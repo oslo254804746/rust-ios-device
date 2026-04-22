@@ -1,0 +1,83 @@
+[workspace]
+members = [
+    "crates/ios-proto",
+    "crates/ios-mux",
+    "crates/ios-lockdown",
+    "crates/ios-tunnel",
+    "crates/ios-xpc",
+    "crates/ios-services",
+    "crates/ios-core",
+    "crates/ios-cli",
+    "crates/ios-py",
+    "crates/ios-ffi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["oslo254804746"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/oslo254804746/rust-ios-device"
+homepage = "https://github.com/oslo254804746/rust-ios-device"
+rust-version = "1.75"
+keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
+categories = ["development-tools", "api-bindings"]
+
+[workspace.dependencies]
+tokio        = { version = "1", features = ["full"] }
+bytes        = "1"
+zerocopy     = { version = "0.8", features = ["derive"] }
+plist        = "1"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+thiserror    = "2"
+anyhow       = "1"
+tracing      = "0.1"
+rustls       = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+h2           = "0.4"
+lz4_flex     = "0.11"
+smoltcp      = { version = "0.11", default-features = false, features = ["std","proto-ipv6","socket-tcp","async","medium-ip"] }
+p256         = "0.13"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek= { version = "2", features = ["rand_core"] }
+sha2         = "0.10"
+hkdf         = "0.12"
+chacha20poly1305 = "0.10"
+zeroize      = { version = "1", features = ["derive"] }
+clap         = { version = "4", features = ["derive", "env"] }
+pyo3         = { version = "0.22", features = ["extension-module"] }
+mdns-sd      = "0.11"
+tokio-util   = { version = "0.7", features = ["codec"] }
+tokio-stream = "0.1"
+semver       = "1"
+uuid         = { version = "1", features = ["v4"] }
+once_cell    = "1"
+comfy-table  = "7"
+indexmap     = "2"
+rustls-pemfile = "2"
+reqwest      = { version = "0.12", features = ["rustls-tls"] }
+futures-util = "0.3"
+futures-core = "0.3"
+async-stream = "0.3"
+axum         = { version = "0.7", features = ["ws", "json"] }
+chrono       = "0.4"
+http         = "1"
+dirs-next    = "2"
+hex          = "0.4"
+openssl      = "0.10"
+rand         = "0.8"
+base64       = "0.22"
+md5          = "0.7"
+num-bigint   = "0.4"
+num-traits   = "0.2"
+quick-xml    = { version = "0.38", features = ["serialize"] }
+regex        = "1"
+serde_bytes  = "0.11"
+time         = { version = "0.3", features = ["parsing", "local-offset"] }
+tokio-openssl = "0.6"
+tracing-subscriber = "0.3"
+tun-rs       = { version = "2", features = ["async"] }
+zip          = { version = "2", default-features = false, features = ["deflate"] }
+crc32fast    = "1"

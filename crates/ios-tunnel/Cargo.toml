@@ -1,0 +1,25 @@
+[package]
+name = "ios-tunnel"
+description = "CDTunnel handshake and kernel/userspace TUN forwarding for iOS 17.4+"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ios-proto    = { path = "../ios-proto" }
+ios-mux      = { path = "../ios-mux" }
+ios-lockdown = { path = "../ios-lockdown" }
+tokio        = { workspace = true }
+bytes        = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+tokio-util   = { workspace = true }
+smoltcp      = { workspace = true }
+tun-rs       = { workspace = true }

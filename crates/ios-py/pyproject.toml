@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ios-rs"
+description = "Python bindings for iOS device management — tunnel, lockdown, and service access"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "oslo254804746" }]
+keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Hardware",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/oslo254804746/rust-ios-device"
+
+[tool.maturin]
+# Path to the Cargo.toml of the Rust crate (relative to this pyproject.toml)
+manifest-path = "Cargo.toml"
+# Build abi3 wheels for maximum Python version compatibility
+features = []

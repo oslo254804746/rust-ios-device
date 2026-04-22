@@ -1,0 +1,44 @@
+[package]
+name = "ios-core"
+description = "High-level device API, pairing transport, and discovery for iOS devices"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ios-proto    = { path = "../ios-proto" }
+ios-mux      = { path = "../ios-mux" }
+ios-lockdown = { path = "../ios-lockdown" }
+ios-tunnel   = { path = "../ios-tunnel" }
+ios-xpc      = { path = "../ios-xpc" }
+ios-services = { path = "../ios-services", features = ["afc","apps","syslog","screenshot","misagent","amfi","fileservice","deviceinfo"] }
+tokio        = { workspace = true }
+bytes        = { workspace = true }
+thiserror    = { workspace = true }
+anyhow       = { workspace = true }
+tracing      = { workspace = true }
+tokio-stream = { workspace = true }
+semver       = { workspace = true }
+mdns-sd      = { workspace = true }
+plist        = { workspace = true }
+futures-core = { workspace = true }
+rustls       = { workspace = true }
+tokio-rustls = { workspace = true }
+async-stream = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+indexmap     = { workspace = true }
+dirs-next    = { workspace = true }
+chacha20poly1305 = { workspace = true }
+base64       = { workspace = true }
+hex          = { workspace = true }
+x25519-dalek = { workspace = true }
+rand         = { workspace = true }
+md5          = { workspace = true }
+openssl      = { workspace = true }
+tokio-openssl = { workspace = true }

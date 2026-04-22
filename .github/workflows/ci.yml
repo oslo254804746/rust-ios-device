@@ -1,0 +1,284 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      # macOS: OpenSSL is available via Homebrew (pre-installed on GitHub runners).
+      # Windows: Use vendored OpenSSL via openssl-sys.
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --exclude ios-py
+        env:
+          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
+          OPENSSL_NO_VENDOR: ${{ runner.os != 'Windows' && '1' || '' }}
+
+      - name: Test
+        run: cargo test --workspace --exclude ios-py
+
+  release:
+    name: Release (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, build-and-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+            lib_ext: so
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+            lib_ext: so
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+            lib_ext: dylib
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+            lib_ext: dylib
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+            lib_ext: dll
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary + FFI library
+        run: cargo build --release --package ios-cli --package ios-ffi --target ${{ matrix.target }}
+        env:
+          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package CLI (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar czf "$ASSET_NAME" -C "target/${{ matrix.target }}/release" ios
+          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+          echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Package CLI (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
+          cd "target/${{ matrix.target }}/release"
+          7z a "../../../$ASSET_NAME" ios.exe
+          cd ../../..
+          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+          echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Package FFI library (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+          # Collect shared lib + static lib + header
+          mkdir -p _ffi_pkg
+          cp "$RELEASE_DIR/libios_ffi.${{ matrix.lib_ext }}" _ffi_pkg/ 2>/dev/null || true
+          cp "$RELEASE_DIR/libios_ffi.a" _ffi_pkg/ 2>/dev/null || true
+          tar czf "$FFI_ASSET" -C _ffi_pkg .
+          sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
+          echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
+
+      - name: Package FFI library (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+          mkdir -p _ffi_pkg
+          cp "$RELEASE_DIR/ios_ffi.dll" _ffi_pkg/ 2>/dev/null || true
+          cp "$RELEASE_DIR/ios_ffi.dll.lib" _ffi_pkg/ 2>/dev/null || true
+          cp "$RELEASE_DIR/ios_ffi.lib" _ffi_pkg/ 2>/dev/null || true
+          cd _ffi_pkg
+          7z a "../$FFI_ASSET" .
+          cd ..
+          sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
+          echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.CLI_ASSET }}
+            ${{ env.CLI_ASSET }}.sha256
+            ${{ env.FFI_ASSET }}
+            ${{ env.FFI_ASSET }}.sha256
+
+  # ── Python wheels (maturin) ──────────────────────────────────────────────────
+
+  python-wheels:
+    name: Python wheels (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, build-and-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-13
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: python-${{ matrix.target }}
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          cd crates/ios-py
+          maturin build --release --target ${{ matrix.target }} --out ../../dist
+        env:
+          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
+
+      - name: Upload wheels as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist/*.whl
+
+  python-sdist:
+    name: Python sdist
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: |
+          cd crates/ios-py
+          maturin sdist --out ../../dist
+
+      - name: Upload sdist as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-wheels, python-sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

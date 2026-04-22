@@ -1,0 +1,23 @@
+[package]
+name = "ios-py"
+description = "Python bindings (PyO3) for the rust-ios-device library"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+keywords = ["ios", "apple", "python", "mobile", "usbmuxd"]
+categories = ["api-bindings", "development-tools::ffi"]
+
+[lib]
+name = "ios_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+ios-core  = { path = "../ios-core" }
+ios-tunnel = { path = "../ios-tunnel" }
+pyo3      = { workspace = true, features = ["abi3-py39"] }
+tokio     = { workspace = true }
+once_cell = { workspace = true }

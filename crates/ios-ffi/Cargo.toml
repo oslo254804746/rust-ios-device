@@ -1,0 +1,23 @@
+[package]
+name = "ios-ffi"
+description = "C FFI bindings for the rust-ios-device library"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+keywords = ["ios", "apple", "ffi", "mobile", "usbmuxd"]
+categories = ["api-bindings", "development-tools::ffi"]
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+ios-core  = { path = "../ios-core" }
+ios-tunnel = { path = "../ios-tunnel" }
+tokio     = { workspace = true }
+once_cell = { workspace = true }
+plist     = { workspace = true }
+serde_json = { workspace = true }

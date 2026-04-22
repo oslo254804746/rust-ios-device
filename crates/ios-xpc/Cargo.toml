@@ -1,0 +1,29 @@
+[package]
+name = "ios-xpc"
+description = "Raw HTTP/2 + XPC message codec and Remote Service Discovery (RSD) handshake"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ios-proto    = { path = "../ios-proto" }
+ios-mux      = { path = "../ios-mux" }
+ios-lockdown = { path = "../ios-lockdown" }
+ios-tunnel   = { path = "../ios-tunnel" }
+tokio        = { workspace = true }
+bytes        = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+rustls       = { workspace = true }
+tokio-rustls = { workspace = true }
+h2           = { workspace = true }
+indexmap     = { workspace = true }
+tokio-util   = { workspace = true }
+http         = { workspace = true }
