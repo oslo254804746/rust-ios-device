@@ -1,6 +1,7 @@
 [package]
 name = "ios-py"
 description = "Python bindings (PyO3) for the rust-ios-device library"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -16,8 +17,8 @@ name = "ios_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ios-core  = { version = "0.1.0", path = "../ios-core" }
-ios-tunnel = { version = "0.1.0", path = "../ios-tunnel" }
+ios-core  = { version = "0.1", path = "../ios-core" }
+ios-tunnel = { version = "0.1", path = "../ios-tunnel" }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
 tokio     = { workspace = true }
 once_cell = { workspace = true }

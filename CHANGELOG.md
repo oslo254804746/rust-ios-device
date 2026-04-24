@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-04-24
+
 ### Added
 
+- Added crate-level README files for every workspace crate so crates.io package pages have documentation.
+- Added a reusable crates.io publish script with retry/backoff handling for crates.io rate limits.
 - Public README, contribution guide, security policy, and user/developer documentation.
 - GitHub issue templates and pull request template.
 
 ### Changed
 
+- Bumped workspace crates and internal crate dependency versions to `0.1.1` for a documentation refresh release.
+- Updated the tag release workflow to use the shared publish script instead of fixed 30-second sleeps.
 - Removed local machine-specific Cargo/PyO3 configuration from the repository.
 - Normalized example/test placeholder names and temporary paths for public release.
 

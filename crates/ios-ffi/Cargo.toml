@@ -1,6 +1,7 @@
 [package]
 name = "ios-ffi"
 description = "C FFI bindings for the rust-ios-device library"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,8 +16,8 @@ categories = ["api-bindings", "development-tools::ffi"]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-ios-core  = { version = "0.1.0", path = "../ios-core" }
-ios-tunnel = { version = "0.1.0", path = "../ios-tunnel" }
+ios-core  = { version = "0.1", path = "../ios-core" }
+ios-tunnel = { version = "0.1", path = "../ios-tunnel" }
 tokio     = { workspace = true }
 once_cell = { workspace = true }
 plist     = { workspace = true }

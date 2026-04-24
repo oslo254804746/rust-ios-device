@@ -1,6 +1,7 @@
 [package]
 name = "ios-services"
 description = "Feature-gated iOS device services: AFC, syslog, screenshot, apps, DTX, instruments, and more"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -78,11 +79,11 @@ dproxy = ["dtx"]
 webinspector = []
 
 [dependencies]
-ios-proto    = { version = "0.1.0", path = "../ios-proto" }
-ios-mux      = { version = "0.1.0", path = "../ios-mux" }
-ios-lockdown = { version = "0.1.0", path = "../ios-lockdown" }
-ios-tunnel   = { version = "0.1.0", path = "../ios-tunnel" }
-ios-xpc      = { version = "0.1.0", path = "../ios-xpc" }
+ios-proto    = { version = "0.1", path = "../ios-proto" }
+ios-mux      = { version = "0.1", path = "../ios-mux" }
+ios-lockdown = { version = "0.1", path = "../ios-lockdown" }
+ios-tunnel   = { version = "0.1", path = "../ios-tunnel" }
+ios-xpc      = { version = "0.1", path = "../ios-xpc" }
 tokio        = { workspace = true }
 bytes        = { workspace = true }
 plist        = { workspace = true }

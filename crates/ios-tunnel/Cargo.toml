@@ -1,6 +1,7 @@
 [package]
 name = "ios-tunnel"
 description = "CDTunnel handshake and kernel/userspace TUN forwarding for iOS 17.4+"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,9 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ios-proto    = { version = "0.1.0", path = "../ios-proto" }
-ios-mux      = { version = "0.1.0", path = "../ios-mux" }
-ios-lockdown = { version = "0.1.0", path = "../ios-lockdown" }
+ios-proto    = { version = "0.1", path = "../ios-proto" }
+ios-mux      = { version = "0.1", path = "../ios-mux" }
+ios-lockdown = { version = "0.1", path = "../ios-lockdown" }
 tokio        = { workspace = true }
 bytes        = { workspace = true }
 serde        = { workspace = true }

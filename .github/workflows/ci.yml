@@ -320,19 +320,4 @@ jobs:
       - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          cargo publish -p ios-proto --no-verify
-          sleep 30
-          cargo publish -p ios-mux --no-verify
-          sleep 30
-          cargo publish -p ios-lockdown --no-verify
-          sleep 30
-          cargo publish -p ios-tunnel --no-verify
-          sleep 30
-          cargo publish -p ios-xpc --no-verify
-          sleep 30
-          cargo publish -p ios-services --no-verify
-          sleep 30
-          cargo publish -p ios-core --no-verify
-          sleep 30
-          cargo publish -p ios-cli --no-verify
+        run: scripts/publish-crates.sh

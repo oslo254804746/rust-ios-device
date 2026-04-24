@@ -36,3 +36,6 @@ remote_*.plist
 *.crash
 # Local Cargo configuration
 /.cargo/config.toml
+
+# Release/build outputs
+/dist/

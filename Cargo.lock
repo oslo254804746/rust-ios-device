@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "ios-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "ios-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "ios-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ios-core",
  "ios-tunnel",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "ios-lockdown"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "ios-mux"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "ios-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "indexmap",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "ios-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ios-core",
  "ios-tunnel",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "ios-services"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "ios-tunnel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "ios-lockdown",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "ios-xpc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "h2",

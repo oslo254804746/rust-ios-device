@@ -1,6 +1,7 @@
 [package]
 name = "ios-proto"
 description = "Protocol types and codecs for iOS device communication (AFC, DTX, lockdown, XPC, OPACK)"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
