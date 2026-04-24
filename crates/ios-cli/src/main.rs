@@ -251,7 +251,7 @@ mod tests {
             "ios",
             "lockdown",
             "save-pair-record",
-            "codex-tmp/exported-pair-record.plist",
+            "ios-rs-tmp/exported-pair-record.plist",
         ]);
         assert!(
             parsed.is_ok(),
@@ -465,14 +465,14 @@ mod tests {
     #[test]
     fn parses_prepare_create_cert_command() {
         let parsed =
-            Cli::try_parse_from(["ios", "prepare", "create-cert", "codex-tmp/supervision"]);
+            Cli::try_parse_from(["ios", "prepare", "create-cert", "ios-rs-tmp/supervision"]);
         assert!(parsed.is_ok(), "prepare create-cert command should parse");
     }
 
     #[test]
     fn parses_prepare_command() {
         let parsed =
-            Cli::try_parse_from(["ios", "prepare", "--cert-der", "codex-tmp/supervision.der"]);
+            Cli::try_parse_from(["ios", "prepare", "--cert-der", "ios-rs-tmp/supervision.der"]);
         assert!(parsed.is_ok(), "prepare command should parse");
     }
 

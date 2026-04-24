@@ -327,15 +327,15 @@ mod tests {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>UUID</key><string>ABC-123</string>
-<key>Name</key><string>Codex Dev Profile</string>
-<key>AppIDName</key><string>Codex App</string>
+<key>Name</key><string>Example Dev Profile</string>
+<key>AppIDName</key><string>Example App</string>
 <key>ExpirationDate</key><date>2026-04-08T00:00:00Z</date>
 </dict></plist>trailer"#;
 
         let profile = decode_profile(xml).unwrap();
         assert_eq!(profile.uuid, "ABC-123");
-        assert_eq!(profile.name, "Codex Dev Profile");
-        assert_eq!(profile.app_id, "Codex App");
+        assert_eq!(profile.name, "Example Dev Profile");
+        assert_eq!(profile.app_id, "Example App");
         assert_eq!(profile.expiry_date.as_deref(), Some("2026-04-08T00:00:00Z"));
     }
 

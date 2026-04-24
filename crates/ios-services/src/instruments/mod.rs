@@ -400,25 +400,19 @@ fn parse_process_from_array(arr: &[NSObject], attr_names: &[String]) -> Option<P
 
             // Extract per-process data: look for "Processes" key
             // The value is a dict of PID → Array(values matching procAttrs order)
-            if let Some(proc_val) = d.get("Processes") {
-                match proc_val {
-                    NSObject::Dict(processes_dict) => {
-                        for (_pid_key, values) in processes_dict {
-                            if let NSObject::Array(vals) = values {
-                                let mut proc_map = serde_json::Map::new();
-                                for (i, val) in vals.iter().enumerate() {
-                                    let key = attr_names
-                                        .get(i)
-                                        .cloned()
-                                        .unwrap_or_else(|| format!("attr_{i}"));
-                                    proc_map.insert(key, nsobject_to_json(val));
-                                }
-                                processes.push(proc_map);
-                            }
+            if let Some(NSObject::Dict(processes_dict)) = d.get("Processes") {
+                for (_pid_key, values) in processes_dict {
+                    if let NSObject::Array(vals) = values {
+                        let mut proc_map = serde_json::Map::new();
+                        for (i, val) in vals.iter().enumerate() {
+                            let key = attr_names
+                                .get(i)
+                                .cloned()
+                                .unwrap_or_else(|| format!("attr_{i}"));
+                            proc_map.insert(key, nsobject_to_json(val));
                         }
+                        processes.push(proc_map);
                     }
-                    // Some iOS versions may use a different container
-                    _ => {}
                 }
             }
         }

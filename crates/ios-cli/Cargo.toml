@@ -15,11 +15,11 @@ name = "ios"
 path = "src/main.rs"
 
 [dependencies]
-ios-core    = { path = "../ios-core" }
-ios-lockdown = { path = "../ios-lockdown" }
-ios-mux     = { path = "../ios-mux" }
-ios-tunnel  = { path = "../ios-tunnel" }
-ios-services = { path = "../ios-services", features = ["afc","arbitration","apps","companion","notificationproxy","crashreport","springboard","mcinstall","heartbeat","file_relay","syslog","screenshot","misagent","dtx","instruments","testmanager","accessibility_audit","imagemounter","debugserver","pcap","power_assertion","preboard","idam","fetchsymbols","ostrace","prepare","restore","dproxy","webinspector"] }
+ios-core    = { version = "0.1.0", path = "../ios-core" }
+ios-lockdown = { version = "0.1.0", path = "../ios-lockdown" }
+ios-mux     = { version = "0.1.0", path = "../ios-mux" }
+ios-tunnel  = { version = "0.1.0", path = "../ios-tunnel" }
+ios-services = { version = "0.1.0", path = "../ios-services", features = ["afc","arbitration","apps","companion","notificationproxy","crashreport","springboard","mcinstall","heartbeat","file_relay","syslog","screenshot","misagent","dtx","instruments","testmanager","accessibility_audit","imagemounter","debugserver","pcap","power_assertion","preboard","idam","fetchsymbols","ostrace","prepare","restore","dproxy","webinspector"] }
 tokio    = { workspace = true }
 tokio-stream = { workspace = true }
 anyhow   = { workspace = true }
@@ -31,8 +31,8 @@ comfy-table = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
-ios-xpc = { path = "../ios-xpc" }
-ios-proto = { path = "../ios-proto" }
+ios-xpc = { version = "0.1.0", path = "../ios-xpc" }
+ios-proto = { version = "0.1.0", path = "../ios-proto" }
 bytes    = { workspace = true }
 semver   = { workspace = true }
 plist    = { workspace = true }

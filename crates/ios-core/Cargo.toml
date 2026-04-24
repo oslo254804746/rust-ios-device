@@ -11,12 +11,12 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ios-proto    = { path = "../ios-proto" }
-ios-mux      = { path = "../ios-mux" }
-ios-lockdown = { path = "../ios-lockdown" }
-ios-tunnel   = { path = "../ios-tunnel" }
-ios-xpc      = { path = "../ios-xpc" }
-ios-services = { path = "../ios-services", features = ["afc","apps","syslog","screenshot","misagent","amfi","fileservice","deviceinfo"] }
+ios-proto    = { version = "0.1.0", path = "../ios-proto" }
+ios-mux      = { version = "0.1.0", path = "../ios-mux" }
+ios-lockdown = { version = "0.1.0", path = "../ios-lockdown" }
+ios-tunnel   = { version = "0.1.0", path = "../ios-tunnel" }
+ios-xpc      = { version = "0.1.0", path = "../ios-xpc" }
+ios-services = { version = "0.1.0", path = "../ios-services", features = ["afc","apps","syslog","screenshot","misagent","amfi","fileservice","deviceinfo"] }
 tokio        = { workspace = true }
 bytes        = { workspace = true }
 thiserror    = { workspace = true }

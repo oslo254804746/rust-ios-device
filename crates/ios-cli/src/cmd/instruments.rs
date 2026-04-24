@@ -1220,7 +1220,7 @@ async fn run_sysmon_process(
             println!("{}", serde_json::to_string(&filtered)?);
         } else {
             println!("--- Snapshot #{emitted} ({} processes) ---", filtered.len());
-            println!("{:<8} {:<6.1} {:<12} {}", "PID", "CPU%", "MEM", "NAME");
+            println!("{:<8} {:<6.1} {:<12} NAME", "PID", "CPU%", "MEM");
             for p in &filtered {
                 let pid = p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cpu = p.get("cpuUsage").and_then(|v| v.as_f64()).unwrap_or(0.0);

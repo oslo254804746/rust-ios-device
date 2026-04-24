@@ -351,7 +351,7 @@ async fn backup_creates_layout_and_writes_uploaded_files() {
     let info_plist = plist::Dictionary::from_iter([
         (
             "Device Name".to_string(),
-            plist::Value::String("Codex iPhone".into()),
+            plist::Value::String("Example iPhone".into()),
         ),
         (
             "Target Identifier".to_string(),
@@ -471,7 +471,7 @@ async fn change_password_sends_requested_fields() {
                     ),
                     (
                         String::from("NewPassword"),
-                        plist::Value::String("codex1234".into()),
+                        plist::Value::String("example1234".into()),
                     ),
                 ])),
             ])
@@ -491,7 +491,7 @@ async fn change_password_sends_requested_fields() {
 
     let mut client = Mobilebackup2Client::new(client_side);
     client
-        .change_password(&backup_root, device_id, None, Some("codex1234"))
+        .change_password(&backup_root, device_id, None, Some("example1234"))
         .await
         .expect("change password should succeed");
 
@@ -681,7 +681,7 @@ async fn change_password_streams_requested_manifest_files() {
 
     let mut client = Mobilebackup2Client::new(client_side);
     client
-        .change_password(&backup_root, device_id, None, Some("codex1234"))
+        .change_password(&backup_root, device_id, None, Some("example1234"))
         .await
         .expect("change password should succeed");
 
@@ -858,7 +858,7 @@ async fn change_password_reports_multi_status_when_requested_file_is_missing() {
 
     let mut client = Mobilebackup2Client::new(client_side);
     client
-        .change_password(&backup_root, device_id, None, Some("codex1234"))
+        .change_password(&backup_root, device_id, None, Some("example1234"))
         .await
         .expect("change password should succeed");
 
@@ -1337,7 +1337,7 @@ async fn restore_sends_requested_fields_and_options() {
                     ),
                     (
                         String::from("Password"),
-                        plist::Value::String("codex1234".into()),
+                        plist::Value::String("example1234".into()),
                     ),
                     (
                         String::from("Options"),
@@ -1394,7 +1394,7 @@ async fn restore_sends_requested_fields_and_options() {
                 copy: false,
                 settings: false,
                 remove: true,
-                password: Some("codex1234"),
+                password: Some("example1234"),
                 source_identifier: Some(source_id),
             },
         )

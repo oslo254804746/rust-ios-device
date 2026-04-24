@@ -3,14 +3,14 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "ios-rs"
+name = "rust-ios-device-tunnel"
 description = "Python bindings for iOS device management — tunnel, lockdown, and service access"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "oslo254804746" }]
 keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",

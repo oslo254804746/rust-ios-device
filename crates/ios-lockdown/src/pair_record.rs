@@ -117,6 +117,7 @@ mod tests {
     #[test]
     fn test_pair_record_dir_windows() {
         let path = pair_record_dir_for_platform(false, true, "C:\\ProgramData");
-        assert_eq!(path, PathBuf::from("C:\\ProgramData\\Apple\\Lockdown"));
+        assert!(path.starts_with("C:\\ProgramData"));
+        assert!(path.ends_with(PathBuf::from("Apple").join("Lockdown")));
     }
 }

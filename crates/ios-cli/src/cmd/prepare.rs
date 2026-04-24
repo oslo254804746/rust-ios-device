@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn parses_prepare_create_cert_subcommand() {
-        let cmd = TestCli::parse_from(["prepare", "create-cert", "codex-tmp/supervision"]);
+        let cmd = TestCli::parse_from(["prepare", "create-cert", "ios-rs-tmp/supervision"]);
         assert!(matches!(
             cmd.command.sub,
             Some(PrepareSub::CreateCert { .. })
@@ -316,7 +316,7 @@ mod tests {
         let cmd = TestCli::parse_from([
             "prepare",
             "--cert-der",
-            "codex-tmp/supervision.der",
+            "ios-rs-tmp/supervision.der",
             "--organization-name",
             "Example Org",
             "--language",
@@ -329,7 +329,7 @@ mod tests {
         assert!(cmd.command.sub.is_none());
         assert_eq!(
             cmd.command.cert_der,
-            Some(PathBuf::from("codex-tmp/supervision.der"))
+            Some(PathBuf::from("ios-rs-tmp/supervision.der"))
         );
         assert_eq!(cmd.command.skip_setup, vec!["WiFi", "Privacy"]);
     }

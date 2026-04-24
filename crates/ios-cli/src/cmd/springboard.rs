@@ -685,7 +685,7 @@ mod tests {
             "springboard",
             "wallpaper-preview-image",
             "lockscreen",
-            "codex-tmp/lockscreen-preview.png",
+            "ios-rs-tmp/lockscreen-preview.png",
             "--json",
         ]);
         match cmd.command {
@@ -695,7 +695,7 @@ mod tests {
                 json,
             } => {
                 assert_eq!(wallpaper_name, "lockscreen");
-                assert_eq!(output, PathBuf::from("codex-tmp/lockscreen-preview.png"));
+                assert_eq!(output, PathBuf::from("ios-rs-tmp/lockscreen-preview.png"));
                 assert!(json);
             }
             _ => panic!("expected wallpaper-preview-image subcommand"),

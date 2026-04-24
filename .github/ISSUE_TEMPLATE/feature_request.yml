@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a capability or improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What workflow would this enable?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the command, API, or service behavior you expect.
+    validations:
+      required: true
+  - type: textarea
+    id: platform
+    attributes:
+      label: Platform details
+      description: Host OS, iOS versions, connection type, and required Apple services if known.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

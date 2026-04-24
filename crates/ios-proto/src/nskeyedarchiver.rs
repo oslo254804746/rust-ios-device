@@ -182,7 +182,7 @@ fn decode_value(
                     .map(|a| a.iter().filter_map(uid_from_plist).collect::<Vec<_>>())
                     .unwrap_or_default();
                 let mut map = HashMap::new();
-                for (k_uid, v_uid) in keys.into_iter().zip(vals.into_iter()) {
+                for (k_uid, v_uid) in keys.into_iter().zip(vals) {
                     let key_str = match decode_object(objects, k_uid) {
                         Ok(ArchiveValue::String(k)) => k,
                         Ok(ArchiveValue::Int(n)) => n.to_string(),

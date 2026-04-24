@@ -11,9 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ios-proto    = { path = "../ios-proto" }
-ios-mux      = { path = "../ios-mux" }
-ios-lockdown = { path = "../ios-lockdown" }
+ios-proto    = { version = "0.1.0", path = "../ios-proto" }
+ios-mux      = { version = "0.1.0", path = "../ios-mux" }
+ios-lockdown = { version = "0.1.0", path = "../ios-lockdown" }
 tokio        = { workspace = true }
 bytes        = { workspace = true }
 serde        = { workspace = true }

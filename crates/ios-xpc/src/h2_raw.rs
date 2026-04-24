@@ -114,14 +114,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 frame.payload.len()
             );
             match frame.frame_type {
+                FRAME_SETTINGS if frame.flags & FLAG_SETTINGS_ACK == 0 => {
+                    // Device sent SETTINGS; acknowledge it
+                    let ack = build_settings_ack();
+                    self.stream.write_all(&ack).await?;
+                    self.stream.flush().await?;
+                    return Ok(());
+                }
                 FRAME_SETTINGS => {
-                    if frame.flags & FLAG_SETTINGS_ACK == 0 {
-                        // Device sent SETTINGS; acknowledge it
-                        let ack = build_settings_ack();
-                        self.stream.write_all(&ack).await?;
-                        self.stream.flush().await?;
-                        return Ok(());
-                    }
                     // It's our own ACK echoed back – ignore
                 }
                 FRAME_DATA => {

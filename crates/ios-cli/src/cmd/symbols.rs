@@ -178,7 +178,7 @@ mod tests {
             "symbols",
             "pull",
             "1",
-            "codex-tmp/dyld_shared_cache",
+            "ios-rs-tmp/dyld_shared_cache",
             "--max-bytes",
             "1024",
         ]);

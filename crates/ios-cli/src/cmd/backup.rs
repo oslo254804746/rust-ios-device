@@ -860,26 +860,26 @@ mod tests {
 
     #[test]
     fn parses_backup_create_subcommand() {
-        let parsed = BackupTestCli::try_parse_from(["backup", "create", "codex-tmp/backup"])
+        let parsed = BackupTestCli::try_parse_from(["backup", "create", "ios-rs-tmp/backup"])
             .expect("backup create command should parse");
 
         let BackupSubcommand::Create { output_dir, full } = parsed.backup.sub else {
             panic!("expected backup create subcommand");
         };
-        assert_eq!(output_dir, "codex-tmp/backup");
+        assert_eq!(output_dir, "ios-rs-tmp/backup");
         assert!(!full, "backup create should default to incremental mode");
     }
 
     #[test]
     fn parses_backup_create_full_flag() {
         let parsed =
-            BackupTestCli::try_parse_from(["backup", "create", "codex-tmp/backup", "--full"])
+            BackupTestCli::try_parse_from(["backup", "create", "ios-rs-tmp/backup", "--full"])
                 .expect("backup create --full command should parse");
 
         let BackupSubcommand::Create { output_dir, full } = parsed.backup.sub else {
             panic!("expected backup create subcommand");
         };
-        assert_eq!(output_dir, "codex-tmp/backup");
+        assert_eq!(output_dir, "ios-rs-tmp/backup");
         assert!(full, "backup create should honor --full");
     }
 
@@ -888,7 +888,7 @@ mod tests {
         let parsed = BackupTestCli::try_parse_from([
             "backup",
             "info",
-            "codex-tmp/backup",
+            "ios-rs-tmp/backup",
             "--source",
             "00008150-000A584C0E62401C",
         ]);
@@ -900,7 +900,7 @@ mod tests {
         let parsed = BackupTestCli::try_parse_from([
             "backup",
             "list",
-            "codex-tmp/backup",
+            "ios-rs-tmp/backup",
             "--source",
             "00008150-000A584C0E62401C",
         ]);
@@ -912,11 +912,11 @@ mod tests {
         let parsed = BackupTestCli::try_parse_from([
             "backup",
             "restore",
-            "codex-tmp/backup",
+            "ios-rs-tmp/backup",
             "--source",
             "00008150-000A584C0E62401C",
             "--password",
-            "codex1234",
+            "example1234",
             "--skip-apps",
         ]);
         assert!(parsed.is_ok(), "backup restore command should parse");
@@ -928,9 +928,9 @@ mod tests {
             "backup",
             "change-password",
             "--backup-directory",
-            "codex-tmp/backup",
+            "ios-rs-tmp/backup",
             "--new-password",
-            "codex1234",
+            "example1234",
         ]);
         assert!(
             parsed.is_ok(),

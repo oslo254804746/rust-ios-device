@@ -2632,7 +2632,7 @@ mod tests {
         let remote_identifier = "test-remote";
         let ios_rs_identity = HostIdentity::generate();
         let fallback_identity = HostIdentity::from_private_key_bytes(
-            pymobiledevice3_host_identifier("codex-host"),
+            pymobiledevice3_host_identifier("example-host"),
             &[0x44; 32],
         )
         .unwrap();
@@ -2659,7 +2659,7 @@ mod tests {
             remote_identifier,
             &ios_rs_dir,
             &pymobiledevice3_dir,
-            "codex-host",
+            "example-host",
         )
         .expect("ios-rs credentials should take precedence");
 
@@ -2678,7 +2678,7 @@ mod tests {
         let ios_rs_dir = base_dir.join("ios-rs");
         let pymobiledevice3_dir = base_dir.join(".pymobiledevice3");
         let remote_identifier = "test-remote";
-        let hostname = "codex-host";
+        let hostname = "example-host";
         let expected_identity = HostIdentity::from_private_key_bytes(
             pymobiledevice3_host_identifier(hostname),
             &[0x22; 32],

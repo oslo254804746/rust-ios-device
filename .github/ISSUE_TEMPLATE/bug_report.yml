@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible problem
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include pair records, private keys, personal UDIDs, backups, certificates, or logs containing personal data.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include commands and relevant flags.
+      placeholder: |
+        1. Run `ios ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS, Rust version, crate/CLI version, iOS version, connection type, and whether the device is trusted.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redact sensitive values before pasting logs.
+      render: text

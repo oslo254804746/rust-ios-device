@@ -815,10 +815,10 @@ mod tests {
 
     #[test]
     fn parses_auto_subcommand() {
-        let cmd = TestCli::parse_from(["ddi", "auto", "--cache-dir", "codex-tmp/ddi-cache"]);
+        let cmd = TestCli::parse_from(["ddi", "auto", "--cache-dir", "ios-rs-tmp/ddi-cache"]);
         match cmd.command {
             DdiSub::Auto { cache_dir } => {
-                assert_eq!(cache_dir, Some(PathBuf::from("codex-tmp/ddi-cache")));
+                assert_eq!(cache_dir, Some(PathBuf::from("ios-rs-tmp/ddi-cache")));
             }
             _ => panic!("expected auto subcommand"),
         }

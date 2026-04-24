@@ -46,24 +46,20 @@ impl DiscoverCmd {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
                 let mut devices = Vec::new();
 
-                loop {
-                    match tokio::time::timeout_at(deadline, stream.next()).await {
-                        Ok(Some(device)) => {
-                            if json {
-                                devices.push(serde_json::json!({
-                                    "udid": device.udid,
-                                    "ipv6": device.ipv6.to_string(),
-                                    "rsd_port": device.rsd_port,
-                                    "name": device.name,
-                                }));
-                            } else {
-                                println!(
-                                    "{:<45} [{}]:{} {}",
-                                    device.udid, device.ipv6, device.rsd_port, device.name
-                                );
-                            }
-                        }
-                        Ok(None) | Err(_) => break,
+                while let Ok(Some(device)) = tokio::time::timeout_at(deadline, stream.next()).await
+                {
+                    if json {
+                        devices.push(serde_json::json!({
+                            "udid": device.udid,
+                            "ipv6": device.ipv6.to_string(),
+                            "rsd_port": device.rsd_port,
+                            "name": device.name,
+                        }));
+                    } else {
+                        println!(
+                            "{:<45} [{}]:{} {}",
+                            device.udid, device.ipv6, device.rsd_port, device.name
+                        );
                     }
                 }
 

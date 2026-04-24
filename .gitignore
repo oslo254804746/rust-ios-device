@@ -6,11 +6,31 @@
 
 # IDE
 .idea/
+.vscode
+
+# Local reference checkouts / generated workspaces
 /raw-projects/*
 /ios-tunnel-core/
 /ios-tunnel-py/
-.vscode
-.codex-tmp
+
+# Local scratch directories
+.ios-rs-tmp
 .t3
 .claude
-codex-tmp
+ios-rs-tmp
+
+# Device credentials and local artifacts
+*.mobileprovision
+*.p12
+*.pem
+*.key
+*.cer
+*.der
+pair-record*.plist
+remote_*.plist
+*.xcresult
+*.ipsw
+*.dmg
+*.har
+*.pcap
+*.crash

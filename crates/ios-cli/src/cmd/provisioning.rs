@@ -366,8 +366,8 @@ mod tests {
     fn profile_json_includes_basic_metadata() {
         let profile = ios_services::misagent::Profile {
             uuid: "ABC-123".into(),
-            name: "Codex Dev Profile".into(),
-            app_id: "Codex App".into(),
+            name: "Example Dev Profile".into(),
+            app_id: "Example App".into(),
             expiry_date: Some("2026-04-08T00:00:00Z".into()),
             raw_data: vec![1, 2, 3, 4],
         };
@@ -376,8 +376,8 @@ mod tests {
             profile_to_json(&profile),
             serde_json::json!({
                 "uuid": "ABC-123",
-                "name": "Codex Dev Profile",
-                "app_id": "Codex App",
+                "name": "Example Dev Profile",
+                "app_id": "Example App",
                 "expiry_date": "2026-04-08T00:00:00Z",
                 "size": 4,
             })
@@ -388,16 +388,16 @@ mod tests {
     fn profile_detail_lines_include_size() {
         let profile = ios_services::misagent::Profile {
             uuid: "ABC-123".into(),
-            name: "Codex Dev Profile".into(),
-            app_id: "Codex App".into(),
+            name: "Example Dev Profile".into(),
+            app_id: "Example App".into(),
             expiry_date: Some("2026-04-08T00:00:00Z".into()),
             raw_data: vec![1, 2, 3, 4],
         };
 
         let lines = profile_detail_lines(&profile);
         assert!(lines.contains(&("UUID:", "ABC-123".into())));
-        assert!(lines.contains(&("Name:", "Codex Dev Profile".into())));
-        assert!(lines.contains(&("App ID:", "Codex App".into())));
+        assert!(lines.contains(&("Name:", "Example Dev Profile".into())));
+        assert!(lines.contains(&("App ID:", "Example App".into())));
         assert!(lines.contains(&("Expiry:", "2026-04-08T00:00:00Z".into())));
         assert!(lines.contains(&("Size:", "4".into())));
     }
@@ -477,8 +477,8 @@ mod tests {
     fn find_profile_returns_not_found_error_for_unknown_uuid() {
         let profiles = vec![ios_services::misagent::Profile {
             uuid: "ABC-123".into(),
-            name: "Codex Dev Profile".into(),
-            app_id: "Codex App".into(),
+            name: "Example Dev Profile".into(),
+            app_id: "Example App".into(),
             expiry_date: Some("2026-04-08T00:00:00Z".into()),
             raw_data: vec![1, 2, 3, 4],
         }];
@@ -518,13 +518,13 @@ mod tests {
     fn find_profile_accepts_exact_name() {
         let profiles = vec![ios_services::misagent::Profile {
             uuid: "ABC-123".into(),
-            name: "Codex Dev Profile".into(),
-            app_id: "Codex App".into(),
+            name: "Example Dev Profile".into(),
+            app_id: "Example App".into(),
             expiry_date: None,
             raw_data: vec![1],
         }];
 
-        let profile = find_profile(&profiles, "Codex Dev Profile").expect("name should resolve");
+        let profile = find_profile(&profiles, "Example Dev Profile").expect("name should resolve");
         assert_eq!(profile.uuid, "ABC-123");
     }
 

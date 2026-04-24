@@ -372,7 +372,6 @@ fn parse_icon(value: plist::Value) -> Result<Icon, SpringboardError> {
             .ok_or_else(|| SpringboardError::Protocol("folder iconLists missing".into()))?;
         let pages = pages
             .iter()
-            .cloned()
             .map(|page| {
                 let page_icons = page.as_array().ok_or_else(|| {
                     SpringboardError::Protocol("folder page was not an array".into())

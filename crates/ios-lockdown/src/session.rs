@@ -179,7 +179,7 @@ where
 /// Wrap a service stream with TLS using an explicit rustls server name.
 ///
 /// The underlying verifier still skips certificate validation, but the caller can
-/// preserve a service-specific ClientHello shape when parity requires it.
+/// preserve a service-specific ClientHello shape when compatibility requires it.
 pub async fn wrap_service_tls_with_server_name<S>(
     stream: S,
     pair_record: &PairRecord,

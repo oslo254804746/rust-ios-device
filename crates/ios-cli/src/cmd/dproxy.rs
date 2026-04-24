@@ -33,7 +33,7 @@ enum DproxySub {
         transport: TransportArg,
         #[arg(long, value_enum, default_value = "auto")]
         protocol: ProtocolArg,
-        #[arg(long, default_value = "codex-tmp/dproxy")]
+        #[arg(long, default_value = "ios-rs-tmp/dproxy")]
         output: PathBuf,
         #[arg(long, help = "Accept a single client connection, then exit")]
         once: bool,

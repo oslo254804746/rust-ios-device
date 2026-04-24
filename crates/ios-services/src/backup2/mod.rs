@@ -1149,7 +1149,7 @@ mod tests {
 
         let info = plist::Dictionary::from_iter([(
             "Device Name".to_string(),
-            plist::Value::String("Codex".into()),
+            plist::Value::String("Example".into()),
         )]);
         let layout = initialize_backup_directory(&root, "device-id", &info, true).unwrap();
 

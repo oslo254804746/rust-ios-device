@@ -16,8 +16,8 @@ name = "ios_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ios-core  = { path = "../ios-core" }
-ios-tunnel = { path = "../ios-tunnel" }
+ios-core  = { version = "0.1.0", path = "../ios-core" }
+ios-tunnel = { version = "0.1.0", path = "../ios-tunnel" }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
 tokio     = { workspace = true }
 once_cell = { workspace = true }

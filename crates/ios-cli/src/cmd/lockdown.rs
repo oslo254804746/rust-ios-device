@@ -837,13 +837,13 @@ mod tests {
         let cmd = TestCli::parse_from([
             "lockdown",
             "save-pair-record",
-            "codex-tmp/exported-pair-record.plist",
+            "ios-rs-tmp/exported-pair-record.plist",
         ]);
         match cmd.command {
             LockdownSub::SavePairRecord { output } => {
                 assert_eq!(
                     output,
-                    std::path::PathBuf::from("codex-tmp/exported-pair-record.plist")
+                    std::path::PathBuf::from("ios-rs-tmp/exported-pair-record.plist")
                 );
             }
             other => panic!("expected save-pair-record subcommand, got {other:?}"),
@@ -891,12 +891,12 @@ mod tests {
 
     #[test]
     fn parses_lockdown_device_name_with_value() {
-        let cmd = TestCli::parse_from(["lockdown", "device-name", "Codex Test Device"]);
+        let cmd = TestCli::parse_from(["lockdown", "device-name", "Example Test Device"]);
         assert!(matches!(
             cmd.command,
             LockdownSub::DeviceName {
                 new_name: Some(name)
-            } if name == "Codex Test Device"
+            } if name == "Example Test Device"
         ));
     }
 
