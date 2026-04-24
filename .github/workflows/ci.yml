@@ -47,7 +47,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
       # macOS: OpenSSL is available via Homebrew (pre-installed on GitHub runners).
-      # Windows: Use vendored OpenSSL via openssl-sys.
+      # Windows: OpenSSL is installed through the runner-provided vcpkg.
+
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          vcpkg install openssl:x64-windows-static-md
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -55,9 +64,6 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --exclude ios-py
-        env:
-          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
-          OPENSSL_NO_VENDOR: ${{ runner.os != 'Windows' && '1' || '' }}
 
       - name: Test
         run: cargo test --workspace --exclude ios-py
@@ -101,6 +107,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          vcpkg install openssl:x64-windows-static-md
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -111,8 +126,6 @@ jobs:
 
       - name: Build release binary + FFI library
         run: cargo build --release --package ios-cli --package ios-ffi --target ${{ matrix.target }}
-        env:
-          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
 
       - name: Determine version
         id: version
@@ -216,6 +229,15 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          vcpkg install openssl:x64-windows-static-md
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -229,8 +251,6 @@ jobs:
         run: |
           cd crates/ios-py
           maturin build --release --target ${{ matrix.target }} --out ../../dist
-        env:
-          OPENSSL_STATIC: ${{ runner.os == 'Windows' && '1' || '' }}
 
       - name: Upload wheels as artifacts
         uses: actions/upload-artifact@v4

@@ -34,3 +34,5 @@ remote_*.plist
 *.har
 *.pcap
 *.crash
+# Local Cargo configuration
+/.cargo/config.toml

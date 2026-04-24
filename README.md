@@ -1,5 +1,7 @@
 # rust-ios-device
 
+English | [简体中文](README.zh-CN.md)
+
 Rust libraries and a command-line tool for communicating with iOS devices through usbmuxd, lockdown, CoreDevice/RemoteXPC, and common device services.
 
 The project is currently **experimental**. It is useful for development, testing, and protocol work, but the API and CLI may change before a stable release. Some services require a real, trusted device and may vary by iOS version, host operating system, pairing state, and installed Apple components.
@@ -229,4 +231,9 @@ at your option.
 
 ## Acknowledgements
 
-This project is informed by the broader iOS device tooling ecosystem, including libimobiledevice, go-ios, and pymobiledevice3. Compatibility is implemented only where this repository's code and tests support it.
+This project is informed by the broader iOS device tooling ecosystem. Special thanks to:
+
+- [go-ios](https://github.com/danielpaulus/go-ios.git)
+- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3.git)
+
+Compatibility is implemented only where this repository's code and tests support it.
