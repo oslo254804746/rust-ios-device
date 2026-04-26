@@ -11,8 +11,14 @@ pub mod credentials;
 pub mod device;
 pub mod discovery;
 pub mod error;
+pub mod lockdown;
+pub mod mux;
 pub mod pairing_transport;
+pub mod proto;
 pub mod psk_tls;
+pub mod services;
+pub mod tunnel;
+pub mod xpc;
 
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
 pub use device::{
@@ -24,7 +30,11 @@ pub use discovery::{
     browse_mobdev2, browse_remotepairing, BonjourService, DeviceEvent, DeviceInfo, MdnsDevice,
 };
 pub use error::CoreError;
+pub use lockdown::{LockdownClient, LOCKDOWN_PORT};
+pub use mux::MuxClient;
 pub use pairing_transport::{pair_new_device, PairedCredentials, UNTRUSTED_SERVICE_NAME};
+pub use tunnel::TunMode;
+pub use xpc::{RsdHandshake, ServiceDescriptor, XpcMessage, XpcValue};
 
 /// List all currently connected iOS devices (via usbmuxd).
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, CoreError> {
@@ -45,7 +55,7 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 /// Discover iOS 17+ devices on the local network via mDNS.
 ///
 /// Returns a stream of devices with their IPv6 address and RSD port.
-/// Use `ios_xpc::rsd::handshake(ipv6, rsd_port)` to get the full service list.
+/// Use [`xpc::rsd::handshake`] to get the full service list.
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }

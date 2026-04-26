@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ios_mux::MuxClient;
+use crate::mux::MuxClient;
 use tokio_stream::Stream;
 
 use crate::error::CoreError;
@@ -16,7 +16,7 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    pub(crate) fn from_mux(d: ios_mux::MuxDevice) -> Self {
+    pub(crate) fn from_mux(d: crate::mux::MuxDevice) -> Self {
         Self {
             udid: d.serial_number,
             device_id: d.device_id,
@@ -45,7 +45,7 @@ pub async fn watch_devices() -> Result<impl Stream<Item = Result<DeviceEvent, Co
 {
     use tokio_stream::StreamExt;
 
-    let events = ios_mux::listener::listen_events().await?;
+    let events = crate::mux::listener::listen_events().await?;
     let attached_devices = list_devices().await?;
 
     Ok(async_stream::stream! {
@@ -214,14 +214,14 @@ impl DeviceEventMapper {
         Self { attached_devices }
     }
 
-    fn map(&mut self, event: ios_mux::MuxEvent) -> Option<DeviceEvent> {
+    fn map(&mut self, event: crate::mux::MuxEvent) -> Option<DeviceEvent> {
         match event {
-            ios_mux::MuxEvent::Attached(device) => {
+            crate::mux::MuxEvent::Attached(device) => {
                 let info = DeviceInfo::from_mux(device);
                 self.attached_devices.insert(info.device_id, info.clone());
                 Some(DeviceEvent::Attached(info))
             }
-            ios_mux::MuxEvent::Detached { device_id } => {
+            crate::mux::MuxEvent::Detached { device_id } => {
                 let udid = self
                     .attached_devices
                     .remove(&device_id)
@@ -241,7 +241,7 @@ mod tests {
     fn mapper_preserves_attached_device_details() {
         let mut mapper = DeviceEventMapper::default();
         let event = mapper
-            .map(ios_mux::MuxEvent::Attached(ios_mux::MuxDevice {
+            .map(crate::mux::MuxEvent::Attached(crate::mux::MuxDevice {
                 device_id: 2,
                 serial_number: "00008150-000A584C0E62401C".into(),
                 connection_type: "USB".into(),
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn mapper_rehydrates_udid_for_detached_device() {
         let mut mapper = DeviceEventMapper::default();
-        mapper.map(ios_mux::MuxEvent::Attached(ios_mux::MuxDevice {
+        mapper.map(crate::mux::MuxEvent::Attached(crate::mux::MuxDevice {
             device_id: 7,
             serial_number: "detaching-udid".into(),
             connection_type: "USB".into(),
@@ -271,7 +271,7 @@ mod tests {
         }));
 
         let event = mapper
-            .map(ios_mux::MuxEvent::Detached { device_id: 7 })
+            .map(crate::mux::MuxEvent::Detached { device_id: 7 })
             .expect("detached event should map");
 
         assert!(matches!(
@@ -287,7 +287,7 @@ mod tests {
     fn mapper_emits_empty_udid_when_detach_arrives_without_prior_attach() {
         let mut mapper = DeviceEventMapper::default();
         let event = mapper
-            .map(ios_mux::MuxEvent::Detached { device_id: 99 })
+            .map(crate::mux::MuxEvent::Detached { device_id: 99 })
             .expect("detached event should still map");
 
         assert!(matches!(
@@ -309,7 +309,7 @@ mod tests {
         }]);
 
         let event = mapper
-            .map(ios_mux::MuxEvent::Detached { device_id: 42 })
+            .map(crate::mux::MuxEvent::Detached { device_id: 42 })
             .expect("detached event should still map");
 
         assert!(matches!(

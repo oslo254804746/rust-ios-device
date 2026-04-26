@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 const AMFI_DOMAIN: &str = "com.apple.security.mac.amfi";
 const DEVELOPER_MODE_STATUS_KEY: &str = "DeveloperModeStatus";
@@ -46,9 +46,9 @@ impl InfoCmd {
             match sub {
                 InfoSub::Display => {
                     let mut stream = device
-                        .connect_service(ios_services::diagnostics::SERVICE_NAME)
+                        .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
                         .await?;
-                    let value = ios_services::diagnostics::query_ioregistry(
+                    let value = ios_core::services::diagnostics::query_ioregistry(
                         &mut *stream,
                         "IOMobileFramebuffer",
                     )

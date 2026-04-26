@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct EraseCmd {
@@ -25,9 +25,9 @@ impl EraseCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_services::mcinstall::SERVICE_NAME)
+            .connect_service(ios_core::services::mcinstall::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::mcinstall::McInstallClient::new(stream);
+        let mut client = ios_core::services::mcinstall::McInstallClient::new(stream);
         let _ = client.flush().await;
         client.erase_device(true, false).await?;
 

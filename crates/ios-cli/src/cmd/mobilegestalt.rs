@@ -1,8 +1,8 @@
 use std::io::Write;
 
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 const COREDEVICE_DEVICEINFO_SERVICE: &str = "com.apple.coredevice.deviceinfo";
 
@@ -25,14 +25,16 @@ impl MobileGestaltCmd {
         };
         let device = connect(&udid, opts).await?;
         let mut stream = device
-            .connect_service(ios_services::diagnostics::SERVICE_NAME)
+            .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
             .await?;
 
         let key_refs: Vec<&str> = self.keys.iter().map(String::as_str).collect();
         let value =
-            match ios_services::diagnostics::query_mobile_gestalt(&mut *stream, &key_refs).await {
+            match ios_core::services::diagnostics::query_mobile_gestalt(&mut *stream, &key_refs)
+                .await
+            {
                 Ok(value) => value,
-                Err(ios_services::diagnostics::DiagnosticsError::Deprecated(message)) => {
+                Err(ios_core::services::diagnostics::DiagnosticsError::Deprecated(message)) => {
                     let rsd_state = match connect(
                         &udid,
                         ConnectOptions {
@@ -69,7 +71,7 @@ impl MobileGestaltCmd {
     }
 }
 
-fn describe_deviceinfo_service(rsd: Option<&ios_xpc::rsd::RsdHandshake>) -> String {
+fn describe_deviceinfo_service(rsd: Option<&ios_core::xpc::rsd::RsdHandshake>) -> String {
     let Some(rsd) = rsd else {
         return "RSD is not available in this session, so CoreDevice mobilegestalt fallback cannot be attempted".to_string();
     };
@@ -127,7 +129,7 @@ mod tests {
     use std::collections::HashMap;
 
     use clap::Parser;
-    use ios_xpc::rsd::{RsdHandshake, ServiceDescriptor};
+    use ios_core::xpc::rsd::{RsdHandshake, ServiceDescriptor};
 
     use super::*;
 

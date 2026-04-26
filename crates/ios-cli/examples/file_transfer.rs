@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     let device = ios_core::connect(&udid, opts).await?;
 
     let stream = device.connect_service("com.apple.afc").await?;
-    let mut afc = ios_services::afc::AfcClient::new(stream);
+    let mut afc = ios_core::services::afc::AfcClient::new(stream);
 
     // List root directory
     let entries = afc.list_dir("/").await?;

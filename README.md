@@ -30,13 +30,7 @@ The project is currently **experimental**. It is useful for development, testing
 
 | Crate | Purpose |
 | --- | --- |
-| `ios-proto` | Protocol types and codecs for AFC, DTX, lockdown, usbmuxd, XPC, OPACK, TLV, and related formats. |
-| `ios-mux` | usbmuxd client for discovery, attach/detach events, and port connections. |
-| `ios-lockdown` | Lockdown protocol, TLS sessions, pair records, pairing, and supervised pairing helpers. |
-| `ios-tunnel` | CDTunnel handshake and userspace/kernel TUN forwarding. |
-| `ios-xpc` | HTTP/2 + RemoteXPC client and RSD handshake. |
-| `ios-services` | Feature-gated clients for device services such as AFC, syslog, apps, DTX/Instruments, and WebInspector. |
-| `ios-core` | Higher-level device discovery, connection, pairing transport, and service access API. |
+| `ios-core` | Public Rust library. Contains protocol codecs, usbmuxd, lockdown, tunneling, XPC/RSD, feature-gated service clients, discovery, pairing, and high-level device APIs. |
 | `ios-cli` | `ios` command-line tool. |
 | `ios-py` | PyO3 Python extension module. Not currently published to crates.io. |
 | `ios-ffi` | C ABI wrapper. Not currently published to crates.io. |
@@ -144,7 +138,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For lower-level access, use `ios-mux`, `ios-lockdown`, `ios-services`, and `ios-xpc` directly.
+For lower-level access, use the modules exposed by `ios-core`, such as `ios_core::mux`,
+`ios_core::lockdown`, `ios_core::services`, and `ios_core::xpc`.
 
 ## Python binding
 

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use comfy_table::{Cell, Table};
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 use plist::Value;
 #[derive(clap::Args)]
 pub struct ProfilesCmd {
@@ -65,9 +65,9 @@ impl ProfilesCmd {
         };
         let device = connect(&udid, opts).await?;
         let stream = device
-            .connect_service(ios_services::mcinstall::SERVICE_NAME)
+            .connect_service(ios_core::services::mcinstall::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::mcinstall::McInstallClient::new(stream);
+        let mut client = ios_core::services::mcinstall::McInstallClient::new(stream);
 
         match self.sub {
             ProfilesSub::List { raw } => {
@@ -158,7 +158,7 @@ impl ProfilesCmd {
     }
 }
 
-fn print_profiles(profiles: &[ios_services::mcinstall::ProfileInfo]) {
+fn print_profiles(profiles: &[ios_core::services::mcinstall::ProfileInfo]) {
     let mut table = Table::new();
     table.set_header([
         "Identifier",
@@ -196,14 +196,14 @@ fn print_profiles(profiles: &[ios_services::mcinstall::ProfileInfo]) {
     println!("{table}");
 }
 
-fn print_profile_details(profile: &ios_services::mcinstall::ProfileInfo) {
+fn print_profile_details(profile: &ios_core::services::mcinstall::ProfileInfo) {
     for (label, value) in profile_detail_lines(profile) {
         println!("{label:<19} {value}");
     }
 }
 
 fn profile_detail_lines(
-    profile: &ios_services::mcinstall::ProfileInfo,
+    profile: &ios_core::services::mcinstall::ProfileInfo,
 ) -> Vec<(&'static str, String)> {
     let mut lines = vec![
         ("Identifier:", profile.identifier.clone()),
@@ -236,7 +236,10 @@ fn profile_detail_lines(
     lines
 }
 
-fn profile_matches_query(profile: &ios_services::mcinstall::ProfileInfo, query: &str) -> bool {
+fn profile_matches_query(
+    profile: &ios_core::services::mcinstall::ProfileInfo,
+    query: &str,
+) -> bool {
     profile.identifier == query
         || profile.display_name == query
         || profile.uuid.as_deref() == Some(query)
@@ -341,7 +344,7 @@ mod tests {
     #[test]
     fn print_profiles_includes_extended_metadata_columns() {
         let output = {
-            let profiles = vec![ios_services::mcinstall::ProfileInfo {
+            let profiles = vec![ios_core::services::mcinstall::ProfileInfo {
                 identifier: "com.example.profile".into(),
                 display_name: "Example".into(),
                 description: Some("Example description".into()),
@@ -399,7 +402,7 @@ mod tests {
 
     #[test]
     fn print_profile_details_includes_extended_fields() {
-        let profile = ios_services::mcinstall::ProfileInfo {
+        let profile = ios_core::services::mcinstall::ProfileInfo {
             identifier: "com.example.profile".into(),
             display_name: "Example".into(),
             description: Some("Example description".into()),
@@ -420,7 +423,7 @@ mod tests {
 
     #[test]
     fn profile_matches_query_accepts_identifier_or_uuid() {
-        let profile = ios_services::mcinstall::ProfileInfo {
+        let profile = ios_core::services::mcinstall::ProfileInfo {
             identifier: "com.example.profile".into(),
             display_name: "Example".into(),
             description: None,
@@ -438,7 +441,7 @@ mod tests {
 
     #[test]
     fn profile_matches_query_accepts_display_name_and_uuid_prefix() {
-        let profile = ios_services::mcinstall::ProfileInfo {
+        let profile = ios_core::services::mcinstall::ProfileInfo {
             identifier: "com.example.profile".into(),
             display_name: "Example".into(),
             description: None,

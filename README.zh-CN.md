@@ -30,13 +30,7 @@
 
 | Crate | 用途 |
 | --- | --- |
-| `ios-proto` | AFC、DTX、lockdown、usbmuxd、XPC、OPACK、TLV 及相关格式的协议类型和编解码器。 |
-| `ios-mux` | 用于发现设备、监听 attach/detach 事件和建立端口连接的 usbmuxd 客户端。 |
-| `ios-lockdown` | Lockdown 协议、TLS 会话、配对记录、配对和监督配对辅助功能。 |
-| `ios-tunnel` | CDTunnel 握手以及用户态/内核 TUN 转发。 |
-| `ios-xpc` | HTTP/2 + RemoteXPC 客户端和 RSD 握手。 |
-| `ios-services` | 面向 AFC、syslog、应用、DTX/Instruments、WebInspector 等设备服务的 feature-gated 客户端。 |
-| `ios-core` | 更高层的设备发现、连接、配对传输和服务访问 API。 |
+| `ios-core` | 公开 Rust 库。包含协议编解码、usbmuxd、lockdown、隧道、XPC/RSD、feature-gated 服务客户端、发现、配对和高层设备 API。 |
 | `ios-cli` | `ios` 命令行工具。 |
 | `ios-py` | PyO3 Python 扩展模块。目前未发布到 crates.io。 |
 | `ios-ffi` | C ABI 包装。目前未发布到 crates.io。 |
@@ -144,7 +138,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-如需更底层访问，可直接使用 `ios-mux`、`ios-lockdown`、`ios-services` 和 `ios-xpc`。
+如需更底层访问，请使用 `ios-core` 暴露的模块，例如 `ios_core::mux`、
+`ios_core::lockdown`、`ios_core::services` 和 `ios_core::xpc`。
 
 ## Python 绑定
 

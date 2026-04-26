@@ -31,7 +31,7 @@ pub struct SyslogCmd {
 }
 
 impl SyslogCmd {
-    fn matches_filters(&self, entry: &ios_services::syslog::LogEntry) -> bool {
+    fn matches_filters(&self, entry: &ios_core::services::syslog::LogEntry) -> bool {
         if let Some(f) = &self.filter {
             if !entry.raw.contains(f.as_str()) {
                 return false;
@@ -60,18 +60,18 @@ impl SyslogCmd {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for syslog"))?;
 
         let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_tunnel::TunMode::Userspace,
+            tun_mode: ios_core::tunnel::TunMode::Userspace,
             pair_record_path: None,
             skip_tunnel: true,
         };
         let device = ios_core::connect(&udid, opts).await?;
         let stream = device
-            .connect_service(ios_services::syslog::SERVICE_NAME)
+            .connect_service(ios_core::services::syslog::SERVICE_NAME)
             .await?;
 
         eprintln!("Streaming syslog (Ctrl+C to stop)...");
 
-        let log_stream = ios_services::syslog::into_stream(stream);
+        let log_stream = ios_core::services::syslog::into_stream(stream);
         tokio::pin!(log_stream);
 
         let deadline = self
@@ -100,7 +100,7 @@ impl SyslogCmd {
 
             match result {
                 Ok(line) => {
-                    let entry = ios_services::syslog::LogEntry::parse(line.clone());
+                    let entry = ios_core::services::syslog::LogEntry::parse(line.clone());
                     if !self.matches_filters(&entry) {
                         continue;
                     }
@@ -143,7 +143,7 @@ fn matches_any_regex(line: &str, patterns: &[String], case_insensitive: bool) ->
     })
 }
 
-fn log_entry_to_json(entry: &ios_services::syslog::LogEntry) -> serde_json::Value {
+fn log_entry_to_json(entry: &ios_core::services::syslog::LogEntry) -> serde_json::Value {
     serde_json::json!({
         "raw": entry.raw,
         "timestamp": entry.timestamp,
@@ -157,7 +157,7 @@ fn log_entry_to_json(entry: &ios_services::syslog::LogEntry) -> serde_json::Valu
     })
 }
 
-fn format_parsed_entry(entry: &ios_services::syslog::LogEntry) -> String {
+fn format_parsed_entry(entry: &ios_core::services::syslog::LogEntry) -> String {
     if !entry.parse_success {
         if let Some(error) = &entry.parse_error {
             return format!("parse_failed({error}): {}", entry.raw);
@@ -248,10 +248,10 @@ mod tests {
             count: Some(1),
             timeout: Some(5),
         };
-        let matching = ios_services::syslog::LogEntry::parse(
+        let matching = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: lock".to_string(),
         );
-        let other = ios_services::syslog::LogEntry::parse(
+        let other = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[99] <Notice>: lock".to_string(),
         );
 
@@ -271,7 +271,7 @@ mod tests {
             count: Some(1),
             timeout: Some(5),
         };
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: worker ready".to_string(),
         );
 
@@ -290,7 +290,7 @@ mod tests {
             count: Some(1),
             timeout: Some(5),
         };
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: worker ready".to_string(),
         );
 
@@ -309,7 +309,7 @@ mod tests {
             count: Some(1),
             timeout: Some(5),
         };
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: worker ready".to_string(),
         );
 
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn log_entry_to_json_preserves_parsed_fields() {
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: lock".to_string(),
         );
 
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn format_parsed_entry_prefers_structured_fields() {
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "Mar 17 12:34:56 iPhone SpringBoard[58] <Notice>: lock".to_string(),
         );
 
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn format_parsed_entry_reports_parse_failures() {
-        let entry = ios_services::syslog::LogEntry::parse(
+        let entry = ios_core::services::syslog::LogEntry::parse(
             "totally unstructured syslog payload".to_string(),
         );
 

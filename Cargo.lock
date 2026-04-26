@@ -1493,12 +1493,6 @@ dependencies = [
  "futures-util",
  "hex",
  "ios-core",
- "ios-lockdown",
- "ios-mux",
- "ios-proto",
- "ios-services",
- "ios-tunnel",
- "ios-xpc",
  "plist",
  "regex",
  "reqwest",
@@ -1525,62 +1519,27 @@ dependencies = [
  "base64",
  "bytes",
  "chacha20poly1305",
+ "crc32fast",
  "dirs-next",
+ "ed25519-dalek",
  "futures-core",
+ "futures-util",
+ "h2",
  "hex",
+ "hkdf",
+ "http",
  "indexmap",
- "ios-lockdown",
- "ios-mux",
- "ios-proto",
- "ios-services",
- "ios-tunnel",
- "ios-xpc",
+ "lz4_flex",
  "md5",
  "mdns-sd",
- "openssl",
- "plist",
- "rand 0.8.5",
- "rustls",
- "semver",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-openssl",
- "tokio-rustls",
- "tokio-stream",
- "tracing",
- "x25519-dalek",
-]
-
-[[package]]
-name = "ios-ffi"
-version = "0.1.1"
-dependencies = [
- "ios-core",
- "ios-tunnel",
- "once_cell",
- "plist",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "ios-lockdown"
-version = "0.1.1"
-dependencies = [
- "bytes",
- "chacha20poly1305",
- "ed25519-dalek",
- "hkdf",
- "ios-mux",
- "ios-proto",
  "num-bigint",
  "num-traits",
  "openssl",
  "p256",
  "plist",
+ "quick-xml",
  "rand 0.8.5",
+ "reqwest",
  "rustls",
  "rustls-pemfile",
  "semver",
@@ -1588,47 +1547,32 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "sha2",
+ "smoltcp",
  "thiserror 2.0.18",
+ "time",
  "tokio",
+ "tokio-openssl",
  "tokio-rustls",
- "tokio-util",
- "tracing",
- "uuid",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "ios-mux"
-version = "0.1.1"
-dependencies = [
- "async-stream",
- "bytes",
- "ios-proto",
- "plist",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "tun-rs",
+ "uuid",
+ "x25519-dalek",
+ "zerocopy",
+ "zeroize",
+ "zip",
 ]
 
 [[package]]
-name = "ios-proto"
+name = "ios-ffi"
 version = "0.1.1"
 dependencies = [
- "bytes",
- "indexmap",
+ "ios-core",
+ "once_cell",
  "plist",
- "rustls",
- "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
- "zerocopy",
+ "tokio",
 ]
 
 [[package]]
@@ -1636,85 +1580,9 @@ name = "ios-py"
 version = "0.1.1"
 dependencies = [
  "ios-core",
- "ios-tunnel",
  "once_cell",
  "pyo3",
  "tokio",
-]
-
-[[package]]
-name = "ios-services"
-version = "0.1.1"
-dependencies = [
- "async-stream",
- "bytes",
- "crc32fast",
- "dirs-next",
- "futures-util",
- "hex",
- "indexmap",
- "ios-lockdown",
- "ios-mux",
- "ios-proto",
- "ios-tunnel",
- "ios-xpc",
- "lz4_flex",
- "openssl",
- "plist",
- "quick-xml",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "uuid",
- "zerocopy",
- "zip",
-]
-
-[[package]]
-name = "ios-tunnel"
-version = "0.1.1"
-dependencies = [
- "bytes",
- "ios-lockdown",
- "ios-mux",
- "ios-proto",
- "serde",
- "serde_json",
- "smoltcp",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tun-rs",
-]
-
-[[package]]
-name = "ios-xpc"
-version = "0.1.1"
-dependencies = [
- "bytes",
- "h2",
- "http",
- "indexmap",
- "ios-lockdown",
- "ios-mux",
- "ios-proto",
- "ios-tunnel",
- "rustls",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]

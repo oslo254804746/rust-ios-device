@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct OsTraceCmd {
@@ -27,9 +27,9 @@ impl OsTraceCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_services::ostrace::SERVICE_NAME)
+            .connect_service(ios_core::services::ostrace::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::ostrace::OsTraceClient::new(stream);
+        let mut client = ios_core::services::ostrace::OsTraceClient::new(stream);
 
         match self.sub {
             OsTraceSub::Ps => {

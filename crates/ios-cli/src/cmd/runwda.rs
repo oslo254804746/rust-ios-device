@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_services::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
+use ios_core::services::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 
 #[derive(clap::Args)]
 pub struct RunWdaCmd {

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct HeartbeatCmd {
@@ -36,9 +36,9 @@ pub(crate) async fn run_heartbeat(
     };
     let device = connect(udid, opts).await?;
     let stream = device
-        .connect_service(ios_services::heartbeat::SERVICE_NAME)
+        .connect_service(ios_core::services::heartbeat::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::heartbeat::HeartbeatClient::new(stream);
+    let mut client = ios_core::services::heartbeat::HeartbeatClient::new(stream);
 
     let mut messages = Vec::with_capacity(count);
     for _ in 0..count {

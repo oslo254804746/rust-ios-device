@@ -50,8 +50,8 @@ The public header is in `crates/ios-ffi/include/ios_rs.h`.
 Before a crates.io release, run package checks per publishable crate:
 
 ```sh
-cargo package -p ios-proto --list
-cargo package -p ios-proto
+cargo package -p ios-core --list
+cargo package -p ios-core
 ```
 
 Repeat in dependency order. Do not run `cargo publish` until package contents, metadata, and dependency versions are reviewed.

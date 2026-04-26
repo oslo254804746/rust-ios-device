@@ -1,11 +1,5 @@
 [workspace]
 members = [
-    "crates/ios-proto",
-    "crates/ios-mux",
-    "crates/ios-lockdown",
-    "crates/ios-tunnel",
-    "crates/ios-xpc",
-    "crates/ios-services",
     "crates/ios-core",
     "crates/ios-cli",
     "crates/ios-py",

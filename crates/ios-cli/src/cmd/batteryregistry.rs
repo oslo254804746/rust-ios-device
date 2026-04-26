@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct BatteryregistryCmd {}
@@ -16,9 +16,9 @@ impl BatteryregistryCmd {
         };
         let device = connect(&udid, opts).await?;
         let mut stream = device
-            .connect_service(ios_services::diagnostics::SERVICE_NAME)
+            .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
             .await?;
-        let battery = ios_services::diagnostics::query_battery(&mut *stream).await?;
+        let battery = ios_core::services::diagnostics::query_battery(&mut *stream).await?;
 
         if json {
             println!("{}", serde_json::to_string_pretty(&battery)?);

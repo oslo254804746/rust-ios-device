@@ -18,10 +18,10 @@ async fn main() -> anyhow::Result<()> {
     let device = ios_core::connect(&udid, opts).await?;
 
     let mut stream = device
-        .connect_service(ios_services::screenshot::SERVICE_NAME)
+        .connect_service(ios_core::services::screenshot::SERVICE_NAME)
         .await?;
 
-    let image = ios_services::screenshot::take_screenshot(&mut stream).await?;
+    let image = ios_core::services::screenshot::take_screenshot(&mut stream).await?;
     println!(
         "Captured screenshot: {} bytes, format: {}",
         image.byte_len(),

@@ -2,12 +2,6 @@
 set -euo pipefail
 
 CRATES=(
-  ios-proto
-  ios-mux
-  ios-lockdown
-  ios-tunnel
-  ios-xpc
-  ios-services
   ios-core
   ios-cli
 )

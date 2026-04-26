@@ -18,7 +18,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ios-core  = { version = "0.1", path = "../ios-core" }
-ios-tunnel = { version = "0.1", path = "../ios-tunnel" }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
 tokio     = { workspace = true }
 once_cell = { workspace = true }

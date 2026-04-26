@@ -3,9 +3,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use ios_core::services::springboard::{Icon, SpringboardClient};
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_services::springboard::{Icon, SpringboardClient};
-use ios_tunnel::TunMode;
 use tokio::fs;
 
 #[derive(clap::Args)]
@@ -106,7 +106,7 @@ impl SpringboardCmd {
         };
         let device = connect(&udid, opts).await?;
         let stream = device
-            .connect_service(ios_services::springboard::SERVICE_NAME)
+            .connect_service(ios_core::services::springboard::SERVICE_NAME)
             .await?;
         let mut client = SpringboardClient::new(stream);
 
@@ -553,7 +553,7 @@ fn format_json_value(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use ios_services::springboard::InterfaceOrientation;
+    use ios_core::services::springboard::InterfaceOrientation;
 
     use super::*;
 
@@ -705,15 +705,15 @@ mod tests {
     #[test]
     fn finds_bundle_locations_in_nested_folder_pages() {
         let screens = vec![vec![
-            Icon::App(ios_services::springboard::AppIcon {
+            Icon::App(ios_core::services::springboard::AppIcon {
                 display_name: "Phone".into(),
                 display_identifier: None,
                 bundle_identifier: "com.apple.mobilephone".into(),
                 bundle_version: None,
             }),
-            Icon::Folder(ios_services::springboard::Folder {
+            Icon::Folder(ios_core::services::springboard::Folder {
                 display_name: "Utilities".into(),
-                pages: vec![vec![Icon::App(ios_services::springboard::AppIcon {
+                pages: vec![vec![Icon::App(ios_core::services::springboard::AppIcon {
                     display_name: "Settings".into(),
                     display_identifier: None,
                     bundle_identifier: "com.apple.Preferences".into(),
@@ -732,22 +732,22 @@ mod tests {
     #[test]
     fn collect_bundle_ids_deduplicates_nested_apps() {
         let screens = vec![vec![
-            Icon::App(ios_services::springboard::AppIcon {
+            Icon::App(ios_core::services::springboard::AppIcon {
                 display_name: "Phone".into(),
                 display_identifier: None,
                 bundle_identifier: "com.apple.mobilephone".into(),
                 bundle_version: None,
             }),
-            Icon::Folder(ios_services::springboard::Folder {
+            Icon::Folder(ios_core::services::springboard::Folder {
                 display_name: "Utilities".into(),
                 pages: vec![vec![
-                    Icon::App(ios_services::springboard::AppIcon {
+                    Icon::App(ios_core::services::springboard::AppIcon {
                         display_name: "Settings".into(),
                         display_identifier: None,
                         bundle_identifier: "com.apple.Preferences".into(),
                         bundle_version: None,
                     }),
-                    Icon::App(ios_services::springboard::AppIcon {
+                    Icon::App(ios_core::services::springboard::AppIcon {
                         display_name: "Phone".into(),
                         display_identifier: None,
                         bundle_identifier: "com.apple.mobilephone".into(),
@@ -770,15 +770,15 @@ mod tests {
     #[test]
     fn screen_layout_json_includes_nested_folder_icons() {
         let screens = vec![vec![
-            Icon::App(ios_services::springboard::AppIcon {
+            Icon::App(ios_core::services::springboard::AppIcon {
                 display_name: "Phone".into(),
                 display_identifier: Some("com.apple.mobilephone".into()),
                 bundle_identifier: "com.apple.mobilephone".into(),
                 bundle_version: Some("1.0".into()),
             }),
-            Icon::Folder(ios_services::springboard::Folder {
+            Icon::Folder(ios_core::services::springboard::Folder {
                 display_name: "Utilities".into(),
-                pages: vec![vec![Icon::App(ios_services::springboard::AppIcon {
+                pages: vec![vec![Icon::App(ios_core::services::springboard::AppIcon {
                     display_name: "Settings".into(),
                     display_identifier: None,
                     bundle_identifier: "com.apple.Preferences".into(),

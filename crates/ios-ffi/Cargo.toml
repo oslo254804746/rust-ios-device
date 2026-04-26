@@ -17,7 +17,6 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 ios-core  = { version = "0.1", path = "../ios-core" }
-ios-tunnel = { version = "0.1", path = "../ios-tunnel" }
 tokio     = { workspace = true }
 once_cell = { workspace = true }
 plist     = { workspace = true }

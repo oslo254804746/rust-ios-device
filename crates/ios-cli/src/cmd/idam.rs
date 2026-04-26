@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct IdamCmd {
@@ -35,9 +35,9 @@ impl IdamCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_services::idam::SERVICE_NAME)
+            .connect_service(ios_core::services::idam::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::idam::IdamClient::new(stream);
+        let mut client = ios_core::services::idam::IdamClient::new(stream);
 
         match self.sub {
             IdamSub::Get => {

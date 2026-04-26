@@ -88,16 +88,16 @@ impl DdiCmd {
 
 async fn run_status(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let mounted = client
         .is_image_mounted()
         .await
@@ -118,16 +118,16 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
 
 async fn run_list(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let developer = client
         .lookup_image_signatures("Developer")
         .await
@@ -160,16 +160,16 @@ async fn run_list(udid: String, json: bool) -> Result<()> {
 
 async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let signatures = client
         .lookup_image_signatures(&image_type)
         .await
@@ -194,16 +194,16 @@ async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> 
 
 async fn run_devices(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let entries = client
         .copy_devices()
         .await
@@ -228,16 +228,16 @@ async fn run_devices(udid: String, json: bool) -> Result<()> {
 
 async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let entries = client
         .copy_devices()
         .await
@@ -276,16 +276,16 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
 
 async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let enabled = client
         .query_developer_mode_status()
         .await
@@ -309,16 +309,16 @@ async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
 
 async fn run_nonce(udid: String, json: bool, image_type: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let nonce = client
         .query_nonce_with_type(&image_type)
         .await
@@ -338,16 +338,16 @@ async fn run_personalization_identifiers(
     image_type: String,
 ) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
 
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let identifiers = client
         .query_personalization_identifiers_with_type(&image_type)
         .await
@@ -366,7 +366,7 @@ async fn run_personalization_identifiers(
 
 async fn run_unmount(udid: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -378,9 +378,9 @@ async fn run_unmount(udid: String) -> Result<()> {
         "/Developer"
     };
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::imagemounter::ImageMounterClient::new(&mut *stream);
+    let mut client = ios_core::services::imagemounter::ImageMounterClient::new(&mut *stream);
     let developer = client
         .lookup_image_signatures("Developer")
         .await
@@ -408,10 +408,10 @@ async fn run_mount(
     local_path: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
-    use ios_services::imagemounter::ImageMounterClient;
+    use ios_core::services::imagemounter::ImageMounterClient;
 
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -420,7 +420,7 @@ async fn run_mount(
     // Check if already mounted
     {
         let mut stream = device
-            .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+            .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
             .await?;
         let mut client = ImageMounterClient::new(&mut *stream);
         if client.is_image_mounted().await.unwrap_or(false) {
@@ -447,7 +447,7 @@ async fn mount_standard(
     local_path: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
-    use ios_services::imagemounter::{DdiDownloader, ImageMounterClient};
+    use ios_core::services::imagemounter::{DdiDownloader, ImageMounterClient};
 
     let (image, signature) = if let Some(path) = local_path {
         let image = tokio::fs::read(path.join("DeveloperDiskImage.dmg")).await?;
@@ -468,7 +468,7 @@ async fn mount_standard(
 
     eprintln!("Uploading and mounting DDI ({} bytes)...", image.len());
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
     let mut client = ImageMounterClient::new(&mut *stream);
     client
@@ -484,8 +484,8 @@ async fn mount_personalized(
     device: &ios_core::ConnectedDevice,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
-    use ios_services::imagemounter::tss;
-    use ios_services::imagemounter::{BuildManifest, DdiDownloader, ImageMounterClient};
+    use ios_core::services::imagemounter::tss;
+    use ios_core::services::imagemounter::{BuildManifest, DdiDownloader, ImageMounterClient};
 
     let downloader = DdiDownloader::new(cache_dir);
     let ddi = downloader
@@ -498,7 +498,7 @@ async fn mount_personalized(
 
     // Get personalization identifiers from device
     let mut stream = device
-        .connect_service(ios_services::imagemounter::protocol::SERVICE_NAME)
+        .connect_service(ios_core::services::imagemounter::protocol::SERVICE_NAME)
         .await?;
     let mut client = ImageMounterClient::new(&mut *stream);
 

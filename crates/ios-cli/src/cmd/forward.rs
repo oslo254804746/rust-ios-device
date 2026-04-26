@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use ios_core::device::ServiceStream;
-use ios_mux::MuxClient;
+use ios_core::mux::MuxClient;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -100,7 +100,7 @@ async fn forward_client_connection(
 async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
     let device_id = lookup_device_id(udid).await?;
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: false,
     };

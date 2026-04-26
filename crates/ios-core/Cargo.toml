@@ -11,35 +11,119 @@ rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+afc = []
+arbitration = []
+apps = ["crc32fast", "zip"]
+companion = []
+notificationproxy = []
+crashreport = ["afc"]
+springboard = []
+mcinstall = []
+heartbeat = []
+file_relay = []
+syslog = []
+screenshot = []
+misagent = []
+amfi = []
+dtx = ["lz4_flex"]
+instruments = ["dtx"]
+testmanager = ["dtx"]
+accessibility_audit = ["dtx"]
+debugserver = []
+fileservice = []
+deviceinfo = []
+imagemounter = ["reqwest", "zip"]
+pcap = []
+power_assertion = []
+preboard = []
+idam = []
+fetchsymbols = []
+ostrace = []
+prepare = ["afc", "mcinstall"]
+restore = []
+dproxy = ["dtx"]
+webinspector = []
+full = [
+    "afc",
+    "arbitration",
+    "apps",
+    "companion",
+    "notificationproxy",
+    "crashreport",
+    "springboard",
+    "mcinstall",
+    "heartbeat",
+    "file_relay",
+    "syslog",
+    "screenshot",
+    "misagent",
+    "amfi",
+    "dtx",
+    "instruments",
+    "testmanager",
+    "accessibility_audit",
+    "imagemounter",
+    "debugserver",
+    "pcap",
+    "power_assertion",
+    "preboard",
+    "idam",
+    "fetchsymbols",
+    "ostrace",
+    "prepare",
+    "restore",
+    "dproxy",
+    "webinspector",
+]
+
 [dependencies]
-ios-proto    = { version = "0.1", path = "../ios-proto" }
-ios-mux      = { version = "0.1", path = "../ios-mux" }
-ios-lockdown = { version = "0.1", path = "../ios-lockdown" }
-ios-tunnel   = { version = "0.1", path = "../ios-tunnel" }
-ios-xpc      = { version = "0.1", path = "../ios-xpc" }
-ios-services = { version = "0.1", path = "../ios-services", features = ["afc","apps","syslog","screenshot","misagent","amfi","fileservice","deviceinfo"] }
 tokio        = { workspace = true }
 bytes        = { workspace = true }
+zerocopy     = { workspace = true }
 thiserror    = { workspace = true }
 anyhow       = { workspace = true }
 tracing      = { workspace = true }
+tokio-util   = { workspace = true }
 tokio-stream = { workspace = true }
 semver       = { workspace = true }
 mdns-sd      = { workspace = true }
 plist        = { workspace = true }
 futures-core = { workspace = true }
+futures-util = { workspace = true }
 rustls       = { workspace = true }
 tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 async-stream = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+serde_bytes  = { workspace = true }
 indexmap     = { workspace = true }
 dirs-next    = { workspace = true }
 chacha20poly1305 = { workspace = true }
 base64       = { workspace = true }
 hex          = { workspace = true }
 x25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true }
 rand         = { workspace = true }
 md5          = { workspace = true }
 openssl      = { workspace = true }
 tokio-openssl = { workspace = true }
+h2           = { workspace = true }
+http         = { workspace = true }
+smoltcp      = { workspace = true }
+tun-rs       = { workspace = true }
+p256         = { workspace = true }
+sha2         = { workspace = true }
+hkdf         = { workspace = true }
+zeroize      = { workspace = true }
+num-bigint   = { workspace = true }
+num-traits   = { workspace = true }
+uuid         = { workspace = true }
+quick-xml    = { workspace = true }
+time         = { workspace = true }
+lz4_flex     = { workspace = true, optional = true }
+reqwest      = { workspace = true, optional = true }
+zip          = { workspace = true, optional = true }
+crc32fast    = { workspace = true, optional = true }
