@@ -1,10 +1,10 @@
 #[cfg(feature = "testmanager")]
 mod tests {
     use bytes::Bytes;
+    use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
+    use ios_core::dtx::{read_dtx_frame, DtxError, DtxPayload, NSObject};
     use ios_core::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
-    use ios_core::services::dtx::primitive_enc::{archived_object, encode_primitive_dict};
-    use ios_core::services::dtx::{read_dtx_frame, DtxError, DtxPayload, NSObject};
-    use ios_core::services::testmanager::TestmanagerClient;
+    use ios_core::testmanager::TestmanagerClient;
     use tokio::io::{duplex, AsyncWriteExt};
     use uuid::Uuid;
 
@@ -129,7 +129,7 @@ mod tests {
         }
 
         server_a
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 req_a.identifier,
                 1,
                 0,
@@ -156,7 +156,7 @@ mod tests {
         }
 
         server_b
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 req_b.identifier,
                 1,
                 0,
@@ -226,7 +226,7 @@ mod tests {
         }
 
         server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 msg.identifier,
                 1,
                 3,
@@ -259,7 +259,7 @@ mod tests {
             other => panic!("unexpected payload: {other:?}"),
         }
         server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 request.identifier,
                 1,
                 0,
@@ -288,7 +288,7 @@ mod tests {
         let (client, mut server) = duplex(4096);
         let mut testmanager = TestmanagerClient::from_session_connection_for_test(client, 3);
 
-        let incoming = ios_core::services::dtx::encode_dtx(
+        let incoming = ios_core::dtx::encode_dtx(
             42,
             0,
             3,
@@ -303,7 +303,7 @@ mod tests {
 
         let event = testmanager.recv_startup_event().await.unwrap();
         let msg = match event {
-            ios_core::services::testmanager::StartupEvent::TestRunnerReady { message } => message,
+            ios_core::testmanager::StartupEvent::TestRunnerReady { message } => message,
             other => panic!("unexpected event: {other:?}"),
         };
 
@@ -358,12 +358,12 @@ mod tests {
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(36)),
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
         ]);
-        let incoming = ios_core::services::dtx::encode_dtx(7, 0, 3, false, 2, &selector, &aux);
+        let incoming = ios_core::dtx::encode_dtx(7, 0, 3, false, 2, &selector, &aux);
         server.write_all(&incoming).await.unwrap();
 
         let event = testmanager.recv_startup_event().await.unwrap();
         match event {
-            ios_core::services::testmanager::StartupEvent::TestBundleReady {
+            ios_core::testmanager::StartupEvent::TestBundleReady {
                 protocol_version,
                 minimum_version,
                 ..
@@ -416,7 +416,7 @@ mod tests {
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
         ]);
         let bundle_ready =
-            ios_core::services::dtx::encode_dtx(8, 0, 3, false, 2, &bundle_selector, &bundle_aux);
+            ios_core::dtx::encode_dtx(8, 0, 3, false, 2, &bundle_selector, &bundle_aux);
         server.write_all(&bundle_ready).await.unwrap();
 
         let runner_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
@@ -431,7 +431,7 @@ mod tests {
             }),
         )]);
         let runner_ready =
-            ios_core::services::dtx::encode_dtx(9, 0, 3, true, 2, &runner_selector, &runner_aux);
+            ios_core::dtx::encode_dtx(9, 0, 3, true, 2, &runner_selector, &runner_aux);
         server.write_all(&runner_ready).await.unwrap();
 
         let response = read_dtx_frame(&mut server).await.unwrap();
@@ -482,7 +482,7 @@ mod tests {
         }
 
         server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 msg.identifier,
                 1,
                 3,
@@ -512,13 +512,12 @@ mod tests {
             "_requestChannelWithCode:identifier:",
         );
         let aux = encode_primitive_dict(&[
-            ios_core::services::dtx::PrimArg::Int32(1),
+            ios_core::dtx::PrimArg::Int32(1),
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_string(
                 "dtxproxy:XCTestDriverInterface:XCTestManager_IDEInterface",
             )),
         ]);
-        let inbound_request =
-            ios_core::services::dtx::encode_dtx(11, 0, 0, true, 2, &selector, &aux);
+        let inbound_request = ios_core::dtx::encode_dtx(11, 0, 0, true, 2, &selector, &aux);
         server.write_all(&inbound_request).await.unwrap();
 
         let ack = read_dtx_frame(&mut server).await.unwrap();
@@ -585,7 +584,7 @@ mod tests {
             other => panic!("unexpected payload: {other:?}"),
         }
         control_server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 authorize.identifier,
                 1,
                 4,
@@ -605,7 +604,7 @@ mod tests {
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
         ]);
         let bundle_ready =
-            ios_core::services::dtx::encode_dtx(12, 0, 3, false, 2, &bundle_selector, &bundle_aux);
+            ios_core::dtx::encode_dtx(12, 0, 3, false, 2, &bundle_selector, &bundle_aux);
         session_server.write_all(&bundle_ready).await.unwrap();
 
         let runner_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
@@ -620,7 +619,7 @@ mod tests {
             }),
         )]);
         let runner_ready =
-            ios_core::services::dtx::encode_dtx(13, 0, 3, true, 2, &runner_selector, &runner_aux);
+            ios_core::dtx::encode_dtx(13, 0, 3, true, 2, &runner_selector, &runner_aux);
         session_server.write_all(&runner_ready).await.unwrap();
 
         let runner_response = read_dtx_frame(&mut session_server).await.unwrap();
@@ -631,13 +630,13 @@ mod tests {
             "_requestChannelWithCode:identifier:",
         );
         let request_aux = encode_primitive_dict(&[
-            ios_core::services::dtx::PrimArg::Int32(1),
+            ios_core::dtx::PrimArg::Int32(1),
             archived_object(ios_core::proto::nskeyedarchiver_encode::archive_string(
                 "dtxproxy:XCTestDriverInterface:XCTestManager_IDEInterface",
             )),
         ]);
         let inbound_request =
-            ios_core::services::dtx::encode_dtx(14, 0, 0, true, 2, &request_selector, &request_aux);
+            ios_core::dtx::encode_dtx(14, 0, 0, true, 2, &request_selector, &request_aux);
         session_server.write_all(&inbound_request).await.unwrap();
 
         let ack = read_dtx_frame(&mut session_server).await.unwrap();
@@ -705,7 +704,7 @@ mod tests {
             other => panic!("unexpected payload: {other:?}"),
         }
         control_server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 authorize.identifier,
                 1,
                 4,
@@ -750,7 +749,7 @@ mod tests {
             other => panic!("unexpected payload: {other:?}"),
         }
         control_server
-            .write_all(&ios_core::services::dtx::encode_dtx(
+            .write_all(&ios_core::dtx::encode_dtx(
                 authorize.identifier,
                 1,
                 4,

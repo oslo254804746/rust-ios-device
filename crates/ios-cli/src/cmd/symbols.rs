@@ -56,9 +56,9 @@ impl SymbolsCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::fetchsymbols::SERVICE_NAME)
+            .connect_service(ios_core::fetchsymbols::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::fetchsymbols::FetchSymbolsClient::new(stream);
+        let mut client = ios_core::fetchsymbols::FetchSymbolsClient::new(stream);
         match self.sub {
             SymbolsSub::List => render_list(client.list_files().await?, json),
             SymbolsSub::Pull {
@@ -85,12 +85,11 @@ impl SymbolsCmd {
         .await?;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let stream = device
-            .connect_rsd_service(ios_core::services::fetchsymbols::REMOTE_SERVICE_NAME)
+            .connect_rsd_service(ios_core::fetchsymbols::REMOTE_SERVICE_NAME)
             .await?;
-        let mut client =
-            ios_core::services::fetchsymbols::RemoteFetchSymbolsClient::connect(stream)
-                .await
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(stream)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         match self.sub {
             SymbolsSub::List => {
                 let files = client

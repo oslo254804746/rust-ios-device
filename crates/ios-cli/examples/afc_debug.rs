@@ -22,7 +22,7 @@ async fn main() {
 
     // Test 1: list_dir WITHOUT device_info first (simulates CLI behavior)
     println!("[test 1] list_dir / (packet_num=1, no warm-up)...");
-    let mut afc = ios_core::services::afc::AfcClient::new(stream);
+    let mut afc = ios_core::afc::AfcClient::new(stream);
     match afc.list_dir("/").await {
         Ok(entries) => println!("[+] OK: {:?}", entries),
         Err(e) => println!("[-] FAIL: {e}"),
@@ -40,7 +40,7 @@ async fn main() {
         .connect_service("com.apple.afc")
         .await
         .expect("afc2 connect failed");
-    let mut afc2 = ios_core::services::afc::AfcClient::new(stream2);
+    let mut afc2 = ios_core::afc::AfcClient::new(stream2);
     println!("[test 3] device_info first (packet_num=1)...");
     match afc2.device_info().await {
         Ok(info) => println!("[+] device_info OK: {:?}", info),

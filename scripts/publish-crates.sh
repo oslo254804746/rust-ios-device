@@ -21,7 +21,7 @@ publish_one() {
     echo "Publishing ${crate} (attempt ${attempt}/${MAX_ATTEMPTS})"
     output="$(mktemp)"
     set +e
-    cargo publish -p "${crate}" --no-verify 2>&1 | tee "${output}"
+    cargo publish -p "${crate}" 2>&1 | tee "${output}"
     status=${PIPESTATUS[0]}
     set -e
 

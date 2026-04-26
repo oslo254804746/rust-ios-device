@@ -13,7 +13,7 @@ The project is currently **experimental**. It is useful for development, testing
 - iOS 17+ tunnel support through CoreDeviceProxy/CDTunnel, with userspace and kernel TUN modes.
 - Remote Service Discovery (RSD), HTTP/2 XPC transport, OPACK, NSKeyedArchiver, AFC, DTX, lockdown, usbmuxd, and XPC protocol codecs.
 - CLI commands for device info, pairing, file operations, app management, syslog, screenshots, diagnostics, provisioning/configuration profiles, crash reports, Instruments, WebInspector, debugserver, backup/restore helpers, and tunnel management.
-- Feature-gated service crates for AFC, apps, syslog, screenshot, DTX/Instruments, TestManager, accessibility audit, developer disk image mounting, pcap, WebInspector, and related services.
+- Feature-gated service clients for AFC, apps, syslog, screenshot, DTX/Instruments, TestManager, accessibility audit, developer disk image mounting, pcap, WebInspector, and related services.
 - Python bindings (`rust-ios-device-tunnel`, imported as `ios_rs`) for device listing and iOS 17+ userspace tunnels.
 - C FFI bindings for device listing, lockdown queries, and tunnel metadata.
 
@@ -139,7 +139,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 For lower-level access, use the modules exposed by `ios-core`, such as `ios_core::mux`,
-`ios_core::lockdown`, `ios_core::services`, and `ios_core::xpc`.
+`ios_core::lockdown`, `ios_core::xpc`, and service modules re-exported at the crate root
+like `ios_core::afc`, `ios_core::apps`, and `ios_core::syslog` when their features are enabled.
 
 ## Python binding
 

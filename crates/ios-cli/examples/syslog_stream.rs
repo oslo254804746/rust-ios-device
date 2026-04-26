@@ -21,13 +21,13 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Streaming syslog from {}... (Ctrl+C to stop)", udid);
 
-    let log_stream = ios_core::services::syslog::into_stream(stream);
+    let log_stream = ios_core::syslog::into_stream(stream);
     tokio::pin!(log_stream);
     let mut count = 0u64;
     while let Some(result) = log_stream.next().await {
         match result {
             Ok(line) => {
-                let entry = ios_core::services::syslog::LogEntry::parse(line);
+                let entry = ios_core::syslog::LogEntry::parse(line);
                 if let Some(msg) = &entry.message {
                     println!(
                         "[{}] {}: {}",

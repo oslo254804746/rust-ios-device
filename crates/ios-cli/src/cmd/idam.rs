@@ -34,10 +34,8 @@ impl IdamCmd {
             },
         )
         .await?;
-        let stream = device
-            .connect_service(ios_core::services::idam::SERVICE_NAME)
-            .await?;
-        let mut client = ios_core::services::idam::IdamClient::new(stream);
+        let stream = device.connect_service(ios_core::idam::SERVICE_NAME).await?;
+        let mut client = ios_core::idam::IdamClient::new(stream);
 
         match self.sub {
             IdamSub::Get => {

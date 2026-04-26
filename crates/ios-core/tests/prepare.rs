@@ -1,6 +1,6 @@
 #[test]
 fn build_cloud_configuration_embeds_supervision_certificate() {
-    let cloud = ios_core::services::prepare::build_cloud_configuration(
+    let cloud = ios_core::prepare::build_cloud_configuration(
         &["WiFi".to_string(), "Privacy".to_string()],
         Some(&[1, 2, 3, 4]),
         Some("Example Org"),
@@ -24,8 +24,7 @@ fn build_cloud_configuration_embeds_supervision_certificate() {
 
 #[test]
 fn generated_supervision_identity_contains_der_and_pkcs12() {
-    let identity =
-        ios_core::services::prepare::generate_supervision_identity("ios-rs", "secret").unwrap();
+    let identity = ios_core::prepare::generate_supervision_identity("ios-rs", "secret").unwrap();
 
     assert!(!identity.certificate_der.is_empty());
     assert!(!identity.certificate_pem.is_empty());

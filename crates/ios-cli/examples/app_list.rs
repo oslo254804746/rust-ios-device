@@ -16,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
     let stream = device
         .connect_service("com.apple.mobile.installation_proxy")
         .await?;
-    let mut proxy = ios_core::services::apps::InstallationProxy::new(stream);
+    let mut proxy = ios_core::apps::InstallationProxy::new(stream);
 
     // List user-installed apps
     let apps = proxy.list_user_apps().await?;

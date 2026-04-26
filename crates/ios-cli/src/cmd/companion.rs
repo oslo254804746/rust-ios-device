@@ -29,9 +29,9 @@ impl CompanionCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::companion::SERVICE_NAME)
+            .connect_service(ios_core::companion::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::companion::CompanionProxyClient::new(stream);
+        let mut client = ios_core::companion::CompanionProxyClient::new(stream);
 
         match self.sub {
             CompanionSub::List => {

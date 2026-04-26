@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ios_core::services::backup2::{Mobilebackup2Client, RestoreOptions, VersionExchange};
+use ios_core::backup2::{Mobilebackup2Client, RestoreOptions, VersionExchange};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
 
@@ -121,8 +121,7 @@ async fn handshake_reports_negotiated_backup2_protocol_version() {
 }
 
 fn temp_backup_root() -> PathBuf {
-    let path =
-        std::env::temp_dir().join(format!("ios-tunnel-backup2-test-{}", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir().join(format!("ios-core-backup2-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&path).expect("create temp backup root");
     path
 }

@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn initialize_backup_directory_creates_expected_seed_files() {
         let root =
-            std::env::temp_dir().join(format!("ios-tunnel-backup2-layout-{}", std::process::id()));
+            std::env::temp_dir().join(format!("ios-core-backup2-layout-{}", std::process::id()));
         if root.exists() {
             std::fs::remove_dir_all(&root).unwrap();
         }
@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn backup_is_encrypted_reads_manifest_flag() {
         let root = std::env::temp_dir().join(format!(
-            "ios-tunnel-backup2-encryption-{}",
+            "ios-core-backup2-encryption-{}",
             std::process::id()
         ));
         let device_dir = root.join("device-id");

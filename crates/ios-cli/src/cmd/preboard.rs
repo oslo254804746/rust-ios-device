@@ -38,9 +38,9 @@ impl PreboardCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::preboard::SERVICE_NAME)
+            .connect_service(ios_core::preboard::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::preboard::PreboardClient::new(stream);
+        let mut client = ios_core::preboard::PreboardClient::new(stream);
 
         let response = match self.sub {
             PreboardSub::Create { manifest } => {

@@ -16,7 +16,7 @@ name = "ios"
 path = "src/main.rs"
 
 [dependencies]
-ios-core    = { version = "0.1", path = "../ios-core", features = ["full"] }
+ios-core    = { version = "0.1.1", path = "../ios-core", features = ["full"] }
 tokio    = { workspace = true }
 tokio-stream = { workspace = true }
 anyhow   = { workspace = true }

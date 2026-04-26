@@ -53,10 +53,9 @@ impl ActivationCmd {
             }
             ActivationSub::SessionInfo => {
                 let stream = device
-                    .connect_service(ios_core::services::mobileactivation::SERVICE_NAME)
+                    .connect_service(ios_core::mobileactivation::SERVICE_NAME)
                     .await?;
-                let mut client =
-                    ios_core::services::mobileactivation::MobileActivationClient::new(stream);
+                let mut client = ios_core::mobileactivation::MobileActivationClient::new(stream);
                 let value = expand_embedded_plists(plist::Value::Dictionary(
                     client.request_session_info().await?,
                 ));
@@ -64,10 +63,9 @@ impl ActivationCmd {
             }
             ActivationSub::Info => {
                 let stream = device
-                    .connect_service(ios_core::services::mobileactivation::SERVICE_NAME)
+                    .connect_service(ios_core::mobileactivation::SERVICE_NAME)
                     .await?;
-                let mut client =
-                    ios_core::services::mobileactivation::MobileActivationClient::new(stream);
+                let mut client = ios_core::mobileactivation::MobileActivationClient::new(stream);
                 let session_info = client.request_session_info().await?;
                 let session_value = session_info
                     .get("Value")
@@ -79,10 +77,9 @@ impl ActivationCmd {
                 let handshake_response = post_drm_handshake(session_value).await?;
 
                 let stream = device
-                    .connect_service(ios_core::services::mobileactivation::SERVICE_NAME)
+                    .connect_service(ios_core::mobileactivation::SERVICE_NAME)
                     .await?;
-                let mut client =
-                    ios_core::services::mobileactivation::MobileActivationClient::new(stream);
+                let mut client = ios_core::mobileactivation::MobileActivationClient::new(stream);
                 let value = expand_embedded_plists(plist::Value::Dictionary(
                     client.request_activation_info(&handshake_response).await?,
                 ));

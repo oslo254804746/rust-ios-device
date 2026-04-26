@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
-use ios_core::services::accessibility_audit::{
+use ios_core::accessibility_audit::{
     AccessibilityAuditClient, FocusElement, MoveDirection, RSD_SERVICE_NAME, SERVICE_NAME,
 };
+use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::tunnel::TunMode;
 
 const MAX_CONSECUTIVE_FOCUS_TIMEOUTS: usize = 5;
@@ -459,7 +459,7 @@ mod tests {
     use clap::Parser;
 
     use super::{parse_direction, AccessibilityAuditSub, FocusElement, FocusTraversal};
-    use ios_core::services::accessibility_audit::MoveDirection;
+    use ios_core::accessibility_audit::MoveDirection;
 
     #[derive(Parser)]
     struct TestCli {

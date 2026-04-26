@@ -83,7 +83,7 @@ async fn get_pid_list_sends_pid_list_request_and_parses_payload() {
                 ]),
             )]),
         )])));
-    let mut client = ios_core::services::ostrace::OsTraceClient::new(&mut stream);
+    let mut client = ios_core::ostrace::OsTraceClient::new(&mut stream);
 
     let response = client.get_pid_list().await.unwrap();
     let payload = response

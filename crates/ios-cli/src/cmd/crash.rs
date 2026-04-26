@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use comfy_table::{presets::UTF8_FULL, Table};
-use ios_core::services::crashreport::{
+use ios_core::crashreport::{
     prepare_reports, CrashReportClient, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
 };
 use ios_core::tunnel::TunMode;
@@ -187,9 +187,7 @@ fn head_line(text: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("crash report was empty"))
 }
 
-fn reports_to_json(
-    reports: &[ios_core::services::crashreport::CrashReportEntry],
-) -> serde_json::Value {
+fn reports_to_json(reports: &[ios_core::crashreport::CrashReportEntry]) -> serde_json::Value {
     serde_json::Value::Array(
         reports
             .iter()

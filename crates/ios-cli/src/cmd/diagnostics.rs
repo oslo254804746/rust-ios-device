@@ -68,12 +68,12 @@ impl DiagnosticsCmd {
         };
         let device = connect(&udid, opts).await?;
         let mut stream = device
-            .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
+            .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
 
         match self.sub {
             DiagnosticsSub::Reboot => {
-                ios_core::services::diagnostics::reboot(&mut *stream).await?;
+                ios_core::diagnostics::reboot(&mut *stream).await?;
                 if json {
                     println!(
                         "{}",
@@ -86,7 +86,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Battery => {
-                let battery = ios_core::services::diagnostics::query_battery(&mut *stream).await?;
+                let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&battery)?);
                 } else {
@@ -98,8 +98,7 @@ impl DiagnosticsCmd {
                 let mut collected = 0u64;
 
                 while collected < limit {
-                    let battery =
-                        ios_core::services::diagnostics::query_battery(&mut *stream).await?;
+                    let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
                     if json {
                         println!("{}", serde_json::to_string(&battery)?);
                     } else {
@@ -117,11 +116,11 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::List => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 println!("{}", serde_json::to_string_pretty(&value)?);
             }
             DiagnosticsSub::Show { name } => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let (resolved_name, entry) = resolve_named_diagnostics_entry(&value, &name)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&entry)?);
@@ -130,7 +129,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Gasgauge => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let gas_gauge = extract_named_diagnostics_entry(&value, "GasGauge")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&gas_gauge)?);
@@ -139,7 +138,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Hdmi => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let hdmi = extract_named_diagnostics_entry(&value, "HDMI")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&hdmi)?);
@@ -148,7 +147,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Wifi => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let wifi = extract_named_diagnostics_entry(&value, "WiFi")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&wifi)?);
@@ -157,7 +156,7 @@ impl DiagnosticsCmd {
                 }
             }
             DiagnosticsSub::Nand => {
-                let value = ios_core::services::diagnostics::query_all_values(&mut *stream).await?;
+                let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let nand = extract_named_diagnostics_entry(&value, "NAND")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&nand)?);
@@ -170,9 +169,9 @@ impl DiagnosticsCmd {
                 entry_name,
                 plane,
             } => {
-                let value = ios_core::services::diagnostics::query_ioregistry_with(
+                let value = ios_core::diagnostics::query_ioregistry_with(
                     &mut *stream,
-                    ios_core::services::diagnostics::IoRegistryQuery {
+                    ios_core::diagnostics::IoRegistryQuery {
                         entry_class: entry_class.as_deref(),
                         entry_name: entry_name.as_deref(),
                         current_plane: plane.as_deref(),
@@ -187,7 +186,7 @@ impl DiagnosticsCmd {
     }
 }
 
-fn print_battery(battery: &ios_core::services::diagnostics::BatteryDiagnostics) {
+fn print_battery(battery: &ios_core::diagnostics::BatteryDiagnostics) {
     if let Some(value) = battery.current_capacity {
         println!("CurrentCapacity: {value}");
     }

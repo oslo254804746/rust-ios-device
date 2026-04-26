@@ -4,7 +4,7 @@
 //! Usage: cargo run --example instruments_cpu -- <UDID>
 //! Press Ctrl+C to stop.
 
-use ios_core::services::instruments::{SysmontapConfig, SysmontapService};
+use ios_core::instruments::{SysmontapConfig, SysmontapService};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Connect to the instruments service hub via RSD
     let stream = device
-        .connect_rsd_service(ios_core::services::instruments::SERVICE_IOS17)
+        .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
         .await?;
 
     // Start sysmontap with default config

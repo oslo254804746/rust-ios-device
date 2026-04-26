@@ -15,7 +15,7 @@ categories.workspace = true
 default = []
 afc = []
 arbitration = []
-apps = ["crc32fast", "zip"]
+apps = ["dep:crc32fast", "dep:zip"]
 companion = []
 notificationproxy = []
 crashreport = ["afc"]
@@ -34,7 +34,7 @@ accessibility_audit = ["dtx"]
 debugserver = []
 fileservice = []
 deviceinfo = []
-imagemounter = ["reqwest", "zip"]
+imagemounter = ["dep:reqwest", "dep:zip"]
 pcap = []
 power_assertion = []
 preboard = []
@@ -64,6 +64,8 @@ full = [
     "instruments",
     "testmanager",
     "accessibility_audit",
+    "fileservice",
+    "deviceinfo",
     "imagemounter",
     "debugserver",
     "pcap",
@@ -127,3 +129,7 @@ lz4_flex     = { workspace = true, optional = true }
 reqwest      = { workspace = true, optional = true }
 zip          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

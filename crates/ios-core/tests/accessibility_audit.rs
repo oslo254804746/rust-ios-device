@@ -1,9 +1,9 @@
-use ios_core::proto::nskeyedarchiver_encode;
-use ios_core::services::accessibility_audit::{
+use ios_core::accessibility_audit::{
     deserialize_ax_object, AccessibilityAuditClient, FocusElement,
 };
-use ios_core::services::dtx::primitive_enc::{archived_object, encode_primitive_dict};
-use ios_core::services::dtx::{encode_dtx, read_dtx_frame, DtxPayload, NSObject};
+use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
+use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxPayload, NSObject};
+use ios_core::proto::nskeyedarchiver_encode;
 use plist::{Dictionary, Value};
 use serde_json::json;
 use tokio::io::{duplex, AsyncWriteExt};
@@ -56,7 +56,7 @@ async fn explicit_publish_handshake_sends_capabilities_before_requesting_device_
         let mut audit = AccessibilityAuditClient::new_with_handshake(
             client,
             17,
-            ios_core::services::accessibility_audit::AccessibilityAuditHandshake::PublishCapabilities,
+            ios_core::accessibility_audit::AccessibilityAuditHandshake::PublishCapabilities,
         );
         audit.capabilities().await.unwrap()
     });

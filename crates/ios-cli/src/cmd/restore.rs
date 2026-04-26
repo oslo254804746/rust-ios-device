@@ -49,9 +49,9 @@ impl RestoreCmd {
         .await?;
 
         let stream = device
-            .connect_rsd_service(ios_core::services::restore::SERVICE_NAME)
+            .connect_rsd_service(ios_core::restore::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::restore::RestoreServiceClient::connect(stream).await?;
+        let mut client = ios_core::restore::RestoreServiceClient::connect(stream).await?;
 
         let response = match self.sub {
             RestoreSub::EnterRecovery => client.enter_recovery().await?,
@@ -63,9 +63,9 @@ impl RestoreCmd {
             RestoreSub::RestoreLang { language } => client.restore_lang(language).await?,
         };
 
-        let rendered = ios_core::services::restore::xpc_value_to_json(
-            &ios_core::xpc::XpcValue::Dictionary(response.clone()),
-        );
+        let rendered = ios_core::restore::xpc_value_to_json(&ios_core::xpc::XpcValue::Dictionary(
+            response.clone(),
+        ));
         if json {
             println!("{}", serde_json::to_string_pretty(&rendered)?);
         } else if let Some(message) = success_message {

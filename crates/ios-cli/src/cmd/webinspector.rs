@@ -12,11 +12,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
-use ios_core::services::webinspector::{
+use ios_core::tunnel::TunMode;
+use ios_core::webinspector::{
     ApplicationPage, AutomationSession, By, InspectorSession, Page, WebInspectorClient, WirType,
     RSD_SERVICE_NAME, SAFARI_BUNDLE_ID, SERVICE_NAME,
 };
-use ios_core::tunnel::TunMode;
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use tokio::net::TcpListener;
@@ -998,7 +998,7 @@ fn encode_webdriver_value(value: JsonValue, store: &mut HashMap<String, JsonValu
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use ios_core::services::webinspector::{Application, AutomationAvailability};
+    use ios_core::webinspector::{Application, AutomationAvailability};
 
     use super::*;
 

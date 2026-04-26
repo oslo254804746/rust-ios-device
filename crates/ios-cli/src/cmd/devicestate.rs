@@ -27,7 +27,7 @@ impl DeviceStateCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for devicestate"))?;
         let (_device, stream) = super::instruments::connect_instruments(&udid).await?;
-        let mut client = ios_core::services::instruments::DeviceStateClient::connect(stream)
+        let mut client = ios_core::instruments::DeviceStateClient::connect(stream)
             .await
             .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
 

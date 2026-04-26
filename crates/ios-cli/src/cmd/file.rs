@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use anyhow::Result;
-use ios_core::services::crashreport::{
+use ios_core::crashreport::{
     prepare_reports, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
 };
 use serde::Serialize;
@@ -101,13 +101,12 @@ impl FileCmd {
             let stream = device
                 .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
                 .await?;
-            ios_core::services::afc::AfcClient::new(stream)
+            ios_core::afc::AfcClient::new(stream)
         } else if let Some(bundle_id) = self.app.as_deref() {
             let stream = device
-                .connect_service(ios_core::services::afc::house_arrest::SERVICE_NAME)
+                .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
                 .await?;
-            let house_arrest =
-                ios_core::services::afc::house_arrest::HouseArrestClient::new(stream);
+            let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream);
             if self.documents {
                 house_arrest.vend_documents(bundle_id).await?
             } else {
@@ -115,7 +114,7 @@ impl FileCmd {
             }
         } else {
             let stream = device.connect_service("com.apple.afc").await?;
-            ios_core::services::afc::AfcClient::new(stream)
+            ios_core::afc::AfcClient::new(stream)
         };
 
         match self.sub {
@@ -256,7 +255,7 @@ fn join_device_path(base: &str, name: &str) -> String {
 fn file_info_to_json(
     name: &str,
     path: &str,
-    info: Option<&ios_core::services::afc::AfcFileInfo>,
+    info: Option<&ios_core::afc::AfcFileInfo>,
 ) -> serde_json::Value {
     match info {
         Some(info) => json!({
@@ -300,9 +299,9 @@ fn afc_device_info_lines(info: &HashMap<String, String>) -> Vec<String> {
 }
 
 fn build_file_tree<'a, S>(
-    afc: &'a mut ios_core::services::afc::AfcClient<S>,
+    afc: &'a mut ios_core::afc::AfcClient<S>,
     path: &'a str,
-) -> Pin<Box<dyn Future<Output = Result<FileTreeEntry, ios_core::services::afc::AfcError>> + 'a>>
+) -> Pin<Box<dyn Future<Output = Result<FileTreeEntry, ios_core::afc::AfcError>> + 'a>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'a,
 {
@@ -448,7 +447,7 @@ mod tests {
 
     #[test]
     fn file_info_to_json_formats_mode_when_present() {
-        let info = ios_core::services::afc::AfcFileInfo {
+        let info = ios_core::afc::AfcFileInfo {
             name: Some("foo".into()),
             file_type: Some("S_IFREG".into()),
             size: Some(123),

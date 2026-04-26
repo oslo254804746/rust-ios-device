@@ -1,6 +1,6 @@
 #[cfg(feature = "debugserver")]
 mod tests {
-    use ios_core::services::debugserver::{
+    use ios_core::debugserver::{
         checksum, format_packet, parse_packet, select_service_name, LEGACY_SERVICE_NAME,
         SECURE_SERVICE_NAME,
     };

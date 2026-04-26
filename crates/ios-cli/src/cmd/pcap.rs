@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::services::pcap::{
+use ios_core::pcap::{
     write_global_header, write_packet_record, CapturedPacket, PacketFilter, PcapClient,
     SERVICE_NAME,
 };

@@ -27,9 +27,9 @@ impl OsTraceCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::ostrace::SERVICE_NAME)
+            .connect_service(ios_core::ostrace::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::ostrace::OsTraceClient::new(stream);
+        let mut client = ios_core::ostrace::OsTraceClient::new(stream);
 
         match self.sub {
             OsTraceSub::Ps => {

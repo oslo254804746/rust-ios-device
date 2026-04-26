@@ -78,7 +78,7 @@ async fn list_files_sends_list_command_and_decodes_response() {
     payload.extend_from_slice(&plist_payload);
 
     let mut stream = MockStream::new(payload);
-    let mut client = ios_core::services::fetchsymbols::FetchSymbolsClient::new(&mut stream);
+    let mut client = ios_core::fetchsymbols::FetchSymbolsClient::new(&mut stream);
 
     let files = client.list_files().await.unwrap();
     assert_eq!(files.len(), 2);
@@ -93,7 +93,7 @@ async fn download_sends_index_and_streams_file_bytes() {
     payload.extend_from_slice(b"hello world");
 
     let mut stream = MockStream::new(payload);
-    let mut client = ios_core::services::fetchsymbols::FetchSymbolsClient::new(&mut stream);
+    let mut client = ios_core::fetchsymbols::FetchSymbolsClient::new(&mut stream);
     let mut out = Vec::new();
 
     let bytes = client.download(7, &mut out, None).await.unwrap();
@@ -150,7 +150,7 @@ async fn remote_list_files_bootstraps_xpc_and_decodes_catalog() {
         read_window_update_pair(&mut server, 2).await;
     });
 
-    let mut client = ios_core::services::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
+    let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
         .await
         .expect("remote fetch symbols client should connect");
     let files = client.list_files().await.expect("list should succeed");
@@ -212,7 +212,7 @@ async fn remote_download_opens_file_stream_and_copies_bytes() {
         assert_eq!(stream_window.stream_id, 4);
     });
 
-    let mut client = ios_core::services::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
+    let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
         .await
         .expect("remote fetch symbols client should connect");
     let mut out = Vec::new();

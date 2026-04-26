@@ -35,9 +35,9 @@ impl PowerAssertCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::power_assertion::SERVICE_NAME)
+            .connect_service(ios_core::power_assertion::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::power_assertion::PowerAssertionClient::new(stream);
+        let mut client = ios_core::power_assertion::PowerAssertionClient::new(stream);
         let response = client
             .create_assertion(
                 &self.assertion_type,

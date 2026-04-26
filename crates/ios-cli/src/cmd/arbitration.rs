@@ -30,7 +30,7 @@ impl ArbitrationCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for arbitration"))?;
         let stream = connect_arbitration(&udid).await?;
-        let mut client = ios_core::services::arbitration::ArbitrationClient::new(stream);
+        let mut client = ios_core::arbitration::ArbitrationClient::new(stream);
 
         match self.sub {
             ArbitrationSub::CheckIn { hostname, force } => {
@@ -99,12 +99,12 @@ async fn connect_arbitration(udid: &str) -> Result<ios_core::device::ServiceStre
         .await?;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         device
-            .connect_rsd_service(ios_core::services::arbitration::SERVICE_NAME)
+            .connect_rsd_service(ios_core::arbitration::SERVICE_NAME)
             .await
             .map_err(|err| {
                 anyhow::anyhow!(
                     "arbitration tunnel fallback reached RSD, but '{}' is not exposed there: {err}",
-                    ios_core::services::arbitration::SERVICE_NAME
+                    ios_core::arbitration::SERVICE_NAME
                 )
             })
     } else {
@@ -118,7 +118,7 @@ async fn connect_arbitration(udid: &str) -> Result<ios_core::device::ServiceStre
         )
         .await?;
         device
-            .connect_service(ios_core::services::arbitration::SERVICE_NAME)
+            .connect_service(ios_core::arbitration::SERVICE_NAME)
             .await
             .map_err(Into::into)
     }

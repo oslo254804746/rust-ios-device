@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ios_core::services::webinspector::{
+use ios_core::webinspector::{
     AutomationAvailability, AutomationSession, By, InspectorSession, WebInspectorClient,
     WebInspectorError, WebInspectorEvent, WirType,
 };

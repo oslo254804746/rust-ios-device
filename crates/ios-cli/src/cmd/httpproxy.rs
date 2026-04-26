@@ -40,9 +40,9 @@ impl HttpProxyCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_core::services::mcinstall::SERVICE_NAME)
+            .connect_service(ios_core::mcinstall::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::mcinstall::McInstallClient::new(stream);
+        let mut client = ios_core::mcinstall::McInstallClient::new(stream);
 
         match self.sub {
             HttpProxySub::Set {

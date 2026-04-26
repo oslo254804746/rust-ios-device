@@ -25,35 +25,33 @@ impl MobileGestaltCmd {
         };
         let device = connect(&udid, opts).await?;
         let mut stream = device
-            .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
+            .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
 
         let key_refs: Vec<&str> = self.keys.iter().map(String::as_str).collect();
-        let value =
-            match ios_core::services::diagnostics::query_mobile_gestalt(&mut *stream, &key_refs)
+        let value = match ios_core::diagnostics::query_mobile_gestalt(&mut *stream, &key_refs).await
+        {
+            Ok(value) => value,
+            Err(ios_core::diagnostics::DiagnosticsError::Deprecated(message)) => {
+                let rsd_state = match connect(
+                    &udid,
+                    ConnectOptions {
+                        tun_mode: TunMode::Userspace,
+                        pair_record_path: None,
+                        skip_tunnel: false,
+                    },
+                )
                 .await
-            {
-                Ok(value) => value,
-                Err(ios_core::services::diagnostics::DiagnosticsError::Deprecated(message)) => {
-                    let rsd_state = match connect(
-                        &udid,
-                        ConnectOptions {
-                            tun_mode: TunMode::Userspace,
-                            pair_record_path: None,
-                            skip_tunnel: false,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(device) => describe_deviceinfo_service(device.rsd.as_ref()),
-                        Err(err) => {
-                            format!("failed to inspect RSD services for CoreDevice fallback: {err}")
-                        }
-                    };
-                    return Err(anyhow::anyhow!("{message}; {rsd_state}"));
-                }
-                Err(err) => return Err(err.into()),
-            };
+                {
+                    Ok(device) => describe_deviceinfo_service(device.rsd.as_ref()),
+                    Err(err) => {
+                        format!("failed to inspect RSD services for CoreDevice fallback: {err}")
+                    }
+                };
+                return Err(anyhow::anyhow!("{message}; {rsd_state}"));
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         if self.plist {
             let mut stdout = std::io::stdout().lock();

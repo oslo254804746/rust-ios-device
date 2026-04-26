@@ -36,9 +36,9 @@ pub(crate) async fn run_heartbeat(
     };
     let device = connect(udid, opts).await?;
     let stream = device
-        .connect_service(ios_core::services::heartbeat::SERVICE_NAME)
+        .connect_service(ios_core::heartbeat::SERVICE_NAME)
         .await?;
-    let mut client = ios_core::services::heartbeat::HeartbeatClient::new(stream);
+    let mut client = ios_core::heartbeat::HeartbeatClient::new(stream);
 
     let mut messages = Vec::with_capacity(count);
     for _ in 0..count {

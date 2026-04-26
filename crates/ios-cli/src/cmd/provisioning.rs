@@ -55,9 +55,9 @@ impl ProvisioningCmd {
         };
         let device = connect(&udid, opts).await?;
         let stream = device
-            .connect_service(ios_core::services::misagent::SERVICE_NAME)
+            .connect_service(ios_core::misagent::SERVICE_NAME)
             .await?;
-        let mut client = ios_core::services::misagent::MisagentClient::new(stream);
+        let mut client = ios_core::misagent::MisagentClient::new(stream);
 
         match self.sub {
             ProvisioningSub::List => {
@@ -148,7 +148,7 @@ impl ProvisioningCmd {
     }
 }
 
-fn profile_to_json(profile: &ios_core::services::misagent::Profile) -> serde_json::Value {
+fn profile_to_json(profile: &ios_core::misagent::Profile) -> serde_json::Value {
     serde_json::json!({
         "uuid": profile.uuid,
         "name": profile.name,
@@ -159,9 +159,9 @@ fn profile_to_json(profile: &ios_core::services::misagent::Profile) -> serde_jso
 }
 
 fn find_profile<'a>(
-    profiles: &'a [ios_core::services::misagent::Profile],
+    profiles: &'a [ios_core::misagent::Profile],
     query: &str,
-) -> Result<&'a ios_core::services::misagent::Profile> {
+) -> Result<&'a ios_core::misagent::Profile> {
     if let Some(profile) = unique_profile_match(profiles, query, |profile| {
         profile.uuid.eq_ignore_ascii_case(query)
     })? {
@@ -183,12 +183,12 @@ fn find_profile<'a>(
 }
 
 fn unique_profile_match<'a, F>(
-    profiles: &'a [ios_core::services::misagent::Profile],
+    profiles: &'a [ios_core::misagent::Profile],
     query: &str,
     predicate: F,
-) -> Result<Option<&'a ios_core::services::misagent::Profile>>
+) -> Result<Option<&'a ios_core::misagent::Profile>>
 where
-    F: Fn(&ios_core::services::misagent::Profile) -> bool,
+    F: Fn(&ios_core::misagent::Profile) -> bool,
 {
     let mut matches = profiles.iter().filter(|profile| predicate(profile));
     let first = matches.next();
@@ -253,7 +253,7 @@ fn dump_entry_message(entry: &serde_json::Value) -> String {
     format!("Dumped provisioning profile {uuid} to {output} ({bytes} bytes)")
 }
 
-fn print_profiles(profiles: &[ios_core::services::misagent::Profile]) {
+fn print_profiles(profiles: &[ios_core::misagent::Profile]) {
     let mut table = Table::new();
     table.set_header(["UUID", "Name", "App ID", "Expiry", "Size"]);
     for profile in profiles {
@@ -268,15 +268,13 @@ fn print_profiles(profiles: &[ios_core::services::misagent::Profile]) {
     println!("{table}");
 }
 
-fn print_profile_details(profile: &ios_core::services::misagent::Profile) {
+fn print_profile_details(profile: &ios_core::misagent::Profile) {
     for (label, value) in profile_detail_lines(profile) {
         println!("{label:<12} {value}");
     }
 }
 
-fn profile_detail_lines(
-    profile: &ios_core::services::misagent::Profile,
-) -> Vec<(&'static str, String)> {
+fn profile_detail_lines(profile: &ios_core::misagent::Profile) -> Vec<(&'static str, String)> {
     vec![
         ("UUID:", profile.uuid.clone()),
         ("Name:", profile.name.clone()),
@@ -366,7 +364,7 @@ mod tests {
 
     #[test]
     fn profile_json_includes_basic_metadata() {
-        let profile = ios_core::services::misagent::Profile {
+        let profile = ios_core::misagent::Profile {
             uuid: "ABC-123".into(),
             name: "Example Dev Profile".into(),
             app_id: "Example App".into(),
@@ -388,7 +386,7 @@ mod tests {
 
     #[test]
     fn profile_detail_lines_include_size() {
-        let profile = ios_core::services::misagent::Profile {
+        let profile = ios_core::misagent::Profile {
             uuid: "ABC-123".into(),
             name: "Example Dev Profile".into(),
             app_id: "Example App".into(),
@@ -477,7 +475,7 @@ mod tests {
 
     #[test]
     fn find_profile_returns_not_found_error_for_unknown_uuid() {
-        let profiles = vec![ios_core::services::misagent::Profile {
+        let profiles = vec![ios_core::misagent::Profile {
             uuid: "ABC-123".into(),
             name: "Example Dev Profile".into(),
             app_id: "Example App".into(),
@@ -496,14 +494,14 @@ mod tests {
     #[test]
     fn find_profile_accepts_unique_uuid_prefix() {
         let profiles = vec![
-            ios_core::services::misagent::Profile {
+            ios_core::misagent::Profile {
                 uuid: "ABC-123".into(),
                 name: "First".into(),
                 app_id: "App A".into(),
                 expiry_date: None,
                 raw_data: vec![1],
             },
-            ios_core::services::misagent::Profile {
+            ios_core::misagent::Profile {
                 uuid: "DEF-456".into(),
                 name: "Second".into(),
                 app_id: "App B".into(),
@@ -518,7 +516,7 @@ mod tests {
 
     #[test]
     fn find_profile_accepts_exact_name() {
-        let profiles = vec![ios_core::services::misagent::Profile {
+        let profiles = vec![ios_core::misagent::Profile {
             uuid: "ABC-123".into(),
             name: "Example Dev Profile".into(),
             app_id: "Example App".into(),
@@ -533,14 +531,14 @@ mod tests {
     #[test]
     fn find_profile_rejects_ambiguous_uuid_prefix() {
         let profiles = vec![
-            ios_core::services::misagent::Profile {
+            ios_core::misagent::Profile {
                 uuid: "ABC-123".into(),
                 name: "First".into(),
                 app_id: "App A".into(),
                 expiry_date: None,
                 raw_data: vec![1],
             },
-            ios_core::services::misagent::Profile {
+            ios_core::misagent::Profile {
                 uuid: "ABC-456".into(),
                 name: "Second".into(),
                 app_id: "App B".into(),

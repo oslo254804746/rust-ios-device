@@ -46,9 +46,9 @@ impl InfoCmd {
             match sub {
                 InfoSub::Display => {
                     let mut stream = device
-                        .connect_service(ios_core::services::diagnostics::SERVICE_NAME)
+                        .connect_service(ios_core::diagnostics::SERVICE_NAME)
                         .await?;
-                    let value = ios_core::services::diagnostics::query_ioregistry(
+                    let value = ios_core::diagnostics::query_ioregistry(
                         &mut *stream,
                         "IOMobileFramebuffer",
                     )
