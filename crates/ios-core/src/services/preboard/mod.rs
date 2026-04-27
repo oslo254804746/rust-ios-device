@@ -5,6 +5,7 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.preboardservice_v2";
+const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PreboardError {
@@ -72,6 +73,11 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_PLIST_SIZE {
+        return Err(PreboardError::Plist(format!(
+            "plist length {len} exceeds max {MAX_PLIST_SIZE}"
+        )));
+    }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
     plist::from_bytes(&buf).map_err(|e| PreboardError::Plist(e.to_string()))
@@ -173,5 +179,19 @@ mod tests {
                 .and_then(plist::Value::as_boolean),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn recv_plist_rejects_oversized_frame() {
+        let mut read_buf = ((MAX_PLIST_SIZE as u32) + 1).to_be_bytes().to_vec();
+        read_buf.extend_from_slice(b"ignored");
+        let mut stream = MockStream {
+            read_buf,
+            written: Vec::new(),
+            read_pos: 0,
+        };
+
+        let err = recv_plist(&mut stream).await.unwrap_err();
+        assert!(matches!(err, PreboardError::Plist(message) if message.contains("exceeds max")));
     }
 }

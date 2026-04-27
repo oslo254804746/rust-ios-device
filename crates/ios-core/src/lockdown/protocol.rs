@@ -4,6 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::lockdown::LockdownError;
 
 pub const LOCKDOWN_PORT: u16 = 62078;
+const MAX_LOCKDOWN_FRAME_SIZE: usize = 4 * 1024 * 1024;
 
 pub fn encode_frame(payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4 + payload.len());
@@ -16,6 +17,11 @@ pub async fn recv_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).await?;
     let length = u32::from_be_bytes(len_buf) as usize;
+    if length > MAX_LOCKDOWN_FRAME_SIZE {
+        return Err(LockdownError::Protocol(format!(
+            "frame too large: {length} bytes exceeds {MAX_LOCKDOWN_FRAME_SIZE}"
+        )));
+    }
     let mut payload = vec![0u8; length];
     reader.read_exact(&mut payload).await?;
     Ok(payload)
@@ -185,6 +191,20 @@ mod tests {
         let mut cursor = std::io::Cursor::new(frame);
         let decoded = recv_frame(&mut cursor).await.unwrap();
         assert!(decoded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_recv_frame_rejects_oversized_payload() {
+        let mut frame = ((MAX_LOCKDOWN_FRAME_SIZE as u32) + 1)
+            .to_be_bytes()
+            .to_vec();
+        frame.extend_from_slice(b"ignored");
+        let mut cursor = std::io::Cursor::new(frame);
+
+        let err = recv_frame(&mut cursor).await.unwrap_err();
+        assert!(
+            matches!(err, LockdownError::Protocol(message) if message.contains("frame too large"))
+        );
     }
 
     #[test]

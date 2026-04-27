@@ -3,6 +3,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::mux::MuxError;
 
+const MAX_MUX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 pub fn encode_message(payload: &[u8], tag: u32) -> Vec<u8> {
     let total = 16 + payload.len();
     let mut buf = Vec::with_capacity(total);
@@ -38,6 +40,11 @@ where
     if length < 16 {
         return Err(MuxError::Protocol(format!(
             "invalid message length: {length}"
+        )));
+    }
+    if length > MAX_MUX_MESSAGE_SIZE {
+        return Err(MuxError::Protocol(format!(
+            "message too large: {length} bytes exceeds {MAX_MUX_MESSAGE_SIZE}"
         )));
     }
     let mut payload = vec![0u8; length - 16];
@@ -154,4 +161,23 @@ pub(crate) struct DeviceEvent {
     #[serde(rename = "DeviceID")]
     pub device_id: u32,
     pub properties: Option<DevicePropertiesRaw>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recv_plist_rejects_oversized_message() {
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(&((MAX_MUX_MESSAGE_SIZE as u32) + 1).to_le_bytes());
+        let mut cursor = std::io::Cursor::new(header);
+
+        let err = recv_plist::<_, plist::Value>(&mut cursor)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, MuxError::Protocol(message) if message.contains("message too large"))
+        );
+    }
 }

@@ -166,6 +166,19 @@ unsafe fn device_from_handle(
     guard.as_ref().cloned().ok_or(IOS_ERR_STATE)
 }
 
+fn ios_devices_into_raw(devices: Vec<IosDevice>) -> (*mut IosDevice, usize) {
+    let boxed = devices.into_boxed_slice();
+    let count = boxed.len();
+    let ptr = Box::into_raw(boxed) as *mut IosDevice;
+    (ptr, count)
+}
+
+unsafe fn drop_ios_devices_allocation(devices: *mut IosDevice, count: usize) {
+    drop(Box::from_raw(std::slice::from_raw_parts_mut(
+        devices, count,
+    )));
+}
+
 // ── Device listing ────────────────────────────────────────────────────────────
 
 /// List all connected iOS devices.
@@ -209,10 +222,7 @@ pub unsafe extern "C" fn ios_list_devices(
                     connection_type,
                 });
             }
-            c_devs.shrink_to_fit();
-            let actual_count = c_devs.len();
-            let ptr = c_devs.as_mut_ptr();
-            std::mem::forget(c_devs);
+            let (ptr, actual_count) = ios_devices_into_raw(c_devs);
             *devices_out = ptr;
             *count_out = actual_count;
             0
@@ -239,7 +249,7 @@ pub unsafe extern "C" fn ios_free_devices(devices: *mut IosDevice, count: usize)
             drop(CString::from_raw(d.connection_type));
         }
     }
-    drop(Vec::from_raw_parts(devices, count, count));
+    drop_ios_devices_allocation(devices, count);
 }
 
 // ── Device handle ────────────────────────────────────────────────────────────
@@ -533,5 +543,23 @@ mod tests {
         let ptr = to_owned_c_string("15.7.1".to_string()).unwrap();
         let text = unsafe { CString::from_raw(ptr).into_string().unwrap() };
         assert_eq!(text, "15.7.1");
+    }
+
+    #[test]
+    fn ios_devices_raw_roundtrip_does_not_depend_on_vec_capacity() {
+        let mut devices = Vec::with_capacity(8);
+        devices.push(IosDevice {
+            udid: std::ptr::null_mut(),
+            device_id: 7,
+            connection_type: std::ptr::null_mut(),
+        });
+
+        let (ptr, count) = ios_devices_into_raw(devices);
+
+        assert_eq!(count, 1);
+        unsafe {
+            assert_eq!((*ptr).device_id, 7);
+            drop_ios_devices_allocation(ptr, count);
+        }
     }
 }
