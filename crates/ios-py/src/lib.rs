@@ -1,4 +1,4 @@
-//! ios_rs - Python bindings for the iOS 17+ tunnel.
+//! ios_rs - Python bindings for device listing and CoreDevice tunnel workflows.
 //!
 //! The binding exposes tunnel metadata plus a small asyncio adapter so Python
 //! libraries can reuse the userspace proxy without reimplementing its custom

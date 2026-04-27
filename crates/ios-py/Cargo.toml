@@ -19,5 +19,5 @@ crate-type = ["cdylib"]
 [dependencies]
 ios-core  = { version = "0.1.1", path = "../ios-core" }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
-tokio     = { workspace = true }
+tokio     = { workspace = true, features = ["rt-multi-thread"] }
 once_cell = { workspace = true }

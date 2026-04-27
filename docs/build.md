@@ -10,7 +10,7 @@ cargo build --release --workspace --exclude ios-py
 ```
 
 `ios-py` is a Python extension module and may need a configured Python interpreter. Its
-PyO3 extension-module build is exercised by maturin; the CI excludes it from normal Rust
+PyO3 extension-module build is exercised by `uvx maturin`; the CI excludes it from normal Rust
 build/test jobs and builds wheels separately.
 
 ## Linux dependencies

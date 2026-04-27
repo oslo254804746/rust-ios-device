@@ -10,18 +10,19 @@ The project is currently **experimental**. It is useful for development, testing
 
 - USB device discovery and event watching through usbmuxd.
 - Lockdown client support, TLS sessions, pair records, and pairing helpers.
-- iOS 17+ tunnel support through CoreDeviceProxy/CDTunnel, with userspace and kernel TUN modes.
+- Lockdown/usbmux service support for devices across multiple iOS generations.
+- CoreDeviceProxy/CDTunnel support for iOS versions that expose the CoreDevice tunnel path, with userspace and kernel TUN modes.
 - Remote Service Discovery (RSD), HTTP/2 XPC transport, OPACK, NSKeyedArchiver, AFC, DTX, lockdown, usbmuxd, and XPC protocol codecs.
 - CLI commands for device info, pairing, file operations, app management, syslog, screenshots, diagnostics, provisioning/configuration profiles, crash reports, Instruments, WebInspector, debugserver, backup/restore helpers, and tunnel management.
 - Feature-gated service clients for AFC, apps, syslog, screenshot, DTX/Instruments, TestManager, accessibility audit, developer disk image mounting, pcap, WebInspector, and related services.
-- Python bindings (`rust-ios-device-tunnel`, imported as `ios_rs`) for device listing and iOS 17+ userspace tunnels.
+- Python bindings (`rust-ios-device-tunnel`, imported as `ios_rs`) for device listing and userspace tunnel workflows.
 - C FFI bindings for device listing, lockdown queries, and tunnel metadata.
 
 ## Non-goals and limitations
 
 - This is not an Apple-supported SDK and does not replace Xcode, Finder, Apple Configurator, or official MDM tooling.
 - Not every command is validated on every iOS version. Some advanced commands are best treated as protocol experiments.
-- iOS 17+ CoreDevice and tunnel paths require a trusted device and the correct pairing material.
+- CoreDevice and tunnel paths require a trusted device, compatible iOS version, and the correct pairing material.
 - Kernel TUN mode may require administrator/root privileges. Userspace mode is usually easier to run.
 - Some services require Developer Mode, a mounted Developer Disk Image, installed test bundles, supervision, or app-specific entitlements.
 - Commands that modify device state can be disruptive. Read command help before using profile, erase, restore, backup restore, location, preboard, and supervision-related commands.
@@ -62,6 +63,17 @@ cargo run -p ios-cli -- --help
 
 The release binary is named `ios`.
 
+## Feature flags
+
+`ios-core` has no default service features. Enable only the service clients you use:
+
+```toml
+[dependencies]
+ios-core = { version = "0.1.1", features = ["afc", "syslog"] }
+```
+
+For broader tools, use grouped features such as `classic`, `developer`, `management`, `ios17`, or `full`. The CLI enables `full`; libraries should usually choose a smaller set. See [docs/features.md](docs/features.md).
+
 ## Quick start
 
 List visible devices:
@@ -98,7 +110,7 @@ ios apps --help
 ios instruments --help
 ```
 
-## iOS 17+ tunnel
+## CoreDevice tunnel
 
 Start a tunnel for a trusted device:
 
@@ -194,7 +206,7 @@ Exact arguments may vary by example; use `--help` or read the example source if 
 - `No such file or directory` or connection refused for usbmuxd: ensure usbmuxd or Apple Mobile Device Support is installed and running.
 - Device does not appear: unlock the device, trust the host, reconnect USB, and check host permissions.
 - Pairing fails: remove stale pair records only if you understand the impact, then pair again from an unlocked device.
-- Tunnel fails on older iOS versions: CoreDevice tunnel support is primarily for iOS 17+ paths.
+- Tunnel fails on some devices: confirm the device/iOS version exposes the CoreDevice tunnel service; use lockdown/usbmux commands for older service paths.
 - Kernel tunnel fails: retry userspace mode or run with the privileges required to create a TUN interface.
 - Developer services fail: enable Developer Mode where required and mount an appropriate Developer Disk Image if the service depends on it.
 

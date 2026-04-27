@@ -87,10 +87,6 @@ jobs:
             runner: ubuntu-24.04-arm
             archive: tar.gz
             lib_ext: so
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            archive: tar.gz
-            lib_ext: dylib
           - target: aarch64-apple-darwin
             runner: macos-latest
             archive: tar.gz
@@ -208,8 +204,6 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            runner: macos-13
           - target: aarch64-apple-darwin
             runner: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -226,8 +220,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install maturin
-        run: pip install maturin
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
@@ -250,7 +244,7 @@ jobs:
         shell: bash
         run: |
           cd crates/ios-py
-          maturin build --release --target ${{ matrix.target }} --out ../../dist
+          uvx maturin build --release --target ${{ matrix.target }} --out ../../dist
 
       - name: Upload wheels as artifacts
         uses: actions/upload-artifact@v4
@@ -270,13 +264,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install maturin
-        run: pip install maturin
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Build sdist
         run: |
           cd crates/ios-py
-          maturin sdist --out ../../dist
+          uvx maturin sdist --out ../../dist
 
       - name: Upload sdist as artifact
         uses: actions/upload-artifact@v4
@@ -295,8 +289,15 @@ jobs:
       - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
+
+      - name: Download sdist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

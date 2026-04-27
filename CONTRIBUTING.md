@@ -13,8 +13,7 @@ For Python binding work:
 
 ```sh
 cd crates/ios-py
-python -m pip install maturin
-maturin develop
+uvx maturin develop
 ```
 
 ## Before opening a PR

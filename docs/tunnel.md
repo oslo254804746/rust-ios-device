@@ -1,6 +1,6 @@
-# iOS 17+ tunnel
+# CoreDevice tunnel
 
-The tunnel layer establishes a CDTunnel to devices that expose the required CoreDevice services. It is primarily useful for iOS 17+ RemoteXPC/RSD workflows.
+The tunnel layer establishes a CDTunnel to devices that expose the required CoreDevice services. It is primarily useful for RemoteXPC/RSD workflows on iOS versions that support the CoreDevice tunnel path.
 
 ## Modes
 

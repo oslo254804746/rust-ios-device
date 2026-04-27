@@ -12,7 +12,7 @@ protocol, transport, service, discovery, pairing, and high-level Rust APIs.
 
 `ios_core::lockdown` implements lockdown request/response handling, pair records, TLS session setup, service startup, and pairing helpers.
 
-`ios_core::tunnel` implements the iOS 17+ CDTunnel handshake and packet forwarding. It supports userspace forwarding through smoltcp and kernel TUN devices through `tun-rs`.
+`ios_core::tunnel` implements the CDTunnel handshake and packet forwarding for devices that expose the CoreDevice tunnel path. It supports userspace forwarding through smoltcp and kernel TUN devices through `tun-rs`.
 
 `ios_core::xpc` implements Remote Service Discovery and the HTTP/2 + XPC transport used by CoreDevice-style services.
 
@@ -30,7 +30,7 @@ Classic services generally follow:
 host -> usbmuxd -> device lockdown port -> StartService -> service port
 ```
 
-iOS 17+ tunnel/RSD services generally follow:
+CoreDevice tunnel/RSD services generally follow:
 
 ```text
 host -> usbmuxd or remote pairing path -> CoreDeviceProxy/CDTunnel -> RSD -> RemoteXPC or raw service
@@ -43,3 +43,5 @@ Some services can be available through both paths depending on iOS version and d
 `ios-core` keeps most service implementations behind feature flags. Examples include `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, and `deviceinfo`.
 
 The CLI enables a broad set of service features because it exposes many commands. Library users should enable a narrower set where possible.
+
+See [features.md](features.md) for the current grouping strategy.

@@ -10,18 +10,19 @@
 
 - 通过 usbmuxd 发现 USB 设备并监听设备事件。
 - 支持 Lockdown 客户端、TLS 会话、配对记录和配对辅助功能。
-- 支持通过 CoreDeviceProxy/CDTunnel 使用 iOS 17+ 隧道，并提供用户态和内核 TUN 模式。
+- 支持跨多个 iOS 版本使用的 lockdown/usbmux 服务路径。
+- 支持在具备 CoreDevice 隧道路由的 iOS 版本上通过 CoreDeviceProxy/CDTunnel 建立隧道，并提供用户态和内核 TUN 模式。
 - 支持 Remote Service Discovery (RSD)、HTTP/2 XPC 传输、OPACK、NSKeyedArchiver、AFC、DTX、lockdown、usbmuxd 和 XPC 协议编解码。
 - CLI 命令覆盖设备信息、配对、文件操作、应用管理、syslog、截图、诊断、预置/配置描述文件、崩溃报告、Instruments、WebInspector、debugserver、备份/恢复辅助功能和隧道管理。
 - 基于 feature gate 的服务客户端，覆盖 AFC、应用、syslog、截图、DTX/Instruments、TestManager、可访问性审计、开发者磁盘镜像挂载、pcap、WebInspector 及相关服务。
-- Python 绑定（`rust-ios-device-tunnel`，导入名为 `ios_rs`），用于设备列表和 iOS 17+ 用户态隧道。
+- Python 绑定（`rust-ios-device-tunnel`，导入名为 `ios_rs`），用于设备列表和用户态隧道工作流。
 - C FFI 绑定，用于设备列表、lockdown 查询和隧道元数据。
 
 ## 非目标和限制
 
 - 这不是 Apple 支持的 SDK，也不能替代 Xcode、Finder、Apple Configurator 或官方 MDM 工具。
 - 并非每个命令都在所有 iOS 版本上验证过。部分高级命令更适合作为协议实验使用。
-- iOS 17+ CoreDevice 和隧道路由需要已信任设备以及正确的配对材料。
+- CoreDevice 和隧道路由需要已信任设备、兼容的 iOS 版本以及正确的配对材料。
 - 内核 TUN 模式可能需要管理员/root 权限。用户态模式通常更容易运行。
 - 部分服务需要开发者模式、已挂载的开发者磁盘镜像、已安装的测试 bundle、监督模式或应用特定 entitlement。
 - 会修改设备状态的命令可能具有破坏性。使用 profile、erase、restore、backup restore、location、preboard 和监督相关命令前，请先阅读命令帮助。
@@ -62,6 +63,17 @@ cargo run -p ios-cli -- --help
 
 发布构建生成的二进制文件名为 `ios`。
 
+## Feature flags
+
+`ios-core` 默认不启用具体服务 feature。按需启用你的应用实际使用的服务：
+
+```toml
+[dependencies]
+ios-core = { version = "0.1.1", features = ["afc", "syslog"] }
+```
+
+如果在构建覆盖面较广的工具，可以使用 `classic`、`developer`、`management`、`ios17` 或 `full` 等分组 feature。CLI 会启用 `full`；库用户通常应选择更小的 feature 集。参阅 [docs/features.md](docs/features.md)。
+
 ## 快速开始
 
 列出可见设备：
@@ -98,7 +110,7 @@ ios apps --help
 ios instruments --help
 ```
 
-## iOS 17+ 隧道
+## CoreDevice 隧道
 
 为已信任设备启动隧道：
 
@@ -194,7 +206,7 @@ cargo run -p ios-cli --example instruments_cpu -- <UDID>
 - usbmuxd 报 `No such file or directory` 或连接被拒绝：确认 usbmuxd 或 Apple Mobile Device Support 已安装并正在运行。
 - 设备未出现：解锁设备、信任主机、重新连接 USB，并检查主机权限。
 - 配对失败：只有在理解影响的情况下才删除过期配对记录，然后从已解锁设备重新配对。
-- 隧道在较旧 iOS 版本上失败：CoreDevice 隧道支持主要面向 iOS 17+ 路径。
+- 隧道在部分设备上失败：确认设备/iOS 版本暴露 CoreDevice 隧道服务；较旧服务路径请使用 lockdown/usbmux 命令。
 - 内核隧道失败：改用用户态模式，或使用创建 TUN 接口所需的权限运行。
 - 开发者服务失败：在需要时启用开发者模式，并在服务依赖开发者磁盘镜像时挂载合适的镜像。
 

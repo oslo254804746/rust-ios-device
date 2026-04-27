@@ -1,6 +1,6 @@
 # Python binding
 
-The `ios-py` crate publishes the `rust-ios-device-tunnel` Python distribution and builds a PyO3 extension module imported as `ios_rs`. It currently exposes device listing and iOS 17+ tunnel helpers.
+The `ios-py` crate publishes the `rust-ios-device-tunnel` Python distribution and builds a PyO3 extension module imported as `ios_rs`. It currently exposes device listing and CoreDevice tunnel helpers for compatible devices.
 
 ## Build locally
 

@@ -13,16 +13,75 @@ categories.workspace = true
 
 [features]
 default = []
+core = []
+lockdown = []
+tunnel = []
+remote = []
+classic = [
+    "afc",
+    "apps",
+    "crashreport",
+    "diagnostics",
+    "file_relay",
+    "heartbeat",
+    "house_arrest",
+    "installation",
+    "lockdown",
+    "mcinstall",
+    "mobileactivation",
+    "notificationproxy",
+    "profiles",
+    "screenshot",
+    "springboard",
+    "syslog",
+]
+developer = [
+    "accessibility_audit",
+    "amfi",
+    "debugserver",
+    "dproxy",
+    "dtx",
+    "fetchsymbols",
+    "imagemounter",
+    "instruments",
+    "pcap",
+    "testmanager",
+    "webinspector",
+]
+management = [
+    "arbitration",
+    "companion",
+    "idam",
+    "misagent",
+    "power_assertion",
+    "preboard",
+    "prepare",
+    "restore",
+]
+ios17 = [
+    "apps",
+    "deviceinfo",
+    "dproxy",
+    "fileservice",
+    "instruments",
+    "testmanager",
+    "tunnel",
+]
 afc = []
 arbitration = []
 apps = ["dep:crc32fast", "dep:zip"]
 companion = []
 notificationproxy = []
 crashreport = ["afc"]
+diagnostics = []
 springboard = []
 mcinstall = []
+mobileactivation = []
+profiles = ["mcinstall", "misagent"]
 heartbeat = []
 file_relay = []
+house_arrest = ["afc"]
+installation = ["apps"]
 syslog = []
 screenshot = []
 misagent = []
@@ -46,42 +105,15 @@ restore = []
 dproxy = ["dtx"]
 webinspector = []
 full = [
-    "afc",
-    "arbitration",
-    "apps",
-    "companion",
-    "notificationproxy",
-    "crashreport",
-    "springboard",
-    "mcinstall",
-    "heartbeat",
-    "file_relay",
-    "syslog",
-    "screenshot",
-    "misagent",
-    "amfi",
-    "dtx",
-    "instruments",
-    "testmanager",
-    "accessibility_audit",
-    "fileservice",
-    "deviceinfo",
-    "imagemounter",
-    "debugserver",
-    "pcap",
-    "power_assertion",
-    "preboard",
-    "idam",
-    "fetchsymbols",
+    "classic",
+    "developer",
+    "ios17",
+    "management",
     "ostrace",
-    "prepare",
-    "restore",
-    "dproxy",
-    "webinspector",
 ]
 
 [dependencies]
-tokio        = { workspace = true }
+tokio        = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 bytes        = { workspace = true }
 zerocopy     = { workspace = true }
 thiserror    = { workspace = true }

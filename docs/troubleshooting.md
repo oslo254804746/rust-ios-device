@@ -17,7 +17,7 @@
 
 ## Tunnel fails
 
-- iOS 17+ tunnel paths require CoreDevice support and trusted pairing material.
+- CoreDevice tunnel paths require a compatible device/iOS version and trusted pairing material.
 - Try userspace mode before kernel mode.
 - Kernel TUN mode may require root or administrator privileges.
 - Network discovery depends on mDNS/Bonjour visibility and local firewall rules.

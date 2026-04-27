@@ -1,4 +1,4 @@
-//! ios-ffi: C FFI for iOS device discovery, lockdown queries, and iOS 17+ tunnel functionality.
+//! ios-ffi: C FFI for iOS device discovery, lockdown queries, and CoreDevice tunnel functionality.
 //!
 //! This library keeps the tunnel APIs intact while adding a narrow device handle
 //! for synchronous lockdown queries.

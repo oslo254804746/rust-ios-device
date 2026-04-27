@@ -53,5 +53,5 @@ Pair records are sensitive because they can authorize access to a paired device.
 
 - [Usage](usage.md) for CLI and Rust API examples.
 - [Build](build.md) for CI-style checks and Python/FFI notes.
-- [Tunnel](tunnel.md) for iOS 17+ CoreDevice tunnel usage.
+- [Tunnel](tunnel.md) for CoreDevice tunnel usage.
 - [Troubleshooting](troubleshooting.md) if the device is not visible.
