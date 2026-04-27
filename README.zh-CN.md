@@ -69,7 +69,7 @@ cargo run -p ios-cli -- --help
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.1", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.2", features = ["afc", "syslog"] }
 ```
 
 如果在构建覆盖面较广的工具，可以使用 `classic`、`developer`、`management`、`ios17` 或 `full` 等分组 feature。CLI 会启用 `full`；库用户通常应选择更小的 feature 集。参阅 [docs/features.md](docs/features.md)。

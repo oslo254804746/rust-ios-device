@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "ios-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "ios-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "ios-ffi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ios-core",
  "once_cell",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "ios-py"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ios-core",
  "once_cell",

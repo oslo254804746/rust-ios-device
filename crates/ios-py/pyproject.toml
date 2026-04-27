@@ -9,6 +9,7 @@ requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "oslo254804746" }]
 keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
+readme = "README.md"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["oslo254804746"]
 license = "MIT OR Apache-2.0"
@@ -19,6 +19,7 @@ keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
 categories = ["development-tools", "api-bindings"]
 
 [workspace.dependencies]
+ios-core     = { version = "0.1.2", path = "crates/ios-core" }
 tokio        = "1"
 bytes        = "1"
 zerocopy     = { version = "0.8", features = ["derive"] }

@@ -16,7 +16,7 @@ categories = ["api-bindings", "development-tools::ffi"]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-ios-core  = { version = "0.1.1", path = "../ios-core" }
+ios-core  = { workspace = true }
 tokio     = { workspace = true, features = ["rt-multi-thread"] }
 once_cell = { workspace = true }
 plist     = { workspace = true }

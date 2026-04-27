@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-04-27
+
+### Added
+
+- PyPI package now includes a user-facing README with install instructions, API reference, and usage examples.
+- CI validates that the git tag version matches the workspace `Cargo.toml` version before publishing.
+
+### Changed
+
+- Bumped workspace version to `0.1.2`.
+
+### Fixed
+
+- Fixed empty PyPI documentation by adding the `readme` field to `pyproject.toml`.
+- Corrected stale crate count and name references in CHANGELOG v0.1.0 infrastructure section.
+
 ## [0.1.1] — 2026-04-24
 
 ### Added
@@ -79,8 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WebInspector protocol for Safari/WebView debugging
 
 #### Infrastructure
-- Workspace with 10 crates, unified dependency management
-- Feature-gated service modules (30+ features in ios-services)
+- Workspace with 4 crates, unified dependency management
+- Feature-gated service modules (30+ features in ios-core)
 - Python bindings (PyO3) — `ios-py`
 - C FFI bindings — `ios-ffi`
 - Cross-platform CLI binary (`ios`)

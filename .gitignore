@@ -17,6 +17,7 @@
 .ios-rs-tmp
 .t3
 .claude
+.codex
 ios-rs-tmp
 
 # Device credentials and local artifacts
