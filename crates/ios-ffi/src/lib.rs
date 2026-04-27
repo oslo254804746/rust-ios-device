@@ -174,7 +174,7 @@ fn ios_devices_into_raw(devices: Vec<IosDevice>) -> (*mut IosDevice, usize) {
 }
 
 unsafe fn drop_ios_devices_allocation(devices: *mut IosDevice, count: usize) {
-    drop(Box::from_raw(std::slice::from_raw_parts_mut(
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
         devices, count,
     )));
 }
