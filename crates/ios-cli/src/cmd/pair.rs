@@ -1,7 +1,7 @@
 use anyhow::Result;
-use ios_lockdown::pair_record::{default_pair_record_path, PairRecord};
-use ios_lockdown::supervised_pair;
-use ios_mux::MuxClient;
+use ios_core::lockdown::pair_record::{default_pair_record_path, PairRecord};
+use ios_core::lockdown::supervised_pair;
+use ios_core::mux::MuxClient;
 use serde::Serialize;
 use tokio_stream::StreamExt;
 
@@ -134,7 +134,7 @@ impl PairCmd {
             host_private_key_hex: Some(hex::encode(&creds.host_private_key)),
             remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
             device_address: device_addr.to_string(),
-            rsd_port: ios_xpc::rsd::RSD_PORT,
+            rsd_port: ios_core::xpc::rsd::RSD_PORT,
         };
         persisted.save(&creds_dir)?;
         let remote_pair_record = ios_core::RemotePairingRecord {
@@ -223,7 +223,7 @@ async fn wifi_pair(
         host_private_key_hex: Some(hex::encode(&creds.host_private_key)),
         remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
         device_address: device_addr.to_string(),
-        rsd_port: ios_xpc::rsd::RSD_PORT,
+        rsd_port: ios_core::xpc::rsd::RSD_PORT,
     };
     persisted.save(&creds_dir)?;
     let remote_pair_record = ios_core::RemotePairingRecord {
@@ -282,7 +282,7 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     let mut mux2 = MuxClient::connect().await?;
     mux2.read_pair_record(udid).await.ok(); // best-effort
     let mut stream = mux2
-        .connect_to_port(device_id, ios_lockdown::LOCKDOWN_PORT)
+        .connect_to_port(device_id, ios_core::lockdown::LOCKDOWN_PORT)
         .await?;
 
     // 4. Optionally get WiFi address before pairing (uses the same raw stream)

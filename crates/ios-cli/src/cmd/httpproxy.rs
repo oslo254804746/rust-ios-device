@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 const GLOBAL_HTTP_PROXY_UUID: &str = "86a52338-52f7-4c09-b005-52baf3dc4882";
 
@@ -40,9 +40,9 @@ impl HttpProxyCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_services::mcinstall::SERVICE_NAME)
+            .connect_service(ios_core::mcinstall::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::mcinstall::McInstallClient::new(stream);
+        let mut client = ios_core::mcinstall::McInstallClient::new(stream);
 
         match self.sub {
             HttpProxySub::Set {

@@ -17,14 +17,14 @@
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 
-use bytes::{Bytes, BytesMut};
-use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
-use indexmap::IndexMap;
-use ios_lockdown::pairing::{
+use crate::lockdown::pairing::{
     build_device_info_tlv, build_setup_tlv, build_srp_proof_tlv, derive_cipher_keys,
     verify_device_info_response, HostIdentity, SrpSession,
 };
-use ios_proto::tlv::TlvBuffer;
+use crate::proto::tlv::TlvBuffer;
+use bytes::{Bytes, BytesMut};
+use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+use indexmap::IndexMap;
 use tokio::net::TcpStream;
 
 pub const UNTRUSTED_SERVICE_NAME: &str = "com.apple.internal.dt.coredevice.untrusted.tunnelservice";
@@ -83,7 +83,7 @@ pub async fn pair_new_device(
     device_addr: Ipv6Addr,
 ) -> Result<PairedCredentials, PairingTransportError> {
     // 1. RSD handshake to find the untrusted service port
-    let rsd = ios_xpc::rsd::handshake(device_addr, ios_xpc::rsd::RSD_PORT)
+    let rsd = crate::xpc::rsd::handshake(device_addr, crate::xpc::rsd::RSD_PORT)
         .await
         .map_err(|e| PairingTransportError::Rsd(e.to_string()))?;
 
@@ -95,7 +95,7 @@ pub async fn pair_new_device(
     let sock_addr = SocketAddr::new(device_addr.into(), port);
     let stream = TcpStream::connect(sock_addr).await?;
 
-    let mut framer = ios_xpc::h2_raw::H2Framer::connect(stream)
+    let mut framer = crate::xpc::h2_raw::H2Framer::connect(stream)
         .await
         .map_err(|e| PairingTransportError::Xpc(format!("H2: {e}")))?;
 
@@ -207,32 +207,32 @@ pub async fn pair_new_device(
 
 // ── XPC message helpers ───────────────────────────────────────────────────────
 
-fn xpc_dict(pairs: &[(&str, ios_xpc::message::XpcValue)]) -> ios_xpc::message::XpcValue {
+fn xpc_dict(pairs: &[(&str, crate::xpc::message::XpcValue)]) -> crate::xpc::message::XpcValue {
     let mut map = IndexMap::new();
     for (k, v) in pairs {
         map.insert(k.to_string(), v.clone());
     }
-    ios_xpc::message::XpcValue::Dictionary(map)
+    crate::xpc::message::XpcValue::Dictionary(map)
 }
 
-fn xpc_bool(b: bool) -> ios_xpc::message::XpcValue {
-    ios_xpc::message::XpcValue::Bool(b)
+fn xpc_bool(b: bool) -> crate::xpc::message::XpcValue {
+    crate::xpc::message::XpcValue::Bool(b)
 }
 
-fn xpc_int(n: i64) -> ios_xpc::message::XpcValue {
-    ios_xpc::message::XpcValue::Int64(n)
+fn xpc_int(n: i64) -> crate::xpc::message::XpcValue {
+    crate::xpc::message::XpcValue::Int64(n)
 }
 
-fn xpc_uint(n: u64) -> ios_xpc::message::XpcValue {
-    ios_xpc::message::XpcValue::Uint64(n)
+fn xpc_uint(n: u64) -> crate::xpc::message::XpcValue {
+    crate::xpc::message::XpcValue::Uint64(n)
 }
 
-fn xpc_data(d: &[u8]) -> ios_xpc::message::XpcValue {
-    ios_xpc::message::XpcValue::Data(Bytes::copy_from_slice(d))
+fn xpc_data(d: &[u8]) -> crate::xpc::message::XpcValue {
+    crate::xpc::message::XpcValue::Data(Bytes::copy_from_slice(d))
 }
 
-fn xpc_string(s: &str) -> ios_xpc::message::XpcValue {
-    ios_xpc::message::XpcValue::String(s.to_string())
+fn xpc_string(s: &str) -> crate::xpc::message::XpcValue {
+    crate::xpc::message::XpcValue::String(s.to_string())
 }
 
 fn next_sequence_number(sequence_number: &mut u64) -> u64 {
@@ -241,7 +241,7 @@ fn next_sequence_number(sequence_number: &mut u64) -> u64 {
     current
 }
 
-fn build_handshake_request(sequence_number: u64) -> ios_xpc::message::XpcValue {
+fn build_handshake_request(sequence_number: u64) -> crate::xpc::message::XpcValue {
     let request = xpc_dict(&[(
         "handshake",
         xpc_dict(&[(
@@ -259,9 +259,9 @@ fn build_handshake_request(sequence_number: u64) -> ios_xpc::message::XpcValue {
 }
 
 fn build_plain_request(
-    request: ios_xpc::message::XpcValue,
+    request: crate::xpc::message::XpcValue,
     sequence_number: u64,
-) -> ios_xpc::message::XpcValue {
+) -> crate::xpc::message::XpcValue {
     build_control_channel_envelope(
         xpc_dict(&[(
             "plain",
@@ -272,9 +272,9 @@ fn build_plain_request(
 }
 
 fn build_control_channel_envelope(
-    message: ios_xpc::message::XpcValue,
+    message: crate::xpc::message::XpcValue,
     sequence_number: u64,
-) -> ios_xpc::message::XpcValue {
+) -> crate::xpc::message::XpcValue {
     xpc_dict(&[
         ("mangledTypeName", xpc_string(CONTROL_CHANNEL_ENVELOPE_TYPE)),
         (
@@ -291,7 +291,7 @@ fn build_control_channel_envelope(
 fn build_encrypted_request(
     encrypted_payload: &[u8],
     sequence_number: u64,
-) -> ios_xpc::message::XpcValue {
+) -> crate::xpc::message::XpcValue {
     build_control_channel_envelope(
         xpc_dict(&[(
             "streamEncrypted",
@@ -307,7 +307,7 @@ fn build_pairing_event(
     start_new_session: bool,
     sending_host: Option<&str>,
     sequence_number: u64,
-) -> ios_xpc::message::XpcValue {
+) -> crate::xpc::message::XpcValue {
     let mut pairs = vec![
         ("data", xpc_data(tlv_data)),
         ("kind", xpc_string(kind)),
@@ -335,19 +335,19 @@ fn build_pairing_event(
 }
 
 async fn bootstrap_remote_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
 ) -> Result<(), PairingTransportError> {
-    ios_xpc::rsd::initialize_xpc_connection_on_framer(framer)
+    crate::xpc::rsd::initialize_xpc_connection_on_framer(framer)
         .await
         .map_err(|e| PairingTransportError::Xpc(format!("RemoteXPC bootstrap: {e}")))
 }
 
 async fn send_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
-    body: &ios_xpc::message::XpcValue,
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
+    body: &crate::xpc::message::XpcValue,
     msg_id: u64,
 ) -> Result<(), PairingTransportError> {
-    use ios_xpc::message::{encode_message, flags, XpcMessage};
+    use crate::xpc::message::{encode_message, flags, XpcMessage};
     let msg = XpcMessage {
         flags: flags::ALWAYS_SET | flags::DATA,
         msg_id,
@@ -361,21 +361,21 @@ async fn send_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 }
 
 fn take_required_field(
-    dict: &mut IndexMap<String, ios_xpc::message::XpcValue>,
+    dict: &mut IndexMap<String, crate::xpc::message::XpcValue>,
     key: &str,
     path: &str,
-) -> Result<ios_xpc::message::XpcValue, PairingTransportError> {
+) -> Result<crate::xpc::message::XpcValue, PairingTransportError> {
     dict.swap_remove(key)
         .ok_or_else(|| PairingTransportError::MissingField(path.to_string()))
 }
 
 fn take_required_dict(
-    dict: &mut IndexMap<String, ios_xpc::message::XpcValue>,
+    dict: &mut IndexMap<String, crate::xpc::message::XpcValue>,
     key: &str,
     path: &str,
-) -> Result<IndexMap<String, ios_xpc::message::XpcValue>, PairingTransportError> {
+) -> Result<IndexMap<String, crate::xpc::message::XpcValue>, PairingTransportError> {
     match take_required_field(dict, key, path)? {
-        ios_xpc::message::XpcValue::Dictionary(value) => Ok(value),
+        crate::xpc::message::XpcValue::Dictionary(value) => Ok(value),
         _ => Err(PairingTransportError::UnexpectedType(format!(
             "{path} must be a dictionary"
         ))),
@@ -383,12 +383,12 @@ fn take_required_dict(
 }
 
 fn take_required_data(
-    dict: &mut IndexMap<String, ios_xpc::message::XpcValue>,
+    dict: &mut IndexMap<String, crate::xpc::message::XpcValue>,
     key: &str,
     path: &str,
 ) -> Result<Vec<u8>, PairingTransportError> {
     match take_required_field(dict, key, path)? {
-        ios_xpc::message::XpcValue::Data(value) => Ok(value.to_vec()),
+        crate::xpc::message::XpcValue::Data(value) => Ok(value.to_vec()),
         _ => Err(PairingTransportError::UnexpectedType(format!(
             "{path} must be a data blob"
         ))),
@@ -396,12 +396,12 @@ fn take_required_data(
 }
 
 fn take_required_string(
-    dict: &mut IndexMap<String, ios_xpc::message::XpcValue>,
+    dict: &mut IndexMap<String, crate::xpc::message::XpcValue>,
     key: &str,
     path: &str,
 ) -> Result<String, PairingTransportError> {
     match take_required_field(dict, key, path)? {
-        ios_xpc::message::XpcValue::String(value) => Ok(value),
+        crate::xpc::message::XpcValue::String(value) => Ok(value),
         _ => Err(PairingTransportError::UnexpectedType(format!(
             "{path} must be a string"
         ))),
@@ -409,10 +409,10 @@ fn take_required_string(
 }
 
 fn decode_control_plain_message(
-    body: ios_xpc::message::XpcValue,
-) -> Result<IndexMap<String, ios_xpc::message::XpcValue>, PairingTransportError> {
+    body: crate::xpc::message::XpcValue,
+) -> Result<IndexMap<String, crate::xpc::message::XpcValue>, PairingTransportError> {
     let mut envelope = match body {
-        ios_xpc::message::XpcValue::Dictionary(value) => value,
+        crate::xpc::message::XpcValue::Dictionary(value) => value,
         _ => {
             return Err(PairingTransportError::UnexpectedType(
                 "control channel body must be a dictionary".into(),
@@ -434,7 +434,7 @@ fn decode_control_plain_message(
 }
 
 fn decode_pairing_data_event(
-    mut plain: IndexMap<String, ios_xpc::message::XpcValue>,
+    mut plain: IndexMap<String, crate::xpc::message::XpcValue>,
 ) -> Result<Vec<u8>, PairingTransportError> {
     let mut event = take_required_dict(&mut plain, "event", "value.message.plain._0.event")?;
     let mut event_body = take_required_dict(&mut event, "_0", "value.message.plain._0.event._0")?;
@@ -462,23 +462,23 @@ fn decode_pairing_data_event(
     )
 }
 
-fn extract_pairing_rejection_message(value: &ios_xpc::message::XpcValue) -> String {
+fn extract_pairing_rejection_message(value: &crate::xpc::message::XpcValue) -> String {
     value
         .as_dict()
         .and_then(|wrapped| wrapped.get("wrappedError"))
-        .and_then(ios_xpc::message::XpcValue::as_dict)
+        .and_then(crate::xpc::message::XpcValue::as_dict)
         .and_then(|user_info| user_info.get("userInfo"))
-        .and_then(ios_xpc::message::XpcValue::as_dict)
+        .and_then(crate::xpc::message::XpcValue::as_dict)
         .and_then(|user_info| user_info.get("NSLocalizedDescription"))
-        .and_then(ios_xpc::message::XpcValue::as_str)
+        .and_then(crate::xpc::message::XpcValue::as_str)
         .unwrap_or("pairing rejected by device")
         .to_string()
 }
 
 async fn recv_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
-) -> Result<ios_xpc::message::XpcValue, PairingTransportError> {
-    use ios_xpc::message::decode_message;
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
+) -> Result<crate::xpc::message::XpcValue, PairingTransportError> {
+    use crate::xpc::message::decode_message;
     let header = framer
         .read_client_server(24)
         .await
@@ -506,14 +506,14 @@ async fn recv_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 }
 
 async fn recv_control_plain_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
-) -> Result<IndexMap<String, ios_xpc::message::XpcValue>, PairingTransportError> {
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
+) -> Result<IndexMap<String, crate::xpc::message::XpcValue>, PairingTransportError> {
     decode_control_plain_message(recv_xpc(framer).await?)
 }
 
 async fn recv_handshake_response<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
-) -> Result<IndexMap<String, ios_xpc::message::XpcValue>, PairingTransportError> {
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
+) -> Result<IndexMap<String, crate::xpc::message::XpcValue>, PairingTransportError> {
     let mut plain = recv_control_plain_message(framer).await?;
     let mut response =
         take_required_dict(&mut plain, "response", "value.message.plain._0.response")?;
@@ -532,19 +532,19 @@ async fn recv_handshake_response<S: tokio::io::AsyncRead + tokio::io::AsyncWrite
 }
 
 async fn recv_xpc_pairing_data<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
 ) -> Result<Vec<u8>, PairingTransportError> {
     decode_pairing_data_event(recv_control_plain_message(framer).await?)
 }
 
 fn extract_remote_identifier(
-    handshake: &IndexMap<String, ios_xpc::message::XpcValue>,
+    handshake: &IndexMap<String, crate::xpc::message::XpcValue>,
 ) -> Result<String, PairingTransportError> {
     handshake
         .get("peerDeviceInfo")
-        .and_then(ios_xpc::message::XpcValue::as_dict)
+        .and_then(crate::xpc::message::XpcValue::as_dict)
         .and_then(|peer| peer.get("identifier"))
-        .and_then(ios_xpc::message::XpcValue::as_str)
+        .and_then(crate::xpc::message::XpcValue::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| {
             PairingTransportError::MissingField(
@@ -565,10 +565,10 @@ fn make_encrypted_nonce(sequence_number: u64) -> [u8; 12] {
 }
 
 fn decode_encrypted_response(
-    body: ios_xpc::message::XpcValue,
+    body: crate::xpc::message::XpcValue,
 ) -> Result<Vec<u8>, PairingTransportError> {
     let mut envelope = match body {
-        ios_xpc::message::XpcValue::Dictionary(value) => value,
+        crate::xpc::message::XpcValue::Dictionary(value) => value,
         _ => {
             return Err(PairingTransportError::UnexpectedType(
                 "encrypted control channel body must be a dictionary".into(),
@@ -616,7 +616,7 @@ fn extract_remote_unlock_host_key(
 }
 
 async fn create_remote_unlock_key<S>(
-    framer: &mut ios_xpc::h2_raw::H2Framer<S>,
+    framer: &mut crate::xpc::h2_raw::H2Framer<S>,
     client_key: &[u8; 32],
     server_key: &[u8; 32],
     sequence_number: &mut u64,
@@ -675,61 +675,61 @@ mod tests {
     fn handshake_envelope_contains_required_control_fields() {
         let envelope = build_handshake_request(7);
         let outer = match envelope {
-            ios_xpc::message::XpcValue::Dictionary(value) => value,
+            crate::xpc::message::XpcValue::Dictionary(value) => value,
             other => panic!("expected envelope dictionary, got {other:?}"),
         };
 
         assert_eq!(
             outer
                 .get("mangledTypeName")
-                .and_then(ios_xpc::message::XpcValue::as_str),
+                .and_then(crate::xpc::message::XpcValue::as_str),
             Some(CONTROL_CHANNEL_ENVELOPE_TYPE)
         );
 
         let value = outer
             .get("value")
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .expect("value dict");
         assert_eq!(
             value
                 .get("originatedBy")
-                .and_then(ios_xpc::message::XpcValue::as_str),
+                .and_then(crate::xpc::message::XpcValue::as_str),
             Some(CONTROL_CHANNEL_ORIGIN)
         );
         assert_eq!(
             value
                 .get("sequenceNumber")
-                .and_then(ios_xpc::message::XpcValue::as_uint64),
+                .and_then(crate::xpc::message::XpcValue::as_uint64),
             Some(7)
         );
 
         let handshake = value
             .get("message")
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|message| message.get("plain"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|plain| plain.get("_0"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|plain| plain.get("request"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|request| request.get("_0"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|request| request.get("handshake"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .and_then(|handshake| handshake.get("_0"))
-            .and_then(ios_xpc::message::XpcValue::as_dict)
+            .and_then(crate::xpc::message::XpcValue::as_dict)
             .expect("handshake payload");
 
         assert_eq!(
             handshake
                 .get("hostOptions")
-                .and_then(ios_xpc::message::XpcValue::as_dict)
+                .and_then(crate::xpc::message::XpcValue::as_dict)
                 .and_then(|options| options.get("attemptPairVerify")),
-            Some(&ios_xpc::message::XpcValue::Bool(true))
+            Some(&crate::xpc::message::XpcValue::Bool(true))
         );
         assert_eq!(
             handshake.get("wireProtocolVersion"),
-            Some(&ios_xpc::message::XpcValue::Int64(19))
+            Some(&crate::xpc::message::XpcValue::Int64(19))
         );
     }
 
@@ -740,7 +740,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let mut preface = [0u8; 24];
             server.read_exact(&mut preface).await.unwrap();
-            assert_eq!(&preface, ios_xpc::h2_raw::H2_PREFACE);
+            assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
 
             let mut settings = [0u8; 21];
             server.read_exact(&mut settings).await.unwrap();
@@ -756,8 +756,8 @@ mod tests {
             server.read_exact(&mut ack).await.unwrap();
             assert_eq!(ack, settings_ack_frame().as_slice());
 
-            let payload = ios_xpc::message::encode_message(&ios_xpc::message::XpcMessage {
-                flags: ios_xpc::message::flags::ALWAYS_SET | ios_xpc::message::flags::DATA,
+            let payload = crate::xpc::message::encode_message(&crate::xpc::message::XpcMessage {
+                flags: crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::DATA,
                 msg_id: 1,
                 body: Some(build_control_channel_envelope(
                     xpc_dict(&[("plain", xpc_dict(&[("_0", xpc_dict(&[]))]))]),
@@ -767,13 +767,16 @@ mod tests {
             .unwrap();
 
             server
-                .write_all(&data_frame(ios_xpc::h2_raw::STREAM_CLIENT_SERVER, &payload))
+                .write_all(&data_frame(
+                    crate::xpc::h2_raw::STREAM_CLIENT_SERVER,
+                    &payload,
+                ))
                 .await
                 .unwrap();
             server.flush().await.unwrap();
         });
 
-        let mut framer = ios_xpc::h2_raw::H2Framer::connect(client).await.unwrap();
+        let mut framer = crate::xpc::h2_raw::H2Framer::connect(client).await.unwrap();
         let plain = timeout(
             Duration::from_secs(1),
             recv_control_plain_message(&mut framer),
@@ -799,7 +802,9 @@ mod tests {
                         dict_value(&[
                             (
                                 "data",
-                                ios_xpc::message::XpcValue::Data(Bytes::from_static(b"\x01\x02")),
+                                crate::xpc::message::XpcValue::Data(Bytes::from_static(
+                                    b"\x01\x02",
+                                )),
                             ),
                             ("kind", xpc_string("setupManualPairing")),
                             ("startNewSession", xpc_bool(false)),
@@ -878,15 +883,17 @@ mod tests {
     }
 
     fn unwrap_dict(
-        value: ios_xpc::message::XpcValue,
-    ) -> IndexMap<String, ios_xpc::message::XpcValue> {
+        value: crate::xpc::message::XpcValue,
+    ) -> IndexMap<String, crate::xpc::message::XpcValue> {
         match value {
-            ios_xpc::message::XpcValue::Dictionary(dict) => dict,
+            crate::xpc::message::XpcValue::Dictionary(dict) => dict,
             other => panic!("expected dictionary, got {other:?}"),
         }
     }
 
-    fn dict_value(pairs: &[(&str, ios_xpc::message::XpcValue)]) -> ios_xpc::message::XpcValue {
+    fn dict_value(
+        pairs: &[(&str, crate::xpc::message::XpcValue)],
+    ) -> crate::xpc::message::XpcValue {
         xpc_dict(pairs)
     }
 

@@ -16,8 +16,7 @@ categories = ["api-bindings", "development-tools::ffi"]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-ios-core  = { version = "0.1", path = "../ios-core" }
-ios-tunnel = { version = "0.1", path = "../ios-tunnel" }
+ios-core  = { version = "0.1.1", path = "../ios-core" }
 tokio     = { workspace = true }
 once_cell = { workspace = true }
 plist     = { workspace = true }

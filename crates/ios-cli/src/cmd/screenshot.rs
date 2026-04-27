@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
-use ios_services::screenshot::{ScreenshotFormat, ScreenshotImage};
+use ios_core::screenshot::{ScreenshotFormat, ScreenshotImage};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, Duration};
@@ -71,7 +71,7 @@ async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
     use crate::cmd::instruments::connect_instruments;
 
     let (_device, stream) = connect_instruments(udid).await?;
-    let data = ios_services::instruments::screenshot::take_screenshot_dtx(stream)
+    let data = ios_core::instruments::screenshot::take_screenshot_dtx(stream)
         .await
         .map_err(|e| anyhow::anyhow!("DTX screenshot: {e}"))?;
     Ok(data)
@@ -79,17 +79,17 @@ async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
 
 async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_tunnel::TunMode::Userspace,
+        tun_mode: ios_core::tunnel::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
     let device = ios_core::connect(udid, opts).await?;
     let mut stream = device
-        .connect_service(ios_services::screenshot::SERVICE_NAME)
+        .connect_service(ios_core::screenshot::SERVICE_NAME)
         .await?;
 
     eprintln!("Capturing screenshot (legacy screenshotr)...");
-    Ok(ios_services::screenshot::take_screenshot(&mut stream).await?)
+    Ok(ios_core::screenshot::take_screenshot(&mut stream).await?)
 }
 
 async fn serve_stream_client(mut socket: TcpStream, udid: &str) -> Result<()> {

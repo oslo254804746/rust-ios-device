@@ -1,6 +1,6 @@
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct RestoreCmd {
@@ -49,9 +49,9 @@ impl RestoreCmd {
         .await?;
 
         let stream = device
-            .connect_rsd_service(ios_services::restore::SERVICE_NAME)
+            .connect_rsd_service(ios_core::restore::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::restore::RestoreServiceClient::connect(stream).await?;
+        let mut client = ios_core::restore::RestoreServiceClient::connect(stream).await?;
 
         let response = match self.sub {
             RestoreSub::EnterRecovery => client.enter_recovery().await?,
@@ -63,7 +63,7 @@ impl RestoreCmd {
             RestoreSub::RestoreLang { language } => client.restore_lang(language).await?,
         };
 
-        let rendered = ios_services::restore::xpc_value_to_json(&ios_xpc::XpcValue::Dictionary(
+        let rendered = ios_core::restore::xpc_value_to_json(&ios_core::xpc::XpcValue::Dictionary(
             response.clone(),
         ));
         if json {

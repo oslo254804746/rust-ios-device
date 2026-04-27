@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions, ConnectedDevice};
-use ios_tunnel::TunMode;
 
 const AFC_SERVICE_NAME: &str = "com.apple.afc";
 const SKIP_SETUP_DIR: &str = "iTunes_Control/iTunes";
@@ -15,11 +15,11 @@ pub struct PrepareCmd {
     sub: Option<PrepareSub>,
     #[arg(long, help = "Supervisor certificate in DER format")]
     cert_der: Option<PathBuf>,
-    #[arg(long, default_value = ios_services::prepare::DEFAULT_ORGANIZATION_NAME)]
+    #[arg(long, default_value = ios_core::prepare::DEFAULT_ORGANIZATION_NAME)]
     organization_name: String,
-    #[arg(long, default_value = ios_services::prepare::DEFAULT_LANGUAGE)]
+    #[arg(long, default_value = ios_core::prepare::DEFAULT_LANGUAGE)]
     language: String,
-    #[arg(long, default_value = ios_services::prepare::DEFAULT_LOCALE)]
+    #[arg(long, default_value = ios_core::prepare::DEFAULT_LOCALE)]
     locale: String,
     #[arg(long, help = "Also set this lockdown time zone during prepare")]
     time_zone: Option<String>,
@@ -36,7 +36,7 @@ enum PrepareSub {
     /// Generate a supervision certificate bundle (.der/.pem/-key.pem/.p12)
     CreateCert {
         output_prefix: PathBuf,
-        #[arg(long, default_value = ios_services::prepare::DEFAULT_ORGANIZATION_NAME)]
+        #[arg(long, default_value = ios_core::prepare::DEFAULT_ORGANIZATION_NAME)]
         common_name: String,
         #[arg(long, env = "P12_PASSWORD", default_value = "")]
         password: String,
@@ -75,7 +75,7 @@ fn run_create_cert(
     password: &str,
     json: bool,
 ) -> Result<()> {
-    let identity = ios_services::prepare::generate_supervision_identity(common_name, password)
+    let identity = ios_core::prepare::generate_supervision_identity(common_name, password)
         .map_err(|err| anyhow::anyhow!("{err}"))?;
 
     if let Some(parent) = output_prefix.parent() {
@@ -146,7 +146,7 @@ async fn run_prepare(
         None => None,
     };
     let skip_keys = if skip_setup.is_empty() {
-        ios_services::prepare::DEFAULT_SKIP_SETUP_KEYS
+        ios_core::prepare::DEFAULT_SKIP_SETUP_KEYS
             .iter()
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
@@ -155,14 +155,14 @@ async fn run_prepare(
     };
 
     let mcinstall_stream = device
-        .connect_service(ios_services::mcinstall::SERVICE_NAME)
+        .connect_service(ios_core::mcinstall::SERVICE_NAME)
         .await?;
-    let mut mcinstall = ios_services::mcinstall::McInstallClient::new(mcinstall_stream);
+    let mut mcinstall = ios_core::mcinstall::McInstallClient::new(mcinstall_stream);
     mcinstall.flush().await?;
     let _ = mcinstall.get_cloud_configuration().await?;
     mcinstall.hello_host_identifier().await?;
     mcinstall
-        .set_cloud_configuration(ios_services::prepare::build_cloud_configuration(
+        .set_cloud_configuration(ios_core::prepare::build_cloud_configuration(
             &skip_keys,
             supervision_certificate.as_deref(),
             Some(organization_name),
@@ -177,8 +177,7 @@ async fn run_prepare(
     mcinstall.hello_host_identifier().await?;
     mcinstall
         .install_profile(
-            &ios_services::prepare::build_initial_profile()
-                .map_err(|err| anyhow::anyhow!("{err}"))?,
+            &ios_core::prepare::build_initial_profile().map_err(|err| anyhow::anyhow!("{err}"))?,
         )
         .await?;
 
@@ -273,7 +272,7 @@ async fn configure_lockdown(
 
 async fn ensure_skip_setup_marker(device: &ConnectedDevice) -> Result<()> {
     let stream = device.connect_service(AFC_SERVICE_NAME).await?;
-    let mut afc = ios_services::afc::AfcClient::new(stream);
+    let mut afc = ios_core::afc::AfcClient::new(stream);
     if let Err(err) = afc.remove_all(SKIP_SETUP_FILE).await {
         tracing::debug!("skip-setup marker cleanup ignored: {err}");
     }

@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::{connect, ConnectOptions};
-use ios_services::pcap::{
+use ios_core::pcap::{
     write_global_header, write_packet_record, CapturedPacket, PacketFilter, PcapClient,
     SERVICE_NAME,
 };
-use ios_tunnel::TunMode;
+use ios_core::tunnel::TunMode;
+use ios_core::{connect, ConnectOptions};
 use serde::Serialize;
 use tokio::time::{timeout, Instant};
 

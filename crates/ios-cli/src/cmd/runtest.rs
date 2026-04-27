@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ios_core::apps::{AppInfo, InstallationProxy};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
-use ios_mux::MuxClient;
-use ios_services::apps::{AppInfo, InstallationProxy};
-use ios_services::instruments::process_control::ProcessControl;
-use ios_services::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
-use ios_services::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
-use ios_services::testmanager::TestmanagerClient;
-use ios_tunnel::TunMode;
+use ios_core::instruments::process_control::ProcessControl;
+use ios_core::mux::MuxClient;
+use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
+use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
+use ios_core::testmanager::TestmanagerClient;
+use ios_core::tunnel::TunMode;
 use uuid::Uuid;
 
 #[derive(clap::Args)]
@@ -109,11 +109,11 @@ pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result
     }
 
     let session_stream = device
-        .connect_rsd_service(ios_services::testmanager::SERVICE_NAME)
+        .connect_rsd_service(ios_core::testmanager::SERVICE_NAME)
         .await
         .context("failed to connect testmanager session stream")?;
     let control_stream = device
-        .connect_rsd_service(ios_services::testmanager::SERVICE_NAME)
+        .connect_rsd_service(ios_core::testmanager::SERVICE_NAME)
         .await
         .context("failed to connect testmanager control stream")?;
     let mut testmanager = TestmanagerClient::connect(session_stream, control_stream)
@@ -187,7 +187,7 @@ pub async fn lookup_installed_app(
     bundle_id: &str,
 ) -> Result<InstalledAppInfo> {
     let stream = device
-        .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
         .await
         .context("failed to connect installation_proxy")?;
     let mut proxy = InstallationProxy::new(stream);
@@ -250,7 +250,7 @@ async fn list_installed_apps_for_target_inference(
     device: &ConnectedDevice,
 ) -> Result<Vec<AppInfo>> {
     let stream = device
-        .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
         .await
         .context("failed to connect installation_proxy for target app inference")?;
     let mut proxy = InstallationProxy::new(stream);
@@ -266,7 +266,7 @@ async fn list_installed_apps_for_target_inference(
 }
 
 fn infer_target_bundle_id(
-    scheme: &ios_services::testmanager::xctestrun::SchemeData,
+    scheme: &ios_core::testmanager::xctestrun::SchemeData,
     installed_apps: Option<&[AppInfo]>,
 ) -> Option<String> {
     if !scheme.is_ui_test_bundle {
@@ -330,8 +330,8 @@ mod tests {
     use std::time::Duration;
 
     use clap::Parser;
-    use ios_services::apps::AppInfo;
-    use ios_services::testmanager::xctestrun::SchemeData;
+    use ios_core::apps::AppInfo;
+    use ios_core::testmanager::xctestrun::SchemeData;
     use plist::Value;
 
     use super::{infer_target_bundle_id, wait_for_ready, RunTestCmd};

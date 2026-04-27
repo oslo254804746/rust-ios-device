@@ -7,30 +7,30 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chacha20poly1305::{aead::Aead, KeyInit};
-use indexmap::IndexMap;
-use ios_lockdown::pair_record::{default_pair_record_dir, PairRecord};
-use ios_lockdown::pairing::{
+use crate::lockdown::pair_record::{default_pair_record_dir, PairRecord};
+use crate::lockdown::pairing::{
     build_verify_start_tlv, build_verify_step2_tlv, HostIdentity, VerifyPairSession,
 };
-use ios_lockdown::protocol::{recv_lockdown, send_lockdown};
-use ios_lockdown::session::{
+use crate::lockdown::protocol::{recv_lockdown, send_lockdown};
+use crate::lockdown::session::{
     start_lockdown_session, start_service, wrap_service_tls, CORE_DEVICE_PROXY,
 };
-use ios_lockdown::LOCKDOWN_PORT;
-use ios_mux::MuxClient;
-use ios_proto::tlv::TlvBuffer;
-use ios_tunnel::{
+use crate::lockdown::LOCKDOWN_PORT;
+use crate::mux::MuxClient;
+use crate::proto::tlv::TlvBuffer;
+use crate::tunnel::{
     forward::forward_packets,
     manager::{TunMode, TunnelHandle},
     tun::{kernel::KernelTunDevice, userspace::UserspaceTunDevice},
 };
-use ios_xpc::{
+use crate::xpc::{
     message::XpcValue,
     rsd::{handshake as rsd_handshake, RsdHandshake, ServiceDescriptor},
     XpcClient,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use chacha20poly1305::{aead::Aead, KeyInit};
+use indexmap::IndexMap;
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -138,7 +138,7 @@ impl ConnectedDevice {
             .ok_or_else(|| CoreError::Unsupported("no pair record loaded".into()))
     }
 
-    async fn lockdown_client(&self) -> Result<ios_lockdown::LockdownClient, CoreError> {
+    async fn lockdown_client(&self) -> Result<crate::lockdown::LockdownClient, CoreError> {
         let pair_record = self.pair_record()?;
         let stream = connect_lockdown_port(
             &self.info.udid,
@@ -147,7 +147,7 @@ impl ConnectedDevice {
             true,
         )
         .await?;
-        ios_lockdown::LockdownClient::connect_with_stream(stream, pair_record)
+        crate::lockdown::LockdownClient::connect_with_stream(stream, pair_record)
             .await
             .map_err(CoreError::from)
     }
@@ -177,7 +177,7 @@ impl ConnectedDevice {
                 .await
                 .map_err(|e| CoreError::Other(e.to_string()))?;
             if should_strip_service_ssl(service_name) {
-                let stream = ios_lockdown::session::strip_service_tls(tls)
+                let stream = crate::lockdown::session::strip_service_tls(tls)
                     .map_err(|e| CoreError::Other(e.to_string()))?;
                 Ok(Box::new(stream))
             } else {
@@ -697,7 +697,10 @@ pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device
     Ok(match_paired_mobdev2_targets(&services, &wifi_mac_to_udid))
 }
 
-fn select_mux_device(devices: Vec<ios_mux::MuxDevice>, udid: &str) -> Option<ios_mux::MuxDevice> {
+fn select_mux_device(
+    devices: Vec<crate::mux::MuxDevice>,
+    udid: &str,
+) -> Option<crate::mux::MuxDevice> {
     let mut fallback = None;
 
     for device in devices {
@@ -817,7 +820,7 @@ async fn connect_via_lockdown_transport(
         "tunnel connect: exchanging CDTunnel parameters (timeout={} ms)",
         TUNNEL_HANDSHAKE_TIMEOUT.as_millis()
     );
-    let tunnel_info = ios_tunnel::handshake::exchange_tunnel_parameters_with_timeout(
+    let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
         &mut proxy_stream,
         TUNNEL_HANDSHAKE_TIMEOUT,
     )
@@ -1082,7 +1085,7 @@ async fn connect_via_direct_rsd_target(
         })?;
     let mut direct_stream = establish_direct_tunnel_stream(target.ipv6, service_port).await?;
 
-    let tunnel_info = ios_tunnel::handshake::exchange_tunnel_parameters_with_timeout(
+    let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
         &mut direct_stream,
         TUNNEL_HANDSHAKE_TIMEOUT,
     )
@@ -1152,7 +1155,7 @@ async fn connect_via_remote_pairing_target(
     let mut remote_stream =
         establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
 
-    let tunnel_info = ios_tunnel::handshake::exchange_tunnel_parameters_with_timeout(
+    let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
         &mut remote_stream,
         TUNNEL_HANDSHAKE_TIMEOUT,
     )
@@ -2258,13 +2261,13 @@ async fn attempt_rsd_via_proxy(
 
     match tokio::time::timeout(
         Duration::from_secs(3),
-        ios_xpc::rsd::queue_rsd_handshake_bootstrap_on_framer(&mut framer),
+        crate::xpc::rsd::queue_rsd_handshake_bootstrap_on_framer(&mut framer),
     )
     .await
     {
         Ok(Ok(())) => match tokio::time::timeout(
             Duration::from_secs(4),
-            ios_xpc::rsd::handshake_on_framer(&mut framer),
+            crate::xpc::rsd::handshake_on_framer(&mut framer),
         )
         .await
         {
@@ -2302,13 +2305,13 @@ async fn attempt_rsd_via_proxy(
 
     match tokio::time::timeout(
         Duration::from_secs(3),
-        ios_xpc::rsd::initialize_xpc_connection_on_framer(&mut framer),
+        crate::xpc::rsd::initialize_xpc_connection_on_framer(&mut framer),
     )
     .await
     {
         Ok(Ok(())) => match tokio::time::timeout(
             Duration::from_secs(3),
-            ios_xpc::rsd::handshake_on_framer(&mut framer),
+            crate::xpc::rsd::handshake_on_framer(&mut framer),
         )
         .await
         {
@@ -2326,7 +2329,7 @@ async fn attempt_rsd_via_proxy(
                 );
                 match tokio::time::timeout(
                     Duration::from_secs(2),
-                    ios_xpc::rsd::handshake_on_framer(&mut framer),
+                    crate::xpc::rsd::handshake_on_framer(&mut framer),
                 )
                 .await
                 {
@@ -2357,7 +2360,7 @@ async fn attempt_rsd_via_proxy(
             tracing::warn!("RSD legacy bootstrap failed: {e}; trying passive fallback");
             match tokio::time::timeout(
                 Duration::from_secs(2),
-                ios_xpc::rsd::handshake_on_framer(&mut framer),
+                crate::xpc::rsd::handshake_on_framer(&mut framer),
             )
             .await
             {
@@ -2383,7 +2386,7 @@ async fn attempt_rsd_via_proxy(
             tracing::warn!("RSD legacy bootstrap timed out; trying passive fallback");
             match tokio::time::timeout(
                 Duration::from_secs(2),
-                ios_xpc::rsd::handshake_on_framer(&mut framer),
+                crate::xpc::rsd::handshake_on_framer(&mut framer),
             )
             .await
             {
@@ -2412,7 +2415,7 @@ async fn open_rsd_proxy_framer(
     proxy_port: u16,
     server_addr: &str,
     rsd_port: u16,
-) -> Option<ios_xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
+) -> Option<crate::xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
 
@@ -2453,7 +2456,7 @@ async fn open_rsd_proxy_framer(
         "RSD via proxy: connecting to [{server_addr}]:{rsd_port} through proxy port {proxy_port}"
     );
     tracing::info!("RSD via proxy: starting H2 framer connect");
-    match ios_xpc::h2_raw::H2Framer::connect(proxy).await {
+    match crate::xpc::h2_raw::H2Framer::connect(proxy).await {
         Ok(framer) => {
             tracing::info!("RSD via proxy: H2 framer connected");
             Some(framer)
@@ -2902,13 +2905,13 @@ mod tests {
     fn select_mux_device_prefers_usb_when_multiple_transports_match() {
         let selected = select_mux_device(
             vec![
-                ios_mux::MuxDevice {
+                crate::mux::MuxDevice {
                     device_id: 7,
                     serial_number: "test-udid".into(),
                     connection_type: "Network".into(),
                     product_id: 0,
                 },
-                ios_mux::MuxDevice {
+                crate::mux::MuxDevice {
                     device_id: 8,
                     serial_number: "test-udid".into(),
                     connection_type: "USB".into(),
@@ -2926,7 +2929,7 @@ mod tests {
     #[test]
     fn select_mux_device_falls_back_to_non_usb_match() {
         let selected = select_mux_device(
-            vec![ios_mux::MuxDevice {
+            vec![crate::mux::MuxDevice {
                 device_id: 9,
                 serial_number: "test-udid".into(),
                 connection_type: "Network".into(),

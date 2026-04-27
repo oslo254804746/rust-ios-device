@@ -1,11 +1,13 @@
 use anyhow::Result;
+use ios_core::debugserver::{select_service_name, GdbRemoteClient};
+use ios_core::lockdown::pair_record::PairRecord;
+use ios_core::lockdown::session::{
+    handshake_only_service_tls, start_lockdown_session, start_service,
+};
+use ios_core::lockdown::LOCKDOWN_PORT;
+use ios_core::mux::MuxClient;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_lockdown::pair_record::PairRecord;
-use ios_lockdown::session::{handshake_only_service_tls, start_lockdown_session, start_service};
-use ios_lockdown::LOCKDOWN_PORT;
-use ios_mux::MuxClient;
-use ios_services::debugserver::{select_service_name, GdbRemoteClient};
-use ios_tunnel::TunMode;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(clap::Args)]
@@ -108,27 +110,27 @@ where
 
     Err(anyhow::anyhow!(
         "debugserver is not exposed on this device via lockdown (tried {}, {})",
-        ios_services::debugserver::LEGACY_SERVICE_NAME,
-        ios_services::debugserver::SECURE_SERVICE_NAME
+        ios_core::debugserver::LEGACY_SERVICE_NAME,
+        ios_core::debugserver::SECURE_SERVICE_NAME
     ))
 }
 
 fn candidate_service_names(preferred_service: &str) -> [&'static str; 2] {
-    if preferred_service == ios_services::debugserver::SECURE_SERVICE_NAME {
+    if preferred_service == ios_core::debugserver::SECURE_SERVICE_NAME {
         [
-            ios_services::debugserver::SECURE_SERVICE_NAME,
-            ios_services::debugserver::LEGACY_SERVICE_NAME,
+            ios_core::debugserver::SECURE_SERVICE_NAME,
+            ios_core::debugserver::LEGACY_SERVICE_NAME,
         ]
     } else {
         [
-            ios_services::debugserver::LEGACY_SERVICE_NAME,
-            ios_services::debugserver::SECURE_SERVICE_NAME,
+            ios_core::debugserver::LEGACY_SERVICE_NAME,
+            ios_core::debugserver::SECURE_SERVICE_NAME,
         ]
     }
 }
 
-fn is_invalid_service(err: &ios_lockdown::LockdownError) -> bool {
-    matches!(err, ios_lockdown::LockdownError::Protocol(message) if message.contains("InvalidService"))
+fn is_invalid_service(err: &ios_core::lockdown::LockdownError) -> bool {
+    matches!(err, ios_core::lockdown::LockdownError::Protocol(message) if message.contains("InvalidService"))
 }
 
 #[cfg(test)]
@@ -154,10 +156,10 @@ mod tests {
     #[test]
     fn secure_preference_falls_back_to_legacy() {
         assert_eq!(
-            super::candidate_service_names(ios_services::debugserver::SECURE_SERVICE_NAME),
+            super::candidate_service_names(ios_core::debugserver::SECURE_SERVICE_NAME),
             [
-                ios_services::debugserver::SECURE_SERVICE_NAME,
-                ios_services::debugserver::LEGACY_SERVICE_NAME,
+                ios_core::debugserver::SECURE_SERVICE_NAME,
+                ios_core::debugserver::LEGACY_SERVICE_NAME,
             ]
         );
     }

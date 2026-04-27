@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
-use ios_services::instruments::{SERVICE_IOS14, SERVICE_IOS17, SERVICE_LEGACY};
-use ios_tunnel::TunMode;
+use ios_core::instruments::{SERVICE_IOS14, SERVICE_IOS17, SERVICE_LEGACY};
+use ios_core::tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct InstrumentsCmd {
@@ -279,8 +279,8 @@ impl InstrumentsCmd {
 }
 
 async fn run_notifications(_udid: String, _count: u64, _timeout_secs: u64) -> Result<()> {
-    use ios_services::dtx::NSObject;
-    use ios_services::instruments::NotificationClient;
+    use ios_core::dtx::NSObject;
+    use ios_core::instruments::NotificationClient;
     use serde_json::{Map, Number, Value};
 
     let (_device, stream) = connect_instruments(&_udid).await?;
@@ -391,7 +391,7 @@ async fn run_cpu(
     timeout_secs: Option<u64>,
     json_output: bool,
 ) -> Result<()> {
-    use ios_services::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
+    use ios_core::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
 
     let (_device, stream) = connect_instruments(&udid).await?;
 
@@ -474,7 +474,7 @@ async fn run_ps(
     name_filter: Option<String>,
     json_output: bool,
 ) -> Result<()> {
-    use ios_services::instruments::DeviceInfoClient;
+    use ios_core::instruments::DeviceInfoClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut di = DeviceInfoClient::connect(stream)
@@ -528,7 +528,7 @@ async fn run_ps(
 }
 
 async fn run_device_info_attrs(udid: String, system: bool, json_output: bool) -> Result<()> {
-    use ios_services::instruments::DeviceInfoClient;
+    use ios_core::instruments::DeviceInfoClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut di = DeviceInfoClient::connect(stream)
@@ -572,7 +572,7 @@ fn format_plist_value(value: &plist::Value) -> String {
 async fn run_launch(udid: String, bundle_id: String, args: Vec<String>) -> Result<()> {
     use std::collections::HashMap;
 
-    use ios_services::instruments::process_control::ProcessControl;
+    use ios_core::instruments::process_control::ProcessControl;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut pc = ProcessControl::connect(stream)
@@ -591,7 +591,7 @@ async fn run_launch(udid: String, bundle_id: String, args: Vec<String>) -> Resul
 }
 
 async fn run_kill(udid: String, pid: u64) -> Result<()> {
-    use ios_services::instruments::process_control::ProcessControl;
+    use ios_core::instruments::process_control::ProcessControl;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut pc = ProcessControl::connect(stream)
@@ -607,7 +607,7 @@ async fn run_kill(udid: String, pid: u64) -> Result<()> {
 }
 
 async fn run_apps(udid: String, json_output: bool) -> Result<()> {
-    use ios_services::instruments::ApplicationListingClient;
+    use ios_core::instruments::ApplicationListingClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = ApplicationListingClient::connect(stream)
@@ -657,7 +657,7 @@ async fn run_apps(udid: String, json_output: bool) -> Result<()> {
 }
 
 async fn run_energy(udid: String, pids: Vec<i32>, count: u64, json_output: bool) -> Result<()> {
-    use ios_services::instruments::EnergyMonitorClient;
+    use ios_core::instruments::EnergyMonitorClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = EnergyMonitorClient::connect(stream, &pids)
@@ -692,7 +692,7 @@ async fn run_energy(udid: String, pids: Vec<i32>, count: u64, json_output: bool)
 }
 
 async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> {
-    use ios_services::instruments::{NetworkMonitorClient, NetworkMonitorEvent};
+    use ios_core::instruments::{NetworkMonitorClient, NetworkMonitorEvent};
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = NetworkMonitorClient::connect(stream)
@@ -758,7 +758,7 @@ async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> 
 }
 
 async fn run_gpu(udid: String, count: u64, json_output: bool) -> Result<()> {
-    use ios_services::instruments::GraphicsMonitorClient;
+    use ios_core::instruments::GraphicsMonitorClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = GraphicsMonitorClient::connect(stream)
@@ -800,7 +800,7 @@ async fn run_trace(
     enable_har: bool,
 ) -> Result<()> {
     use chrono::{Local, SecondsFormat};
-    use ios_services::instruments::ActivityTraceClient;
+    use ios_core::instruments::ActivityTraceClient;
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = ActivityTraceClient::connect(stream, pid, enable_har)
@@ -868,7 +868,7 @@ async fn run_trace(
 }
 
 async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) -> Result<()> {
-    use ios_services::instruments::{
+    use ios_core::instruments::{
         parse_frame_commit_timestamps, CoreProfileConfig, CoreProfileEvent,
         CoreProfileSessionClient, FpsSample, FpsWindowCalculator,
     };
@@ -997,9 +997,7 @@ async fn run_kdebug(
     subclass_filter: Vec<u32>,
     json_output: bool,
 ) -> Result<()> {
-    use ios_services::instruments::{
-        CoreProfileConfig, CoreProfileEvent, CoreProfileSessionClient,
-    };
+    use ios_core::instruments::{CoreProfileConfig, CoreProfileEvent, CoreProfileSessionClient};
 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut session = CoreProfileSessionClient::connect(stream)
@@ -1133,7 +1131,7 @@ async fn run_sysmon_process(
     pid_filter: Option<u64>,
     json_output: bool,
 ) -> Result<()> {
-    use ios_services::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
+    use ios_core::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
 
     let (_device, stream) = connect_instruments(&udid).await?;
 
@@ -1241,7 +1239,7 @@ async fn run_sysmon_threshold(
     count: u64,
     json_output: bool,
 ) -> Result<()> {
-    use ios_services::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
+    use ios_core::instruments::{DeviceInfoClient, SysmontapConfig, SysmontapService};
 
     let (_device, stream) = connect_instruments(&udid).await?;
 

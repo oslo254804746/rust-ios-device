@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 use tokio::fs;
 
 #[derive(clap::Args)]
@@ -44,9 +44,9 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let mut stream = device
-                    .connect_service(ios_services::simlocation::SERVICE_NAME)
+                    .connect_service(ios_core::simlocation::SERVICE_NAME)
                     .await?;
-                ios_services::simlocation::set_location(&mut *stream, &latitude, &longitude)
+                ios_core::simlocation::set_location(&mut *stream, &latitude, &longitude)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation set failed: {e}"))?;
                 println!("Location simulation set to {latitude}, {longitude}");
@@ -63,9 +63,9 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let mut stream = device
-                    .connect_service(ios_services::simlocation::SERVICE_NAME)
+                    .connect_service(ios_core::simlocation::SERVICE_NAME)
                     .await?;
-                let count = ios_services::simlocation::replay_gpx_route(&mut *stream, &gpx)
+                let count = ios_core::simlocation::replay_gpx_route(&mut *stream, &gpx)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation GPX replay failed: {e}"))?;
                 println!("Replayed {count} GPX point(s) from {}", file.display());
@@ -78,9 +78,9 @@ impl LocationCmd {
                 };
                 let device = connect(&udid, opts).await?;
                 let mut stream = device
-                    .connect_service(ios_services::simlocation::SERVICE_NAME)
+                    .connect_service(ios_core::simlocation::SERVICE_NAME)
                     .await?;
-                ios_services::simlocation::reset_location(&mut *stream)
+                ios_core::simlocation::reset_location(&mut *stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation reset failed: {e}"))?;
                 println!("Location simulation reset.");

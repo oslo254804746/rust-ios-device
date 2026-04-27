@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use ios_core::device::ConnectOptions;
-use ios_tunnel::TunMode;
+use ios_core::tunnel::TunMode;
 use semver::Version;
 
 const DEBUGPROXY_SERVICE: &str = "com.apple.internal.dt.remote.debugproxy";

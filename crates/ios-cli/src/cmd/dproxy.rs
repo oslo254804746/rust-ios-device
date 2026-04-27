@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ios_core::{connect, ConnectOptions, ServiceStream};
-use ios_lockdown::pair_record::PairRecord;
-use ios_lockdown::protocol::{
+use ios_core::lockdown::pair_record::PairRecord;
+use ios_core::lockdown::protocol::{
     recv_lockdown, send_lockdown, QueryTypeRequest, QueryTypeResponse, StartServiceRequest,
     StartServiceResponse, StartSessionRequest, StartSessionResponse, LOCKDOWN_PORT,
 };
-use ios_lockdown::session::{strip_service_tls, wrap_service_tls};
-use ios_mux::MuxClient;
-use ios_tunnel::TunMode;
+use ios_core::lockdown::session::{strip_service_tls, wrap_service_tls};
+use ios_core::mux::MuxClient;
+use ios_core::tunnel::TunMode;
+use ios_core::{connect, ConnectOptions, ServiceStream};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 use tokio::net::TcpListener;
 use tokio_rustls::client::TlsStream;
@@ -105,7 +105,7 @@ impl DproxyCmd {
                         timestamp_ms()
                     ));
                     let mut recorder =
-                        ios_services::dproxy::ProxyRecorder::new(&capture_dir, protocol)?;
+                        ios_core::dproxy::ProxyRecorder::new(&capture_dir, protocol)?;
                     eprintln!(
                         "accepted {} -> capture {}",
                         peer,
@@ -125,7 +125,7 @@ impl DproxyCmd {
                         }
                     };
 
-                    ios_services::dproxy::proxy_bidirectional(client, remote, recorder).await?;
+                    ios_core::dproxy::proxy_bidirectional(client, remote, recorder).await?;
 
                     if once {
                         break;
@@ -139,7 +139,7 @@ impl DproxyCmd {
 }
 
 fn choose_transport(
-    rsd: Option<&ios_xpc::RsdHandshake>,
+    rsd: Option<&ios_core::xpc::RsdHandshake>,
     service: &str,
     arg: TransportArg,
 ) -> TransportKind {
@@ -160,23 +160,23 @@ fn choose_protocol(
     service: &str,
     transport: TransportKind,
     arg: ProtocolArg,
-) -> ios_services::dproxy::ProxyProtocol {
+) -> ios_core::dproxy::ProxyProtocol {
     match arg {
-        ProtocolArg::Lockdown => ios_services::dproxy::ProxyProtocol::Lockdown,
-        ProtocolArg::Dtx => ios_services::dproxy::ProxyProtocol::Dtx,
-        ProtocolArg::Xpc => ios_services::dproxy::ProxyProtocol::Xpc,
-        ProtocolArg::Binary => ios_services::dproxy::ProxyProtocol::Binary,
+        ProtocolArg::Lockdown => ios_core::dproxy::ProxyProtocol::Lockdown,
+        ProtocolArg::Dtx => ios_core::dproxy::ProxyProtocol::Dtx,
+        ProtocolArg::Xpc => ios_core::dproxy::ProxyProtocol::Xpc,
+        ProtocolArg::Binary => ios_core::dproxy::ProxyProtocol::Binary,
         ProtocolArg::Auto => {
             if let Some(protocol) = protocol_override(service, transport) {
                 return protocol;
             }
 
             if is_dtx_service(service) {
-                ios_services::dproxy::ProxyProtocol::Dtx
+                ios_core::dproxy::ProxyProtocol::Dtx
             } else if transport == TransportKind::Rsd {
-                ios_services::dproxy::ProxyProtocol::Xpc
+                ios_core::dproxy::ProxyProtocol::Xpc
             } else {
-                ios_services::dproxy::ProxyProtocol::Binary
+                ios_core::dproxy::ProxyProtocol::Binary
             }
         }
     }
@@ -279,16 +279,16 @@ async fn connect_tunnel_device(udid: &str) -> Result<ios_core::device::Connected
 fn protocol_override(
     service: &str,
     transport: TransportKind,
-) -> Option<ios_services::dproxy::ProxyProtocol> {
+) -> Option<ios_core::dproxy::ProxyProtocol> {
     match service {
-        "com.apple.webinspector" => Some(ios_services::dproxy::ProxyProtocol::Lockdown),
+        "com.apple.webinspector" => Some(ios_core::dproxy::ProxyProtocol::Lockdown),
         "com.apple.webinspector.shim.remote" if transport == TransportKind::Rsd => {
-            Some(ios_services::dproxy::ProxyProtocol::Lockdown)
+            Some(ios_core::dproxy::ProxyProtocol::Lockdown)
         }
         "com.apple.accessibility.axAuditDaemon.remoteserver.shim.remote"
         | "com.apple.dt.testmanagerd.remote"
         | "com.apple.dt.testmanagerd.remote.automation" => {
-            Some(ios_services::dproxy::ProxyProtocol::Dtx)
+            Some(ios_core::dproxy::ProxyProtocol::Dtx)
         }
         _ => None,
     }
@@ -336,7 +336,7 @@ async fn connect_lockdown_service(
     udid: &str,
     device_id: u32,
     service_name: &str,
-    recorder: &mut ios_services::dproxy::ProxyRecorder,
+    recorder: &mut ios_core::dproxy::ProxyRecorder,
 ) -> Result<ServiceStream> {
     let pair_record = PairRecord::load(udid)?;
 
@@ -370,7 +370,7 @@ async fn connect_lockdown_service(
 async fn start_lockdown_session_with_recording<S>(
     stream: S,
     pair_record: &PairRecord,
-    recorder: &mut ios_services::dproxy::ProxyRecorder,
+    recorder: &mut ios_core::dproxy::ProxyRecorder,
 ) -> Result<(
     String,
     BufReader<tokio::io::ReadHalf<TlsStream<S>>>,
@@ -392,7 +392,7 @@ where
     )
     .await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::HostToDevice,
+        ios_core::dproxy::Direction::HostToDevice,
         "lockdown",
         "QueryType",
         serde_json::json!({
@@ -402,7 +402,7 @@ where
     )?;
     let query_response: QueryTypeResponse = recv_lockdown(&mut reader).await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::DeviceToHost,
+        ios_core::dproxy::Direction::DeviceToHost,
         "lockdown",
         "QueryType",
         serde_json::json!({
@@ -422,7 +422,7 @@ where
     )
     .await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::HostToDevice,
+        ios_core::dproxy::Direction::HostToDevice,
         "lockdown",
         "StartSession",
         serde_json::json!({
@@ -436,7 +436,7 @@ where
 
     let session_response: StartSessionResponse = recv_lockdown(&mut reader).await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::DeviceToHost,
+        ios_core::dproxy::Direction::DeviceToHost,
         "lockdown",
         "StartSession",
         serde_json::json!({
@@ -459,7 +459,7 @@ async fn start_service_with_recording<R, W>(
     reader: &mut R,
     writer: &mut W,
     service_name: &str,
-    recorder: &mut ios_services::dproxy::ProxyRecorder,
+    recorder: &mut ios_core::dproxy::ProxyRecorder,
 ) -> Result<(u16, bool)>
 where
     R: AsyncRead + Unpin,
@@ -475,7 +475,7 @@ where
     )
     .await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::HostToDevice,
+        ios_core::dproxy::Direction::HostToDevice,
         "lockdown",
         format!("StartService {service_name}"),
         serde_json::json!({
@@ -487,7 +487,7 @@ where
 
     let response: StartServiceResponse = recv_lockdown(reader).await?;
     recorder.record_meta_event(
-        ios_services::dproxy::Direction::DeviceToHost,
+        ios_core::dproxy::Direction::DeviceToHost,
         "lockdown",
         format!("StartService {service_name}"),
         serde_json::json!({
@@ -540,7 +540,7 @@ mod tests {
             TransportKind::Rsd,
             ProtocolArg::Auto,
         );
-        assert_eq!(protocol, ios_services::dproxy::ProxyProtocol::Dtx);
+        assert_eq!(protocol, ios_core::dproxy::ProxyProtocol::Dtx);
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
                 TransportKind::Lockdown,
                 ProtocolArg::Auto,
             ),
-            ios_services::dproxy::ProxyProtocol::Lockdown
+            ios_core::dproxy::ProxyProtocol::Lockdown
         );
         assert_eq!(
             choose_protocol(
@@ -559,7 +559,7 @@ mod tests {
                 TransportKind::Rsd,
                 ProtocolArg::Auto,
             ),
-            ios_services::dproxy::ProxyProtocol::Lockdown
+            ios_core::dproxy::ProxyProtocol::Lockdown
         );
         assert_eq!(
             choose_protocol(
@@ -567,7 +567,7 @@ mod tests {
                 TransportKind::Rsd,
                 ProtocolArg::Auto,
             ),
-            ios_services::dproxy::ProxyProtocol::Dtx
+            ios_core::dproxy::ProxyProtocol::Dtx
         );
         assert_eq!(
             choose_protocol(
@@ -575,7 +575,7 @@ mod tests {
                 TransportKind::Rsd,
                 ProtocolArg::Auto,
             ),
-            ios_services::dproxy::ProxyProtocol::Dtx
+            ios_core::dproxy::ProxyProtocol::Dtx
         );
         assert_eq!(
             choose_protocol(
@@ -583,7 +583,7 @@ mod tests {
                 TransportKind::Rsd,
                 ProtocolArg::Auto,
             ),
-            ios_services::dproxy::ProxyProtocol::Dtx
+            ios_core::dproxy::ProxyProtocol::Dtx
         );
     }
 

@@ -11,8 +11,14 @@ pub mod credentials;
 pub mod device;
 pub mod discovery;
 pub mod error;
+pub mod lockdown;
+pub mod mux;
 pub mod pairing_transport;
+pub mod proto;
 pub mod psk_tls;
+pub mod services;
+pub mod tunnel;
+pub mod xpc;
 
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
 pub use device::{
@@ -24,7 +30,76 @@ pub use discovery::{
     browse_mobdev2, browse_remotepairing, BonjourService, DeviceEvent, DeviceInfo, MdnsDevice,
 };
 pub use error::CoreError;
+pub use lockdown::{LockdownClient, LOCKDOWN_PORT};
+pub use mux::MuxClient;
 pub use pairing_transport::{pair_new_device, PairedCredentials, UNTRUSTED_SERVICE_NAME};
+#[cfg(feature = "accessibility_audit")]
+pub use services::accessibility_audit;
+#[cfg(feature = "afc")]
+pub use services::afc;
+#[cfg(feature = "amfi")]
+pub use services::amfi;
+#[cfg(feature = "apps")]
+pub use services::apps;
+#[cfg(feature = "arbitration")]
+pub use services::arbitration;
+#[cfg(feature = "companion")]
+pub use services::companion;
+#[cfg(feature = "crashreport")]
+pub use services::crashreport;
+#[cfg(feature = "debugserver")]
+pub use services::debugserver;
+#[cfg(feature = "deviceinfo")]
+pub use services::deviceinfo;
+#[cfg(feature = "dproxy")]
+pub use services::dproxy;
+#[cfg(feature = "dtx")]
+pub use services::dtx;
+#[cfg(feature = "fetchsymbols")]
+pub use services::fetchsymbols;
+#[cfg(feature = "file_relay")]
+pub use services::file_relay;
+#[cfg(feature = "fileservice")]
+pub use services::fileservice;
+#[cfg(feature = "heartbeat")]
+pub use services::heartbeat;
+#[cfg(feature = "idam")]
+pub use services::idam;
+#[cfg(feature = "imagemounter")]
+pub use services::imagemounter;
+#[cfg(feature = "instruments")]
+pub use services::instruments;
+#[cfg(feature = "mcinstall")]
+pub use services::mcinstall;
+#[cfg(feature = "misagent")]
+pub use services::misagent;
+#[cfg(feature = "notificationproxy")]
+pub use services::notificationproxy;
+#[cfg(feature = "ostrace")]
+pub use services::ostrace;
+#[cfg(feature = "pcap")]
+pub use services::pcap;
+#[cfg(feature = "power_assertion")]
+pub use services::power_assertion;
+#[cfg(feature = "preboard")]
+pub use services::preboard;
+#[cfg(feature = "prepare")]
+pub use services::prepare;
+#[cfg(feature = "restore")]
+pub use services::restore;
+#[cfg(feature = "screenshot")]
+pub use services::screenshot;
+#[cfg(feature = "springboard")]
+pub use services::springboard;
+#[cfg(feature = "syslog")]
+pub use services::syslog;
+#[cfg(feature = "testmanager")]
+pub use services::testmanager;
+#[cfg(feature = "webinspector")]
+pub use services::webinspector;
+pub use services::{backup2, device_link, diagnostics, mobileactivation, simlocation};
+pub use tunnel::TunMode;
+pub use xpc::{RsdHandshake, ServiceDescriptor, XpcMessage, XpcValue};
 
 /// List all currently connected iOS devices (via usbmuxd).
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, CoreError> {
@@ -45,7 +120,7 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 /// Discover iOS 17+ devices on the local network via mDNS.
 ///
 /// Returns a stream of devices with their IPv6 address and RSD port.
-/// Use `ios_xpc::rsd::handshake(ipv6, rsd_port)` to get the full service list.
+/// Use [`xpc::rsd::handshake`] to get the full service list.
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }

@@ -2,12 +2,6 @@
 set -euo pipefail
 
 CRATES=(
-  ios-proto
-  ios-mux
-  ios-lockdown
-  ios-tunnel
-  ios-xpc
-  ios-services
   ios-core
   ios-cli
 )
@@ -27,7 +21,7 @@ publish_one() {
     echo "Publishing ${crate} (attempt ${attempt}/${MAX_ATTEMPTS})"
     output="$(mktemp)"
     set +e
-    cargo publish -p "${crate}" --no-verify 2>&1 | tee "${output}"
+    cargo publish -p "${crate}" 2>&1 | tee "${output}"
     status=${PIPESTATUS[0]}
     set -e
 

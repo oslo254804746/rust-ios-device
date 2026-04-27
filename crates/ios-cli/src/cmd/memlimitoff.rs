@@ -10,7 +10,7 @@ impl MemlimitoffCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for memlimitoff"))?;
         let (_device, stream) = super::instruments::connect_instruments(&udid).await?;
-        let mut pc = ios_services::instruments::process_control::ProcessControl::connect(stream)
+        let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
             .await
             .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
         let disabled = pc

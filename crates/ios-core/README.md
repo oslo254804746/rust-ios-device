@@ -20,12 +20,16 @@ ios-core = "0.1.1"
 ## Example
 
 ```rust,no_run
-use ios_core::DeviceManager;
+use ios_core::{ConnectOptions, list_devices};
 
 # async fn run() -> anyhow::Result<()> {
-let manager = DeviceManager::new().await?;
-let devices = manager.list_devices().await?;
+let devices = list_devices().await?;
 println!("found {} device(s)", devices.len());
+
+if let Some(device) = devices.first() {
+    let connected = ios_core::connect(&device.udid, ConnectOptions::default()).await?;
+    println!("connected to {}", connected.info.udid);
+}
 # Ok(())
 # }
 ```

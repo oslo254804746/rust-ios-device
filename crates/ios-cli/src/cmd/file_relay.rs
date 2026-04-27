@@ -2,8 +2,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_tunnel::TunMode;
 
 #[derive(clap::Args)]
 pub struct FileRelayCmd {
@@ -26,9 +26,9 @@ impl FileRelayCmd {
         )
         .await?;
         let stream = device
-            .connect_service(ios_services::file_relay::SERVICE_NAME)
+            .connect_service(ios_core::file_relay::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::file_relay::FileRelayClient::new(stream);
+        let mut client = ios_core::file_relay::FileRelayClient::new(stream);
         let sources: Vec<&str> = self.sources.iter().map(|source| source.as_str()).collect();
         let archive = client.request_sources(&sources).await?;
 

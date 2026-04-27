@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use anyhow::Result;
+use ios_core::afc::{AfcClient, AfcError, AfcStatusCode};
+use ios_core::apps::installation::InstallationProxy;
+use ios_core::notificationproxy::NotificationProxyClient;
+use ios_core::springboard::SpringboardClient;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_services::afc::{AfcClient, AfcError, AfcStatusCode};
-use ios_services::apps::installation::InstallationProxy;
-use ios_services::notificationproxy::NotificationProxyClient;
-use ios_services::springboard::SpringboardClient;
-use ios_tunnel::TunMode;
 use tokio::time::{sleep, Duration};
 
 const BACKUP_DOMAIN: &str = "com.apple.mobile.backup";
@@ -171,9 +171,9 @@ async fn run_version(udid: &str, json: bool) -> Result<()> {
     )
     .await?;
     let stream = device
-        .connect_service(ios_services::backup2::SERVICE_NAME)
+        .connect_service(ios_core::backup2::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
     let version = client.version_exchange().await?;
 
     if json {
@@ -183,11 +183,11 @@ async fn run_version(udid: &str, json: bool) -> Result<()> {
                 "device_link_version": version.device_link_version,
                 "protocol_version": version.protocol_version,
                 "supported_protocol_versions": version.local_versions,
-                "service_name": ios_services::backup2::SERVICE_NAME,
+                "service_name": ios_core::backup2::SERVICE_NAME,
             }))?
         );
     } else {
-        println!("Service: {}", ios_services::backup2::SERVICE_NAME);
+        println!("Service: {}", ios_core::backup2::SERVICE_NAME);
         println!("DeviceLinkVersion: {}", version.device_link_version);
         println!("ProtocolVersion: {}", version.protocol_version);
         println!(
@@ -249,9 +249,9 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let backup_result: Result<_> = async {
         let stream = device
-            .connect_service(ios_services::backup2::SERVICE_NAME)
+            .connect_service(ios_core::backup2::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+        let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
         client
             .backup(Path::new(output_dir), udid, full, &info_plist)
             .await
@@ -377,9 +377,9 @@ async fn run_info(
     )
     .await?;
     let stream = device
-        .connect_service(ios_services::backup2::SERVICE_NAME)
+        .connect_service(ios_core::backup2::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
     let result = client
         .info(Path::new(backup_directory), udid, source)
         .await?;
@@ -403,9 +403,9 @@ async fn run_list(
     )
     .await?;
     let stream = device
-        .connect_service(ios_services::backup2::SERVICE_NAME)
+        .connect_service(ios_core::backup2::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
     let result = client
         .list(Path::new(backup_directory), udid, source)
         .await?;
@@ -428,7 +428,7 @@ async fn run_restore(
     json: bool,
 ) -> Result<()> {
     let source_identifier = source.unwrap_or(udid);
-    if ios_services::backup2::backup_is_encrypted(Path::new(backup_directory), source_identifier)?
+    if ios_core::backup2::backup_is_encrypted(Path::new(backup_directory), source_identifier)?
         && password.is_none()
     {
         return Err(anyhow::anyhow!(
@@ -449,7 +449,7 @@ async fn run_restore(
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let restore_result: Result<_> = async {
         if !skip_apps {
-            if let Some(applications) = ios_services::backup2::load_backup_applications(
+            if let Some(applications) = ios_core::backup2::load_backup_applications(
                 Path::new(backup_directory),
                 source_identifier,
             )? {
@@ -458,14 +458,14 @@ async fn run_restore(
         }
 
         let stream = device
-            .connect_service(ios_services::backup2::SERVICE_NAME)
+            .connect_service(ios_core::backup2::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+        let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
         client
             .restore(
                 Path::new(backup_directory),
                 udid,
-                ios_services::backup2::RestoreOptions {
+                ios_core::backup2::RestoreOptions {
                     system,
                     reboot,
                     copy,
@@ -538,9 +538,9 @@ async fn run_change_password(
     )
     .await?;
     let stream = device
-        .connect_service(ios_services::backup2::SERVICE_NAME)
+        .connect_service(ios_core::backup2::SERVICE_NAME)
         .await?;
-    let mut client = ios_services::backup2::Mobilebackup2Client::new(stream);
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
     client
         .change_password(
             Path::new(backup_directory),
@@ -591,11 +591,11 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
     let mut applications = plist::Dictionary::new();
 
     let springboard_stream = device
-        .connect_service(ios_services::springboard::SERVICE_NAME)
+        .connect_service(ios_core::springboard::SERVICE_NAME)
         .await;
     let mut springboard = springboard_stream.ok().map(SpringboardClient::new);
     let install_stream = device
-        .connect_service(ios_services::apps::installation::SERVICE_NAME)
+        .connect_service(ios_core::apps::installation::SERVICE_NAME)
         .await?;
     let mut install_proxy = InstallationProxy::new(install_stream);
     for app in install_proxy
@@ -817,7 +817,7 @@ where
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use ios_lockdown::LockdownError;
+    use ios_core::lockdown::LockdownError;
 
     use super::{
         build_backup_guid, format_protocol_version, plist_value_to_bool, resolve_will_encrypt,

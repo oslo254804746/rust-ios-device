@@ -13,7 +13,7 @@ The project is currently **experimental**. It is useful for development, testing
 - iOS 17+ tunnel support through CoreDeviceProxy/CDTunnel, with userspace and kernel TUN modes.
 - Remote Service Discovery (RSD), HTTP/2 XPC transport, OPACK, NSKeyedArchiver, AFC, DTX, lockdown, usbmuxd, and XPC protocol codecs.
 - CLI commands for device info, pairing, file operations, app management, syslog, screenshots, diagnostics, provisioning/configuration profiles, crash reports, Instruments, WebInspector, debugserver, backup/restore helpers, and tunnel management.
-- Feature-gated service crates for AFC, apps, syslog, screenshot, DTX/Instruments, TestManager, accessibility audit, developer disk image mounting, pcap, WebInspector, and related services.
+- Feature-gated service clients for AFC, apps, syslog, screenshot, DTX/Instruments, TestManager, accessibility audit, developer disk image mounting, pcap, WebInspector, and related services.
 - Python bindings (`rust-ios-device-tunnel`, imported as `ios_rs`) for device listing and iOS 17+ userspace tunnels.
 - C FFI bindings for device listing, lockdown queries, and tunnel metadata.
 
@@ -30,13 +30,7 @@ The project is currently **experimental**. It is useful for development, testing
 
 | Crate | Purpose |
 | --- | --- |
-| `ios-proto` | Protocol types and codecs for AFC, DTX, lockdown, usbmuxd, XPC, OPACK, TLV, and related formats. |
-| `ios-mux` | usbmuxd client for discovery, attach/detach events, and port connections. |
-| `ios-lockdown` | Lockdown protocol, TLS sessions, pair records, pairing, and supervised pairing helpers. |
-| `ios-tunnel` | CDTunnel handshake and userspace/kernel TUN forwarding. |
-| `ios-xpc` | HTTP/2 + RemoteXPC client and RSD handshake. |
-| `ios-services` | Feature-gated clients for device services such as AFC, syslog, apps, DTX/Instruments, and WebInspector. |
-| `ios-core` | Higher-level device discovery, connection, pairing transport, and service access API. |
+| `ios-core` | Public Rust library. Contains protocol codecs, usbmuxd, lockdown, tunneling, XPC/RSD, feature-gated service clients, discovery, pairing, and high-level device APIs. |
 | `ios-cli` | `ios` command-line tool. |
 | `ios-py` | PyO3 Python extension module. Not currently published to crates.io. |
 | `ios-ffi` | C ABI wrapper. Not currently published to crates.io. |
@@ -144,7 +138,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For lower-level access, use `ios-mux`, `ios-lockdown`, `ios-services`, and `ios-xpc` directly.
+For lower-level access, use the modules exposed by `ios-core`, such as `ios_core::mux`,
+`ios_core::lockdown`, `ios_core::xpc`, and service modules re-exported at the crate root
+like `ios_core::afc`, `ios_core::apps`, and `ios_core::syslog` when their features are enabled.
 
 ## Python binding
 

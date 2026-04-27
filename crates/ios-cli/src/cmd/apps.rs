@@ -107,7 +107,7 @@ impl AppsCmd {
             let probe = ios_core::connect(
                 &udid,
                 ios_core::device::ConnectOptions {
-                    tun_mode: ios_tunnel::TunMode::Userspace,
+                    tun_mode: ios_core::tunnel::TunMode::Userspace,
                     pair_record_path: None,
                     skip_tunnel: true,
                 },
@@ -121,7 +121,7 @@ impl AppsCmd {
             true
         };
         let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_tunnel::TunMode::Userspace,
+            tun_mode: ios_core::tunnel::TunMode::Userspace,
             pair_record_path: None,
             skip_tunnel,
         };
@@ -130,9 +130,9 @@ impl AppsCmd {
         match self.sub {
             AppsSub::List { app_type } => {
                 let stream = device
-                    .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                    .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
-                let mut proxy = ios_services::apps::InstallationProxy::new(stream);
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
 
                 let apps = match parse_app_type(&app_type)? {
                     AppType::User => proxy.list_user_apps().await?,
@@ -177,9 +177,9 @@ impl AppsCmd {
 
                     // Try streaming zip conduit service
                     let svc_name = if skip_tunnel {
-                        ios_services::apps::zipconduit::SERVICE_NAME
+                        ios_core::apps::zipconduit::SERVICE_NAME
                     } else {
-                        ios_services::apps::zipconduit::RSD_SERVICE_NAME
+                        ios_core::apps::zipconduit::RSD_SERVICE_NAME
                     };
 
                     let mut stream = if skip_tunnel {
@@ -195,7 +195,7 @@ impl AppsCmd {
                     };
 
                     eprintln!("Installing via streaming zip conduit...");
-                    ios_services::apps::install_ipa(
+                    ios_core::apps::install_ipa(
                         &mut stream,
                         source_path,
                         Some(Box::new(|percent, status| {
@@ -214,12 +214,12 @@ impl AppsCmd {
                     .connect_service("com.apple.afc")
                     .await
                     .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_services::afc::AfcClient::new(afc_stream);
+                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
 
                 match afc.make_dir("/PublicStaging").await {
                     Ok(()) => {}
-                    Err(ios_services::afc::AfcError::Status(
-                        ios_services::afc::AfcStatusCode::ObjectExists,
+                    Err(ios_core::afc::AfcError::Status(
+                        ios_core::afc::AfcStatusCode::ObjectExists,
                     )) => {}
                     Err(err) => {
                         return Err(err).context("failed to create /PublicStaging on device");
@@ -286,10 +286,10 @@ impl AppsCmd {
 
                 let install_result: Result<()> = async {
                     let install_stream = device
-                        .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                         .await
                         .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_services::apps::InstallationProxy::new(install_stream);
+                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
                     proxy
                         .install(&install_paths.package_path)
                         .await
@@ -330,12 +330,12 @@ impl AppsCmd {
                     .connect_service("com.apple.afc")
                     .await
                     .context("failed to connect AFC for app staging")?;
-                let mut afc = ios_services::afc::AfcClient::new(afc_stream);
+                let mut afc = ios_core::afc::AfcClient::new(afc_stream);
 
                 match afc.make_dir("/PublicStaging").await {
                     Ok(()) => {}
-                    Err(ios_services::afc::AfcError::Status(
-                        ios_services::afc::AfcStatusCode::ObjectExists,
+                    Err(ios_core::afc::AfcError::Status(
+                        ios_core::afc::AfcStatusCode::ObjectExists,
                     )) => {}
                     Err(err) => {
                         return Err(err).context("failed to create /PublicStaging on device");
@@ -372,10 +372,10 @@ impl AppsCmd {
 
                 let upgrade_result: Result<()> = async {
                     let install_stream = device
-                        .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                         .await
                         .context("failed to connect installation proxy")?;
-                    let mut proxy = ios_services::apps::InstallationProxy::new(install_stream);
+                    let mut proxy = ios_core::apps::InstallationProxy::new(install_stream);
                     proxy
                         .upgrade(&install_paths.package_path)
                         .await
@@ -404,25 +404,25 @@ impl AppsCmd {
             }
             AppsSub::Archive { bundle_id } => {
                 let stream = device
-                    .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                    .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
-                let mut proxy = ios_services::apps::InstallationProxy::new(stream);
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.archive(&bundle_id).await?;
                 println!("Archived {bundle_id}");
             }
             AppsSub::Restore { bundle_id } => {
                 let stream = device
-                    .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                    .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
-                let mut proxy = ios_services::apps::InstallationProxy::new(stream);
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.restore(&bundle_id).await?;
                 println!("Restored {bundle_id}");
             }
             AppsSub::Show { bundle_id, attrs } => {
                 let stream = device
-                    .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                    .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
-                let mut proxy = ios_services::apps::InstallationProxy::new(stream);
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 let attr_refs: Vec<&str> = attrs.iter().map(String::as_str).collect();
                 let app = proxy
                     .lookup_app_with_attributes(&bundle_id, &attr_refs)
@@ -442,14 +442,14 @@ impl AppsCmd {
                     Err(e) if should_fallback_to_instruments(&e) => {
                         let (_device, stream) =
                             super::instruments::connect_instruments(&udid).await?;
-                        let mut di = ios_services::instruments::DeviceInfoClient::connect(stream)
+                        let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
                             .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
                         di.running_processes()
                             .await
                             .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
                             .into_iter()
-                            .map(|p| ios_services::apps::RunningAppProcess {
+                            .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
                                 bundle_id: None,
                                 name: p.name,
@@ -491,11 +491,9 @@ impl AppsCmd {
                         let (_device, stream) =
                             super::instruments::connect_instruments(&udid).await?;
                         let mut pc =
-                            ios_services::instruments::process_control::ProcessControl::connect(
-                                stream,
-                            )
-                            .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            ios_core::instruments::process_control::ProcessControl::connect(stream)
+                                .await
+                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
                         pc.kill(pid)
                             .await
                             .map_err(|err| anyhow::anyhow!("kill error: {err}"))?;
@@ -523,14 +521,14 @@ impl AppsCmd {
                     Err(e) if should_fallback_to_instruments(&e) => {
                         let (_device, stream) =
                             super::instruments::connect_instruments(&udid).await?;
-                        let mut di = ios_services::instruments::DeviceInfoClient::connect(stream)
+                        let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
                             .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
                         di.running_processes()
                             .await
                             .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
                             .into_iter()
-                            .map(|p| ios_services::apps::RunningAppProcess {
+                            .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
                                 bundle_id: None,
                                 name: p.name,
@@ -557,7 +555,7 @@ impl AppsCmd {
                             Err(e) if should_fallback_to_instruments(&e) => {
                                 let (_device, stream) =
                                     super::instruments::connect_instruments(&udid).await?;
-                                let mut pc = ios_services::instruments::process_control::ProcessControl::connect(stream)
+                                let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
                                     .await
                                     .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
                                 pc.kill(p.pid)
@@ -580,11 +578,9 @@ impl AppsCmd {
                         let (_device, stream) =
                             super::instruments::connect_instruments(&udid).await?;
                         let mut pc =
-                            ios_services::instruments::process_control::ProcessControl::connect(
-                                stream,
-                            )
-                            .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            ios_core::instruments::process_control::ProcessControl::connect(stream)
+                                .await
+                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
                         let env = HashMap::new();
                         Some(
                             pc.launch(&bundle_id, &[], &env)
@@ -602,9 +598,9 @@ impl AppsCmd {
             }
             AppsSub::Uninstall { bundle_id } => {
                 let stream = device
-                    .connect_service(ios_services::apps::INSTALLATION_PROXY_SERVICE)
+                    .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
-                let mut proxy = ios_services::apps::InstallationProxy::new(stream);
+                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.uninstall(&bundle_id).await?;
                 println!("Uninstalled {bundle_id}");
             }
@@ -639,14 +635,11 @@ fn apps_subcommand_prefers_tunnel(sub: &AppsSub, ios_major: u64) -> bool {
 async fn connect_appservice(
     device: &ios_core::ConnectedDevice,
     udid: &str,
-) -> Result<ios_services::apps::AppServiceClient, CoreError> {
+) -> Result<ios_core::apps::AppServiceClient, CoreError> {
     let xpc = device
-        .connect_xpc_service(ios_services::apps::APPSERVICE_SERVICE)
+        .connect_xpc_service(ios_core::apps::APPSERVICE_SERVICE)
         .await?;
-    Ok(ios_services::apps::AppServiceClient::new(
-        xpc,
-        udid.to_string(),
-    ))
+    Ok(ios_core::apps::AppServiceClient::new(xpc, udid.to_string()))
 }
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {
@@ -714,7 +707,7 @@ fn build_install_paths(path: &std::path::Path) -> Result<InstallPaths> {
 }
 
 async fn remove_staged_path<S>(
-    afc: &mut ios_services::afc::AfcClient<S>,
+    afc: &mut ios_core::afc::AfcClient<S>,
     path: &str,
     is_directory: bool,
 ) -> Result<()>
@@ -724,9 +717,9 @@ where
     if !is_directory {
         return match afc.remove(path).await {
             Ok(()) => Ok(()),
-            Err(ios_services::afc::AfcError::Status(
-                ios_services::afc::AfcStatusCode::ObjectNotFound,
-            )) => Ok(()),
+            Err(ios_core::afc::AfcError::Status(ios_core::afc::AfcStatusCode::ObjectNotFound)) => {
+                Ok(())
+            }
             Err(err) => Err(err.into()),
         };
     }
@@ -734,21 +727,21 @@ where
     for _ in 0..5 {
         match afc.remove_all(path).await {
             Ok(()) => {}
-            Err(ios_services::afc::AfcError::Status(
-                ios_services::afc::AfcStatusCode::ObjectNotFound,
-            )) => return Ok(()),
+            Err(ios_core::afc::AfcError::Status(ios_core::afc::AfcStatusCode::ObjectNotFound)) => {
+                return Ok(())
+            }
             Err(err) => return Err(err.into()),
         }
 
         match afc.remove(path).await {
             Ok(()) => return Ok(()),
-            Err(ios_services::afc::AfcError::Status(
-                ios_services::afc::AfcStatusCode::ObjectNotFound,
-            )) => return Ok(()),
-            Err(ios_services::afc::AfcError::Status(
-                ios_services::afc::AfcStatusCode::DirNotEmpty
-                | ios_services::afc::AfcStatusCode::ObjectBusy
-                | ios_services::afc::AfcStatusCode::OpWouldBlock,
+            Err(ios_core::afc::AfcError::Status(ios_core::afc::AfcStatusCode::ObjectNotFound)) => {
+                return Ok(())
+            }
+            Err(ios_core::afc::AfcError::Status(
+                ios_core::afc::AfcStatusCode::DirNotEmpty
+                | ios_core::afc::AfcStatusCode::ObjectBusy
+                | ios_core::afc::AfcStatusCode::OpWouldBlock,
             )) => {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
@@ -756,9 +749,9 @@ where
         }
 
         match afc.stat(path).await {
-            Err(ios_services::afc::AfcError::Status(
-                ios_services::afc::AfcStatusCode::ObjectNotFound,
-            )) => return Ok(()),
+            Err(ios_core::afc::AfcError::Status(ios_core::afc::AfcStatusCode::ObjectNotFound)) => {
+                return Ok(())
+            }
             Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
             Err(err) => return Err(err.into()),
         }
@@ -775,7 +768,7 @@ struct StagedPath {
 }
 
 async fn stage_app_bundle<S>(
-    afc: &mut ios_services::afc::AfcClient<S>,
+    afc: &mut ios_core::afc::AfcClient<S>,
     local_root: &std::path::Path,
     remote_root: &str,
 ) -> Result<()>
@@ -839,15 +832,13 @@ where
     Ok(())
 }
 
-async fn ensure_remote_dir<S>(afc: &mut ios_services::afc::AfcClient<S>, path: &str) -> Result<()>
+async fn ensure_remote_dir<S>(afc: &mut ios_core::afc::AfcClient<S>, path: &str) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match afc.make_dir(path).await {
         Ok(()) => Ok(()),
-        Err(ios_services::afc::AfcError::Status(
-            ios_services::afc::AfcStatusCode::ObjectExists,
-        )) => Ok(()),
+        Err(ios_core::afc::AfcError::Status(ios_core::afc::AfcStatusCode::ObjectExists)) => Ok(()),
         Err(err) => Err(err.into()),
     }
 }
@@ -873,7 +864,7 @@ fn parse_app_type(input: &str) -> Result<AppType> {
     }
 }
 
-fn app_to_json(app: &ios_services::apps::AppInfo) -> serde_json::Value {
+fn app_to_json(app: &ios_core::apps::AppInfo) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert(
         "bundle_id".to_string(),
@@ -904,10 +895,7 @@ fn app_to_json(app: &ios_services::apps::AppInfo) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-fn app_to_json_with_attrs(
-    app: &ios_services::apps::AppInfo,
-    attrs: &[String],
-) -> serde_json::Value {
+fn app_to_json_with_attrs(app: &ios_core::apps::AppInfo, attrs: &[String]) -> serde_json::Value {
     let json = app_to_json(app);
     if attrs.is_empty() {
         return json;
@@ -990,9 +978,9 @@ fn format_json_value(value: &serde_json::Value) -> String {
 }
 
 fn filter_running_processes(
-    processes: Vec<ios_services::apps::RunningAppProcess>,
+    processes: Vec<ios_core::apps::RunningAppProcess>,
     apps_only: bool,
-) -> Vec<ios_services::apps::RunningAppProcess> {
+) -> Vec<ios_core::apps::RunningAppProcess> {
     if !apps_only {
         return processes;
     }
@@ -1004,9 +992,9 @@ fn filter_running_processes(
 }
 
 fn filter_running_processes_by_name(
-    processes: Vec<ios_services::apps::RunningAppProcess>,
+    processes: Vec<ios_core::apps::RunningAppProcess>,
     name: Option<&str>,
-) -> Vec<ios_services::apps::RunningAppProcess> {
+) -> Vec<ios_core::apps::RunningAppProcess> {
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
         return processes;
     };
@@ -1224,21 +1212,21 @@ mod tests {
     #[test]
     fn filter_running_processes_keeps_only_apps_when_requested() {
         let processes = vec![
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 1,
                 bundle_id: Some("com.apple.mobilephone".into()),
                 name: "Phone".into(),
                 executable: Some("MobilePhone".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 2,
                 bundle_id: None,
                 name: "mediaserverd".into(),
                 executable: Some("mediaserverd".into()),
                 is_application: Some(false),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 3,
                 bundle_id: None,
                 name: "unknown".into(),
@@ -1255,21 +1243,21 @@ mod tests {
     #[test]
     fn filter_running_processes_by_name_uses_substring_matching() {
         let processes = vec![
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 1,
                 bundle_id: Some("com.apple.mobilephone".into()),
                 name: "Phone".into(),
                 executable: Some("MobilePhone".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 2,
                 bundle_id: Some("com.apple.Preferences".into()),
                 name: "Settings".into(),
                 executable: Some("Settings".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 3,
                 bundle_id: None,
                 name: "mediaremoted".into(),
@@ -1286,14 +1274,14 @@ mod tests {
     #[test]
     fn filter_running_processes_by_name_is_case_insensitive() {
         let processes = vec![
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 1,
                 bundle_id: Some("com.apple.mobilephone".into()),
                 name: "Phone".into(),
                 executable: Some("MobilePhone".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 2,
                 bundle_id: Some("com.apple.Preferences".into()),
                 name: "Settings".into(),
@@ -1310,14 +1298,14 @@ mod tests {
     #[test]
     fn filter_running_processes_by_name_ignores_empty_filter() {
         let processes = vec![
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 1,
                 bundle_id: Some("com.apple.mobilephone".into()),
                 name: "Phone".into(),
                 executable: Some("MobilePhone".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 2,
                 bundle_id: Some("com.apple.Preferences".into()),
                 name: "Settings".into(),
@@ -1334,21 +1322,21 @@ mod tests {
     #[test]
     fn filter_running_processes_applies_name_after_apps_only() {
         let processes = vec![
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 1,
                 bundle_id: Some("com.apple.mobilephone".into()),
                 name: "Phone".into(),
                 executable: Some("MobilePhone".into()),
                 is_application: Some(true),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 2,
                 bundle_id: None,
                 name: "Phone Helper".into(),
                 executable: Some("PhoneHelper".into()),
                 is_application: Some(false),
             },
-            ios_services::apps::RunningAppProcess {
+            ios_core::apps::RunningAppProcess {
                 pid: 3,
                 bundle_id: Some("com.apple.Preferences".into()),
                 name: "Settings".into(),

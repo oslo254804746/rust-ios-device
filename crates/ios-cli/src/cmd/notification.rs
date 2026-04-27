@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use ios_core::notificationproxy::NotificationEvent;
+use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
-use ios_services::notificationproxy::NotificationEvent;
-use ios_tunnel::TunMode;
 use tokio::time::Instant;
 
 #[derive(clap::Args)]
@@ -73,9 +73,9 @@ impl NotificationCmd {
         };
         let device = connect(&udid, opts).await?;
         let stream = device
-            .connect_service(ios_services::notificationproxy::SERVICE_NAME)
+            .connect_service(ios_core::notificationproxy::SERVICE_NAME)
             .await?;
-        let mut client = ios_services::notificationproxy::NotificationProxyClient::new(stream);
+        let mut client = ios_core::notificationproxy::NotificationProxyClient::new(stream);
 
         match self.sub {
             NotificationSub::Post { notification } => {
@@ -106,9 +106,7 @@ impl NotificationCmd {
                 let mut seen = 0u64;
                 while seen < limit {
                     match client.next_event(timeout).await? {
-                        ios_services::notificationproxy::NotificationProxyEvent::Notification(
-                            name,
-                        ) => {
+                        ios_core::notificationproxy::NotificationProxyEvent::Notification(name) => {
                             if name == notification {
                                 seen += 1;
                                 println!(
@@ -117,7 +115,7 @@ impl NotificationCmd {
                                 );
                             }
                         }
-                        ios_services::notificationproxy::NotificationProxyEvent::ProxyDeath => {
+                        ios_core::notificationproxy::NotificationProxyEvent::ProxyDeath => {
                             anyhow::bail!("notification proxy closed before notification arrived");
                         }
                     }
@@ -185,7 +183,7 @@ impl NotificationCmd {
                 println!(
                     "{}",
                     render_notification_output(
-                        ios_services::notificationproxy::SPRINGBOARD_FINISHED_STARTUP,
+                        ios_core::notificationproxy::SPRINGBOARD_FINISHED_STARTUP,
                         json,
                         None
                     )?

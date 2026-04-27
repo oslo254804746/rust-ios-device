@@ -13,7 +13,7 @@
 - 支持通过 CoreDeviceProxy/CDTunnel 使用 iOS 17+ 隧道，并提供用户态和内核 TUN 模式。
 - 支持 Remote Service Discovery (RSD)、HTTP/2 XPC 传输、OPACK、NSKeyedArchiver、AFC、DTX、lockdown、usbmuxd 和 XPC 协议编解码。
 - CLI 命令覆盖设备信息、配对、文件操作、应用管理、syslog、截图、诊断、预置/配置描述文件、崩溃报告、Instruments、WebInspector、debugserver、备份/恢复辅助功能和隧道管理。
-- 基于 feature gate 的服务 crate，覆盖 AFC、应用、syslog、截图、DTX/Instruments、TestManager、可访问性审计、开发者磁盘镜像挂载、pcap、WebInspector 及相关服务。
+- 基于 feature gate 的服务客户端，覆盖 AFC、应用、syslog、截图、DTX/Instruments、TestManager、可访问性审计、开发者磁盘镜像挂载、pcap、WebInspector 及相关服务。
 - Python 绑定（`rust-ios-device-tunnel`，导入名为 `ios_rs`），用于设备列表和 iOS 17+ 用户态隧道。
 - C FFI 绑定，用于设备列表、lockdown 查询和隧道元数据。
 
@@ -30,13 +30,7 @@
 
 | Crate | 用途 |
 | --- | --- |
-| `ios-proto` | AFC、DTX、lockdown、usbmuxd、XPC、OPACK、TLV 及相关格式的协议类型和编解码器。 |
-| `ios-mux` | 用于发现设备、监听 attach/detach 事件和建立端口连接的 usbmuxd 客户端。 |
-| `ios-lockdown` | Lockdown 协议、TLS 会话、配对记录、配对和监督配对辅助功能。 |
-| `ios-tunnel` | CDTunnel 握手以及用户态/内核 TUN 转发。 |
-| `ios-xpc` | HTTP/2 + RemoteXPC 客户端和 RSD 握手。 |
-| `ios-services` | 面向 AFC、syslog、应用、DTX/Instruments、WebInspector 等设备服务的 feature-gated 客户端。 |
-| `ios-core` | 更高层的设备发现、连接、配对传输和服务访问 API。 |
+| `ios-core` | 公开 Rust 库。包含协议编解码、usbmuxd、lockdown、隧道、XPC/RSD、feature-gated 服务客户端、发现、配对和高层设备 API。 |
 | `ios-cli` | `ios` 命令行工具。 |
 | `ios-py` | PyO3 Python 扩展模块。目前未发布到 crates.io。 |
 | `ios-ffi` | C ABI 包装。目前未发布到 crates.io。 |
@@ -144,7 +138,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-如需更底层访问，可直接使用 `ios-mux`、`ios-lockdown`、`ios-services` 和 `ios-xpc`。
+如需更底层访问，请使用 `ios-core` 暴露的模块，例如 `ios_core::mux`、
+`ios_core::lockdown`、`ios_core::xpc`，以及启用相应 feature 后在 crate 根部重导出的
+`ios_core::afc`、`ios_core::apps`、`ios_core::syslog` 等服务模块。
 
 ## Python 绑定
 
