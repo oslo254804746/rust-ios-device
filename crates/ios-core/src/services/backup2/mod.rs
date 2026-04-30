@@ -1,6 +1,5 @@
 use std::fs::{self, File};
 use std::io::ErrorKind;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use std::time::SystemTime;
@@ -163,7 +162,16 @@ where
         info_plist: &plist::Dictionary,
     ) -> Result<BackupResult, Mobilebackup2Error> {
         let version = self.version_exchange().await?;
-        let layout = initialize_backup_directory(backup_root, target_identifier, info_plist, full)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = target_identifier.to_owned();
+            let info = info_plist.clone();
+            tokio::task::spawn_blocking(move || {
+                initialize_backup_directory(&root, &id, &info, full)
+            })
+            .await
+            .map_err(|e| Mobilebackup2Error::Io(std::io::Error::other(e.to_string())))?
+        }?;
 
         self.device_link
             .send_process_message(&BackupRequest {
@@ -367,7 +375,7 @@ where
                                 "create directory missing path: {message:?}"
                             ))
                         })?;
-                    fs::create_dir_all(resolve_relative_path(layout, path)?)?;
+                    tokio::fs::create_dir_all(resolve_relative_path(layout, path)?).await?;
                     self.send_status_response(
                         0,
                         "",
@@ -421,9 +429,9 @@ where
                         let src_path = resolve_relative_path(layout, src)?;
                         let dst_path = resolve_relative_path(layout, dst)?;
                         if let Some(parent) = dst_path.parent() {
-                            fs::create_dir_all(parent)?;
+                            tokio::fs::create_dir_all(parent).await?;
                         }
-                        fs::rename(src_path, dst_path)?;
+                        tokio::fs::rename(src_path, dst_path).await?;
                     }
                     self.send_status_response(
                         0,
@@ -449,9 +457,9 @@ where
                         })?;
                         let target = resolve_relative_path(layout, rel)?;
                         if target.is_dir() {
-                            fs::remove_dir_all(target)?;
+                            tokio::fs::remove_dir_all(&target).await?;
                         } else if target.exists() {
-                            fs::remove_file(target)?;
+                            tokio::fs::remove_file(&target).await?;
                         }
                     }
                     self.send_status_response(
@@ -471,7 +479,11 @@ where
                             ))
                         })?;
                     let path = resolve_relative_path(layout, rel)?;
-                    let listing = contents_of_directory(&path)?;
+                    let listing = tokio::task::spawn_blocking(move || contents_of_directory(&path))
+                        .await
+                        .map_err(|e| {
+                            Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
+                        })??;
                     self.send_status_response(0, "", plist::Value::Dictionary(listing))
                         .await?;
                 }
@@ -492,10 +504,13 @@ where
                                 "copy item missing destination: {message:?}"
                             ))
                         })?;
-                    copy_item(
-                        &resolve_relative_path(layout, src)?,
-                        &resolve_relative_path(layout, dst)?,
-                    )?;
+                    let src_path = resolve_relative_path(layout, src)?;
+                    let dst_path = resolve_relative_path(layout, dst)?;
+                    tokio::task::spawn_blocking(move || copy_item(&src_path, &dst_path))
+                        .await
+                        .map_err(|e| {
+                            Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
+                        })??;
                     self.send_status_response(
                         0,
                         "",
@@ -530,9 +545,9 @@ where
             let file_name = read_prefixed_string(self.device_link.stream_mut()).await?;
             let output_path = resolve_relative_path(layout, &file_name)?;
             if let Some(parent) = output_path.parent() {
-                fs::create_dir_all(parent)?;
+                tokio::fs::create_dir_all(parent).await?;
             }
-            let mut file = File::create(&output_path)?;
+            let mut file = tokio::fs::File::create(&output_path).await?;
 
             loop {
                 let frame_size = read_u32_be(self.device_link.stream_mut()).await?;
@@ -550,7 +565,9 @@ where
                     .await?;
 
                 match code[0] {
-                    FILE_TRANSFER_CODE_FILE_DATA => file.write_all(&payload)?,
+                    FILE_TRANSFER_CODE_FILE_DATA => {
+                        tokio::io::AsyncWriteExt::write_all(&mut file, &payload).await?
+                    }
                     FILE_TRANSFER_CODE_SUCCESS => break,
                     FILE_TRANSFER_CODE_REMOTE_ERROR => {
                         let message = String::from_utf8_lossy(&payload);
@@ -613,7 +630,7 @@ where
             let local_path = resolve_relative_path(layout, rel)?;
             write_prefixed_string(self.device_link.stream_mut(), rel).await?;
 
-            match fs::read(&local_path) {
+            match tokio::fs::read(&local_path).await {
                 Ok(contents) => {
                     let mut offset = 0usize;
                     while offset < contents.len() {

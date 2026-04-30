@@ -104,8 +104,11 @@ impl DproxyCmd {
                         counter,
                         timestamp_ms()
                     ));
-                    let mut recorder =
-                        ios_core::dproxy::ProxyRecorder::new(&capture_dir, protocol)?;
+                    let mut recorder = tokio::task::spawn_blocking({
+                        let dir = capture_dir.clone();
+                        move || ios_core::dproxy::ProxyRecorder::new(&dir, protocol)
+                    })
+                    .await??;
                     eprintln!(
                         "accepted {} -> capture {}",
                         peer,

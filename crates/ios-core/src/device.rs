@@ -1261,7 +1261,12 @@ async fn establish_direct_tunnel_stream(
             .ok_or_else(|| CoreError::Other("direct handshake response missing body".into()))?,
     )?;
 
-    let loaded = load_remote_pairing_credentials(&remote_identifier)?;
+    let loaded = {
+        let id = remote_identifier.clone();
+        tokio::task::spawn_blocking(move || load_remote_pairing_credentials(&id))
+            .await
+            .map_err(|e| CoreError::Other(format!("spawn_blocking join error: {e}")))?
+    }?;
 
     let mut our_secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut our_secret);
@@ -1367,7 +1372,12 @@ async fn establish_remote_pairing_tunnel_stream(
     host: &str,
     port: u16,
 ) -> Result<GuardedTunnelStream<RemotePairingControlChannel>, CoreError> {
-    let loaded = load_remote_pairing_credentials(remote_identifier)?;
+    let loaded = {
+        let id = remote_identifier.to_owned();
+        tokio::task::spawn_blocking(move || load_remote_pairing_credentials(&id))
+            .await
+            .map_err(|e| CoreError::Other(format!("spawn_blocking join error: {e}")))?
+    }?;
     let mut control = RemotePairingControlChannel::connect(host, port).await?;
     let mut sequence_number = 0u64;
 
