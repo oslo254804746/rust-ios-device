@@ -7,15 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const SERVICE_NAME: &str = "com.apple.idamd";
 pub const RSD_SERVICE_NAME: &str = "com.apple.idamd.shim.remote";
 
-#[derive(Debug, thiserror::Error)]
-pub enum IdamError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(IdamError);
 
 pub struct IdamClient<S> {
     stream: S,

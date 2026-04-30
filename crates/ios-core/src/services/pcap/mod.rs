@@ -12,15 +12,7 @@ const FAKE_ETHERNET_HEADER: [u8; 14] = [
     0xbe, 0xfe, 0xbe, 0xfe, 0xbe, 0xfe, 0xbe, 0xfe, 0xbe, 0xfe, 0xbe, 0xfe, 0x08, 0x00,
 ];
 
-#[derive(Debug, thiserror::Error)]
-pub enum PcapError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(PcapError);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedPacket {

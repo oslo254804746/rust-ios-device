@@ -1,15 +1,7 @@
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, thiserror::Error)]
-pub enum DeviceLinkError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(DeviceLinkError);
 
 pub struct DeviceLinkClient<S> {
     stream: S,

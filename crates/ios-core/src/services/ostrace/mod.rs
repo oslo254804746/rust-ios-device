@@ -8,15 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const SERVICE_NAME: &str = "com.apple.os_trace_relay";
 pub const SHIM_SERVICE_NAME: &str = "com.apple.os_trace_relay.shim.remote";
 
-#[derive(Debug, thiserror::Error)]
-pub enum OsTraceError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(OsTraceError);
 
 pub struct OsTraceClient<S> {
     stream: S,

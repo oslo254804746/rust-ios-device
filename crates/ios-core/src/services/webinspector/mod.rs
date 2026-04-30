@@ -13,19 +13,17 @@ pub const RSD_SERVICE_NAME: &str = "com.apple.webinspector.shim.remote";
 pub const SAFARI_BUNDLE_ID: &str = "com.apple.mobilesafari";
 const MAX_PLIST_SIZE: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, thiserror::Error)]
-pub enum WebInspectorError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
+service_error!(
+    WebInspectorError,
+    between {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+    },
+    after {
     #[error("timed out waiting for webinspector response after {0:?}")]
     Timeout(Duration),
-}
+    },
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

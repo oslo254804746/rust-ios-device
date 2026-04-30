@@ -79,17 +79,14 @@ pub struct RestoreResult {
     pub protocol_version: f64,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Mobilebackup2Error {
+service_error!(
+    Mobilebackup2Error,
+    before {
     #[error("device link error: {0}")]
     DeviceLink(#[from] DeviceLinkError),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+    },
+    after {},
+);
 
 pub struct Mobilebackup2Client<S> {
     device_link: DeviceLinkClient<S>,

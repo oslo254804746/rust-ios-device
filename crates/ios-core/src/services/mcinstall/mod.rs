@@ -10,17 +10,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.MCInstall";
 
-#[derive(Debug, thiserror::Error)]
-pub enum McInstallError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+service_error!(
+    McInstallError,
     #[error("crypto error: {0}")]
     Crypto(String),
-}
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProfileInfo {

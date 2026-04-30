@@ -8,17 +8,11 @@ use crate::services::afc::{AfcClient, AfcError};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.house_arrest";
 
-#[derive(Debug, thiserror::Error)]
-pub enum HouseArrestError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+service_error!(
+    HouseArrestError,
     #[error("house arrest error: {0}")]
     Service(String),
-}
+);
 
 impl From<AfcError> for HouseArrestError {
     fn from(err: AfcError) -> Self {

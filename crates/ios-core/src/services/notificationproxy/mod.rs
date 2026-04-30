@@ -19,19 +19,13 @@ pub enum NotificationEvent {
     ProxyDeath,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum NotificationProxyError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+service_error!(
+    NotificationProxyError,
     #[error("proxy closed before notification arrived")]
     ProxyDeath,
     #[error("timed out waiting for notification")]
     Timeout,
-}
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationProxyEvent {
