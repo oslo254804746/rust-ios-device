@@ -47,6 +47,8 @@ pub(crate) mod pairing_transport;
 pub(crate) mod proto;
 pub(crate) mod psk_tls;
 pub mod services;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub(crate) mod tunnel;
 pub(crate) mod xpc;
 
