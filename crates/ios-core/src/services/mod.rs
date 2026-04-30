@@ -140,6 +140,7 @@ pub mod dproxy;
 #[cfg(feature = "webinspector")]
 pub mod webinspector;
 
+#[cfg(feature = "mobileactivation")]
 pub mod mobileactivation;
 pub mod simlocation;
 
@@ -147,4 +148,5 @@ pub mod simlocation;
 pub mod imagemounter;
 
 // Always-available modules
+#[cfg(feature = "diagnostics")]
 pub mod diagnostics;

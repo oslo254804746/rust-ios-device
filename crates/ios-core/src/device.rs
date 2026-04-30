@@ -82,9 +82,9 @@ const DIRECT_CONTROL_CHANNEL_ORIGIN: &str = "host";
 
 pub struct ConnectedDevice {
     pub info: DeviceInfo,
-    pub tunnel: Option<Arc<TunnelHandle>>,
+    pub(crate) tunnel: Option<Arc<TunnelHandle>>,
     /// RSD service directory (only available after tunnel is up on iOS 17+)
-    pub rsd: Option<RsdHandshake>,
+    pub(crate) rsd: Option<RsdHandshake>,
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
 }
@@ -120,6 +120,21 @@ fn should_strip_service_ssl(service_name: &str) -> bool {
 }
 
 impl ConnectedDevice {
+    /// The RSD handshake result, if available (iOS 17+ with tunnel).
+    pub fn rsd(&self) -> Option<&RsdHandshake> {
+        self.rsd.as_ref()
+    }
+
+    /// Take ownership of the RSD handshake, consuming it from the device.
+    pub fn into_rsd(self) -> Option<RsdHandshake> {
+        self.rsd
+    }
+
+    /// The tunnel handle, if a tunnel is active.
+    pub fn tunnel_handle(&self) -> Option<&Arc<TunnelHandle>> {
+        self.tunnel.as_ref()
+    }
+
     pub fn server_address(&self) -> Option<&str> {
         self.tunnel.as_ref().map(|t| t.info.server_address.as_str())
     }
@@ -692,7 +707,11 @@ pub async fn connect_tcp_lockdown_tunnel(
 }
 
 pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
-    let wifi_mac_to_udid = load_wifi_mac_pairings()?;
+    let wifi_mac_to_udid =
+        tokio::task::spawn_blocking(load_wifi_mac_pairings)
+            .await
+            .map_err(|e| CoreError::Other(format!("join error: {e}")))?
+            ?;
     let services = browse_mobdev2(MOBDEV2_DISCOVERY_TIMEOUT).await?;
     Ok(match_paired_mobdev2_targets(&services, &wifi_mac_to_udid))
 }

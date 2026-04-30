@@ -49,7 +49,7 @@ where
         .unwrap_or("app.ipa");
 
     // 1. Read and extract the IPA entries (decompress in memory)
-    let ipa_data = std::fs::read(ipa_path)?;
+    let ipa_data = tokio::fs::read(ipa_path).await?;
     let entries = extract_zip_entries(&ipa_data)?;
 
     // Calculate totals for ZipMetadata

@@ -5,7 +5,7 @@ use ios_core::lockdown::session::{
     handshake_only_service_tls, start_lockdown_session, start_service,
 };
 use ios_core::lockdown::LOCKDOWN_PORT;
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::io::{AsyncRead, AsyncWrite};

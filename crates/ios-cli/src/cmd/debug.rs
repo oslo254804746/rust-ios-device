@@ -48,8 +48,7 @@ impl DebugCmd {
             .server_address()
             .ok_or_else(|| anyhow::anyhow!("missing tunnel server address"))?;
         let port = device
-            .rsd
-            .as_ref()
+            .rsd()
             .and_then(|rsd| rsd.get_port(DEBUGPROXY_SERVICE))
             .ok_or_else(|| {
                 anyhow::anyhow!("service '{DEBUGPROXY_SERVICE}' not found in RSD directory")

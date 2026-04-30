@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use ios_core::tunnel::TunMode;
 use ios_core::{
     connect, connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
@@ -585,8 +585,7 @@ impl ManagedTunnel {
 
     fn is_alive(&self) -> bool {
         self.device
-            .tunnel
-            .as_ref()
+            .tunnel_handle()
             .map(|tunnel| tunnel.is_alive())
             .unwrap_or(false)
     }

@@ -40,7 +40,7 @@ impl RsdCmd {
         };
         let device = connect(&udid, opts).await?;
         let rsd = device
-            .rsd
+            .into_rsd()
             .ok_or_else(|| anyhow::anyhow!("RSD not available on this device/session"))?;
 
         match self.sub {

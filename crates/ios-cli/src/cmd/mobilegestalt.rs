@@ -43,7 +43,7 @@ impl MobileGestaltCmd {
                 )
                 .await
                 {
-                    Ok(device) => describe_deviceinfo_service(device.rsd.as_ref()),
+                    Ok(device) => describe_deviceinfo_service(device.rsd()),
                     Err(err) => {
                         format!("failed to inspect RSD services for CoreDevice fallback: {err}")
                     }

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use ios_core::apps::{AppInfo, InstallationProxy};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::instruments::process_control::ProcessControl;
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ios_core::lockdown::pair_record::{default_pair_record_path, PairRecord};
 use ios_core::lockdown::supervised_pair;
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use serde::Serialize;
 use tokio_stream::StreamExt;
 

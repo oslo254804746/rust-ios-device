@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use ios_core::device::ServiceStream;
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

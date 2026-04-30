@@ -12,10 +12,10 @@ pub mod device;
 pub mod discovery;
 pub mod error;
 pub mod lockdown;
-pub mod mux;
+pub(crate) mod mux;
 pub mod pairing_transport;
 pub mod proto;
-pub mod psk_tls;
+pub(crate) mod psk_tls;
 pub mod services;
 pub mod tunnel;
 pub mod xpc;
@@ -97,7 +97,11 @@ pub use services::syslog;
 pub use services::testmanager;
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
-pub use services::{backup2, device_link, diagnostics, mobileactivation, simlocation};
+pub use services::{backup2, device_link, simlocation};
+#[cfg(feature = "diagnostics")]
+pub use services::diagnostics;
+#[cfg(feature = "mobileactivation")]
+pub use services::mobileactivation;
 pub use tunnel::TunMode;
 pub use xpc::{RsdHandshake, ServiceDescriptor, XpcMessage, XpcValue};
 

@@ -13,10 +13,6 @@ categories.workspace = true
 
 [features]
 default = []
-core = []
-lockdown = []
-tunnel = []
-remote = []
 classic = [
     "afc",
     "apps",
@@ -26,7 +22,6 @@ classic = [
     "heartbeat",
     "house_arrest",
     "installation",
-    "lockdown",
     "mcinstall",
     "mobileactivation",
     "notificationproxy",
@@ -65,7 +60,6 @@ ios17 = [
     "fileservice",
     "instruments",
     "testmanager",
-    "tunnel",
 ]
 afc = []
 arbitration = []

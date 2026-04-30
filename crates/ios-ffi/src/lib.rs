@@ -429,9 +429,7 @@ pub unsafe extern "C" fn ios_start_tunnel(
         Ok(device) => {
             let server_address = device.server_address().unwrap_or("").to_string();
             let rsd_port = device
-                .tunnel
-                .as_ref()
-                .map(|t| t.info.server_rsd_port)
+                .rsd_port()
                 .unwrap_or(0);
             let userspace_port = device.userspace_port().unwrap_or(0);
             let tunnel = Box::new(IosTunnel {

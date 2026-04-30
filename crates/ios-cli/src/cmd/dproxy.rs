@@ -7,7 +7,7 @@ use ios_core::lockdown::protocol::{
     StartServiceResponse, StartSessionRequest, StartSessionResponse, LOCKDOWN_PORT,
 };
 use ios_core::lockdown::session::{strip_service_tls, wrap_service_tls};
-use ios_core::mux::MuxClient;
+use ios_core::MuxClient;
 use ios_core::tunnel::TunMode;
 use ios_core::{connect, ConnectOptions, ServiceStream};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
@@ -199,7 +199,7 @@ async fn connect_dproxy_device(
         }
         DproxyConnectPlan::Auto => match connect_tunnel_device(udid).await {
             Ok(device) => {
-                let transport = choose_transport(device.rsd.as_ref(), service, TransportArg::Auto);
+                let transport = choose_transport(device.rsd(), service, TransportArg::Auto);
                 if transport == TransportKind::Rsd {
                     Ok((device, transport))
                 } else {

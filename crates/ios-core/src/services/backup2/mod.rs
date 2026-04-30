@@ -979,6 +979,11 @@ fn device_link_local_wall_clock(modified: SystemTime) -> SystemTime {
     local_wall_clock.into()
 }
 
+/// Maximum size for a length-prefixed string (64 KiB). Device names and file
+/// paths are never anywhere near this limit; the guard protects against
+/// corrupted or malicious size fields causing unbounded allocation.
+const MAX_PREFIXED_STRING_SIZE: usize = 64 * 1024;
+
 async fn read_prefixed_string<S>(stream: &mut S) -> Result<String, Mobilebackup2Error>
 where
     S: AsyncRead + Unpin,
@@ -986,6 +991,11 @@ where
     let size = read_u32_be(stream).await? as usize;
     if size == 0 {
         return Ok(String::new());
+    }
+    if size > MAX_PREFIXED_STRING_SIZE {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "prefixed string too large: {size} bytes (max {MAX_PREFIXED_STRING_SIZE})"
+        )));
     }
 
     let mut buf = vec![0u8; size];
@@ -1265,5 +1275,29 @@ mod tests {
         assert!(!should_suppress_disconnect_error(
             &DeviceLinkError::Protocol("disconnect protocol mismatch".into(),)
         ));
+    }
+
+    #[tokio::test]
+    async fn read_prefixed_string_rejects_oversized_allocation() {
+        // Craft a size field that exceeds MAX_PREFIXED_STRING_SIZE
+        let size = (MAX_PREFIXED_STRING_SIZE as u32) + 1;
+        let data = size.to_be_bytes();
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let err = read_prefixed_string(&mut cursor).await.unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "expected size guard error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_prefixed_string_accepts_normal_size() {
+        let payload = b"hello";
+        let size = (payload.len() as u32).to_be_bytes();
+        let mut data = size.to_vec();
+        data.extend_from_slice(payload);
+        let mut cursor = std::io::Cursor::new(data);
+        let result = read_prefixed_string(&mut cursor).await.unwrap();
+        assert_eq!(result, "hello");
     }
 }

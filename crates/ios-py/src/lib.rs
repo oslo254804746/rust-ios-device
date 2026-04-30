@@ -161,15 +161,12 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
 
     let server_address = device.server_address().unwrap_or("").to_string();
     let rsd_port = device
-        .tunnel
-        .as_ref()
-        .map(|t| t.info.server_rsd_port)
+        .rsd_port()
         .unwrap_or(0);
     let userspace_port = device.userspace_port();
 
     let services: Vec<String> = device
-        .rsd
-        .as_ref()
+        .rsd()
         .map(|r| r.services.keys().cloned().collect())
         .unwrap_or_default();
 
