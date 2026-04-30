@@ -110,3 +110,59 @@ impl Default for TunnelManager {
         Self::new(TunMode::Userspace)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn tunnel_info() -> TunnelInfo {
+        TunnelInfo {
+            server_address: "fd59:2381:6956::1".into(),
+            server_rsd_port: 58783,
+            client_address: "fd59:2381:6956::2".into(),
+            client_mtu: 1280,
+        }
+    }
+
+    #[test]
+    fn tunnel_handle_kernel_liveness_tracks_cancel_receiver() {
+        let (handle, cancel_rx) = TunnelHandle::new("test-udid".into(), tunnel_info(), None);
+
+        assert!(handle.is_alive());
+
+        drop(cancel_rx);
+        assert!(!handle.is_alive());
+    }
+
+    #[tokio::test]
+    async fn tunnel_manager_register_find_list_and_stop() {
+        let manager = TunnelManager::new(TunMode::Kernel);
+        let (handle, cancel_rx) = TunnelHandle::new("test-udid".into(), tunnel_info(), None);
+        let handle = Arc::new(handle);
+
+        manager.register(handle.clone()).await;
+
+        assert!(Arc::ptr_eq(
+            &manager.find("test-udid").await.unwrap(),
+            &handle
+        ));
+        assert!(manager.find("missing").await.is_none());
+        assert_eq!(manager.list().await.len(), 1);
+        assert_eq!(manager.list().await[0].udid, "test-udid");
+
+        assert!(manager.stop("test-udid").await);
+        assert!(!manager.stop("test-udid").await);
+        assert!(manager.find("test-udid").await.is_none());
+        assert!(manager.list().await.is_empty());
+
+        drop(cancel_rx);
+    }
+
+    #[test]
+    fn tunnel_manager_default_uses_userspace_mode() {
+        let manager = TunnelManager::default();
+        assert_eq!(manager.mode, TunMode::Userspace);
+    }
+}
