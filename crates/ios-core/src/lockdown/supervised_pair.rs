@@ -632,31 +632,6 @@ pub fn save_pair_record(
     Ok(())
 }
 
-/// Retrieve the WiFi MAC address from lockdown on a raw (non-TLS) stream.
-pub async fn get_wifi_address<S>(stream: &mut S) -> Result<Option<String>, LockdownError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let request = GetValueRequest {
-        label: "ios-rs",
-        request: "GetValue",
-        domain: None,
-        key: Some("WiFiAddress"),
-    };
-    send_lockdown(stream, &request).await?;
-
-    let resp: GetValueRawResponse = recv_lockdown(stream).await?;
-    if resp.error.is_some() {
-        // WiFiAddress may not be available; this is non-fatal
-        return Ok(None);
-    }
-
-    match resp.value {
-        Some(plist::Value::String(s)) => Ok(Some(s)),
-        _ => Ok(None),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

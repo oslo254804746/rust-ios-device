@@ -262,11 +262,6 @@ where
     Ok((header, body))
 }
 
-/// Public wrapper for use by ios-core's device module.
-pub fn parse_handshake_message_pub(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
-    parse_handshake_message(msg)
-}
-
 fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
     let dict = msg
         .body

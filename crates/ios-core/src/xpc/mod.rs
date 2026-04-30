@@ -11,12 +11,8 @@ pub mod h2_raw;
 pub mod message;
 pub mod rsd;
 
-// Keep the old codec as a compatibility shim (still compiles)
-pub mod codec;
-
 pub use client::XpcClient;
 pub use message::{XpcMessage, XpcValue};
-pub use rsd::{RsdHandshake, ServiceDescriptor};
 
 /// Errors from XPC operations.
 #[derive(Debug, thiserror::Error)]

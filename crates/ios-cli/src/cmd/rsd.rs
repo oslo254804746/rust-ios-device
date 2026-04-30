@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 const COREDEVICE_PREFIX: &str = "com.apple.coredevice.";
@@ -89,7 +89,7 @@ struct ServiceCheckResult {
     port: Option<u16>,
 }
 
-fn service_check(rsd: &ios_core::xpc::rsd::RsdHandshake, service: &str) -> ServiceCheckResult {
+fn service_check(rsd: &ios_core::RsdHandshake, service: &str) -> ServiceCheckResult {
     if let Some(descriptor) = rsd.services.get(service) {
         return ServiceCheckResult {
             requested_name: service.to_string(),
@@ -110,7 +110,7 @@ fn service_check(rsd: &ios_core::xpc::rsd::RsdHandshake, service: &str) -> Servi
 }
 
 fn filtered_services(
-    rsd: &ios_core::xpc::rsd::RsdHandshake,
+    rsd: &ios_core::RsdHandshake,
     all: bool,
     prefix: Option<&str>,
 ) -> Vec<(String, u16)> {
@@ -130,7 +130,7 @@ mod tests {
     use std::collections::HashMap;
 
     use clap::Parser;
-    use ios_core::xpc::rsd::{RsdHandshake, ServiceDescriptor};
+    use ios_core::{RsdHandshake, ServiceDescriptor};
 
     use super::*;
 

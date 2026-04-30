@@ -5,7 +5,7 @@ use ios_core::afc::{AfcClient, AfcError, AfcStatusCode};
 use ios_core::apps::installation::InstallationProxy;
 use ios_core::notificationproxy::NotificationProxyClient;
 use ios_core::springboard::SpringboardClient;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::time::{sleep, Duration};
 
@@ -817,7 +817,7 @@ where
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use ios_core::lockdown::LockdownError;
+    use ios_core::LockdownError;
 
     use super::{
         build_backup_guid, format_protocol_version, plist_value_to_bool, resolve_will_encrypt,

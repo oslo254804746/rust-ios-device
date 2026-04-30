@@ -3,8 +3,8 @@ mod tests {
     use bytes::Bytes;
     use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
     use ios_core::dtx::{read_dtx_frame, DtxError, DtxPayload, NSObject};
-    use ios_core::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
     use ios_core::testmanager::TestmanagerClient;
+    use ios_core::{NsUrl, XcTestConfiguration, XctCapabilities};
     use tokio::io::{duplex, AsyncWriteExt};
     use uuid::Uuid;
 
@@ -294,9 +294,7 @@ mod tests {
             3,
             true,
             2,
-            &ios_core::proto::nskeyedarchiver_encode::archive_string(
-                "_XCT_testRunnerReadyWithCapabilities:",
-            ),
+            &ios_core::archive_string("_XCT_testRunnerReadyWithCapabilities:"),
             &[],
         );
         server.write_all(&incoming).await.unwrap();
@@ -351,12 +349,11 @@ mod tests {
         let (client, mut server) = duplex(4096);
         let mut testmanager = TestmanagerClient::from_session_connection_for_test(client, 3);
 
-        let selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_XCT_testBundleReadyWithProtocolVersion:minimumVersion:",
-        );
+        let selector =
+            ios_core::archive_string("_XCT_testBundleReadyWithProtocolVersion:minimumVersion:");
         let aux = encode_primitive_dict(&[
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(36)),
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
+            archived_object(ios_core::archive_int(36)),
+            archived_object(ios_core::archive_int(25)),
         ]);
         let incoming = ios_core::dtx::encode_dtx(7, 0, 3, false, 2, &selector, &aux);
         server.write_all(&incoming).await.unwrap();
@@ -408,22 +405,19 @@ mod tests {
                 .unwrap()
         });
 
-        let bundle_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_XCT_testBundleReadyWithProtocolVersion:minimumVersion:",
-        );
+        let bundle_selector =
+            ios_core::archive_string("_XCT_testBundleReadyWithProtocolVersion:minimumVersion:");
         let bundle_aux = encode_primitive_dict(&[
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(36)),
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
+            archived_object(ios_core::archive_int(36)),
+            archived_object(ios_core::archive_int(25)),
         ]);
         let bundle_ready =
             ios_core::dtx::encode_dtx(8, 0, 3, false, 2, &bundle_selector, &bundle_aux);
         server.write_all(&bundle_ready).await.unwrap();
 
-        let runner_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_XCT_testRunnerReadyWithCapabilities:",
-        );
+        let runner_selector = ios_core::archive_string("_XCT_testRunnerReadyWithCapabilities:");
         let runner_aux = encode_primitive_dict(&[archived_object(
-            ios_core::proto::nskeyedarchiver_encode::archive_xct_capabilities(XctCapabilities {
+            ios_core::archive_xct_capabilities(XctCapabilities {
                 capabilities: vec![(
                     "XCTIssue capability".to_string(),
                     plist::Value::Boolean(true),
@@ -508,12 +502,10 @@ mod tests {
             testmanager.start_executing_test_plan().await.unwrap();
         });
 
-        let selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_requestChannelWithCode:identifier:",
-        );
+        let selector = ios_core::archive_string("_requestChannelWithCode:identifier:");
         let aux = encode_primitive_dict(&[
             ios_core::dtx::PrimArg::Int32(1),
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_string(
+            archived_object(ios_core::archive_string(
                 "dtxproxy:XCTestDriverInterface:XCTestManager_IDEInterface",
             )),
         ]);
@@ -590,28 +582,25 @@ mod tests {
                 4,
                 false,
                 3,
-                &ios_core::proto::nskeyedarchiver_encode::archive_bool(true),
+                &ios_core::archive_bool(true),
                 &[],
             ))
             .await
             .unwrap();
 
-        let bundle_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_XCT_testBundleReadyWithProtocolVersion:minimumVersion:",
-        );
+        let bundle_selector =
+            ios_core::archive_string("_XCT_testBundleReadyWithProtocolVersion:minimumVersion:");
         let bundle_aux = encode_primitive_dict(&[
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(36)),
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_int(25)),
+            archived_object(ios_core::archive_int(36)),
+            archived_object(ios_core::archive_int(25)),
         ]);
         let bundle_ready =
             ios_core::dtx::encode_dtx(12, 0, 3, false, 2, &bundle_selector, &bundle_aux);
         session_server.write_all(&bundle_ready).await.unwrap();
 
-        let runner_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_XCT_testRunnerReadyWithCapabilities:",
-        );
+        let runner_selector = ios_core::archive_string("_XCT_testRunnerReadyWithCapabilities:");
         let runner_aux = encode_primitive_dict(&[archived_object(
-            ios_core::proto::nskeyedarchiver_encode::archive_xct_capabilities(XctCapabilities {
+            ios_core::archive_xct_capabilities(XctCapabilities {
                 capabilities: vec![(
                     "XCTIssue capability".to_string(),
                     plist::Value::Boolean(true),
@@ -626,12 +615,10 @@ mod tests {
         assert_eq!(runner_response.identifier, 13);
         assert_eq!(runner_response.conversation_idx, 1);
 
-        let request_selector = ios_core::proto::nskeyedarchiver_encode::archive_string(
-            "_requestChannelWithCode:identifier:",
-        );
+        let request_selector = ios_core::archive_string("_requestChannelWithCode:identifier:");
         let request_aux = encode_primitive_dict(&[
             ios_core::dtx::PrimArg::Int32(1),
-            archived_object(ios_core::proto::nskeyedarchiver_encode::archive_string(
+            archived_object(ios_core::archive_string(
                 "dtxproxy:XCTestDriverInterface:XCTestManager_IDEInterface",
             )),
         ]);
@@ -710,7 +697,7 @@ mod tests {
                 4,
                 false,
                 3,
-                &ios_core::proto::nskeyedarchiver_encode::archive_bool(false),
+                &ios_core::archive_bool(false),
                 &[],
             ))
             .await
@@ -755,7 +742,7 @@ mod tests {
                 4,
                 false,
                 3,
-                &ios_core::proto::nskeyedarchiver_encode::archive_string("selector failed"),
+                &ios_core::archive_string("selector failed"),
                 &[],
             ))
             .await

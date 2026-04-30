@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 const ACTIVATION_USER_AGENT: &str = "iOS Device Activator (MobileActivation-592.103.2)";

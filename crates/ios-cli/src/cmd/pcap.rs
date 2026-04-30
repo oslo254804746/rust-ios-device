@@ -7,7 +7,7 @@ use ios_core::pcap::{
     write_global_header, write_packet_record, CapturedPacket, PacketFilter, PcapClient,
     SERVICE_NAME,
 };
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use serde::Serialize;
 use tokio::time::{timeout, Instant};

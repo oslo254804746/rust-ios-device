@@ -61,8 +61,6 @@ pub struct H2Framer<S> {
 
 #[derive(Debug, Clone)]
 pub struct DataFrame {
-    pub stream_id: u32,
-    pub flags: u8,
     pub payload: Bytes,
 }
 
@@ -244,8 +242,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         self.stream.flush().await?;
                     }
                     return Ok(DataFrame {
-                        stream_id: frame.stream_id,
-                        flags: frame.flags,
                         payload: Bytes::from(frame.payload),
                     });
                 }
@@ -278,16 +274,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(())
     }
 
-    /// Open stream 1 with an empty HEADERS frame if it is not open yet.
-    pub async fn open_client_server(&mut self) -> Result<(), H2Error> {
-        self.open_stream(STREAM_CLIENT_SERVER).await
-    }
-
-    /// Open stream 3 with an empty HEADERS frame if it is not open yet.
-    pub async fn open_server_client(&mut self) -> Result<(), H2Error> {
-        self.open_stream(STREAM_SERVER_CLIENT).await
-    }
-
     /// Open an arbitrary stream with an empty HEADERS frame if it is not open yet.
     pub async fn open_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
         let already_open = match stream_id {
@@ -308,14 +294,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Process any pending frames (drain incoming data into buffers).
-    pub async fn poll_frames(&mut self) -> Result<(), H2Error> {
-        // Non-blocking poll: try to read frames if there's data available
-        // We rely on the individual read_* calls to refill buffers; this is a helper
-        // for situations where we want to ensure the buffers are current.
         Ok(())
     }
 
@@ -413,8 +391,6 @@ pub enum H2Error {
     Io(#[from] std::io::Error),
     #[error("H2 protocol error: {0}")]
     Protocol(String),
-    #[error("GOAWAY received")]
-    GoAway,
 }
 
 #[cfg(test)]

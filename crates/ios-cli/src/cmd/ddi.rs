@@ -88,7 +88,7 @@ impl DdiCmd {
 
 async fn run_status(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -118,7 +118,7 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
 
 async fn run_list(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -160,7 +160,7 @@ async fn run_list(udid: String, json: bool) -> Result<()> {
 
 async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -194,7 +194,7 @@ async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> 
 
 async fn run_devices(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -228,7 +228,7 @@ async fn run_devices(udid: String, json: bool) -> Result<()> {
 
 async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -276,7 +276,7 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
 
 async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -309,7 +309,7 @@ async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
 
 async fn run_nonce(udid: String, json: bool, image_type: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -338,7 +338,7 @@ async fn run_personalization_identifiers(
     image_type: String,
 ) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -366,7 +366,7 @@ async fn run_personalization_identifiers(
 
 async fn run_unmount(udid: String) -> Result<()> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -411,7 +411,7 @@ async fn run_mount(
     use ios_core::imagemounter::ImageMounterClient;
 
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };

@@ -6,7 +6,7 @@ use ios_core::accessibility_audit::{
     AccessibilityAuditClient, FocusElement, MoveDirection, RSD_SERVICE_NAME, SERVICE_NAME,
 };
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 
 const MAX_CONSECUTIVE_FOCUS_TIMEOUTS: usize = 5;
 

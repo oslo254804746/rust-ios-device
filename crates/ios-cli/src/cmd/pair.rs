@@ -1,7 +1,6 @@
 use anyhow::Result;
-use ios_core::lockdown::pair_record::{default_pair_record_path, PairRecord};
-use ios_core::lockdown::supervised_pair;
 use ios_core::MuxClient;
+use ios_core::{default_pair_record_path, PairRecord, LOCKDOWN_PORT};
 use serde::Serialize;
 use tokio_stream::StreamExt;
 
@@ -134,7 +133,7 @@ impl PairCmd {
             host_private_key_hex: Some(hex::encode(&creds.host_private_key)),
             remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
             device_address: device_addr.to_string(),
-            rsd_port: ios_core::xpc::rsd::RSD_PORT,
+            rsd_port: ios_core::RSD_PORT,
         };
         persisted.save(&creds_dir)?;
         let remote_pair_record = ios_core::RemotePairingRecord {
@@ -223,7 +222,7 @@ async fn wifi_pair(
         host_private_key_hex: Some(hex::encode(&creds.host_private_key)),
         remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
         device_address: device_addr.to_string(),
-        rsd_port: ios_core::xpc::rsd::RSD_PORT,
+        rsd_port: ios_core::RSD_PORT,
     };
     persisted.save(&creds_dir)?;
     let remote_pair_record = ios_core::RemotePairingRecord {
@@ -281,9 +280,7 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     // Need a fresh MuxClient because connect_to_port consumes self
     let mut mux2 = MuxClient::connect().await?;
     mux2.read_pair_record(udid).await.ok(); // best-effort
-    let mut stream = mux2
-        .connect_to_port(device_id, ios_core::lockdown::LOCKDOWN_PORT)
-        .await?;
+    let mut stream = mux2.connect_to_port(device_id, LOCKDOWN_PORT).await?;
 
     // 4. Optionally get WiFi address before pairing (uses the same raw stream)
     //    We skip this because the stream will be consumed by the pair protocol.
@@ -292,11 +289,11 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     // 5. Run supervised pairing protocol
     eprintln!("Starting supervised pairing for device {}...", serial);
     let (pair_record, escrow_bag) =
-        supervised_pair::pair_supervised(&mut stream, &p12_bytes, password, &buid).await?;
+        ios_core::pair_supervised(&mut stream, &p12_bytes, password, &buid).await?;
 
     // 6. Save pair record to disk
     let pair_record_path = default_pair_record_path(udid);
-    supervised_pair::save_pair_record(&pair_record, &escrow_bag, None, &pair_record_path)?;
+    ios_core::save_pair_record(&pair_record, &escrow_bag, None, &pair_record_path)?;
 
     if json {
         println!(

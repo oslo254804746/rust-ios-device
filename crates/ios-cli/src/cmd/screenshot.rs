@@ -79,7 +79,7 @@ async fn try_dtx_screenshot(udid: &str) -> Result<Bytes> {
 
 async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };

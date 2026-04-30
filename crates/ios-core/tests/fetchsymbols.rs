@@ -2,7 +2,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use indexmap::IndexMap;
+use ios_core::{decode_xpc_message, encode_xpc_message, xpc_message_flags, XpcMessage, XpcValue};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 struct MockStream {
     read_buf: Vec<u8>,
@@ -116,19 +119,19 @@ async fn remote_list_files_bootstraps_xpc_and_decodes_catalog() {
         let request_dict = request_body.as_dict().expect("request dict");
         assert!(matches!(
             request_dict.get("DSCFilePaths"),
-            Some(ios_core::xpc::XpcValue::Array(paths)) if paths.is_empty()
+            Some(XpcValue::Array(paths)) if paths.is_empty()
         ));
         assert!(matches!(
             request_dict.get("XPCDictionary_sideChannel"),
-            Some(ios_core::xpc::XpcValue::Uuid(_))
+            Some(XpcValue::Uuid(_))
         ));
 
         write_xpc_response(
             &mut server,
             3,
-            ios_core::xpc::XpcValue::Dictionary(IndexMap::from([(
+            XpcValue::Dictionary(IndexMap::from([(
                 "DSCFilePaths".to_string(),
-                ios_core::xpc::XpcValue::Uint64(2),
+                XpcValue::Uint64(2),
             )])),
         )
         .await;
@@ -182,9 +185,9 @@ async fn remote_download_opens_file_stream_and_copies_bytes() {
         write_xpc_response(
             &mut server,
             3,
-            ios_core::xpc::XpcValue::Dictionary(IndexMap::from([(
+            XpcValue::Dictionary(IndexMap::from([(
                 "DSCFilePaths".to_string(),
-                ios_core::xpc::XpcValue::Uint64(2),
+                XpcValue::Uint64(2),
             )])),
         )
         .await;
@@ -198,8 +201,7 @@ async fn remote_download_opens_file_stream_and_copies_bytes() {
         let open = read_xpc_request(&mut server, 4).await;
         assert_eq!(
             open.flags,
-            ios_core::xpc::message::flags::ALWAYS_SET
-                | ios_core::xpc::message::flags::FILE_TX_STREAM_RESPONSE
+            xpc_message_flags::ALWAYS_SET | xpc_message_flags::FILE_TX_STREAM_RESPONSE
         );
         assert!(open.body.is_none());
 
@@ -235,7 +237,7 @@ where
     tokio::io::AsyncReadExt::read_exact(stream, &mut preface)
         .await
         .unwrap();
-    assert_eq!(&preface, ios_core::xpc::h2_raw::H2_PREFACE);
+    assert_eq!(&preface, H2_PREFACE);
 
     let settings = read_raw_frame(stream).await;
     assert_eq!(settings.frame_type, 0x04);
@@ -266,21 +268,18 @@ where
     write_empty_xpc(stream, 3).await;
 }
 
-fn remote_catalog_entry(path: &str, size: u64) -> ios_core::xpc::XpcValue {
-    ios_core::xpc::XpcValue::Dictionary(IndexMap::from([(
+fn remote_catalog_entry(path: &str, size: u64) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([(
         "DSCFilePaths".to_string(),
-        ios_core::xpc::XpcValue::Dictionary(IndexMap::from([
-            (
-                "filePath".to_string(),
-                ios_core::xpc::XpcValue::String(path.to_string()),
-            ),
+        XpcValue::Dictionary(IndexMap::from([
+            ("filePath".to_string(), XpcValue::String(path.to_string())),
             (
                 "fileTransfer".to_string(),
-                ios_core::xpc::XpcValue::FileTransfer {
+                XpcValue::FileTransfer {
                     msg_id: 0,
-                    data: Box::new(ios_core::xpc::XpcValue::Dictionary(IndexMap::from([(
+                    data: Box::new(XpcValue::Dictionary(IndexMap::from([(
                         "s".to_string(),
-                        ios_core::xpc::XpcValue::Uint64(size),
+                        XpcValue::Uint64(size),
                     )]))),
                 },
             ),
@@ -288,28 +287,23 @@ fn remote_catalog_entry(path: &str, size: u64) -> ios_core::xpc::XpcValue {
     )]))
 }
 
-fn remote_catalog_entry_nested(path: &str, size: u64, msg_id: u64) -> ios_core::xpc::XpcValue {
-    ios_core::xpc::XpcValue::Dictionary(IndexMap::from([(
+fn remote_catalog_entry_nested(path: &str, size: u64, msg_id: u64) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([(
         "DSCFilePaths".to_string(),
-        ios_core::xpc::XpcValue::Dictionary(IndexMap::from([
-            (
-                "filePath".to_string(),
-                ios_core::xpc::XpcValue::String(path.to_string()),
-            ),
+        XpcValue::Dictionary(IndexMap::from([
+            ("filePath".to_string(), XpcValue::String(path.to_string())),
             (
                 "fileTransfer".to_string(),
-                ios_core::xpc::XpcValue::Dictionary(IndexMap::from([
-                    (
-                        "expectedLength".to_string(),
-                        ios_core::xpc::XpcValue::Uint64(size),
-                    ),
+                XpcValue::Dictionary(IndexMap::from([
+                    ("expectedLength".to_string(), XpcValue::Uint64(size)),
                     (
                         "xpcFileTransfer".to_string(),
-                        ios_core::xpc::XpcValue::FileTransfer {
+                        XpcValue::FileTransfer {
                             msg_id,
-                            data: Box::new(ios_core::xpc::XpcValue::Dictionary(IndexMap::from([
-                                ("s".to_string(), ios_core::xpc::XpcValue::Uint64(size)),
-                            ]))),
+                            data: Box::new(XpcValue::Dictionary(IndexMap::from([(
+                                "s".to_string(),
+                                XpcValue::Uint64(size),
+                            )]))),
                         },
                     ),
                 ])),
@@ -328,14 +322,14 @@ where
     assert_eq!(frame.stream_id, stream_id);
 }
 
-async fn read_xpc_request<S>(stream: &mut S, stream_id: u32) -> ios_core::xpc::XpcMessage
+async fn read_xpc_request<S>(stream: &mut S, stream_id: u32) -> XpcMessage
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let frame = read_raw_frame(stream).await;
     assert_eq!(frame.frame_type, 0x00);
     assert_eq!(frame.stream_id, stream_id);
-    ios_core::xpc::message::decode_message(bytes::Bytes::from(frame.payload)).unwrap()
+    decode_xpc_message(bytes::Bytes::from(frame.payload)).unwrap()
 }
 
 async fn write_empty_xpc<S>(stream: &mut S, stream_id: u32)
@@ -347,8 +341,8 @@ where
         0x00,
         0,
         stream_id,
-        &ios_core::xpc::message::encode_message(&ios_core::xpc::XpcMessage {
-            flags: ios_core::xpc::message::flags::ALWAYS_SET,
+        &encode_xpc_message(&XpcMessage {
+            flags: xpc_message_flags::ALWAYS_SET,
             msg_id: 0,
             body: None,
         })
@@ -357,7 +351,7 @@ where
     .await;
 }
 
-async fn write_xpc_response<S>(stream: &mut S, stream_id: u32, body: ios_core::xpc::XpcValue)
+async fn write_xpc_response<S>(stream: &mut S, stream_id: u32, body: XpcValue)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -366,10 +360,10 @@ where
         0x00,
         0,
         stream_id,
-        &ios_core::xpc::message::encode_message(&ios_core::xpc::XpcMessage {
-            flags: ios_core::xpc::message::flags::ALWAYS_SET
-                | ios_core::xpc::message::flags::DATA
-                | ios_core::xpc::message::flags::REPLY,
+        &encode_xpc_message(&XpcMessage {
+            flags: xpc_message_flags::ALWAYS_SET
+                | xpc_message_flags::DATA
+                | xpc_message_flags::REPLY,
             msg_id: 1,
             body: Some(body),
         })
@@ -381,15 +375,13 @@ where
 async fn write_xpc_response_fragmented<S>(
     stream: &mut S,
     stream_id: u32,
-    body: ios_core::xpc::XpcValue,
+    body: XpcValue,
     split_at: usize,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let payload = ios_core::xpc::message::encode_message(&ios_core::xpc::XpcMessage {
-        flags: ios_core::xpc::message::flags::ALWAYS_SET
-            | ios_core::xpc::message::flags::DATA
-            | ios_core::xpc::message::flags::REPLY,
+    let payload = encode_xpc_message(&XpcMessage {
+        flags: xpc_message_flags::ALWAYS_SET | xpc_message_flags::DATA | xpc_message_flags::REPLY,
         msg_id: 1,
         body: Some(body),
     })
@@ -422,9 +414,8 @@ where
         0x00,
         0,
         stream_id,
-        &ios_core::xpc::message::encode_message(&ios_core::xpc::XpcMessage {
-            flags: ios_core::xpc::message::flags::ALWAYS_SET
-                | ios_core::xpc::message::flags::FILE_TX_STREAM_REQUEST,
+        &encode_xpc_message(&XpcMessage {
+            flags: xpc_message_flags::ALWAYS_SET | xpc_message_flags::FILE_TX_STREAM_REQUEST,
             msg_id: 0,
             body: None,
         })

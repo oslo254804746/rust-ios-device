@@ -100,7 +100,7 @@ async fn forward_client_connection(
 async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
     let device_id = lookup_device_id(udid).await?;
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: false,
     };

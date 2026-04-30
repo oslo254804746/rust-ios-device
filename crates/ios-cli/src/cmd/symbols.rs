@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]

@@ -107,7 +107,7 @@ impl AppsCmd {
             let probe = ios_core::connect(
                 &udid,
                 ios_core::device::ConnectOptions {
-                    tun_mode: ios_core::tunnel::TunMode::Userspace,
+                    tun_mode: ios_core::TunMode::Userspace,
                     pair_record_path: None,
                     skip_tunnel: true,
                 },
@@ -121,7 +121,7 @@ impl AppsCmd {
             true
         };
         let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_core::tunnel::TunMode::Userspace,
+            tun_mode: ios_core::TunMode::Userspace,
             pair_record_path: None,
             skip_tunnel,
         };

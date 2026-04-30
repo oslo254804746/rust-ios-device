@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]

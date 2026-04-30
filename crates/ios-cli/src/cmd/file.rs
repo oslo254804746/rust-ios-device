@@ -90,7 +90,7 @@ impl FileCmd {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for file commands"))?;
 
         let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_core::tunnel::TunMode::Userspace,
+            tun_mode: ios_core::TunMode::Userspace,
             pair_record_path: None,
             skip_tunnel: true,
         };

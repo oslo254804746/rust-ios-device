@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 const COREDEVICE_DEVICEINFO_SERVICE: &str = "com.apple.coredevice.deviceinfo";
@@ -69,7 +69,7 @@ impl MobileGestaltCmd {
     }
 }
 
-fn describe_deviceinfo_service(rsd: Option<&ios_core::xpc::rsd::RsdHandshake>) -> String {
+fn describe_deviceinfo_service(rsd: Option<&ios_core::RsdHandshake>) -> String {
     let Some(rsd) = rsd else {
         return "RSD is not available in this session, so CoreDevice mobilegestalt fallback cannot be attempted".to_string();
     };
@@ -127,7 +127,7 @@ mod tests {
     use std::collections::HashMap;
 
     use clap::Parser;
-    use ios_core::xpc::rsd::{RsdHandshake, ServiceDescriptor};
+    use ios_core::{RsdHandshake, ServiceDescriptor};
 
     use super::*;
 

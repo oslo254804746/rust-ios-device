@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use ios_core::springboard::{Icon, SpringboardClient};
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::fs;
 

@@ -6,19 +6,49 @@
 //! Key types:
 //! - [`device::IosDevice`] — connected device handle with service access
 //! - [`discovery`] — USB and network device discovery
+//!
+//! Internal transport modules are not part of the public API. Use top-level
+//! re-exports for supported types:
+//!
+//! ```
+//! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
+//! use ios_core::{default_pair_record_path, LockdownClient, LockdownError, PairRecord};
+//! use ios_core::{archive_string, NsUrl, XcTestConfiguration, XctCapabilities};
+//! use ios_core::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+//! ```
+//!
+//! ```compile_fail
+//! use ios_core::proto::nskeyedarchiver_encode::archive_string;
+//! ```
+//!
+//! ```compile_fail
+//! use ios_core::lockdown::PairRecord;
+//! ```
+//!
+//! ```compile_fail
+//! use ios_core::pairing_transport::UNTRUSTED_SERVICE_NAME;
+//! ```
+//!
+//! ```compile_fail
+//! use ios_core::tunnel::TunMode;
+//! ```
+//!
+//! ```compile_fail
+//! use ios_core::xpc::RsdHandshake;
+//! ```
 
 pub mod credentials;
 pub mod device;
 pub mod discovery;
 pub mod error;
-pub mod lockdown;
+pub(crate) mod lockdown;
 pub(crate) mod mux;
-pub mod pairing_transport;
-pub mod proto;
+pub(crate) mod pairing_transport;
+pub(crate) mod proto;
 pub(crate) mod psk_tls;
 pub mod services;
-pub mod tunnel;
-pub mod xpc;
+pub(crate) mod tunnel;
+pub(crate) mod xpc;
 
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
 pub use device::{
@@ -30,9 +60,24 @@ pub use discovery::{
     browse_mobdev2, browse_remotepairing, BonjourService, DeviceEvent, DeviceInfo, MdnsDevice,
 };
 pub use error::CoreError;
-pub use lockdown::{LockdownClient, LOCKDOWN_PORT};
+pub use lockdown::{
+    default_pair_record_path, handshake_only_service_tls, pair_supervised, recv_lockdown,
+    save_pair_record, send_lockdown, start_lockdown_session, start_service, strip_service_tls,
+    wrap_service_tls, FullPairRecord, GetValueRequest, GetValueResponse, LockdownClient,
+    LockdownError, PairRecord, PairRecordError, QueryTypeRequest, QueryTypeResponse,
+    RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest, StartServiceResponse,
+    StartSessionRequest, StartSessionResponse, StopSessionRequest, ValueOperationResponse,
+    CORE_DEVICE_PROXY, LOCKDOWN_PORT,
+};
 pub use mux::MuxClient;
-pub use pairing_transport::{pair_new_device, PairedCredentials, UNTRUSTED_SERVICE_NAME};
+pub use pairing_transport::{
+    pair_new_device, PairedCredentials, PairingTransportError, UNTRUSTED_SERVICE_NAME,
+};
+pub use proto::nskeyedarchiver_encode::{
+    archive_array, archive_bool, archive_data, archive_dict, archive_float, archive_int,
+    archive_nsurl, archive_null, archive_string, archive_uuid, archive_xct_capabilities,
+    archive_xctest_configuration, NsUrl, XcTestConfiguration, XctCapabilities,
+};
 #[cfg(feature = "accessibility_audit")]
 pub use services::accessibility_audit;
 #[cfg(feature = "afc")]
@@ -102,8 +147,15 @@ pub use services::testmanager;
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
-pub use tunnel::TunMode;
-pub use xpc::{RsdHandshake, ServiceDescriptor, XpcMessage, XpcValue};
+pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+pub use xpc::client::XpcClient;
+pub use xpc::message::flags as xpc_message_flags;
+pub use xpc::message::{
+    decode_message as decode_xpc_message, encode_message as encode_xpc_message, XpcMessage,
+    XpcValue,
+};
+pub use xpc::rsd::{RsdHandshake, ServiceDescriptor, RSD_PORT};
+pub use xpc::XpcError;
 
 /// List all currently connected iOS devices (via usbmuxd).
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, CoreError> {
@@ -124,7 +176,7 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 /// Discover iOS 17+ devices on the local network via mDNS.
 ///
 /// Returns a stream of devices with their IPv6 address and RSD port.
-/// Use [`xpc::rsd::handshake`] to get the full service list.
+/// Use [`connect`] to establish a session and inspect the RSD service list.
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }

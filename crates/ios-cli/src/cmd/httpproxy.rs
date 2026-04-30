@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 const GLOBAL_HTTP_PROXY_UUID: &str = "86a52338-52f7-4c09-b005-52baf3dc4882";

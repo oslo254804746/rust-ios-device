@@ -275,7 +275,7 @@ pub unsafe extern "C" fn ios_device_open(
         Err(_) => return IOS_ERR_UTF8,
     };
     let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::tunnel::TunMode::Userspace,
+        tun_mode: ios_core::TunMode::Userspace,
         pair_record_path: None,
         skip_tunnel: true,
     };
@@ -416,8 +416,8 @@ pub unsafe extern "C" fn ios_start_tunnel(
         Err(_) => return 2,
     };
     let tun_mode = match mode {
-        IosTunMode::IOS_TUN_KERNEL => ios_core::tunnel::TunMode::Kernel,
-        _ => ios_core::tunnel::TunMode::Userspace,
+        IosTunMode::IOS_TUN_KERNEL => ios_core::TunMode::Kernel,
+        _ => ios_core::TunMode::Userspace,
     };
     let opts = ios_core::device::ConnectOptions {
         tun_mode,

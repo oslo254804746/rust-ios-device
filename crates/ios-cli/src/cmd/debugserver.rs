@@ -1,13 +1,11 @@
 use anyhow::Result;
 use ios_core::debugserver::{select_service_name, GdbRemoteClient};
-use ios_core::lockdown::pair_record::PairRecord;
-use ios_core::lockdown::session::{
-    handshake_only_service_tls, start_lockdown_session, start_service,
-};
-use ios_core::lockdown::LOCKDOWN_PORT;
-use ios_core::tunnel::TunMode;
 use ios_core::MuxClient;
-use ios_core::{connect, ConnectOptions};
+use ios_core::TunMode;
+use ios_core::{
+    connect, handshake_only_service_tls, start_lockdown_session, start_service, ConnectOptions,
+    LockdownError, PairRecord, LOCKDOWN_PORT,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(clap::Args)]
@@ -129,8 +127,8 @@ fn candidate_service_names(preferred_service: &str) -> [&'static str; 2] {
     }
 }
 
-fn is_invalid_service(err: &ios_core::lockdown::LockdownError) -> bool {
-    matches!(err, ios_core::lockdown::LockdownError::Protocol(message) if message.contains("InvalidService"))
+fn is_invalid_service(err: &LockdownError) -> bool {
+    matches!(err, LockdownError::Protocol(message) if message.contains("InvalidService"))
 }
 
 #[cfg(test)]

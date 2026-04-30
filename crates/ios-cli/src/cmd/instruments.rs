@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::instruments::{SERVICE_IOS14, SERVICE_IOS17, SERVICE_LEGACY};
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 
 #[derive(clap::Args)]
 pub struct InstrumentsCmd {

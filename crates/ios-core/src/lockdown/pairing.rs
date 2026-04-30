@@ -340,21 +340,6 @@ pub enum PairingError {
     Crypto(String),
     #[error("protocol error: {0}")]
     Protocol(String),
-    #[error("user must press Trust on device")]
-    TrustRequired,
-    #[error("server proof verification failed")]
-    ServerProofInvalid,
-}
-
-// ── Pairing result ────────────────────────────────────────────────────────────
-
-/// Host identity and session info to be persisted as a pair record.
-#[derive(Debug, Clone)]
-pub struct PairingResult {
-    pub host_identifier: String,
-    pub host_public_key: Vec<u8>,
-    // In a full implementation, we'd also store the device's public key
-    // and the session's derived key material for future verifyPair().
 }
 
 // ── Pure crypto step functions (testable without network) ─────────────────────
@@ -547,16 +532,6 @@ pub fn build_verify_step2_tlv(
         client_key,
         server_key,
     })
-}
-
-pub fn verify_pair_step2(
-    our_secret: [u8; 32],     // x25519 secret scalar bytes
-    our_public: &[u8; 32],    // x25519 public
-    device_public: &[u8; 32], // from device TLV
-    identity: &HostIdentity,
-) -> Result<([u8; 32], [u8; 32]), PairingError> {
-    let session = build_verify_step2_tlv(our_secret, our_public, device_public, identity)?;
-    Ok((session.client_key, session.server_key))
 }
 
 #[cfg(test)]

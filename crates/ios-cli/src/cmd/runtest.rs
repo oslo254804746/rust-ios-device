@@ -10,8 +10,8 @@ use ios_core::instruments::process_control::ProcessControl;
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;
-use ios_core::tunnel::TunMode;
 use ios_core::MuxClient;
+use ios_core::TunMode;
 use uuid::Uuid;
 
 #[derive(clap::Args)]

@@ -3,7 +3,6 @@ use ios_core::accessibility_audit::{
 };
 use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
 use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxPayload, NSObject};
-use ios_core::proto::nskeyedarchiver_encode;
 use plist::{Dictionary, Value};
 use serde_json::json;
 use tokio::io::{duplex, AsyncWriteExt};
@@ -25,7 +24,7 @@ async fn lockdown_capabilities_requests_device_capabilities_without_publishing_c
         other => panic!("unexpected deviceCapabilities request: {other:?}"),
     }
 
-    let response = nskeyedarchiver_encode::archive_array(vec![
+    let response = ios_core::archive_array(vec![
         Value::String("cap-one".to_string()),
         Value::String("cap-two".to_string()),
     ]);
@@ -84,8 +83,8 @@ async fn explicit_publish_handshake_sends_capabilities_before_requesting_device_
         other => panic!("unexpected publish frame: {other:?}"),
     }
 
-    let flush_selector = nskeyedarchiver_encode::archive_string("hostAppStateChanged:");
-    let flush_payload = nskeyedarchiver_encode::archive_dict(vec![(
+    let flush_selector = ios_core::archive_string("hostAppStateChanged:");
+    let flush_payload = ios_core::archive_dict(vec![(
         "state".to_string(),
         Value::String("ready".to_string()),
     )]);
@@ -113,8 +112,7 @@ async fn explicit_publish_handshake_sends_capabilities_before_requesting_device_
         other => panic!("unexpected deviceCapabilities request: {other:?}"),
     }
 
-    let response =
-        nskeyedarchiver_encode::archive_array(vec![Value::String("cap-explicit".to_string())]);
+    let response = ios_core::archive_array(vec![Value::String("cap-explicit".to_string())]);
     server
         .write_all(&encode_dtx(
             request.identifier,
@@ -149,7 +147,7 @@ async fn rsd_capabilities_requests_device_capabilities_without_publishing_capabi
         other => panic!("unexpected first RSD request: {other:?}"),
     }
 
-    let response = nskeyedarchiver_encode::archive_array(vec![
+    let response = ios_core::archive_array(vec![
         Value::String("cap-rsd-one".to_string()),
         Value::String("cap-rsd-two".to_string()),
     ]);

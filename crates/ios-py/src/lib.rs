@@ -146,8 +146,8 @@ fn list_devices(py: Python<'_>) -> PyResult<PyObject> {
 #[pyo3(signature = (udid, mode = "userspace"))]
 fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     let tun_mode = match mode {
-        "kernel" => ios_core::tunnel::TunMode::Kernel,
-        _ => ios_core::tunnel::TunMode::Userspace,
+        "kernel" => ios_core::TunMode::Kernel,
+        _ => ios_core::TunMode::Userspace,
     };
     let opts = ios_core::device::ConnectOptions {
         tun_mode,

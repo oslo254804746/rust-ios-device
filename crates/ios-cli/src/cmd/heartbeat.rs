@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]

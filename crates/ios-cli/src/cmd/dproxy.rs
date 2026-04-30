@@ -1,15 +1,13 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ios_core::lockdown::pair_record::PairRecord;
-use ios_core::lockdown::protocol::{
-    recv_lockdown, send_lockdown, QueryTypeRequest, QueryTypeResponse, StartServiceRequest,
+use ios_core::MuxClient;
+use ios_core::TunMode;
+use ios_core::{
+    connect, recv_lockdown, send_lockdown, strip_service_tls, wrap_service_tls, ConnectOptions,
+    PairRecord, QueryTypeRequest, QueryTypeResponse, ServiceStream, StartServiceRequest,
     StartServiceResponse, StartSessionRequest, StartSessionResponse, LOCKDOWN_PORT,
 };
-use ios_core::lockdown::session::{strip_service_tls, wrap_service_tls};
-use ios_core::tunnel::TunMode;
-use ios_core::MuxClient;
-use ios_core::{connect, ConnectOptions, ServiceStream};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 use tokio::net::TcpListener;
 use tokio_rustls::client::TlsStream;
@@ -142,7 +140,7 @@ impl DproxyCmd {
 }
 
 fn choose_transport(
-    rsd: Option<&ios_core::xpc::RsdHandshake>,
+    rsd: Option<&ios_core::RsdHandshake>,
     service: &str,
     arg: TransportArg,
 ) -> TransportKind {

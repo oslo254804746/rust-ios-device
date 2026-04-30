@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 #[derive(clap::Args)]
@@ -63,9 +63,8 @@ impl RestoreCmd {
             RestoreSub::RestoreLang { language } => client.restore_lang(language).await?,
         };
 
-        let rendered = ios_core::restore::xpc_value_to_json(&ios_core::xpc::XpcValue::Dictionary(
-            response.clone(),
-        ));
+        let rendered =
+            ios_core::restore::xpc_value_to_json(&ios_core::XpcValue::Dictionary(response.clone()));
         if json {
             println!("{}", serde_json::to_string_pretty(&rendered)?);
         } else if let Some(message) = success_message {

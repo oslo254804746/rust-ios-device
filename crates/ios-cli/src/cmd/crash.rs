@@ -5,7 +5,7 @@ use comfy_table::{presets::UTF8_FULL, Table};
 use ios_core::crashreport::{
     prepare_reports, CrashReportClient, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
 };
-use ios_core::tunnel::TunMode;
+use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::fs;
 

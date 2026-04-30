@@ -4,16 +4,25 @@
 //! Use [`LockdownClient`] to read device values, start services, and manage pairing.
 
 pub mod client;
-pub mod pair_record;
+pub(crate) mod pair_record;
 pub mod pairing;
 pub mod protocol;
-pub mod session;
-pub mod supervised_pair;
+pub(crate) mod session;
+pub(crate) mod supervised_pair;
 
 pub use client::LockdownClient;
-pub use pair_record::{PairRecord, PairRecordError};
-pub use protocol::LOCKDOWN_PORT;
-pub use session::CORE_DEVICE_PROXY;
+pub use pair_record::{default_pair_record_path, PairRecord, PairRecordError};
+pub use protocol::{
+    recv_lockdown, send_lockdown, GetValueRequest, GetValueResponse, QueryTypeRequest,
+    QueryTypeResponse, RemoveValueRequest, SetValueRequest, StartServiceRequest,
+    StartServiceResponse, StartSessionRequest, StartSessionResponse, StopSessionRequest,
+    ValueOperationResponse, LOCKDOWN_PORT,
+};
+pub use session::{
+    handshake_only_service_tls, start_lockdown_session, start_service, strip_service_tls,
+    wrap_service_tls, CORE_DEVICE_PROXY,
+};
+pub use supervised_pair::{pair_supervised, save_pair_record, FullPairRecord};
 
 /// Service info returned by StartService.
 #[derive(Debug, Clone)]

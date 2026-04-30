@@ -1,7 +1,6 @@
 use anyhow::Result;
-use ios_core::lockdown::pair_record::default_pair_record_path;
-use ios_core::tunnel::TunMode;
-use ios_core::{connect, ConnectOptions};
+use ios_core::TunMode;
+use ios_core::{connect, default_pair_record_path, ConnectOptions};
 
 const INTERNATIONAL_DOMAIN: &str = "com.apple.international";
 const ACCESSIBILITY_DOMAIN: &str = "com.apple.Accessibility";

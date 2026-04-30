@@ -6,7 +6,6 @@ use crate::tunnel::TunnelError;
 
 const MAGIC: &[u8] = b"CDTunnel";
 const HEADER_LEN: usize = 10;
-const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Information returned by the CDTunnel handshake.
 #[derive(Debug, Clone)]
@@ -64,14 +63,6 @@ pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
     buf.extend_from_slice(&(json_bytes.len() as u16).to_be_bytes());
     buf.extend_from_slice(&json_bytes);
     Ok(buf)
-}
-
-/// Perform the CDTunnel handshake over the given stream.
-pub async fn exchange_tunnel_parameters<S>(stream: &mut S) -> Result<TunnelInfo, TunnelError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    exchange_tunnel_parameters_with_timeout(stream, DEFAULT_HANDSHAKE_TIMEOUT).await
 }
 
 pub async fn exchange_tunnel_parameters_with_timeout<S>(
@@ -151,7 +142,7 @@ mod tests {
             server.write_all(&response).await.unwrap();
         });
 
-        exchange_tunnel_parameters(&mut client).await
+        exchange_tunnel_parameters_with_timeout(&mut client, Duration::from_secs(5)).await
     }
 
     #[test]
