@@ -12,13 +12,19 @@
 //! Reference: go-ios/ios/rsd.go + go-ios/ios/http/http.go
 
 use std::collections::HashMap;
+#[cfg(feature = "mdns")]
 use std::net::{Ipv6Addr, SocketAddr};
 
+#[cfg(feature = "tunnel")]
 use bytes::Bytes;
+#[cfg(feature = "mdns")]
 use tokio::net::TcpStream;
 
+#[cfg(feature = "tunnel")]
 use crate::xpc::h2_raw::H2Framer;
+#[cfg(feature = "tunnel")]
 use crate::xpc::message::{decode_message, flags, XpcMessage, XpcValue};
+#[cfg(any(feature = "tunnel", feature = "mdns"))]
 use crate::xpc::XpcError;
 
 pub const RSD_PORT: u16 = 58783;
@@ -50,6 +56,7 @@ impl RsdHandshake {
 /// Perform an RSD handshake with an iOS 17+ device.
 ///
 /// `addr` is the device's tunnel IPv6 address (from CDTunnel handshake).
+#[cfg(feature = "mdns")]
 pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcError> {
     let sock_addr = SocketAddr::new(addr.into(), port);
     let stream = TcpStream::connect(sock_addr).await?;
@@ -62,6 +69,7 @@ pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcErr
 
 /// Perform an RSD handshake on an already-connected H2 framer.
 /// Used by ios-core's `attempt_rsd_via_proxy`.
+#[cfg(feature = "tunnel")]
 pub async fn handshake_on_framer<S>(framer: &mut H2Framer<S>) -> Result<RsdHandshake, XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -73,6 +81,7 @@ where
 ///
 /// Some devices appear to withhold the RSD handshake until these stream
 /// bootstrapping messages have been exchanged.
+#[cfg(feature = "tunnel")]
 pub async fn initialize_xpc_connection_on_framer<S>(
     framer: &mut H2Framer<S>,
 ) -> Result<(), XpcError>
@@ -119,6 +128,7 @@ where
 
 /// Queue the minimal RemoteXPC bootstrap used by pymobiledevice3 before it
 /// reads the first RSD handshake message from stream 1.
+#[cfg(feature = "tunnel")]
 pub async fn queue_rsd_handshake_bootstrap_on_framer<S>(
     framer: &mut H2Framer<S>,
 ) -> Result<(), XpcError>
@@ -165,6 +175,7 @@ where
 /// The device sends the handshake immediately after the H2 connection is
 /// established — no XPC initialization is needed on the RSD port.
 /// go-ios reads this via `ReceiveOnClientServerStream()` (rsd.go:208).
+#[cfg(feature = "tunnel")]
 async fn read_rsd_handshake<S>(framer: &mut H2Framer<S>) -> Result<RsdHandshake, XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -183,6 +194,7 @@ where
     Err(last_err.unwrap_or_else(|| XpcError::Tls("RSD: no handshake message received".into())))
 }
 
+#[cfg(feature = "tunnel")]
 async fn read_xpc_on_client_server<S>(framer: &mut H2Framer<S>) -> Result<XpcMessage, XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -194,6 +206,7 @@ where
     decode_message(full.freeze())
 }
 
+#[cfg(feature = "tunnel")]
 async fn discard_xpc_on_client_server<S>(framer: &mut H2Framer<S>) -> Result<(), XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -202,6 +215,7 @@ where
     Ok(())
 }
 
+#[cfg(feature = "tunnel")]
 async fn discard_xpc_on_server_client<S>(framer: &mut H2Framer<S>) -> Result<(), XpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -210,6 +224,7 @@ where
     Ok(())
 }
 
+#[cfg(feature = "tunnel")]
 async fn read_raw_xpc_on_client_server<S>(
     framer: &mut H2Framer<S>,
 ) -> Result<(Bytes, Bytes), XpcError>
@@ -236,6 +251,7 @@ where
     Ok((header, body))
 }
 
+#[cfg(feature = "tunnel")]
 async fn read_raw_xpc_on_server_client<S>(
     framer: &mut H2Framer<S>,
 ) -> Result<(Bytes, Bytes), XpcError>
@@ -262,6 +278,7 @@ where
     Ok((header, body))
 }
 
+#[cfg(feature = "tunnel")]
 fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
     let dict = msg
         .body
@@ -321,11 +338,13 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
 }
 
 /// A live XPC connection to an iOS 17+ service.
+#[cfg(feature = "tunnel")]
 pub struct XpcConnection<S> {
     framer: H2Framer<S>,
     msg_id: u64,
 }
 
+#[cfg(feature = "tunnel")]
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     pub fn new(framer: H2Framer<S>) -> Self {
         Self { framer, msg_id: 1 }
@@ -390,6 +409,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tunnel")]
 mod tests {
     use bytes::Bytes;
     use indexmap::IndexMap;

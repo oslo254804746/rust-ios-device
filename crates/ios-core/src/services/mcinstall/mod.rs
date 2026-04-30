@@ -2,8 +2,11 @@
 //!
 //! Service: `com.apple.mobile.MCInstall`
 
+#[cfg(feature = "supervised-pair")]
 use openssl::pkcs12::Pkcs12;
+#[cfg(feature = "supervised-pair")]
 use openssl::pkcs7::{Pkcs7, Pkcs7Flags};
+#[cfg(feature = "supervised-pair")]
 use openssl::stack::Stack;
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -130,15 +133,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         p12_bytes: &[u8],
         password: &str,
     ) -> Result<(), McInstallError> {
-        self.escalate(p12_bytes, password).await?;
-        let request = plist::Dictionary::from_iter([
-            (
-                "RequestType".to_string(),
-                plist::Value::String("InstallProfileSilent".into()),
-            ),
-            ("Payload".to_string(), plist::Value::Data(payload.to_vec())),
-        ]);
-        send_request(&mut self.stream, request).await
+        #[cfg(not(feature = "supervised-pair"))]
+        {
+            let _ = (payload, p12_bytes, password);
+            return Err(McInstallError::Crypto(
+                "silent profile installation requires ios-core feature 'supervised-pair'".into(),
+            ));
+        }
+
+        #[cfg(feature = "supervised-pair")]
+        {
+            self.escalate(p12_bytes, password).await?;
+            let request = plist::Dictionary::from_iter([
+                (
+                    "RequestType".to_string(),
+                    plist::Value::String("InstallProfileSilent".into()),
+                ),
+                ("Payload".to_string(), plist::Value::Data(payload.to_vec())),
+            ]);
+            send_request(&mut self.stream, request).await
+        }
     }
 
     pub async fn remove_profile(&mut self, identifier: &str) -> Result<(), McInstallError> {
@@ -194,6 +208,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         send_request(&mut self.stream, request).await
     }
 
+    #[cfg(feature = "supervised-pair")]
     async fn escalate(&mut self, p12_bytes: &[u8], password: &str) -> Result<(), McInstallError> {
         let pkcs12 =
             Pkcs12::from_der(p12_bytes).map_err(|err| McInstallError::Crypto(err.to_string()))?;

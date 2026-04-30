@@ -583,6 +583,7 @@ where
                     }
                 }
             }
+            file.flush().await?;
         }
 
         Ok(())

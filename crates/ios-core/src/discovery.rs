@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(feature = "mdns")]
 use std::time::{Duration, Instant};
 
 use crate::mux::MuxClient;
@@ -72,6 +73,7 @@ pub async fn watch_devices() -> Result<impl Stream<Item = Result<DeviceEvent, Co
 ///
 /// Returns a stream of `(ipv6_address, rsd_port)` pairs for discovered devices.
 /// The caller should perform an RSD handshake to get the full service list.
+#[cfg(feature = "mdns")]
 pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
@@ -114,6 +116,7 @@ pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "mdns")]
 pub struct BonjourService {
     pub instance: String,
     pub port: u16,
@@ -121,10 +124,12 @@ pub struct BonjourService {
     pub properties: HashMap<String, String>,
 }
 
+#[cfg(feature = "mdns")]
 pub async fn browse_mobdev2(timeout: Duration) -> Result<Vec<BonjourService>, CoreError> {
     browse_bonjour_service("_apple-mobdev2._tcp.local.", timeout).await
 }
 
+#[cfg(feature = "mdns")]
 pub async fn browse_remotepairing(timeout: Duration) -> Result<Vec<BonjourService>, CoreError> {
     browse_bonjour_service("_remotepairing._tcp.local.", timeout).await
 }
@@ -135,6 +140,7 @@ pub fn mobdev2_wifi_mac(instance: &str) -> Option<&str> {
 
 /// A device discovered via mDNS.
 #[derive(Debug, Clone)]
+#[cfg(feature = "mdns")]
 pub struct MdnsDevice {
     /// Device's IPv6 address (USB-Ethernet or Wi-Fi)
     pub ipv6: std::net::Ipv6Addr,
@@ -146,6 +152,7 @@ pub struct MdnsDevice {
     pub name: String,
 }
 
+#[cfg(feature = "mdns")]
 async fn browse_bonjour_service(
     service_type: &str,
     timeout: Duration,

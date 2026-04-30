@@ -1,44 +1,71 @@
+#[cfg(feature = "mdns")]
 use std::collections::HashMap;
+#[cfg(feature = "tunnel")]
 use std::net::Ipv6Addr;
+#[cfg(feature = "tunnel")]
 use std::path::Path;
-use std::pin::Pin;
+#[cfg(feature = "tunnel")]
 use std::str::FromStr;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+#[cfg(any(feature = "tunnel", feature = "mdns"))]
+use std::time::Duration;
+#[cfg(feature = "tunnel")]
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::Instant,
+};
 
-use crate::lockdown::pair_record::{default_pair_record_dir, PairRecord};
+#[cfg(feature = "mdns")]
+use crate::lockdown::pair_record::default_pair_record_dir;
+use crate::lockdown::pair_record::PairRecord;
+#[cfg(feature = "tunnel")]
 use crate::lockdown::pairing::{
     build_verify_start_tlv, build_verify_step2_tlv, HostIdentity, VerifyPairSession,
 };
 use crate::lockdown::protocol::{recv_lockdown, send_lockdown};
-use crate::lockdown::session::{
-    start_lockdown_session, start_service, wrap_service_tls, CORE_DEVICE_PROXY,
-};
+#[cfg(feature = "tunnel")]
+use crate::lockdown::session::CORE_DEVICE_PROXY;
+use crate::lockdown::session::{start_lockdown_session, start_service, wrap_service_tls};
 use crate::lockdown::LOCKDOWN_PORT;
 use crate::mux::MuxClient;
+#[cfg(feature = "tunnel")]
 use crate::proto::tlv::TlvBuffer;
-use crate::tunnel::{
-    forward::forward_packets,
-    manager::{TunMode, TunnelHandle},
-    tun::{kernel::KernelTunDevice, userspace::UserspaceTunDevice},
-};
-use crate::xpc::{
-    message::XpcValue,
-    rsd::{handshake as rsd_handshake, RsdHandshake, ServiceDescriptor},
-    XpcClient,
-};
+#[cfg(feature = "tunnel")]
+use crate::tunnel::forward::forward_packets;
+use crate::tunnel::manager::{TunMode, TunnelHandle};
+#[cfg(feature = "tunnel-kernel")]
+use crate::tunnel::tun::kernel::KernelTunDevice;
+#[cfg(feature = "tunnel-userspace")]
+use crate::tunnel::tun::userspace::UserspaceTunDevice;
+#[cfg(feature = "tunnel")]
+use crate::xpc::message::XpcValue;
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+use crate::xpc::rsd::handshake as rsd_handshake;
+use crate::xpc::rsd::{RsdHandshake, ServiceDescriptor};
+#[cfg(feature = "tunnel")]
+use crate::xpc::XpcClient;
+#[cfg(feature = "tunnel")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+#[cfg(feature = "tunnel")]
 use chacha20poly1305::{aead::Aead, KeyInit};
+#[cfg(feature = "tunnel")]
 use indexmap::IndexMap;
+#[cfg(feature = "tunnel")]
 use rand::RngCore;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+#[cfg(feature = "tunnel")]
+use tokio::io::ReadBuf;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+#[cfg(feature = "tunnel")]
 use tokio_stream::StreamExt;
 
+#[cfg(feature = "tunnel")]
 use crate::credentials::{PersistedCredentials, RemotePairingRecord};
+use crate::discovery::DeviceInfo;
+#[cfg(feature = "mdns")]
 use crate::discovery::{
-    browse_mobdev2, browse_remotepairing, mobdev2_wifi_mac, BonjourService, DeviceInfo, MdnsDevice,
+    browse_mobdev2, browse_remotepairing, mobdev2_wifi_mac, BonjourService, MdnsDevice,
 };
 use crate::error::CoreError;
 
@@ -68,14 +95,21 @@ pub type ServiceStream = Box<dyn ServiceStreamTrait>;
 pub trait ServiceStreamTrait: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ServiceStreamTrait for T {}
 
+#[cfg(feature = "tunnel")]
 const TUNNEL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "mdns")]
 const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 const DIRECT_RSD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 // Direct pairing TLV type: public key exchange (X25519 ephemeral public key)
+#[cfg(feature = "tunnel")]
 const DIRECT_PAIRING_TYPE_PUBLIC_KEY: u8 = 0x03;
 // Direct pairing TLV type: error response from device (pairing rejected or failed)
+#[cfg(feature = "tunnel")]
 const DIRECT_PAIRING_TYPE_ERROR: u8 = 0x07;
+#[cfg(feature = "tunnel")]
 const DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
+#[cfg(feature = "tunnel")]
 const DIRECT_CONTROL_CHANNEL_ORIGIN: &str = "host";
 
 // ── ConnectedDevice ────────────────────────────────────────────────────────────
@@ -96,6 +130,7 @@ pub struct PairedMobdev2Device {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "tunnel")]
 enum TunnelConnectionTarget {
     UserspaceProxy {
         proxy_port: u16,
@@ -327,6 +362,7 @@ impl ConnectedDevice {
     ///
     /// Returns an XpcClient ready for method calls.
     /// Performs an on-demand RSD handshake if rsd is not already populated.
+    #[cfg(feature = "tunnel")]
     pub async fn connect_xpc_service(&self, service_name: &str) -> Result<XpcClient, CoreError> {
         let (_resolved_service_name, port) =
             self.resolve_rsd_service_with_retry(service_name).await?;
@@ -358,35 +394,44 @@ impl ConnectedDevice {
     }
 
     async fn resolve_rsd_with_retry(&self) -> Result<RsdHandshake, CoreError> {
-        const MAX_ATTEMPTS: usize = 5;
-
-        if self.tunnel.is_none() {
-            return Err(CoreError::Unsupported(
-                "RSD not available (no tunnel or iOS <17)".into(),
-            ));
+        #[cfg(not(feature = "tunnel"))]
+        {
+            Err(tunnel_unavailable())
         }
 
-        for attempt in 0..MAX_ATTEMPTS {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        #[cfg(feature = "tunnel")]
+        {
+            const MAX_ATTEMPTS: usize = 5;
+
+            if self.tunnel.is_none() {
+                return Err(CoreError::Unsupported(
+                    "RSD not available (no tunnel or iOS <17)".into(),
+                ));
             }
 
-            if let Some(rsd) = self.attempt_rsd_from_tunnel().await? {
-                return Ok(rsd);
+            for attempt in 0..MAX_ATTEMPTS {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+
+                if let Some(rsd) = self.attempt_rsd_from_tunnel().await? {
+                    return Ok(rsd);
+                }
+
+                tracing::debug!(
+                    "RSD handshake attempt {}/{} failed, retrying...",
+                    attempt + 1,
+                    MAX_ATTEMPTS
+                );
             }
 
-            tracing::debug!(
-                "RSD handshake attempt {}/{} failed, retrying...",
-                attempt + 1,
-                MAX_ATTEMPTS
-            );
+            Err(CoreError::Unsupported(
+                "RSD handshake failed after retries".into(),
+            ))
         }
-
-        Err(CoreError::Unsupported(
-            "RSD handshake failed after retries".into(),
-        ))
     }
 
+    #[cfg(feature = "tunnel")]
     async fn attempt_rsd_from_tunnel(&self) -> Result<Option<RsdHandshake>, CoreError> {
         let server_addr = self
             .server_address()
@@ -401,6 +446,7 @@ impl ConnectedDevice {
         })
     }
 
+    #[cfg(feature = "tunnel")]
     fn tunnel_connection_target(&self) -> Result<TunnelConnectionTarget, CoreError> {
         let server_addr = self
             .server_address()
@@ -410,23 +456,36 @@ impl ConnectedDevice {
     }
 
     async fn connect_tunnel_port(&self, port: u16) -> Result<ServiceStream, CoreError> {
-        use tokio::io::AsyncWriteExt;
-        use tokio::net::TcpStream;
+        #[cfg(not(feature = "tunnel"))]
+        {
+            let _ = port;
+            Err(tunnel_unavailable())
+        }
 
-        match self.tunnel_connection_target()? {
-            TunnelConnectionTarget::UserspaceProxy {
-                proxy_port,
-                remote_addr,
-            } => {
-                let mut proxy = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await?;
-                proxy.write_all(&remote_addr.octets()).await?;
-                proxy.write_all(&(port as u32).to_le_bytes()).await?;
-                Ok(Box::new(proxy))
-            }
-            TunnelConnectionTarget::DirectIpv6 { remote_addr } => {
-                let addr =
-                    std::net::SocketAddr::V6(std::net::SocketAddrV6::new(remote_addr, port, 0, 0));
-                Ok(Box::new(TcpStream::connect(addr).await?))
+        #[cfg(feature = "tunnel")]
+        {
+            use tokio::io::AsyncWriteExt;
+            use tokio::net::TcpStream;
+
+            match self.tunnel_connection_target()? {
+                TunnelConnectionTarget::UserspaceProxy {
+                    proxy_port,
+                    remote_addr,
+                } => {
+                    let mut proxy = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await?;
+                    proxy.write_all(&remote_addr.octets()).await?;
+                    proxy.write_all(&(port as u32).to_le_bytes()).await?;
+                    Ok(Box::new(proxy))
+                }
+                TunnelConnectionTarget::DirectIpv6 { remote_addr } => {
+                    let addr = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                        remote_addr,
+                        port,
+                        0,
+                        0,
+                    ));
+                    Ok(Box::new(TcpStream::connect(addr).await?))
+                }
             }
         }
     }
@@ -451,6 +510,7 @@ fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(S
         .map(|ServiceDescriptor { port }| (shim_service, *port))
 }
 
+#[cfg(feature = "tunnel")]
 fn resolve_tunnel_connection_target(
     server_addr: &str,
     userspace_port: Option<u16>,
@@ -595,34 +655,45 @@ pub async fn connect_direct_usb_tunnel(
         });
     }
 
-    let targets = discover_direct_rsd_targets(udid, rsd_ip).await?;
-    if targets.is_empty() {
-        return Err(CoreError::Unsupported(format!(
-            "no _remoted target matched udid={udid} ip={rsd_ip:?}"
-        )));
-    }
-
-    let mut last_error = None;
-    for target in targets {
-        match connect_via_direct_rsd_target(
-            info.clone(),
-            pair_record.clone(),
-            lockdown_transport.clone(),
-            opts.clone(),
-            target,
-        )
-        .await
-        {
-            Ok(device) => return Ok(device),
-            Err(err) => last_error = Some(err),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        CoreError::Unsupported(format!(
-            "no direct RSD target produced a tunnel for udid={udid}"
+    #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
+    {
+        let _ = rsd_ip;
+        Err(CoreError::Unsupported(
+            "direct USB tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
         ))
-    }))
+    }
+
+    #[cfg(all(feature = "tunnel", feature = "mdns"))]
+    {
+        let targets = discover_direct_rsd_targets(udid, rsd_ip).await?;
+        if targets.is_empty() {
+            return Err(CoreError::Unsupported(format!(
+                "no _remoted target matched udid={udid} ip={rsd_ip:?}"
+            )));
+        }
+
+        let mut last_error = None;
+        for target in targets {
+            match connect_via_direct_rsd_target(
+                info.clone(),
+                pair_record.clone(),
+                lockdown_transport.clone(),
+                opts.clone(),
+                target,
+            )
+            .await
+            {
+                Ok(device) => return Ok(device),
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            CoreError::Unsupported(format!(
+                "no direct RSD target produced a tunnel for udid={udid}"
+            ))
+        }))
+    }
 }
 
 pub async fn connect_remote_pairing_tunnel(
@@ -652,35 +723,46 @@ pub async fn connect_remote_pairing_tunnel(
         });
     }
 
-    let targets = discover_remote_pairing_targets(udid, host).await?;
-    if targets.is_empty() {
-        return Err(CoreError::Unsupported(format!(
-            "no _remotepairing target matched udid={udid} host={host:?}"
-        )));
-    }
-
-    let mut last_error = None;
-    for (remote_host, port) in targets {
-        match connect_via_remote_pairing_target(
-            info.clone(),
-            pair_record.clone(),
-            opts.clone(),
-            udid,
-            &remote_host,
-            port,
-        )
-        .await
-        {
-            Ok(device) => return Ok(device),
-            Err(err) => last_error = Some(err),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        CoreError::Unsupported(format!(
-            "no remote pairing target produced a tunnel for udid={udid}"
+    #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
+    {
+        let _ = host;
+        Err(CoreError::Unsupported(
+            "remote pairing tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
         ))
-    }))
+    }
+
+    #[cfg(all(feature = "tunnel", feature = "mdns"))]
+    {
+        let targets = discover_remote_pairing_targets(udid, host).await?;
+        if targets.is_empty() {
+            return Err(CoreError::Unsupported(format!(
+                "no _remotepairing target matched udid={udid} host={host:?}"
+            )));
+        }
+
+        let mut last_error = None;
+        for (remote_host, port) in targets {
+            match connect_via_remote_pairing_target(
+                info.clone(),
+                pair_record.clone(),
+                opts.clone(),
+                udid,
+                &remote_host,
+                port,
+            )
+            .await
+            {
+                Ok(device) => return Ok(device),
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            CoreError::Unsupported(format!(
+                "no remote pairing target produced a tunnel for udid={udid}"
+            ))
+        }))
+    }
 }
 
 pub async fn connect_tcp_lockdown_tunnel(
@@ -706,6 +788,7 @@ pub async fn connect_tcp_lockdown_tunnel(
     .await
 }
 
+#[cfg(feature = "mdns")]
 pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
     let wifi_mac_to_udid = tokio::task::spawn_blocking(load_wifi_mac_pairings)
         .await
@@ -802,115 +885,160 @@ async fn connect_via_lockdown_transport(
         });
     }
 
-    let lockdown_stream =
-        connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
+    #[cfg(not(feature = "tunnel"))]
+    {
+        let _ = (info, pair_record, lockdown_transport);
+        Err(CoreError::Unsupported(
+            "CoreDevice tunnel support requires ios-core feature 'tunnel'".into(),
+        ))
+    }
 
-    tracing::info!("tunnel connect: starting lockdown session");
-    let (_session_id, mut tls_reader, mut tls_writer) =
-        start_lockdown_session(lockdown_stream, &pair_record).await?;
-    tracing::info!("tunnel connect: lockdown session established");
+    #[cfg(feature = "tunnel")]
+    {
+        let lockdown_stream =
+            connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
 
-    tracing::info!("tunnel connect: requesting CoreDeviceProxy");
-    let (service_port, enable_service_ssl) =
-        start_service(&mut tls_reader, &mut tls_writer, CORE_DEVICE_PROXY).await?;
-    tracing::info!(
+        tracing::info!("tunnel connect: starting lockdown session");
+        let (_session_id, mut tls_reader, mut tls_writer) =
+            start_lockdown_session(lockdown_stream, &pair_record).await?;
+        tracing::info!("tunnel connect: lockdown session established");
+
+        tracing::info!("tunnel connect: requesting CoreDeviceProxy");
+        let (service_port, enable_service_ssl) =
+            start_service(&mut tls_reader, &mut tls_writer, CORE_DEVICE_PROXY).await?;
+        tracing::info!(
         "tunnel connect: CoreDeviceProxy started on port {service_port} (ssl={enable_service_ssl})"
     );
 
-    let proxy_stream_raw =
-        connect_lockdown_port(&info.udid, &lockdown_transport, service_port, false).await?;
+        let proxy_stream_raw =
+            connect_lockdown_port(&info.udid, &lockdown_transport, service_port, false).await?;
 
-    let mut proxy_stream = if enable_service_ssl {
-        tracing::info!("tunnel connect: wrapping CoreDeviceProxy with TLS");
-        ProxyStream::Tls(Box::new(
-            wrap_service_tls(proxy_stream_raw, &pair_record)
-                .await
-                .map_err(|e| CoreError::Other(e.to_string()))?,
-        ))
-    } else {
-        tracing::info!("tunnel connect: CoreDeviceProxy is plaintext");
-        ProxyStream::Plain(proxy_stream_raw)
-    };
-    tracing::info!("tunnel connect: CoreDeviceProxy stream ready");
+        let mut proxy_stream = if enable_service_ssl {
+            tracing::info!("tunnel connect: wrapping CoreDeviceProxy with TLS");
+            ProxyStream::Tls(Box::new(
+                wrap_service_tls(proxy_stream_raw, &pair_record)
+                    .await
+                    .map_err(|e| CoreError::Other(e.to_string()))?,
+            ))
+        } else {
+            tracing::info!("tunnel connect: CoreDeviceProxy is plaintext");
+            ProxyStream::Plain(proxy_stream_raw)
+        };
+        tracing::info!("tunnel connect: CoreDeviceProxy stream ready");
 
-    tracing::info!(
-        "tunnel connect: exchanging CDTunnel parameters (timeout={} ms)",
-        TUNNEL_HANDSHAKE_TIMEOUT.as_millis()
-    );
-    let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
-        &mut proxy_stream,
-        TUNNEL_HANDSHAKE_TIMEOUT,
-    )
-    .await
-    .map_err(CoreError::Tunnel)?;
-    tracing::info!("tunnel connect: CDTunnel parameters received");
-    tracing::info!(
-        "tunnel_info: server={} rsd_port={} client={} mtu={}",
-        tunnel_info.server_address,
-        tunnel_info.server_rsd_port,
-        tunnel_info.client_address,
-        tunnel_info.client_mtu
-    );
+        tracing::info!(
+            "tunnel connect: exchanging CDTunnel parameters (timeout={} ms)",
+            TUNNEL_HANDSHAKE_TIMEOUT.as_millis()
+        );
+        let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
+            &mut proxy_stream,
+            TUNNEL_HANDSHAKE_TIMEOUT,
+        )
+        .await
+        .map_err(CoreError::Tunnel)?;
+        tracing::info!("tunnel connect: CDTunnel parameters received");
+        tracing::info!(
+            "tunnel_info: server={} rsd_port={} client={} mtu={}",
+            tunnel_info.server_address,
+            tunnel_info.server_rsd_port,
+            tunnel_info.client_address,
+            tunnel_info.client_mtu
+        );
 
-    match opts.tun_mode {
-        TunMode::Kernel => {
-            let (handle, cancel_rx) =
-                TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
-            let tun = KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
-                .await
-                .map_err(CoreError::Tunnel)?;
-            let mtu = tunnel_info.client_mtu;
-            tokio::spawn(async move {
-                if let Err(e) = forward_packets(proxy_stream, tun, mtu, cancel_rx).await {
-                    tracing::error!("kernel TUN forward: {e}");
+        match opts.tun_mode {
+            TunMode::Kernel => {
+                #[cfg(not(feature = "tunnel-kernel"))]
+                {
+                    return Err(CoreError::Unsupported(
+                        "kernel TUN support requires ios-core feature 'tunnel-kernel'".into(),
+                    ));
                 }
-            });
-            let rsd = attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record: Some(pair_record),
-                lockdown_transport,
-            })
-        }
-        TunMode::Userspace => {
-            let userspace = UserspaceTunDevice::start(
-                &tunnel_info.client_address,
-                &tunnel_info.server_address,
-                tunnel_info.client_mtu,
-                proxy_stream,
-            )
-            .await
-            .map_err(CoreError::Tunnel)?;
+                #[cfg(feature = "tunnel-kernel")]
+                {
+                    let (handle, cancel_rx) =
+                        TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
+                    let tun = KernelTunDevice::create(
+                        &tunnel_info.client_address,
+                        tunnel_info.client_mtu,
+                    )
+                    .await
+                    .map_err(CoreError::Tunnel)?;
+                    let mtu = tunnel_info.client_mtu;
+                    tokio::spawn(async move {
+                        if let Err(e) = forward_packets(proxy_stream, tun, mtu, cancel_rx).await {
+                            tracing::error!("kernel TUN forward: {e}");
+                        }
+                    });
+                    let rsd =
+                        attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
+                    Ok(ConnectedDevice {
+                        info,
+                        tunnel: Some(Arc::new(handle)),
+                        rsd,
+                        pair_record: Some(pair_record),
+                        lockdown_transport,
+                    })
+                }
+            }
+            TunMode::Userspace => {
+                #[cfg(not(feature = "tunnel-userspace"))]
+                {
+                    return Err(CoreError::Unsupported(
+                        "userspace tunnel support requires ios-core feature 'tunnel-userspace'"
+                            .into(),
+                    ));
+                }
+                #[cfg(feature = "tunnel-userspace")]
+                {
+                    let userspace = UserspaceTunDevice::start(
+                        &tunnel_info.client_address,
+                        &tunnel_info.server_address,
+                        tunnel_info.client_mtu,
+                        proxy_stream,
+                    )
+                    .await
+                    .map_err(CoreError::Tunnel)?;
 
-            let proxy_port = userspace.local_port;
-            let handle =
-                TunnelHandle::new_userspace(info.udid.clone(), tunnel_info.clone(), userspace);
-            let rsd = attempt_rsd_via_proxy(
-                proxy_port,
-                &tunnel_info.server_address,
-                tunnel_info.server_rsd_port,
-            )
-            .await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record: Some(pair_record),
-                lockdown_transport,
-            })
+                    let proxy_port = userspace.local_port;
+                    let handle = TunnelHandle::new_userspace(
+                        info.udid.clone(),
+                        tunnel_info.clone(),
+                        userspace,
+                    );
+                    let rsd = attempt_rsd_via_proxy(
+                        proxy_port,
+                        &tunnel_info.server_address,
+                        tunnel_info.server_rsd_port,
+                    )
+                    .await;
+                    Ok(ConnectedDevice {
+                        info,
+                        tunnel: Some(Arc::new(handle)),
+                        rsd,
+                        pair_record: Some(pair_record),
+                        lockdown_transport,
+                    })
+                }
+            }
         }
     }
 }
 
+#[cfg(not(feature = "tunnel"))]
+fn tunnel_unavailable() -> CoreError {
+    CoreError::Unsupported("CoreDevice tunnel support requires ios-core feature 'tunnel'".into())
+}
+
+#[cfg(feature = "tunnel")]
 struct GuardedTunnelStream<G> {
     stream: tokio_openssl::SslStream<TcpStream>,
     _guard: G,
 }
 
+#[cfg(feature = "tunnel")]
 impl<G> Unpin for GuardedTunnelStream<G> {}
 
+#[cfg(feature = "tunnel")]
 impl<G> AsyncRead for GuardedTunnelStream<G> {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -921,6 +1049,7 @@ impl<G> AsyncRead for GuardedTunnelStream<G> {
     }
 }
 
+#[cfg(feature = "tunnel")]
 impl<G> AsyncWrite for GuardedTunnelStream<G> {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -939,14 +1068,17 @@ impl<G> AsyncWrite for GuardedTunnelStream<G> {
     }
 }
 
+#[cfg(feature = "tunnel")]
 struct LoadedRemotePairingCredentials {
     host_identity: HostIdentity,
 }
 
+#[cfg(feature = "tunnel")]
 struct RemotePairingControlChannel {
     stream: TcpStream,
 }
 
+#[cfg(feature = "tunnel")]
 impl RemotePairingControlChannel {
     async fn connect(host: &str, port: u16) -> Result<Self, CoreError> {
         Ok(Self {
@@ -996,6 +1128,7 @@ impl RemotePairingControlChannel {
     }
 }
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 async fn discover_direct_rsd_targets(
     udid: &str,
     ip_filter: Option<&str>,
@@ -1043,6 +1176,7 @@ async fn discover_direct_rsd_targets(
     Ok(targets)
 }
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 async fn discover_remote_pairing_targets(
     udid: &str,
     host_filter: Option<&str>,
@@ -1074,6 +1208,7 @@ async fn discover_remote_pairing_targets(
     Ok(targets)
 }
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 async fn connect_via_direct_rsd_target(
     info: DeviceInfo,
     pair_record: Option<Arc<PairRecord>>,
@@ -1161,6 +1296,7 @@ async fn connect_via_direct_rsd_target(
     }
 }
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 async fn connect_via_remote_pairing_target(
     info: DeviceInfo,
     pair_record: Option<Arc<PairRecord>>,
@@ -1235,6 +1371,7 @@ async fn connect_via_remote_pairing_target(
     }
 }
 
+#[cfg(feature = "tunnel")]
 async fn establish_direct_tunnel_stream(
     rsd_addr: Ipv6Addr,
     service_port: u16,
@@ -1367,6 +1504,7 @@ async fn establish_direct_tunnel_stream(
     })
 }
 
+#[cfg(feature = "tunnel")]
 async fn establish_remote_pairing_tunnel_stream(
     remote_identifier: &str,
     host: &str,
@@ -1478,6 +1616,7 @@ async fn establish_remote_pairing_tunnel_stream(
     })
 }
 
+#[cfg(feature = "tunnel")]
 async fn send_pair_verify_failed(
     client: &mut XpcClient,
     sequence_number: u64,
@@ -1488,6 +1627,7 @@ async fn send_pair_verify_failed(
         .map_err(|e| CoreError::Other(format!("pairVerifyFailed send failed: {e}")))
 }
 
+#[cfg(feature = "tunnel")]
 fn load_remote_pairing_credentials(
     remote_identifier: &str,
 ) -> Result<LoadedRemotePairingCredentials, CoreError> {
@@ -1499,6 +1639,7 @@ fn load_remote_pairing_credentials(
     )
 }
 
+#[cfg(feature = "tunnel")]
 fn load_remote_pairing_credentials_from_dirs(
     remote_identifier: &str,
     ios_rs_dir: &Path,
@@ -1541,6 +1682,7 @@ fn load_remote_pairing_credentials_from_dirs(
     )))
 }
 
+#[cfg(feature = "tunnel")]
 fn find_persisted_host_identity(
     creds_dir: &Path,
     remote_identifier: &str,
@@ -1550,6 +1692,7 @@ fn find_persisted_host_identity(
         .find(|creds| creds.remote_identifier.as_deref() == Some(remote_identifier))
 }
 
+#[cfg(feature = "tunnel")]
 fn load_ios_rs_remote_pairing_credentials(
     remote_identifier: &str,
     remote_pair_record: RemotePairingRecord,
@@ -1579,6 +1722,7 @@ fn load_ios_rs_remote_pairing_credentials(
     Ok(LoadedRemotePairingCredentials { host_identity })
 }
 
+#[cfg(feature = "tunnel")]
 fn load_pymobiledevice3_remote_pairing_credentials(
     remote_identifier: &str,
     hostname: &str,
@@ -1604,6 +1748,7 @@ fn load_pymobiledevice3_remote_pairing_credentials(
     Ok(LoadedRemotePairingCredentials { host_identity })
 }
 
+#[cfg(feature = "tunnel")]
 fn current_hostname() -> String {
     std::env::var_os("COMPUTERNAME")
         .or_else(|| std::env::var_os("HOSTNAME"))
@@ -1612,6 +1757,7 @@ fn current_hostname() -> String {
         .into_owned()
 }
 
+#[cfg(feature = "tunnel")]
 fn pymobiledevice3_host_identifier(hostname: &str) -> String {
     const NAMESPACE_DNS: [u8; 16] = [
         0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
@@ -1648,6 +1794,7 @@ fn pymobiledevice3_host_identifier(hostname: &str) -> String {
     .to_uppercase()
 }
 
+#[cfg(feature = "tunnel")]
 fn build_direct_handshake_request(sequence_number: u64) -> XpcValue {
     build_direct_control_envelope(
         xpc_dict(&[(
@@ -1679,6 +1826,7 @@ fn build_direct_handshake_request(sequence_number: u64) -> XpcValue {
     )
 }
 
+#[cfg(feature = "tunnel")]
 fn build_direct_pairing_event(
     tlv_data: &[u8],
     kind: &str,
@@ -1716,6 +1864,7 @@ fn build_direct_pairing_event(
     )
 }
 
+#[cfg(feature = "tunnel")]
 fn build_direct_pair_verify_failed_event(sequence_number: u64) -> XpcValue {
     build_direct_control_envelope(
         xpc_dict(&[(
@@ -1732,6 +1881,7 @@ fn build_direct_pair_verify_failed_event(sequence_number: u64) -> XpcValue {
     )
 }
 
+#[cfg(feature = "tunnel")]
 fn build_direct_control_envelope(message: XpcValue, sequence_number: u64) -> XpcValue {
     xpc_dict(&[
         (
@@ -1752,6 +1902,7 @@ fn build_direct_control_envelope(message: XpcValue, sequence_number: u64) -> Xpc
     ])
 }
 
+#[cfg(feature = "tunnel")]
 async fn create_direct_tcp_listener(
     client: &mut XpcClient,
     session: &VerifyPairSession,
@@ -1826,6 +1977,7 @@ async fn create_direct_tcp_listener(
         .ok_or_else(|| CoreError::Other(format!("invalid createListener port {port}")))
 }
 
+#[cfg(feature = "tunnel")]
 async fn create_remote_pairing_tcp_listener(
     control: &mut RemotePairingControlChannel,
     session: &VerifyPairSession,
@@ -1904,6 +2056,7 @@ async fn create_remote_pairing_tcp_listener(
         })
 }
 
+#[cfg(feature = "tunnel")]
 fn xpc_dict(pairs: &[(&str, XpcValue)]) -> XpcValue {
     let mut map = IndexMap::new();
     for (key, value) in pairs {
@@ -1912,6 +2065,7 @@ fn xpc_dict(pairs: &[(&str, XpcValue)]) -> XpcValue {
     XpcValue::Dictionary(map)
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_direct_remote_identifier(body: &XpcValue) -> Result<String, CoreError> {
     direct_plain_message(body)?
         .get("response")
@@ -1930,6 +2084,7 @@ fn extract_direct_remote_identifier(body: &XpcValue) -> Result<String, CoreError
         .ok_or_else(|| CoreError::Other("handshake missing peerDeviceInfo.identifier".into()))
 }
 
+#[cfg(feature = "tunnel")]
 fn build_remote_pairing_handshake_request(sequence_number: u64) -> serde_json::Value {
     serde_json::json!({
         "message": {
@@ -1955,6 +2110,7 @@ fn build_remote_pairing_handshake_request(sequence_number: u64) -> serde_json::V
     })
 }
 
+#[cfg(feature = "tunnel")]
 fn build_remote_pairing_pairing_event(
     tlv_data: &[u8],
     kind: &str,
@@ -1998,6 +2154,7 @@ fn build_remote_pairing_pairing_event(
     })
 }
 
+#[cfg(feature = "tunnel")]
 fn build_remote_pairing_pair_verify_failed_event(sequence_number: u64) -> serde_json::Value {
     serde_json::json!({
         "message": {
@@ -2016,6 +2173,7 @@ fn build_remote_pairing_pair_verify_failed_event(sequence_number: u64) -> serde_
     })
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_direct_pairing_tlv(body: &XpcValue) -> Result<Vec<u8>, CoreError> {
     let event = direct_plain_message(body)?
         .get("event")
@@ -2044,6 +2202,7 @@ fn extract_direct_pairing_tlv(body: &XpcValue) -> Result<Vec<u8>, CoreError> {
         .ok_or_else(|| CoreError::Other("pairing response missing pairingData._0.data".into()))
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec<u8>, CoreError> {
     let event = body
         .get("message")
@@ -2077,6 +2236,7 @@ fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec<u8>, CoreE
         .map_err(|e| CoreError::Other(format!("invalid remote pairing TLV base64: {e}")))
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_direct_stream_encrypted(body: &XpcValue) -> Result<Vec<u8>, CoreError> {
     direct_control_value(body)?
         .get("message")
@@ -2093,6 +2253,7 @@ fn extract_direct_stream_encrypted(body: &XpcValue) -> Result<Vec<u8>, CoreError
         })
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<Vec<u8>, CoreError> {
     let encoded = body
         .get("message")
@@ -2111,6 +2272,7 @@ fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<V
     })
 }
 
+#[cfg(feature = "tunnel")]
 fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     let envelope = body.as_dict().ok_or_else(|| {
         CoreError::Other("direct control message body must be a dictionary".into())
@@ -2130,6 +2292,7 @@ fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, 
         .ok_or_else(|| CoreError::Other("direct control message missing value".into()))
 }
 
+#[cfg(feature = "tunnel")]
 fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     direct_control_value(body)?
         .get("message")
@@ -2141,6 +2304,7 @@ fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, 
         .ok_or_else(|| CoreError::Other("direct control message missing message.plain._0".into()))
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_direct_rejection_message(value: &XpcValue) -> Option<String> {
     value
         .as_dict()
@@ -2153,6 +2317,7 @@ fn extract_direct_rejection_message(value: &XpcValue) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_remote_pairing_rejection_message(value: &serde_json::Value) -> Option<String> {
     value
         .get("wrappedError")
@@ -2162,6 +2327,7 @@ fn extract_remote_pairing_rejection_message(value: &serde_json::Value) -> Option
         .map(ToOwned::to_owned)
 }
 
+#[cfg(feature = "tunnel")]
 fn extract_direct_error_extended_message(value: &serde_json::Value) -> Option<String> {
     value
         .get("errorExtended")
@@ -2172,12 +2338,14 @@ fn extract_direct_error_extended_message(value: &serde_json::Value) -> Option<St
         .map(ToOwned::to_owned)
 }
 
+#[cfg(feature = "tunnel")]
 fn make_direct_encrypted_nonce(sequence_number: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[..8].copy_from_slice(&sequence_number.to_le_bytes());
     nonce
 }
 
+#[cfg(feature = "mdns")]
 fn load_wifi_mac_pairings() -> Result<HashMap<String, String>, CoreError> {
     let mut wifi_mac_to_udid = HashMap::new();
     let pair_record_dir = default_pair_record_dir();
@@ -2206,6 +2374,7 @@ fn load_wifi_mac_pairings() -> Result<HashMap<String, String>, CoreError> {
     Ok(wifi_mac_to_udid)
 }
 
+#[cfg(feature = "mdns")]
 fn match_paired_mobdev2_targets(
     services: &[BonjourService],
     wifi_mac_to_udid: &HashMap<String, String>,
@@ -2236,6 +2405,7 @@ fn match_paired_mobdev2_targets(
     targets
 }
 
+#[cfg(feature = "mdns")]
 fn preferred_lockdown_address(addresses: &[String]) -> Option<&str> {
     addresses
         .iter()
@@ -2253,6 +2423,7 @@ fn preferred_lockdown_address(addresses: &[String]) -> Option<&str> {
 }
 
 /// Attempt RSD handshake; returns None on failure (e.g. iOS <17).
+#[cfg(feature = "tunnel")]
 async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
     let addr = Ipv6Addr::from_str(server_addr).ok()?;
     match rsd_handshake(addr, rsd_port).await {
@@ -2272,6 +2443,7 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
 }
 
 /// Attempt RSD via go-ios-compatible userspace proxy.
+#[cfg(feature = "tunnel")]
 async fn attempt_rsd_via_proxy(
     proxy_port: u16,
     server_addr: &str,
@@ -2438,6 +2610,7 @@ async fn attempt_rsd_via_proxy(
     }
 }
 
+#[cfg(feature = "tunnel")]
 async fn open_rsd_proxy_framer(
     proxy_port: u16,
     server_addr: &str,
@@ -2497,13 +2670,16 @@ async fn open_rsd_proxy_framer(
 
 // ── ProxyStream ───────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tunnel")]
 pub(crate) enum ProxyStream {
     Plain(ServiceStream),
     Tls(Box<tokio_rustls::client::TlsStream<ServiceStream>>),
 }
 
+#[cfg(feature = "tunnel")]
 impl Unpin for ProxyStream {}
 
+#[cfg(feature = "tunnel")]
 impl AsyncRead for ProxyStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -2517,6 +2693,7 @@ impl AsyncRead for ProxyStream {
     }
 }
 
+#[cfg(feature = "tunnel")]
 impl AsyncWrite for ProxyStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -2584,6 +2761,7 @@ mod tests {
         std::env::temp_dir().join(format!("ios_core_device_{label}_{unique}"))
     }
 
+    #[cfg(feature = "tunnel")]
     fn make_remote_pair_record(identity: &HostIdentity) -> RemotePairingRecord {
         RemotePairingRecord {
             public_key: identity.public_key_bytes(),
@@ -2615,6 +2793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn load_remote_pairing_credentials_accepts_legacy_ios_rs_without_private_key_hex() {
         let base_dir = temp_test_dir("legacy_ios_rs");
         let ios_rs_dir = base_dir.join("ios-rs");
@@ -2655,6 +2834,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn load_remote_pairing_credentials_prefers_ios_rs_over_pymobiledevice3() {
         let base_dir = temp_test_dir("prefers_ios_rs");
         let ios_rs_dir = base_dir.join("ios-rs");
@@ -2703,6 +2883,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn load_remote_pairing_credentials_falls_back_to_pymobiledevice3_remote_record() {
         let base_dir = temp_test_dir("pymobiledevice3_fallback");
         let ios_rs_dir = base_dir.join("ios-rs");
@@ -2740,6 +2921,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn direct_handshake_request_carries_attempt_pair_verify() {
         let request = build_direct_handshake_request(7);
         let envelope = request.as_dict().expect("envelope dict");
@@ -2781,6 +2963,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn remote_pairing_handshake_request_starts_at_plain_message_root() {
         let request = build_remote_pairing_handshake_request(0);
         assert_eq!(request["originatedBy"], "host");
@@ -2798,6 +2981,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn extract_direct_remote_identifier_reads_peer_device_info() {
         let body = build_direct_control_envelope(
             xpc_dict(&[(
@@ -2833,6 +3017,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn extract_direct_pairing_tlv_surfaces_rejection_message() {
         let body = build_direct_control_envelope(
             xpc_dict(&[(
@@ -2868,6 +3053,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn extract_remote_pairing_tlv_decodes_base64_payload() {
         let body = serde_json::json!({
             "message": {
@@ -2894,6 +3080,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn extract_remote_pairing_tlv_surfaces_rejection_message() {
         let body = serde_json::json!({
             "message": {
@@ -2920,6 +3107,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn make_direct_encrypted_nonce_uses_little_endian_sequence() {
         let nonce = make_direct_encrypted_nonce(0x0102_0304_0506_0708);
         assert_eq!(
@@ -3033,6 +3221,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn resolve_tunnel_connection_target_uses_userspace_proxy_when_available() {
         let target =
             resolve_tunnel_connection_target("fd00::1", Some(60105)).expect("valid proxy target");
@@ -3047,6 +3236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn resolve_tunnel_connection_target_falls_back_to_direct_ipv6() {
         let target =
             resolve_tunnel_connection_target("fd00::2", None).expect("valid direct target");
@@ -3060,6 +3250,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tunnel")]
     fn resolve_tunnel_connection_target_rejects_invalid_ipv6() {
         let err = resolve_tunnel_connection_target("not-an-ipv6", Some(60105))
             .expect_err("invalid IPv6 should fail");
@@ -3068,6 +3259,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdns")]
     fn preferred_lockdown_address_prefers_ipv4() {
         let addresses = vec![
             "fe80::1%Ethernet".to_string(),
@@ -3082,6 +3274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mdns")]
     fn match_paired_mobdev2_targets_uses_wifi_mac_and_dedupes() {
         let services = vec![
             BonjourService {

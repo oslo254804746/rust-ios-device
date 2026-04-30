@@ -43,8 +43,10 @@ pub mod discovery;
 pub mod error;
 pub(crate) mod lockdown;
 pub(crate) mod mux;
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub(crate) mod pairing_transport;
 pub(crate) mod proto;
+#[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
 pub mod services;
 #[cfg(test)]
@@ -53,28 +55,30 @@ pub(crate) mod tunnel;
 pub(crate) mod xpc;
 
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
+#[cfg(feature = "mdns")]
+pub use device::discover_paired_mobdev2_devices;
 pub use device::{
     connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
-    discover_paired_mobdev2_devices, ConnectOptions, ConnectedDevice, InternationalConfiguration,
-    PairedMobdev2Device, ServiceStream,
+    ConnectOptions, ConnectedDevice, InternationalConfiguration, PairedMobdev2Device,
+    ServiceStream,
 };
-pub use discovery::{
-    browse_mobdev2, browse_remotepairing, BonjourService, DeviceEvent, DeviceInfo, MdnsDevice,
-};
+#[cfg(feature = "mdns")]
+pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
+pub use discovery::{DeviceEvent, DeviceInfo};
 pub use error::CoreError;
 pub use lockdown::{
-    default_pair_record_path, handshake_only_service_tls, pair_supervised, recv_lockdown,
-    save_pair_record, send_lockdown, start_lockdown_session, start_service, strip_service_tls,
-    wrap_service_tls, FullPairRecord, GetValueRequest, GetValueResponse, LockdownClient,
-    LockdownError, PairRecord, PairRecordError, QueryTypeRequest, QueryTypeResponse,
-    RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest, StartServiceResponse,
-    StartSessionRequest, StartSessionResponse, StopSessionRequest, ValueOperationResponse,
-    CORE_DEVICE_PROXY, LOCKDOWN_PORT,
+    default_pair_record_path, handshake_only_service_tls, recv_lockdown, send_lockdown,
+    start_lockdown_session, start_service, strip_service_tls, wrap_service_tls, GetValueRequest,
+    GetValueResponse, LockdownClient, LockdownError, PairRecord, PairRecordError, QueryTypeRequest,
+    QueryTypeResponse, RemoveValueRequest, ServiceInfo, SetValueRequest, StartServiceRequest,
+    StartServiceResponse, StartSessionRequest, StartSessionResponse, StopSessionRequest,
+    ValueOperationResponse, CORE_DEVICE_PROXY, LOCKDOWN_PORT,
 };
+#[cfg(feature = "supervised-pair")]
+pub use lockdown::{pair_supervised, save_pair_record, FullPairRecord};
 pub use mux::MuxClient;
-pub use pairing_transport::{
-    pair_new_device, PairedCredentials, PairingTransportError, UNTRUSTED_SERVICE_NAME,
-};
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub use pairing_transport::{pair_new_device, PairedCredentials, PairingTransportError};
 pub use proto::nskeyedarchiver_encode::{
     archive_array, archive_bool, archive_data, archive_dict, archive_float, archive_int,
     archive_nsurl, archive_null, archive_string, archive_uuid, archive_xct_capabilities,
@@ -150,6 +154,7 @@ pub use services::testmanager;
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
 pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+#[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;
 pub use xpc::message::flags as xpc_message_flags;
 pub use xpc::message::{
@@ -179,6 +184,7 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 ///
 /// Returns a stream of devices with their IPv6 address and RSD port.
 /// Use [`connect`] to establish a session and inspect the RSD service list.
+#[cfg(feature = "mdns")]
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }

@@ -5,9 +5,11 @@
 
 pub mod client;
 pub(crate) mod pair_record;
+#[cfg(feature = "tunnel")]
 pub mod pairing;
 pub mod protocol;
 pub(crate) mod session;
+#[cfg(feature = "supervised-pair")]
 pub(crate) mod supervised_pair;
 
 pub use client::LockdownClient;
@@ -22,6 +24,7 @@ pub use session::{
     handshake_only_service_tls, start_lockdown_session, start_service, strip_service_tls,
     wrap_service_tls, CORE_DEVICE_PROXY,
 };
+#[cfg(feature = "supervised-pair")]
 pub use supervised_pair::{pair_supervised, save_pair_record, FullPairRecord};
 
 /// Service info returned by StartService.

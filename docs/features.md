@@ -36,5 +36,10 @@ Some features add heavier optional dependencies only when enabled:
 | `apps` | IPA/Zip parsing and CRC support. |
 | `imagemounter` | HTTP downloads plus Zip handling for Developer Disk Images. |
 | `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `dproxy` | DTX codec support. |
+| `mdns` | Bonjour/mDNS discovery via `mdns-sd`. Required for iOS 17+ network discovery and remote pairing target discovery. |
+| `tunnel` | CoreDevice tunnel infrastructure and TLS-PSK support via `openssl` and `tokio-openssl`. |
+| `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
+| `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |
+| `supervised-pair` | Supervised pairing/P12 signing helpers via `openssl`; implied by `prepare`. |
 
 The `ios-cli` crate enables `ios-core/full` because the binary exposes many commands. Library users should prefer a narrower feature list.

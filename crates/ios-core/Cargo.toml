@@ -60,7 +60,14 @@ ios17 = [
     "fileservice",
     "instruments",
     "testmanager",
+    "mdns",
+    "tunnel-userspace",
 ]
+mdns = ["dep:mdns-sd"]
+tunnel = ["dep:openssl", "dep:tokio-openssl"]
+tunnel-kernel = ["tunnel", "dep:tun-rs"]
+tunnel-userspace = ["tunnel", "dep:smoltcp"]
+supervised-pair = ["dep:openssl"]
 afc = []
 arbitration = []
 apps = ["dep:crc32fast", "dep:zip"]
@@ -94,7 +101,7 @@ preboard = []
 idam = []
 fetchsymbols = []
 ostrace = []
-prepare = ["afc", "mcinstall"]
+prepare = ["afc", "mcinstall", "supervised-pair"]
 restore = []
 dproxy = ["dtx"]
 webinspector = []
@@ -104,6 +111,8 @@ full = [
     "ios17",
     "management",
     "ostrace",
+    "supervised-pair",
+    "tunnel-kernel",
 ]
 
 [dependencies]
@@ -116,7 +125,7 @@ tracing      = { workspace = true }
 tokio-util   = { workspace = true }
 tokio-stream = { workspace = true }
 semver       = { workspace = true }
-mdns-sd      = { workspace = true }
+mdns-sd      = { workspace = true, optional = true }
 plist        = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
@@ -136,12 +145,12 @@ x25519-dalek = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand         = { workspace = true }
 md5          = { workspace = true }
-openssl      = { workspace = true }
-tokio-openssl = { workspace = true }
+openssl      = { workspace = true, optional = true }
+tokio-openssl = { workspace = true, optional = true }
 h2           = { workspace = true }
 http         = { workspace = true }
-smoltcp      = { workspace = true }
-tun-rs       = { workspace = true }
+smoltcp      = { workspace = true, optional = true }
+tun-rs       = { workspace = true, optional = true }
 p256         = { workspace = true }
 sha2         = { workspace = true }
 hkdf         = { workspace = true }

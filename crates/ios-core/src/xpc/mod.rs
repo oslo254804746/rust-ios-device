@@ -6,13 +6,22 @@
 //!   rsd      – RSD handshake (service discovery)
 //!   client   – High-level XpcClient
 
+#[cfg(feature = "tunnel")]
 pub mod client;
+#[cfg(feature = "tunnel")]
 pub mod h2_raw;
 pub mod message;
 pub mod rsd;
 
+#[cfg(feature = "tunnel")]
 pub use client::XpcClient;
-pub use message::{XpcMessage, XpcValue};
+#[cfg(any(
+    feature = "apps",
+    feature = "dproxy",
+    feature = "fetchsymbols",
+    feature = "restore"
+))]
+pub(crate) use message::{XpcMessage, XpcValue};
 
 /// Errors from XPC operations.
 #[derive(Debug, thiserror::Error)]

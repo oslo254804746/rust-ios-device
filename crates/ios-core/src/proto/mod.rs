@@ -20,6 +20,7 @@ pub mod nskeyedarchiver_encode;
 #[allow(dead_code)]
 pub mod opack;
 pub mod tls;
+#[cfg(feature = "tunnel")]
 pub mod tlv;
 #[allow(dead_code)]
 pub mod usbmuxd;

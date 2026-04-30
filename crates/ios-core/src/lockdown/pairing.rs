@@ -61,6 +61,7 @@ impl HostIdentity {
         }
     }
 
+    #[cfg(feature = "tunnel")]
     pub fn from_private_key_bytes(
         identifier: impl Into<String>,
         private_key: &[u8],
@@ -466,6 +467,7 @@ pub fn derive_cipher_keys(session_key: &[u8]) -> Result<([u8; 32], [u8; 32]), Pa
 // ── VerifyPair (for already-paired devices) ───────────────────────────────────
 
 /// Build the TLV for the pair verify initiation.
+#[cfg(feature = "tunnel")]
 pub fn build_verify_start_tlv(x25519_pub: &[u8]) -> Vec<u8> {
     let mut buf = TlvBuffer::new();
     buf.push_u8(TYPE_STATE, STATE_START_REQUEST);
@@ -477,6 +479,7 @@ pub fn build_verify_start_tlv(x25519_pub: &[u8]) -> Vec<u8> {
 ///
 /// Returns the derived cipher keys (client_key, server_key) on success.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "tunnel")]
 pub struct VerifyPairSession {
     pub tlv: Vec<u8>,
     pub encryption_key: [u8; 32],
@@ -486,6 +489,7 @@ pub struct VerifyPairSession {
 
 /// Build the pair verify step-2 TLV and derive the keys required for the
 /// subsequent encrypted control channel and TLS-PSK listener connection.
+#[cfg(feature = "tunnel")]
 pub fn build_verify_step2_tlv(
     our_secret: [u8; 32],     // x25519 secret scalar bytes
     our_public: &[u8; 32],    // x25519 public

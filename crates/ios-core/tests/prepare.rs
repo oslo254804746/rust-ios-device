@@ -1,3 +1,5 @@
+#![cfg(feature = "prepare")]
+
 #[test]
 fn build_cloud_configuration_embeds_supervision_certificate() {
     let cloud = ios_core::prepare::build_cloud_configuration(

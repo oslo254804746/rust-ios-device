@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, RwLock};
 
-use crate::tunnel::handshake::TunnelInfo;
+#[cfg(feature = "tunnel-userspace")]
 use crate::tunnel::tun::userspace::UserspaceTunDevice;
+use crate::tunnel::TunnelInfo;
 
 /// TUN mode selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -29,9 +30,8 @@ enum TunnelRuntime {
         /// Dropping this sender cancels the tunnel (receivers get RecvError).
         _cancel_tx: watch::Sender<()>,
     },
-    Userspace {
-        _runtime: UserspaceTunDevice,
-    },
+    #[cfg(feature = "tunnel-userspace")]
+    Userspace { _runtime: UserspaceTunDevice },
 }
 
 impl TunnelHandle {
@@ -52,6 +52,7 @@ impl TunnelHandle {
         )
     }
 
+    #[cfg(feature = "tunnel-userspace")]
     pub fn new_userspace(udid: String, info: TunnelInfo, runtime: UserspaceTunDevice) -> Self {
         Self {
             udid,
@@ -64,6 +65,7 @@ impl TunnelHandle {
     pub fn is_alive(&self) -> bool {
         match &self._runtime {
             TunnelRuntime::Kernel { _cancel_tx } => _cancel_tx.receiver_count() > 0,
+            #[cfg(feature = "tunnel-userspace")]
             TunnelRuntime::Userspace { _runtime } => _runtime.is_alive(),
         }
     }

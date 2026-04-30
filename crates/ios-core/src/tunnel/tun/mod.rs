@@ -1,4 +1,6 @@
+#[cfg(feature = "tunnel-kernel")]
 pub mod kernel;
+#[cfg(feature = "tunnel-userspace")]
 pub mod userspace;
 
 use crate::tunnel::TunnelError;
