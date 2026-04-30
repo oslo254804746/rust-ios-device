@@ -7,15 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const SERVICE_NAME: &str = "com.apple.dt.devicearbitration";
 const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ArbitrationError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(ArbitrationError);
 
 pub struct ArbitrationClient<S> {
     stream: S,

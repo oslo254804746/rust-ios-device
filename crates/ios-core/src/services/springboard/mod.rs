@@ -8,17 +8,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.springboardservices";
 
-#[derive(Debug, thiserror::Error)]
-pub enum SpringboardError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+service_error!(
+    SpringboardError,
     #[error("service error: {0}")]
     Service(String),
-}
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Icon {

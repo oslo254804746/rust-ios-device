@@ -10,17 +10,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.diagnostics_relay";
 
-#[derive(Debug, thiserror::Error)]
-pub enum DiagnosticsError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
+service_error!(
+    DiagnosticsError,
+    between {
     #[error("mobilegestalt deprecated: {0}")]
     Deprecated(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+    },
+    after {},
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]

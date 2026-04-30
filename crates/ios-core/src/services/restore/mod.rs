@@ -6,15 +6,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced";
 
-#[derive(Debug, thiserror::Error)]
-pub enum RestoreError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(RestoreError);
 
 pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,

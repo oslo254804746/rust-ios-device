@@ -44,6 +44,47 @@
 //! | `dproxy` | [`dproxy`] | DTX debug proxy recording (requires `dtx`) |
 //! | `webinspector` | [`webinspector`] | Safari/WebView remote debugging |
 
+macro_rules! service_error {
+    ($name:ident $(,)?) => {
+        service_error!($name, before {}, between {}, after {});
+    };
+    ($name:ident, before { $($before:tt)* } $(,)?) => {
+        service_error!($name, before { $($before)* }, between {}, after {});
+    };
+    ($name:ident, between { $($between:tt)* } $(,)?) => {
+        service_error!($name, before {}, between { $($between)* }, after {});
+    };
+    ($name:ident, after { $($after:tt)* } $(,)?) => {
+        service_error!($name, before {}, between {}, after { $($after)* });
+    };
+    ($name:ident, before { $($before:tt)* }, between { $($between:tt)* } $(,)?) => {
+        service_error!($name, before { $($before)* }, between { $($between)* }, after {});
+    };
+    ($name:ident, before { $($before:tt)* }, after { $($after:tt)* } $(,)?) => {
+        service_error!($name, before { $($before)* }, between {}, after { $($after)* });
+    };
+    ($name:ident, between { $($between:tt)* }, after { $($after:tt)* } $(,)?) => {
+        service_error!($name, before {}, between { $($between)* }, after { $($after)* });
+    };
+    ($name:ident, before { $($before:tt)* }, between { $($between:tt)* }, after { $($after:tt)* } $(,)?) => {
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            $($before)*
+            #[error("IO error: {0}")]
+            Io(#[from] std::io::Error),
+            #[error("plist error: {0}")]
+            Plist(String),
+            $($between)*
+            #[error("protocol error: {0}")]
+            Protocol(String),
+            $($after)*
+        }
+    };
+    ($name:ident, $($after:tt)*) => {
+        service_error!($name, before {}, between {}, after { $($after)* });
+    };
+}
+
 pub mod backup2;
 pub mod device_link;
 
@@ -153,3 +194,34 @@ pub mod imagemounter;
 // Always-available modules
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
+
+#[cfg(test)]
+mod tests {
+    service_error!(
+        MacroSmokeError,
+        after {
+        #[error("extra error: {0}")]
+        Extra(String),
+        },
+    );
+
+    #[test]
+    fn service_error_macro_preserves_common_variants_and_display() {
+        let io_error: MacroSmokeError =
+            std::io::Error::from(std::io::ErrorKind::Interrupted).into();
+        assert!(matches!(io_error, MacroSmokeError::Io(_)));
+
+        assert_eq!(
+            MacroSmokeError::Plist("bad plist".into()).to_string(),
+            "plist error: bad plist"
+        );
+        assert_eq!(
+            MacroSmokeError::Protocol("bad frame".into()).to_string(),
+            "protocol error: bad frame"
+        );
+        assert_eq!(
+            MacroSmokeError::Extra("specific".into()).to_string(),
+            "extra error: specific"
+        );
+    }
+}

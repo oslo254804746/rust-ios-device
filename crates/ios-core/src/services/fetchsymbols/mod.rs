@@ -16,15 +16,7 @@ const CMD_LIST_FILES: u32 = 0x3030_3030;
 const CMD_GET_FILE: u32 = 1;
 const MAX_CHUNK: usize = 10 * 1024 * 1024;
 
-#[derive(Debug, thiserror::Error)]
-pub enum FetchSymbolsError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(FetchSymbolsError);
 
 pub struct FetchSymbolsClient<S> {
     stream: S,

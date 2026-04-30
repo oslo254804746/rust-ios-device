@@ -7,17 +7,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.misagent";
 
-#[derive(Debug, thiserror::Error)]
-pub enum MisagentError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
+service_error!(
+    MisagentError,
     #[error("status {0}")]
     Status(u32),
-}
+);
 
 /// Provisioning profile entry.
 #[derive(Debug, Clone)]

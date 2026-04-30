@@ -6,15 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.file_relay";
 
-#[derive(Debug, thiserror::Error)]
-pub enum FileRelayError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("plist error: {0}")]
-    Plist(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-}
+service_error!(FileRelayError);
 
 pub struct FileRelayClient<S> {
     stream: S,
