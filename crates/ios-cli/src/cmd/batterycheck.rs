@@ -1,8 +1,8 @@
 use anyhow::Result;
 use ios_core::lockdown::pair_record::PairRecord;
 use ios_core::lockdown::{LockdownClient, LOCKDOWN_PORT};
-use ios_core::MuxClient;
 use ios_core::tunnel::TunMode;
+use ios_core::MuxClient;
 use ios_core::{connect, ConnectOptions};
 
 const BATTERY_DOMAIN: &str = "com.apple.mobile.battery";

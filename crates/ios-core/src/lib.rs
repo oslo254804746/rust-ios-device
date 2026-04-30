@@ -51,6 +51,8 @@ pub use services::crashreport;
 pub use services::debugserver;
 #[cfg(feature = "deviceinfo")]
 pub use services::deviceinfo;
+#[cfg(feature = "diagnostics")]
+pub use services::diagnostics;
 #[cfg(feature = "dproxy")]
 pub use services::dproxy;
 #[cfg(feature = "dtx")]
@@ -73,6 +75,8 @@ pub use services::instruments;
 pub use services::mcinstall;
 #[cfg(feature = "misagent")]
 pub use services::misagent;
+#[cfg(feature = "mobileactivation")]
+pub use services::mobileactivation;
 #[cfg(feature = "notificationproxy")]
 pub use services::notificationproxy;
 #[cfg(feature = "ostrace")]
@@ -98,10 +102,6 @@ pub use services::testmanager;
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
-#[cfg(feature = "diagnostics")]
-pub use services::diagnostics;
-#[cfg(feature = "mobileactivation")]
-pub use services::mobileactivation;
 pub use tunnel::TunMode;
 pub use xpc::{RsdHandshake, ServiceDescriptor, XpcMessage, XpcValue};
 

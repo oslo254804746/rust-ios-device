@@ -7,6 +7,10 @@ pub const LOCKDOWN_PORT: u16 = 62078;
 const MAX_LOCKDOWN_FRAME_SIZE: usize = 4 * 1024 * 1024;
 
 pub fn encode_frame(payload: &[u8]) -> Vec<u8> {
+    debug_assert!(
+        payload.len() <= u32::MAX as usize,
+        "lockdown frame payload exceeds u32::MAX"
+    );
     let mut buf = Vec::with_capacity(4 + payload.len());
     buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     buf.extend_from_slice(payload);

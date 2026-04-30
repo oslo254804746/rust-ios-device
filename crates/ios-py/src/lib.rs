@@ -160,9 +160,7 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let server_address = device.server_address().unwrap_or("").to_string();
-    let rsd_port = device
-        .rsd_port()
-        .unwrap_or(0);
+    let rsd_port = device.rsd_port().unwrap_or(0);
     let userspace_port = device.userspace_port();
 
     let services: Vec<String> = device

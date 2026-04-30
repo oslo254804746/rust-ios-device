@@ -36,7 +36,7 @@ where
 {
     let mut header = [0u8; 16];
     reader.read_exact(&mut header).await?;
-    let length = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
+    let length = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
     if length < 16 {
         return Err(MuxError::Protocol(format!(
             "invalid message length: {length}"

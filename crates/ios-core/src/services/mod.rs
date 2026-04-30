@@ -50,6 +50,9 @@ pub mod device_link;
 #[cfg(feature = "afc")]
 pub mod afc;
 
+#[cfg(feature = "house_arrest")]
+pub mod house_arrest;
+
 #[cfg(feature = "arbitration")]
 pub mod arbitration;
 

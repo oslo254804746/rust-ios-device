@@ -707,11 +707,9 @@ pub async fn connect_tcp_lockdown_tunnel(
 }
 
 pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
-    let wifi_mac_to_udid =
-        tokio::task::spawn_blocking(load_wifi_mac_pairings)
-            .await
-            .map_err(|e| CoreError::Other(format!("join error: {e}")))?
-            ?;
+    let wifi_mac_to_udid = tokio::task::spawn_blocking(load_wifi_mac_pairings)
+        .await
+        .map_err(|e| CoreError::Other(format!("join error: {e}")))??;
     let services = browse_mobdev2(MOBDEV2_DISCOVERY_TIMEOUT).await?;
     Ok(match_paired_mobdev2_targets(&services, &wifi_mac_to_udid))
 }

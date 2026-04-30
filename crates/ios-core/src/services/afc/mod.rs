@@ -17,8 +17,8 @@ use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zerocopy::{FromBytes, IntoBytes};
 
-#[path = "../house_arrest/mod.rs"]
-pub mod house_arrest;
+#[cfg(feature = "house_arrest")]
+pub use super::house_arrest;
 
 pub mod protocol; // kept for re-export compatibility
 

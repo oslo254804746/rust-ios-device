@@ -491,7 +491,14 @@ async fn run_local_listener(listener: TcpListener, conn_req_tx: mpsc::Sender<Con
         if client.read_exact(&mut port_buf).await.is_err() {
             continue;
         }
-        let remote_port = u32::from_le_bytes(port_buf) as u16;
+        let port_u32 = u32::from_le_bytes(port_buf);
+        let remote_port = match u16::try_from(port_u32) {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("userspace: invalid port {port_u32}, skipping");
+                continue;
+            }
+        };
         let remote_ip = Ipv6Address::from_bytes(&addr_buf);
 
         tracing::info!("userspace: tunneling to [{remote_ip}]:{remote_port}");

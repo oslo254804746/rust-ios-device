@@ -157,8 +157,7 @@ impl DdiDownloader {
         let dir_clone = dir.clone();
         tokio::task::spawn_blocking(move || extract_zip(&zip_bytes, &dir_clone))
             .await
-            .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))?
-            ?;
+            .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
 
         load_personalized_from_dir(&dir).await
     }
