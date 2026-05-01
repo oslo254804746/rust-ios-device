@@ -18,6 +18,5 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 ios-core  = { workspace = true }
 tokio     = { workspace = true, features = ["rt-multi-thread"] }
-once_cell = { workspace = true }
 plist     = { workspace = true }
 serde_json = { workspace = true }

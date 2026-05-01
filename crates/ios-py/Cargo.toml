@@ -20,4 +20,3 @@ crate-type = ["cdylib"]
 ios-core  = { workspace = true }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
 tokio     = { workspace = true, features = ["rt-multi-thread"] }
-once_cell = { workspace = true }

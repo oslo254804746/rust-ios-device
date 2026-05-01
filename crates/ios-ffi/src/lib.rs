@@ -35,13 +35,12 @@
 use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 
-static RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("failed to create tokio runtime"));
+static RUNTIME: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("failed to create tokio runtime"));
 
 // ── Types exported to C ───────────────────────────────────────────────────────
 
@@ -95,7 +94,7 @@ const IOS_ERR_STATE: c_int = 5;
 /// Safe to call multiple times (idempotent).
 #[no_mangle]
 pub extern "C" fn ios_runtime_init() {
-    Lazy::force(&RUNTIME);
+    LazyLock::force(&RUNTIME);
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

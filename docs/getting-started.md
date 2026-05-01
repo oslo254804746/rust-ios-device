@@ -4,7 +4,7 @@ This guide covers a local source checkout. Published binaries or packages may us
 
 ## Prerequisites
 
-- Rust 1.75 or newer.
+- Rust 1.80 or newer.
 - A trusted iOS device connected over USB for the most reliable first test.
 - usbmux support on the host:
   - macOS: Apple device support from Xcode/Finder is usually enough.

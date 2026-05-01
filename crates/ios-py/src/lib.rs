@@ -20,15 +20,14 @@
 
 #![allow(clippy::useless_conversion)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use once_cell::sync::Lazy;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use tokio::runtime::Runtime;
 
-static RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("failed to create tokio runtime"));
+static RUNTIME: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("failed to create tokio runtime"));
 
 const ASYNCIO_PROXY_HELPERS: &str = r#"
 import ipaddress
