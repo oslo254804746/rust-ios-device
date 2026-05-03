@@ -14,13 +14,13 @@ This is a library crate in the [`rust-ios-device`](https://github.com/oslo254804
 
 ```toml
 [dependencies]
-ios-core = "0.1.4"
+ios-core = "0.1.5"
 ```
 
 The crate has no default service features. Enable only the service clients you need:
 
 ```toml
-ios-core = { version = "0.1.4", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
 ```
 
 Use grouped features such as `classic`, `developer`, `management`, `ios17`, or `full` for broader tools.

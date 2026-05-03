@@ -69,7 +69,7 @@ The release binary is named `ios`.
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.4", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
 ```
 
 For broader tools, use grouped features such as `classic`, `developer`, `management`, `ios17`, or `full`. The CLI enables `full`; libraries should usually choose a smaller set. See [docs/features.md](docs/features.md).
