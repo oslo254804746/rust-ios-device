@@ -110,6 +110,25 @@ ios apps --help
 ios instruments --help
 ```
 
+## CLI 覆盖范围与生态对照
+
+`ios` CLI 按 `ios-core` 中实现的服务族组织命令。它有意覆盖
+`go-ios` 和 `pymobiledevice3` 中常见的工作流，同时让命令名称尽量贴近本仓库的
+Rust 模块边界。
+
+| 任务 | `ios` 命令 | 对应的 go-ios / pymobiledevice3 区域 |
+| --- | --- | --- |
+| 设备发现与配对 | `list`, `listen`, `discover`, `pair`, `lockdown` | go-ios `list`, `listen`, `pair`, `lockdown`；pymobiledevice3 `usbmux`, `lockdown`, `bonjour` |
+| 文件与 App 容器 | `file`, `crash`, `file-relay` | go-ios `fsync`, `crash`；pymobiledevice3 `afc`, `crash` |
+| 应用工作流 | `apps`, `runtest`, `runwda` | go-ios `apps`, `install`, `launch`, `kill`, `runtest`, `runwda`；pymobiledevice3 `apps`、developer DVT launch/kill |
+| 诊断与日志 | `syslog`, `diagnostics`, `batterycheck`, `batteryregistry`, `os-trace`, `pcap` | go-ios `syslog`, `diagnostics`, `batterycheck`, `batteryregistry`, `pcap`；pymobiledevice3 `syslog`, `diagnostics`, `pcap` |
+| 开发者服务 | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector` | go-ios `instruments`, `debug`, `image`, `ax`；pymobiledevice3 `developer dvt`, `mounter`, `webinspector` |
+| iOS 17+ 传输 | `tunnel`, `rsd`, `forward` | go-ios `tunnel`, `rsd`, `forward`；pymobiledevice3 RemoteXPC/tunnel 与 `usbmux forward` 工作流 |
+| 管理与监督 | `profiles`, `provisioning`, `prepare`, `httpproxy`, `erase`, `restore`, `preboard`, `power-assert` | go-ios `profile`, `prepare`, `httpproxy`, `erase`；pymobiledevice3 `profile`, `provision`, `restore` 及相关服务 |
+
+按任务组织的命令示例见 [docs/usage.md](docs/usage.md)，更详细的 go-ios /
+pymobiledevice3 对照见 [docs/cli-map.md](docs/cli-map.md)。
+
 ## CoreDevice 隧道
 
 为已信任设备启动隧道：

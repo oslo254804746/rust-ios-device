@@ -110,6 +110,27 @@ ios apps --help
 ios instruments --help
 ```
 
+## CLI coverage and ecosystem mapping
+
+The `ios` CLI is organized around the service families implemented in `ios-core`.
+It intentionally overlaps with common workflows from `go-ios` and
+`pymobiledevice3`, while keeping command names close to this workspace's Rust
+modules.
+
+| Task | `ios` commands | Comparable go-ios / pymobiledevice3 areas |
+| --- | --- | --- |
+| Device discovery and pairing | `list`, `listen`, `discover`, `pair`, `lockdown` | go-ios `list`, `listen`, `pair`, `lockdown`; pymobiledevice3 `usbmux`, `lockdown`, `bonjour` |
+| Files and app containers | `file`, `crash`, `file-relay` | go-ios `fsync`, `crash`; pymobiledevice3 `afc`, `crash` |
+| Application workflows | `apps`, `runtest`, `runwda` | go-ios `apps`, `install`, `launch`, `kill`, `runtest`, `runwda`; pymobiledevice3 `apps`, developer DVT launch/kill |
+| Diagnostics and logs | `syslog`, `diagnostics`, `batterycheck`, `batteryregistry`, `os-trace`, `pcap` | go-ios `syslog`, `diagnostics`, `batterycheck`, `batteryregistry`, `pcap`; pymobiledevice3 `syslog`, `diagnostics`, `pcap` |
+| Developer services | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector` | go-ios `instruments`, `debug`, `image`, `ax`; pymobiledevice3 `developer dvt`, `mounter`, `webinspector` |
+| iOS 17+ transport | `tunnel`, `rsd`, `forward` | go-ios `tunnel`, `rsd`, `forward`; pymobiledevice3 RemoteXPC/tunnel and `usbmux forward` workflows |
+| Management and supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `erase`, `restore`, `preboard`, `power-assert` | go-ios `profile`, `prepare`, `httpproxy`, `erase`; pymobiledevice3 `profile`, `provision`, `restore`, related services |
+
+See [docs/usage.md](docs/usage.md) for task-focused command examples and
+[docs/cli-map.md](docs/cli-map.md) for a more detailed mapping against
+go-ios and pymobiledevice3.
+
 ## CoreDevice tunnel
 
 Start a tunnel for a trusted device:
