@@ -38,7 +38,7 @@ The project is currently **experimental**. It is useful for development, testing
 
 ## Requirements
 
-- Rust 1.75 or newer.
+- Rust 1.80 or newer.
 - A trusted iOS device for most real-device operations.
 - Host support for usbmux:
   - macOS: Apple device support is normally available with Xcode/Finder components.

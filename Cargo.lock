@@ -1540,7 +1540,6 @@ name = "ios-ffi"
 version = "0.1.4"
 dependencies = [
  "ios-core",
- "once_cell",
  "plist",
  "serde_json",
  "tokio",
@@ -1551,7 +1550,6 @@ name = "ios-py"
 version = "0.1.4"
 dependencies = [
  "ios-core",
- "once_cell",
  "pyo3",
  "tokio",
 ]
