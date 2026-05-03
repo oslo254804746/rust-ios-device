@@ -84,7 +84,10 @@ jobs:
         run: cargo build --workspace --exclude ios-py
 
       - name: Test
-        run: cargo test --workspace --exclude ios-py
+        shell: bash
+        run: |
+          cargo test --workspace --exclude ios-core --exclude ios-py
+          cargo test -p ios-core --all-features
 
   release:
     name: Release (${{ matrix.target }})
@@ -176,6 +179,7 @@ jobs:
           mkdir -p _ffi_pkg
           cp "$RELEASE_DIR/libios_ffi.${{ matrix.lib_ext }}" _ffi_pkg/ 2>/dev/null || true
           cp "$RELEASE_DIR/libios_ffi.a" _ffi_pkg/ 2>/dev/null || true
+          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
           tar czf "$FFI_ASSET" -C _ffi_pkg .
           sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
           echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
@@ -190,6 +194,7 @@ jobs:
           cp "$RELEASE_DIR/ios_ffi.dll" _ffi_pkg/ 2>/dev/null || true
           cp "$RELEASE_DIR/ios_ffi.dll.lib" _ffi_pkg/ 2>/dev/null || true
           cp "$RELEASE_DIR/ios_ffi.lib" _ffi_pkg/ 2>/dev/null || true
+          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
           cd _ffi_pkg
           7z a "../$FFI_ASSET" .
           cd ..

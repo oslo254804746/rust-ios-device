@@ -172,6 +172,16 @@ fn ios_devices_into_raw(devices: Vec<IosDevice>) -> (*mut IosDevice, usize) {
     (ptr, count)
 }
 
+fn validate_device_list_outputs(
+    devices_out: *mut *mut IosDevice,
+    count_out: *mut usize,
+) -> Result<(), c_int> {
+    if devices_out.is_null() || count_out.is_null() {
+        return Err(IOS_ERR_NULL);
+    }
+    Ok(())
+}
+
 unsafe fn drop_ios_devices_allocation(devices: *mut IosDevice, count: usize) {
     drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
         devices, count,
@@ -196,6 +206,9 @@ pub unsafe extern "C" fn ios_list_devices(
     devices_out: *mut *mut IosDevice,
     count_out: *mut usize,
 ) -> c_int {
+    if let Err(code) = validate_device_list_outputs(devices_out, count_out) {
+        return code;
+    }
     let result = RUNTIME.block_on(ios_core::list_devices());
     match result {
         Err(_) => 1,
@@ -556,5 +569,31 @@ mod tests {
             assert_eq!((*ptr).device_id, 7);
             drop_ios_devices_allocation(ptr, count);
         }
+    }
+
+    #[test]
+    fn validate_device_list_outputs_rejects_null_pointers() {
+        let mut devices = std::ptr::null_mut();
+        let mut count = 0usize;
+
+        assert_eq!(
+            validate_device_list_outputs(std::ptr::null_mut(), &mut count),
+            Err(IOS_ERR_NULL)
+        );
+        assert_eq!(
+            validate_device_list_outputs(&mut devices, std::ptr::null_mut()),
+            Err(IOS_ERR_NULL)
+        );
+    }
+
+    #[test]
+    fn validate_device_list_outputs_accepts_valid_pointers() {
+        let mut devices = std::ptr::null_mut();
+        let mut count = 0usize;
+
+        assert_eq!(
+            validate_device_list_outputs(&mut devices, &mut count),
+            Ok(())
+        );
     }
 }
