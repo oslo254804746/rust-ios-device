@@ -31,7 +31,7 @@ use crate::lockdown::LOCKDOWN_PORT;
 use crate::mux::MuxClient;
 #[cfg(feature = "tunnel")]
 use crate::proto::tlv::TlvBuffer;
-#[cfg(feature = "tunnel")]
+#[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::forward::forward_packets;
 use crate::tunnel::manager::{TunMode, TunnelHandle};
 #[cfg(feature = "tunnel-kernel")]
@@ -1246,52 +1246,72 @@ async fn connect_via_direct_rsd_target(
 
     match opts.tun_mode {
         TunMode::Kernel => {
-            let (handle, cancel_rx) =
-                TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
-            let tun = KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
-                .await
-                .map_err(CoreError::Tunnel)?;
-            let mtu = tunnel_info.client_mtu;
-            tokio::spawn(async move {
-                if let Err(err) = forward_packets(direct_stream, tun, mtu, cancel_rx).await {
-                    tracing::error!("direct kernel TUN forward: {err}");
-                }
-            });
-            let rsd = attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record,
-                lockdown_transport,
-            })
+            #[cfg(not(feature = "tunnel-kernel"))]
+            {
+                return Err(CoreError::Unsupported(
+                    "kernel TUN support requires ios-core feature 'tunnel-kernel'".into(),
+                ));
+            }
+            #[cfg(feature = "tunnel-kernel")]
+            {
+                let (handle, cancel_rx) =
+                    TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
+                let tun =
+                    KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
+                        .await
+                        .map_err(CoreError::Tunnel)?;
+                let mtu = tunnel_info.client_mtu;
+                tokio::spawn(async move {
+                    if let Err(err) = forward_packets(direct_stream, tun, mtu, cancel_rx).await {
+                        tracing::error!("direct kernel TUN forward: {err}");
+                    }
+                });
+                let rsd =
+                    attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
+                Ok(ConnectedDevice {
+                    info,
+                    tunnel: Some(Arc::new(handle)),
+                    rsd,
+                    pair_record,
+                    lockdown_transport,
+                })
+            }
         }
         TunMode::Userspace => {
-            let userspace = UserspaceTunDevice::start(
-                &tunnel_info.client_address,
-                &tunnel_info.server_address,
-                tunnel_info.client_mtu,
-                direct_stream,
-            )
-            .await
-            .map_err(CoreError::Tunnel)?;
+            #[cfg(not(feature = "tunnel-userspace"))]
+            {
+                return Err(CoreError::Unsupported(
+                    "userspace tunnel support requires ios-core feature 'tunnel-userspace'".into(),
+                ));
+            }
+            #[cfg(feature = "tunnel-userspace")]
+            {
+                let userspace = UserspaceTunDevice::start(
+                    &tunnel_info.client_address,
+                    &tunnel_info.server_address,
+                    tunnel_info.client_mtu,
+                    direct_stream,
+                )
+                .await
+                .map_err(CoreError::Tunnel)?;
 
-            let proxy_port = userspace.local_port;
-            let handle =
-                TunnelHandle::new_userspace(info.udid.clone(), tunnel_info.clone(), userspace);
-            let rsd = attempt_rsd_via_proxy(
-                proxy_port,
-                &tunnel_info.server_address,
-                tunnel_info.server_rsd_port,
-            )
-            .await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record,
-                lockdown_transport,
-            })
+                let proxy_port = userspace.local_port;
+                let handle =
+                    TunnelHandle::new_userspace(info.udid.clone(), tunnel_info.clone(), userspace);
+                let rsd = attempt_rsd_via_proxy(
+                    proxy_port,
+                    &tunnel_info.server_address,
+                    tunnel_info.server_rsd_port,
+                )
+                .await;
+                Ok(ConnectedDevice {
+                    info,
+                    tunnel: Some(Arc::new(handle)),
+                    rsd,
+                    pair_record,
+                    lockdown_transport,
+                })
+            }
         }
     }
 }
@@ -1317,56 +1337,76 @@ async fn connect_via_remote_pairing_target(
 
     match opts.tun_mode {
         TunMode::Kernel => {
-            let (handle, cancel_rx) =
-                TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
-            let tun = KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
-                .await
-                .map_err(CoreError::Tunnel)?;
-            let mtu = tunnel_info.client_mtu;
-            tokio::spawn(async move {
-                if let Err(err) = forward_packets(remote_stream, tun, mtu, cancel_rx).await {
-                    tracing::error!("remote pairing kernel TUN forward: {err}");
-                }
-            });
-            let rsd = attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record,
-                lockdown_transport: LockdownTransport::Tcp {
-                    host: host.to_string(),
-                },
-            })
+            #[cfg(not(feature = "tunnel-kernel"))]
+            {
+                return Err(CoreError::Unsupported(
+                    "kernel TUN support requires ios-core feature 'tunnel-kernel'".into(),
+                ));
+            }
+            #[cfg(feature = "tunnel-kernel")]
+            {
+                let (handle, cancel_rx) =
+                    TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
+                let tun =
+                    KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
+                        .await
+                        .map_err(CoreError::Tunnel)?;
+                let mtu = tunnel_info.client_mtu;
+                tokio::spawn(async move {
+                    if let Err(err) = forward_packets(remote_stream, tun, mtu, cancel_rx).await {
+                        tracing::error!("remote pairing kernel TUN forward: {err}");
+                    }
+                });
+                let rsd =
+                    attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
+                Ok(ConnectedDevice {
+                    info,
+                    tunnel: Some(Arc::new(handle)),
+                    rsd,
+                    pair_record,
+                    lockdown_transport: LockdownTransport::Tcp {
+                        host: host.to_string(),
+                    },
+                })
+            }
         }
         TunMode::Userspace => {
-            let userspace = UserspaceTunDevice::start(
-                &tunnel_info.client_address,
-                &tunnel_info.server_address,
-                tunnel_info.client_mtu,
-                remote_stream,
-            )
-            .await
-            .map_err(CoreError::Tunnel)?;
+            #[cfg(not(feature = "tunnel-userspace"))]
+            {
+                return Err(CoreError::Unsupported(
+                    "userspace tunnel support requires ios-core feature 'tunnel-userspace'".into(),
+                ));
+            }
+            #[cfg(feature = "tunnel-userspace")]
+            {
+                let userspace = UserspaceTunDevice::start(
+                    &tunnel_info.client_address,
+                    &tunnel_info.server_address,
+                    tunnel_info.client_mtu,
+                    remote_stream,
+                )
+                .await
+                .map_err(CoreError::Tunnel)?;
 
-            let proxy_port = userspace.local_port;
-            let handle =
-                TunnelHandle::new_userspace(info.udid.clone(), tunnel_info.clone(), userspace);
-            let rsd = attempt_rsd_via_proxy(
-                proxy_port,
-                &tunnel_info.server_address,
-                tunnel_info.server_rsd_port,
-            )
-            .await;
-            Ok(ConnectedDevice {
-                info,
-                tunnel: Some(Arc::new(handle)),
-                rsd,
-                pair_record,
-                lockdown_transport: LockdownTransport::Tcp {
-                    host: host.to_string(),
-                },
-            })
+                let proxy_port = userspace.local_port;
+                let handle =
+                    TunnelHandle::new_userspace(info.udid.clone(), tunnel_info.clone(), userspace);
+                let rsd = attempt_rsd_via_proxy(
+                    proxy_port,
+                    &tunnel_info.server_address,
+                    tunnel_info.server_rsd_port,
+                )
+                .await;
+                Ok(ConnectedDevice {
+                    info,
+                    tunnel: Some(Arc::new(handle)),
+                    rsd,
+                    pair_record,
+                    lockdown_transport: LockdownTransport::Tcp {
+                        host: host.to_string(),
+                    },
+                })
+            }
         }
     }
 }
