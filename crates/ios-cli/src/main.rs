@@ -539,4 +539,15 @@ mod tests {
             "tunnel start --script-mode command should parse"
         );
     }
+
+    #[test]
+    fn dispatch_file_future_fits_within_windows_main_thread_budget() {
+        let command = Commands::File(cmd::file::FileCmd::test_ls_command(false));
+        let future = dispatch_command(command, Some("test-udid".into()), false);
+        assert!(
+            size_of_val(&future) <= 16 * 1024,
+            "file dispatch future too large for main-thread stack: {} bytes",
+            size_of_val(&future)
+        );
+    }
 }

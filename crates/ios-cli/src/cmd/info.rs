@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
@@ -17,10 +17,20 @@ pub struct InfoCmd {
 
 #[derive(Debug, clap::Subcommand)]
 enum InfoSub {
-    /// Show display information using diagnostics relay IORegistry
-    Display,
+    /// Show display information
+    Display(InfoDisplayArgs),
+    /// Show CoreDevice lock state
+    LockState,
+    /// Show full CoreDevice device information
+    DeviceInfo,
     /// Show standard lockdown information
     Lockdown(InfoLockdownArgs),
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct InfoDisplayArgs {
+    #[arg(long, help = "Use CoreDevice deviceinfo instead of diagnostics relay")]
+    coredevice: bool,
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -44,21 +54,44 @@ impl InfoCmd {
 
         if let Some(sub) = self.sub {
             match sub {
-                InfoSub::Display => {
-                    let mut stream = device
-                        .connect_service(ios_core::diagnostics::SERVICE_NAME)
-                        .await?;
-                    let value = ios_core::diagnostics::query_ioregistry(
-                        &mut *stream,
-                        "IOMobileFramebuffer",
-                    )
-                    .await?;
-                    let summary = summarize_display_ioregistry(&value);
+                InfoSub::Display(args) => {
+                    let summary = if args.coredevice {
+                        let value = query_coredevice_info(&udid, CoreDeviceInfoKind::DisplayInfo)
+                            .await
+                            .context("CoreDevice display info failed")?;
+                        summarize_coredevice_display_info(&value)
+                    } else {
+                        match query_diagnostics_display_info(&device).await {
+                            Ok(value) => summarize_display_ioregistry(&value),
+                            Err(diagnostics_err) => {
+                                let value =
+                                    query_coredevice_info(&udid, CoreDeviceInfoKind::DisplayInfo)
+                                        .await
+                                        .with_context(|| {
+                                            format!(
+                                                "diagnostics display info failed: {diagnostics_err}; CoreDevice fallback failed"
+                                            )
+                                        })?;
+                                summarize_coredevice_display_info(&value)
+                            }
+                        }
+                    };
                     if json {
                         println!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
                         print_display_summary(&summary);
                     }
+                    return Ok(());
+                }
+                InfoSub::LockState => {
+                    let value = query_coredevice_info(&udid, CoreDeviceInfoKind::LockState).await?;
+                    print_coredevice_value(&value, json)?;
+                    return Ok(());
+                }
+                InfoSub::DeviceInfo => {
+                    let value =
+                        query_coredevice_info(&udid, CoreDeviceInfoKind::DeviceInfo).await?;
+                    print_coredevice_value(&value, json)?;
                     return Ok(());
                 }
                 InfoSub::Lockdown(args) => {
@@ -143,6 +176,43 @@ impl InfoCmd {
     }
 }
 
+enum CoreDeviceInfoKind {
+    DeviceInfo,
+    DisplayInfo,
+    LockState,
+}
+
+async fn query_diagnostics_display_info(
+    device: &ios_core::device::ConnectedDevice,
+) -> Result<plist::Value> {
+    let mut stream = device
+        .connect_service(ios_core::diagnostics::SERVICE_NAME)
+        .await?;
+    Ok(ios_core::diagnostics::query_ioregistry(&mut *stream, "IOMobileFramebuffer").await?)
+}
+
+async fn query_coredevice_info(udid: &str, kind: CoreDeviceInfoKind) -> Result<plist::Value> {
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await?;
+    let xpc = device
+        .connect_xpc_service(ios_core::deviceinfo::SERVICE_NAME)
+        .await?;
+    let mut client = ios_core::deviceinfo::DeviceInfoClient::new(xpc, udid.to_string());
+    let output = match kind {
+        CoreDeviceInfoKind::DeviceInfo => client.get_device_info().await?,
+        CoreDeviceInfoKind::DisplayInfo => client.get_display_info().await?,
+        CoreDeviceInfoKind::LockState => client.get_lockstate().await?,
+    };
+    Ok(ios_core::deviceinfo::xpc_value_to_plist(&output))
+}
+
 fn resolve_developer_mode_status(
     all_values: Option<&plist::Dictionary>,
     amfi_value: Option<&plist::Value>,
@@ -184,6 +254,16 @@ fn summarize_display_ioregistry(value: &plist::Value) -> serde_json::Value {
         obj.insert("display_refresh".to_string(), plist_to_json(refresh));
     }
 
+    serde_json::Value::Object(obj)
+}
+
+fn summarize_coredevice_display_info(value: &plist::Value) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "source".to_string(),
+        serde_json::Value::String("coredevice:getdisplayinfo".into()),
+    );
+    obj.insert("raw".to_string(), plist_to_json(value));
     serde_json::Value::Object(obj)
 }
 
@@ -270,6 +350,10 @@ fn print_display_summary(summary: &serde_json::Value) {
         let rendered = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
         println!("DisplayRefresh:  {rendered}");
     }
+    if let Some(value) = obj.get("raw") {
+        let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+        println!("Raw:             {rendered}");
+    }
 }
 
 fn print_row(obj: &serde_json::Map<String, serde_json::Value>, label: &str, key: &str) {
@@ -309,6 +393,49 @@ fn print_value(value: &plist::Value) {
             "{}",
             serde_json::to_string_pretty(&plist_to_json(other)).unwrap_or_else(|_| "null".into())
         ),
+    }
+}
+
+fn print_coredevice_value(value: &plist::Value, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plist_to_json(value))?);
+    } else {
+        for (key, rendered) in coredevice_detail_lines(value) {
+            println!("{key}: {rendered}");
+        }
+    }
+    Ok(())
+}
+
+fn coredevice_detail_lines(value: &plist::Value) -> Vec<(String, String)> {
+    match value {
+        plist::Value::Dictionary(dict) => {
+            let mut lines: Vec<_> = dict
+                .iter()
+                .map(|(key, value)| (key.clone(), format_plist_value(value)))
+                .collect();
+            lines.sort_by(|a, b| a.0.cmp(&b.0));
+            lines
+        }
+        other => vec![("Value".to_string(), format_plist_value(other))],
+    }
+}
+
+fn format_plist_value(value: &plist::Value) -> String {
+    match value {
+        plist::Value::String(v) => v.clone(),
+        plist::Value::Boolean(v) => v.to_string(),
+        plist::Value::Integer(v) => {
+            if let Some(i) = v.as_signed() {
+                i.to_string()
+            } else if let Some(u) = v.as_unsigned() {
+                u.to_string()
+            } else {
+                "null".to_string()
+            }
+        }
+        plist::Value::Real(v) => v.to_string(),
+        other => serde_json::to_string(&plist_to_json(other)).unwrap_or_else(|_| "null".into()),
     }
 }
 
@@ -378,9 +505,30 @@ mod tests {
     #[test]
     fn parses_info_display_subcommand() {
         let cmd = TestCli::parse_from(["info", "display"]);
-        assert!(matches!(cmd.command.sub, Some(InfoSub::Display)));
+        assert!(matches!(cmd.command.sub, Some(InfoSub::Display(_))));
         assert_eq!(cmd.command.domain, None);
         assert_eq!(cmd.command.key, None);
+    }
+
+    #[test]
+    fn parses_info_display_coredevice_mode() {
+        let cmd = TestCli::parse_from(["info", "display", "--coredevice"]);
+        match cmd.command.sub {
+            Some(InfoSub::Display(args)) => assert!(args.coredevice),
+            other => panic!("expected display subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_info_lock_state_subcommand() {
+        let cmd = TestCli::parse_from(["info", "lock-state"]);
+        assert!(matches!(cmd.command.sub, Some(InfoSub::LockState)));
+    }
+
+    #[test]
+    fn parses_info_device_info_subcommand() {
+        let cmd = TestCli::parse_from(["info", "device-info"]);
+        assert!(matches!(cmd.command.sub, Some(InfoSub::DeviceInfo)));
     }
 
     #[test]
@@ -464,5 +612,24 @@ mod tests {
         let amfi_value = plist::Value::Boolean(true);
         let resolved = resolve_developer_mode_status(Some(&all_values), Some(&amfi_value));
         assert_eq!(resolved, Some(false));
+    }
+
+    #[test]
+    fn coredevice_detail_lines_render_sorted_dictionary_values() {
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "LockState".to_string(),
+                plist::Value::String("Unlocked".into()),
+            ),
+            ("PasscodeSet".to_string(), plist::Value::Boolean(true)),
+        ]));
+
+        assert_eq!(
+            coredevice_detail_lines(&value),
+            vec![
+                ("LockState".to_string(), "Unlocked".to_string()),
+                ("PasscodeSet".to_string(), "true".to_string()),
+            ]
+        );
     }
 }

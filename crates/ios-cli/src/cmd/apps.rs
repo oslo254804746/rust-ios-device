@@ -553,6 +553,12 @@ impl AppsCmd {
                         match connect_appservice(&device, &udid).await {
                             Ok(mut client) => client.send_signal(p.pid, signal).await?,
                             Err(e) if should_fallback_to_instruments(&e) => {
+                                if !pkill_signal_allows_instruments_fallback(signal) {
+                                    return Err(anyhow::anyhow!(
+                                        "apps pkill --signal {signal} requires iOS 17+ appservice \
+                                         because Instruments fallback only supports SIGKILL (9)"
+                                    ));
+                                }
                                 let (_device, stream) =
                                     super::instruments::connect_instruments(&udid).await?;
                                 let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
@@ -650,6 +656,10 @@ fn should_fallback_to_instruments(err: &CoreError) -> bool {
         }
         _ => false,
     }
+}
+
+fn pkill_signal_allows_instruments_fallback(signal: i64) -> bool {
+    signal == 9
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1403,5 +1413,11 @@ mod tests {
         assert!(should_fallback_to_instruments(&CoreError::Unsupported(
             "service 'com.apple.coredevice.appservice' not found".into()
         )));
+    }
+
+    #[test]
+    fn pkill_instruments_fallback_is_limited_to_sigkill() {
+        assert!(pkill_signal_allows_instruments_fallback(9));
+        assert!(!pkill_signal_allows_instruments_fallback(15));
     }
 }

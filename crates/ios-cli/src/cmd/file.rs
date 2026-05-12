@@ -131,262 +131,326 @@ enum FileSub {
 }
 
 impl FileCmd {
-    pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
-        let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for file commands"))?;
-
-        if self.coredevice {
-            return self.run_coredevice(&udid, json_output).await;
-        }
-
-        let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_core::TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = ios_core::connect(&udid, opts).await?;
-        let mut afc = if self.crash {
-            let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-            prepare_reports(&mut mover).await?;
-            let stream = device
-                .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                .await?;
-            ios_core::afc::AfcClient::new(stream)
-        } else if let Some(bundle_id) = self.app.as_deref() {
-            let stream = device
-                .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
-                .await?;
-            let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream);
-            if self.documents {
-                house_arrest.vend_documents(bundle_id).await?
+    #[cfg(test)]
+    pub(crate) fn test_ls_command(coredevice: bool) -> Self {
+        Self {
+            coredevice,
+            app: None,
+            documents: false,
+            crash: false,
+            domain: if coredevice {
+                CoreDeviceFileDomain::Temporary
             } else {
-                house_arrest.vend_container(bundle_id).await?
-            }
-        } else {
-            let stream = device.connect_service("com.apple.afc").await?;
-            ios_core::afc::AfcClient::new(stream)
-        };
+                CoreDeviceFileDomain::AppDataContainer
+            },
+            identifier: None,
+            sub: FileSub::Ls {
+                path: "/".into(),
+                long: false,
+            },
+        }
+    }
 
-        match self.sub {
-            FileSub::Ls { path, long } => {
-                let entries = afc.list_dir(&path).await?;
-                if json_output {
-                    if long {
-                        let mut list = Vec::with_capacity(entries.len());
-                        for name in &entries {
-                            let full = join_device_path(&path, name);
-                            match afc.stat_info(&full).await {
-                                Ok(info) => list.push(file_info_to_json(name, &full, Some(&info))),
-                                Err(_) => list.push(file_info_to_json(name, &full, None)),
+    pub fn run(
+        self,
+        udid: Option<String>,
+        json_output: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<()>>>> {
+        Box::pin(async move {
+            let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for file commands"))?;
+
+            if self.coredevice {
+                ensure_coredevice_fileservice_supported(&udid).await?;
+                return self.run_coredevice(&udid, json_output).await;
+            }
+
+            let opts = ios_core::device::ConnectOptions {
+                tun_mode: ios_core::TunMode::Userspace,
+                pair_record_path: None,
+                skip_tunnel: true,
+            };
+            let device = ios_core::connect(&udid, opts).await?;
+            let mut afc = if self.crash {
+                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
+                prepare_reports(&mut mover).await?;
+                let stream = device
+                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
+                    .await?;
+                ios_core::afc::AfcClient::new(stream)
+            } else if let Some(bundle_id) = self.app.as_deref() {
+                let stream = device
+                    .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
+                    .await?;
+                let house_arrest = ios_core::afc::house_arrest::HouseArrestClient::new(stream);
+                if self.documents {
+                    house_arrest.vend_documents(bundle_id).await?
+                } else {
+                    house_arrest.vend_container(bundle_id).await?
+                }
+            } else {
+                let stream = device.connect_service("com.apple.afc").await?;
+                ios_core::afc::AfcClient::new(stream)
+            };
+
+            match self.sub {
+                FileSub::Ls { path, long } => {
+                    let entries = afc.list_dir(&path).await?;
+                    if json_output {
+                        if long {
+                            let mut list = Vec::with_capacity(entries.len());
+                            for name in &entries {
+                                let full = join_device_path(&path, name);
+                                match afc.stat_info(&full).await {
+                                    Ok(info) => {
+                                        list.push(file_info_to_json(name, &full, Some(&info)))
+                                    }
+                                    Err(_) => list.push(file_info_to_json(name, &full, None)),
+                                }
                             }
-                        }
-                        println!("{}", serde_json::to_string_pretty(&list)?);
-                    } else {
-                        let list: Vec<_> = entries
+                            println!("{}", serde_json::to_string_pretty(&list)?);
+                        } else {
+                            let list: Vec<_> = entries
                             .iter()
                             .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                             .collect();
-                        println!("{}", serde_json::to_string_pretty(&list)?);
-                    }
-                } else if long {
-                    for name in &entries {
-                        let full = join_device_path(&path, name);
-                        match afc.stat_info(&full).await {
-                            Ok(info) => {
-                                let kind = info.file_type.as_deref().unwrap_or("?");
-                                let size = info.size.map(|n| n.to_string()).unwrap_or_default();
-                                println!("{:<10} {:>12}  {name}", kind, size);
+                            println!("{}", serde_json::to_string_pretty(&list)?);
+                        }
+                    } else if long {
+                        for name in &entries {
+                            let full = join_device_path(&path, name);
+                            match afc.stat_info(&full).await {
+                                Ok(info) => {
+                                    let kind = info.file_type.as_deref().unwrap_or("?");
+                                    let size = info.size.map(|n| n.to_string()).unwrap_or_default();
+                                    println!("{:<10} {:>12}  {name}", kind, size);
+                                }
+                                Err(_) => println!("?              {name}"),
                             }
-                            Err(_) => println!("?              {name}"),
+                        }
+                    } else {
+                        for name in &entries {
+                            println!("{name}");
                         }
                     }
-                } else {
-                    for name in &entries {
-                        println!("{name}");
+                }
+                FileSub::Pull { remote, local } => {
+                    eprintln!("Downloading {remote} → {local}");
+                    let data = afc.read_file_follow_links(&remote).await?;
+                    fs::write(&local, &data).await?;
+                    eprintln!("Done ({} bytes)", data.len());
+                }
+                FileSub::Push { local, remote } => {
+                    eprintln!("Uploading {local} → {remote}");
+                    let data = fs::read(&local).await?;
+                    let len = data.len();
+                    afc.write_file(&remote, &data).await?;
+                    eprintln!("Done ({len} bytes)");
+                }
+                FileSub::Rm { path, recursive } => {
+                    if recursive {
+                        afc.remove_all(&path).await?;
+                    } else {
+                        afc.remove(&path).await?;
                     }
+                    eprintln!("Removed {path}");
                 }
-            }
-            FileSub::Pull { remote, local } => {
-                eprintln!("Downloading {remote} → {local}");
-                let data = afc.read_file_follow_links(&remote).await?;
-                fs::write(&local, &data).await?;
-                eprintln!("Done ({} bytes)", data.len());
-            }
-            FileSub::Push { local, remote } => {
-                eprintln!("Uploading {local} → {remote}");
-                let data = fs::read(&local).await?;
-                let len = data.len();
-                afc.write_file(&remote, &data).await?;
-                eprintln!("Done ({len} bytes)");
-            }
-            FileSub::Rm { path, recursive } => {
-                if recursive {
-                    afc.remove_all(&path).await?;
-                } else {
-                    afc.remove(&path).await?;
+                FileSub::Mkdir { path } => {
+                    afc.make_dir(&path).await?;
+                    eprintln!("Created {path}");
                 }
-                eprintln!("Removed {path}");
-            }
-            FileSub::Mkdir { path } => {
-                afc.make_dir(&path).await?;
-                eprintln!("Created {path}");
-            }
-            FileSub::Mv { from, to } => {
-                afc.rename(&from, &to).await?;
-                eprintln!("Moved {from} -> {to}");
-            }
-            FileSub::DeviceInfo => {
-                let info = afc.device_info().await?;
-                if json_output {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&afc_device_info_to_json(&info))?
-                    );
-                } else {
-                    for line in afc_device_info_lines(&info) {
-                        println!("{line}");
-                    }
+                FileSub::Mv { from, to } => {
+                    afc.rename(&from, &to).await?;
+                    eprintln!("Moved {from} -> {to}");
                 }
-            }
-            FileSub::Stat { path } => {
-                let info = afc.stat_info(&path).await?;
-                if json_output {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&file_info_to_json(
-                            path.rsplit('/').next().unwrap_or(&path),
-                            &path,
-                            Some(&info),
-                        ))?
-                    );
-                } else {
-                    for (k, v) in &info.raw {
-                        if k == "st_mode" {
-                            continue;
+                FileSub::DeviceInfo => {
+                    let info = afc.device_info().await?;
+                    if json_output {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&afc_device_info_to_json(&info))?
+                        );
+                    } else {
+                        for line in afc_device_info_lines(&info) {
+                            println!("{line}");
                         }
-                        println!("{k}: {v}");
                     }
-                    if let Some(mode) = info.mode {
-                        println!("st_mode: {mode:#o}");
+                }
+                FileSub::Stat { path } => {
+                    let info = afc.stat_info(&path).await?;
+                    if json_output {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&file_info_to_json(
+                                path.rsplit('/').next().unwrap_or(&path),
+                                &path,
+                                Some(&info),
+                            ))?
+                        );
+                    } else {
+                        for (k, v) in &info.raw {
+                            if k == "st_mode" {
+                                continue;
+                            }
+                            println!("{k}: {v}");
+                        }
+                        if let Some(mode) = info.mode {
+                            println!("st_mode: {mode:#o}");
+                        }
+                    }
+                }
+                FileSub::Tree { path } => {
+                    let tree = build_file_tree(&mut afc, &path).await?;
+                    if json_output {
+                        println!("{}", serde_json::to_string_pretty(&tree)?);
+                    } else {
+                        print!("{}", render_tree(&tree));
                     }
                 }
             }
-            FileSub::Tree { path } => {
-                let tree = build_file_tree(&mut afc, &path).await?;
-                if json_output {
-                    println!("{}", serde_json::to_string_pretty(&tree)?);
-                } else {
-                    print!("{}", render_tree(&tree));
-                }
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    async fn run_coredevice(self, udid: &str, json_output: bool) -> Result<()> {
-        if matches!(
-            self.domain,
-            CoreDeviceFileDomain::AppDataContainer | CoreDeviceFileDomain::AppGroupDataContainer
-        ) && self.identifier.as_deref().unwrap_or_default().is_empty()
-        {
-            return Err(anyhow::anyhow!(
-                "--identifier is required for CoreDevice app container domains"
-            ));
-        }
+    fn run_coredevice<'a>(
+        self,
+        udid: &'a str,
+        json_output: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if matches!(
+                self.domain,
+                CoreDeviceFileDomain::AppDataContainer
+                    | CoreDeviceFileDomain::AppGroupDataContainer
+            ) && self.identifier.as_deref().unwrap_or_default().is_empty()
+            {
+                return Err(anyhow::anyhow!(
+                    "--identifier is required for CoreDevice app container domains"
+                ));
+            }
 
-        let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_core::TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: false,
-        };
-        let device = ios_core::connect(udid, opts).await?;
-        let control = device
-            .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
+            let opts = ios_core::device::ConnectOptions {
+                tun_mode: ios_core::TunMode::Userspace,
+                pair_record_path: None,
+                skip_tunnel: false,
+            };
+            let device = ios_core::connect(udid, opts).await?;
+            let control = device
+                .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
+                .await?;
+            let identifier = self.identifier.as_deref().unwrap_or_default();
+            let mut fileservice = ios_core::fileservice::FileServiceClient::connect(
+                control,
+                self.domain.into(),
+                identifier,
+            )
             .await?;
-        let identifier = self.identifier.as_deref().unwrap_or_default();
-        let mut fileservice = ios_core::fileservice::FileServiceClient::connect(
-            control,
-            self.domain.into(),
-            identifier,
-        )
-        .await?;
 
-        match self.sub {
-            FileSub::Ls { path, long } => {
-                if long {
-                    return Err(anyhow::anyhow!(
+            match self.sub {
+                FileSub::Ls { path, long } => {
+                    if long {
+                        return Err(anyhow::anyhow!(
                         "CoreDevice fileservice directory list does not expose stat metadata yet"
                     ));
-                }
-                let entries = fileservice.list_directory(&path).await?;
-                if json_output {
-                    let list: Vec<_> = entries
+                    }
+                    let entries = fileservice.list_directory(&path).await?;
+                    if json_output {
+                        let list: Vec<_> = entries
                         .iter()
                         .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
-                } else {
-                    for name in entries {
-                        println!("{name}");
+                        println!("{}", serde_json::to_string_pretty(&list)?);
+                    } else {
+                        for name in entries {
+                            println!("{name}");
+                        }
                     }
                 }
-            }
-            FileSub::Pull { remote, local } => {
-                eprintln!("Downloading {remote} -> {local}");
-                let mut data_stream = device
-                    .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
-                    .await?;
-                let mut output = fs::File::create(&local).await?;
-                let bytes = fileservice
-                    .download_file_to_writer(&remote, &mut data_stream, &mut output)
-                    .await?;
-                eprintln!("Done ({bytes} bytes)");
-            }
-            FileSub::Push { local, remote } => {
-                let metadata = fs::metadata(&local).await?;
-                if !metadata.is_file() {
-                    return Err(anyhow::anyhow!(
-                        "CoreDevice fileservice push requires a regular file: {local}"
-                    ));
-                }
-
-                let file_size = metadata.len();
-                let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
-                eprintln!("Uploading {local} -> {remote}");
-                if file_size == 0 {
-                    fileservice.propose_empty_file(&remote, options).await?;
-                } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
-                    let data = fs::read(&local).await?;
-                    fileservice
-                        .upload_inline_file(&remote, data.into(), options)
-                        .await?;
-                } else {
-                    let ticket = fileservice
-                        .propose_file_upload(&remote, file_size, options)
-                        .await?;
+                FileSub::Pull { remote, local } => {
+                    eprintln!("Downloading {remote} -> {local}");
                     let mut data_stream = device
                         .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
                         .await?;
-                    let mut input = fs::File::open(&local).await?;
-                    fileservice
-                        .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
+                    let mut output = fs::File::create(&local).await?;
+                    let bytes = fileservice
+                        .download_file_to_writer(&remote, &mut data_stream, &mut output)
                         .await?;
+                    eprintln!("Done ({bytes} bytes)");
                 }
-                eprintln!("Done ({file_size} bytes)");
-            }
-            FileSub::Rm { .. }
-            | FileSub::Mkdir { .. }
-            | FileSub::Mv { .. }
-            | FileSub::DeviceInfo
-            | FileSub::Stat { .. }
-            | FileSub::Tree { .. } => {
-                return Err(anyhow::anyhow!(
-                    "CoreDevice fileservice currently supports ls, pull, and push"
-                ));
-            }
-        }
+                FileSub::Push { local, remote } => {
+                    let metadata = fs::metadata(&local).await?;
+                    if !metadata.is_file() {
+                        return Err(anyhow::anyhow!(
+                            "CoreDevice fileservice push requires a regular file: {local}"
+                        ));
+                    }
 
-        Ok(())
+                    let file_size = metadata.len();
+                    let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
+                    eprintln!("Uploading {local} -> {remote}");
+                    if file_size == 0 {
+                        fileservice.propose_empty_file(&remote, options).await?;
+                    } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
+                        let data = fs::read(&local).await?;
+                        fileservice
+                            .upload_inline_file(&remote, data.into(), options)
+                            .await?;
+                    } else {
+                        let ticket = fileservice
+                            .propose_file_upload(&remote, file_size, options)
+                            .await?;
+                        let mut data_stream = device
+                            .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
+                            .await?;
+                        let mut input = fs::File::open(&local).await?;
+                        fileservice
+                            .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
+                            .await?;
+                    }
+                    eprintln!("Done ({file_size} bytes)");
+                }
+                FileSub::Rm { path, recursive } => {
+                    fileservice.remove_item(&path, recursive).await?;
+                    eprintln!("Removed {path}");
+                }
+                FileSub::Mkdir { path } => {
+                    let options = ios_core::fileservice::FileWriteOptions {
+                        permissions: 0o755,
+                        ..ios_core::fileservice::FileWriteOptions::mobile_defaults_now()
+                    };
+                    fileservice.create_directory(&path, options).await?;
+                    eprintln!("Created {path}");
+                }
+                FileSub::Mv { from, to } => {
+                    fileservice.rename_item(&from, &to).await?;
+                    eprintln!("Moved {from} -> {to}");
+                }
+                FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {
+                    return Err(anyhow::anyhow!(
+                    "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
+                ));
+                }
+            }
+
+            Ok(())
+        })
     }
+}
+
+async fn ensure_coredevice_fileservice_supported(udid: &str) -> Result<()> {
+    let probe_opts = ios_core::device::ConnectOptions {
+        tun_mode: ios_core::TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: true,
+    };
+    let probe = ios_core::connect(udid, probe_opts).await?;
+    let product_version = probe.product_version().await?;
+    drop(probe);
+    if !supports_coredevice_fileservice(product_version.major) {
+        return Err(anyhow::anyhow!(
+            "CoreDevice fileservice requires iOS 17+; device is iOS {product_version}"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -492,6 +556,10 @@ fn tree_entry_name(path: &str) -> String {
     } else {
         trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
     }
+}
+
+fn supports_coredevice_fileservice(ios_major: u64) -> bool {
+    ios_major >= 17
 }
 
 fn render_tree(tree: &FileTreeEntry) -> String {
@@ -778,5 +846,59 @@ mod tests {
             afc_device_info_lines(&info),
             vec!["alpha: first".to_string(), "zeta: last".to_string()]
         );
+    }
+
+    #[test]
+    fn file_run_future_fits_within_windows_main_thread_budget() {
+        let command = FileCmd {
+            coredevice: false,
+            app: None,
+            documents: false,
+            crash: false,
+            domain: CoreDeviceFileDomain::AppDataContainer,
+            identifier: None,
+            sub: FileSub::Ls {
+                path: "/".into(),
+                long: false,
+            },
+        };
+        let future = command.run(Some("test-udid".into()), false);
+
+        assert!(
+            std::mem::size_of_val(&future) <= 16 * 1024,
+            "file run future too large for main-thread stack: {} bytes",
+            std::mem::size_of_val(&future)
+        );
+    }
+
+    #[test]
+    fn file_coredevice_run_future_fits_within_windows_main_thread_budget() {
+        let command = FileCmd {
+            coredevice: true,
+            app: None,
+            documents: false,
+            crash: false,
+            domain: CoreDeviceFileDomain::Temporary,
+            identifier: None,
+            sub: FileSub::Ls {
+                path: "/".into(),
+                long: false,
+            },
+        };
+        let future = command.run_coredevice("test-udid", false);
+
+        assert!(
+            std::mem::size_of_val(&future) <= 16 * 1024,
+            "coredevice file run future too large for main-thread stack: {} bytes",
+            std::mem::size_of_val(&future)
+        );
+    }
+
+    #[test]
+    fn coredevice_fileservice_is_ios17_plus_only() {
+        assert!(!supports_coredevice_fileservice(14));
+        assert!(!supports_coredevice_fileservice(16));
+        assert!(supports_coredevice_fileservice(17));
+        assert!(supports_coredevice_fileservice(26));
     }
 }

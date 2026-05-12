@@ -51,9 +51,19 @@ enum TunnelSub {
         scan_interval_ms: u64,
     },
     /// Stop a tunnel
-    Stop,
+    Stop {
+        #[arg(long, default_value = DEFAULT_AGENT_HOST)]
+        host: String,
+        #[arg(long, default_value_t = DEFAULT_AGENT_PORT)]
+        port: u16,
+    },
     /// List active tunnels
-    List,
+    List {
+        #[arg(long, default_value = DEFAULT_AGENT_HOST)]
+        host: String,
+        #[arg(long, default_value_t = DEFAULT_AGENT_PORT)]
+        port: u16,
+    },
 }
 
 impl TunnelCmd {
@@ -91,19 +101,86 @@ impl TunnelCmd {
                 )
                 .await?;
             }
-            TunnelSub::Stop => {
-                println!(
-                    "tunnel stop: not yet implemented (use the HTTP manager DELETE /tunnel/:udid or /shutdown)"
-                );
+            TunnelSub::Stop { host, port } => {
+                let udid =
+                    udid.ok_or_else(|| anyhow::anyhow!("--udid required for tunnel stop"))?;
+                run_tunnel_stop(&host, port, &udid).await?;
             }
-            TunnelSub::List => {
-                println!(
-                    "tunnel list: not yet implemented (use the HTTP manager GET / or /tunnels)"
-                );
+            TunnelSub::List { host, port } => {
+                run_tunnel_list(&host, port).await?;
             }
         }
         Ok(())
     }
+}
+
+fn manager_base_url(host: &str, port: u16) -> Result<reqwest::Url> {
+    reqwest::Url::parse(&format!("http://{host}:{port}"))
+        .with_context(|| format!("invalid tunnel manager address {host}:{port}"))
+}
+
+fn manager_tunnels_url(host: &str, port: u16) -> Result<String> {
+    let mut url = manager_base_url(host, port)?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("tunnel manager URL cannot be a base"))?
+        .push("tunnels");
+    Ok(url.to_string())
+}
+
+fn manager_tunnel_url(host: &str, port: u16, udid: &str) -> Result<String> {
+    let mut url = manager_base_url(host, port)?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("tunnel manager URL cannot be a base"))?
+        .extend(["tunnel", udid]);
+    Ok(url.to_string())
+}
+
+fn parse_tunnel_list_response(body: &str) -> Result<Vec<TunnelRecord>> {
+    serde_json::from_str(body).context("failed to parse tunnel manager list response")
+}
+
+fn parse_tunnel_stop_response(body: &str) -> Result<TunnelStopResponse> {
+    serde_json::from_str(body).context("failed to parse tunnel manager stop response")
+}
+
+async fn run_tunnel_list(host: &str, port: u16) -> Result<()> {
+    let url = manager_tunnels_url(host, port)?;
+    let body = tunnel_manager_request(reqwest::Method::GET, url).await?;
+    let records = parse_tunnel_list_response(&body)?;
+
+    println!("{}", serde_json::to_string_pretty(&records)?);
+    Ok(())
+}
+
+async fn run_tunnel_stop(host: &str, port: u16, udid: &str) -> Result<()> {
+    let url = manager_tunnel_url(host, port, udid)?;
+    let body = tunnel_manager_request(reqwest::Method::DELETE, url).await?;
+    let response = parse_tunnel_stop_response(&body)?;
+
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+async fn tunnel_manager_request(method: reqwest::Method, url: String) -> Result<String> {
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?
+        .request(method, &url)
+        .send()
+        .await
+        .with_context(|| format!("failed to connect to tunnel manager at {url}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read tunnel manager response")?;
+
+    if !status.is_success() {
+        anyhow::bail!("tunnel manager request to {url} failed with {status}: {body}");
+    }
+
+    Ok(body)
 }
 
 pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) -> Result<()> {
@@ -166,7 +243,7 @@ struct ManagedTunnel {
     device: ConnectedDevice,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct TunnelRecord {
     udid: String,
     interface: String,
@@ -188,6 +265,14 @@ struct TunnelRecord {
     userspace_tun_port: Option<u16>,
     #[serde(rename = "userspace-port", skip_serializing_if = "Option::is_none")]
     userspace_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TunnelStopResponse {
+    operation: String,
+    #[serde(default)]
+    udid: Option<String>,
+    data: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -814,6 +899,94 @@ mod tests {
             "49151",
         ]);
         assert!(parsed.is_ok(), "tunnel serve command should parse");
+    }
+
+    #[test]
+    fn parses_tunnel_list_manager_options() {
+        let parsed = crate::Cli::try_parse_from([
+            "ios",
+            "tunnel",
+            "list",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "49151",
+        ]);
+        assert!(parsed.is_ok(), "tunnel list manager options should parse");
+    }
+
+    #[test]
+    fn parses_tunnel_stop_with_global_udid_and_manager_options() {
+        let parsed = crate::Cli::try_parse_from([
+            "ios",
+            "--udid",
+            "00008110-001234567890801E",
+            "tunnel",
+            "stop",
+            "--host",
+            "localhost",
+            "--port",
+            "49152",
+        ]);
+        assert!(
+            parsed.is_ok(),
+            "tunnel stop should accept global UDID and manager options"
+        );
+    }
+
+    #[test]
+    fn manager_client_builds_list_url() {
+        assert_eq!(
+            manager_tunnels_url("127.0.0.1", 49151).unwrap(),
+            "http://127.0.0.1:49151/tunnels"
+        );
+    }
+
+    #[test]
+    fn manager_client_builds_stop_url_with_encoded_udid() {
+        assert_eq!(
+            manager_tunnel_url("127.0.0.1", 49151, "abc/def 123").unwrap(),
+            "http://127.0.0.1:49151/tunnel/abc%2Fdef%20123"
+        );
+    }
+
+    #[test]
+    fn manager_client_parses_tunnel_list_response() {
+        let records = parse_tunnel_list_response(
+            r#"[
+                {
+                    "udid": "test-udid",
+                    "interface": "usbmux-test-udid",
+                    "connectionType": "USB",
+                    "mode": "userspace",
+                    "address": "fd00::1",
+                    "rsdPort": 58783,
+                    "tunnel-address": "fd00::1",
+                    "tunnel-port": 58783,
+                    "userspaceTun": true,
+                    "userspaceTunHost": "127.0.0.1",
+                    "userspaceTunPort": 49152,
+                    "userspace-port": 49152
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].udid, "test-udid");
+        assert_eq!(records[0].rsd_port, 58783);
+        assert_eq!(records[0].userspace_port, Some(49152));
+    }
+
+    #[test]
+    fn manager_client_parses_stop_response() {
+        let response =
+            parse_tunnel_stop_response(r#"{"operation":"cancel","udid":"test-udid","data":true}"#)
+                .unwrap();
+
+        assert_eq!(response.operation, "cancel");
+        assert_eq!(response.udid.as_deref(), Some("test-udid"));
+        assert!(response.data);
     }
 
     #[test]

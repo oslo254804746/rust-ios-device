@@ -169,6 +169,45 @@ impl FileServiceClient {
         ensure_no_error(&body)
     }
 
+    pub async fn remove_item(
+        &mut self,
+        path: &str,
+        recursive: bool,
+    ) -> Result<(), FileServiceError> {
+        let response = self
+            .control
+            .call(build_remove_item_request(&self.session_id, path, recursive))
+            .await?;
+        let body = response_body(response)?;
+        ensure_no_error(&body)
+    }
+
+    pub async fn create_directory(
+        &mut self,
+        path: &str,
+        options: FileWriteOptions,
+    ) -> Result<(), FileServiceError> {
+        let response = self
+            .control
+            .call(build_create_directory_request(
+                &self.session_id,
+                path,
+                options,
+            ))
+            .await?;
+        let body = response_body(response)?;
+        ensure_no_error(&body)
+    }
+
+    pub async fn rename_item(&mut self, from: &str, to: &str) -> Result<(), FileServiceError> {
+        let response = self
+            .control
+            .call(build_rename_item_request(&self.session_id, from, to))
+            .await?;
+        let body = response_body(response)?;
+        ensure_no_error(&body)
+    }
+
     pub async fn upload_inline_file(
         &mut self,
         path: &str,
@@ -314,6 +353,46 @@ fn build_propose_file_request(
         dict.insert("FileData".to_string(), XpcValue::Data(file_data));
     }
     XpcValue::Dictionary(dict)
+}
+
+fn build_remove_item_request(session_id: &str, path: &str, recursive: bool) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([
+        ("Cmd".to_string(), XpcValue::String("RemoveItem".into())),
+        ("Path".to_string(), XpcValue::String(path.to_string())),
+        ("Recursive".to_string(), XpcValue::Bool(recursive)),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ]))
+}
+
+fn build_create_directory_request(
+    session_id: &str,
+    path: &str,
+    options: FileWriteOptions,
+) -> XpcValue {
+    XpcValue::Dictionary(file_write_metadata(
+        "CreateDirectory",
+        session_id,
+        path,
+        options,
+    ))
+}
+
+fn build_rename_item_request(session_id: &str, from: &str, to: &str) -> XpcValue {
+    XpcValue::Dictionary(IndexMap::from([
+        ("Cmd".to_string(), XpcValue::String("RenameItem".into())),
+        ("SourcePath".to_string(), XpcValue::String(from.to_string())),
+        (
+            "DestinationPath".to_string(),
+            XpcValue::String(to.to_string()),
+        ),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ]))
 }
 
 fn file_write_metadata(
@@ -760,6 +839,51 @@ mod tests {
             dict["FileData"],
             XpcValue::Data(Bytes::from_static(b"hello"))
         );
+    }
+
+    #[test]
+    fn remove_item_request_includes_session_path_and_recursive_flag() {
+        let request = build_remove_item_request("SESSION-1", "Documents/old.txt", false);
+        let dict = request.as_dict().expect("request should be a dictionary");
+
+        assert_eq!(dict["Cmd"].as_str(), Some("RemoveItem"));
+        assert_eq!(dict["Path"].as_str(), Some("Documents/old.txt"));
+        assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
+        assert_eq!(dict["Recursive"], XpcValue::Bool(false));
+    }
+
+    #[test]
+    fn create_directory_request_includes_write_metadata() {
+        let options = FileWriteOptions {
+            permissions: 0o755,
+            uid: 501,
+            gid: 501,
+            creation_time: 11,
+            last_modification_time: 12,
+        };
+        let request = build_create_directory_request("SESSION-1", "Documents/New", options);
+        let dict = request.as_dict().expect("request should be a dictionary");
+
+        assert_eq!(dict["Cmd"].as_str(), Some("CreateDirectory"));
+        assert_eq!(dict["Path"].as_str(), Some("Documents/New"));
+        assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
+        assert_eq!(dict["FilePermissions"], XpcValue::Int64(0o755));
+        assert_eq!(dict["FileOwnerUserID"], XpcValue::Int64(501));
+        assert_eq!(dict["FileOwnerGroupID"], XpcValue::Int64(501));
+        assert_eq!(dict["FileCreationTime"], XpcValue::Int64(11));
+        assert_eq!(dict["FileLastModificationTime"], XpcValue::Int64(12));
+    }
+
+    #[test]
+    fn rename_item_request_includes_source_and_destination_paths() {
+        let request =
+            build_rename_item_request("SESSION-1", "Documents/old.txt", "Documents/new.txt");
+        let dict = request.as_dict().expect("request should be a dictionary");
+
+        assert_eq!(dict["Cmd"].as_str(), Some("RenameItem"));
+        assert_eq!(dict["SourcePath"].as_str(), Some("Documents/old.txt"));
+        assert_eq!(dict["DestinationPath"].as_str(), Some("Documents/new.txt"));
+        assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
     }
 
     #[test]

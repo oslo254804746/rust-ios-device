@@ -27,22 +27,33 @@
 - `ios mobilegestalt` 在 diagnostics relay 返回 deprecated 时，会尝试走 CoreDevice `com.apple.coredevice.deviceinfo` fallback。
 - 修正 CoreDevice appservice client 初始化时未使用真实 device identifier 的问题。
 - 抽出内部 CoreDevice envelope/error helper，让 appservice/deviceinfo 复用同一套 `CoreDevice.*` 请求和错误解析。
-- `ios-core::fileservice::FileServiceClient` 支持 CoreDevice fileservice 读写基础闭环：`CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile`、`rwb!FILE` 数据下载/上传和 `EncodedError` 解析。
-- `ios file --coredevice` 支持通过 iOS 17+ CoreDevice fileservice 读取目录、下载文件和上传文件。
+- `ios-core::fileservice::FileServiceClient` 支持 CoreDevice fileservice 读写基础闭环：`CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile`、`RemoveItem`、`CreateDirectory`、`RenameItem`、`rwb!FILE` 数据下载/上传和 `EncodedError` 解析。
+- `ios file --coredevice` 支持通过 iOS 17+ CoreDevice fileservice 读取目录、下载文件、上传文件、删除、建目录和移动/重命名。
+- `ios-core::apps::AppServiceClient` 支持 CoreDevice appservice 的 `listapps`、`listroots`、`spawnexecutable`、`fetchappicons`、`monitorprocesstermination` 请求/API 与离线解析，并兼容 `executableURL.relative` 进程字段。
+- `ios info display` 支持 diagnostics relay 失败时 fallback 到 CoreDevice `getdisplayinfo`，也支持显式 `--coredevice`；新增 `ios info lock-state` 和 `ios info device-info`。
+- `ios tunnel list` / `ios tunnel stop` 已接入本机 HTTP tunnel manager 的 `/tunnels` 与 `/tunnel/:udid`。
+- `ios apps pkill --signal N` 在 Instruments fallback 下只允许 SIGKILL，避免非 SIGKILL 被误执行成 kill。
+
+本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
+
+- 传统路径验证通过：`list`、`info`、`info lockdown --key ProductVersion`、`info display` diagnostics relay、`mobilegestalt ProductVersion`、AFC `file ls /` / `file device-info`、InstallationProxy `apps list --app-type user`、Instruments fallback `apps processes --name SpringBoard`。
+- CoreDevice-only 入口在 iOS 14.4.2 上按预期不可用：`info lock-state` / `info device-info` 返回 lockdown `InvalidService`；`file --coredevice` 已在 CLI 侧提前给出 iOS 17+ 要求，避免进入不支持协议路径。
+- `tunnel list` 在本机 manager 未运行时会明确报告连接失败；manager 端到端仍待常驻服务环境验证。
+- iOS 17+ CoreDevice fileservice/appservice/deviceinfo 真实设备语义仍待后续设备到位后验证。
 
 ## 主要差距
 
-### P0：CoreDevice fileservice（读与上传已补，删除/移动待补）
+### P0：CoreDevice fileservice（基础读写闭环已补）
 
 `crates/ios-core/src/services/fileservice/mod.rs` 已经补齐目录列表、下载和上传能力。pymobiledevice3/go-ios 对 iOS 17+ 文件访问的关键差异在这里：
 
-- `com.apple.coredevice.fileservice.control` / `data` 双服务连接：已覆盖只读路径。
-- `CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile` 已覆盖；删除/移动等写操作待补。
+- `com.apple.coredevice.fileservice.control` / `data` 双服务连接：已覆盖目录列表、下载和上传路径。
+- `CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile`、`RemoveItem`、`CreateDirectory`、`RenameItem` 已覆盖。
 - domain 枚举与路径语义，包括应用容器、崩溃日志、临时目录等。
 - `rwb!FILE` 数据流下载和大文件上传已覆盖；inline 小文件上传已覆盖；更复杂的混合方向并发流协调待补。
 - `EncodedError` / `LocalizedDescription` 的错误解析已覆盖。
 
-后续建议补删除/移动等写操作，并用真实设备验证 app container、app group、temporary、system crash logs 等 domain 的路径语义。
+后续建议用真实设备验证 app container、app group、temporary、system crash logs 等 domain 的路径语义，以及删除/移动/建目录在各 domain 下的权限表现。
 
 ### P0：共享 CoreDevice envelope 与 XPC 流能力（基础已补）
 
@@ -56,27 +67,36 @@ appservice 和 deviceinfo 已经复用内部 CoreDevice helper，避免 envelope
 
 XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应，fileservice 只读目录列表和下载会用到。后续如果实现更完整的写入和并发传输，还需要按 msg id 等待、接收任意 data frame、以及更细的 control/data 双连接协调。
 
-### P1：CoreDevice appservice 扩展
+### P1：CoreDevice appservice 扩展（核心 API 基础已补）
 
-当前 appservice 覆盖了最核心的 process/kill/signal/launch，但比参考项目还少：
+当前 appservice 在 `ios-core` 层已经补齐参考项目中最重要的离线可测能力：
 
-- `feature.listapps`、`feature.listroots`、`feature.spawnexecutable`、`feature.monitorprocesstermination`。
-- `feature.fetchappicons`；项目里已有 SpringBoard 图标路径，但没有 CoreDevice appservice 图标路径。
-- launch 参数较窄，缺少 arguments、environment、start stopped、terminate existing、stdio socket/pty 等完整选项。
-- 进程字段解析还应兼容 `executableURL.relative` 等形态。
-- CLI `apps pkill --signal N` 在 Instruments fallback 下仍按 kill 语义处理，非 SIGKILL 时应避免误报或改用支持 signal 的路径。
+- `feature.listapps`、`feature.listroots`、`feature.spawnexecutable`、`feature.monitorprocesstermination` 已有请求/API 与离线解析。
+- `feature.fetchappicons` 已有请求/API 与 icon data 解析。
+- launch options 已支持 arguments、environment、start stopped、terminate existing、PTY 开关和 stdio identifier 映射；真实 stdio socket 生命周期仍待设备侧联调。
+- 进程字段解析已兼容 `executableURL.relative`。
+- CLI `apps pkill --signal N` 在 Instruments fallback 下已限制为 SIGKILL，非 SIGKILL 会要求 iOS 17+ appservice。
 
-### P1：CoreDevice diagnostics/deviceinfo 更完整接入
+后续建议为这些 CoreDevice appservice 新 API 补 CLI 入口（尤其 listroots、spawn、fetchicons、monitor）并用真实 iOS 17+ 设备验证返回字段和阻塞/流式行为。
 
-deviceinfo client 已经有最小实现，但 CLI 只接入了 MobileGestalt fallback。还可继续补：
+### P1：CoreDevice diagnostics/deviceinfo 更完整接入（CLI 基础已补）
 
-- `ios info display` 在 diagnostics relay 不可用或 iOS 17+ deprecated 时走 CoreDevice `getdisplayinfo`。
-- lock state、完整 device info 的 CLI 暴露。
+deviceinfo client 与 CLI 基础入口已经接入：
+
+- `ios info display` 在 diagnostics relay 不可用或 iOS 17+ deprecated 时走 CoreDevice `getdisplayinfo`，也可用 `ios info display --coredevice` 显式选择。
+- lock state、完整 device info 已通过 `ios info lock-state` 和 `ios info device-info` 暴露。
 - 与 RSD service name 的 shim/remote 后缀兼容策略保持一致。
 
-### P1：Tunnel CLI 与 tunnel manager 体验
+后续建议真实设备验证 `getdisplayinfo`、`getlockstate`、`getdeviceinfo` 的输出结构，并按需要优化表格化展示。
 
-HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，但 CLI 顶层 `ios tunnel list` / `ios tunnel stop` 仍提示未实现，只能让用户手动调用 HTTP manager。对标 go-ios 的 `tunnel ls` / `tunnel stop`，这里应补成真实客户端行为。
+### P1：Tunnel CLI 与 tunnel manager 体验（基础已补）
+
+HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已经补成真实客户端行为：
+
+- `ios tunnel list [--host HOST --port PORT]` 调用本机 manager 的 `GET /tunnels`。
+- `ios --udid <UDID> tunnel stop [--host HOST --port PORT]` 调用本机 manager 的 `DELETE /tunnel/:udid`。
+
+后续建议在 manager 常驻运行时做端到端验证，并按需要增加非 JSON/表格输出。
 
 ### P2：XCTest / WDA
 
@@ -96,10 +116,10 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 
 ## 推荐推进顺序
 
-1. 补 fileservice 删除/移动等写操作，以及更完整的 data stream 协调。
-2. 补 appservice 的 listroots/listapps/spawn/fetchicons/monitor，以及 launch options。
-3. 接入 CoreDevice deviceinfo 到 `info display`、lock state 和完整 device info。
-4. 补 `ios tunnel list` / `ios tunnel stop` 对本机 HTTP manager 的客户端调用。
+1. 补 fileservice 更完整的 data stream 协调，并做真实设备 domain 语义验证。
+2. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再决定 CLI 入口形态。
+3. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
+4. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
 5. 在没有真实 WDA 环境前，只补 XCTest/WDA 的离线可测部分，保留真实设备验证说明。
 
 ## 测试策略
