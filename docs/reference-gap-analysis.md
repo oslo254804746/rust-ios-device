@@ -39,6 +39,7 @@
 - 新增 `ios wda` HTTP client，可对已经运行/转发好的 WDA 执行 status、session、source、screenshot、find、click、press-button、unlock、send-keys、swipe 等基础命令。
 - `ios wda --device-port PORT` 支持通过 usbmux 直接请求设备上的 WDA HTTP 端口，避免必须先启动本地 forward。
 - `ios-core::restore` 新增 restore 生命周期事件解析，覆盖 ProgressMsg、StatusMsg、CheckpointMsg、DataRequestMsg、PreviousRestoreLogMsg、RestoredCrash，并内置常见 restore status 错误说明。
+- `ios-core::restore::RestoreServiceClient::next_lifecycle_event` 与 `ios restore events` 已接入只读事件消费，可输出 progress、status、checkpoint、data request、previous log 和 restored crash 的 JSON 事件。
 
 本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
 
@@ -126,7 +127,7 @@ HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已
 
 go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命周期能力上更完整。本项目已有部分 prepare/mobileactivation/imagemounter 能力，以及 RestoreRemoteServices 的 recovery/reboot/preflight/nonces/app-parameters/lang 命令。
 
-本次补齐低风险的离线基础：restore 生命周期事件模型与常见 status 错误解释，方便后续实现完整 restore loop 时复用。真正的 IPSW 刷机、TSS/ASR/FDR、DFU/recovery USB 低层控制仍未实现，且属于破坏性高风险能力，应在明确产品目标和测试设备后单独推进。
+本次补齐低风险的离线基础：restore 生命周期事件模型、常见 status 错误解释，以及 `ios restore events` 只读事件消费，方便后续实现完整 restore loop 时复用。真正的 IPSW 刷机、TSS/ASR/FDR、DFU/recovery USB 低层控制仍未实现，且属于破坏性高风险能力，应在明确产品目标和测试设备后单独推进。
 
 ## 推荐推进顺序
 
@@ -135,7 +136,7 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 3. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
 4. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
 5. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
-6. 若要推进 P3，先做只读/低风险 restore loop 事件消费，再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
+6. 用真实恢复/更新流程验证 `ios restore events` 的事件顺序、超时行为和 data request 形态；确认后再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
 
 ## 测试策略
 

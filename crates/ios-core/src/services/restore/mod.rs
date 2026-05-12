@@ -145,6 +145,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             .await
     }
 
+    pub async fn next_lifecycle_event(&mut self) -> Result<RestoreLifecycleEvent, RestoreError> {
+        let response = self.recv_control_message().await?;
+        let body = response_dict(response)?;
+        Ok(RestoreLifecycleEvent::from_xpc_dictionary(&body))
+    }
+
     async fn validate_command(
         &mut self,
         command: &str,
@@ -377,6 +383,59 @@ pub fn xpc_value_to_json(value: &XpcValue) -> serde_json::Value {
     }
 }
 
+pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_json::Value {
+    match event {
+        RestoreLifecycleEvent::Progress {
+            operation,
+            progress,
+        } => serde_json::json!({
+            "type": "progress",
+            "operation": operation,
+            "progress": progress,
+        }),
+        RestoreLifecycleEvent::Status {
+            code,
+            message,
+            log,
+            finished,
+        } => serde_json::json!({
+            "type": "status",
+            "code": code,
+            "message": message,
+            "log": log,
+            "finished": finished,
+        }),
+        RestoreLifecycleEvent::Checkpoint { name, raw } => serde_json::json!({
+            "type": "checkpoint",
+            "name": name,
+            "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
+        }),
+        RestoreLifecycleEvent::DataRequest {
+            data_type,
+            data_port,
+            raw,
+        } => serde_json::json!({
+            "type": "data_request",
+            "data_type": data_type,
+            "data_port": data_port,
+            "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
+        }),
+        RestoreLifecycleEvent::PreviousRestoreLog(log) => serde_json::json!({
+            "type": "previous_restore_log",
+            "log": log,
+        }),
+        RestoreLifecycleEvent::RestoredCrash { backtrace } => serde_json::json!({
+            "type": "restored_crash",
+            "backtrace": backtrace,
+        }),
+        RestoreLifecycleEvent::Unknown { msg_type, raw } => serde_json::json!({
+            "type": "unknown",
+            "msg_type": msg_type,
+            "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -450,6 +509,70 @@ mod tests {
                 finished: false,
             }
         );
+    }
+
+    #[test]
+    fn restore_lifecycle_event_json_includes_raw_checkpoint_payload() {
+        let event = RestoreLifecycleEvent::Checkpoint {
+            name: Some("preflight".to_string()),
+            raw: IndexMap::from([
+                (
+                    "MsgType".to_string(),
+                    XpcValue::String("CheckpointMsg".to_string()),
+                ),
+                (
+                    "Checkpoint".to_string(),
+                    XpcValue::String("preflight".to_string()),
+                ),
+            ]),
+        };
+
+        let json = restore_lifecycle_event_to_json(&event);
+
+        assert_eq!(json["type"], "checkpoint");
+        assert_eq!(json["name"], "preflight");
+        assert_eq!(json["raw"]["MsgType"], "CheckpointMsg");
+    }
+
+    #[tokio::test]
+    async fn next_lifecycle_event_reads_restore_status_message() {
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("MsgType".to_string(), XpcValue::String("StatusMsg".into())),
+                    ("Status".to_string(), XpcValue::Uint64(0)),
+                    ("Log".to_string(), XpcValue::String("done".into())),
+                ])),
+            )
+            .await;
+        });
+
+        let mut client = RestoreServiceClient::connect(client)
+            .await
+            .expect("restore client should connect");
+        let event = client
+            .next_lifecycle_event()
+            .await
+            .expect("status event should decode");
+
+        assert_eq!(
+            event,
+            RestoreLifecycleEvent::Status {
+                code: 0,
+                message: Some("success".to_string()),
+                log: Some("done".to_string()),
+                finished: true,
+            }
+        );
+
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

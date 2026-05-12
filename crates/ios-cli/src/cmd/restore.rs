@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
@@ -27,6 +29,15 @@ enum RestoreSub {
         /// Language identifier to request from restore service
         language: String,
     },
+    /// Read restore lifecycle events without starting a destructive restore
+    Events {
+        /// Maximum number of lifecycle events to read
+        #[arg(long)]
+        count: Option<usize>,
+        /// Stop waiting when no event arrives before this timeout
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+    },
 }
 
 impl RestoreCmd {
@@ -53,6 +64,26 @@ impl RestoreCmd {
             .await?;
         let mut client = ios_core::restore::RestoreServiceClient::connect(stream).await?;
 
+        if let RestoreSub::Events {
+            count,
+            timeout_secs,
+        } = self.sub
+        {
+            let events = read_restore_events(&mut client, count, timeout_secs).await?;
+            let rendered: Vec<_> = events
+                .iter()
+                .map(ios_core::restore::restore_lifecycle_event_to_json)
+                .collect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rendered)?);
+            } else {
+                for event in rendered {
+                    println!("{}", serde_json::to_string_pretty(&event)?);
+                }
+            }
+            return Ok(());
+        }
+
         let response = match self.sub {
             RestoreSub::EnterRecovery => client.enter_recovery().await?,
             RestoreSub::DelayRecoveryImage => client.delay_recovery_image().await?,
@@ -61,6 +92,7 @@ impl RestoreCmd {
             RestoreSub::Nonces => client.get_nonces().await?,
             RestoreSub::AppParameters => client.get_app_parameters().await?,
             RestoreSub::RestoreLang { language } => client.restore_lang(language).await?,
+            RestoreSub::Events { .. } => unreachable!("events handled above"),
         };
 
         let rendered =
@@ -124,4 +156,43 @@ mod tests {
         let parsed = TestCli::try_parse_from(["restore", "restore-lang", "en"]);
         assert!(parsed.is_ok(), "restore restore-lang should parse");
     }
+
+    #[test]
+    fn parses_restore_events_subcommand() {
+        let parsed =
+            TestCli::try_parse_from(["restore", "events", "--count", "2", "--timeout-secs", "30"]);
+        assert!(parsed.is_ok(), "restore events should parse");
+    }
+}
+
+async fn read_restore_events<S>(
+    client: &mut ios_core::restore::RestoreServiceClient<S>,
+    count: Option<usize>,
+    timeout_secs: u64,
+) -> Result<Vec<ios_core::restore::RestoreLifecycleEvent>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut events = Vec::new();
+    loop {
+        if count.is_some_and(|count| events.len() >= count) {
+            break;
+        }
+
+        let event = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            client.next_lifecycle_event(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for restore lifecycle event"))??;
+        let finished = matches!(
+            event,
+            ios_core::restore::RestoreLifecycleEvent::Status { finished: true, .. }
+        );
+        events.push(event);
+        if finished {
+            break;
+        }
+    }
+    Ok(events)
 }

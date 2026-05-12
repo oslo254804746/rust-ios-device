@@ -200,12 +200,18 @@ ios -u <UDID> prepare --cert-der ./supervision.der
 ios -u <UDID> power-assert --timeout 10
 ios -u <UDID> preboard create
 ios -u <UDID> restore enter-recovery
+ios -u <UDID> restore events --count 5 --timeout-secs 30
 ios -u <UDID> erase --force
 ```
 
 These commands can change persistent device state. Prefer a test device, inspect
 `--help`, and confirm the expected iOS version and supervision state before
 running them.
+
+`restore events` is a read-only RestoreRemoteServices event consumer. It waits
+for lifecycle messages such as progress, status, checkpoint, data request,
+previous log, or restored-crash notifications; it does not start a restore by
+itself.
 
 ## Rust API
 
