@@ -92,6 +92,37 @@ enum AppsSub {
         #[arg(help = "Bundle ID (e.g. com.example.App)")]
         bundle_id: String,
     },
+    /// List CoreDevice appservice roots (iOS 17+ appservice)
+    Roots,
+    /// Spawn an executable through CoreDevice appservice (iOS 17+ appservice)
+    Spawn {
+        #[arg(help = "Executable path, e.g. /usr/bin/log")]
+        executable: String,
+        #[arg(last = true, allow_hyphen_values = true, help = "Arguments after --")]
+        args: Vec<String>,
+    },
+    /// Fetch app icons through CoreDevice appservice (iOS 17+ appservice)
+    Icons {
+        #[arg(help = "Bundle ID (e.g. com.example.App)")]
+        bundle_id: String,
+        #[arg(long, default_value = ".")]
+        output_dir: String,
+        #[arg(long, default_value_t = 60.0)]
+        width: f64,
+        #[arg(long, default_value_t = 60.0)]
+        height: f64,
+        #[arg(long, default_value_t = 3.0)]
+        scale: f64,
+        #[arg(long)]
+        allow_placeholder: bool,
+    },
+    /// Wait for a process termination event (iOS 17+ appservice)
+    Monitor {
+        #[arg(help = "Process ID")]
+        pid: u64,
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+    },
     /// Uninstall an app by bundle ID
     Uninstall {
         #[arg(help = "Bundle ID (e.g. com.example.App)")]
@@ -602,6 +633,81 @@ impl AppsCmd {
                     println!("Launched {bundle_id}");
                 }
             }
+            AppsSub::Roots => {
+                let mut client = connect_appservice(&device, &udid).await?;
+                let roots = client.list_roots().await?;
+                let roots_json = xpc_value_to_json(&roots);
+                println!("{}", serde_json::to_string_pretty(&roots_json)?);
+            }
+            AppsSub::Spawn { executable, args } => {
+                let mut client = connect_appservice(&device, &udid).await?;
+                let pid = client.spawn_executable(&executable, &args).await?;
+                let output = serde_json::json!({
+                    "executable": executable,
+                    "arguments": args,
+                    "pid": pid,
+                });
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else if let Some(pid) = pid {
+                    println!("Spawned {executable} (pid {pid})");
+                } else {
+                    println!("Spawned {executable}");
+                }
+            }
+            AppsSub::Icons {
+                bundle_id,
+                output_dir,
+                width,
+                height,
+                scale,
+                allow_placeholder,
+            } => {
+                let mut client = connect_appservice(&device, &udid).await?;
+                let icons = client
+                    .fetch_app_icons(&bundle_id, width, height, scale, allow_placeholder)
+                    .await?;
+                let output_dir = std::path::PathBuf::from(output_dir);
+                tokio::fs::create_dir_all(&output_dir).await?;
+                let mut results = Vec::new();
+                for (index, icon) in icons.iter().enumerate() {
+                    let output_path = app_icon_output_path(&output_dir, &bundle_id, index);
+                    tokio::fs::write(&output_path, &icon.data).await?;
+                    results.push(app_icon_result_to_json(
+                        &bundle_id,
+                        index,
+                        &output_path,
+                        icon,
+                    ));
+                }
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&results)?);
+                } else {
+                    for result in &results {
+                        println!(
+                            "{}",
+                            result
+                                .get("output")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-")
+                        );
+                    }
+                }
+            }
+            AppsSub::Monitor { pid, timeout_secs } => {
+                let mut client = connect_appservice(&device, &udid).await?;
+                let termination = tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    client.monitor_process_termination(pid),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("timed out waiting for process {pid} termination")
+                })??;
+                let output = process_termination_to_json(&termination);
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
             AppsSub::Uninstall { bundle_id } => {
                 let stream = device
                     .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
@@ -623,6 +729,10 @@ fn apps_subcommand_requires_version_probe(sub: &AppsSub) -> bool {
             | AppsSub::Signal { .. }
             | AppsSub::Pkill { .. }
             | AppsSub::Launch { .. }
+            | AppsSub::Roots
+            | AppsSub::Spawn { .. }
+            | AppsSub::Icons { .. }
+            | AppsSub::Monitor { .. }
     )
 }
 
@@ -635,6 +745,10 @@ fn apps_subcommand_prefers_tunnel(sub: &AppsSub, ios_major: u64) -> bool {
                 | AppsSub::Signal { .. }
                 | AppsSub::Pkill { .. }
                 | AppsSub::Launch { .. }
+                | AppsSub::Roots
+                | AppsSub::Spawn { .. }
+                | AppsSub::Icons { .. }
+                | AppsSub::Monitor { .. }
         )
 }
 
@@ -985,6 +1099,73 @@ fn format_json_value(value: &serde_json::Value) -> String {
         serde_json::Value::String(v) => v.clone(),
         other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
+}
+
+fn xpc_value_to_json(value: &ios_core::XpcValue) -> serde_json::Value {
+    match value {
+        ios_core::XpcValue::Null => serde_json::Value::Null,
+        ios_core::XpcValue::Bool(value) => serde_json::Value::Bool(*value),
+        ios_core::XpcValue::Int64(value) => serde_json::Value::from(*value),
+        ios_core::XpcValue::Uint64(value) => serde_json::Value::from(*value),
+        ios_core::XpcValue::Double(value) => serde_json::Number::from_f64(*value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ios_core::XpcValue::Date(value) => serde_json::Value::from(*value),
+        ios_core::XpcValue::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
+        ios_core::XpcValue::String(value) => serde_json::Value::String(value.clone()),
+        ios_core::XpcValue::Uuid(bytes) => {
+            serde_json::Value::String(uuid::Uuid::from_bytes(*bytes).to_string())
+        }
+        ios_core::XpcValue::Array(values) => {
+            serde_json::Value::Array(values.iter().map(xpc_value_to_json).collect())
+        }
+        ios_core::XpcValue::Dictionary(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), xpc_value_to_json(value)))
+                .collect(),
+        ),
+        ios_core::XpcValue::FileTransfer { msg_id, data } => serde_json::json!({
+            "msg_id": msg_id,
+            "data": xpc_value_to_json(data),
+        }),
+    }
+}
+
+fn app_icon_output_path(
+    output_dir: &std::path::Path,
+    bundle_id: &str,
+    index: usize,
+) -> std::path::PathBuf {
+    output_dir.join(format!("{bundle_id}-{index}.png"))
+}
+
+fn app_icon_result_to_json(
+    bundle_id: &str,
+    index: usize,
+    output_path: &std::path::Path,
+    icon: &ios_core::apps::appservice::AppIcon,
+) -> serde_json::Value {
+    serde_json::json!({
+        "bundle_id": bundle_id,
+        "index": index,
+        "output": output_path.display().to_string(),
+        "bytes": icon.data.len(),
+        "width": icon.width,
+        "height": icon.height,
+        "scale": icon.scale,
+    })
+}
+
+fn process_termination_to_json(
+    termination: &ios_core::apps::appservice::ProcessTermination,
+) -> serde_json::Value {
+    serde_json::json!({
+        "pid": termination.pid,
+        "exit_status": termination.exit_status,
+        "signal": termination.signal,
+        "reason": termination.reason,
+    })
 }
 
 fn filter_running_processes(
@@ -1413,6 +1594,104 @@ mod tests {
         assert!(should_fallback_to_instruments(&CoreError::Unsupported(
             "service 'com.apple.coredevice.appservice' not found".into()
         )));
+    }
+
+    #[test]
+    fn parses_apps_roots_subcommand() {
+        let parsed = TestCli::try_parse_from(["apps", "roots"]);
+        assert!(parsed.is_ok(), "apps roots subcommand should parse");
+    }
+
+    #[test]
+    fn parses_apps_spawn_with_trailing_arguments() {
+        let cmd = TestCli::parse_from([
+            "apps",
+            "spawn",
+            "/usr/bin/log",
+            "--",
+            "stream",
+            "--style",
+            "json",
+        ]);
+        match cmd.command {
+            AppsSub::Spawn { executable, args } => {
+                assert_eq!(executable, "/usr/bin/log");
+                assert_eq!(args, ["stream", "--style", "json"]);
+            }
+            _ => panic!("expected spawn subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_apps_icons_options() {
+        let cmd = TestCli::parse_from([
+            "apps",
+            "icons",
+            "com.example.App",
+            "--output-dir",
+            "icons",
+            "--width",
+            "120",
+            "--height",
+            "80",
+            "--scale",
+            "2",
+            "--allow-placeholder",
+        ]);
+        match cmd.command {
+            AppsSub::Icons {
+                bundle_id,
+                output_dir,
+                width,
+                height,
+                scale,
+                allow_placeholder,
+            } => {
+                assert_eq!(bundle_id, "com.example.App");
+                assert_eq!(output_dir, "icons");
+                assert_eq!(width, 120.0);
+                assert_eq!(height, 80.0);
+                assert_eq!(scale, 2.0);
+                assert!(allow_placeholder);
+            }
+            _ => panic!("expected icons subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_apps_monitor_timeout() {
+        let cmd = TestCli::parse_from(["apps", "monitor", "1234", "--timeout-secs", "30"]);
+        match cmd.command {
+            AppsSub::Monitor { pid, timeout_secs } => {
+                assert_eq!(pid, 1234);
+                assert_eq!(timeout_secs, 30);
+            }
+            _ => panic!("expected monitor subcommand"),
+        }
+    }
+
+    #[test]
+    fn app_icon_output_path_uses_bundle_id_and_index() {
+        let path = app_icon_output_path(std::path::Path::new("icons"), "com.example.App", 2);
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("icons/com.example.App-2.png")
+        );
+    }
+
+    #[test]
+    fn process_termination_json_includes_pid_status_signal_and_reason() {
+        let json = process_termination_to_json(&ios_core::apps::appservice::ProcessTermination {
+            pid: Some(1234),
+            exit_status: Some(0),
+            signal: Some(9),
+            reason: Some("killed".to_string()),
+        });
+
+        assert_eq!(json["pid"], 1234);
+        assert_eq!(json["exit_status"], 0);
+        assert_eq!(json["signal"], 9);
+        assert_eq!(json["reason"], "killed");
     }
 
     #[test]

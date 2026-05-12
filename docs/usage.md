@@ -104,6 +104,10 @@ ios -u <UDID> apps uninstall com.example.app
 ios -u <UDID> apps launch com.example.app
 ios -u <UDID> apps processes
 ios -u <UDID> apps kill <PID>
+ios -u <UDID> apps roots
+ios -u <UDID> apps spawn /usr/bin/log -- stream --style json
+ios -u <UDID> apps icons com.example.app --output-dir ./icons
+ios -u <UDID> apps monitor <PID> --timeout-secs 30
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests --test-target com.example.Runner --wait
 ios -u <UDID> runwda --help
@@ -112,9 +116,10 @@ ios -u <UDID> wda --device-port 8100 status
 ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
 
-`apps processes`, `apps launch`, and related process-control commands use newer
-app service paths and are mainly intended for iOS versions that expose those
-services through CoreDevice/RSD.
+`apps processes`, `apps launch`, `apps roots`, `apps spawn`, `apps icons`,
+`apps monitor`, and related process-control commands use newer app service
+paths and are mainly intended for iOS versions that expose those services
+through CoreDevice/RSD.
 
 `runtest` chooses the XCTest transport by iOS generation: iOS 17+ uses Remote
 Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
