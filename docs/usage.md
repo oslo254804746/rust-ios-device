@@ -98,6 +98,7 @@ Comparable upstream workflows:
 
 ```sh
 ios -u <UDID> apps list
+ios -u <UDID> apps list --coredevice
 ios -u <UDID> apps show com.example.app
 ios -u <UDID> apps install ./Example.ipa
 ios -u <UDID> apps uninstall com.example.app
@@ -116,10 +117,10 @@ ios -u <UDID> wda --device-port 8100 status
 ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
 
-`apps processes`, `apps launch`, `apps roots`, `apps spawn`, `apps icons`,
-`apps monitor`, and related process-control commands use newer app service
-paths and are mainly intended for iOS versions that expose those services
-through CoreDevice/RSD.
+`apps list --coredevice`, `apps processes`, `apps launch`, `apps roots`,
+`apps spawn`, `apps icons`, `apps monitor`, and related process-control commands
+use newer app service paths and are mainly intended for iOS versions that expose
+those services through CoreDevice/RSD.
 
 `runtest` chooses the XCTest transport by iOS generation: iOS 17+ uses Remote
 Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and

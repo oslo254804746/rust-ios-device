@@ -17,6 +17,8 @@ enum AppsSub {
             help = "App type: user, system, hidden, all, file-sharing"
         )]
         app_type: String,
+        #[arg(long, help = "Use iOS 17+ CoreDevice appservice listapps")]
+        coredevice: bool,
     },
     /// Install an IPA or unpacked .app bundle from the local filesystem
     Install {
@@ -159,7 +161,32 @@ impl AppsCmd {
         let device = ios_core::connect(&udid, opts).await?;
 
         match self.sub {
-            AppsSub::List { app_type } => {
+            AppsSub::List {
+                app_type,
+                coredevice,
+            } => {
+                if coredevice {
+                    let mut client = connect_appservice(&device, &udid).await?;
+                    let apps = client
+                        .list_apps(ios_core::apps::appservice::ListAppsOptions::default())
+                        .await?;
+
+                    if json {
+                        let list: Vec<_> = apps.iter().map(coredevice_app_to_json).collect();
+                        println!("{}", serde_json::to_string_pretty(&list)?);
+                    } else {
+                        for app in &apps {
+                            println!(
+                                "{:<45} {} ({})",
+                                app.bundle_id,
+                                app.name.as_deref().unwrap_or("-"),
+                                app.version.as_deref().unwrap_or("-")
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+
                 let stream = device
                     .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
                     .await?;
@@ -724,7 +751,10 @@ impl AppsCmd {
 fn apps_subcommand_requires_version_probe(sub: &AppsSub) -> bool {
     matches!(
         sub,
-        AppsSub::Processes { .. }
+        AppsSub::List {
+            coredevice: true,
+            ..
+        } | AppsSub::Processes { .. }
             | AppsSub::Kill { .. }
             | AppsSub::Signal { .. }
             | AppsSub::Pkill { .. }
@@ -740,7 +770,10 @@ fn apps_subcommand_prefers_tunnel(sub: &AppsSub, ios_major: u64) -> bool {
     ios_major >= 17
         && matches!(
             sub,
-            AppsSub::Processes { .. }
+            AppsSub::List {
+                coredevice: true,
+                ..
+            } | AppsSub::Processes { .. }
                 | AppsSub::Kill { .. }
                 | AppsSub::Signal { .. }
                 | AppsSub::Pkill { .. }
@@ -1042,6 +1075,20 @@ fn app_to_json_with_attrs(app: &ios_core::apps::AppInfo, attrs: &[String]) -> se
     serde_json::Value::Object(filtered)
 }
 
+fn coredevice_app_to_json(
+    app: &ios_core::apps::appservice::CoreDeviceAppInfo,
+) -> serde_json::Value {
+    serde_json::json!({
+        "bundle_id": app.bundle_id,
+        "name": app.name,
+        "version": app.version,
+        "is_removable": app.is_removable,
+        "is_hidden": app.is_hidden,
+        "is_internal": app.is_internal,
+        "is_app_clip": app.is_app_clip,
+    })
+}
+
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
     match value {
         plist::Value::Array(items) => {
@@ -1262,6 +1309,21 @@ mod tests {
                 assert!(attrs.is_empty());
             }
             _ => panic!("expected show subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_apps_list_coredevice_flag() {
+        let cmd = TestCli::parse_from(["apps", "list", "--coredevice"]);
+        match cmd.command {
+            AppsSub::List {
+                app_type,
+                coredevice,
+            } => {
+                assert_eq!(app_type, "user");
+                assert!(coredevice);
+            }
+            _ => panic!("expected list subcommand"),
         }
     }
 
@@ -1568,6 +1630,11 @@ mod tests {
         }));
         assert!(!apps_subcommand_requires_version_probe(&AppsSub::List {
             app_type: "user".into(),
+            coredevice: false,
+        }));
+        assert!(apps_subcommand_requires_version_probe(&AppsSub::List {
+            app_type: "user".into(),
+            coredevice: true,
         }));
     }
 
@@ -1578,12 +1645,38 @@ mod tests {
         };
         let list = AppsSub::List {
             app_type: "user".into(),
+            coredevice: false,
+        };
+        let coredevice_list = AppsSub::List {
+            app_type: "user".into(),
+            coredevice: true,
         };
 
         assert!(apps_subcommand_prefers_tunnel(&launch, 17));
         assert!(apps_subcommand_prefers_tunnel(&launch, 26));
         assert!(!apps_subcommand_prefers_tunnel(&launch, 15));
         assert!(!apps_subcommand_prefers_tunnel(&list, 26));
+        assert!(apps_subcommand_prefers_tunnel(&coredevice_list, 17));
+    }
+
+    #[test]
+    fn coredevice_app_json_includes_flags() {
+        let app = ios_core::apps::appservice::CoreDeviceAppInfo {
+            bundle_id: "com.example.App".to_string(),
+            name: Some("Example".to_string()),
+            version: Some("1.2.3".to_string()),
+            is_removable: Some(true),
+            is_hidden: Some(false),
+            is_internal: Some(false),
+            is_app_clip: Some(true),
+        };
+
+        let json = coredevice_app_to_json(&app);
+
+        assert_eq!(json["bundle_id"], "com.example.App");
+        assert_eq!(json["name"], "Example");
+        assert_eq!(json["version"], "1.2.3");
+        assert_eq!(json["is_app_clip"], true);
     }
 
     #[test]

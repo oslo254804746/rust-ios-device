@@ -30,7 +30,7 @@
 - `ios-core::fileservice::FileServiceClient` 支持 CoreDevice fileservice 读写基础闭环：`CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile`、`RemoveItem`、`CreateDirectory`、`RenameItem`、`rwb!FILE` 数据下载/上传和 `EncodedError` 解析。
 - `ios file --coredevice` 支持通过 iOS 17+ CoreDevice fileservice 读取目录、下载文件、上传文件、删除、建目录和移动/重命名。
 - `ios-core::apps::AppServiceClient` 支持 CoreDevice appservice 的 `listapps`、`listroots`、`spawnexecutable`、`fetchappicons`、`monitorprocesstermination` 请求/API 与离线解析，并兼容 `executableURL.relative` 进程字段。
-- `ios apps roots`、`ios apps spawn`、`ios apps icons`、`ios apps monitor` 已把 CoreDevice appservice 的 listroots、spawnexecutable、fetchappicons、monitorprocesstermination 暴露到 CLI。
+- `ios apps list --coredevice`、`ios apps roots`、`ios apps spawn`、`ios apps icons`、`ios apps monitor` 已把 CoreDevice appservice 的 listapps、listroots、spawnexecutable、fetchappicons、monitorprocesstermination 暴露到 CLI。
 - `ios info display` 支持 diagnostics relay 失败时 fallback 到 CoreDevice `getdisplayinfo`，也支持显式 `--coredevice`；新增 `ios info lock-state` 和 `ios info device-info`。
 - `ios tunnel list` / `ios tunnel stop` 已接入本机 HTTP tunnel manager 的 `/tunnels` 与 `/tunnel/:udid`。
 - `ios apps pkill --signal N` 在 Instruments fallback 下只允许 SIGKILL，避免非 SIGKILL 被误执行成 kill。
@@ -84,7 +84,7 @@ XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应
 - launch options 已支持 arguments、environment、start stopped、terminate existing、PTY 开关和 stdio identifier 映射；真实 stdio socket 生命周期仍待设备侧联调。
 - 进程字段解析已兼容 `executableURL.relative`。
 - CLI `apps pkill --signal N` 在 Instruments fallback 下已限制为 SIGKILL，非 SIGKILL 会要求 iOS 17+ appservice。
-- CLI 已新增 `apps roots`、`apps spawn <executable> -- <args...>`、`apps icons <bundle-id>`、`apps monitor <pid>`，分别覆盖 listroots、spawnexecutable、fetchappicons 和 monitorprocesstermination。
+- CLI 已新增 `apps list --coredevice`、`apps roots`、`apps spawn <executable> -- <args...>`、`apps icons <bundle-id>`、`apps monitor <pid>`，分别覆盖 listapps、listroots、spawnexecutable、fetchappicons 和 monitorprocesstermination。
 
 后续建议用真实 iOS 17+ 设备验证这些入口的返回字段、icon 数据格式、spawn stdio socket 生命周期，以及 monitor 的阻塞/流式行为。
 
