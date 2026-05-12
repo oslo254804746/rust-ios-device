@@ -27,22 +27,22 @@
 - `ios mobilegestalt` 在 diagnostics relay 返回 deprecated 时，会尝试走 CoreDevice `com.apple.coredevice.deviceinfo` fallback。
 - 修正 CoreDevice appservice client 初始化时未使用真实 device identifier 的问题。
 - 抽出内部 CoreDevice envelope/error helper，让 appservice/deviceinfo 复用同一套 `CoreDevice.*` 请求和错误解析。
-- `ios-core::fileservice::FileServiceClient` 支持 CoreDevice fileservice 只读闭环：`CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`rwb!FILE` 数据下载和 `EncodedError` 解析。
-- `ios file --coredevice` 支持通过 iOS 17+ CoreDevice fileservice 读取目录和下载文件。
+- `ios-core::fileservice::FileServiceClient` 支持 CoreDevice fileservice 读写基础闭环：`CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile`、`rwb!FILE` 数据下载/上传和 `EncodedError` 解析。
+- `ios file --coredevice` 支持通过 iOS 17+ CoreDevice fileservice 读取目录、下载文件和上传文件。
 
 ## 主要差距
 
-### P0：CoreDevice fileservice（只读已补，写操作待补）
+### P0：CoreDevice fileservice（读与上传已补，删除/移动待补）
 
-`crates/ios-core/src/services/fileservice/mod.rs` 已经补齐只读能力。pymobiledevice3/go-ios 对 iOS 17+ 文件访问的关键差异在这里：
+`crates/ios-core/src/services/fileservice/mod.rs` 已经补齐目录列表、下载和上传能力。pymobiledevice3/go-ios 对 iOS 17+ 文件访问的关键差异在这里：
 
 - `com.apple.coredevice.fileservice.control` / `data` 双服务连接：已覆盖只读路径。
-- `CreateSession`、`RetrieveDirectoryList`、`RetrieveFile` 已覆盖；`ProposeEmptyFile`、`ProposeFile` 等写操作待补。
+- `CreateSession`、`RetrieveDirectoryList`、`RetrieveFile`、`ProposeEmptyFile`、`ProposeFile` 已覆盖；删除/移动等写操作待补。
 - domain 枚举与路径语义，包括应用容器、崩溃日志、临时目录等。
-- `rwb!FILE` 数据流下载已覆盖；inline 小文件上传、混合方向上传待补。
+- `rwb!FILE` 数据流下载和大文件上传已覆盖；inline 小文件上传已覆盖；更复杂的混合方向并发流协调待补。
 - `EncodedError` / `LocalizedDescription` 的错误解析已覆盖。
 
-后续建议补上传、空文件、删除/移动等写操作，并用真实设备验证 app container、app group、temporary、system crash logs 等 domain 的路径语义。
+后续建议补删除/移动等写操作，并用真实设备验证 app container、app group、temporary、system crash logs 等 domain 的路径语义。
 
 ### P0：共享 CoreDevice envelope 与 XPC 流能力（基础已补）
 
@@ -96,7 +96,7 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 
 ## 推荐推进顺序
 
-1. 补 fileservice 写操作：upload、empty file、delete/move，以及更完整的 data stream 协调。
+1. 补 fileservice 删除/移动等写操作，以及更完整的 data stream 协调。
 2. 补 appservice 的 listroots/listapps/spawn/fetchicons/monitor，以及 launch options。
 3. 接入 CoreDevice deviceinfo 到 `info display`、lock state 和完整 device info。
 4. 补 `ios tunnel list` / `ios tunnel stop` 对本机 HTTP manager 的客户端调用。

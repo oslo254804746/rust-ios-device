@@ -9,6 +9,7 @@ use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 pub const CONTROL_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.control";
 pub const DATA_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.data";
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
+pub const MAX_INLINE_DATA_SIZE: u64 = 500;
 
 const FILE_WIRE_MAGIC: &[u8; 8] = b"rwb!FILE";
 
@@ -36,6 +37,37 @@ pub enum Domain {
 pub struct FileTransferTicket {
     pub response_token: u64,
     pub file_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileWriteOptions {
+    pub permissions: i64,
+    pub uid: i64,
+    pub gid: i64,
+    pub creation_time: i64,
+    pub last_modification_time: i64,
+}
+
+impl FileWriteOptions {
+    pub fn mobile_defaults_now() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        Self {
+            permissions: 0o644,
+            uid: 501,
+            gid: 501,
+            creation_time: now,
+            last_modification_time: now,
+        }
+    }
+}
+
+impl Default for FileWriteOptions {
+    fn default() -> Self {
+        Self::mobile_defaults_now()
+    }
 }
 
 pub struct FileServiceClient {
@@ -119,6 +151,99 @@ impl FileServiceClient {
         send_download_wire_request(data_stream, &ticket).await?;
         receive_file_data_to_writer(data_stream, writer).await
     }
+
+    pub async fn propose_empty_file(
+        &mut self,
+        path: &str,
+        options: FileWriteOptions,
+    ) -> Result<(), FileServiceError> {
+        let response = self
+            .control
+            .call(build_propose_empty_file_request(
+                &self.session_id,
+                path,
+                options,
+            ))
+            .await?;
+        let body = response_body(response)?;
+        ensure_no_error(&body)
+    }
+
+    pub async fn upload_inline_file(
+        &mut self,
+        path: &str,
+        data: Bytes,
+        options: FileWriteOptions,
+    ) -> Result<(), FileServiceError> {
+        if data.is_empty() {
+            return self.propose_empty_file(path, options).await;
+        }
+        if data.len() as u64 > MAX_INLINE_DATA_SIZE {
+            return Err(FileServiceError::Protocol(format!(
+                "inline file size {} exceeds maximum inline size {MAX_INLINE_DATA_SIZE}",
+                data.len()
+            )));
+        }
+
+        let response = self
+            .control
+            .call(build_propose_file_request(
+                &self.session_id,
+                path,
+                data.len() as u64,
+                Some(data),
+                options,
+            ))
+            .await?;
+        let _ = parse_propose_file_response(response)?;
+        Ok(())
+    }
+
+    pub async fn propose_file_upload(
+        &mut self,
+        path: &str,
+        file_size: u64,
+        options: FileWriteOptions,
+    ) -> Result<FileTransferTicket, FileServiceError> {
+        if file_size > MAX_FILE_SIZE {
+            return Err(FileServiceError::Protocol(format!(
+                "file size {file_size} exceeds maximum allowed size {MAX_FILE_SIZE}"
+            )));
+        }
+        if file_size <= MAX_INLINE_DATA_SIZE {
+            return Err(FileServiceError::Protocol(format!(
+                "file size {file_size} fits inline; use upload_inline_file"
+            )));
+        }
+
+        let response = self
+            .control
+            .call(build_propose_file_request(
+                &self.session_id,
+                path,
+                file_size,
+                None,
+                options,
+            ))
+            .await?;
+        parse_propose_file_response(response)?.ok_or_else(|| {
+            FileServiceError::Protocol("ProposeFile response missing upload ticket".into())
+        })
+    }
+
+    pub async fn upload_file_data<S, R>(
+        &mut self,
+        data_stream: &mut S,
+        ticket: &FileTransferTicket,
+        reader: &mut R,
+        file_size: u64,
+    ) -> Result<(), FileServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+        R: AsyncRead + Unpin,
+    {
+        upload_file_data(data_stream, ticket, reader, file_size).await
+    }
 }
 
 fn build_create_session_request(domain: Domain, identifier: &str) -> XpcValue {
@@ -161,6 +286,64 @@ fn build_retrieve_file_request(session_id: &str, path: &str) -> XpcValue {
             XpcValue::String(session_id.to_string()),
         ),
     ]))
+}
+
+fn build_propose_empty_file_request(
+    session_id: &str,
+    path: &str,
+    options: FileWriteOptions,
+) -> XpcValue {
+    XpcValue::Dictionary(file_write_metadata(
+        "ProposeEmptyFile",
+        session_id,
+        path,
+        options,
+    ))
+}
+
+fn build_propose_file_request(
+    session_id: &str,
+    path: &str,
+    file_size: u64,
+    file_data: Option<Bytes>,
+    options: FileWriteOptions,
+) -> XpcValue {
+    let mut dict = file_write_metadata("ProposeFile", session_id, path, options);
+    dict.insert("FileSize".to_string(), XpcValue::Uint64(file_size));
+    if let Some(file_data) = file_data {
+        dict.insert("FileData".to_string(), XpcValue::Data(file_data));
+    }
+    XpcValue::Dictionary(dict)
+}
+
+fn file_write_metadata(
+    command: &str,
+    session_id: &str,
+    path: &str,
+    options: FileWriteOptions,
+) -> IndexMap<String, XpcValue> {
+    IndexMap::from([
+        ("Cmd".to_string(), XpcValue::String(command.to_string())),
+        (
+            "FileCreationTime".to_string(),
+            XpcValue::Int64(options.creation_time),
+        ),
+        (
+            "FileLastModificationTime".to_string(),
+            XpcValue::Int64(options.last_modification_time),
+        ),
+        (
+            "FilePermissions".to_string(),
+            XpcValue::Int64(options.permissions),
+        ),
+        ("FileOwnerUserID".to_string(), XpcValue::Int64(options.uid)),
+        ("FileOwnerGroupID".to_string(), XpcValue::Int64(options.gid)),
+        ("Path".to_string(), XpcValue::String(path.to_string())),
+        (
+            "SessionID".to_string(),
+            XpcValue::String(session_id.to_string()),
+        ),
+    ])
 }
 
 fn parse_create_session_response(response: XpcMessage) -> Result<String, FileServiceError> {
@@ -215,6 +398,27 @@ fn parse_retrieve_file_response(
     })
 }
 
+fn parse_propose_file_response(
+    response: XpcMessage,
+) -> Result<Option<FileTransferTicket>, FileServiceError> {
+    let body = response_body(response)?;
+    ensure_no_error(&body)?;
+    let dict = body_dict(&body)?;
+    let response_token = dict.get("Response").and_then(as_u64);
+    let file_id = dict.get("NewFileID").and_then(as_u64);
+
+    match (response_token, file_id) {
+        (Some(response_token), Some(file_id)) => Ok(Some(FileTransferTicket {
+            response_token,
+            file_id,
+        })),
+        (None, None) => Ok(None),
+        _ => Err(FileServiceError::Protocol(format!(
+            "ProposeFile response has incomplete upload ticket: {body:?}"
+        ))),
+    }
+}
+
 async fn send_download_wire_request<S>(
     stream: &mut S,
     ticket: &FileTransferTicket,
@@ -235,6 +439,55 @@ fn build_download_wire_request(ticket: FileTransferTicket) -> [u8; 40] {
     request[8..16].copy_from_slice(&ticket.response_token.to_be_bytes());
     request[24..32].copy_from_slice(&ticket.file_id.to_be_bytes());
     request
+}
+
+fn build_upload_wire_header(ticket: &FileTransferTicket, file_size: u64) -> [u8; 40] {
+    let mut request = [0u8; 40];
+    request[0..8].copy_from_slice(FILE_WIRE_MAGIC);
+    request[24..32].copy_from_slice(&ticket.file_id.to_be_bytes());
+    request[32..40].copy_from_slice(&file_size.to_be_bytes());
+    request
+}
+
+async fn upload_file_data<S, R>(
+    stream: &mut S,
+    ticket: &FileTransferTicket,
+    reader: &mut R,
+    file_size: u64,
+) -> Result<(), FileServiceError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    stream
+        .write_all(&build_upload_wire_header(ticket, file_size))
+        .await?;
+
+    let mut remaining = file_size;
+    let mut buffer = [0u8; 256 * 1024];
+    while remaining > 0 {
+        let to_read = remaining.min(buffer.len() as u64) as usize;
+        let n = reader.read(&mut buffer[..to_read]).await?;
+        if n == 0 {
+            return Err(FileServiceError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "file upload source ended before declared size",
+            )));
+        }
+        stream.write_all(&buffer[..n]).await?;
+        remaining -= n as u64;
+    }
+    stream.flush().await?;
+
+    let mut confirmation = [0u8; 32];
+    stream.read_exact(&mut confirmation).await?;
+    if &confirmation[0..8] != FILE_WIRE_MAGIC {
+        return Err(FileServiceError::Protocol(format!(
+            "invalid upload confirmation magic: {:?}",
+            &confirmation[0..8]
+        )));
+    }
+    Ok(())
 }
 
 async fn receive_file_data<S>(stream: &mut S) -> Result<Bytes, FileServiceError>
@@ -461,6 +714,75 @@ mod tests {
     }
 
     #[test]
+    fn propose_empty_file_request_includes_metadata() {
+        let options = FileWriteOptions {
+            permissions: 0o644,
+            uid: 501,
+            gid: 501,
+            creation_time: 100,
+            last_modification_time: 200,
+        };
+        let request = build_propose_empty_file_request("SESSION-1", "empty.txt", options);
+        let dict = request.as_dict().expect("request should be a dictionary");
+
+        assert_eq!(dict["Cmd"].as_str(), Some("ProposeEmptyFile"));
+        assert_eq!(dict["Path"].as_str(), Some("empty.txt"));
+        assert_eq!(dict["SessionID"].as_str(), Some("SESSION-1"));
+        assert_eq!(dict["FilePermissions"], XpcValue::Int64(0o644));
+        assert_eq!(dict["FileOwnerUserID"], XpcValue::Int64(501));
+        assert_eq!(dict["FileOwnerGroupID"], XpcValue::Int64(501));
+        assert_eq!(dict["FileCreationTime"], XpcValue::Int64(100));
+        assert_eq!(dict["FileLastModificationTime"], XpcValue::Int64(200));
+    }
+
+    #[test]
+    fn propose_file_request_inlines_small_file_data() {
+        let options = FileWriteOptions {
+            permissions: 0o600,
+            uid: 501,
+            gid: 501,
+            creation_time: 1,
+            last_modification_time: 2,
+        };
+        let request = build_propose_file_request(
+            "SESSION-1",
+            "notes.txt",
+            5,
+            Some(Bytes::from_static(b"hello")),
+            options,
+        );
+        let dict = request.as_dict().expect("request should be a dictionary");
+
+        assert_eq!(dict["Cmd"].as_str(), Some("ProposeFile"));
+        assert_eq!(dict["FileSize"], XpcValue::Uint64(5));
+        assert_eq!(dict["FilePermissions"], XpcValue::Int64(0o600));
+        assert_eq!(
+            dict["FileData"],
+            XpcValue::Data(Bytes::from_static(b"hello"))
+        );
+    }
+
+    #[test]
+    fn propose_file_response_extracts_large_upload_ticket() {
+        let response = XpcMessage {
+            flags: 0,
+            msg_id: 4,
+            body: Some(XpcValue::Dictionary(IndexMap::from([
+                ("Response".to_string(), XpcValue::Uint64(0x33)),
+                ("NewFileID".to_string(), XpcValue::Uint64(0x44)),
+            ]))),
+        };
+
+        assert_eq!(
+            parse_propose_file_response(response).unwrap(),
+            Some(FileTransferTicket {
+                response_token: 0x33,
+                file_id: 0x44,
+            })
+        );
+    }
+
+    #[test]
     fn download_wire_request_uses_rwb_file_big_endian_header() {
         let header = build_download_wire_request(FileTransferTicket {
             response_token: 0x0102_0304_0506_0708,
@@ -475,6 +797,25 @@ mod tests {
             &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
         );
         assert_eq!(&header[32..40], &[0; 8]);
+    }
+
+    #[test]
+    fn upload_wire_header_uses_zero_token_file_id_and_size() {
+        let header = build_upload_wire_header(
+            &FileTransferTicket {
+                response_token: 0x99,
+                file_id: 0x1112_1314_1516_1718,
+            },
+            0x0102_0304_0506_0708,
+        );
+
+        assert_eq!(&header[0..8], b"rwb!FILE");
+        assert_eq!(&header[8..16], &[0; 8]);
+        assert_eq!(
+            &header[24..32],
+            &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
+        );
+        assert_eq!(&header[32..40], &[1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[tokio::test]
@@ -492,5 +833,42 @@ mod tests {
 
         assert_eq!(data, Bytes::from_static(b"hello"));
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upload_file_data_streams_header_payload_and_checks_confirmation() {
+        let (mut data_client, mut data_server) = tokio::io::duplex(256);
+        let (mut reader_client, mut reader_server) = tokio::io::duplex(16);
+        let server = tokio::spawn(async move {
+            reader_server.write_all(b"hello").await.unwrap();
+
+            let mut header_and_payload = [0u8; 45];
+            data_server
+                .read_exact(&mut header_and_payload)
+                .await
+                .unwrap();
+            assert_eq!(&header_and_payload[0..8], b"rwb!FILE");
+            assert_eq!(&header_and_payload[8..16], &[0; 8]);
+            assert_eq!(&header_and_payload[32..40], &(5u64.to_be_bytes()));
+            assert_eq!(&header_and_payload[40..45], b"hello");
+
+            let mut confirmation = [0u8; 32];
+            confirmation[0..8].copy_from_slice(b"rwb!FILE");
+            data_server.write_all(&confirmation).await.unwrap();
+        });
+
+        upload_file_data(
+            &mut data_client,
+            &FileTransferTicket {
+                response_token: 7,
+                file_id: 9,
+            },
+            &mut reader_client,
+            5,
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
     }
 }

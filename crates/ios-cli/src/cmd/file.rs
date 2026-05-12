@@ -15,7 +15,7 @@ pub struct FileCmd {
     #[arg(
         long,
         conflicts_with_all = ["app", "crash"],
-        help = "Use iOS 17+ CoreDevice fileservice for read-only file access"
+        help = "Use iOS 17+ CoreDevice fileservice for file access"
     )]
     coredevice: bool,
     #[arg(
@@ -341,15 +341,46 @@ impl FileCmd {
                     .await?;
                 eprintln!("Done ({bytes} bytes)");
             }
-            FileSub::Push { .. }
-            | FileSub::Rm { .. }
+            FileSub::Push { local, remote } => {
+                let metadata = fs::metadata(&local).await?;
+                if !metadata.is_file() {
+                    return Err(anyhow::anyhow!(
+                        "CoreDevice fileservice push requires a regular file: {local}"
+                    ));
+                }
+
+                let file_size = metadata.len();
+                let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
+                eprintln!("Uploading {local} -> {remote}");
+                if file_size == 0 {
+                    fileservice.propose_empty_file(&remote, options).await?;
+                } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
+                    let data = fs::read(&local).await?;
+                    fileservice
+                        .upload_inline_file(&remote, data.into(), options)
+                        .await?;
+                } else {
+                    let ticket = fileservice
+                        .propose_file_upload(&remote, file_size, options)
+                        .await?;
+                    let mut data_stream = device
+                        .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
+                        .await?;
+                    let mut input = fs::File::open(&local).await?;
+                    fileservice
+                        .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
+                        .await?;
+                }
+                eprintln!("Done ({file_size} bytes)");
+            }
+            FileSub::Rm { .. }
             | FileSub::Mkdir { .. }
             | FileSub::Mv { .. }
             | FileSub::DeviceInfo
             | FileSub::Stat { .. }
             | FileSub::Tree { .. } => {
                 return Err(anyhow::anyhow!(
-                    "CoreDevice fileservice currently supports read-only ls and pull"
+                    "CoreDevice fileservice currently supports ls, pull, and push"
                 ));
             }
         }
@@ -601,6 +632,29 @@ mod tests {
 
         assert_eq!(cmd.file.domain, CoreDeviceFileDomain::SystemCrashLogs);
         assert_eq!(cmd.file.identifier, None);
+    }
+
+    #[test]
+    fn parses_coredevice_push_subcommand() {
+        let cmd = TestCli::parse_from([
+            "file",
+            "--coredevice",
+            "--domain",
+            "temporary",
+            "push",
+            r"C:\tmp\local.txt",
+            "remote.txt",
+        ]);
+
+        assert!(cmd.file.coredevice);
+        assert_eq!(cmd.file.domain, CoreDeviceFileDomain::Temporary);
+        match cmd.file.sub {
+            FileSub::Push { local, remote } => {
+                assert_eq!(local, r"C:\tmp\local.txt");
+                assert_eq!(remote, "remote.txt");
+            }
+            _ => panic!("expected push subcommand"),
+        }
     }
 
     #[test]
