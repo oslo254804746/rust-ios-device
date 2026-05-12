@@ -118,11 +118,11 @@ enum Commands {
     Prepare(cmd::prepare::PrepareCmd),
     /// Restore-mode helpers exposed through restore service
     Restore(cmd::restore::RestoreCmd),
-    /// Start an XCTest runner from a .xctestrun file (startup path only)
+    /// Start an XCTest runner from a .xctestrun file
     Runtest(cmd::runtest::RunTestCmd),
     /// Start WebDriverAgent and forward its HTTP port locally
     Runwda(cmd::runwda::RunWdaCmd),
-    /// Send HTTP commands to a running WebDriverAgent endpoint
+    /// Send HTTP commands to a running WebDriverAgent endpoint or device port
     Wda(cmd::wda::WdaCmd),
     /// Inspect Safari/WebView pages via WebInspector
     Webinspector(cmd::webinspector::WebInspectorCmd),
@@ -183,7 +183,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Restore(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Runtest(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Runwda(c) => Box::pin(async move { c.run(udid).await }),
-        Commands::Wda(c) => Box::pin(async move { c.run(!no_json).await }),
+        Commands::Wda(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Webinspector(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Symbols(c) => Box::pin(async move { c.run(udid, !no_json).await }),
     }
@@ -508,7 +508,11 @@ mod tests {
     fn parses_wda_status_command() {
         let parsed = Cli::try_parse_from([
             "ios",
+            "--udid",
+            "00008101-000A5CCC2E90001E",
             "wda",
+            "--device-port",
+            "8100",
             "status",
             "--base-url",
             "http://127.0.0.1:8100",

@@ -1,8 +1,8 @@
 //! Minimal XCTestManager/testmanagerd startup helpers.
 //!
-//! This is the first Rust slice for the iOS 17+ `com.apple.dt.testmanagerd.remote`
-//! path: request the XCTestManager channel on two DTX connections, then expose the
-//! key startup selectors used before full test execution begins.
+//! This covers the DTX protocol shared by the iOS 17+ Remote Service Discovery
+//! path and older lockdown testmanager services. The CLI chooses the concrete
+//! transport/service name for each iOS generation.
 
 pub mod results;
 pub mod workflow;
@@ -22,7 +22,10 @@ use crate::services::dtx::{
     archived_object, encode_dtx, DtxConnection, DtxError, DtxMessage, DtxPayload, NSObject, PrimArg,
 };
 
-pub const SERVICE_NAME: &str = "com.apple.dt.testmanagerd.remote";
+pub const SERVICE_IOS17: &str = "com.apple.dt.testmanagerd.remote";
+pub const SERVICE_IOS14: &str = "com.apple.testmanagerd.lockdown.secure";
+pub const SERVICE_LEGACY: &str = "com.apple.testmanagerd.lockdown";
+pub const SERVICE_NAME: &str = SERVICE_IOS17;
 pub const DAEMON_CONNECTION_INTERFACE: &str =
     "dtxproxy:XCTestManager_IDEInterface:XCTestManager_DaemonConnectionInterface";
 pub const DRIVER_INTERFACE: &str = "dtxproxy:XCTestDriverInterface:XCTestManager_IDEInterface";

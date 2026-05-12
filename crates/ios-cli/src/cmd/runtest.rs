@@ -130,6 +130,42 @@ pub struct ActiveTestPlan {
     _process_control: ProcessControl<ServiceStream>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestmanagerTransport {
+    RemoteServiceDiscovery,
+    LockdownSecure,
+    LockdownLegacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TestmanagerConnectPlan {
+    pub transport: TestmanagerTransport,
+    pub service_name: &'static str,
+    pub requires_tunnel: bool,
+}
+
+pub(crate) fn testmanager_connect_plan(product_major_version: u64) -> TestmanagerConnectPlan {
+    if product_major_version >= 17 {
+        TestmanagerConnectPlan {
+            transport: TestmanagerTransport::RemoteServiceDiscovery,
+            service_name: ios_core::testmanager::SERVICE_IOS17,
+            requires_tunnel: true,
+        }
+    } else if product_major_version >= 14 {
+        TestmanagerConnectPlan {
+            transport: TestmanagerTransport::LockdownSecure,
+            service_name: ios_core::testmanager::SERVICE_IOS14,
+            requires_tunnel: false,
+        }
+    } else {
+        TestmanagerConnectPlan {
+            transport: TestmanagerTransport::LockdownLegacy,
+            service_name: ios_core::testmanager::SERVICE_LEGACY,
+            requires_tunnel: false,
+        }
+    }
+}
+
 impl ActiveTestPlan {
     pub fn startup_result(&self) -> &TestStartupResult {
         &self.startup_result
@@ -175,18 +211,24 @@ pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestSta
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
     let device = connect_testmanager_device(udid).await?;
     let product_version = device.product_version().await?;
-    if product_version.major < 17 {
-        anyhow::bail!("runtest is currently implemented only for iOS 17+ tunnel/RSD devices");
-    }
+    let connect_plan = testmanager_connect_plan(product_version.major);
 
-    let session_stream = device
-        .connect_rsd_service(ios_core::testmanager::SERVICE_NAME)
+    let session_stream = connect_testmanager_stream(&device, connect_plan)
         .await
-        .context("failed to connect testmanager session stream")?;
-    let control_stream = device
-        .connect_rsd_service(ios_core::testmanager::SERVICE_NAME)
+        .with_context(|| {
+            format!(
+                "failed to connect testmanager session stream via {}",
+                connect_plan.service_name
+            )
+        })?;
+    let control_stream = connect_testmanager_stream(&device, connect_plan)
         .await
-        .context("failed to connect testmanager control stream")?;
+        .with_context(|| {
+            format!(
+                "failed to connect testmanager control stream via {}",
+                connect_plan.service_name
+            )
+        })?;
     let mut testmanager = TestmanagerClient::connect(session_stream, control_stream)
         .await
         .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
@@ -243,14 +285,45 @@ pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result
 }
 
 pub async fn connect_testmanager_device(udid: &str) -> Result<ConnectedDevice> {
+    let probe_opts = ConnectOptions {
+        tun_mode: TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: true,
+    };
+    let probe = ios_core::connect(udid, probe_opts)
+        .await
+        .context("failed to connect device for product version probe")?;
+    let product_version = probe.product_version().await?;
+    let connect_plan = testmanager_connect_plan(product_version.major);
+    drop(probe);
+
     let opts = ConnectOptions {
         tun_mode: TunMode::Userspace,
         pair_record_path: None,
-        skip_tunnel: false,
+        skip_tunnel: !connect_plan.requires_tunnel,
     };
-    ios_core::connect(udid, opts)
-        .await
-        .context("failed to establish device tunnel for testmanager")
+    ios_core::connect(udid, opts).await.with_context(|| {
+        if connect_plan.requires_tunnel {
+            "failed to establish device tunnel for testmanager".to_string()
+        } else {
+            "failed to connect device for lockdown testmanager".to_string()
+        }
+    })
+}
+
+async fn connect_testmanager_stream(
+    device: &ConnectedDevice,
+    connect_plan: TestmanagerConnectPlan,
+) -> Result<ServiceStream> {
+    match connect_plan.transport {
+        TestmanagerTransport::RemoteServiceDiscovery => {
+            device.connect_rsd_service(connect_plan.service_name).await
+        }
+        TestmanagerTransport::LockdownSecure | TestmanagerTransport::LockdownLegacy => {
+            device.connect_service(connect_plan.service_name).await
+        }
+    }
+    .map_err(anyhow::Error::from)
 }
 
 pub async fn lookup_installed_app(
@@ -452,7 +525,10 @@ mod tests {
     use ios_core::testmanager::xctestrun::{SchemeData, TestConfiguration};
     use plist::Value;
 
-    use super::{infer_target_bundle_id, select_test_target, wait_for_ready, RunTestCmd};
+    use super::{
+        infer_target_bundle_id, select_test_target, testmanager_connect_plan, wait_for_ready,
+        RunTestCmd, TestmanagerTransport,
+    };
 
     #[derive(Parser)]
     struct TestCli {
@@ -489,6 +565,27 @@ mod tests {
         assert_eq!(cmd.command.test_target.as_deref(), Some("LoginTarget"));
         assert!(cmd.command.wait);
         assert_eq!(cmd.command.result_timeout_secs, 120);
+    }
+
+    #[test]
+    fn testmanager_transport_plan_matches_ios_generation() {
+        let ios17 = testmanager_connect_plan(17);
+        assert_eq!(
+            ios17.transport,
+            TestmanagerTransport::RemoteServiceDiscovery
+        );
+        assert_eq!(ios17.service_name, ios_core::testmanager::SERVICE_IOS17);
+        assert!(ios17.requires_tunnel);
+
+        let ios14 = testmanager_connect_plan(14);
+        assert_eq!(ios14.transport, TestmanagerTransport::LockdownSecure);
+        assert_eq!(ios14.service_name, ios_core::testmanager::SERVICE_IOS14);
+        assert!(!ios14.requires_tunnel);
+
+        let ios13 = testmanager_connect_plan(13);
+        assert_eq!(ios13.transport, TestmanagerTransport::LockdownLegacy);
+        assert_eq!(ios13.service_name, ios_core::testmanager::SERVICE_LEGACY);
+        assert!(!ios13.requires_tunnel);
     }
 
     fn ui_scheme() -> SchemeData {

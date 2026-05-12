@@ -108,11 +108,19 @@ ios -u <UDID> runtest ./Build/Products/Example.xctestrun
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests --test-target com.example.Runner --wait
 ios -u <UDID> runwda --help
 ios wda status --base-url http://127.0.0.1:8100
+ios -u <UDID> wda --device-port 8100 status
+ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
 
 `apps processes`, `apps launch`, and related process-control commands use newer
 app service paths and are mainly intended for iOS versions that expose those
 services through CoreDevice/RSD.
+
+`runtest` chooses the XCTest transport by iOS generation: iOS 17+ uses Remote
+Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
+older versions use the legacy lockdown service. `wda --device-port` talks to a
+WDA listener directly through usbmux, so it does not require a local `forward`
+process when the runner is already listening on the device.
 
 Comparable upstream workflows:
 

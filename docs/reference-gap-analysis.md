@@ -35,7 +35,9 @@
 - `ios apps pkill --signal N` 在 Instruments fallback 下只允许 SIGKILL，避免非 SIGKILL 被误执行成 kill。
 - `ios-core::testmanager::results` 新增 XCTest result stream 事件模型与 summary recorder，覆盖 suite/case start/finish、failure、log/debug log、plan begin/finish 等离线可测事件。
 - `ios runtest` 支持 `--configuration`、`--test-target` 选择，不再只能取第一项；新增 `--wait` / `--result-timeout-secs` 用于等待 XCTest 结果事件并输出 summary。
+- `ios runtest` / `ios runwda` 的 testmanager 连接已按 iOS 代际选择服务：iOS 17+ 走 RSD `com.apple.dt.testmanagerd.remote`，iOS 14-16 走 secure lockdown `com.apple.testmanagerd.lockdown.secure`，更旧系统走 legacy lockdown `com.apple.testmanagerd.lockdown`。
 - 新增 `ios wda` HTTP client，可对已经运行/转发好的 WDA 执行 status、session、source、screenshot、find、click、press-button、unlock、send-keys、swipe 等基础命令。
+- `ios wda --device-port PORT` 支持通过 usbmux 直接请求设备上的 WDA HTTP 端口，避免必须先启动本地 forward。
 - `ios-core::restore` 新增 restore 生命周期事件解析，覆盖 ProgressMsg、StatusMsg、CheckpointMsg、DataRequestMsg、PreviousRestoreLogMsg、RestoredCrash，并内置常见 restore status 错误说明。
 
 本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
@@ -102,22 +104,23 @@ HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已
 
 后续建议在 manager 常驻运行时做端到端验证，并按需要增加非 JSON/表格输出。
 
-### P2：XCTest / WDA（离线基础已补）
+### P2：XCTest / WDA（离线基础继续补齐，待真机验证）
 
 当前已经有最小启动路径，并补上了无真机条件下可以稳定验证的能力：
 
 - XCTest result stream 的 typed event 与 summary recorder，覆盖 test plan、suite、case、failure、log/debug log 事件。
 - `ios runtest --configuration NAME --test-target TARGET` 支持多 configuration / target 选择；`--wait` 可等待结果流并输出 summary。
-- WDA HTTP client 已通过 `ios wda` 暴露常用命令，可配合 `ios runwda` 或外部端口转发使用。
+- `runtest`/`runwda` 已移除 iOS 17-only gate，并按 ProductVersion 选择 RSD、secure lockdown 或 legacy lockdown testmanager service。
+- WDA HTTP client 已通过 `ios wda` 暴露常用命令，可配合 `ios runwda`、外部端口转发，或 `--device-port` usbmux 直连使用。
 
 仍需真实环境验证或后续补齐：
 
 - 更完整的 XCTestConfiguration 字段。
-- iOS 版本分支，尤其旧版 testmanager / developer service path。
+- 旧版 testmanager 服务已按代际选择；握手 selector、capabilities 与 DTX 语义仍需 iOS 14-16 / iOS 13 真机验证。
 - XCTest result stream 在真实设备上的 selector 变体和附件/issue 解档细节。
-- WDA native over-device-port client；当前 `ios wda` 是 HTTP endpoint client。
+- WDA over-device-port 已有 usbmux HTTP client；仍需在真实 WDA runner 上验证长连接、错误响应和截图大响应表现。
 
-这部分仍需要真实 WDA/XCTest 环境验证；当前只宣称离线解析、配置选择、HTTP client 与事件模型完成。
+这部分仍需要真实 WDA/XCTest 环境验证；当前只宣称离线解析、配置选择、HTTP client、device-port transport 与事件模型完成。
 
 ### P3：恢复/刷机/低层设备生命周期（只补安全离线基础）
 
@@ -131,7 +134,7 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 2. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再决定 CLI 入口形态。
 3. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
 4. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
-5. 用真实 WDA/XCTest 环境验证 `runtest --wait`、selector 变体、summary 统计和 `ios wda` 命令；旧版 testmanager path 另开兼容任务。
+5. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
 6. 若要推进 P3，先做只读/低风险 restore loop 事件消费，再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
 
 ## 测试策略

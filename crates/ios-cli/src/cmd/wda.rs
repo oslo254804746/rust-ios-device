@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use ios_core::MuxClient;
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8100";
 
@@ -7,6 +9,12 @@ const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8100";
 pub struct WdaCmd {
     #[arg(long, global = true, default_value = DEFAULT_BASE_URL)]
     pub base_url: String,
+    #[arg(
+        long,
+        global = true,
+        help = "Connect directly to a WDA device port over usbmux"
+    )]
+    pub device_port: Option<u16>,
     #[arg(long, global = true, default_value_t = 10)]
     pub timeout_secs: u64,
     #[command(subcommand)]
@@ -70,8 +78,15 @@ enum WdaSub {
 }
 
 impl WdaCmd {
-    pub async fn run(self, json_output: bool) -> Result<()> {
-        let client = WdaHttpClient::new(self.base_url, self.timeout_secs);
+    pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
+        let client = match self.device_port {
+            Some(device_port) => WdaHttpClient::new_device_port(
+                udid.ok_or_else(|| anyhow::anyhow!("--udid is required with --device-port"))?,
+                device_port,
+                self.timeout_secs,
+            ),
+            None => WdaHttpClient::new_http(self.base_url, self.timeout_secs),
+        };
         match self.sub {
             WdaSub::Status => print_json(client.get("/status").await?, json_output)?,
             WdaSub::Session { bundle_id } => {
@@ -199,37 +214,76 @@ impl WdaCmd {
 }
 
 struct WdaHttpClient {
-    client: reqwest::Client,
-    base_url: String,
+    transport: WdaTransport,
+    timeout: std::time::Duration,
+}
+
+enum WdaTransport {
+    Http {
+        client: reqwest::Client,
+        base_url: String,
+    },
+    DevicePort {
+        udid: String,
+        port: u16,
+    },
 }
 
 impl WdaHttpClient {
-    fn new(base_url: String, timeout_secs: u64) -> Self {
+    fn new_http(base_url: String, timeout_secs: u64) -> Self {
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .timeout(timeout)
             .build()
             .expect("valid reqwest client");
         Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            transport: WdaTransport::Http {
+                client,
+                base_url: base_url.trim_end_matches('/').to_string(),
+            },
+            timeout,
+        }
+    }
+
+    fn new_device_port(udid: String, port: u16, timeout_secs: u64) -> Self {
+        Self {
+            transport: WdaTransport::DevicePort { udid, port },
+            timeout: std::time::Duration::from_secs(timeout_secs),
         }
     }
 
     async fn get(&self, path: &str) -> Result<Value> {
-        self.request(self.client.get(self.url(path))).await
+        match &self.transport {
+            WdaTransport::Http { client, base_url } => {
+                self.request_http(client.get(Self::url(base_url, path)))
+                    .await
+            }
+            WdaTransport::DevicePort { udid, port } => {
+                self.request_device_port(udid, *port, "GET", path, None)
+                    .await
+            }
+        }
     }
 
     async fn post(&self, path: &str, payload: Value) -> Result<Value> {
-        self.request(
-            self.client
-                .post(self.url(path))
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(payload.to_string()),
-        )
-        .await
+        match &self.transport {
+            WdaTransport::Http { client, base_url } => {
+                self.request_http(
+                    client
+                        .post(Self::url(base_url, path))
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(payload.to_string()),
+                )
+                .await
+            }
+            WdaTransport::DevicePort { udid, port } => {
+                self.request_device_port(udid, *port, "POST", path, Some(&payload))
+                    .await
+            }
+        }
     }
 
-    async fn request(&self, request: reqwest::RequestBuilder) -> Result<Value> {
+    async fn request_http(&self, request: reqwest::RequestBuilder) -> Result<Value> {
         let response = request.send().await?;
         let status = response.status();
         let bytes = response
@@ -247,8 +301,42 @@ impl WdaHttpClient {
         Ok(value)
     }
 
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
+    async fn request_device_port(
+        &self,
+        udid: &str,
+        port: u16,
+        method: &str,
+        path: &str,
+        payload: Option<&Value>,
+    ) -> Result<Value> {
+        let request = build_device_http_request(method, path, payload);
+        let fut = async {
+            let mut mux = MuxClient::connect().await?;
+            let device = mux
+                .list_devices()
+                .await?
+                .into_iter()
+                .find(|device| device.serial_number == udid)
+                .ok_or_else(|| anyhow::anyhow!("device not found: {udid}"))?;
+            let mut stream = MuxClient::connect()
+                .await?
+                .connect_to_port(device.device_id, port)
+                .await?;
+            stream.write_all(request.as_bytes()).await?;
+            stream.flush().await?;
+
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await?;
+            parse_device_http_json_response(&response)
+        };
+
+        tokio::time::timeout(self.timeout, fut)
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for WDA device port {port}"))?
+    }
+
+    fn url(base_url: &str, path: &str) -> String {
+        format!("{}{}", base_url, path)
     }
 }
 
@@ -311,6 +399,56 @@ fn format_wda_error(value: &Value) -> String {
         .to_string()
 }
 
+fn build_device_http_request(method: &str, path: &str, payload: Option<&Value>) -> String {
+    let body = payload.map(Value::to_string).unwrap_or_default();
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAccept: application/json\r\n"
+    );
+    if payload.is_some() {
+        request.push_str("Content-Type: application/json\r\n");
+    }
+    request.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+    request
+}
+
+fn parse_device_http_json_response(response: &[u8]) -> Result<Value> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .context("WDA device port returned an invalid HTTP response")?;
+    let headers = std::str::from_utf8(&response[..header_end])
+        .context("WDA device port returned non-UTF8 HTTP headers")?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .context("WDA device port returned an invalid HTTP status line")?;
+    let body_start = header_end + 4;
+    let body_end = content_length(headers)
+        .map(|len| body_start.saturating_add(len).min(response.len()))
+        .unwrap_or(response.len());
+    let body = &response[body_start..body_end];
+    let value = serde_json::from_slice::<Value>(body)
+        .with_context(|| format!("WDA returned non-JSON response with HTTP {status}"))?;
+    if status >= 400 || wda_status_is_error(&value) {
+        anyhow::bail!(
+            "WDA request failed with HTTP {status}: {}",
+            format_wda_error(&value)
+        );
+    }
+    Ok(value)
+}
+
+fn content_length(headers: &str) -> Option<usize> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    })
+}
+
 fn normalize_button_name(name: &str) -> &str {
     match name
         .trim()
@@ -355,5 +493,25 @@ mod tests {
             payload["desiredCapabilities"]["bundleId"],
             "com.example.Aut"
         );
+    }
+
+    #[test]
+    fn builds_device_http_request_with_json_body() {
+        let payload = serde_json::json!({ "name": "home" });
+        let request = build_device_http_request("POST", "/wda/pressButton", Some(&payload));
+
+        assert!(request.starts_with("POST /wda/pressButton HTTP/1.1\r\n"));
+        assert!(request.contains("Host: 127.0.0.1\r\n"));
+        assert!(request.contains("Content-Type: application/json\r\n"));
+        assert!(request.contains("Content-Length: 15\r\n"));
+        assert!(request.ends_with("\r\n\r\n{\"name\":\"home\"}"));
+    }
+
+    #[test]
+    fn parses_device_http_json_response_body() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 24\r\n\r\n{\"value\":{\"ready\":true}}";
+        let value = parse_device_http_json_response(response).unwrap();
+
+        assert_eq!(value["value"]["ready"], true);
     }
 }
