@@ -33,6 +33,10 @@
 - `ios info display` 支持 diagnostics relay 失败时 fallback 到 CoreDevice `getdisplayinfo`，也支持显式 `--coredevice`；新增 `ios info lock-state` 和 `ios info device-info`。
 - `ios tunnel list` / `ios tunnel stop` 已接入本机 HTTP tunnel manager 的 `/tunnels` 与 `/tunnel/:udid`。
 - `ios apps pkill --signal N` 在 Instruments fallback 下只允许 SIGKILL，避免非 SIGKILL 被误执行成 kill。
+- `ios-core::testmanager::results` 新增 XCTest result stream 事件模型与 summary recorder，覆盖 suite/case start/finish、failure、log/debug log、plan begin/finish 等离线可测事件。
+- `ios runtest` 支持 `--configuration`、`--test-target` 选择，不再只能取第一项；新增 `--wait` / `--result-timeout-secs` 用于等待 XCTest 结果事件并输出 summary。
+- 新增 `ios wda` HTTP client，可对已经运行/转发好的 WDA 执行 status、session、source、screenshot、find、click、press-button、unlock、send-keys、swipe 等基础命令。
+- `ios-core::restore` 新增 restore 生命周期事件解析，覆盖 ProgressMsg、StatusMsg、CheckpointMsg、DataRequestMsg、PreviousRestoreLogMsg、RestoredCrash，并内置常见 restore status 错误说明。
 
 本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
 
@@ -98,21 +102,28 @@ HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已
 
 后续建议在 manager 常驻运行时做端到端验证，并按需要增加非 JSON/表格输出。
 
-### P2：XCTest / WDA
+### P2：XCTest / WDA（离线基础已补）
 
-当前已经有最小启动路径，但参考项目覆盖更完整：
+当前已经有最小启动路径，并补上了无真机条件下可以稳定验证的能力：
 
-- XCTest result stream、test summary、失败/日志事件监听。
-- 多 target/configuration 选择，而不是只取第一项。
+- XCTest result stream 的 typed event 与 summary recorder，覆盖 test plan、suite、case、failure、log/debug log 事件。
+- `ios runtest --configuration NAME --test-target TARGET` 支持多 configuration / target 选择；`--wait` 可等待结果流并输出 summary。
+- WDA HTTP client 已通过 `ios wda` 暴露常用命令，可配合 `ios runwda` 或外部端口转发使用。
+
+仍需真实环境验证或后续补齐：
+
 - 更完整的 XCTestConfiguration 字段。
 - iOS 版本分支，尤其旧版 testmanager / developer service path。
-- WDA HTTP/native command client。
+- XCTest result stream 在真实设备上的 selector 变体和附件/issue 解档细节。
+- WDA native over-device-port client；当前 `ios wda` 是 HTTP endpoint client。
 
-这部分需要真实 WDA/XCTest 环境验证；当前可以先做离线可测的解析、配置生成和事件模型，但不要宣称真实设备闭环完成。
+这部分仍需要真实 WDA/XCTest 环境验证；当前只宣称离线解析、配置选择、HTTP client 与事件模型完成。
 
-### P3：恢复/刷机/低层设备生命周期
+### P3：恢复/刷机/低层设备生命周期（只补安全离线基础）
 
-go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命周期能力上更完整。本项目已有部分 prepare/mobileactivation/imagemounter 能力，但如果目标仍聚焦 tunnel 和开发服务，这块优先级低。
+go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命周期能力上更完整。本项目已有部分 prepare/mobileactivation/imagemounter 能力，以及 RestoreRemoteServices 的 recovery/reboot/preflight/nonces/app-parameters/lang 命令。
+
+本次补齐低风险的离线基础：restore 生命周期事件模型与常见 status 错误解释，方便后续实现完整 restore loop 时复用。真正的 IPSW 刷机、TSS/ASR/FDR、DFU/recovery USB 低层控制仍未实现，且属于破坏性高风险能力，应在明确产品目标和测试设备后单独推进。
 
 ## 推荐推进顺序
 
@@ -120,7 +131,8 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 2. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再决定 CLI 入口形态。
 3. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
 4. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
-5. 在没有真实 WDA 环境前，只补 XCTest/WDA 的离线可测部分，保留真实设备验证说明。
+5. 用真实 WDA/XCTest 环境验证 `runtest --wait`、selector 变体、summary 统计和 `ios wda` 命令；旧版 testmanager path 另开兼容任务。
+6. 若要推进 P3，先做只读/低风险 restore loop 事件消费，再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
 
 ## 测试策略
 

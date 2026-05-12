@@ -2,7 +2,8 @@
 mod tests {
     use bytes::Bytes;
     use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
-    use ios_core::dtx::{read_dtx_frame, DtxError, DtxPayload, NSObject};
+    use ios_core::dtx::{read_dtx_frame, DtxError, DtxMessage, DtxPayload, NSObject};
+    use ios_core::testmanager::results::{TestCaseStatus, TestExecutionEvent, TestRunRecorder};
     use ios_core::testmanager::TestmanagerClient;
     use ios_core::{NsUrl, XcTestConfiguration, XctCapabilities};
     use tokio::io::{duplex, AsyncWriteExt};
@@ -104,6 +105,81 @@ mod tests {
             dict.get("IDECapabilities")
                 .unwrap_or_else(|| panic!("xctest configuration: missing IDECapabilities")),
         );
+    }
+
+    #[test]
+    fn xctest_result_recorder_builds_summary_from_class_method_events() {
+        let mut recorder = TestRunRecorder::default();
+
+        for message in [
+            DtxMessage {
+                identifier: 1,
+                conversation_idx: 0,
+                channel_code: -1,
+                expects_reply: false,
+                payload: DtxPayload::MethodInvocation {
+                    selector: "_XCT_testSuite:didStartAt:".to_string(),
+                    args: vec![
+                        NSObject::String("LoginTests".to_string()),
+                        NSObject::String("2026-05-12 10:00:00 +0000".to_string()),
+                    ],
+                },
+            },
+            DtxMessage {
+                identifier: 2,
+                conversation_idx: 0,
+                channel_code: -1,
+                expects_reply: false,
+                payload: DtxPayload::MethodInvocation {
+                    selector: "_XCT_testCaseDidStartForTestClass:method:".to_string(),
+                    args: vec![
+                        NSObject::String("LoginTests".to_string()),
+                        NSObject::String("testHappyPath".to_string()),
+                    ],
+                },
+            },
+            DtxMessage {
+                identifier: 3,
+                conversation_idx: 0,
+                channel_code: -1,
+                expects_reply: false,
+                payload: DtxPayload::MethodInvocation {
+                    selector: "_XCT_testCaseDidFinishForTestClass:method:withStatus:duration:"
+                        .to_string(),
+                    args: vec![
+                        NSObject::String("LoginTests".to_string()),
+                        NSObject::String("testHappyPath".to_string()),
+                        NSObject::String("passed".to_string()),
+                        NSObject::Double(1.25),
+                    ],
+                },
+            },
+            DtxMessage {
+                identifier: 4,
+                conversation_idx: 0,
+                channel_code: -1,
+                expects_reply: false,
+                payload: DtxPayload::MethodInvocation {
+                    selector: "_XCT_didFinishExecutingTestPlan".to_string(),
+                    args: Vec::new(),
+                },
+            },
+        ] {
+            let event = TestExecutionEvent::from_dtx_message(&message)
+                .expect("known XCTest selector should parse");
+            recorder.apply(event);
+        }
+
+        let summary = recorder.summary();
+        assert!(summary.finished);
+        assert_eq!(summary.total_tests, 1);
+        assert_eq!(summary.failed_tests, 0);
+        assert_eq!(summary.suites[0].name, "LoginTests");
+        assert_eq!(
+            summary.suites[0].cases[0].status,
+            Some(TestCaseStatus::Passed)
+        );
+        assert_eq!(summary.suites[0].cases[0].duration_seconds, Some(1.25));
     }
 
     #[tokio::test]

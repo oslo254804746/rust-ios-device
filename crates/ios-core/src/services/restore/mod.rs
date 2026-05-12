@@ -8,6 +8,90 @@ pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced"
 
 service_error!(RestoreError);
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RestoreLifecycleEvent {
+    Progress {
+        operation: Option<String>,
+        progress: Option<u64>,
+    },
+    Status {
+        code: u64,
+        message: Option<String>,
+        log: Option<String>,
+        finished: bool,
+    },
+    Checkpoint {
+        name: Option<String>,
+        raw: IndexMap<String, XpcValue>,
+    },
+    DataRequest {
+        data_type: Option<String>,
+        data_port: Option<u64>,
+        raw: IndexMap<String, XpcValue>,
+    },
+    PreviousRestoreLog(String),
+    RestoredCrash {
+        backtrace: Vec<String>,
+    },
+    Unknown {
+        msg_type: Option<String>,
+        raw: IndexMap<String, XpcValue>,
+    },
+}
+
+impl RestoreLifecycleEvent {
+    pub fn from_xpc_dictionary(message: &IndexMap<String, XpcValue>) -> Self {
+        match message.get("MsgType").and_then(XpcValue::as_str) {
+            Some("ProgressMsg") => Self::Progress {
+                operation: xpc_string(message, "Operation"),
+                progress: xpc_u64(message, "Progress"),
+            },
+            Some("StatusMsg") => {
+                let code = xpc_u64(message, "Status").unwrap_or_default();
+                Self::Status {
+                    code,
+                    message: restore_status_message(code).map(ToString::to_string),
+                    log: xpc_string(message, "Log"),
+                    finished: code == 0,
+                }
+            }
+            Some("CheckpointMsg") => Self::Checkpoint {
+                name: xpc_string(message, "Checkpoint"),
+                raw: message.clone(),
+            },
+            Some("DataRequestMsg") | Some("AsyncDataRequestMsg") => Self::DataRequest {
+                data_type: xpc_string(message, "DataType"),
+                data_port: xpc_u64(message, "DataPort"),
+                raw: message.clone(),
+            },
+            Some("PreviousRestoreLogMsg") => Self::PreviousRestoreLog(
+                xpc_string(message, "PreviousRestoreLog").unwrap_or_default(),
+            ),
+            Some("RestoredCrash") => Self::RestoredCrash {
+                backtrace: xpc_string_array(message, "RestoredBacktrace"),
+            },
+            other => Self::Unknown {
+                msg_type: other.map(ToString::to_string),
+                raw: message.clone(),
+            },
+        }
+    }
+}
+
+pub fn restore_status_message(status: u64) -> Option<&'static str> {
+    match status {
+        0 => Some("success"),
+        6 => Some("disk failure"),
+        14 => Some("fail"),
+        27 => Some("failed to mount filesystems"),
+        50 | 51 => Some("failed to load SEP firmware"),
+        53 => Some("failed to recover FDR data"),
+        1015 => Some("X-Gold Baseband Update Failed. Defective Unit?"),
+        0xFFFF_FFFF_FFFF_FFFF => Some("verification error"),
+        _ => None,
+    }
+}
+
 pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,
     next_msg_id: u64,
@@ -163,6 +247,32 @@ fn response_dict(response: XpcMessage) -> Result<IndexMap<String, XpcValue>, Res
         .ok_or_else(|| RestoreError::Protocol("restore response missing dictionary body".into()))
 }
 
+fn xpc_string(values: &IndexMap<String, XpcValue>, key: &str) -> Option<String> {
+    values
+        .get(key)
+        .and_then(XpcValue::as_str)
+        .map(ToString::to_string)
+}
+
+fn xpc_u64(values: &IndexMap<String, XpcValue>, key: &str) -> Option<u64> {
+    match values.get(key)? {
+        XpcValue::Uint64(value) => Some(*value),
+        XpcValue::Int64(value) if *value >= 0 => Some(*value as u64),
+        _ => None,
+    }
+}
+
+fn xpc_string_array(values: &IndexMap<String, XpcValue>, key: &str) -> Vec<String> {
+    match values.get(key) {
+        Some(XpcValue::Array(items)) => items
+            .iter()
+            .filter_map(XpcValue::as_str)
+            .map(ToString::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn ensure_success(response: &IndexMap<String, XpcValue>) -> Result<(), RestoreError> {
     match response.get("result").and_then(XpcValue::as_str) {
         Some("success") => Ok(()),
@@ -316,6 +426,30 @@ mod tests {
         let err = ensure_success(&response).expect_err("non-success must fail");
         assert!(err.to_string().contains("failure"));
         assert!(err.to_string().contains("denied"));
+    }
+
+    #[test]
+    fn parses_restore_lifecycle_status_with_known_error() {
+        let message = IndexMap::from([
+            ("MsgType".to_string(), XpcValue::String("StatusMsg".into())),
+            ("Status".to_string(), XpcValue::Uint64(27)),
+            (
+                "Log".to_string(),
+                XpcValue::String("mount failed".to_string()),
+            ),
+        ]);
+
+        let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+
+        assert_eq!(
+            event,
+            RestoreLifecycleEvent::Status {
+                code: 27,
+                message: Some("failed to mount filesystems".to_string()),
+                log: Some("mount failed".to_string()),
+                finished: false,
+            }
+        );
     }
 
     #[tokio::test]

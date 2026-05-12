@@ -4,6 +4,7 @@
 //! path: request the XCTestManager channel on two DTX connections, then expose the
 //! key startup selectors used before full test execution begins.
 
+pub mod results;
 pub mod workflow;
 pub mod xctestrun;
 
@@ -14,6 +15,8 @@ use crate::proto::nskeyedarchiver_encode::{
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
+
+use results::TestExecutionEvent;
 
 use crate::services::dtx::{
     archived_object, encode_dtx, DtxConnection, DtxError, DtxMessage, DtxPayload, NSObject, PrimArg,
@@ -217,6 +220,21 @@ where
 
             if msg.expects_reply {
                 self.session.send_ack(&msg).await?;
+            }
+        }
+    }
+
+    pub async fn recv_execution_event(&mut self) -> Result<TestExecutionEvent, DtxError> {
+        loop {
+            let msg = self.session.recv().await?;
+            let event = TestExecutionEvent::from_dtx_message(&msg);
+
+            if msg.expects_reply {
+                self.session.send_ack(&msg).await?;
+            }
+
+            if let Some(event) = event {
+                return Ok(event);
             }
         }
     }

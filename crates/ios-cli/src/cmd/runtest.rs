@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use ios_core::apps::{AppInfo, InstallationProxy};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::instruments::process_control::ProcessControl;
+use ios_core::testmanager::results::{TestRunRecorder, TestRunSummary};
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;
@@ -18,8 +19,22 @@ use uuid::Uuid;
 pub struct RunTestCmd {
     #[arg(help = "Path to the .xctestrun file")]
     pub xctestrun: PathBuf,
+    #[arg(
+        long,
+        help = "Select a named TestConfigurations entry from format v2 .xctestrun files"
+    )]
+    pub configuration: Option<String>,
+    #[arg(
+        long,
+        help = "Select a TestTargets entry by runner bundle id or test bundle name"
+    )]
+    pub test_target: Option<String>,
     #[arg(long, default_value_t = 30, help = "Startup timeout in seconds")]
     pub startup_timeout_secs: u64,
+    #[arg(long, help = "Wait for XCTest result events after startup")]
+    pub wait: bool,
+    #[arg(long, default_value_t = 300, help = "Result wait timeout in seconds")]
+    pub result_timeout_secs: u64,
 }
 
 impl RunTestCmd {
@@ -30,8 +45,48 @@ impl RunTestCmd {
         let device = connect_testmanager_device(&udid).await?;
         let configs = parse_xctestrun_file(&self.xctestrun)
             .with_context(|| format!("failed to parse {}", self.xctestrun.display()))?;
-        let (configuration_name, plan) =
-            build_plan_from_xctestrun(&device, &self.xctestrun, &configs).await?;
+        let (configuration_name, plan) = build_plan_from_xctestrun(
+            &device,
+            &self.xctestrun,
+            &configs,
+            self.configuration.as_deref(),
+            self.test_target.as_deref(),
+        )
+        .await?;
+
+        if self.wait {
+            let mut session = tokio::time::timeout(
+                std::time::Duration::from_secs(self.startup_timeout_secs),
+                start_test_plan_session(&udid, plan),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest startup"))??;
+            let result = session.startup_result().clone();
+            let summary = tokio::time::timeout(
+                std::time::Duration::from_secs(self.result_timeout_secs),
+                session.wait_for_results(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest results"))??;
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "finished",
+                    "untested": true,
+                    "configuration": configuration_name,
+                    "runner_bundle_id": result.runner_bundle_id,
+                    "target_bundle_id": result.target_bundle_id,
+                    "pid": result.pid,
+                    "protocol_version": result.protocol_version,
+                    "minimum_version": result.minimum_version,
+                    "summary": summary,
+                    "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
+                }))?
+            );
+            return Ok(());
+        }
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(self.startup_timeout_secs),
             start_test_plan(&udid, plan),
@@ -91,6 +146,22 @@ impl ActiveTestPlan {
             Ok(())
         })
         .await
+    }
+
+    pub async fn wait_for_results(&mut self) -> Result<TestRunSummary> {
+        let mut recorder = TestRunRecorder::default();
+        loop {
+            let event = self
+                ._testmanager
+                .recv_execution_event()
+                .await
+                .map_err(|err| anyhow::anyhow!("XCTest result stream error: {err}"))?;
+            let finished = event.is_finished_plan();
+            recorder.apply(event);
+            if finished {
+                return Ok(recorder.summary());
+            }
+        }
     }
 }
 
@@ -210,15 +281,22 @@ async fn build_plan_from_xctestrun(
     device: &ConnectedDevice,
     xctestrun_path: &Path,
     configs: &[TestConfiguration],
+    configuration_name: Option<&str>,
+    test_target: Option<&str>,
 ) -> Result<(String, TestLaunchPlan)> {
-    let config = configs.first().ok_or_else(|| {
+    let config = select_configuration(configs, configuration_name).ok_or_else(|| {
         anyhow::anyhow!(
-            "no test configuration found in {}",
+            "test configuration {:?} not found in {}",
+            configuration_name,
             xctestrun_path.display()
         )
     })?;
-    let scheme = config.test_targets.first().ok_or_else(|| {
-        anyhow::anyhow!("test configuration {:?} has no TestTargets", config.name)
+    let scheme = select_test_target(config, test_target).ok_or_else(|| {
+        anyhow::anyhow!(
+            "test target {:?} not found in configuration {:?}",
+            test_target,
+            config.name
+        )
     })?;
 
     let runner = lookup_installed_app(device, &scheme.test_host_bundle_identifier).await?;
@@ -237,6 +315,46 @@ async fn build_plan_from_xctestrun(
     };
     let plan = TestLaunchPlan::from_scheme(scheme, runner, target);
     Ok((config.name.clone(), plan))
+}
+
+fn select_configuration<'a>(
+    configs: &'a [TestConfiguration],
+    name: Option<&str>,
+) -> Option<&'a TestConfiguration> {
+    match name {
+        Some(name) => configs.iter().find(|config| config.name == name),
+        None => configs.first(),
+    }
+}
+
+fn select_test_target<'a>(
+    config: &'a TestConfiguration,
+    target: Option<&str>,
+) -> Option<&'a ios_core::testmanager::xctestrun::SchemeData> {
+    match target {
+        Some(target) => config
+            .test_targets
+            .iter()
+            .find(|scheme| scheme_matches_target(scheme, target)),
+        None => config.test_targets.first(),
+    }
+}
+
+fn scheme_matches_target(
+    scheme: &ios_core::testmanager::xctestrun::SchemeData,
+    target: &str,
+) -> bool {
+    scheme.test_host_bundle_identifier == target
+        || test_bundle_name_from_path(&scheme.test_bundle_path).as_deref() == Some(target)
+        || scheme.test_bundle_path == target
+}
+
+fn test_bundle_name_from_path(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim_end_matches(".xctest").to_string())
+        .filter(|name| !name.is_empty())
 }
 
 pub(crate) fn plist_string(values: &HashMap<String, plist::Value>, key: &str) -> Option<String> {
@@ -331,10 +449,10 @@ mod tests {
 
     use clap::Parser;
     use ios_core::apps::AppInfo;
-    use ios_core::testmanager::xctestrun::SchemeData;
+    use ios_core::testmanager::xctestrun::{SchemeData, TestConfiguration};
     use plist::Value;
 
-    use super::{infer_target_bundle_id, wait_for_ready, RunTestCmd};
+    use super::{infer_target_bundle_id, select_test_target, wait_for_ready, RunTestCmd};
 
     #[derive(Parser)]
     struct TestCli {
@@ -351,6 +469,26 @@ mod tests {
             std::path::PathBuf::from("Tests.xctestrun")
         );
         assert_eq!(cmd.command.startup_timeout_secs, 45);
+    }
+
+    #[test]
+    fn parses_runtest_selection_and_wait_options() {
+        let cmd = TestCli::parse_from([
+            "runtest",
+            "Tests.xctestrun",
+            "--configuration",
+            "UITests",
+            "--test-target",
+            "LoginTarget",
+            "--wait",
+            "--result-timeout-secs",
+            "120",
+        ]);
+
+        assert_eq!(cmd.command.configuration.as_deref(), Some("UITests"));
+        assert_eq!(cmd.command.test_target.as_deref(), Some("LoginTarget"));
+        assert!(cmd.command.wait);
+        assert_eq!(cmd.command.result_timeout_secs, 120);
     }
 
     fn ui_scheme() -> SchemeData {
@@ -392,6 +530,54 @@ mod tests {
         assert_eq!(
             infer_target_bundle_id(&scheme, Some(&apps)).as_deref(),
             Some("com.example.explicit")
+        );
+    }
+
+    #[test]
+    fn select_test_target_matches_runner_bundle_or_xctest_name() {
+        let config = TestConfiguration {
+            name: "UITests".to_string(),
+            test_targets: vec![
+                SchemeData {
+                    test_host_bundle_identifier: "com.example.FirstRunner".to_string(),
+                    test_bundle_path: "FirstTests.xctest".to_string(),
+                    skip_test_identifiers: Vec::new(),
+                    only_test_identifiers: Vec::new(),
+                    is_ui_test_bundle: true,
+                    command_line_arguments: Vec::new(),
+                    environment_variables: HashMap::new(),
+                    testing_environment_variables: HashMap::new(),
+                    ui_target_app_environment_variables: HashMap::new(),
+                    ui_target_app_command_line_arguments: Vec::new(),
+                    ui_target_app_path: String::new(),
+                },
+                SchemeData {
+                    test_host_bundle_identifier: "com.example.SecondRunner".to_string(),
+                    test_bundle_path: "__TESTROOT__/SecondTests.xctest".to_string(),
+                    skip_test_identifiers: Vec::new(),
+                    only_test_identifiers: Vec::new(),
+                    is_ui_test_bundle: true,
+                    command_line_arguments: Vec::new(),
+                    environment_variables: HashMap::new(),
+                    testing_environment_variables: HashMap::new(),
+                    ui_target_app_environment_variables: HashMap::new(),
+                    ui_target_app_command_line_arguments: Vec::new(),
+                    ui_target_app_path: String::new(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            select_test_target(&config, Some("com.example.SecondRunner"))
+                .unwrap()
+                .test_host_bundle_identifier,
+            "com.example.SecondRunner"
+        );
+        assert_eq!(
+            select_test_target(&config, Some("SecondTests"))
+                .unwrap()
+                .test_host_bundle_identifier,
+            "com.example.SecondRunner"
         );
     }
 

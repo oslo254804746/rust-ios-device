@@ -41,8 +41,8 @@ schemas, service routing, and iOS-version support can differ.
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
-| Run XCTest | `ios runtest FILE.xctestrun` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows |
-| Run WebDriverAgent | `ios runwda ...` | `ios runwda ...` | WDA/developer workflows |
+| Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows |
+| Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
 | Diagnostics | `ios diagnostics ...` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...` |
 | Restart or restore mode | `ios diagnostics reboot`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |

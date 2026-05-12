@@ -105,7 +105,9 @@ ios -u <UDID> apps launch com.example.app
 ios -u <UDID> apps processes
 ios -u <UDID> apps kill <PID>
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun
+ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests --test-target com.example.Runner --wait
 ios -u <UDID> runwda --help
+ios wda status --base-url http://127.0.0.1:8100
 ```
 
 `apps processes`, `apps launch`, and related process-control commands use newer

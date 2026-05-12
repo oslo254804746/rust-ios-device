@@ -39,6 +39,7 @@ regex = { workspace = true }
 chrono = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 indexmap = { workspace = true }
