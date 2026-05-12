@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
-use plist::Value;
+use plist::{Dictionary, Uid, Value};
 use uuid::Uuid;
 
 use super::xctestrun::SchemeData;
@@ -72,13 +72,7 @@ impl TestLaunchPlan {
             "/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework"
         };
 
-        let mut additional_fields = vec![
-            ("reportActivities".to_string(), Value::Boolean(true)),
-            (
-                "testApplicationDependencies".to_string(),
-                Value::Dictionary(Default::default()),
-            ),
-        ];
+        let mut additional_fields = reference_default_xctest_fields();
 
         if let Some(target) = &self.target {
             additional_fields.push((
@@ -355,6 +349,64 @@ fn default_capabilities() -> XctCapabilities {
     }
 }
 
+fn reference_default_xctest_fields() -> Vec<(String, Value)> {
+    vec![
+        (
+            "aggregateStatisticsBeforeCrash".to_string(),
+            Value::Dictionary(Dictionary::from_iter([(
+                "XCSuiteRecordsKey".to_string(),
+                Value::Dictionary(Dictionary::new()),
+            )])),
+        ),
+        ("baselineFileRelativePath".to_string(), ns_null()),
+        ("baselineFileURL".to_string(), ns_null()),
+        ("defaultTestExecutionTimeAllowance".to_string(), ns_null()),
+        (
+            "disablePerformanceMetrics".to_string(),
+            Value::Boolean(false),
+        ),
+        ("emitOSLogs".to_string(), Value::Boolean(false)),
+        (
+            "gatherLocalizableStringsData".to_string(),
+            Value::Boolean(false),
+        ),
+        ("maximumTestExecutionTimeAllowance".to_string(), ns_null()),
+        ("randomExecutionOrderingSeed".to_string(), ns_null()),
+        ("reportActivities".to_string(), Value::Boolean(true)),
+        (
+            "systemAttachmentLifetime".to_string(),
+            Value::Integer(2.into()),
+        ),
+        (
+            "testApplicationDependencies".to_string(),
+            Value::Dictionary(Dictionary::new()),
+        ),
+        ("testApplicationUserOverrides".to_string(), ns_null()),
+        ("testBundleRelativePath".to_string(), ns_null()),
+        (
+            "testExecutionOrdering".to_string(),
+            Value::Integer(0.into()),
+        ),
+        ("testsDrivenByIDE".to_string(), Value::Boolean(false)),
+        (
+            "treatMissingBaselinesAsFailures".to_string(),
+            Value::Boolean(false),
+        ),
+        (
+            "userAttachmentLifetime".to_string(),
+            Value::Integer(0.into()),
+        ),
+        (
+            "preferredScreenCaptureFormat".to_string(),
+            Value::Integer(2.into()),
+        ),
+    ]
+}
+
+fn ns_null() -> Value {
+    Value::Uid(Uid::new(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,6 +556,49 @@ mod tests {
                     Value::Dictionary(items)
                         if items.get("TARGET_ENV") == Some(&Value::String("target".to_string()))
                 )
+        }));
+    }
+
+    #[test]
+    fn configuration_includes_reference_default_fields() {
+        let plan = TestLaunchPlan {
+            runner: runner(),
+            target: None,
+            xctest_bundle_name: "DemoAppUITests.xctest".to_string(),
+            is_xctest: false,
+            args: Vec::new(),
+            env: HashMap::new(),
+            tests_to_run: Vec::new(),
+            tests_to_skip: Vec::new(),
+        };
+
+        let config = plan.xctest_configuration(
+            17,
+            Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+        );
+
+        assert!(config.additional_fields.iter().any(|(key, value)| {
+            key == "aggregateStatisticsBeforeCrash"
+                && matches!(
+                    value,
+                    Value::Dictionary(stats)
+                        if matches!(
+                            stats.get("XCSuiteRecordsKey"),
+                            Some(Value::Dictionary(suites)) if suites.is_empty()
+                        )
+                )
+        }));
+        assert!(config.additional_fields.iter().any(|(key, value)| {
+            key == "disablePerformanceMetrics" && value.as_boolean() == Some(false)
+        }));
+        assert!(config.additional_fields.iter().any(|(key, value)| {
+            key == "systemAttachmentLifetime" && value.as_signed_integer() == Some(2)
+        }));
+        assert!(config.additional_fields.iter().any(|(key, value)| {
+            key == "preferredScreenCaptureFormat" && value.as_signed_integer() == Some(2)
+        }));
+        assert!(config.additional_fields.iter().any(|(key, value)| {
+            key == "testsDrivenByIDE" && value.as_boolean() == Some(false)
         }));
     }
 }

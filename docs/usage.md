@@ -217,7 +217,8 @@ running them.
 `restore events` is a read-only RestoreRemoteServices event consumer. It waits
 for lifecycle messages such as progress, status, checkpoint, data request,
 previous log, or restored-crash notifications; it does not start a restore by
-itself.
+itself. Data request events include an `async` flag so later restore-loop work
+can distinguish `DataRequestMsg` from `AsyncDataRequestMsg`.
 
 ## Rust API
 

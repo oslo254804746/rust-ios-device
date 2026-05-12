@@ -37,10 +37,11 @@
 - `ios-core::testmanager::results` 新增 XCTest result stream 事件模型与 summary recorder，覆盖 suite/case start/finish、failure、log/debug log、plan begin/finish 等离线可测事件。
 - `ios runtest` 支持 `--configuration`、`--test-target` 选择，不再只能取第一项；新增 `--wait` / `--result-timeout-secs` 用于等待 XCTest 结果事件并输出 summary。
 - `ios runtest` / `ios runwda` 的 testmanager 连接已按 iOS 代际选择服务：iOS 17+ 走 RSD `com.apple.dt.testmanagerd.remote`，iOS 14-16 走 secure lockdown `com.apple.testmanagerd.lockdown.secure`，更旧系统走 legacy lockdown `com.apple.testmanagerd.lockdown`。
+- XCTestConfiguration 生成补齐参考实现中的常用默认字段，例如 aggregate statistics、baseline/time allowance 空值、attachment lifetime、execution ordering、screen capture format 和性能/日志开关。
 - 新增 `ios wda` HTTP client，可对已经运行/转发好的 WDA 执行 status、session、source、screenshot、find、click、press-button、unlock、send-keys、swipe 等基础命令。
 - `ios wda --device-port PORT` 支持通过 usbmux 直接请求设备上的 WDA HTTP 端口，避免必须先启动本地 forward。
 - `ios-core::restore` 新增 restore 生命周期事件解析，覆盖 ProgressMsg、StatusMsg、CheckpointMsg、DataRequestMsg、PreviousRestoreLogMsg、RestoredCrash，并内置常见 restore status 错误说明。
-- `ios-core::restore::RestoreServiceClient::next_lifecycle_event` 与 `ios restore events` 已接入只读事件消费，可输出 progress、status、checkpoint、data request、previous log 和 restored crash 的 JSON 事件。
+- `ios-core::restore::RestoreServiceClient::next_lifecycle_event` 与 `ios restore events` 已接入只读事件消费，可输出 progress、status、checkpoint、data request、previous log 和 restored crash 的 JSON 事件；data request JSON 会标记普通/async 请求。
 
 本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
 
@@ -115,10 +116,10 @@ HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已
 - `ios runtest --configuration NAME --test-target TARGET` 支持多 configuration / target 选择；`--wait` 可等待结果流并输出 summary。
 - `runtest`/`runwda` 已移除 iOS 17-only gate，并按 ProductVersion 选择 RSD、secure lockdown 或 legacy lockdown testmanager service。
 - WDA HTTP client 已通过 `ios wda` 暴露常用命令，可配合 `ios runwda`、外部端口转发，或 `--device-port` usbmux 直连使用。
+- XCTestConfiguration 已补齐更多参考默认字段，降低旧版/新版 runner 对缺省键敏感时的风险。
 
 仍需真实环境验证或后续补齐：
 
-- 更完整的 XCTestConfiguration 字段。
 - 旧版 testmanager 服务已按代际选择；握手 selector、capabilities 与 DTX 语义仍需 iOS 14-16 / iOS 13 真机验证。
 - XCTest result stream 在真实设备上的 selector 变体和附件/issue 解档细节。
 - WDA over-device-port 已有 usbmux HTTP client；仍需在真实 WDA runner 上验证长连接、错误响应和截图大响应表现。
@@ -129,7 +130,7 @@ HTTP manager 已有 `/`、`/tunnels`、`/tunnel/:udid` 等接口，CLI 顶层已
 
 go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命周期能力上更完整。本项目已有部分 prepare/mobileactivation/imagemounter 能力，以及 RestoreRemoteServices 的 recovery/reboot/preflight/nonces/app-parameters/lang 命令。
 
-本次补齐低风险的离线基础：restore 生命周期事件模型、常见 status 错误解释，以及 `ios restore events` 只读事件消费，方便后续实现完整 restore loop 时复用。真正的 IPSW 刷机、TSS/ASR/FDR、DFU/recovery USB 低层控制仍未实现，且属于破坏性高风险能力，应在明确产品目标和测试设备后单独推进。
+本次补齐低风险的离线基础：restore 生命周期事件模型、常见 status 错误解释，以及 `ios restore events` 只读事件消费；`DataRequestMsg` / `AsyncDataRequestMsg` 会在 JSON 中保留 raw payload 并标记 async 形态，方便后续实现完整 restore loop 时复用。真正的 IPSW 刷机、TSS/ASR/FDR、DFU/recovery USB 低层控制仍未实现，且属于破坏性高风险能力，应在明确产品目标和测试设备后单独推进。
 
 ## 推荐推进顺序
 

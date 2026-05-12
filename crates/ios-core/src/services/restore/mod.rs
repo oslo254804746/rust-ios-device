@@ -27,6 +27,7 @@ pub enum RestoreLifecycleEvent {
     DataRequest {
         data_type: Option<String>,
         data_port: Option<u64>,
+        async_request: bool,
         raw: IndexMap<String, XpcValue>,
     },
     PreviousRestoreLog(String),
@@ -62,6 +63,10 @@ impl RestoreLifecycleEvent {
             Some("DataRequestMsg") | Some("AsyncDataRequestMsg") => Self::DataRequest {
                 data_type: xpc_string(message, "DataType"),
                 data_port: xpc_u64(message, "DataPort"),
+                async_request: matches!(
+                    message.get("MsgType").and_then(XpcValue::as_str),
+                    Some("AsyncDataRequestMsg")
+                ),
                 raw: message.clone(),
             },
             Some("PreviousRestoreLogMsg") => Self::PreviousRestoreLog(
@@ -413,11 +418,13 @@ pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_j
         RestoreLifecycleEvent::DataRequest {
             data_type,
             data_port,
+            async_request,
             raw,
         } => serde_json::json!({
             "type": "data_request",
             "data_type": data_type,
             "data_port": data_port,
+            "async": async_request,
             "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
         }),
         RestoreLifecycleEvent::PreviousRestoreLog(log) => serde_json::json!({
@@ -532,6 +539,29 @@ mod tests {
         assert_eq!(json["type"], "checkpoint");
         assert_eq!(json["name"], "preflight");
         assert_eq!(json["raw"]["MsgType"], "CheckpointMsg");
+    }
+
+    #[test]
+    fn restore_lifecycle_event_json_marks_async_data_requests() {
+        let message = IndexMap::from([
+            (
+                "MsgType".to_string(),
+                XpcValue::String("AsyncDataRequestMsg".to_string()),
+            ),
+            (
+                "DataType".to_string(),
+                XpcValue::String("SystemImageData".to_string()),
+            ),
+            ("DataPort".to_string(), XpcValue::Uint64(12345)),
+        ]);
+
+        let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+        let json = restore_lifecycle_event_to_json(&event);
+
+        assert_eq!(json["type"], "data_request");
+        assert_eq!(json["data_type"], "SystemImageData");
+        assert_eq!(json["data_port"], 12345);
+        assert_eq!(json["async"], true);
     }
 
     #[tokio::test]
