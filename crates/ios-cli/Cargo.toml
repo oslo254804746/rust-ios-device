@@ -41,4 +41,5 @@ axum = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
+indexmap = { workspace = true }
 serde_urlencoded = "0.7"

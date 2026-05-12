@@ -14,6 +14,12 @@ use tokio::fs;
 pub struct FileCmd {
     #[arg(
         long,
+        conflicts_with_all = ["app", "crash"],
+        help = "Use iOS 17+ CoreDevice fileservice for read-only file access"
+    )]
+    coredevice: bool,
+    #[arg(
+        long,
         conflicts_with = "crash",
         help = "Open the app container via House Arrest instead of com.apple.afc"
     )]
@@ -31,8 +37,47 @@ pub struct FileCmd {
         help = "Open crash logs via crashreportcopymobile instead of com.apple.afc"
     )]
     crash: bool,
+    #[arg(
+        long,
+        requires = "coredevice",
+        default_value = "app-data-container",
+        value_enum,
+        help = "CoreDevice fileservice domain"
+    )]
+    domain: CoreDeviceFileDomain,
+    #[arg(
+        long,
+        requires = "coredevice",
+        help = "CoreDevice domain identifier, usually an app bundle ID"
+    )]
+    identifier: Option<String>,
     #[command(subcommand)]
     sub: FileSub,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CoreDeviceFileDomain {
+    AppDataContainer,
+    AppGroupDataContainer,
+    Temporary,
+    RootStaging,
+    SystemCrashLogs,
+}
+
+impl From<CoreDeviceFileDomain> for ios_core::fileservice::Domain {
+    fn from(value: CoreDeviceFileDomain) -> Self {
+        match value {
+            CoreDeviceFileDomain::AppDataContainer => {
+                ios_core::fileservice::Domain::AppDataContainer
+            }
+            CoreDeviceFileDomain::AppGroupDataContainer => {
+                ios_core::fileservice::Domain::AppGroupDataContainer
+            }
+            CoreDeviceFileDomain::Temporary => ios_core::fileservice::Domain::Temporary,
+            CoreDeviceFileDomain::RootStaging => ios_core::fileservice::Domain::RootStaging,
+            CoreDeviceFileDomain::SystemCrashLogs => ios_core::fileservice::Domain::SystemCrashLogs,
+        }
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -88,6 +133,10 @@ enum FileSub {
 impl FileCmd {
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for file commands"))?;
+
+        if self.coredevice {
+            return self.run_coredevice(&udid, json_output).await;
+        }
 
         let opts = ios_core::device::ConnectOptions {
             tun_mode: ios_core::TunMode::Userspace,
@@ -230,6 +279,81 @@ impl FileCmd {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn run_coredevice(self, udid: &str, json_output: bool) -> Result<()> {
+        if matches!(
+            self.domain,
+            CoreDeviceFileDomain::AppDataContainer | CoreDeviceFileDomain::AppGroupDataContainer
+        ) && self.identifier.as_deref().unwrap_or_default().is_empty()
+        {
+            return Err(anyhow::anyhow!(
+                "--identifier is required for CoreDevice app container domains"
+            ));
+        }
+
+        let opts = ios_core::device::ConnectOptions {
+            tun_mode: ios_core::TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        };
+        let device = ios_core::connect(udid, opts).await?;
+        let control = device
+            .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
+            .await?;
+        let identifier = self.identifier.as_deref().unwrap_or_default();
+        let mut fileservice = ios_core::fileservice::FileServiceClient::connect(
+            control,
+            self.domain.into(),
+            identifier,
+        )
+        .await?;
+
+        match self.sub {
+            FileSub::Ls { path, long } => {
+                if long {
+                    return Err(anyhow::anyhow!(
+                        "CoreDevice fileservice directory list does not expose stat metadata yet"
+                    ));
+                }
+                let entries = fileservice.list_directory(&path).await?;
+                if json_output {
+                    let list: Vec<_> = entries
+                        .iter()
+                        .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&list)?);
+                } else {
+                    for name in entries {
+                        println!("{name}");
+                    }
+                }
+            }
+            FileSub::Pull { remote, local } => {
+                eprintln!("Downloading {remote} -> {local}");
+                let mut data_stream = device
+                    .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
+                    .await?;
+                let mut output = fs::File::create(&local).await?;
+                let bytes = fileservice
+                    .download_file_to_writer(&remote, &mut data_stream, &mut output)
+                    .await?;
+                eprintln!("Done ({bytes} bytes)");
+            }
+            FileSub::Push { .. }
+            | FileSub::Rm { .. }
+            | FileSub::Mkdir { .. }
+            | FileSub::Mv { .. }
+            | FileSub::DeviceInfo
+            | FileSub::Stat { .. }
+            | FileSub::Tree { .. } => {
+                return Err(anyhow::anyhow!(
+                    "CoreDevice fileservice currently supports read-only ls and pull"
+                ));
+            }
+        }
+
         Ok(())
     }
 }
@@ -436,6 +560,47 @@ mod tests {
             }
             _ => panic!("expected ls subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_coredevice_domain_and_identifier() {
+        let cmd = TestCli::parse_from([
+            "file",
+            "--coredevice",
+            "--domain",
+            "app-data-container",
+            "--identifier",
+            "com.example.App",
+            "ls",
+            "Documents",
+        ]);
+
+        assert!(cmd.file.coredevice);
+        assert_eq!(cmd.file.domain, CoreDeviceFileDomain::AppDataContainer);
+        assert_eq!(cmd.file.identifier.as_deref(), Some("com.example.App"));
+        match cmd.file.sub {
+            FileSub::Ls { path, long } => {
+                assert_eq!(path, "Documents");
+                assert!(!long);
+            }
+            _ => panic!("expected ls subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_coredevice_system_crash_logs_domain() {
+        let cmd = TestCli::parse_from([
+            "file",
+            "--coredevice",
+            "--domain",
+            "system-crash-logs",
+            "pull",
+            "foo.ips",
+            r"C:\tmp\foo.ips",
+        ]);
+
+        assert_eq!(cmd.file.domain, CoreDeviceFileDomain::SystemCrashLogs);
+        assert_eq!(cmd.file.identifier, None);
     }
 
     #[test]

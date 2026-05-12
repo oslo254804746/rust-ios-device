@@ -383,9 +383,20 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
 
     /// Receive one XPC message from the serverClient stream.
     pub async fn recv(&mut self) -> Result<XpcMessage, XpcError> {
+        self.recv_on_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+            .await
+    }
+
+    /// Receive one XPC message from the clientServer stream.
+    pub async fn recv_client_server(&mut self) -> Result<XpcMessage, XpcError> {
+        self.recv_on_stream(crate::xpc::h2_raw::STREAM_CLIENT_SERVER)
+            .await
+    }
+
+    async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         let header = self
             .framer
-            .read_server_client(24)
+            .read_stream(stream_id, 24)
             .await
             .map_err(|e| XpcError::Tls(e.to_string()))?;
         let body_len = u64::from_le_bytes(
@@ -395,7 +406,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         ) as usize;
         let body = if body_len > 0 {
             self.framer
-                .read_server_client(body_len)
+                .read_stream(stream_id, body_len)
                 .await
                 .map_err(|e| XpcError::Tls(e.to_string()))?
         } else {

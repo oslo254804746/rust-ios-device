@@ -17,8 +17,10 @@ pub mod rsd;
 pub use client::XpcClient;
 #[cfg(any(
     feature = "apps",
+    feature = "deviceinfo",
     feature = "dproxy",
     feature = "fetchsymbols",
+    feature = "fileservice",
     feature = "restore"
 ))]
 pub(crate) use message::{XpcMessage, XpcValue};

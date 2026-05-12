@@ -86,6 +86,8 @@ macro_rules! service_error {
 }
 
 pub mod backup2;
+#[cfg(any(feature = "apps", feature = "deviceinfo", feature = "fileservice"))]
+pub(crate) mod coredevice;
 pub mod device_link;
 
 #[cfg(feature = "afc")]

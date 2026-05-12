@@ -4,8 +4,6 @@ use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 use bytes::Bytes;
 use indexmap::IndexMap;
 
-const COREDEVICE_PROTOCOL_VERSION: i64 = 0;
-const COREDEVICE_VERSION: &str = "325.3";
 const FEATURE_LIST_PROCESSES: &str = "com.apple.coredevice.feature.listprocesses";
 const FEATURE_LAUNCH_APPLICATION: &str = "com.apple.coredevice.feature.launchapplication";
 const FEATURE_SEND_SIGNAL: &str = "com.apple.coredevice.feature.sendsignaltoprocess";
@@ -34,10 +32,10 @@ pub struct AppServiceClient {
 }
 
 impl AppServiceClient {
-    pub fn new(client: XpcClient, _device_identifier: impl Into<String>) -> Self {
+    pub fn new(client: XpcClient, device_identifier: impl Into<String>) -> Self {
         Self {
             client,
-            device_identifier: invocation_identifier(),
+            device_identifier: device_identifier.into(),
         }
     }
 
@@ -159,68 +157,7 @@ fn build_launch_application_input(bundle_id: &str) -> Result<XpcValue, AppServic
 }
 
 fn build_request(device_identifier: &str, feature_identifier: &str, input: XpcValue) -> XpcValue {
-    let mut coredevice_version = IndexMap::new();
-    coredevice_version.insert(
-        "components".to_string(),
-        XpcValue::Array(vec![
-            XpcValue::Uint64(325),
-            XpcValue::Uint64(3),
-            XpcValue::Uint64(0),
-            XpcValue::Uint64(0),
-            XpcValue::Uint64(0),
-        ]),
-    );
-    coredevice_version.insert("originalComponentsCount".to_string(), XpcValue::Int64(2));
-    coredevice_version.insert(
-        "stringValue".to_string(),
-        XpcValue::String(COREDEVICE_VERSION.to_string()),
-    );
-
-    let mut body = IndexMap::new();
-    body.insert(
-        "CoreDevice.CoreDeviceDDIProtocolVersion".to_string(),
-        XpcValue::Int64(COREDEVICE_PROTOCOL_VERSION),
-    );
-    body.insert(
-        "CoreDevice.action".to_string(),
-        XpcValue::Dictionary(IndexMap::new()),
-    );
-    body.insert(
-        "CoreDevice.coreDeviceVersion".to_string(),
-        XpcValue::Dictionary(coredevice_version),
-    );
-    body.insert(
-        "CoreDevice.deviceIdentifier".to_string(),
-        XpcValue::String(device_identifier.to_string()),
-    );
-    body.insert(
-        "CoreDevice.featureIdentifier".to_string(),
-        XpcValue::String(feature_identifier.to_string()),
-    );
-    body.insert("CoreDevice.input".to_string(), input);
-    body.insert(
-        "CoreDevice.invocationIdentifier".to_string(),
-        XpcValue::String(invocation_identifier()),
-    );
-    XpcValue::Dictionary(body)
-}
-
-fn invocation_identifier() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let raw = format!("{nanos:032x}");
-    format!(
-        "{}-{}-{}-{}-{}",
-        &raw[0..8],
-        &raw[8..12],
-        &raw[12..16],
-        &raw[16..20],
-        &raw[20..32]
-    )
+    crate::services::coredevice::build_request(device_identifier, feature_identifier, input)
 }
 
 fn parse_processes(response: &XpcMessage) -> Result<Vec<RunningAppProcess>, AppServiceError> {
@@ -229,17 +166,13 @@ fn parse_processes(response: &XpcMessage) -> Result<Vec<RunningAppProcess>, AppS
         .body
         .as_ref()
         .ok_or_else(|| AppServiceError::Protocol("missing response body".into()))?;
-    let payload = coredevice_output(body).unwrap_or(body);
+    let payload = crate::services::coredevice::output(body).unwrap_or(body);
 
     let items = process_items(payload).ok_or_else(|| {
         AppServiceError::Protocol(format!("unexpected process list payload: {payload:?}"))
     })?;
 
     Ok(items.iter().filter_map(parse_process).collect())
-}
-
-fn coredevice_output(value: &XpcValue) -> Option<&XpcValue> {
-    value.as_dict()?.get("CoreDevice.output")
 }
 
 fn process_items(value: &XpcValue) -> Option<&[XpcValue]> {
@@ -287,44 +220,9 @@ fn parse_process(value: &XpcValue) -> Option<RunningAppProcess> {
 
 fn ensure_no_error(response: &XpcMessage) -> Result<(), AppServiceError> {
     if let Some(body) = response.body.as_ref() {
-        if let Some(message) = error_message(body) {
-            return Err(AppServiceError::Protocol(message));
-        }
+        crate::services::coredevice::ensure_no_error(body).map_err(AppServiceError::Protocol)?;
     }
     Ok(())
-}
-
-fn error_message(value: &XpcValue) -> Option<String> {
-    let dict = value.as_dict()?;
-    for key in ["CoreDevice.error", "error", "Error", "NSError", "userInfo"] {
-        if let Some(found) = dict.get(key) {
-            if let Some(message) = nested_error_message(found) {
-                return Some(message);
-            }
-            return Some(format!("{found:?}"));
-        }
-    }
-    None
-}
-
-fn nested_error_message(value: &XpcValue) -> Option<String> {
-    match value {
-        XpcValue::String(s) => Some(s.clone()),
-        XpcValue::Dictionary(dict) => {
-            for key in [
-                "message",
-                "localizedDescription",
-                "NSLocalizedDescription",
-                "description",
-            ] {
-                if let Some(XpcValue::String(s)) = dict.get(key) {
-                    return Some(s.clone());
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }
 
 fn parse_pid(value: Option<&XpcValue>) -> Option<u64> {

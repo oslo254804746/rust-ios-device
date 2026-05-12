@@ -4,7 +4,7 @@ use anyhow::Result;
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
-const COREDEVICE_DEVICEINFO_SERVICE: &str = "com.apple.coredevice.deviceinfo";
+const COREDEVICE_DEVICEINFO_SERVICE: &str = ios_core::deviceinfo::SERVICE_NAME;
 
 #[derive(clap::Args)]
 pub struct MobileGestaltCmd {
@@ -33,22 +33,15 @@ impl MobileGestaltCmd {
         {
             Ok(value) => value,
             Err(ios_core::diagnostics::DiagnosticsError::Deprecated(message)) => {
-                let rsd_state = match connect(
-                    &udid,
-                    ConnectOptions {
-                        tun_mode: TunMode::Userspace,
-                        pair_record_path: None,
-                        skip_tunnel: false,
-                    },
-                )
-                .await
-                {
-                    Ok(device) => describe_deviceinfo_service(device.rsd()),
+                match query_mobilegestalt_via_coredevice(&udid, &key_refs).await {
+                    Ok(value) => value,
                     Err(err) => {
-                        format!("failed to inspect RSD services for CoreDevice fallback: {err}")
+                        let rsd_state = inspect_coredevice_mobilegestalt_fallback(&udid).await;
+                        return Err(anyhow::anyhow!(
+                            "{message}; CoreDevice fallback failed: {err}; {rsd_state}"
+                        ));
                     }
-                };
-                return Err(anyhow::anyhow!("{message}; {rsd_state}"));
+                }
             }
             Err(err) => return Err(err.into()),
         };
@@ -69,22 +62,56 @@ impl MobileGestaltCmd {
     }
 }
 
+async fn query_mobilegestalt_via_coredevice(udid: &str, keys: &[&str]) -> Result<plist::Value> {
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await?;
+    let xpc = device
+        .connect_xpc_service(ios_core::deviceinfo::SERVICE_NAME)
+        .await?;
+    let mut client = ios_core::deviceinfo::DeviceInfoClient::new(xpc, udid.to_string());
+    let output = client.query_mobilegestalt(keys).await?;
+    Ok(coredevice_mobilegestalt_output_to_plist(output))
+}
+
+async fn inspect_coredevice_mobilegestalt_fallback(udid: &str) -> String {
+    match connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await
+    {
+        Ok(device) => describe_deviceinfo_service(device.rsd()),
+        Err(err) => format!("failed to inspect RSD services for CoreDevice fallback: {err}"),
+    }
+}
+
+fn coredevice_mobilegestalt_output_to_plist(output: ios_core::XpcValue) -> plist::Value {
+    ios_core::deviceinfo::xpc_value_to_plist(&output)
+}
+
 fn describe_deviceinfo_service(rsd: Option<&ios_core::RsdHandshake>) -> String {
     let Some(rsd) = rsd else {
         return "RSD is not available in this session, so CoreDevice mobilegestalt fallback cannot be attempted".to_string();
     };
 
     if rsd.services.contains_key(COREDEVICE_DEVICEINFO_SERVICE) {
-        return format!(
-            "{COREDEVICE_DEVICEINFO_SERVICE} is exposed in this RSD session, but a CoreDevice mobilegestalt fallback is not implemented yet"
-        );
+        return format!("{COREDEVICE_DEVICEINFO_SERVICE} is exposed in this RSD session");
     }
 
     let shim = format!("{COREDEVICE_DEVICEINFO_SERVICE}.shim.remote");
     if rsd.services.contains_key(&shim) {
-        return format!(
-            "{shim} is exposed in this RSD session, but a CoreDevice mobilegestalt fallback is not implemented yet"
-        );
+        return format!("{shim} is exposed in this RSD session");
     }
 
     format!("current RSD session does not expose {COREDEVICE_DEVICEINFO_SERVICE}")
@@ -127,6 +154,7 @@ mod tests {
     use std::collections::HashMap;
 
     use clap::Parser;
+    use indexmap::IndexMap;
     use ios_core::{RsdHandshake, ServiceDescriptor};
 
     use super::*;
@@ -214,7 +242,25 @@ mod tests {
 
         assert_eq!(
             describe_deviceinfo_service(Some(&rsd)),
-            "com.apple.coredevice.deviceinfo.shim.remote is exposed in this RSD session, but a CoreDevice mobilegestalt fallback is not implemented yet"
+            "com.apple.coredevice.deviceinfo.shim.remote is exposed in this RSD session"
+        );
+    }
+
+    #[test]
+    fn coredevice_mobilegestalt_output_converts_to_plist_dictionary() {
+        let output = ios_core::XpcValue::Dictionary(IndexMap::from([(
+            "ProductVersion".to_string(),
+            ios_core::XpcValue::String("17.4".into()),
+        )]));
+
+        let value = coredevice_mobilegestalt_output_to_plist(output);
+
+        assert_eq!(
+            value
+                .as_dictionary()
+                .and_then(|dict| dict.get("ProductVersion"))
+                .and_then(plist::Value::as_string),
+            Some("17.4")
         );
     }
 }
