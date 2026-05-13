@@ -6,13 +6,18 @@ mod output;
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(clap::Parser)]
 #[command(name = "ios", about = "iOS device management CLI (supports iOS 17+)")]
 struct Cli {
-    #[arg(short = 'u', long, env = "IOS_UDID", help = "Device UDID")]
+    #[arg(
+        short = 'u',
+        long,
+        env = "IOS_UDID",
+        help = "Device UDID; defaults to the first connected device when omitted"
+    )]
     udid: Option<String>,
     #[arg(long, help = "Disable JSON output, use table format")]
     no_json: bool,
@@ -192,6 +197,33 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
     }
 }
 
+fn command_needs_default_udid(command: &Commands) -> bool {
+    match command {
+        Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) => false,
+        Commands::Pair(command) => command.needs_default_udid(),
+        Commands::Prepare(command) => command.needs_default_udid(),
+        Commands::Wda(command) => command.needs_default_udid(),
+        _ => true,
+    }
+}
+
+fn default_udid_from_devices(devices: &[ios_core::DeviceInfo]) -> Option<String> {
+    devices.first().map(|device| device.udid.clone())
+}
+
+async fn resolve_cli_udid(udid: Option<String>, command: &Commands) -> Result<Option<String>> {
+    if udid.is_some() || !command_needs_default_udid(command) {
+        return Ok(udid);
+    }
+
+    let devices = ios_core::list_devices()
+        .await
+        .context("failed to list connected iOS devices for default --udid")?;
+    default_udid_from_devices(&devices)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("--udid required: no connected iOS devices found"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -204,7 +236,8 @@ async fn main() -> Result<()> {
     };
     tracing_subscriber::fmt().with_max_level(level).init();
 
-    dispatch_command(cli.command, cli.udid, cli.no_json).await
+    let udid = resolve_cli_udid(cli.udid, &cli.command).await?;
+    dispatch_command(cli.command, udid, cli.no_json).await
 }
 
 #[cfg(test)]
@@ -589,5 +622,74 @@ mod tests {
             "file dispatch future too large for main-thread stack: {} bytes",
             size_of_val(&future)
         );
+    }
+
+    #[test]
+    fn default_udid_uses_first_listed_device() {
+        let devices = vec![
+            ios_core::DeviceInfo {
+                udid: "first-udid".into(),
+                device_id: 7,
+                connection_type: "Network".into(),
+                product_id: 0,
+            },
+            ios_core::DeviceInfo {
+                udid: "second-udid".into(),
+                device_id: 8,
+                connection_type: "USB".into(),
+                product_id: 0,
+            },
+        ];
+
+        assert_eq!(
+            default_udid_from_devices(&devices),
+            Some("first-udid".into())
+        );
+    }
+
+    #[test]
+    fn list_command_does_not_resolve_default_udid() {
+        let cli = Cli::try_parse_from(["ios", "list"]).expect("list command should parse");
+
+        assert!(!command_needs_default_udid(&cli.command));
+    }
+
+    #[test]
+    fn info_command_resolves_default_udid() {
+        let cli = Cli::try_parse_from(["ios", "info"]).expect("info command should parse");
+
+        assert!(command_needs_default_udid(&cli.command));
+    }
+
+    #[test]
+    fn pair_show_record_resolves_default_udid_but_pair_list_does_not() {
+        let show_record =
+            Cli::try_parse_from(["ios", "pair", "show-record"]).expect("show-record should parse");
+        assert!(command_needs_default_udid(&show_record.command));
+
+        let list =
+            Cli::try_parse_from(["ios", "pair", "--list"]).expect("pair --list should parse");
+        assert!(!command_needs_default_udid(&list.command));
+    }
+
+    #[test]
+    fn prepare_apply_resolves_default_udid_but_create_cert_does_not() {
+        let apply = Cli::try_parse_from(["ios", "prepare"]).expect("prepare should parse");
+        assert!(command_needs_default_udid(&apply.command));
+
+        let create_cert =
+            Cli::try_parse_from(["ios", "prepare", "create-cert", "ios-rs-tmp/supervision"])
+                .expect("prepare create-cert should parse");
+        assert!(!command_needs_default_udid(&create_cert.command));
+    }
+
+    #[test]
+    fn wda_device_port_resolves_default_udid_but_http_mode_does_not() {
+        let device_port = Cli::try_parse_from(["ios", "wda", "--device-port", "8100", "status"])
+            .expect("wda device-port status should parse");
+        assert!(command_needs_default_udid(&device_port.command));
+
+        let http = Cli::try_parse_from(["ios", "wda", "status"]).expect("wda status should parse");
+        assert!(!command_needs_default_udid(&http.command));
     }
 }

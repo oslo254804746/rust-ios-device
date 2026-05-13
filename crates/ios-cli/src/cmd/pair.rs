@@ -45,6 +45,13 @@ enum PairSubcommand {
 }
 
 impl PairCmd {
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        matches!(
+            self.sub,
+            Some(PairSubcommand::ShowRecord { .. } | PairSubcommand::Supervised { .. })
+        )
+    }
+
     pub async fn run(self, default_udid: Option<String>, json: bool) -> Result<()> {
         match self.sub {
             Some(PairSubcommand::ShowRecord { udid }) => {

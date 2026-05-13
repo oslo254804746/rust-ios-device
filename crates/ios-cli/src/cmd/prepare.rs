@@ -44,6 +44,10 @@ enum PrepareSub {
 }
 
 impl PrepareCmd {
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        self.sub.is_none()
+    }
+
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         match self.sub {
             Some(PrepareSub::CreateCert {

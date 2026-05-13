@@ -8,11 +8,16 @@ format where a command supports it.
 
 ```sh
 ios --help
+ios <command>
 ios -u <UDID> <command>
 IOS_UDID=<UDID> ios <command>
 ios --no-json <command>
 ios -v <command>
 ```
+
+For commands that target a device, omitting `-u/--udid` selects the first
+device returned by `ios list`. Use `-u <UDID>` or `IOS_UDID=<UDID>` when you
+need to choose a specific device.
 
 Use command help for exact arguments:
 

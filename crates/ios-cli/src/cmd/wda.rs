@@ -78,6 +78,10 @@ enum WdaSub {
 }
 
 impl WdaCmd {
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        self.device_port.is_some()
+    }
+
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         let client = match self.device_port {
             Some(device_port) => WdaHttpClient::new_device_port(

@@ -25,11 +25,13 @@ The debug binary is at `target/debug/ios`; the release binary is at `target/rele
 
 ```sh
 cargo run -p ios-cli -- list
-cargo run -p ios-cli -- -u <UDID> info
-cargo run -p ios-cli -- -u <UDID> lockdown get --key ProductVersion
+cargo run -p ios-cli -- info
+cargo run -p ios-cli -- lockdown get --key ProductVersion
 ```
 
-If multiple devices are connected, pass `-u <UDID>` or set:
+When a command targets a device and no UDID is specified, the CLI uses the
+first device returned by `ios list`. If multiple devices are connected, pass
+`-u <UDID>` or set:
 
 ```sh
 export IOS_UDID=<UDID>

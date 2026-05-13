@@ -26,9 +26,13 @@ cargo install ios-cli
 cargo install ios-cli
 ios --help
 ios list
-ios -u <UDID> info
-ios -u <UDID> tunnel start --userspace
+ios info
+ios tunnel start --userspace
 ```
+
+When a command targets a device and `-u/--udid` is omitted, the CLI uses the
+first device returned by `ios list`. Pass `-u <UDID>` or set `IOS_UDID` to
+choose a specific device.
 
 ## Documentation
 
