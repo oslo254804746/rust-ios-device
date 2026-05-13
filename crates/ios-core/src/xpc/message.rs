@@ -313,6 +313,45 @@ pub fn decode_message(mut buf: Bytes) -> Result<XpcMessage, XpcError> {
     })
 }
 
+/// Incrementally reassembles complete XPC messages from DATA frame payloads.
+#[derive(Debug, Default)]
+pub(crate) struct XpcMessageBuffer {
+    pending: BytesMut,
+}
+
+impl XpcMessageBuffer {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: BytesMut::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+    }
+
+    pub(crate) fn try_next(&mut self) -> Result<Option<XpcMessage>, XpcError> {
+        if self.pending.len() < 24 {
+            return Ok(None);
+        }
+
+        let body_len = u64::from_le_bytes(
+            self.pending[8..16]
+                .try_into()
+                .map_err(|_| XpcError::Tls("XPC: invalid wrapper header".into()))?,
+        ) as usize;
+        let total_len = 24usize
+            .checked_add(body_len)
+            .ok_or_else(|| XpcError::Tls("XPC: message length overflow".into()))?;
+        if self.pending.len() < total_len {
+            return Ok(None);
+        }
+
+        let payload = self.pending.split_to(total_len).freeze();
+        decode_message(payload).map(Some)
+    }
+}
+
 fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
     if buf.remaining() < 4 {
         return Err(XpcError::Tls("XPC: value too short".into()));
@@ -527,5 +566,32 @@ mod tests {
         assert!(err
             .to_string()
             .contains("array encoded size exceeds u32::MAX"));
+    }
+
+    #[test]
+    fn message_buffer_reassembles_fragmented_messages() {
+        let msg1 = XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 1,
+            body: Some(XpcValue::String("one".into())),
+        };
+        let msg2 = XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 2,
+            body: Some(XpcValue::String("two".into())),
+        };
+        let bytes1 = encode_message(&msg1).unwrap();
+        let bytes2 = encode_message(&msg2).unwrap();
+        let mut buffer = XpcMessageBuffer::new();
+
+        buffer.push(&bytes1[..10]);
+        assert!(buffer.try_next().unwrap().is_none());
+
+        buffer.push(&bytes1[10..]);
+        buffer.push(&bytes2);
+
+        assert_eq!(buffer.try_next().unwrap().unwrap().msg_id, 1);
+        assert_eq!(buffer.try_next().unwrap().unwrap().msg_id, 2);
+        assert!(buffer.try_next().unwrap().is_none());
     }
 }

@@ -5,7 +5,6 @@
 
 use std::io::Write;
 
-use bytes::BytesMut;
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
@@ -95,7 +94,7 @@ pub struct RemoteSymbolFile {
 pub struct RemoteFetchSymbolsClient<S> {
     framer: crate::xpc::h2_raw::H2Framer<S>,
     next_msg_id: u64,
-    pending_control_data: BytesMut,
+    control_messages: crate::xpc::message::XpcMessageBuffer,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
@@ -107,7 +106,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         Ok(Self {
             framer,
             next_msg_id: 1,
-            pending_control_data: BytesMut::new(),
+            control_messages: crate::xpc::message::XpcMessageBuffer::new(),
         })
     }
 
@@ -217,7 +216,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
             let frame = self.framer.read_next_data_frame().await.map_err(|err| {
                 FetchSymbolsError::Protocol(format!("control frame read failed: {err}"))
             })?;
-            self.pending_control_data.extend_from_slice(&frame.payload);
+            if frame.is_end_stream() && frame.payload.is_empty() {
+                continue;
+            }
+            if !frame.is_remote_xpc_control_stream() {
+                continue;
+            }
+            self.control_messages.push(&frame.payload);
         }
     }
 
@@ -262,25 +267,9 @@ impl<S> RemoteFetchSymbolsClient<S> {
     fn try_take_pending_control_message(
         &mut self,
     ) -> Result<Option<crate::xpc::XpcMessage>, FetchSymbolsError> {
-        if self.pending_control_data.len() < 24 {
-            return Ok(None);
-        }
-
-        let body_len =
-            u64::from_le_bytes(self.pending_control_data[8..16].try_into().map_err(|_| {
-                FetchSymbolsError::Protocol("invalid control message header".into())
-            })?) as usize;
-        let total_len = 24usize
-            .checked_add(body_len)
-            .ok_or_else(|| FetchSymbolsError::Protocol("control message length overflow".into()))?;
-        if self.pending_control_data.len() < total_len {
-            return Ok(None);
-        }
-
-        let payload = self.pending_control_data.split_to(total_len).freeze();
-        let message = crate::xpc::message::decode_message(payload)
-            .map_err(|err| FetchSymbolsError::Protocol(format!("control decode failed: {err}")))?;
-        Ok(Some(message))
+        self.control_messages
+            .try_next()
+            .map_err(|err| FetchSymbolsError::Protocol(format!("control decode failed: {err}")))
     }
 }
 

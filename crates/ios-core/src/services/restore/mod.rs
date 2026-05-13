@@ -1,6 +1,5 @@
 use crate::xpc::h2_raw::H2Framer;
 use crate::xpc::{XpcMessage, XpcValue};
-use bytes::BytesMut;
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -100,7 +99,7 @@ pub fn restore_status_message(status: u64) -> Option<&'static str> {
 pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,
     next_msg_id: u64,
-    pending_control_data: BytesMut,
+    control_messages: crate::xpc::message::XpcMessageBuffer,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
@@ -112,7 +111,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         Ok(Self {
             framer,
             next_msg_id: 1,
-            pending_control_data: BytesMut::new(),
+            control_messages: crate::xpc::message::XpcMessageBuffer::new(),
         })
     }
 
@@ -210,32 +209,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             let frame = self.framer.read_next_data_frame().await.map_err(|err| {
                 RestoreError::Protocol(format!("restore response read failed: {err}"))
             })?;
-            self.pending_control_data.extend_from_slice(&frame.payload);
+            if frame.is_end_stream() && frame.payload.is_empty() {
+                continue;
+            }
+            if !frame.is_remote_xpc_control_stream() {
+                continue;
+            }
+            self.control_messages.push(&frame.payload);
         }
     }
 
     fn try_take_pending_control_message(&mut self) -> Result<Option<XpcMessage>, RestoreError> {
-        if self.pending_control_data.len() < 24 {
-            return Ok(None);
-        }
-
-        let body_len = u64::from_le_bytes(
-            self.pending_control_data[8..16]
-                .try_into()
-                .map_err(|_| RestoreError::Protocol("invalid XPC response header".into()))?,
-        ) as usize;
-        let total_len = 24usize
-            .checked_add(body_len)
-            .ok_or_else(|| RestoreError::Protocol("XPC response length overflow".into()))?;
-        if self.pending_control_data.len() < total_len {
-            return Ok(None);
-        }
-
-        let payload = self.pending_control_data.split_to(total_len).freeze();
-        let message = crate::xpc::message::decode_message(payload).map_err(|err| {
-            RestoreError::Protocol(format!("restore response decode failed: {err}"))
-        })?;
-        Ok(Some(message))
+        self.control_messages
+            .try_next()
+            .map_err(|err| RestoreError::Protocol(format!("restore response decode failed: {err}")))
     }
 }
 

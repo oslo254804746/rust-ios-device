@@ -29,6 +29,7 @@ const FRAME_HEADERS: u8 = 0x01;
 const FRAME_SETTINGS: u8 = 0x04;
 const FRAME_WINDOW_UPDATE: u8 = 0x08;
 
+const FLAG_END_STREAM: u8 = 0x01;
 const FLAG_END_HEADERS: u8 = 0x04;
 const FLAG_SETTINGS_ACK: u8 = 0x01;
 
@@ -61,7 +62,19 @@ pub struct H2Framer<S> {
 
 #[derive(Debug, Clone)]
 pub struct DataFrame {
+    pub stream_id: u32,
+    pub flags: u8,
     pub payload: Bytes,
+}
+
+impl DataFrame {
+    pub fn is_end_stream(&self) -> bool {
+        self.flags & FLAG_END_STREAM != 0
+    }
+
+    pub fn is_remote_xpc_control_stream(&self) -> bool {
+        matches!(self.stream_id, STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT)
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
@@ -242,6 +255,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         self.stream.flush().await?;
                     }
                     return Ok(DataFrame {
+                        stream_id: frame.stream_id,
+                        flags: frame.flags,
                         payload: Bytes::from(frame.payload),
                     });
                 }
@@ -516,5 +531,30 @@ mod tests {
             u32::from_be_bytes([headers[5] & 0x7F, headers[6], headers[7], headers[8]]),
             4
         );
+    }
+
+    #[tokio::test]
+    async fn read_next_data_frame_preserves_stream_id_and_flags() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let mut framer = H2Framer {
+            stream: client,
+            client_server_buf: BytesMut::new(),
+            server_client_buf: BytesMut::new(),
+            stream_bufs: HashMap::new(),
+            locally_open_streams: HashSet::new(),
+            client_server_open: false,
+            server_client_open: false,
+        };
+
+        server
+            .write_all(&build_frame(FRAME_DATA, 0x01, 6, b"chunk"))
+            .await
+            .unwrap();
+
+        let frame = framer.read_next_data_frame().await.unwrap();
+
+        assert_eq!(frame.stream_id, 6);
+        assert_eq!(frame.flags, 0x01);
+        assert_eq!(frame.payload, Bytes::from_static(b"chunk"));
     }
 }

@@ -12,6 +12,8 @@
 //! Reference: go-ios/ios/rsd.go + go-ios/ios/http/http.go
 
 use std::collections::HashMap;
+#[cfg(feature = "tunnel")]
+use std::collections::VecDeque;
 #[cfg(feature = "mdns")]
 use std::net::{Ipv6Addr, SocketAddr};
 
@@ -342,12 +344,17 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
 pub struct XpcConnection<S> {
     framer: H2Framer<S>,
     msg_id: u64,
+    pending_messages: HashMap<u32, VecDeque<XpcMessage>>,
 }
 
 #[cfg(feature = "tunnel")]
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     pub fn new(framer: H2Framer<S>) -> Self {
-        Self { framer, msg_id: 1 }
+        Self {
+            framer,
+            msg_id: 1,
+            pending_messages: HashMap::new(),
+        }
     }
 
     fn next_id(&mut self) -> u64 {
@@ -358,7 +365,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
 
     /// Send a dictionary as an XPC message on the clientServer stream.
     pub async fn send(&mut self, body: XpcValue) -> Result<(), XpcError> {
-        self.send_with_flags(body, 0).await
+        self.send_with_flags(body, 0).await.map(|_| ())
     }
 
     /// Send a dictionary as an XPC message on the clientServer stream with
@@ -367,7 +374,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         &mut self,
         body: XpcValue,
         extra_flags: u32,
-    ) -> Result<(), XpcError> {
+    ) -> Result<u64, XpcError> {
         let id = self.next_id();
         let msg = XpcMessage {
             flags: flags::ALWAYS_SET | flags::DATA | extra_flags,
@@ -378,7 +385,8 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         self.framer
             .write_client_server(&bytes)
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        Ok(id)
     }
 
     /// Receive one XPC message from the serverClient stream.
@@ -394,6 +402,32 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
+        if let Some(message) = self.pop_next_pending_message(stream_id) {
+            return Ok(message);
+        }
+        self.recv_fresh_on_stream(stream_id).await
+    }
+
+    /// Receive the reply with a specific XPC message id from one stream.
+    pub async fn recv_reply_on_stream(
+        &mut self,
+        stream_id: u32,
+        msg_id: u64,
+    ) -> Result<XpcMessage, XpcError> {
+        if let Some(message) = self.take_pending_message(stream_id, msg_id) {
+            return Ok(message);
+        }
+
+        loop {
+            let message = self.recv_fresh_on_stream(stream_id).await?;
+            if message.msg_id == msg_id {
+                return Ok(message);
+            }
+            self.push_pending_message(stream_id, message);
+        }
+    }
+
+    async fn recv_fresh_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         let header = self
             .framer
             .read_stream(stream_id, 24)
@@ -416,6 +450,25 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         full.extend_from_slice(&header);
         full.extend_from_slice(&body);
         decode_message(full.freeze())
+    }
+
+    fn push_pending_message(&mut self, stream_id: u32, message: XpcMessage) {
+        self.pending_messages
+            .entry(stream_id)
+            .or_default()
+            .push_back(message);
+    }
+
+    fn pop_next_pending_message(&mut self, stream_id: u32) -> Option<XpcMessage> {
+        self.pending_messages.get_mut(&stream_id)?.pop_front()
+    }
+
+    fn take_pending_message(&mut self, stream_id: u32, msg_id: u64) -> Option<XpcMessage> {
+        let pending = self.pending_messages.get_mut(&stream_id)?;
+        let index = pending
+            .iter()
+            .position(|message| message.msg_id == msg_id)?;
+        pending.remove(index)
     }
 }
 

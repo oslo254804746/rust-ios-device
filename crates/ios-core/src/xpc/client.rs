@@ -45,10 +45,13 @@ impl XpcClient {
 
     /// Send an XPC dictionary and receive the response.
     pub async fn call(&mut self, body: XpcValue) -> Result<XpcMessage, XpcError> {
-        self.inner
+        let msg_id = self
+            .inner
             .send_with_flags(body, flags::WANTING_REPLY)
             .await?;
-        self.inner.recv().await
+        self.inner
+            .recv_reply_on_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT, msg_id)
+            .await
     }
 
     /// Send an XPC dictionary and receive the response from stream 1.
@@ -56,10 +59,13 @@ impl XpcClient {
         &mut self,
         body: XpcValue,
     ) -> Result<XpcMessage, XpcError> {
-        self.inner
+        let msg_id = self
+            .inner
             .send_with_flags(body, flags::WANTING_REPLY)
             .await?;
-        self.inner.recv_client_server().await
+        self.inner
+            .recv_reply_on_stream(crate::xpc::h2_raw::STREAM_CLIENT_SERVER, msg_id)
+            .await
     }
 
     /// Send without waiting for a response.
@@ -527,6 +533,176 @@ mod tests {
             _ => None,
         });
         assert!(body.unwrap().contains_key("FileList"));
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn call_waits_for_matching_reply_id_and_buffers_early_replies() {
+        let (client, mut server) = duplex(4096);
+
+        let empty = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET,
+            msg_id: 0,
+            body: None,
+        })
+        .expect("message should encode");
+        let early_reply = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 2,
+            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                "kind".to_string(),
+                XpcValue::String("early".into()),
+            )]))),
+        })
+        .expect("message should encode");
+        let matching_reply = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 1,
+            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                "kind".to_string(),
+                XpcValue::String("matching".into()),
+            )]))),
+        })
+        .expect("message should encode");
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            assert_eq!(settings[3], FRAME_SETTINGS);
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            assert_eq!(window_update[3], 0x08);
+
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+            assert_eq!(ack, settings_ack_frame().as_slice());
+
+            let mut cs_headers = [0u8; 9];
+            server.read_exact(&mut cs_headers).await.unwrap();
+            assert_eq!(cs_headers, headers_frame(STREAM_CLIENT_SERVER).as_slice());
+
+            let mut cs_msg1_header = [0u8; 9];
+            server.read_exact(&mut cs_msg1_header).await.unwrap();
+            let cs_msg1_len = ((cs_msg1_header[0] as usize) << 16)
+                | ((cs_msg1_header[1] as usize) << 8)
+                | (cs_msg1_header[2] as usize);
+            let mut cs_msg1 = vec![0u8; cs_msg1_len];
+            server.read_exact(&mut cs_msg1).await.unwrap();
+            assert_eq!(
+                cs_msg1.as_slice(),
+                empty_message(flags::ALWAYS_SET).as_ref()
+            );
+
+            server
+                .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut sc_headers = [0u8; 9];
+            server.read_exact(&mut sc_headers).await.unwrap();
+            assert_eq!(sc_headers, headers_frame(STREAM_SERVER_CLIENT).as_slice());
+
+            let mut sc_msg2_header = [0u8; 9];
+            server.read_exact(&mut sc_msg2_header).await.unwrap();
+            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
+                | ((sc_msg2_header[1] as usize) << 8)
+                | (sc_msg2_header[2] as usize);
+            let mut sc_msg2 = vec![0u8; sc_msg2_len];
+            server.read_exact(&mut sc_msg2).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&sc_msg2),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut cs_msg3_header = [0u8; 9];
+            server.read_exact(&mut cs_msg3_header).await.unwrap();
+            let cs_msg3_len = ((cs_msg3_header[0] as usize) << 16)
+                | ((cs_msg3_header[1] as usize) << 8)
+                | (cs_msg3_header[2] as usize);
+            let mut cs_msg3 = vec![0u8; cs_msg3_len];
+            server.read_exact(&mut cs_msg3).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&cs_msg3),
+                (flags::ALWAYS_SET | 0x200, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut request_header = [0u8; 9];
+            server.read_exact(&mut request_header).await.unwrap();
+            assert_eq!(request_header[3], FRAME_DATA);
+            let request_len = ((request_header[0] as usize) << 16)
+                | ((request_header[1] as usize) << 8)
+                | (request_header[2] as usize);
+            let mut request = vec![0u8; request_len];
+            server.read_exact(&mut request).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&request),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 1)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &early_reply))
+                .await
+                .unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &matching_reply))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut client = timeout(Duration::from_secs(1), XpcClient::connect_stream(client))
+            .await
+            .expect("connect timed out")
+            .expect("connect should succeed");
+
+        let response = timeout(
+            Duration::from_secs(1),
+            client.call(XpcValue::Dictionary(IndexMap::new())),
+        )
+        .await
+        .expect("call timed out")
+        .expect("call should succeed");
+
+        assert_eq!(response.msg_id, 1);
+        let response_kind = response
+            .body
+            .as_ref()
+            .and_then(XpcValue::as_dict)
+            .and_then(|dict| dict.get("kind"))
+            .and_then(XpcValue::as_str);
+        assert_eq!(response_kind, Some("matching"));
+
+        let buffered = client.recv().await.expect("early reply should be buffered");
+        assert_eq!(buffered.msg_id, 2);
+        let buffered_kind = buffered
+            .body
+            .as_ref()
+            .and_then(XpcValue::as_dict)
+            .and_then(|dict| dict.get("kind"))
+            .and_then(XpcValue::as_str);
+        assert_eq!(buffered_kind, Some("early"));
 
         server_task.await.unwrap();
     }

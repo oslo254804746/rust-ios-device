@@ -99,7 +99,9 @@ appservice 和 deviceinfo 已经复用内部 CoreDevice helper，避免 envelope
 - 解析 `CoreDevice.output`、`CoreDevice.error`、嵌套 localized error。
 - 统一 CoreDevice version/components。
 
-XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应，fileservice 只读目录列表和下载会用到。后续如果实现更完整的写入和并发传输，还需要按 msg id 等待、接收任意 data frame、以及更细的 control/data 双连接协调。
+XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应，fileservice 只读目录列表和下载会用到。C-lite 收敛后，`XpcClient::call` / `call_recv_client_server` 会按请求 `msg_id` 等待匹配响应，并缓存同一 stream 上早到的乱序消息；底层 `DataFrame` 会携带 `stream_id`、flags 和 payload，支持上层区分任意 data frame 与空 END_STREAM 帧。`fetchsymbols` 和 `restore` 也已复用共享的 `XpcMessageBuffer` 来重组分片 XPC 控制消息，避免各自手写 pending bytes/header/body_len 逻辑。
+
+后续如果实现更复杂的 CoreDevice data plane，例如 appservice stdio socket、sysdiagnose 大文件下载或真实 fileservice 暴露设备上的混合方向并发传输，需要继续在具体业务层补 control/data 双连接生命周期与压力测试；基础 RemoteXPC msg-id/frame/buffer 能力已不再作为 P0 缺口。
 
 ### P1：CoreDevice appservice 扩展（核心 API 基础已补）
 
