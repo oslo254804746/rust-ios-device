@@ -6,6 +6,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.amfi.lockdown";
 
+const DEVELOPER_MODE_REVEAL: u64 = 0;
+const DEVELOPER_MODE_ENABLE: u64 = 1;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AmfiError {
     #[error("IO error: {0}")]
@@ -23,9 +26,24 @@ pub async fn enable_developer_mode<S>(stream: &mut S) -> Result<(), AmfiError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    send_developer_mode_action(stream, DEVELOPER_MODE_ENABLE).await
+}
+
+/// Reveal the Developer Mode option in the device Settings UI.
+pub async fn reveal_developer_mode<S>(stream: &mut S) -> Result<(), AmfiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    send_developer_mode_action(stream, DEVELOPER_MODE_REVEAL).await
+}
+
+async fn send_developer_mode_action<S>(stream: &mut S, action: u64) -> Result<(), AmfiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let req = plist::Value::Dictionary({
         let mut d = plist::Dictionary::new();
-        d.insert("action".to_string(), plist::Value::Integer(1.into()));
+        d.insert("action".to_string(), plist::Value::Integer(action.into()));
         d
     });
 
@@ -54,6 +72,13 @@ where
     if let Some(dict) = val.as_dictionary() {
         if let Some(err) = dict.get("Error").and_then(|v| v.as_string()) {
             return Err(AmfiError::Device(err.to_string()));
+        }
+        if dict
+            .get("success")
+            .and_then(|v| v.as_boolean())
+            .is_some_and(|success| !success)
+        {
+            return Err(AmfiError::Device(format!("{val:?}")));
         }
     }
     Ok(())

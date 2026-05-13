@@ -1,5 +1,6 @@
 pub mod accessibility_audit;
 pub mod activation;
+pub mod amfi;
 pub mod apps;
 pub mod arbitration;
 pub mod backup;

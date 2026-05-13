@@ -32,6 +32,8 @@ enum Commands {
     Arbitration(cmd::arbitration::ArbitrationCmd),
     /// Activation state helpers
     Activation(cmd::activation::ActivationCmd),
+    /// AMFI developer mode helpers
+    Amfi(cmd::amfi::AmfiCmd),
     /// Show device information
     Info(cmd::info::InfoCmd),
     /// Listen for usbmux attach/detach events
@@ -138,6 +140,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::AccessibilityAudit(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Arbitration(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Activation(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Amfi(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Info(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Listen(c) => Box::pin(async move { c.run(!no_json).await }),
         Commands::Lockdown(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -313,6 +316,24 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "lockdown developer-mode command should parse"
+        );
+    }
+
+    #[test]
+    fn parses_amfi_enable_developer_mode_command() {
+        let parsed = Cli::try_parse_from(["ios", "amfi", "enable-developer-mode"]);
+        assert!(
+            parsed.is_ok(),
+            "amfi enable-developer-mode command should parse"
+        );
+    }
+
+    #[test]
+    fn parses_amfi_reveal_developer_mode_command() {
+        let parsed = Cli::try_parse_from(["ios", "amfi", "reveal-developer-mode"]);
+        assert!(
+            parsed.is_ok(),
+            "amfi reveal-developer-mode command should parse"
         );
     }
 
