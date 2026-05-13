@@ -59,6 +59,7 @@
 - 该设备未暴露 `com.apple.coredevice.deviceinfo`、`com.apple.coredevice.appservice`、`com.apple.coredevice.diagnosticsservice` 等 feature-invocation 服务；`info lock-state`、`apps list --coredevice`、`diagnostics sysdiagnose` 均按预期返回对应服务不可用。
 - 该设备暴露 `com.apple.sysdiagnose.remote` / `com.apple.sysdiagnose.remote.trusted`，但实测它们不是 `CoreDevice.output` envelope 协议，不能作为 `com.apple.coredevice.diagnosticsservice` 的透明 fallback。
 - `mobilegestalt ProductVersion ProductType` 在 iOS 17.5.1 上先遇到 diagnostics relay `MobileGestaltDeprecated`，随后 CoreDevice deviceinfo fallback 因该设备未暴露 `com.apple.coredevice.deviceinfo` 而失败；这是设备服务面限制，不是传统 lockdown 基础连接失败。
+- pymobiledevice3 的真实 service class 通过 `ios_rs` userspace tunnel proxy 复用同一 RemoteXPC/RSD 传输时，对上述三个 CoreDevice 服务同样返回 `InvalidServiceError: No such service`；这验证了两点：该设备服务面确实缺失这些 feature-invocation 服务，且 `ios-py` 的 userspace proxy 能与 pymobiledevice3 的 asyncio RemoteXPC 栈协同工作。示例已沉淀在 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py`。
 - 未执行 WDA、XCTest、恢复、重置或完整 sysdiagnose 采集。
 
 ## 主要差距

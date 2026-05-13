@@ -65,6 +65,26 @@ with tunnel.asyncio_proxy():
 tunnel.close()
 ```
 
+## pymobiledevice3 interoperability
+
+`Tunnel.asyncio_proxy()` can also be used as a transport bridge for
+asyncio-based RemoteXPC clients. For example, pymobiledevice3's
+`RemoteServiceDiscoveryService` calls `asyncio.open_connection()` internally, so
+it can run over an `ios_rs` userspace tunnel without requiring pymobiledevice3's
+own privileged tunnel startup path:
+
+```sh
+cd crates/ios-py
+uvx maturin develop
+uv pip install pymobiledevice3
+uv run python examples/pymobiledevice3_coredevice_bridge.py --udid <UDID>
+```
+
+The example is read-only by default and reports RSD service presence. Add
+`--probe-coredevice` to try opening selected pymobiledevice3 CoreDevice service
+classes through the same tunnel; the diagnostics probe is connect-only and does
+not capture a full sysdiagnose.
+
 ## API reference
 
 | Function / Class | Description |

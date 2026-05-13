@@ -54,3 +54,23 @@ with tunnel.asyncio_proxy():
 ```
 
 The patch is process-local and should be kept scoped with the context manager.
+
+## pymobiledevice3 bridge example
+
+Because pymobiledevice3's RemoteXPC stack uses `asyncio.open_connection()`,
+`Tunnel.asyncio_proxy()` can act as a userspace transport bridge for it. This is
+useful on hosts where pymobiledevice3's own tunnel command needs elevated
+privileges, but `ios_rs.start_tunnel(..., mode="userspace")` can already create
+the local proxy.
+
+```sh
+cd crates/ios-py
+uvx maturin develop
+uv pip install pymobiledevice3
+uv run python examples/pymobiledevice3_coredevice_bridge.py --udid <UDID>
+```
+
+The example reports RSD peer metadata and service presence. With
+`--probe-coredevice`, it opens selected pymobiledevice3 CoreDevice service
+classes through the `ios_rs` tunnel. It does not invoke WDA/XCTest, restore,
+reset, or full sysdiagnose capture.

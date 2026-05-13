@@ -36,6 +36,17 @@ The local proxy expects each new connection to begin with:
 
 The Python binding's `asyncio_proxy()` helper installs this preamble automatically for asyncio clients while the context manager is active.
 
+## Python interoperability
+
+The same helper can bridge third-party asyncio RemoteXPC clients. For example,
+`crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` starts an
+`ios_rs` userspace tunnel, scopes `tunnel.asyncio_proxy()`, and then runs
+pymobiledevice3's `RemoteServiceDiscoveryService` over the patched
+`asyncio.open_connection()` transport.
+
+This is intentionally an optional example rather than a hard dependency:
+pymobiledevice3 is only needed when running that script.
+
 ## Common failure causes
 
 - Device is not trusted or required pairing material is missing.
