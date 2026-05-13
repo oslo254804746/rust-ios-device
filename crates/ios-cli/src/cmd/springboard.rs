@@ -363,6 +363,13 @@ fn icon_to_json(icon: &Icon) -> serde_json::Value {
                 .map(|page| page.iter().map(icon_to_json).collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
         }),
+        Icon::Unknown(unknown) => serde_json::json!({
+            "kind": "unknown",
+            "display_name": unknown.display_name,
+            "display_identifier": unknown.display_identifier,
+            "icon_type": unknown.icon_type,
+            "list_type": unknown.list_type,
+        }),
     }
 }
 
@@ -397,6 +404,10 @@ fn print_icon(icon: &Icon, indent: &str) {
                     print_icon(nested, &format!("{indent}    "));
                 }
             }
+        }
+        Icon::Unknown(unknown) => {
+            let name = unknown.display_name.as_deref().unwrap_or("<unknown>");
+            println!("{indent}- {name} [unknown]");
         }
     }
 }
@@ -484,7 +495,7 @@ fn find_bundle_locations_in_icons(
                     find_bundle_locations_in_icons(page, bundle_id, &nested_prefix, locations);
                 }
             }
-            Icon::WebClip(_) | Icon::Custom(_) => {}
+            Icon::WebClip(_) | Icon::Custom(_) | Icon::Unknown(_) => {}
         }
     }
 }
@@ -508,7 +519,7 @@ fn collect_bundle_ids_in_icons(icons: &[Icon], bundle_ids: &mut BTreeSet<String>
                     collect_bundle_ids_in_icons(page, bundle_ids);
                 }
             }
-            Icon::WebClip(_) | Icon::Custom(_) => {}
+            Icon::WebClip(_) | Icon::Custom(_) | Icon::Unknown(_) => {}
         }
     }
 }

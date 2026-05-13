@@ -20,6 +20,9 @@ pub enum Icon {
     Folder(Folder),
     WebClip(WebClip),
     Custom(CustomIcon),
+    /// An icon entry that doesn't match any known pattern (e.g. widgets,
+    /// suggested apps, or other iOS 17+ icon types).
+    Unknown(UnknownIcon),
 }
 
 impl Icon {
@@ -29,6 +32,7 @@ impl Icon {
             Icon::Folder(folder) => &folder.display_name,
             Icon::WebClip(web_clip) => &web_clip.display_name,
             Icon::Custom(_) => "",
+            Icon::Unknown(unknown) => unknown.display_name.as_deref().unwrap_or(""),
         }
     }
 }
@@ -57,6 +61,16 @@ pub struct WebClip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomIcon {
     pub icon_type: Option<String>,
+}
+
+/// An icon entry that doesn't match any known pattern. Preserves whatever
+/// fields the device sent so callers can inspect them if needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownIcon {
+    pub display_name: Option<String>,
+    pub display_identifier: Option<String>,
+    pub icon_type: Option<String>,
+    pub list_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,9 +399,14 @@ fn parse_icon(value: plist::Value) -> Result<Icon, SpringboardError> {
         }));
     }
 
-    Err(SpringboardError::Protocol(
-        "unrecognized springboard icon entry".into(),
-    ))
+    // Unrecognized entry — could be a widget, suggested app, or other iOS 17+
+    // icon type. Return it as Unknown rather than failing the entire parse.
+    Ok(Icon::Unknown(UnknownIcon {
+        display_name: string_field(&dict, "displayName"),
+        display_identifier: string_field(&dict, "displayIdentifier"),
+        icon_type: string_field(&dict, "iconType"),
+        list_type: string_field(&dict, "listType"),
+    }))
 }
 
 fn string_field(dict: &plist::Dictionary, key: &str) -> Option<String> {

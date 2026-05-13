@@ -196,9 +196,20 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
 
     if !script_mode {
         eprintln!("Starting {mode} tunnel for {udid}...");
+    } else {
+        eprintln!("tunnel: connecting ({mode})...");
     }
 
-    let device = connect(udid, opts).await?;
+    let connect_timeout = Duration::from_secs(30);
+    let device = tokio::time::timeout(connect_timeout, connect(udid, opts))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "tunnel connect timed out after {}s — the device may not support \
+                 CoreDevice tunneling or the handshake is blocked",
+                connect_timeout.as_secs()
+            )
+        })??;
     let server_address = device
         .server_address()
         .ok_or_else(|| anyhow::anyhow!("tunnel started without a server address"))?;
