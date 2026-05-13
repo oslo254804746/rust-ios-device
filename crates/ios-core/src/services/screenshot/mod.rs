@@ -3,7 +3,7 @@
 //! Connects to `com.apple.mobile.screenshotr` and captures a screenshot.
 //!
 //! Protocol: plist-framed (same 4-byte BE length prefix as lockdown).
-//! 1. Send DL message: {"MessageType":"DLMessageVersionExchange", "SupportedVersions":[1]}
+//! 1. Send DL message: `{"MessageType":"DLMessageVersionExchange", "SupportedVersions":[1]}`
 //! 2. Recv version exchange response
 //! 3. Send DL ready: {"MessageType":"DLMessageDeviceReady"}
 //! 4. Recv: screenshot plist with "ScreenShotData" key (TIFF/PNG/JPEG bytes)

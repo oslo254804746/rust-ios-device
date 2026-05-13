@@ -1,3 +1,9 @@
+//! XCTest result event parsing and run summary accumulation.
+//!
+//! Testmanager reports progress as DTX method invocations using private XCTest
+//! selectors. This module translates the selectors into stable Rust events and
+//! accumulates those events into a serializable summary for CLI and binding users.
+
 use crate::services::dtx::{DtxMessage, DtxPayload, NSObject};
 use serde::Serialize;
 
@@ -16,19 +22,22 @@ pub const TEST_CASE_FINISHED_SELECTOR: &str =
 pub const TEST_CASE_FAILED_SELECTOR: &str =
     "_XCT_testCaseDidFailForTestClass:method:withMessage:file:line:";
 
+/// A normalized XCTest execution event decoded from a DTX method invocation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TestExecutionEvent {
+    /// The test plan started.
     BeganPlan,
+    /// The test plan finished.
     FinishedPlan,
-    Log {
-        message: String,
-        debug: bool,
-    },
+    /// XCTest emitted a log message.
+    Log { message: String, debug: bool },
+    /// A test suite started.
     SuiteStarted {
         name: String,
         started_at: Option<String>,
     },
+    /// A test suite finished and reported aggregate counts.
     SuiteFinished {
         name: String,
         finished_at: Option<String>,
@@ -41,10 +50,12 @@ pub enum TestExecutionEvent {
         test_duration_seconds: f64,
         total_duration_seconds: f64,
     },
+    /// A test case started.
     CaseStarted {
         class_name: String,
         method_name: String,
     },
+    /// A test case reported a failure.
     CaseFailed {
         class_name: String,
         method_name: String,
@@ -52,6 +63,7 @@ pub enum TestExecutionEvent {
         file: Option<String>,
         line: Option<u64>,
     },
+    /// A test case finished with a final status.
     CaseFinished {
         class_name: String,
         method_name: String,
@@ -61,6 +73,7 @@ pub enum TestExecutionEvent {
 }
 
 impl TestExecutionEvent {
+    /// Decode a supported XCTest DTX method invocation.
     pub fn from_dtx_message(message: &DtxMessage) -> Option<Self> {
         let DtxPayload::MethodInvocation { selector, args } = &message.payload else {
             return None;
@@ -128,19 +141,27 @@ impl TestExecutionEvent {
         }
     }
 
+    /// Return true when this event marks the end of the plan.
     pub fn is_finished_plan(&self) -> bool {
         matches!(self, Self::FinishedPlan)
     }
 }
 
+/// Normalized XCTest case status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestCaseStatus {
+    /// Test passed.
     Passed,
+    /// Test failed.
     Failed,
+    /// XCTest reported an expected failure.
     ExpectedFailure,
+    /// XCTest reported a stalled case.
     Stalled,
+    /// Test was skipped.
     Skipped,
+    /// Status string not modeled by ios-core yet.
     Other(String),
 }
 
@@ -157,50 +178,83 @@ impl TestCaseStatus {
     }
 }
 
+/// Failure details for a single test case.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestFailure {
+    /// Failure message emitted by XCTest.
     pub message: String,
+    /// Source file path when available.
     pub file: Option<String>,
+    /// Source line when available.
     pub line: Option<u64>,
 }
 
+/// Summary for one XCTest case.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestCaseSummary {
+    /// XCTest class name.
     pub class_name: String,
+    /// XCTest method name.
     pub method_name: String,
+    /// Final case status, if observed.
     pub status: Option<TestCaseStatus>,
+    /// Case duration in seconds, if reported.
     pub duration_seconds: Option<f64>,
+    /// First failure associated with the case, if any.
     pub failure: Option<TestFailure>,
 }
 
+/// Summary for one XCTest suite.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestSuiteSummary {
+    /// Suite name.
     pub name: String,
+    /// Start timestamp string as reported by XCTest.
     pub started_at: Option<String>,
+    /// Finish timestamp string as reported by XCTest.
     pub finished_at: Option<String>,
+    /// Total tests reported by the suite.
     pub test_count: Option<u64>,
+    /// Skipped test count.
     pub skipped: Option<u64>,
+    /// Failure count.
     pub failures: Option<u64>,
+    /// Expected failure count.
     pub expected_failures: Option<u64>,
+    /// Unexpected failure count.
     pub unexpected_failures: Option<u64>,
+    /// Uncaught exception count.
     pub uncaught_exceptions: Option<u64>,
+    /// XCTest execution duration in seconds.
     pub test_duration_seconds: Option<f64>,
+    /// Total suite duration in seconds.
     pub total_duration_seconds: Option<f64>,
+    /// Case summaries accumulated for this suite.
     pub cases: Vec<TestCaseSummary>,
 }
 
+/// Summary for an XCTest run.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestRunSummary {
+    /// Whether a plan-start event was observed.
     pub began: bool,
+    /// Whether a plan-finish event was observed.
     pub finished: bool,
+    /// Total test count across suites.
     pub total_tests: u64,
+    /// Total failed test count across suites.
     pub failed_tests: u64,
+    /// Total skipped test count across suites.
     pub skipped_tests: u64,
+    /// Non-debug log messages.
     pub logs: Vec<String>,
+    /// Debug log messages.
     pub debug_logs: Vec<String>,
+    /// Suite summaries.
     pub suites: Vec<TestSuiteSummary>,
 }
 
+/// Stateful accumulator for XCTest events.
 #[derive(Debug, Default, Clone)]
 pub struct TestRunRecorder {
     began: bool,
@@ -211,6 +265,7 @@ pub struct TestRunRecorder {
 }
 
 impl TestRunRecorder {
+    /// Apply one event to the current run summary.
     pub fn apply(&mut self, event: TestExecutionEvent) {
         match event {
             TestExecutionEvent::BeganPlan => self.began = true,
@@ -304,6 +359,7 @@ impl TestRunRecorder {
         }
     }
 
+    /// Build a serializable summary from the events applied so far.
     pub fn summary(&self) -> TestRunSummary {
         let total_tests = self
             .suites

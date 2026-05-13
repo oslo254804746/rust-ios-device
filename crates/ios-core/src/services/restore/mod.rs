@@ -1,38 +1,51 @@
+//! RestoreRemoteServices client for recovery and restore lifecycle operations.
+//!
+//! The service is exposed over RemoteXPC/H2 on iOS 17+ devices. Command helpers
+//! validate the response envelopes for non-destructive actions such as reboot,
+//! recovery entry, nonce queries, and restore lifecycle event streaming.
+
 use crate::xpc::h2_raw::H2Framer;
 use crate::xpc::{XpcMessage, XpcValue};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+/// RSD service name for RestoreRemoteServices.
 pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced";
 
 service_error!(RestoreError);
 
+/// Normalized restore lifecycle event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RestoreLifecycleEvent {
+    /// Progress update with optional operation label and percentage-like progress value.
     Progress {
         operation: Option<String>,
         progress: Option<u64>,
     },
+    /// Status message. `finished` is true when the service reports status code 0.
     Status {
         code: u64,
         message: Option<String>,
         log: Option<String>,
         finished: bool,
     },
+    /// Restore checkpoint notification.
     Checkpoint {
         name: Option<String>,
         raw: IndexMap<String, XpcValue>,
     },
+    /// Data request emitted during a restore lifecycle stream.
     DataRequest {
         data_type: Option<String>,
         data_port: Option<u64>,
         async_request: bool,
         raw: IndexMap<String, XpcValue>,
     },
+    /// Previous restore log payload.
     PreviousRestoreLog(String),
-    RestoredCrash {
-        backtrace: Vec<String>,
-    },
+    /// Crash report emitted by restored.
+    RestoredCrash { backtrace: Vec<String> },
+    /// Event type not yet modeled by ios-core.
     Unknown {
         msg_type: Option<String>,
         raw: IndexMap<String, XpcValue>,
@@ -40,6 +53,7 @@ pub enum RestoreLifecycleEvent {
 }
 
 impl RestoreLifecycleEvent {
+    /// Convert a raw XPC dictionary from restored into a typed lifecycle event.
     pub fn from_xpc_dictionary(message: &IndexMap<String, XpcValue>) -> Self {
         match message.get("MsgType").and_then(XpcValue::as_str) {
             Some("ProgressMsg") => Self::Progress {
@@ -82,6 +96,7 @@ impl RestoreLifecycleEvent {
     }
 }
 
+/// Return a short label for common restored status codes.
 pub fn restore_status_message(status: u64) -> Option<&'static str> {
     match status {
         0 => Some("success"),
@@ -96,6 +111,7 @@ pub fn restore_status_message(status: u64) -> Option<&'static str> {
     }
 }
 
+/// Client for RestoreRemoteServices over an initialized stream.
 pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,
     next_msg_id: u64,
@@ -103,6 +119,7 @@ pub struct RestoreServiceClient<S> {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
+    /// Connect and bootstrap the RemoteXPC/H2 restore service.
     pub async fn connect(stream: S) -> Result<Self, RestoreError> {
         let mut framer = H2Framer::connect(stream)
             .await
@@ -115,32 +132,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         })
     }
 
+    /// Ask the device to enter recovery mode.
     pub async fn enter_recovery(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.validate_command("recovery").await
     }
 
+    /// Request delay-recovery-image mode on supported devices.
     pub async fn delay_recovery_image(
         &mut self,
     ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.validate_command("delayrecoveryimage").await
     }
 
+    /// Ask restored to reboot the device.
     pub async fn reboot(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.validate_command("reboot").await
     }
 
+    /// Query restore preflight metadata.
     pub async fn get_preflight_info(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.send_command("getpreflightinfo", None).await
     }
 
+    /// Query restore nonces such as AP and SEP nonces.
     pub async fn get_nonces(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.send_command("getnonces", None).await
     }
 
+    /// Query restore app parameters.
     pub async fn get_app_parameters(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.validate_command("getappparameters").await
     }
 
+    /// Send a restore language identifier.
     pub async fn restore_lang(
         &mut self,
         language: impl Into<String>,
@@ -149,6 +173,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             .await
     }
 
+    /// Read and normalize one restore lifecycle control event.
     pub async fn next_lifecycle_event(&mut self) -> Result<RestoreLifecycleEvent, RestoreError> {
         let response = self.recv_control_message().await?;
         let body = response_dict(response)?;
@@ -344,6 +369,7 @@ where
     Ok(())
 }
 
+/// Convert an XPC value into a JSON value for CLI output.
 pub fn xpc_value_to_json(value: &XpcValue) -> serde_json::Value {
     match value {
         XpcValue::Null => serde_json::Value::Null,
@@ -375,6 +401,7 @@ pub fn xpc_value_to_json(value: &XpcValue) -> serde_json::Value {
     }
 }
 
+/// Convert a typed restore lifecycle event into the CLI JSON shape.
 pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_json::Value {
     match event {
         RestoreLifecycleEvent::Progress {

@@ -8,6 +8,9 @@ This is a library crate in the [`rust-ios-device`](https://github.com/oslo254804
 
 - Device discovery and connection orchestration across usbmuxd, lockdown, tunnel, and XPC layers.
 - Pairing, tunnel startup, and service helpers suitable for applications and tools.
+- iOS 17+ CoreDevice/RSD support, including appservice, fileservice, diagnosticsservice,
+  deviceinfo, Instruments, testmanager, and restore helpers when the device exposes
+  the corresponding RSD services.
 - Convenience API used by the CLI, FFI, and Python bindings.
 
 ## Install
@@ -24,6 +27,11 @@ ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
 ```
 
 Use grouped features such as `classic`, `developer`, `management`, `ios17`, or `full` for broader tools.
+
+CoreDevice services are feature-gated and service-surface dependent. A device can
+support USB, lockdown, tunnel, and RSD while still omitting a specific CoreDevice
+service; callers should inspect the RSD service list instead of relying on
+ProductVersion alone.
 
 ## Example
 

@@ -1,4 +1,9 @@
 //! iOS 17+ CoreDevice appservice helpers for running processes and app lifecycle.
+//!
+//! Appservice is exposed through the CoreDevice feature invocation envelope rather
+//! than the legacy InstallationProxy service. Use it for process listing, launching,
+//! spawning executables, icon retrieval, and process termination monitoring when the
+//! device exposes the appservice features through RSD.
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 use bytes::Bytes;
@@ -15,6 +20,7 @@ const FEATURE_MONITOR_PROCESS_TERMINATION: &str =
 const FEATURE_SEND_SIGNAL: &str = "com.apple.coredevice.feature.sendsignaltoprocess";
 const SIGKILL: i64 = 9;
 
+/// Errors returned by CoreDevice appservice operations.
 #[derive(Debug, thiserror::Error)]
 pub enum AppServiceError {
     #[error("xpc error: {0}")]
@@ -23,21 +29,33 @@ pub enum AppServiceError {
     Protocol(String),
 }
 
+/// Running process entry returned by `list_processes`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningAppProcess {
+    /// Process identifier.
     pub pid: u64,
+    /// Bundle identifier when the process maps to an app.
     pub bundle_id: Option<String>,
+    /// Display or executable name reported by CoreDevice.
     pub name: String,
+    /// Executable path or name when present in the response.
     pub executable: Option<String>,
+    /// Whether CoreDevice classified the process as an application.
     pub is_application: Option<bool>,
 }
 
+/// Filters used for CoreDevice app listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListAppsOptions {
+    /// Include App Clip bundles.
     pub include_app_clips: bool,
+    /// Include removable user apps.
     pub include_removable_apps: bool,
+    /// Include hidden apps.
     pub include_hidden_apps: bool,
+    /// Include internal Apple apps.
     pub include_internal_apps: bool,
+    /// Include default system apps.
     pub include_default_apps: bool,
 }
 
@@ -53,24 +71,39 @@ impl Default for ListAppsOptions {
     }
 }
 
+/// Application metadata returned by CoreDevice app listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreDeviceAppInfo {
+    /// Bundle identifier.
     pub bundle_id: String,
+    /// Display name when CoreDevice provides one.
     pub name: Option<String>,
+    /// Version string when present.
     pub version: Option<String>,
+    /// Whether the app can be removed by the user.
     pub is_removable: Option<bool>,
+    /// Whether the app is hidden from normal listing.
     pub is_hidden: Option<bool>,
+    /// Whether CoreDevice marks the app as internal.
     pub is_internal: Option<bool>,
+    /// Whether the bundle is an App Clip.
     pub is_app_clip: Option<bool>,
 }
 
+/// Options for launching an application through CoreDevice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchApplicationOptions {
+    /// Command-line arguments passed to the app process.
     pub arguments: Vec<String>,
+    /// Environment variables passed to the app process.
     pub environment_variables: IndexMap<String, String>,
+    /// Request pseudo-terminal backed standard I/O.
     pub standard_io_uses_pseudoterminals: bool,
+    /// Start the process suspended.
     pub start_stopped: bool,
+    /// Terminate an existing instance before launching.
     pub terminate_existing: bool,
+    /// Optional CoreDevice standard I/O routing identifiers.
     pub standard_io_identifiers: IndexMap<String, String>,
 }
 
@@ -87,28 +120,40 @@ impl Default for LaunchApplicationOptions {
     }
 }
 
+/// Raw icon payload and scale metadata returned by CoreDevice.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppIcon {
+    /// Encoded image bytes.
     pub data: Bytes,
+    /// Logical icon width.
     pub width: Option<f64>,
+    /// Logical icon height.
     pub height: Option<f64>,
+    /// Icon scale factor.
     pub scale: Option<f64>,
 }
 
+/// Process termination event returned by CoreDevice monitoring.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessTermination {
+    /// Terminated process identifier.
     pub pid: Option<u64>,
+    /// Exit status when the process exited normally.
     pub exit_status: Option<i64>,
+    /// Signal number when the process was signaled.
     pub signal: Option<i64>,
+    /// Human-readable reason when CoreDevice provides one.
     pub reason: Option<String>,
 }
 
+/// Client for CoreDevice appservice feature calls.
 pub struct AppServiceClient {
     client: XpcClient,
     device_identifier: String,
 }
 
 impl AppServiceClient {
+    /// Create an appservice client from an initialized XPC client and device identifier.
     pub fn new(client: XpcClient, device_identifier: impl Into<String>) -> Self {
         Self {
             client,
@@ -116,6 +161,7 @@ impl AppServiceClient {
         }
     }
 
+    /// List running processes visible to CoreDevice.
     pub async fn list_processes(&mut self) -> Result<Vec<RunningAppProcess>, AppServiceError> {
         let response = self
             .client
@@ -128,6 +174,7 @@ impl AppServiceClient {
         parse_processes(&response)
     }
 
+    /// List installed apps using the supplied CoreDevice filters.
     pub async fn list_apps(
         &mut self,
         options: ListAppsOptions,
@@ -143,6 +190,7 @@ impl AppServiceClient {
         parse_apps(&response)
     }
 
+    /// Return appservice root descriptors as the raw CoreDevice output value.
     pub async fn list_roots(&mut self) -> Result<XpcValue, AppServiceError> {
         let response = self
             .client
@@ -155,10 +203,12 @@ impl AppServiceClient {
         parse_output_value(response)
     }
 
+    /// Send SIGKILL to a process.
     pub async fn kill_process(&mut self, pid: u64) -> Result<(), AppServiceError> {
         self.send_signal(pid, SIGKILL).await
     }
 
+    /// Send an arbitrary signal to a process identifier.
     pub async fn send_signal(&mut self, pid: u64, signal: i64) -> Result<(), AppServiceError> {
         let response = self
             .client
@@ -172,6 +222,7 @@ impl AppServiceClient {
         Ok(())
     }
 
+    /// Launch an app using default CoreDevice options.
     pub async fn launch_application(
         &mut self,
         bundle_id: &str,
@@ -188,6 +239,7 @@ impl AppServiceClient {
         Ok(parse_pid(response.body.as_ref()))
     }
 
+    /// Launch an app using explicit CoreDevice launch options.
     pub async fn launch_application_with_options(
         &mut self,
         bundle_id: &str,
@@ -205,6 +257,7 @@ impl AppServiceClient {
         Ok(parse_pid(response.body.as_ref()))
     }
 
+    /// Spawn an executable path with command-line arguments.
     pub async fn spawn_executable(
         &mut self,
         executable: &str,
@@ -222,6 +275,7 @@ impl AppServiceClient {
         Ok(parse_pid(response.body.as_ref()))
     }
 
+    /// Fetch one or more rendered app icons for a bundle.
     pub async fn fetch_app_icons(
         &mut self,
         bundle_id: &str,
@@ -241,6 +295,7 @@ impl AppServiceClient {
         parse_app_icons(&response)
     }
 
+    /// Wait for CoreDevice to report a process termination event.
     pub async fn monitor_process_termination(
         &mut self,
         pid: u64,

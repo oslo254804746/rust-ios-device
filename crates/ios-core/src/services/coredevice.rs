@@ -1,4 +1,10 @@
 //! Shared helpers for CoreDevice XPC feature services.
+//!
+//! CoreDevice services expose individual operations as feature identifiers. Each call is
+//! wrapped in the same `CoreDevice.*` envelope: target device identifier, CoreDevice
+//! protocol version, feature identifier, input payload, and a per-call invocation UUID.
+//! Service modules keep their feature-specific input/output parsing local and use this
+//! module only for the common envelope and error extraction.
 
 use indexmap::IndexMap;
 
@@ -12,6 +18,9 @@ pub(crate) fn build_request(
     feature_identifier: &str,
     input: XpcValue,
 ) -> XpcValue {
+    // The version fields mirror reference CoreDevice clients. Apple appears to accept
+    // this client version for the feature set implemented here, so keep the shape stable
+    // unless a new reference trace shows a required version bump.
     let mut coredevice_version = IndexMap::new();
     coredevice_version.insert(
         "components".to_string(),
@@ -84,6 +93,9 @@ pub(crate) fn ensure_no_error(value: &XpcValue) -> Result<(), String> {
 
 pub(crate) fn error_message(value: &XpcValue) -> Option<String> {
     let dict = value.as_dict()?;
+    // CoreDevice errors can arrive at several nesting levels depending on the feature.
+    // Search the common envelopes first, then recurse through userInfo/wrapped errors
+    // to surface the human-readable description instead of a raw dictionary dump.
     for key in ["CoreDevice.error", "error", "Error", "NSError", "userInfo"] {
         if let Some(found) = dict.get(key) {
             if let Some(message) = nested_error_message(found) {

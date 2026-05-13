@@ -1,13 +1,19 @@
 //! iOS 17+ CoreDevice diagnostics service via XPC/RSD.
+//!
+//! This module currently covers the CoreDevice sysdiagnose feature. The service
+//! returns metadata and an XPC file-transfer token; consumers that need the full
+//! archive must use the returned transfer information with a compatible data path.
 
 use indexmap::IndexMap;
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 
+/// RSD service name for CoreDevice diagnostics.
 pub const SERVICE_NAME: &str = "com.apple.coredevice.diagnosticsservice";
 
 const FEATURE_CAPTURE_SYSDIAGNOSE: &str = "com.apple.coredevice.feature.capturesysdiagnose";
 
+/// Errors returned by CoreDevice diagnostics operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DiagnosticsServiceError {
     #[error("xpc error: {0}")]
@@ -16,19 +22,25 @@ pub enum DiagnosticsServiceError {
     Protocol(String),
 }
 
+/// Metadata returned by the CoreDevice sysdiagnose feature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SysdiagnoseResponse {
+    /// Filename preferred by the device for the sysdiagnose archive.
     pub preferred_filename: String,
+    /// Archive size reported by CoreDevice.
     pub file_size: u64,
+    /// Raw XPC file-transfer object for consumers that implement the transfer path.
     pub file_transfer: XpcValue,
 }
 
+/// Client for the CoreDevice diagnostics service.
 pub struct DiagnosticsServiceClient {
     client: XpcClient,
     device_identifier: String,
 }
 
 impl DiagnosticsServiceClient {
+    /// Create a diagnostics client from an initialized XPC client and device identifier.
     pub fn new(client: XpcClient, device_identifier: impl Into<String>) -> Self {
         Self {
             client,
@@ -36,6 +48,10 @@ impl DiagnosticsServiceClient {
         }
     }
 
+    /// Request a sysdiagnose capture.
+    ///
+    /// When `dry_run` is true, the device validates and describes the capture without
+    /// collecting the full archive.
     pub async fn capture_sysdiagnose(
         &mut self,
         dry_run: bool,

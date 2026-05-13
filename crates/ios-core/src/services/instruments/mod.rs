@@ -9,7 +9,7 @@
 //!   1. Connect to service via lockdown StartService
 //!   2. Wrap stream in DtxConnection
 //!   3. request_channel(service_name) → channel_code
-//!   4. method_call(channel_code, "setConfig:", [archived_config])
+//!   4. method_call(channel_code, "setConfig:", `[archived_config]`)
 //!   5. method_call_async(channel_code, "start")
 //!   6. Loop recv() → parse samples
 //!

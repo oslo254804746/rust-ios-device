@@ -10,7 +10,7 @@
 //!   [if body_len > 0]:
 //!     body_magic   [4] = 0x42133742
 //!     body_version [4] = 0x00000005
-//!     <XPC value encoding>
+//!     XPC value encoding
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use indexmap::IndexMap;

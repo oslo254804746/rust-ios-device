@@ -4,8 +4,23 @@
 //! into a single ergonomic API. It is the recommended entry point for library consumers.
 //!
 //! Key types:
-//! - [`device::IosDevice`] — connected device handle with service access
+//! - [`ConnectedDevice`] - connected device handle with service access
 //! - [`discovery`] — USB and network device discovery
+//! - [`TunnelManager`] and [`TunMode`] - CoreDevice tunnel lifecycle helpers
+//! - [`XpcClient`] and [`XpcValue`] - RemoteXPC client and value model for iOS 17+ services
+//!
+//! Service implementations are feature gated under [`services`]. The grouped feature flags
+//! are intended for common consumers:
+//!
+//! - `classic` enables lockdown-era services such as AFC, syslog, screenshots, and profiles.
+//! - `developer` enables DTX/Instruments, testmanager, debugserver, WebInspector, and related tools.
+//! - `ios17` enables CoreDevice/RSD services, mDNS discovery, and userspace tunnel support.
+//! - `management` enables restore, preboard, companion, arbitration, and device management helpers.
+//! - `full` enables the broad CLI surface.
+//!
+//! CoreDevice service availability is discovered from the device's RSD directory at runtime.
+//! Do not infer support from ProductVersion alone; newer devices can expose the tunnel and
+//! RSD while omitting a specific feature service such as fileservice.
 //!
 //! Internal transport modules are not part of the public API. Use top-level
 //! re-exports for supported types:

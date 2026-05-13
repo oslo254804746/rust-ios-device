@@ -1,4 +1,9 @@
-//! iOS 17+ file service via XPC/RSD.
+//! iOS 17+ CoreDevice fileservice over RSD.
+//!
+//! The service uses two RSD entries: a control XPC service for sessions and metadata
+//! operations, and a data service for `rwb!FILE` byte transfers. Devices that do not
+//! expose both RSD services should report a clear missing-service error rather than
+//! falling back to AFC or another CoreDevice service name.
 
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
@@ -6,13 +11,18 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 
+/// RSD service name for session creation and metadata operations.
 pub const CONTROL_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.control";
+/// RSD service name for file payload transfer streams.
 pub const DATA_SERVICE_NAME: &str = "com.apple.coredevice.fileservice.data";
+/// Conservative upper bound for a single file transfer.
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
+/// Maximum payload size inlined in a `ProposeFile` control request.
 pub const MAX_INLINE_DATA_SIZE: u64 = 500;
 
 const FILE_WIRE_MAGIC: &[u8; 8] = b"rwb!FILE";
 
+/// Errors returned by the CoreDevice fileservice client.
 #[derive(Debug, thiserror::Error)]
 pub enum FileServiceError {
     #[error("xpc error: {0}")]
@@ -23,32 +33,51 @@ pub enum FileServiceError {
     Protocol(String),
 }
 
+/// Fileservice domain identifiers used by CoreDevice.
+///
+/// Some domains require an app bundle identifier or app group identifier when creating
+/// the session. Temporary and root staging domains use an empty identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum Domain {
+    /// Per-application data container.
     AppDataContainer = 1,
+    /// App group data container.
     AppGroupDataContainer = 2,
+    /// Device temporary fileservice domain.
     Temporary = 3,
+    /// Root staging domain used by reference tools for upload staging.
     RootStaging = 4,
+    /// System crash log domain.
     SystemCrashLogs = 5,
 }
 
+/// Tokens returned by `RetrieveFile` or upload proposal calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileTransferTicket {
+    /// Control-plane token used when opening the data-plane transfer.
     pub response_token: u64,
+    /// File identifier embedded in the `rwb!FILE` transfer header.
     pub file_id: u64,
 }
 
+/// Metadata sent with file creation proposals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileWriteOptions {
+    /// POSIX mode bits for the proposed file.
     pub permissions: i64,
+    /// Owner user ID.
     pub uid: i64,
+    /// Owner group ID.
     pub gid: i64,
+    /// Unix creation timestamp in seconds.
     pub creation_time: i64,
+    /// Unix modification timestamp in seconds.
     pub last_modification_time: i64,
 }
 
 impl FileWriteOptions {
+    /// Return mobile-user defaults matching reference CoreDevice fileservice clients.
     pub fn mobile_defaults_now() -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -70,12 +99,14 @@ impl Default for FileWriteOptions {
     }
 }
 
+/// Client for an active fileservice session.
 pub struct FileServiceClient {
     control: XpcClient,
     session_id: String,
 }
 
 impl FileServiceClient {
+    /// Create a new fileservice session in the requested domain.
     pub async fn connect(
         mut control: XpcClient,
         domain: Domain,
@@ -91,6 +122,7 @@ impl FileServiceClient {
         })
     }
 
+    /// Build a client from an existing session ID.
     pub fn with_session(control: XpcClient, session_id: impl Into<String>) -> Self {
         Self {
             control,
@@ -98,10 +130,12 @@ impl FileServiceClient {
         }
     }
 
+    /// Return the CoreDevice session identifier.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
+    /// List child names for `path` within the active session domain.
     pub async fn list_directory(&mut self, path: &str) -> Result<Vec<String>, FileServiceError> {
         let response = self
             .control
@@ -113,6 +147,7 @@ impl FileServiceClient {
         parse_directory_list_response(response)
     }
 
+    /// Request a data-plane ticket for downloading `path`.
     pub async fn retrieve_file_ticket(
         &mut self,
         path: &str,
@@ -124,6 +159,7 @@ impl FileServiceClient {
         parse_retrieve_file_response(response)
     }
 
+    /// Download `path` into memory through the data service stream.
     pub async fn download_file<S>(
         &mut self,
         path: &str,
@@ -137,6 +173,7 @@ impl FileServiceClient {
         receive_file_data(data_stream).await
     }
 
+    /// Download `path` directly into an async writer through the data service stream.
     pub async fn download_file_to_writer<S, W>(
         &mut self,
         path: &str,
@@ -152,6 +189,7 @@ impl FileServiceClient {
         receive_file_data_to_writer(data_stream, writer).await
     }
 
+    /// Create an empty remote file with the supplied metadata.
     pub async fn propose_empty_file(
         &mut self,
         path: &str,
@@ -169,6 +207,10 @@ impl FileServiceClient {
         ensure_no_error(&body)
     }
 
+    /// Remove a remote item.
+    ///
+    /// Set `recursive` for directories. The device enforces the permissions of the
+    /// selected session domain.
     pub async fn remove_item(
         &mut self,
         path: &str,
@@ -182,6 +224,7 @@ impl FileServiceClient {
         ensure_no_error(&body)
     }
 
+    /// Create a directory with the supplied metadata.
     pub async fn create_directory(
         &mut self,
         path: &str,
@@ -199,6 +242,7 @@ impl FileServiceClient {
         ensure_no_error(&body)
     }
 
+    /// Rename or move an item within the active session domain.
     pub async fn rename_item(&mut self, from: &str, to: &str) -> Result<(), FileServiceError> {
         let response = self
             .control
@@ -208,6 +252,7 @@ impl FileServiceClient {
         ensure_no_error(&body)
     }
 
+    /// Upload a small file by embedding its bytes in the control-plane request.
     pub async fn upload_inline_file(
         &mut self,
         path: &str,
@@ -238,6 +283,7 @@ impl FileServiceClient {
         Ok(())
     }
 
+    /// Request a data-plane upload ticket for a large file.
     pub async fn propose_file_upload(
         &mut self,
         path: &str,
@@ -270,6 +316,7 @@ impl FileServiceClient {
         })
     }
 
+    /// Stream large file bytes to the data service using a previously issued ticket.
     pub async fn upload_file_data<S, R>(
         &mut self,
         data_stream: &mut S,

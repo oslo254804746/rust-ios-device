@@ -34,9 +34,9 @@ pub enum PrimArg {
 /// Encode a list of arguments into a DTX PrimitiveDictionary byte array.
 ///
 /// Wire format (matches go-ios ToBytes() exactly — no array header):
-///   For each entry: [key_type=0x0A (4 LE)] [value_type (4 LE)] [value_data]
-///   t_uint32:    [0x0A][0x03][uint32 (4 LE)]
-///   t_bytearray: [0x0A][0x02][length (4 LE)][data]
+///   For each entry: `[key_type=0x0A (4 LE)] [value_type (4 LE)] [value_data]`
+///   `t_uint32`:    `[0x0A][0x03][uint32 (4 LE)]`
+///   `t_bytearray`: `[0x0A][0x02][length (4 LE)][data]`
 pub fn encode_primitive_dict(args: &[PrimArg]) -> Bytes {
     let mut out = BytesMut::new();
 
