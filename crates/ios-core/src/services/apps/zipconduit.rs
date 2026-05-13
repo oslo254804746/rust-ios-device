@@ -20,7 +20,9 @@ pub enum ZipConduitError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[from] plist::Error),
+    #[error("protocol error: {0}")]
+    Protocol(String),
     #[error("zip error: {0}")]
     Zip(String),
     #[error("install error: {0}")]
@@ -312,7 +314,7 @@ fn build_zip_metadata(record_count: u64, total_uncompressed: u64) -> plist::Valu
 
 fn plist_to_xml_bytes(value: &plist::Value) -> Result<Vec<u8>, ZipConduitError> {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| ZipConduitError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     Ok(buf)
 }
 
@@ -332,11 +334,11 @@ async fn recv_plist<S: AsyncRead + Unpin>(stream: &mut S) -> Result<plist::Value
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > 4 * 1024 * 1024 {
-        return Err(ZipConduitError::Plist(format!("plist too large: {len}")));
+        return Err(ZipConduitError::Protocol(format!("plist too large: {len}")));
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|e| ZipConduitError::Plist(e.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }
 
 #[cfg(test)]

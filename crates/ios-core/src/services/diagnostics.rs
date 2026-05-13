@@ -132,7 +132,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     let io_registry = query_ioregistry(stream, "IOPMPowerSource").await?;
-    plist::from_value(&io_registry).map_err(|e| DiagnosticsError::Plist(e.to_string()))
+    Ok(plist::from_value(&io_registry)?)
 }
 
 /// Query an arbitrary IORegistry entry class exposed by diagnostics_relay.
@@ -205,7 +205,7 @@ where
     T: Serialize,
 {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| DiagnosticsError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -236,8 +236,7 @@ where
     S: AsyncRead + Unpin + ?Sized,
 {
     let data = recv_plist_raw(stream).await?;
-    let value: plist::Value =
-        plist::from_bytes(&data).map_err(|e| DiagnosticsError::Plist(e.to_string()))?;
+    let value: plist::Value = plist::from_bytes(&data)?;
     value.into_dictionary().ok_or_else(|| {
         DiagnosticsError::Protocol("diagnostics response payload was not a dictionary".into())
     })

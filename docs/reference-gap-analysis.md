@@ -103,7 +103,7 @@ XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应
 
 后续如果实现更复杂的 CoreDevice data plane，例如 appservice stdio socket、sysdiagnose 大文件下载或真实 fileservice 暴露设备上的混合方向并发传输，需要继续在具体业务层补 control/data 双连接生命周期与压力测试；基础 RemoteXPC msg-id/frame/buffer 能力已不再作为 P0 缺口。
 
-### P1：CoreDevice appservice 扩展（核心 API 基础已补）
+### P1：CoreDevice appservice 扩展（核心 API 基础已补，缺服务表现已真机收尾）
 
 当前 appservice 在 `ios-core` 层已经补齐参考项目中最重要的离线可测能力：
 
@@ -114,7 +114,13 @@ XPC 层已经支持从 serverClient 和 clientServer 两条固定流读取响应
 - CLI `apps pkill --signal N` 在 Instruments fallback 下已限制为 SIGKILL，非 SIGKILL 会要求 iOS 17+ appservice。
 - CLI 已新增 `apps list --coredevice`、`apps roots`、`apps spawn <executable> -- <args...>`、`apps icons <bundle-id>`、`apps monitor <pid>`，分别覆盖 listapps、listroots、spawnexecutable、fetchappicons 和 monitorprocesstermination。
 
-后续建议用真实 iOS 17+ 设备验证这些入口的返回字段、icon 数据格式、spawn stdio socket 生命周期，以及 monitor 的阻塞/流式行为。
+2026-05-13 用 iOS 17.5.1 / `00008020-0004553E02F2002E` 真机复核 appservice P1：
+
+- `rsd services --all` 不包含 `com.apple.coredevice.appservice`，`rsd check com.apple.coredevice.appservice` 返回 `available: false`。
+- `apps list --coredevice`、`apps roots`、`apps spawn /usr/bin/log -- stream --style json`、`apps icons com.apple.Preferences`、`apps monitor 1 --timeout-secs 1` 均在服务发现阶段返回明确错误：`service 'com.apple.coredevice.appservice' not found in RSD directory`。
+- `apps processes --name SpringBoard` 仍可通过 Instruments fallback 返回 SpringBoard，说明传统进程列表链路未被 CoreDevice appservice 缺失影响。
+
+因此该 P1 在实现、CLI 暴露和 appservice 缺失时的失败行为上已闭环；当前在线设备不暴露 appservice，无法正向验证返回字段、icon 数据格式、spawn stdio socket 生命周期和 monitor 的阻塞/流式行为。后续若遇到实际暴露 `com.apple.coredevice.appservice` 的设备，再把这些项目作为覆盖扩展补测，不再阻塞当前参考差距收敛。
 
 ### P1：CoreDevice diagnostics/deviceinfo 更完整接入（CLI 基础已补）
 
@@ -162,11 +168,11 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 
 ## 推荐推进顺序
 
-1. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再按结果优化 CLI 输出形态。
-2. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
-3. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
-4. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
-5. 用真实恢复/更新流程验证 `ios restore events` 的事件顺序、超时行为和 data request 形态；确认后再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
+1. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
+2. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
+3. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
+4. 用真实恢复/更新流程验证 `ios restore events` 的事件顺序、超时行为和 data request 形态；确认后再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
+5. 若后续拿到暴露 CoreDevice appservice 的设备，再补充 listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期正向覆盖。
 6. 若后续拿到暴露 CoreDevice fileservice control/data 的设备，再补充 fileservice domain 权限矩阵和混合方向并发流验证。
 
 ## 测试策略

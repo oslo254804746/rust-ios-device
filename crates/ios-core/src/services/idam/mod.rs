@@ -50,7 +50,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     value: &plist::Value,
 ) -> Result<(), IdamError> {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| IdamError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -69,7 +69,7 @@ async fn recv_plist<S: AsyncRead + Unpin>(stream: &mut S) -> Result<plist::Dicti
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|e| IdamError::Plist(e.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }
 
 #[cfg(test)]

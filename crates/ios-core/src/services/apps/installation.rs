@@ -16,7 +16,9 @@ pub enum IpError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[from] plist::Error),
+    #[error("protocol error: {0}")]
+    Protocol(String),
     #[error("install error: {0}")]
     Install(String),
 }
@@ -217,8 +219,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         let mut apps = Vec::new();
         loop {
             let data = recv_plist_raw(&mut self.stream).await?;
-            let resp: plist::Dictionary =
-                plist::from_bytes(&data).map_err(|e| IpError::Plist(e.to_string()))?;
+            let resp: plist::Dictionary = plist::from_bytes(&data)?;
 
             for item in resp
                 .get("CurrentList")
@@ -250,8 +251,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         .await?;
 
         let data = recv_plist_raw(&mut self.stream).await?;
-        let mut dict: HashMap<String, plist::Value> =
-            plist::from_bytes(&data).map_err(|e| IpError::Plist(e.to_string()))?;
+        let mut dict: HashMap<String, plist::Value> = plist::from_bytes(&data)?;
         if let Some(e) = dict.get("Error") {
             return Err(IpError::Install(format!("{e:?}")));
         }
@@ -267,8 +267,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
     async fn wait_for_completion(&mut self) -> Result<(), IpError> {
         loop {
             let data = recv_plist_raw(&mut self.stream).await?;
-            let dict: HashMap<String, plist::Value> =
-                plist::from_bytes(&data).map_err(|e| IpError::Plist(e.to_string()))?;
+            let dict: HashMap<String, plist::Value> = plist::from_bytes(&data)?;
             if let Some(error) = dict.get("Error") {
                 let message = match dict.get("ErrorDescription").and_then(|v| v.as_string()) {
                     Some(description) => format!("{error:?}: {description}"),
@@ -330,7 +329,7 @@ where
     // Convert JSON value to plist
     let plist_val = json_to_plist(value);
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, &plist_val).map_err(|e| IpError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, &plist_val)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -346,7 +345,7 @@ where
     let len = u32::from_be_bytes(len_buf) as usize;
     const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
     if len > MAX_PLIST_SIZE {
-        return Err(IpError::Plist(format!(
+        return Err(IpError::Protocol(format!(
             "plist length {len} exceeds maximum of {MAX_PLIST_SIZE}"
         )));
     }

@@ -1502,6 +1502,7 @@ dependencies = [
  "hkdf",
  "http",
  "indexmap",
+ "libc",
  "lz4_flex",
  "md5",
  "mdns-sd",

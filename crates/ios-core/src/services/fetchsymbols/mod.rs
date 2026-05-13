@@ -285,7 +285,7 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|err| FetchSymbolsError::Plist(err.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }
 
 fn try_parse_catalog_count(

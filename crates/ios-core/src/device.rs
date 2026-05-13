@@ -223,12 +223,9 @@ impl ConnectedDevice {
             connect_lockdown_port(&self.info.udid, &self.lockdown_transport, port, false).await?;
 
         if enable_ssl {
-            let tls = wrap_service_tls(svc_stream, pair_record)
-                .await
-                .map_err(|e| CoreError::Other(e.to_string()))?;
+            let tls = wrap_service_tls(svc_stream, pair_record).await?;
             if should_strip_service_ssl(service_name) {
-                let stream = crate::lockdown::session::strip_service_tls(tls)
-                    .map_err(|e| CoreError::Other(e.to_string()))?;
+                let stream = crate::lockdown::session::strip_service_tls(tls)?;
                 Ok(Box::new(stream))
             } else {
                 Ok(Box::new(tls))
@@ -260,7 +257,7 @@ impl ConnectedDevice {
         client
             .get_value(domain, key)
             .await
-            .map_err(|e| CoreError::Other(e.to_string()))
+            .map_err(CoreError::from)
     }
 
     /// Set a lockdown value by key (domain=None for global domain).
@@ -283,7 +280,7 @@ impl ConnectedDevice {
         client
             .set_value(domain, key, value)
             .await
-            .map_err(|e| CoreError::Other(e.to_string()))
+            .map_err(CoreError::from)
     }
 
     /// Remove a lockdown value by key (domain=None for global domain).
@@ -301,7 +298,7 @@ impl ConnectedDevice {
         client
             .remove_value(domain, key)
             .await
-            .map_err(|e| CoreError::Other(e.to_string()))
+            .map_err(CoreError::from)
     }
 
     /// Read language and locale metadata from `com.apple.international`.
@@ -313,20 +310,16 @@ impl ConnectedDevice {
         let mut client = self.lockdown_client().await?;
         let language = client
             .get_value(Some(INTERNATIONAL_DOMAIN), Some("Language"))
-            .await
-            .map_err(|e| CoreError::Other(e.to_string()))?;
+            .await?;
         let locale = client
             .get_value(Some(INTERNATIONAL_DOMAIN), Some("Locale"))
-            .await
-            .map_err(|e| CoreError::Other(e.to_string()))?;
+            .await?;
         let supported_locales = client
             .get_value(Some(INTERNATIONAL_DOMAIN), Some("SupportedLocales"))
-            .await
-            .map_err(|e| CoreError::Other(e.to_string()))?;
+            .await?;
         let supported_languages = client
             .get_value(Some(INTERNATIONAL_DOMAIN), Some("SupportedLanguages"))
-            .await
-            .map_err(|e| CoreError::Other(e.to_string()))?;
+            .await?;
 
         Ok(InternationalConfiguration {
             language: plist_value_to_string(&language, "Language")?,
@@ -370,7 +363,7 @@ impl ConnectedDevice {
 
         XpcClient::connect_stream(stream)
             .await
-            .map_err(|e| CoreError::Other(e.to_string()))
+            .map_err(CoreError::from)
     }
 
     async fn resolve_rsd_service_with_retry(
@@ -516,7 +509,7 @@ fn resolve_tunnel_connection_target(
     userspace_port: Option<u16>,
 ) -> Result<TunnelConnectionTarget, CoreError> {
     let remote_addr = Ipv6Addr::from_str(server_addr)
-        .map_err(|e| CoreError::Other(format!("invalid IPv6 addr: {e}")))?;
+        .map_err(|e| CoreError::Protocol(format!("invalid IPv6 addr: {e}")))?;
 
     Ok(match userspace_port {
         Some(proxy_port) => TunnelConnectionTarget::UserspaceProxy {
@@ -533,7 +526,7 @@ fn validate_rsd_checkin_response(
     context: &str,
 ) -> Result<(), CoreError> {
     let response = response.as_dictionary().ok_or_else(|| {
-        CoreError::Other(format!(
+        CoreError::Protocol(format!(
             "{context} expected plist dictionary response, got {:?}",
             response
         ))
@@ -543,20 +536,20 @@ fn validate_rsd_checkin_response(
         .get("Request")
         .and_then(plist::Value::as_string)
         .ok_or_else(|| {
-            CoreError::Other(format!(
+            CoreError::Protocol(format!(
                 "{context} missing Request field in response: {:?}",
                 response
             ))
         })?;
 
     if actual_request != expected_request {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "{context} expected Request={expected_request}, got {actual_request}"
         )));
     }
 
     if let Some(error) = response.get("Error") {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "{context} failed with Error={:?}",
             error
         )));
@@ -577,17 +570,12 @@ where
             request: "RSDCheckin",
         },
     )
-    .await
-    .map_err(|e| CoreError::Other(e.to_string()))?;
+    .await?;
 
-    let checkin_response: plist::Value = recv_lockdown(stream)
-        .await
-        .map_err(|e| CoreError::Other(e.to_string()))?;
+    let checkin_response: plist::Value = recv_lockdown(stream).await?;
     validate_rsd_checkin_response(checkin_response, "RSDCheckin", "RSD check-in response")?;
 
-    let start_service_response: plist::Value = recv_lockdown(stream)
-        .await
-        .map_err(|e| CoreError::Other(e.to_string()))?;
+    let start_service_response: plist::Value = recv_lockdown(stream).await?;
     validate_rsd_checkin_response(
         start_service_response,
         "StartService",
@@ -917,8 +905,7 @@ async fn connect_via_lockdown_transport(
             tracing::info!("tunnel connect: wrapping CoreDeviceProxy with TLS");
             ProxyStream::Tls(Box::new(
                 wrap_service_tls(proxy_stream_raw, &pair_record)
-                    .await
-                    .map_err(|e| CoreError::Other(e.to_string()))?,
+                    .await?,
             ))
         } else {
             tracing::info!("tunnel connect: CoreDeviceProxy is plaintext");
@@ -1089,10 +1076,9 @@ impl RemotePairingControlChannel {
     async fn send(&mut self, payload: &serde_json::Value) -> Result<(), CoreError> {
         use tokio::io::AsyncWriteExt;
 
-        let body = serde_json::to_vec(payload)
-            .map_err(|e| CoreError::Other(format!("remote pairing JSON encode failed: {e}")))?;
+        let body = serde_json::to_vec(payload)?;
         if body.len() > u16::MAX as usize {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::Protocol(format!(
                 "remote pairing payload too large: {} bytes",
                 body.len()
             )));
@@ -1113,7 +1099,7 @@ impl RemotePairingControlChannel {
         let mut magic = [0u8; 9];
         self.stream.read_exact(&mut magic).await?;
         if &magic != b"RPPairing" {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::Protocol(format!(
                 "invalid RPPairing magic: {magic:?}"
             )));
         }
@@ -1123,8 +1109,7 @@ impl RemotePairingControlChannel {
         let body_len = u16::from_be_bytes(length) as usize;
         let mut body = vec![0u8; body_len];
         self.stream.read_exact(&mut body).await?;
-        serde_json::from_slice(&body)
-            .map_err(|e| CoreError::Other(format!("remote pairing JSON decode failed: {e}")))
+        Ok(serde_json::from_slice(&body)?)
     }
 }
 
@@ -1216,11 +1201,9 @@ async fn connect_via_direct_rsd_target(
     opts: ConnectOptions,
     target: MdnsDevice,
 ) -> Result<ConnectedDevice, CoreError> {
-    let rsd = rsd_handshake(target.ipv6, target.rsd_port)
-        .await
-        .map_err(|e| CoreError::Other(format!("direct RSD handshake failed: {e}")))?;
+    let rsd = rsd_handshake(target.ipv6, target.rsd_port).await?;
     if rsd.udid != info.udid {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "direct RSD target {} resolved to unexpected udid {}",
             target.ipv6, rsd.udid
         )));
@@ -1416,26 +1399,20 @@ async fn establish_direct_tunnel_stream(
     rsd_addr: Ipv6Addr,
     service_port: u16,
 ) -> Result<GuardedTunnelStream<XpcClient>, CoreError> {
-    let mut client = XpcClient::connect(rsd_addr, service_port)
-        .await
-        .map_err(|e| CoreError::Other(format!("direct tunnelservice connect failed: {e}")))?;
+    let mut client = XpcClient::connect(rsd_addr, service_port).await?;
     let mut sequence_number = 0u64;
 
     client
         .send(build_direct_handshake_request(sequence_number))
-        .await
-        .map_err(|e| CoreError::Other(format!("direct handshake request failed: {e}")))?;
+        .await?;
     sequence_number += 1;
 
-    let handshake = client
-        .recv()
-        .await
-        .map_err(|e| CoreError::Other(format!("direct handshake response failed: {e}")))?;
+    let handshake = client.recv().await?;
     let remote_identifier = extract_direct_remote_identifier(
         handshake
             .body
             .as_ref()
-            .ok_or_else(|| CoreError::Other("direct handshake response missing body".into()))?,
+            .ok_or_else(|| CoreError::Protocol("direct handshake response missing body".into()))?,
     )?;
 
     let loaded = {
@@ -1458,24 +1435,20 @@ async fn establish_direct_tunnel_stream(
             None,
             sequence_number,
         ))
-        .await
-        .map_err(|e| CoreError::Other(format!("verifyManualPairing start failed: {e}")))?;
+        .await?;
     sequence_number += 1;
 
-    let verify_start = client
-        .recv()
-        .await
-        .map_err(|e| CoreError::Other(format!("verifyManualPairing start response failed: {e}")))?;
+    let verify_start = client.recv().await?;
     let verify_start_tlv = extract_direct_pairing_tlv(
         verify_start
             .body
             .as_ref()
-            .ok_or_else(|| CoreError::Other("verifyManualPairing start missing body".into()))?,
+            .ok_or_else(|| CoreError::Protocol("verifyManualPairing start missing body".into()))?,
     )?;
     let verify_start_fields = TlvBuffer::decode(&verify_start_tlv);
     if let Some(error) = verify_start_fields.get(&DIRECT_PAIRING_TYPE_ERROR) {
         send_pair_verify_failed(&mut client, sequence_number).await?;
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "verifyManualPairing start rejected: {error:?}"
         )));
     }
@@ -1483,12 +1456,12 @@ async fn establish_direct_tunnel_stream(
     let device_public: [u8; 32] = verify_start_fields
         .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
         .ok_or_else(|| {
-            CoreError::Other("verifyManualPairing start missing device public key".into())
+            CoreError::Protocol("verifyManualPairing start missing device public key".into())
         })?
         .as_ref()
         .try_into()
         .map_err(|_| {
-            CoreError::Other("verifyManualPairing device public key must be 32 bytes".into())
+            CoreError::Protocol("verifyManualPairing device public key must be 32 bytes".into())
         })?;
 
     let verify_session = build_verify_step2_tlv(
@@ -1507,23 +1480,20 @@ async fn establish_direct_tunnel_stream(
             None,
             sequence_number,
         ))
-        .await
-        .map_err(|e| CoreError::Other(format!("verifyManualPairing finish failed: {e}")))?;
+        .await?;
     sequence_number += 1;
 
-    let verify_finish = client.recv().await.map_err(|e| {
-        CoreError::Other(format!("verifyManualPairing finish response failed: {e}"))
-    })?;
+    let verify_finish = client.recv().await?;
     let verify_finish_tlv = extract_direct_pairing_tlv(
         verify_finish
             .body
             .as_ref()
-            .ok_or_else(|| CoreError::Other("verifyManualPairing finish missing body".into()))?,
+            .ok_or_else(|| CoreError::Protocol("verifyManualPairing finish missing body".into()))?,
     )?;
     let verify_finish_fields = TlvBuffer::decode(&verify_finish_tlv);
     if let Some(error) = verify_finish_fields.get(&DIRECT_PAIRING_TYPE_ERROR) {
         send_pair_verify_failed(&mut client, sequence_number).await?;
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "verifyManualPairing finish rejected: {error:?}"
         )));
     }
@@ -1590,7 +1560,7 @@ async fn establish_remote_pairing_tunnel_stream(
                 sequence_number,
             ))
             .await?;
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "remote pairing verify start rejected: {error:?}"
         )));
     }
@@ -1598,12 +1568,12 @@ async fn establish_remote_pairing_tunnel_stream(
     let device_public: [u8; 32] = verify_start_fields
         .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
         .ok_or_else(|| {
-            CoreError::Other("remote pairing verify start missing device public key".into())
+            CoreError::Protocol("remote pairing verify start missing device public key".into())
         })?
         .as_ref()
         .try_into()
         .map_err(|_| {
-            CoreError::Other("remote pairing device public key must be 32 bytes".into())
+            CoreError::Protocol("remote pairing device public key must be 32 bytes".into())
         })?;
 
     let verify_session = build_verify_step2_tlv(
@@ -1634,7 +1604,7 @@ async fn establish_remote_pairing_tunnel_stream(
                 sequence_number,
             ))
             .await?;
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "remote pairing verify finish rejected: {error:?}"
         )));
     }
@@ -1664,7 +1634,7 @@ async fn send_pair_verify_failed(
     client
         .send(build_direct_pair_verify_failed_event(sequence_number))
         .await
-        .map_err(|e| CoreError::Other(format!("pairVerifyFailed send failed: {e}")))
+        .map_err(CoreError::from)
 }
 
 #[cfg(feature = "tunnel")]
@@ -1744,7 +1714,7 @@ fn load_ios_rs_remote_pairing_credentials(
             .map_err(|e| CoreError::Other(format!("invalid persisted host identity: {e}")))?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "persisted host key mismatch for remote identifier {remote_identifier}"
         )));
     }
@@ -1753,7 +1723,7 @@ fn load_ios_rs_remote_pairing_credentials(
         let persisted_private_key = hex::decode(host_private_key_hex)
             .map_err(|e| CoreError::Other(format!("invalid host private key hex: {e}")))?;
         if persisted_private_key != remote_pair_record.private_key {
-            return Err(CoreError::Other(format!(
+            return Err(CoreError::Protocol(format!(
                 "persisted host private key mismatch for remote identifier {remote_identifier}"
             )));
         }
@@ -1779,7 +1749,7 @@ fn load_pymobiledevice3_remote_pairing_credentials(
             })?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "pymobiledevice3 host key mismatch for remote identifier {remote_identifier} in {}",
             creds_dir.display()
         )));
@@ -1976,32 +1946,27 @@ async fn create_direct_tcp_listener(
             )]),
             sequence_number,
         ))
-        .await
-        .map_err(|e| CoreError::Other(format!("createListener request failed: {e}")))?;
+        .await?;
 
-    let response = client
-        .recv()
-        .await
-        .map_err(|e| CoreError::Other(format!("createListener response failed: {e}")))?;
+    let response = client.recv().await?;
     let encrypted_response = extract_direct_stream_encrypted(
         response
             .body
             .as_ref()
-            .ok_or_else(|| CoreError::Other("createListener response missing body".into()))?,
+            .ok_or_else(|| CoreError::Protocol("createListener response missing body".into()))?,
     )?;
     let server_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.server_key).into());
     let plaintext = server_cipher
         .decrypt((&nonce).into(), encrypted_response.as_ref())
         .map_err(|e| CoreError::Other(format!("createListener decrypt failed: {e}")))?;
-    let response: serde_json::Value = serde_json::from_slice(&plaintext)
-        .map_err(|e| CoreError::Other(format!("invalid createListener JSON: {e}")))?;
+    let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
         .get("response")
         .and_then(|value| value.get("_1"))
-        .ok_or_else(|| CoreError::Other("createListener response missing response._1".into()))?;
+        .ok_or_else(|| CoreError::Protocol("createListener response missing response._1".into()))?;
 
     if let Some(message) = extract_direct_error_extended_message(response_body) {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "createListener returned errorExtended: {message}"
         )));
     }
@@ -2010,11 +1975,11 @@ async fn create_direct_tcp_listener(
         .get("createListener")
         .and_then(|value| value.get("port"))
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| CoreError::Other("createListener response missing port".into()))?;
+        .ok_or_else(|| CoreError::Protocol("createListener response missing port".into()))?;
     u16::try_from(port)
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| CoreError::Other(format!("invalid createListener port {port}")))
+        .ok_or_else(|| CoreError::Protocol(format!("invalid createListener port {port}")))
 }
 
 #[cfg(feature = "tunnel")]
@@ -2065,18 +2030,16 @@ async fn create_remote_pairing_tcp_listener(
         .map_err(|e| {
             CoreError::Other(format!("remote pairing createListener decrypt failed: {e}"))
         })?;
-    let response: serde_json::Value = serde_json::from_slice(&plaintext).map_err(|e| {
-        CoreError::Other(format!("invalid remote pairing createListener JSON: {e}"))
-    })?;
+    let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
         .get("response")
         .and_then(|value| value.get("_1"))
         .ok_or_else(|| {
-            CoreError::Other("remote pairing createListener response missing response._1".into())
+            CoreError::Protocol("remote pairing createListener response missing response._1".into())
         })?;
 
     if let Some(message) = extract_direct_error_extended_message(response_body) {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "remote pairing createListener returned errorExtended: {message}"
         )));
     }
@@ -2086,13 +2049,13 @@ async fn create_remote_pairing_tcp_listener(
         .and_then(|value| value.get("port"))
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
-            CoreError::Other("remote pairing createListener response missing port".into())
+            CoreError::Protocol("remote pairing createListener response missing port".into())
         })?;
     u16::try_from(port)
         .ok()
         .filter(|port| *port != 0)
         .ok_or_else(|| {
-            CoreError::Other(format!("invalid remote pairing createListener port {port}"))
+            CoreError::Protocol(format!("invalid remote pairing createListener port {port}"))
         })
 }
 
@@ -2121,7 +2084,7 @@ fn extract_direct_remote_identifier(body: &XpcValue) -> Result<String, CoreError
         .and_then(|peer| peer.get("identifier"))
         .and_then(XpcValue::as_str)
         .map(ToOwned::to_owned)
-        .ok_or_else(|| CoreError::Other("handshake missing peerDeviceInfo.identifier".into()))
+        .ok_or_else(|| CoreError::Protocol("handshake missing peerDeviceInfo.identifier".into()))
 }
 
 #[cfg(feature = "tunnel")]
@@ -2220,13 +2183,13 @@ fn extract_direct_pairing_tlv(body: &XpcValue) -> Result<Vec<u8>, CoreError> {
         .and_then(XpcValue::as_dict)
         .and_then(|event| event.get("_0"))
         .and_then(XpcValue::as_dict)
-        .ok_or_else(|| CoreError::Other("pairing response missing event._0".into()))?;
+        .ok_or_else(|| CoreError::Protocol("pairing response missing event._0".into()))?;
 
     if let Some(message) = event
         .get("pairingRejectedWithError")
         .and_then(extract_direct_rejection_message)
     {
-        return Err(CoreError::Other(format!("pairing rejected: {message}")));
+        return Err(CoreError::Protocol(format!("pairing rejected: {message}")));
     }
 
     event
@@ -2239,7 +2202,7 @@ fn extract_direct_pairing_tlv(body: &XpcValue) -> Result<Vec<u8>, CoreError> {
             XpcValue::Data(bytes) => Some(bytes.to_vec()),
             _ => None,
         })
-        .ok_or_else(|| CoreError::Other("pairing response missing pairingData._0.data".into()))
+        .ok_or_else(|| CoreError::Protocol("pairing response missing pairingData._0.data".into()))
 }
 
 #[cfg(feature = "tunnel")]
@@ -2251,14 +2214,14 @@ fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec<u8>, CoreE
         .and_then(|value| value.get("event"))
         .and_then(|value| value.get("_0"))
         .ok_or_else(|| {
-            CoreError::Other("remote pairing response missing message.plain._0.event._0".into())
+            CoreError::Protocol("remote pairing response missing message.plain._0.event._0".into())
         })?;
 
     if let Some(message) = event
         .get("pairingRejectedWithError")
         .and_then(extract_remote_pairing_rejection_message)
     {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "remote pairing rejected: {message}"
         )));
     }
@@ -2269,7 +2232,7 @@ fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec<u8>, CoreE
         .and_then(|value| value.get("data"))
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            CoreError::Other("remote pairing response missing pairingData._0.data".into())
+            CoreError::Protocol("remote pairing response missing pairingData._0.data".into())
         })?;
     BASE64_STANDARD
         .decode(data)
@@ -2289,7 +2252,7 @@ fn extract_direct_stream_encrypted(body: &XpcValue) -> Result<Vec<u8>, CoreError
             _ => None,
         })
         .ok_or_else(|| {
-            CoreError::Other("encrypted response missing message.streamEncrypted._0".into())
+            CoreError::Protocol("encrypted response missing message.streamEncrypted._0".into())
         })
 }
 
@@ -2301,7 +2264,7 @@ fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<V
         .and_then(|value| value.get("_0"))
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            CoreError::Other(
+            CoreError::Protocol(
                 "remote pairing encrypted response missing message.streamEncrypted._0".into(),
             )
         })?;
@@ -2315,21 +2278,21 @@ fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<V
 #[cfg(feature = "tunnel")]
 fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     let envelope = body.as_dict().ok_or_else(|| {
-        CoreError::Other("direct control message body must be a dictionary".into())
+        CoreError::Protocol("direct control message body must be a dictionary".into())
     })?;
     let mangled_type = envelope
         .get("mangledTypeName")
         .and_then(XpcValue::as_str)
-        .ok_or_else(|| CoreError::Other("direct control message missing mangledTypeName".into()))?;
+        .ok_or_else(|| CoreError::Protocol("direct control message missing mangledTypeName".into()))?;
     if mangled_type != DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE {
-        return Err(CoreError::Other(format!(
+        return Err(CoreError::Protocol(format!(
             "unexpected direct control channel type {mangled_type}"
         )));
     }
     envelope
         .get("value")
         .and_then(XpcValue::as_dict)
-        .ok_or_else(|| CoreError::Other("direct control message missing value".into()))
+        .ok_or_else(|| CoreError::Protocol("direct control message missing value".into()))
 }
 
 #[cfg(feature = "tunnel")]
@@ -2341,7 +2304,7 @@ fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, 
         .and_then(XpcValue::as_dict)
         .and_then(|plain| plain.get("_0"))
         .and_then(XpcValue::as_dict)
-        .ok_or_else(|| CoreError::Other("direct control message missing message.plain._0".into()))
+        .ok_or_else(|| CoreError::Protocol("direct control message missing message.plain._0".into()))
 }
 
 #[cfg(feature = "tunnel")]
@@ -2763,12 +2726,12 @@ fn plist_value_to_string(value: &plist::Value, field: &str) -> Result<String, Co
     value
         .as_string()
         .map(ToOwned::to_owned)
-        .ok_or_else(|| CoreError::Other(format!("{field} expected string value, got {:?}", value)))
+        .ok_or_else(|| CoreError::Protocol(format!("{field} expected string value, got {:?}", value)))
 }
 
 fn plist_value_to_string_vec(value: &plist::Value, field: &str) -> Result<Vec<String>, CoreError> {
     let values = value.as_array().ok_or_else(|| {
-        CoreError::Other(format!(
+        CoreError::Protocol(format!(
             "{field} expected string array value, got {:?}",
             value
         ))
@@ -2778,7 +2741,7 @@ fn plist_value_to_string_vec(value: &plist::Value, field: &str) -> Result<Vec<St
         .iter()
         .map(|item| {
             item.as_string().map(ToOwned::to_owned).ok_or_else(|| {
-                CoreError::Other(format!("{field} expected string entries, got {:?}", item))
+                CoreError::Protocol(format!("{field} expected string entries, got {:?}", item))
             })
         })
         .collect()

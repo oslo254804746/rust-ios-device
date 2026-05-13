@@ -36,7 +36,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     value: &plist::Value,
 ) -> Result<(), OsTraceError> {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|err| OsTraceError::Plist(err.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -56,5 +56,5 @@ async fn recv_prefixed_plist<S: AsyncRead + Unpin>(
 
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|err| OsTraceError::Plist(err.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }

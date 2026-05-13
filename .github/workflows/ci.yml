@@ -50,6 +50,52 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  feature-check:
+    name: Feature subset check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check no-default-features
+        run: cargo check -p ios-core --no-default-features
+
+      - name: Check feature classic
+        run: cargo check -p ios-core --features classic
+
+      - name: Check feature developer
+        run: cargo check -p ios-core --features developer
+
+      - name: Check feature ios17
+        run: cargo check -p ios-core --features ios17
+
+      - name: Check feature management
+        run: cargo check -p ios-core --features management
+
+  msrv:
+    name: MSRV (1.80)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.80"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace compiles on MSRV
+        run: cargo check --workspace --exclude ios-py
+
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

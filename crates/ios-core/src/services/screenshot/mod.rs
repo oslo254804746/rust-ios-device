@@ -117,8 +117,7 @@ where
     let data = recv_plist_raw(stream).await?;
 
     // Parse plist to find ScreenShotData
-    let val: plist::Value =
-        plist::from_bytes(&data).map_err(|e| ScreenshotError::Plist(e.to_string()))?;
+    let val: plist::Value = plist::from_bytes(&data)?;
 
     // The plist is an array: [MessageType, {ScreenShotData: <data>}]
     if let Some(arr) = val.as_array() {
@@ -146,7 +145,7 @@ where
     T: Serialize,
 {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| ScreenshotError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;

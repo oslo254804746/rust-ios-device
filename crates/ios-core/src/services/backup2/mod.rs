@@ -705,8 +705,7 @@ pub fn initialize_backup_directory(
     plist::to_writer_xml(
         &mut info_file,
         &plist::Value::Dictionary(info_plist.clone()),
-    )
-    .map_err(|e| Mobilebackup2Error::Plist(e.to_string()))?;
+    )?;
 
     let status = plist::Dictionary::from_iter([
         (
@@ -729,8 +728,7 @@ pub fn initialize_backup_directory(
         ),
     ]);
     let mut status_file = File::create(device_directory.join("Status.plist"))?;
-    plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))
-        .map_err(|e| Mobilebackup2Error::Plist(e.to_string()))?;
+    plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))?;
 
     let manifest_path = device_directory.join("Manifest.plist");
     if full && manifest_path.exists() {
@@ -781,8 +779,7 @@ pub fn load_backup_applications(
     target_identifier: &str,
 ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
     ensure_backup_directory(backup_root, target_identifier)?;
-    let info = plist::Value::from_file(backup_root.join(target_identifier).join("Info.plist"))
-        .map_err(|err| Mobilebackup2Error::Plist(err.to_string()))?;
+    let info = plist::Value::from_file(backup_root.join(target_identifier).join("Info.plist"))?;
     Ok(info
         .as_dictionary()
         .and_then(|dict| dict.get("Applications"))
@@ -803,8 +800,7 @@ pub fn backup_is_encrypted(
 }
 
 fn read_backup_dictionary(path: &Path) -> Result<plist::Dictionary, Mobilebackup2Error> {
-    plist::Value::from_file(path)
-        .map_err(|err| Mobilebackup2Error::Plist(err.to_string()))?
+    plist::Value::from_file(path)?
         .into_dictionary()
         .ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!(
@@ -1096,10 +1092,27 @@ fn available_space(path: &Path) -> Result<u64, Mobilebackup2Error> {
     Ok(available)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn available_space(path: &Path) -> Result<u64, Mobilebackup2Error> {
-    let _ = path;
-    Ok(0)
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let probe = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    };
+    let c_path = CString::new(probe.as_os_str().as_bytes())
+        .map_err(|e| Mobilebackup2Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
+
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) != 0 {
+            return Err(Mobilebackup2Error::Io(std::io::Error::last_os_error()));
+        }
+        // Available space = available blocks * fragment size
+        Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+    }
 }
 
 fn plist_number_to_u64(value: &plist::Value) -> Option<u64> {

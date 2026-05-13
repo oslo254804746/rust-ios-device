@@ -75,3 +75,4 @@ tracing-subscriber = "0.3"
 tun-rs       = { version = "2", features = ["async"] }
 zip          = { version = "2", default-features = false, features = ["deflate"] }
 crc32fast    = "1"
+libc         = "0.2"

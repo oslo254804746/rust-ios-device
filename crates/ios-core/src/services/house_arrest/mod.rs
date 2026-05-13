@@ -71,8 +71,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HouseArrestClient<S> {
 
     async fn send_plist<T: Serialize>(&mut self, value: &T) -> Result<(), HouseArrestError> {
         let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, value)
-            .map_err(|e| HouseArrestError::Plist(e.to_string()))?;
+        plist::to_writer_xml(&mut buf, value)?;
         let len = buf.len() as u32;
         self.stream.write_all(&len.to_be_bytes()).await?;
         self.stream.write_all(&buf).await?;
@@ -95,7 +94,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HouseArrestClient<S> {
         }
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf).await?;
-        plist::from_bytes(&buf).map_err(|e| HouseArrestError::Plist(e.to_string()))
+        Ok(plist::from_bytes(&buf)?)
     }
 }
 

@@ -48,8 +48,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
         .await?;
 
         let data = self.recv_raw().await?;
-        let val: plist::Value =
-            plist::from_bytes(&data).map_err(|e| MisagentError::Plist(e.to_string()))?;
+        let val: plist::Value = plist::from_bytes(&data)?;
 
         let status = val
             .as_dictionary()
@@ -102,8 +101,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
         ])))
         .await?;
         let data = self.recv_raw().await?;
-        let val: plist::Value =
-            plist::from_bytes(&data).map_err(|e| MisagentError::Plist(e.to_string()))?;
+        let val: plist::Value = plist::from_bytes(&data)?;
         let status = val
             .as_dictionary()
             .and_then(|d| d.get("Status"))
@@ -133,8 +131,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
         ])))
         .await?;
         let data = self.recv_raw().await?;
-        let val: plist::Value =
-            plist::from_bytes(&data).map_err(|e| MisagentError::Plist(e.to_string()))?;
+        let val: plist::Value = plist::from_bytes(&data)?;
         let status = val
             .as_dictionary()
             .and_then(|d| d.get("Status"))
@@ -148,8 +145,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
 
     async fn send_value(&mut self, plist_val: plist::Value) -> Result<(), MisagentError> {
         let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, &plist_val)
-            .map_err(|e| MisagentError::Plist(e.to_string()))?;
+        plist::to_writer_xml(&mut buf, &plist_val)?;
         self.stream
             .write_all(&(buf.len() as u32).to_be_bytes())
             .await?;
@@ -177,8 +173,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
 
 fn decode_profile(raw_data: &[u8]) -> Result<Profile, MisagentError> {
     let plist_bytes = embedded_plist_bytes(raw_data)?;
-    let value: plist::Value =
-        plist::from_bytes(plist_bytes).map_err(|e| MisagentError::Plist(e.to_string()))?;
+    let value: plist::Value = plist::from_bytes(plist_bytes)?;
     let dict = value.into_dictionary().ok_or_else(|| {
         MisagentError::Protocol("provisioning profile payload was not a dictionary".into())
     })?;

@@ -12,7 +12,9 @@ pub enum PreboardError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[from] plist::Error),
+    #[error("protocol error: {0}")]
+    Protocol(String),
 }
 
 pub struct PreboardClient<S> {
@@ -60,7 +62,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     value: &plist::Value,
 ) -> Result<(), PreboardError> {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| PreboardError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -74,13 +76,13 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_PLIST_SIZE {
-        return Err(PreboardError::Plist(format!(
+        return Err(PreboardError::Protocol(format!(
             "plist length {len} exceeds max {MAX_PLIST_SIZE}"
         )));
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|e| PreboardError::Plist(e.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }
 
 #[cfg(test)]
@@ -123,6 +125,6 @@ mod tests {
         let mut stream = MockStream::new(read_buf);
 
         let err = recv_plist(&mut stream).await.unwrap_err();
-        assert!(matches!(err, PreboardError::Plist(message) if message.contains("exceeds max")));
+        assert!(matches!(err, PreboardError::Protocol(message) if message.contains("exceeds max")));
     }
 }

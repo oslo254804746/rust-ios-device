@@ -270,7 +270,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
 
     async fn send_plist<T: Serialize>(&mut self, value: &T) -> Result<(), McInstallError> {
         let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, value).map_err(|e| McInstallError::Plist(e.to_string()))?;
+        plist::to_writer_xml(&mut buf, value)?;
         self.stream
             .write_all(&(buf.len() as u32).to_be_bytes())
             .await?;
@@ -294,7 +294,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         }
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf).await?;
-        plist::from_bytes(&buf).map_err(|e| McInstallError::Plist(e.to_string()))
+        Ok(plist::from_bytes(&buf)?)
     }
 }
 
@@ -484,7 +484,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     value: &plist::Value,
 ) -> Result<(), McInstallError> {
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value).map_err(|e| McInstallError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, value)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -505,7 +505,7 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
-    plist::from_bytes(&buf).map_err(|e| McInstallError::Plist(e.to_string()))
+    Ok(plist::from_bytes(&buf)?)
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ pub enum AmfiError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[from] plist::Error),
     #[error("error: {0}")]
     Device(String),
 }
@@ -48,7 +48,7 @@ where
     });
 
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, &req).map_err(|e| AmfiError::Plist(e.to_string()))?;
+    plist::to_writer_xml(&mut buf, &req)?;
     stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
@@ -66,8 +66,7 @@ where
     let mut resp_buf = vec![0u8; len];
     stream.read_exact(&mut resp_buf).await?;
 
-    let val: plist::Value =
-        plist::from_bytes(&resp_buf).map_err(|e| AmfiError::Plist(e.to_string()))?;
+    let val: plist::Value = plist::from_bytes(&resp_buf)?;
 
     if let Some(dict) = val.as_dictionary() {
         if let Some(err) = dict.get("Error").and_then(|v| v.as_string()) {

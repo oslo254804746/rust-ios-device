@@ -94,7 +94,7 @@ pub enum PrepareError {
     #[error("crypto error: {0}")]
     Crypto(String),
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[from] plist::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -301,7 +301,7 @@ pub fn build_initial_profile() -> Result<Vec<u8>, PrepareError> {
     ]));
 
     let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, &payload).map_err(|err| PrepareError::Plist(err.to_string()))?;
+    plist::to_writer_xml(&mut buf, &payload)?;
     Ok(buf)
 }
 

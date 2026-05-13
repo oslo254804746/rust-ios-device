@@ -14,17 +14,16 @@ pub struct BuildManifest {
 impl BuildManifest {
     /// Parse a BuildManifest.plist from bytes.
     pub fn parse(data: &[u8]) -> Result<Self, ImageMounterError> {
-        let val: plist::Value = plist::from_bytes(data)
-            .map_err(|e| ImageMounterError::Plist(format!("parse BuildManifest: {e}")))?;
+        let val: plist::Value = plist::from_bytes(data)?;
 
         let dict = val
             .as_dictionary()
-            .ok_or_else(|| ImageMounterError::Plist("BuildManifest is not a dictionary".into()))?;
+            .ok_or_else(|| ImageMounterError::Protocol("BuildManifest is not a dictionary".into()))?;
 
         let identities = dict
             .get("BuildIdentities")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| ImageMounterError::Plist("missing BuildIdentities array".into()))?;
+            .ok_or_else(|| ImageMounterError::Protocol("missing BuildIdentities array".into()))?;
 
         let build_identities = identities
             .iter()

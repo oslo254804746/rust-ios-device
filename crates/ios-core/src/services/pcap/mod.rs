@@ -48,8 +48,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PcapClient<S> {
 
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf).await?;
-        let payload = plist::from_bytes::<Value>(&buf)
-            .map_err(|e| PcapError::Plist(e.to_string()))?
+        let payload = plist::from_bytes::<Value>(&buf)?
             .into_data()
             .ok_or_else(|| PcapError::Protocol("pcap plist payload was not data".into()))?;
 

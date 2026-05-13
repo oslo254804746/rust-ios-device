@@ -156,8 +156,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         request: NotificationProxyRequest<'_>,
     ) -> Result<(), NotificationProxyError> {
         let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, &request)
-            .map_err(|e| NotificationProxyError::Plist(e.to_string()))?;
+        plist::to_writer_xml(&mut buf, &request)?;
         self.stream
             .write_all(&(buf.len() as u32).to_be_bytes())
             .await?;
@@ -178,7 +177,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         }
         let mut buf = vec![0u8; len];
         self.stream.read_exact(&mut buf).await?;
-        plist::from_bytes(&buf).map_err(|e| NotificationProxyError::Plist(e.to_string()))
+        Ok(plist::from_bytes(&buf)?)
     }
 }
 

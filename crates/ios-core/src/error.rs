@@ -13,6 +13,12 @@ pub enum CoreError {
     PairRecord(#[from] PairRecordError),
     #[error("tunnel error: {0}")]
     Tunnel(#[from] crate::tunnel::TunnelError),
+    #[error("XPC error: {0}")]
+    Xpc(#[from] crate::xpc::XpcError),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("protocol error: {0}")]
+    Protocol(String),
     #[error("device not found: {0}")]
     DeviceNotFound(String),
     #[error("operation not supported: {0}")]

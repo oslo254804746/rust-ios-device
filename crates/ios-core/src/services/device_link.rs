@@ -129,8 +129,7 @@ where
         T: Serialize,
     {
         let mut payload = Vec::new();
-        plist::to_writer_xml(&mut payload, message)
-            .map_err(|e| DeviceLinkError::Plist(e.to_string()))?;
+        plist::to_writer_xml(&mut payload, message)?;
         self.stream
             .write_all(&(payload.len() as u32).to_be_bytes())
             .await?;
@@ -152,7 +151,7 @@ where
 
         let mut payload = vec![0u8; len];
         self.stream.read_exact(&mut payload).await?;
-        plist::from_bytes(&payload).map_err(|e| DeviceLinkError::Plist(e.to_string()))
+        Ok(plist::from_bytes(&payload)?)
     }
 
     pub async fn disconnect(&mut self) -> Result<(), DeviceLinkError> {

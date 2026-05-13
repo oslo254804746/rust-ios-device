@@ -74,7 +74,7 @@ macro_rules! service_error {
             #[error("IO error: {0}")]
             Io(#[from] std::io::Error),
             #[error("plist error: {0}")]
-            Plist(String),
+            Plist(#[from] plist::Error),
             $($between)*
             #[error("protocol error: {0}")]
             Protocol(String),
@@ -222,10 +222,12 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::Interrupted).into();
         assert!(matches!(io_error, MacroSmokeError::Io(_)));
 
-        assert_eq!(
-            MacroSmokeError::Plist("bad plist".into()).to_string(),
-            "plist error: bad plist"
-        );
+        // Plist variant now wraps plist::Error via #[from]
+        let plist_err: MacroSmokeError =
+            plist::from_bytes::<plist::Value>(b"not valid plist").unwrap_err().into();
+        assert!(matches!(plist_err, MacroSmokeError::Plist(_)));
+        assert!(plist_err.to_string().starts_with("plist error: "));
+
         assert_eq!(
             MacroSmokeError::Protocol("bad frame".into()).to_string(),
             "protocol error: bad frame"

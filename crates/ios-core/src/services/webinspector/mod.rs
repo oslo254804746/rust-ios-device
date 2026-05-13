@@ -1678,8 +1678,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     value: &plist::Value,
 ) -> Result<(), WebInspectorError> {
     let mut payload = Vec::new();
-    plist::to_writer_xml(&mut payload, value)
-        .map_err(|error| WebInspectorError::Plist(error.to_string()))?;
+    plist::to_writer_xml(&mut payload, value)?;
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
         .await?;
@@ -1701,7 +1700,7 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     }
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).await?;
-    plist::from_bytes(&payload).map_err(|error| WebInspectorError::Plist(error.to_string()))
+    Ok(plist::from_bytes(&payload)?)
 }
 
 fn required_string<'a>(
