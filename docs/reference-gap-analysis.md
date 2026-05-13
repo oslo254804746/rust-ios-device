@@ -57,14 +57,25 @@
 - 传统路径验证通过：`diagnostics battery`、AFC `file ls /`、InstallationProxy `apps list --app-type user`。
 - RSD 全量服务列表可读取；传统服务可通过 shim 解析，例如 `com.apple.mobile.diagnostics_relay -> com.apple.mobile.diagnostics_relay.shim.remote`。
 - 该设备未暴露 `com.apple.coredevice.deviceinfo`、`com.apple.coredevice.appservice`、`com.apple.coredevice.diagnosticsservice` 等 feature-invocation 服务；`info lock-state`、`apps list --coredevice`、`diagnostics sysdiagnose` 均按预期返回对应服务不可用。
+- 该设备同样未暴露 `com.apple.coredevice.fileservice.control` / `com.apple.coredevice.fileservice.data`；`file --coredevice --domain temporary ls /` 已实测返回 `service 'com.apple.coredevice.fileservice.control' not found in RSD directory`。因此这台 iOS 17.5.1 设备不能用于结掉 CoreDevice fileservice 的读写闭环验证。
 - 该设备暴露 `com.apple.sysdiagnose.remote` / `com.apple.sysdiagnose.remote.trusted`，但实测它们不是 `CoreDevice.output` envelope 协议，不能作为 `com.apple.coredevice.diagnosticsservice` 的透明 fallback。
 - `mobilegestalt ProductVersion ProductType` 在 iOS 17.5.1 上先遇到 diagnostics relay `MobileGestaltDeprecated`，随后 CoreDevice deviceinfo fallback 因该设备未暴露 `com.apple.coredevice.deviceinfo` 而失败；这是设备服务面限制，不是传统 lockdown 基础连接失败。
 - pymobiledevice3 的真实 service class 通过 `ios_rs` userspace tunnel proxy 复用同一 RemoteXPC/RSD 传输时，对上述三个 CoreDevice 服务同样返回 `InvalidServiceError: No such service`；这验证了两点：该设备服务面确实缺失这些 feature-invocation 服务，且 `ios-py` 的 userspace proxy 能与 pymobiledevice3 的 asyncio RemoteXPC 栈协同工作。示例已沉淀在 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py`。
 - 未执行 WDA、XCTest、恢复、重置或完整 sysdiagnose 采集。
 
+本次真机回归（2026-05-13，iOS 26.4.2 / `00008130-00065DD90E40001C`）：
+
+- 设备发现和 lockdown 基础读取通过：`ios list` 识别 USB 设备，`ProductVersion=26.4.2`。
+- 传统路径验证通过：AFC `file ls /`、InstallationProxy `apps list --app-type user`。
+- RSD 全量服务列表可读取；传统 AFC 可通过 shim 解析为 `com.apple.afc.shim.remote`。
+- RSD 目录未暴露 `com.apple.coredevice.fileservice.control` / `com.apple.coredevice.fileservice.data`；仅看到 `com.apple.internal.devicecompute.CoreDeviceProxy`、`com.apple.internal.devicecompute.CoreDeviceProxy.shim.remote`、`com.apple.internal.dt.coredevice.untrusted.tunnelservice` 等相关服务。
+- `file --coredevice --domain temporary ls /` 实测返回 `service 'com.apple.coredevice.fileservice.control' not found in RSD directory`，未进入 `CreateSession` / 目录列表 / 数据流阶段。
+- 因 control/data 双服务缺失，无法在该设备上执行 CoreDevice fileservice 的 temporary、app container、app group、system crash logs 等 domain 读写闭环结项测试；这是设备服务面限制，不是 USB、lockdown、RSD 或传统 AFC 基础连接失败。
+- 参考实现对比通过：pymobiledevice3 的 `FileServiceService` 同样只查 `com.apple.coredevice.fileservice.control` / `data`，通过 `ios_rs` userspace proxy 复用同一 RSD 传输时返回 `InvalidServiceError: No such service: com.apple.coredevice.fileservice.control`；go-ios 的 `fileservice.New` 也只连接同名 control service，接入本机 tunnel agent 后 `rsd ls` 同样看不到 control/data，`file ls --temp` 失败在连接 fileservice 阶段。三者表现一致。
+
 ## 主要差距
 
-### P0：CoreDevice fileservice（基础读写闭环已补）
+### P0：CoreDevice fileservice（实现对齐参考，服务缺失表现一致，可结项）
 
 `crates/ios-core/src/services/fileservice/mod.rs` 已经补齐目录列表、下载和上传能力。pymobiledevice3/go-ios 对 iOS 17+ 文件访问的关键差异在这里：
 
@@ -74,7 +85,9 @@
 - `rwb!FILE` 数据流下载和大文件上传已覆盖；inline 小文件上传已覆盖；更复杂的混合方向并发流协调待补。
 - `EncodedError` / `LocalizedDescription` 的错误解析已覆盖。
 
-后续建议用真实设备验证 app container、app group、temporary、system crash logs 等 domain 的路径语义，以及删除/移动/建目录在各 domain 下的权限表现。
+参考实现不会在缺少 `com.apple.coredevice.fileservice.control` / `data` 时 fallback 到其他服务名；当前实现也会在 RSD 缺服务时给出明确错误。2026-05-13 以 iOS 17.5.1 / `00008020-0004553E02F2002E` 和 iOS 26.4.2 / `00008130-00065DD90E40001C` 验证，RSD 目录均不包含 fileservice control/data；在 iOS 26.4.2 上 pymobiledevice3 和 go-ios 与本项目表现一致。因此该项按“实现与参考行为对齐、当前设备服务面不可用”结项，不再作为阻塞 P0。
+
+后续若遇到实际暴露 `com.apple.coredevice.fileservice.*` 的设备，可继续补充 app container、app group、temporary、system crash logs 等 domain 的权限矩阵和大文件并发流实测，但这属于覆盖扩展，不再阻塞当前参考差距收敛。
 
 ### P0：共享 CoreDevice envelope 与 XPC 流能力（基础已补）
 
@@ -147,12 +160,12 @@ go-ios 和 pymobiledevice3 在 recovery/restore、固件、激活等低层生命
 
 ## 推荐推进顺序
 
-1. 补 fileservice 更完整的 data stream 协调，并做真实设备 domain 语义验证。
-2. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再按结果优化 CLI 输出形态。
-3. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
-4. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
-5. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
-6. 用真实恢复/更新流程验证 `ios restore events` 的事件顺序、超时行为和 data request 形态；确认后再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
+1. 用真实设备验证 appservice listroots/listapps/spawn/fetchicons/monitor、launch options 和 stdio socket 生命周期，再按结果优化 CLI 输出形态。
+2. 用真实设备验证 CoreDevice deviceinfo 的 display、lock state 和完整 device info 输出结构。
+3. 用本机 manager 端到端验证 `ios tunnel list` / `ios tunnel stop`，并视需要补表格输出。
+4. 用真实 WDA/XCTest 环境验证 `runtest --wait`、旧版 testmanager service path、selector 变体、summary 统计、`ios wda` endpoint 与 `--device-port` 直连命令。
+5. 用真实恢复/更新流程验证 `ios restore events` 的事件顺序、超时行为和 data request 形态；确认后再评估是否进入 IPSW/TSS/ASR/FDR/DFU 等破坏性能力。
+6. 若后续拿到暴露 CoreDevice fileservice control/data 的设备，再补充 fileservice domain 权限矩阵和混合方向并发流验证。
 
 ## 测试策略
 

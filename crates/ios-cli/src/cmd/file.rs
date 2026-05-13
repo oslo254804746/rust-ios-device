@@ -156,14 +156,24 @@ impl FileCmd {
         udid: Option<String>,
         json_output: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>>>> {
-        Box::pin(async move {
-            let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for file commands"))?;
+        let Some(udid) = udid else {
+            return Box::pin(std::future::ready(Err(anyhow::anyhow!(
+                "--udid required for file commands"
+            ))));
+        };
 
-            if self.coredevice {
+        if self.coredevice {
+            return Box::pin(async move {
                 ensure_coredevice_fileservice_supported(&udid).await?;
-                return self.run_coredevice(&udid, json_output).await;
-            }
+                self.run_coredevice(&udid, json_output).await
+            });
+        }
 
+        self.run_afc(udid, json_output)
+    }
+
+    fn run_afc(self, udid: String, json_output: bool) -> Pin<Box<dyn Future<Output = Result<()>>>> {
+        Box::pin(async move {
             let opts = ios_core::device::ConnectOptions {
                 tun_mode: ios_core::TunMode::Userspace,
                 pair_record_path: None,
@@ -316,6 +326,14 @@ impl FileCmd {
         udid: &'a str,
         json_output: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.run_coredevice_inner(udid, json_output)
+    }
+
+    fn run_coredevice_inner<'a>(
+        self,
+        udid: &'a str,
+        json_output: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             if matches!(
                 self.domain,
@@ -328,111 +346,156 @@ impl FileCmd {
                 ));
             }
 
-            let opts = ios_core::device::ConnectOptions {
-                tun_mode: ios_core::TunMode::Userspace,
-                pair_record_path: None,
-                skip_tunnel: false,
-            };
-            let device = ios_core::connect(udid, opts).await?;
-            let control = device
-                .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
-                .await?;
-            let identifier = self.identifier.as_deref().unwrap_or_default();
-            let mut fileservice = ios_core::fileservice::FileServiceClient::connect(
-                control,
-                self.domain.into(),
-                identifier,
-            )
-            .await?;
-
-            match self.sub {
-                FileSub::Ls { path, long } => {
-                    if long {
-                        return Err(anyhow::anyhow!(
-                        "CoreDevice fileservice directory list does not expose stat metadata yet"
-                    ));
-                    }
-                    let entries = fileservice.list_directory(&path).await?;
-                    if json_output {
-                        let list: Vec<_> = entries
-                        .iter()
-                        .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
-                        .collect();
-                        println!("{}", serde_json::to_string_pretty(&list)?);
-                    } else {
-                        for name in entries {
-                            println!("{name}");
-                        }
-                    }
-                }
-                FileSub::Pull { remote, local } => {
-                    eprintln!("Downloading {remote} -> {local}");
-                    let mut data_stream = device
-                        .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
-                        .await?;
-                    let mut output = fs::File::create(&local).await?;
-                    let bytes = fileservice
-                        .download_file_to_writer(&remote, &mut data_stream, &mut output)
-                        .await?;
-                    eprintln!("Done ({bytes} bytes)");
-                }
-                FileSub::Push { local, remote } => {
-                    let metadata = fs::metadata(&local).await?;
-                    if !metadata.is_file() {
-                        return Err(anyhow::anyhow!(
-                            "CoreDevice fileservice push requires a regular file: {local}"
-                        ));
-                    }
-
-                    let file_size = metadata.len();
-                    let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
-                    eprintln!("Uploading {local} -> {remote}");
-                    if file_size == 0 {
-                        fileservice.propose_empty_file(&remote, options).await?;
-                    } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
-                        let data = fs::read(&local).await?;
-                        fileservice
-                            .upload_inline_file(&remote, data.into(), options)
-                            .await?;
-                    } else {
-                        let ticket = fileservice
-                            .propose_file_upload(&remote, file_size, options)
-                            .await?;
-                        let mut data_stream = device
-                            .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
-                            .await?;
-                        let mut input = fs::File::open(&local).await?;
-                        fileservice
-                            .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
-                            .await?;
-                    }
-                    eprintln!("Done ({file_size} bytes)");
-                }
-                FileSub::Rm { path, recursive } => {
-                    fileservice.remove_item(&path, recursive).await?;
-                    eprintln!("Removed {path}");
-                }
-                FileSub::Mkdir { path } => {
-                    let options = ios_core::fileservice::FileWriteOptions {
-                        permissions: 0o755,
-                        ..ios_core::fileservice::FileWriteOptions::mobile_defaults_now()
-                    };
-                    fileservice.create_directory(&path, options).await?;
-                    eprintln!("Created {path}");
-                }
-                FileSub::Mv { from, to } => {
-                    fileservice.rename_item(&from, &to).await?;
-                    eprintln!("Moved {from} -> {to}");
-                }
-                FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {
-                    return Err(anyhow::anyhow!(
-                    "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
-                ));
-                }
-            }
+            let domain = self.domain;
+            let identifier = self.identifier.unwrap_or_default();
+            let sub = self.sub;
+            let device = connect_coredevice_file_device(udid).await?;
+            ensure_coredevice_rsd_service_available(
+                device.rsd(),
+                ios_core::fileservice::CONTROL_SERVICE_NAME,
+            )?;
+            let mut fileservice =
+                open_coredevice_file_session(&device, domain, &identifier).await?;
+            run_coredevice_subcommand(&device, &mut fileservice, sub, json_output).await?;
 
             Ok(())
         })
+    }
+}
+
+fn connect_coredevice_file_device(
+    udid: &str,
+) -> Pin<Box<dyn Future<Output = Result<ios_core::ConnectedDevice>> + '_>> {
+    Box::pin(async move {
+        let opts = ios_core::device::ConnectOptions {
+            tun_mode: ios_core::TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        };
+        Ok(ios_core::connect(udid, opts).await?)
+    })
+}
+
+fn open_coredevice_file_session<'a>(
+    device: &'a ios_core::ConnectedDevice,
+    domain: CoreDeviceFileDomain,
+    identifier: &'a str,
+) -> Pin<Box<dyn Future<Output = Result<ios_core::fileservice::FileServiceClient>> + 'a>> {
+    Box::pin(async move {
+        let control = device
+            .connect_xpc_service(ios_core::fileservice::CONTROL_SERVICE_NAME)
+            .await?;
+        let fileservice =
+            ios_core::fileservice::FileServiceClient::connect(control, domain.into(), identifier)
+                .await?;
+        Ok(fileservice)
+    })
+}
+
+fn run_coredevice_subcommand<'a>(
+    device: &'a ios_core::ConnectedDevice,
+    fileservice: &'a mut ios_core::fileservice::FileServiceClient,
+    sub: FileSub,
+    json_output: bool,
+) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+    match sub {
+        FileSub::Ls { path, long } => Box::pin(async move {
+            if long {
+                return Err(anyhow::anyhow!(
+                    "CoreDevice fileservice directory list does not expose stat metadata yet"
+                ));
+            }
+            let entries = fileservice.list_directory(&path).await?;
+            if json_output {
+                let list: Vec<_> = entries
+                    .iter()
+                    .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                for name in entries {
+                    println!("{name}");
+                }
+            }
+            Ok(())
+        }),
+        FileSub::Pull { remote, local } => Box::pin(async move {
+            eprintln!("Downloading {remote} -> {local}");
+            ensure_coredevice_rsd_service_available(
+                device.rsd(),
+                ios_core::fileservice::DATA_SERVICE_NAME,
+            )?;
+            let mut data_stream = device
+                .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
+                .await?;
+            let mut output = fs::File::create(&local).await?;
+            let bytes = fileservice
+                .download_file_to_writer(&remote, &mut data_stream, &mut output)
+                .await?;
+            eprintln!("Done ({bytes} bytes)");
+            Ok(())
+        }),
+        FileSub::Push { local, remote } => Box::pin(async move {
+            let metadata = fs::metadata(&local).await?;
+            if !metadata.is_file() {
+                return Err(anyhow::anyhow!(
+                    "CoreDevice fileservice push requires a regular file: {local}"
+                ));
+            }
+
+            let file_size = metadata.len();
+            let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
+            eprintln!("Uploading {local} -> {remote}");
+            if file_size == 0 {
+                fileservice.propose_empty_file(&remote, options).await?;
+            } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
+                let data = fs::read(&local).await?;
+                fileservice
+                    .upload_inline_file(&remote, data.into(), options)
+                    .await?;
+            } else {
+                let ticket = fileservice
+                    .propose_file_upload(&remote, file_size, options)
+                    .await?;
+                ensure_coredevice_rsd_service_available(
+                    device.rsd(),
+                    ios_core::fileservice::DATA_SERVICE_NAME,
+                )?;
+                let mut data_stream = device
+                    .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
+                    .await?;
+                let mut input = fs::File::open(&local).await?;
+                fileservice
+                    .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
+                    .await?;
+            }
+            eprintln!("Done ({file_size} bytes)");
+            Ok(())
+        }),
+        FileSub::Rm { path, recursive } => Box::pin(async move {
+            fileservice.remove_item(&path, recursive).await?;
+            eprintln!("Removed {path}");
+            Ok(())
+        }),
+        FileSub::Mkdir { path } => Box::pin(async move {
+            let options = ios_core::fileservice::FileWriteOptions {
+                permissions: 0o755,
+                ..ios_core::fileservice::FileWriteOptions::mobile_defaults_now()
+            };
+            fileservice.create_directory(&path, options).await?;
+            eprintln!("Created {path}");
+            Ok(())
+        }),
+        FileSub::Mv { from, to } => Box::pin(async move {
+            fileservice.rename_item(&from, &to).await?;
+            eprintln!("Moved {from} -> {to}");
+            Ok(())
+        }),
+        FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {
+            Box::pin(std::future::ready(Err(anyhow::anyhow!(
+                "CoreDevice fileservice currently supports ls, pull, push, rm, mkdir, and mv"
+            ))))
+        }
     }
 }
 
@@ -451,6 +514,26 @@ async fn ensure_coredevice_fileservice_supported(udid: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn ensure_coredevice_rsd_service_available(
+    rsd: Option<&ios_core::RsdHandshake>,
+    service_name: &str,
+) -> Result<()> {
+    let Some(rsd) = rsd else {
+        return Err(anyhow::anyhow!(
+            "RSD directory is not available for CoreDevice fileservice"
+        ));
+    };
+
+    let shim_service = format!("{service_name}.shim.remote");
+    if rsd.services.contains_key(service_name) || rsd.services.contains_key(&shim_service) {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "service '{service_name}' not found in RSD directory"
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -895,10 +978,51 @@ mod tests {
     }
 
     #[test]
+    fn file_coredevice_inner_future_fits_within_windows_main_thread_budget() {
+        let command = FileCmd {
+            coredevice: true,
+            app: None,
+            documents: false,
+            crash: false,
+            domain: CoreDeviceFileDomain::Temporary,
+            identifier: None,
+            sub: FileSub::Ls {
+                path: "/".into(),
+                long: false,
+            },
+        };
+        let future = command.run_coredevice_inner("test-udid", false);
+
+        assert!(
+            std::mem::size_of_val(&future) <= 16 * 1024,
+            "coredevice file inner future too large for main-thread stack: {} bytes",
+            std::mem::size_of_val(&future)
+        );
+    }
+
+    #[test]
     fn coredevice_fileservice_is_ios17_plus_only() {
         assert!(!supports_coredevice_fileservice(14));
         assert!(!supports_coredevice_fileservice(16));
         assert!(supports_coredevice_fileservice(17));
         assert!(supports_coredevice_fileservice(26));
+    }
+
+    #[test]
+    fn coredevice_fileservice_preflight_reports_missing_rsd_service() {
+        let rsd = ios_core::RsdHandshake {
+            udid: "test-udid".into(),
+            services: std::collections::HashMap::new(),
+        };
+
+        let err = ensure_coredevice_rsd_service_available(
+            Some(&rsd),
+            ios_core::fileservice::CONTROL_SERVICE_NAME,
+        )
+        .expect_err("missing fileservice control service should fail before connecting");
+
+        assert!(err
+            .to_string()
+            .contains("service 'com.apple.coredevice.fileservice.control' not found"));
     }
 }
