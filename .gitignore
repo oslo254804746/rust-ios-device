@@ -40,3 +40,5 @@ remote_*.plist
 
 # Release/build outputs
 /dist/
+AGENTS.MD
+raw-projcects/

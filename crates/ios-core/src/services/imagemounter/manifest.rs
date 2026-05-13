@@ -16,9 +16,9 @@ impl BuildManifest {
     pub fn parse(data: &[u8]) -> Result<Self, ImageMounterError> {
         let val: plist::Value = plist::from_bytes(data)?;
 
-        let dict = val
-            .as_dictionary()
-            .ok_or_else(|| ImageMounterError::Protocol("BuildManifest is not a dictionary".into()))?;
+        let dict = val.as_dictionary().ok_or_else(|| {
+            ImageMounterError::Protocol("BuildManifest is not a dictionary".into())
+        })?;
 
         let identities = dict
             .get("BuildIdentities")

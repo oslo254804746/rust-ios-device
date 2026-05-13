@@ -856,17 +856,14 @@ mod tests {
 
     #[test]
     fn build_launch_application_input_accepts_extended_options() {
-        let mut options = LaunchApplicationOptions::default();
-        options.arguments = vec!["--flag".into(), "value".into()];
-        options
-            .environment_variables
-            .insert("FOO".into(), "bar".into());
-        options.start_stopped = true;
-        options.terminate_existing = true;
-        options.standard_io_uses_pseudoterminals = false;
-        options
-            .standard_io_identifiers
-            .insert("standardOutput".into(), "socket-1".into());
+        let options = LaunchApplicationOptions {
+            arguments: vec!["--flag".into(), "value".into()],
+            environment_variables: IndexMap::from([("FOO".into(), "bar".into())]),
+            start_stopped: true,
+            terminate_existing: true,
+            standard_io_uses_pseudoterminals: false,
+            standard_io_identifiers: IndexMap::from([("standardOutput".into(), "socket-1".into())]),
+        };
 
         let input = build_launch_application_input_with_options("com.example.App", &options)
             .expect("launch input should build");

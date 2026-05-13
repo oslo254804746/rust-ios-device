@@ -1102,8 +1102,9 @@ fn available_space(path: &Path) -> Result<u64, Mobilebackup2Error> {
     } else {
         path.parent().unwrap_or(path).to_path_buf()
     };
-    let c_path = CString::new(probe.as_os_str().as_bytes())
-        .map_err(|e| Mobilebackup2Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
+    let c_path = CString::new(probe.as_os_str().as_bytes()).map_err(|e| {
+        Mobilebackup2Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    })?;
 
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();

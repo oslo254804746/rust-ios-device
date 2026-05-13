@@ -92,21 +92,21 @@ impl WdaCmd {
             None => WdaHttpClient::new_http(self.base_url, self.timeout_secs),
         };
         match self.sub {
-            WdaSub::Status => print_json(client.get("/status").await?, json_output)?,
+            WdaSub::Status => print_json(client.get("/status").await?)?,
             WdaSub::Session { bundle_id } => {
                 let payload = session_payload(bundle_id.as_deref());
                 let response = client.post("/session", payload).await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
             WdaSub::Source { session_id } => {
                 let path = session_path(session_id.as_deref(), "source");
                 let response = client.get(&path).await?;
                 if json_output {
-                    print_json(response, true)?;
+                    print_json(response)?;
                 } else if let Some(source) = response.get("value").and_then(Value::as_str) {
                     println!("{source}");
                 } else {
-                    print_json(response, true)?;
+                    print_json(response)?;
                 }
             }
             WdaSub::Screenshot { output, session_id } => {
@@ -141,7 +141,7 @@ impl WdaCmd {
                     )
                     .await?;
                 if json_output {
-                    print_json(response, true)?;
+                    print_json(response)?;
                 } else {
                     println!(
                         "{}",
@@ -159,7 +159,7 @@ impl WdaCmd {
                         serde_json::json!({}),
                     )
                     .await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
             WdaSub::PressButton { name, session_id } => {
                 let normalized = normalize_button_name(&name);
@@ -171,7 +171,7 @@ impl WdaCmd {
                 let response = client
                     .post(&path, serde_json::json!({ "name": normalized }))
                     .await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
             WdaSub::Unlock { session_id } => {
                 let path = match session_id {
@@ -179,7 +179,7 @@ impl WdaCmd {
                     None => "/wda/unlock".to_string(),
                 };
                 let response = client.post(&path, serde_json::json!({})).await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
             WdaSub::SendKeys { session_id, text } => {
                 let response = client
@@ -188,7 +188,7 @@ impl WdaCmd {
                         serde_json::json!({ "value": text.chars().map(|ch| ch.to_string()).collect::<Vec<_>>() }),
                     )
                     .await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
             WdaSub::Swipe {
                 session_id,
@@ -210,7 +210,7 @@ impl WdaCmd {
                         }),
                     )
                     .await?;
-                print_json(response, json_output)?;
+                print_json(response)?;
             }
         }
         Ok(())
@@ -344,12 +344,8 @@ impl WdaHttpClient {
     }
 }
 
-fn print_json(value: Value, json_output: bool) -> Result<()> {
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    }
+fn print_json(value: Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 

@@ -254,10 +254,7 @@ impl ConnectedDevice {
         key: Option<&str>,
     ) -> Result<plist::Value, CoreError> {
         let mut client = self.lockdown_client().await?;
-        client
-            .get_value(domain, key)
-            .await
-            .map_err(CoreError::from)
+        client.get_value(domain, key).await.map_err(CoreError::from)
     }
 
     /// Set a lockdown value by key (domain=None for global domain).
@@ -904,8 +901,7 @@ async fn connect_via_lockdown_transport(
         let mut proxy_stream = if enable_service_ssl {
             tracing::info!("tunnel connect: wrapping CoreDeviceProxy with TLS");
             ProxyStream::Tls(Box::new(
-                wrap_service_tls(proxy_stream_raw, &pair_record)
-                    .await?,
+                wrap_service_tls(proxy_stream_raw, &pair_record).await?,
             ))
         } else {
             tracing::info!("tunnel connect: CoreDeviceProxy is plaintext");
@@ -1408,12 +1404,10 @@ async fn establish_direct_tunnel_stream(
     sequence_number += 1;
 
     let handshake = client.recv().await?;
-    let remote_identifier = extract_direct_remote_identifier(
-        handshake
-            .body
-            .as_ref()
-            .ok_or_else(|| CoreError::Protocol("direct handshake response missing body".into()))?,
-    )?;
+    let remote_identifier =
+        extract_direct_remote_identifier(handshake.body.as_ref().ok_or_else(|| {
+            CoreError::Protocol("direct handshake response missing body".into())
+        })?)?;
 
     let loaded = {
         let id = remote_identifier.clone();
@@ -1439,12 +1433,10 @@ async fn establish_direct_tunnel_stream(
     sequence_number += 1;
 
     let verify_start = client.recv().await?;
-    let verify_start_tlv = extract_direct_pairing_tlv(
-        verify_start
-            .body
-            .as_ref()
-            .ok_or_else(|| CoreError::Protocol("verifyManualPairing start missing body".into()))?,
-    )?;
+    let verify_start_tlv =
+        extract_direct_pairing_tlv(verify_start.body.as_ref().ok_or_else(|| {
+            CoreError::Protocol("verifyManualPairing start missing body".into())
+        })?)?;
     let verify_start_fields = TlvBuffer::decode(&verify_start_tlv);
     if let Some(error) = verify_start_fields.get(&DIRECT_PAIRING_TYPE_ERROR) {
         send_pair_verify_failed(&mut client, sequence_number).await?;
@@ -1484,12 +1476,10 @@ async fn establish_direct_tunnel_stream(
     sequence_number += 1;
 
     let verify_finish = client.recv().await?;
-    let verify_finish_tlv = extract_direct_pairing_tlv(
-        verify_finish
-            .body
-            .as_ref()
-            .ok_or_else(|| CoreError::Protocol("verifyManualPairing finish missing body".into()))?,
-    )?;
+    let verify_finish_tlv =
+        extract_direct_pairing_tlv(verify_finish.body.as_ref().ok_or_else(|| {
+            CoreError::Protocol("verifyManualPairing finish missing body".into())
+        })?)?;
     let verify_finish_fields = TlvBuffer::decode(&verify_finish_tlv);
     if let Some(error) = verify_finish_fields.get(&DIRECT_PAIRING_TYPE_ERROR) {
         send_pair_verify_failed(&mut client, sequence_number).await?;
@@ -2283,7 +2273,9 @@ fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, 
     let mangled_type = envelope
         .get("mangledTypeName")
         .and_then(XpcValue::as_str)
-        .ok_or_else(|| CoreError::Protocol("direct control message missing mangledTypeName".into()))?;
+        .ok_or_else(|| {
+            CoreError::Protocol("direct control message missing mangledTypeName".into())
+        })?;
     if mangled_type != DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE {
         return Err(CoreError::Protocol(format!(
             "unexpected direct control channel type {mangled_type}"
@@ -2304,7 +2296,9 @@ fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, 
         .and_then(XpcValue::as_dict)
         .and_then(|plain| plain.get("_0"))
         .and_then(XpcValue::as_dict)
-        .ok_or_else(|| CoreError::Protocol("direct control message missing message.plain._0".into()))
+        .ok_or_else(|| {
+            CoreError::Protocol("direct control message missing message.plain._0".into())
+        })
 }
 
 #[cfg(feature = "tunnel")]
@@ -2723,10 +2717,9 @@ impl AsyncWrite for ProxyStream {
 }
 
 fn plist_value_to_string(value: &plist::Value, field: &str) -> Result<String, CoreError> {
-    value
-        .as_string()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CoreError::Protocol(format!("{field} expected string value, got {:?}", value)))
+    value.as_string().map(ToOwned::to_owned).ok_or_else(|| {
+        CoreError::Protocol(format!("{field} expected string value, got {:?}", value))
+    })
 }
 
 fn plist_value_to_string_vec(value: &plist::Value, field: &str) -> Result<Vec<String>, CoreError> {

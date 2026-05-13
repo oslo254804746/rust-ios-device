@@ -109,6 +109,38 @@ impl RestoreCmd {
     }
 }
 
+async fn read_restore_events<S>(
+    client: &mut ios_core::restore::RestoreServiceClient<S>,
+    count: Option<usize>,
+    timeout_secs: u64,
+) -> Result<Vec<ios_core::restore::RestoreLifecycleEvent>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut events = Vec::new();
+    loop {
+        if count.is_some_and(|count| events.len() >= count) {
+            break;
+        }
+
+        let event = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            client.next_lifecycle_event(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for restore lifecycle event"))??;
+        let finished = matches!(
+            event,
+            ios_core::restore::RestoreLifecycleEvent::Status { finished: true, .. }
+        );
+        events.push(event);
+        if finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -163,36 +195,4 @@ mod tests {
             TestCli::try_parse_from(["restore", "events", "--count", "2", "--timeout-secs", "30"]);
         assert!(parsed.is_ok(), "restore events should parse");
     }
-}
-
-async fn read_restore_events<S>(
-    client: &mut ios_core::restore::RestoreServiceClient<S>,
-    count: Option<usize>,
-    timeout_secs: u64,
-) -> Result<Vec<ios_core::restore::RestoreLifecycleEvent>>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    let mut events = Vec::new();
-    loop {
-        if count.is_some_and(|count| events.len() >= count) {
-            break;
-        }
-
-        let event = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            client.next_lifecycle_event(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for restore lifecycle event"))??;
-        let finished = matches!(
-            event,
-            ios_core::restore::RestoreLifecycleEvent::Status { finished: true, .. }
-        );
-        events.push(event);
-        if finished {
-            break;
-        }
-    }
-    Ok(events)
 }
