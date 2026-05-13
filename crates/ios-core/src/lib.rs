@@ -5,9 +5,10 @@
 //!
 //! Key types:
 //! - [`ConnectedDevice`] - connected device handle with service access
-//! - [`discovery`] — USB and network device discovery
+//! - [`discovery`] - USB and network device discovery
 //! - [`TunnelManager`] and [`TunMode`] - CoreDevice tunnel lifecycle helpers
-//! - [`XpcClient`] and [`XpcValue`] - RemoteXPC client and value model for iOS 17+ services
+//! - [`XpcValue`] - RemoteXPC value model for iOS 17+ services
+//! - [`XpcClient`] - RemoteXPC client, available when the `tunnel` feature is enabled
 //!
 //! Service implementations are feature gated under [`services`]. The grouped feature flags
 //! are intended for common consumers:
@@ -53,8 +54,11 @@
 //! ```
 
 pub mod credentials;
+/// Device connection orchestration and service access helpers.
 pub mod device;
+/// USB and network discovery helpers.
 pub mod discovery;
+/// Shared high-level error type.
 pub mod error;
 pub(crate) mod lockdown;
 pub(crate) mod mux;

@@ -7,18 +7,28 @@
 use crate::services::dtx::{DtxMessage, DtxPayload, NSObject};
 use serde::Serialize;
 
+/// XCTest selector emitted when a test plan begins.
 pub const DID_BEGIN_EXECUTING_TEST_PLAN_SELECTOR: &str = "_XCT_didBeginExecutingTestPlan";
+/// XCTest selector emitted when a test plan finishes.
 pub const DID_FINISH_EXECUTING_TEST_PLAN_SELECTOR: &str = "_XCT_didFinishExecutingTestPlan";
+/// XCTest selector for normal log messages.
 pub const LOG_MESSAGE_SELECTOR: &str = "_XCT_logMessage:";
+/// XCTest selector for debug log messages.
 pub const LOG_DEBUG_MESSAGE_SELECTOR: &str = "_XCT_logDebugMessage:";
+/// XCTest selector emitted when a suite starts.
 pub const TEST_SUITE_STARTED_SELECTOR: &str = "_XCT_testSuite:didStartAt:";
+/// XCTest selector emitted when older XCTest runtimes finish a suite.
 pub const TEST_SUITE_FINISHED_SELECTOR: &str =
     "_XCT_testSuite:didFinishAt:runCount:withFailures:unexpected:testDuration:totalDuration:";
+/// XCTest selector emitted when newer XCTest runtimes finish a suite with skip counts.
 pub const TEST_SUITE_FINISHED_WITH_SKIP_SELECTOR: &str =
     "_XCT_testSuiteWithIdentifier:didFinishAt:runCount:skipCount:failureCount:expectedFailureCount:uncaughtExceptionCount:testDuration:totalDuration:";
+/// XCTest selector emitted when a test case starts.
 pub const TEST_CASE_STARTED_SELECTOR: &str = "_XCT_testCaseDidStartForTestClass:method:";
+/// XCTest selector emitted when a test case finishes.
 pub const TEST_CASE_FINISHED_SELECTOR: &str =
     "_XCT_testCaseDidFinishForTestClass:method:withStatus:duration:";
+/// XCTest selector emitted when a test case records a failure.
 pub const TEST_CASE_FAILED_SELECTOR: &str =
     "_XCT_testCaseDidFailForTestClass:method:withMessage:file:line:";
 
@@ -31,43 +41,71 @@ pub enum TestExecutionEvent {
     /// The test plan finished.
     FinishedPlan,
     /// XCTest emitted a log message.
-    Log { message: String, debug: bool },
+    Log {
+        /// Log message text.
+        message: String,
+        /// Whether the message came from the debug log selector.
+        debug: bool,
+    },
     /// A test suite started.
     SuiteStarted {
+        /// Suite name.
         name: String,
+        /// Start timestamp string as reported by XCTest.
         started_at: Option<String>,
     },
     /// A test suite finished and reported aggregate counts.
     SuiteFinished {
+        /// Suite name.
         name: String,
+        /// Finish timestamp string as reported by XCTest.
         finished_at: Option<String>,
+        /// Number of tests reported by the suite.
         test_count: u64,
+        /// Number of skipped tests.
         skipped: u64,
+        /// Number of failures.
         failures: u64,
+        /// Number of expected failures.
         expected_failures: u64,
+        /// Number of unexpected failures.
         unexpected_failures: u64,
+        /// Number of uncaught exceptions.
         uncaught_exceptions: u64,
+        /// XCTest execution duration in seconds.
         test_duration_seconds: f64,
+        /// Total suite duration in seconds.
         total_duration_seconds: f64,
     },
     /// A test case started.
     CaseStarted {
+        /// XCTest class name.
         class_name: String,
+        /// XCTest method name.
         method_name: String,
     },
     /// A test case reported a failure.
     CaseFailed {
+        /// XCTest class name.
         class_name: String,
+        /// XCTest method name.
         method_name: String,
+        /// Failure message.
         message: String,
+        /// Source file when XCTest reports one.
         file: Option<String>,
+        /// Source line when XCTest reports one.
         line: Option<u64>,
     },
     /// A test case finished with a final status.
     CaseFinished {
+        /// XCTest class name.
         class_name: String,
+        /// XCTest method name.
         method_name: String,
+        /// Final test status.
         status: TestCaseStatus,
+        /// Test case duration in seconds.
         duration_seconds: f64,
     },
 }

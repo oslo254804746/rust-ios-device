@@ -23,8 +23,10 @@ const SIGKILL: i64 = 9;
 /// Errors returned by CoreDevice appservice operations.
 #[derive(Debug, thiserror::Error)]
 pub enum AppServiceError {
+    /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
+    /// Appservice response did not match the expected protocol shape.
     #[error("protocol error: {0}")]
     Protocol(String),
 }

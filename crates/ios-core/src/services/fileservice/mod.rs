@@ -25,10 +25,13 @@ const FILE_WIRE_MAGIC: &[u8; 8] = b"rwb!FILE";
 /// Errors returned by the CoreDevice fileservice client.
 #[derive(Debug, thiserror::Error)]
 pub enum FileServiceError {
+    /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
+    /// Underlying data-stream I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Fileservice response or transfer frame did not match the expected protocol shape.
     #[error("protocol error: {0}")]
     Protocol(String),
 }

@@ -16,8 +16,10 @@ const FEATURE_CAPTURE_SYSDIAGNOSE: &str = "com.apple.coredevice.feature.captures
 /// Errors returned by CoreDevice diagnostics operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DiagnosticsServiceError {
+    /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
+    /// Diagnosticsservice response did not match the expected protocol shape.
     #[error("protocol error: {0}")]
     Protocol(String),
 }

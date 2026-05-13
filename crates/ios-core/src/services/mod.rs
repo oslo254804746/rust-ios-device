@@ -68,14 +68,18 @@ macro_rules! service_error {
         service_error!($name, before {}, between { $($between)* }, after { $($after)* });
     };
     ($name:ident, before { $($before:tt)* }, between { $($between:tt)* }, after { $($after:tt)* } $(,)?) => {
+        #[doc = concat!("Error type for ", stringify!($name), ".")]
         #[derive(Debug, thiserror::Error)]
         pub enum $name {
             $($before)*
+            /// Underlying I/O error.
             #[error("IO error: {0}")]
             Io(#[from] std::io::Error),
+            /// Plist serialization or parsing error.
             #[error("plist error: {0}")]
             Plist(#[from] plist::Error),
             $($between)*
+            /// Service protocol error.
             #[error("protocol error: {0}")]
             Protocol(String),
             $($after)*

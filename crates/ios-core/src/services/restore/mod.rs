@@ -19,35 +19,52 @@ service_error!(RestoreError);
 pub enum RestoreLifecycleEvent {
     /// Progress update with optional operation label and percentage-like progress value.
     Progress {
+        /// Restore operation name when restored reports one.
         operation: Option<String>,
+        /// Progress value reported by restored.
         progress: Option<u64>,
     },
     /// Status message. `finished` is true when the service reports status code 0.
     Status {
+        /// Raw restored status code.
         code: u64,
+        /// Known status label when ios-core recognizes the code.
         message: Option<String>,
+        /// Raw log message from restored.
         log: Option<String>,
+        /// Whether this status marks restore completion.
         finished: bool,
     },
     /// Restore checkpoint notification.
     Checkpoint {
+        /// Checkpoint name when present.
         name: Option<String>,
+        /// Full raw XPC payload for fields not modeled by ios-core.
         raw: IndexMap<String, XpcValue>,
     },
     /// Data request emitted during a restore lifecycle stream.
     DataRequest {
+        /// Requested data type when present.
         data_type: Option<String>,
+        /// Data port advertised by restored.
         data_port: Option<u64>,
+        /// Whether this was an asynchronous data request.
         async_request: bool,
+        /// Full raw XPC payload for fields not modeled by ios-core.
         raw: IndexMap<String, XpcValue>,
     },
     /// Previous restore log payload.
     PreviousRestoreLog(String),
     /// Crash report emitted by restored.
-    RestoredCrash { backtrace: Vec<String> },
+    RestoredCrash {
+        /// Restored crash backtrace frames.
+        backtrace: Vec<String>,
+    },
     /// Event type not yet modeled by ios-core.
     Unknown {
+        /// Raw `MsgType` value when present.
         msg_type: Option<String>,
+        /// Full raw XPC payload.
         raw: IndexMap<String, XpcValue>,
     },
 }
