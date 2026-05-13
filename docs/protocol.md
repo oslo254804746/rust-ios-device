@@ -19,6 +19,6 @@ This document is a high-level map of protocol modules in this repository. It is 
 
 - `ios_core::lockdown` builds on lockdown framing for sessions, service startup, pairing, and pair records.
 - `ios_core::xpc` builds the RSD and RemoteXPC transport over HTTP/2.
-- `ios_core::services` implements higher-level service clients such as AFC, syslog, screenshot, DTX/Instruments, TestManager, ImageMounter, WebInspector, and CoreDevice file/device information services.
+- `ios_core::services` implements higher-level service clients such as AFC, syslog, screenshot, DTX/Instruments, TestManager, ImageMounter, WebInspector, and CoreDevice file/device information/diagnostics services.
 
 Protocol compatibility should be treated as best effort. Apple can change private services and message shapes between iOS versions.

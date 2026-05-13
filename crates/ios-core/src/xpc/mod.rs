@@ -18,6 +18,7 @@ pub use client::XpcClient;
 #[cfg(any(
     feature = "apps",
     feature = "deviceinfo",
+    feature = "diagnosticsservice",
     feature = "dproxy",
     feature = "fetchsymbols",
     feature = "fileservice",

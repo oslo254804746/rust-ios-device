@@ -56,6 +56,7 @@ management = [
 ios17 = [
     "apps",
     "deviceinfo",
+    "diagnosticsservice",
     "dproxy",
     "fileservice",
     "instruments",
@@ -75,6 +76,7 @@ companion = []
 notificationproxy = []
 crashreport = ["afc"]
 diagnostics = []
+diagnosticsservice = ["tunnel", "mdns"]
 springboard = []
 mcinstall = []
 mobileactivation = []

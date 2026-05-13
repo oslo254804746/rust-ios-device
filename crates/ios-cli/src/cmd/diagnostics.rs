@@ -55,11 +55,18 @@ enum DiagnosticsSub {
         #[arg(long = "plane", help = "IORegistry plane (e.g. IODeviceTree)")]
         plane: Option<String>,
     },
+    /// Preview iOS 17+ CoreDevice sysdiagnose capture metadata without collecting logs
+    Sysdiagnose,
 }
 
 impl DiagnosticsCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for diagnostics"))?;
+        let sub = self.sub;
+
+        if matches!(sub, DiagnosticsSub::Sysdiagnose) {
+            return run_coredevice_sysdiagnose_dry_run(&udid, json).await;
+        }
 
         let opts = ConnectOptions {
             tun_mode: TunMode::Userspace,
@@ -71,7 +78,7 @@ impl DiagnosticsCmd {
             .connect_service(ios_core::diagnostics::SERVICE_NAME)
             .await?;
 
-        match self.sub {
+        match sub {
             DiagnosticsSub::Reboot => {
                 ios_core::diagnostics::reboot(&mut *stream).await?;
                 if json {
@@ -180,10 +187,48 @@ impl DiagnosticsCmd {
                 .await?;
                 println!("{}", serde_json::to_string_pretty(&value)?);
             }
+            DiagnosticsSub::Sysdiagnose => unreachable!("handled before diagnostics_relay connect"),
         }
 
         Ok(())
     }
+}
+
+async fn run_coredevice_sysdiagnose_dry_run(udid: &str, json: bool) -> Result<()> {
+    let opts = ConnectOptions {
+        tun_mode: TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: false,
+    };
+    let device = connect(udid, opts).await?;
+    let xpc = device
+        .connect_xpc_service(ios_core::diagnosticsservice::SERVICE_NAME)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "CoreDevice diagnosticsservice is unavailable for this device/session: {error}"
+            )
+        })?;
+    let mut client =
+        ios_core::diagnosticsservice::DiagnosticsServiceClient::new(xpc, udid.to_string());
+    let response = client.capture_sysdiagnose(true).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": true,
+                "preferred_filename": response.preferred_filename,
+                "file_size": response.file_size,
+            }))?
+        );
+    } else {
+        println!("Dry-run sysdiagnose capture:");
+        println!("PreferredFilename: {}", response.preferred_filename);
+        println!("ExpectedLength: {}", response.file_size);
+    }
+
+    Ok(())
 }
 
 fn print_battery(battery: &ios_core::diagnostics::BatteryDiagnostics) {
@@ -464,5 +509,11 @@ mod tests {
             }
             _ => panic!("expected ioregistry subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_sysdiagnose_subcommand() {
+        let cmd = TestCli::parse_from(["diagnostics", "sysdiagnose"]);
+        assert!(matches!(cmd.command, DiagnosticsSub::Sysdiagnose));
     }
 }

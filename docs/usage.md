@@ -140,11 +140,17 @@ Comparable upstream workflows:
 ```sh
 ios -u <UDID> syslog
 ios -u <UDID> diagnostics list
+ios -u <UDID> diagnostics sysdiagnose
 ios -u <UDID> diagnostics reboot
 ios -u <UDID> os-trace ps
 ios -u <UDID> pcap --output device.pcap
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
+
+`diagnostics sysdiagnose` uses the iOS 17+ CoreDevice diagnostics service when
+that service is exposed in RSD. It runs in dry-run mode and prints the preferred
+archive name plus expected byte count; it does not download or collect the full
+sysdiagnose bundle.
 
 Use a test device for commands that restart the device, change state, or collect
 large streams.

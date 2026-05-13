@@ -32,6 +32,7 @@
 //! | `debugserver` | [`debugserver`] | LLDB remote debug server |
 //! | `fileservice` | [`fileservice`] | iOS 17+ XPC file service |
 //! | `deviceinfo` | [`deviceinfo`] | iOS 17+ XPC device info |
+//! | `diagnosticsservice` | [`diagnosticsservice`] | iOS 17+ XPC diagnostics service |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
@@ -86,7 +87,12 @@ macro_rules! service_error {
 }
 
 pub mod backup2;
-#[cfg(any(feature = "apps", feature = "deviceinfo", feature = "fileservice"))]
+#[cfg(any(
+    feature = "apps",
+    feature = "deviceinfo",
+    feature = "diagnosticsservice",
+    feature = "fileservice"
+))]
 pub(crate) mod coredevice;
 pub mod device_link;
 
@@ -152,6 +158,9 @@ pub mod fileservice;
 
 #[cfg(feature = "deviceinfo")]
 pub mod deviceinfo;
+
+#[cfg(feature = "diagnosticsservice")]
+pub mod diagnosticsservice;
 
 #[cfg(feature = "debugserver")]
 pub mod debugserver;

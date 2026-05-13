@@ -104,6 +104,8 @@ pub use services::debugserver;
 pub use services::deviceinfo;
 #[cfg(feature = "diagnostics")]
 pub use services::diagnostics;
+#[cfg(feature = "diagnosticsservice")]
+pub use services::diagnosticsservice;
 #[cfg(feature = "dproxy")]
 pub use services::dproxy;
 #[cfg(feature = "dtx")]

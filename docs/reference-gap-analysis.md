@@ -42,6 +42,7 @@
 - `ios wda --device-port PORT` 支持通过 usbmux 直接请求设备上的 WDA HTTP 端口，避免必须先启动本地 forward。
 - `ios-core::restore` 新增 restore 生命周期事件解析，覆盖 ProgressMsg、StatusMsg、CheckpointMsg、DataRequestMsg、PreviousRestoreLogMsg、RestoredCrash，并内置常见 restore status 错误说明。
 - `ios-core::restore::RestoreServiceClient::next_lifecycle_event` 与 `ios restore events` 已接入只读事件消费，可输出 progress、status、checkpoint、data request、previous log 和 restored crash 的 JSON 事件；data request JSON 会标记普通/async 请求。
+- `ios-core::diagnosticsservice::DiagnosticsServiceClient` 新增 iOS 17+ CoreDevice `capturesysdiagnose` dry-run/metadata 路径，支持 `preferredFilename`、`fileTransfer.expectedLength` 与嵌套 `xpcFileTransfer` size 解析；`ios diagnostics sysdiagnose` 暴露安全 dry-run 入口，不采集完整日志包。
 
 本次真机回归（2026-05-12，iOS 14.4.2 / `00008101-000A5CCC2E90001E`）：
 
@@ -49,6 +50,16 @@
 - CoreDevice-only 入口在 iOS 14.4.2 上按预期不可用：`info lock-state` / `info device-info` 返回 lockdown `InvalidService`；`file --coredevice` 已在 CLI 侧提前给出 iOS 17+ 要求，避免进入不支持协议路径。
 - `tunnel list` 在本机 manager 未运行时会明确报告连接失败；manager 端到端仍待常驻服务环境验证。
 - iOS 17+ CoreDevice fileservice/appservice/deviceinfo 真实设备语义仍待后续设备到位后验证。
+
+本次真机回归（2026-05-13，iOS 17.5.1 / `00008020-0004553E02F2002E`）：
+
+- 设备发现和 lockdown 基础读取通过：`ios list` 识别 USB 设备，`ProductVersion=17.5.1`，`ProductType=iPhone11,8`。
+- 传统路径验证通过：`diagnostics battery`、AFC `file ls /`、InstallationProxy `apps list --app-type user`。
+- RSD 全量服务列表可读取；传统服务可通过 shim 解析，例如 `com.apple.mobile.diagnostics_relay -> com.apple.mobile.diagnostics_relay.shim.remote`。
+- 该设备未暴露 `com.apple.coredevice.deviceinfo`、`com.apple.coredevice.appservice`、`com.apple.coredevice.diagnosticsservice` 等 feature-invocation 服务；`info lock-state`、`apps list --coredevice`、`diagnostics sysdiagnose` 均按预期返回对应服务不可用。
+- 该设备暴露 `com.apple.sysdiagnose.remote` / `com.apple.sysdiagnose.remote.trusted`，但实测它们不是 `CoreDevice.output` envelope 协议，不能作为 `com.apple.coredevice.diagnosticsservice` 的透明 fallback。
+- `mobilegestalt ProductVersion ProductType` 在 iOS 17.5.1 上先遇到 diagnostics relay `MobileGestaltDeprecated`，随后 CoreDevice deviceinfo fallback 因该设备未暴露 `com.apple.coredevice.deviceinfo` 而失败；这是设备服务面限制，不是传统 lockdown 基础连接失败。
+- 未执行 WDA、XCTest、恢复、重置或完整 sysdiagnose 采集。
 
 ## 主要差距
 
@@ -96,8 +107,9 @@ deviceinfo client 与 CLI 基础入口已经接入：
 - `ios info display` 在 diagnostics relay 不可用或 iOS 17+ deprecated 时走 CoreDevice `getdisplayinfo`，也可用 `ios info display --coredevice` 显式选择。
 - lock state、完整 device info 已通过 `ios info lock-state` 和 `ios info device-info` 暴露。
 - 与 RSD service name 的 shim/remote 后缀兼容策略保持一致。
+- `com.apple.coredevice.diagnosticsservice` 已接入 `capturesysdiagnose` dry-run/metadata 解析，CLI 入口为 `ios diagnostics sysdiagnose`。当前只预览服务返回的文件名与预计大小，不下载或触发完整日志采集，避免在默认诊断命令中引入长时间/大文件副作用。
 
-后续建议真实设备验证 `getdisplayinfo`、`getlockstate`、`getdeviceinfo` 的输出结构，并按需要优化表格化展示。
+后续建议真实设备验证 `getdisplayinfo`、`getlockstate`、`getdeviceinfo` 的输出结构，并按需要优化表格化展示。对 sysdiagnose，需要另行研究 `com.apple.sysdiagnose.remote` / `.trusted` 的非 CoreDevice feature 协议；不要把它与 `com.apple.coredevice.diagnosticsservice` 的 `capturesysdiagnose` envelope 混用。
 
 ### P1：Tunnel CLI 与 tunnel manager 体验（基础已补）
 
