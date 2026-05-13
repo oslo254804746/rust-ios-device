@@ -68,6 +68,13 @@ schemas, service routing, and iOS-version support can differ.
 | Preboard | `ios preboard ...` | prepare/preboard-style workflows | preboard service workflows |
 | Power assertion | `ios power-assert --timeout 10` | power assertion workflows | `pymobiledevice3 power-assertion ...` |
 | Companion devices | `ios companion list` | companion-related workflows | `pymobiledevice3 companion_proxy ...` |
+| Activation | `ios activation state`, `ios activation session-info`, `ios activation info` | go-ios activation helpers | pymobiledevice3 activation workflows |
+| AMFI developer mode | `ios amfi enable-developer-mode`, `ios amfi reveal-developer-mode` | `ios amfi ...` | `pymobiledevice3 amfi ...` |
+| Heartbeat | `ios heartbeat` | heartbeat service workflows | lockdown heartbeat service |
+| Notifications | `ios notify wait <EVENT>` | `ios notify ...` | `pymobiledevice3 notification ...` |
+| SpringBoard | `ios springboard ...` | `ios springboard ...` | pymobiledevice3 springboard workflows |
+| Traffic recording | `ios dproxy service <SERVICE>` | DTX proxy/recording workflows | developer DVT service inspection |
+| IDAM | `ios idam get` | IDAM-related workflows | IDAM service workflows |
 
 ## Notes for migration
 

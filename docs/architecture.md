@@ -4,6 +4,11 @@ The workspace now exposes a small set of public crates. `ios-core` owns the
 protocol, transport, service, discovery, pairing, and high-level Rust APIs.
 `ios-cli`, `ios-py`, and `ios-ffi` are front ends built on top of it.
 
+Note: Internal modules (`proto`, `mux`, `lockdown`, `xpc`, `tunnel`,
+`pairing_transport`, `psk_tls`) are `pub(crate)`. Supported types are
+re-exported at the `ios_core` crate root. The paths below describe internal
+organization for contributors.
+
 ## Layers
 
 `ios_core::proto` contains wire formats and codecs. It does not own device connections.

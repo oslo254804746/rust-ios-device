@@ -39,6 +39,24 @@ sudo apt-get install -y libssl-dev pkg-config
 
 Distribution package names may differ.
 
+## Build fails on Windows
+
+OpenSSL must be installed via vcpkg with static linking:
+
+```powershell
+vcpkg install openssl:x64-windows-static-md
+```
+
+Set the following environment variables before building:
+
+```powershell
+$env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT   # or your vcpkg root
+$env:VCPKGRS_TRIPLET = "x64-windows-static-md"
+$env:OPENSSL_STATIC = "1"
+```
+
+If using GitHub Actions runners, `VCPKG_INSTALLATION_ROOT` is pre-set. For local development, point `VCPKG_ROOT` at your vcpkg checkout.
+
 ## Python build fails
 
 Use Python 3.9+ and set `PYO3_PYTHON` in your shell if PyO3 picks the wrong interpreter:

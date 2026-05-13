@@ -93,6 +93,22 @@ ios -u <UDID> file --crash ls /
 ios -u <UDID> file-relay Network --output network-relay.zip
 ```
 
+CoreDevice fileservice (iOS 17+ devices that expose the service):
+
+```sh
+ios -u <UDID> file --coredevice --domain temporary ls /
+ios -u <UDID> file --coredevice --domain app-data-container --identifier com.example.app ls /
+ios -u <UDID> file --coredevice --domain temporary push local.txt remote.txt
+ios -u <UDID> file --coredevice --domain temporary pull remote.txt local.txt
+ios -u <UDID> file --coredevice --domain temporary mkdir new-dir
+ios -u <UDID> file --coredevice --domain temporary mv old.txt new.txt
+ios -u <UDID> file --coredevice --domain temporary rm old.txt
+```
+
+Not all devices expose `com.apple.coredevice.fileservice.control` / `.data` in
+their RSD directory. Use `ios rsd check com.apple.coredevice.fileservice.control`
+to verify availability before using `--coredevice`.
+
 Comparable upstream workflows:
 
 - go-ios: `ios fsync ...`, `ios crash ls`, `ios crash cp`.

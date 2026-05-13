@@ -1,6 +1,6 @@
 # Getting started
 
-This guide covers a local source checkout. Published binaries or packages may use different installation steps once releases are available.
+This guide covers building from source and running the CLI locally. Pre-built binaries are available from [GitHub Releases](https://github.com/oslo254804746/rust-ios-device/releases), and the Python package can be installed via `pip install rust-ios-device-tunnel`.
 
 ## Prerequisites
 

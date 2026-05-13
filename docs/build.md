@@ -13,6 +13,22 @@ cargo build --release --workspace --exclude ios-py
 PyO3 extension-module build is exercised by `uvx maturin`; the CI excludes it from normal Rust
 build/test jobs and builds wheels separately.
 
+## Windows dependencies
+
+OpenSSL must be installed via vcpkg with static linking:
+
+```powershell
+vcpkg install openssl:x64-windows-static-md
+```
+
+Set the following environment variables before building:
+
+```powershell
+$env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+$env:VCPKGRS_TRIPLET = "x64-windows-static-md"
+$env:OPENSSL_STATIC = "1"
+```
+
 ## Linux dependencies
 
 On Debian/Ubuntu-style systems:

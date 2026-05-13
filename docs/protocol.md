@@ -2,6 +2,8 @@
 
 This document is a high-level map of protocol modules in this repository. It is not a wire-level specification.
 
+Note: The `proto` module is `pub(crate)` — these paths describe internal organization, not public API. Public types are re-exported at the `ios_core` crate root.
+
 ## Implemented protocol modules
 
 - `ios_core::proto::usbmuxd`: usbmuxd message types.

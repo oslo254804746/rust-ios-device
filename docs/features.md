@@ -27,7 +27,9 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, and `diagnosticsservice`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
+
+Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 
 Some features add heavier optional dependencies only when enabled:
 
