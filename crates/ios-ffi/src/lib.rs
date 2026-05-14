@@ -39,8 +39,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::runtime::Runtime;
 
-static RUNTIME: LazyLock<Runtime> =
-    LazyLock::new(|| Runtime::new().expect("failed to create tokio runtime"));
+static RUNTIME: LazyLock<Result<Runtime, String>> =
+    LazyLock::new(|| Runtime::new().map_err(|err| err.to_string()));
 
 // ── Types exported to C ───────────────────────────────────────────────────────
 
@@ -86,6 +86,9 @@ const IOS_ERR_UTF8: c_int = 2;
 const IOS_ERR_CORE: c_int = 3;
 const IOS_ERR_ALLOC: c_int = 4;
 const IOS_ERR_STATE: c_int = 5;
+const IOS_ERR_RUNTIME: c_int = 6;
+const IOS_ERR_PANIC: c_int = 7;
+const IOS_ERR_BUFFER_TOO_SMALL: c_int = 8;
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +98,17 @@ const IOS_ERR_STATE: c_int = 5;
 #[no_mangle]
 pub extern "C" fn ios_runtime_init() {
     LazyLock::force(&RUNTIME);
+}
+
+fn runtime() -> Result<&'static Runtime, c_int> {
+    RUNTIME.as_ref().map_err(|_| IOS_ERR_RUNTIME)
+}
+
+fn ffi_status(f: impl FnOnce() -> c_int + std::panic::UnwindSafe) -> c_int {
+    match std::panic::catch_unwind(f) {
+        Ok(code) => code,
+        Err(_) => IOS_ERR_PANIC,
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -206,40 +220,46 @@ pub unsafe extern "C" fn ios_list_devices(
     devices_out: *mut *mut IosDevice,
     count_out: *mut usize,
 ) -> c_int {
-    if let Err(code) = validate_device_list_outputs(devices_out, count_out) {
-        return code;
-    }
-    let result = RUNTIME.block_on(ios_core::list_devices());
-    match result {
-        Err(_) => 1,
-        Ok(devs) => {
-            let count = devs.len();
-            let mut c_devs: Vec<IosDevice> = Vec::with_capacity(count);
-            for d in devs {
-                let udid = match CString::new(d.udid) {
-                    Ok(s) => s.into_raw(),
-                    Err(_) => continue, // skip devices with invalid UDIDs
-                };
-                let connection_type = match CString::new(d.connection_type) {
-                    Ok(s) => s.into_raw(),
-                    Err(_) => {
-                        // Free the already-allocated udid before skipping
-                        drop(CString::from_raw(udid));
-                        continue;
-                    }
-                };
-                c_devs.push(IosDevice {
-                    udid,
-                    device_id: d.device_id,
-                    connection_type,
-                });
-            }
-            let (ptr, actual_count) = ios_devices_into_raw(c_devs);
-            *devices_out = ptr;
-            *count_out = actual_count;
-            0
+    ffi_status(|| {
+        if let Err(code) = validate_device_list_outputs(devices_out, count_out) {
+            return code;
         }
-    }
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let result = runtime.block_on(ios_core::list_devices());
+        match result {
+            Err(_) => IOS_ERR_CORE,
+            Ok(devs) => {
+                let count = devs.len();
+                let mut c_devs: Vec<IosDevice> = Vec::with_capacity(count);
+                for d in devs {
+                    let udid = match CString::new(d.udid) {
+                        Ok(s) => s.into_raw(),
+                        Err(_) => continue, // skip devices with invalid UDIDs
+                    };
+                    let connection_type = match CString::new(d.connection_type) {
+                        Ok(s) => s.into_raw(),
+                        Err(_) => {
+                            // Free the already-allocated udid before skipping
+                            drop(CString::from_raw(udid));
+                            continue;
+                        }
+                    };
+                    c_devs.push(IosDevice {
+                        udid,
+                        device_id: d.device_id,
+                        connection_type,
+                    });
+                }
+                let (ptr, actual_count) = ios_devices_into_raw(c_devs);
+                *devices_out = ptr;
+                *count_out = actual_count;
+                IOS_SUCCESS
+            }
+        }
+    })
 }
 
 /// Free a device list returned by `ios_list_devices`.
@@ -279,28 +299,34 @@ pub unsafe extern "C" fn ios_device_open(
     udid: *const c_char,
     out: *mut *mut IosDeviceHandle,
 ) -> c_int {
-    if udid.is_null() || out.is_null() {
-        return IOS_ERR_NULL;
-    }
-    let udid_str = match CStr::from_ptr(udid).to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return IOS_ERR_UTF8,
-    };
-    let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    match RUNTIME.block_on(ios_core::connect(&udid_str, opts)) {
-        Ok(device) => {
-            let handle = Box::new(IosDeviceHandle {
-                _device: Mutex::new(Some(Arc::new(device))),
-            });
-            *out = Box::into_raw(handle);
-            IOS_SUCCESS
+    ffi_status(|| {
+        if udid.is_null() || out.is_null() {
+            return IOS_ERR_NULL;
         }
-        Err(_) => IOS_ERR_CORE,
-    }
+        let udid_str = match CStr::from_ptr(udid).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return IOS_ERR_UTF8,
+        };
+        let opts = ios_core::device::ConnectOptions {
+            tun_mode: ios_core::TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: true,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        match runtime.block_on(ios_core::connect(&udid_str, opts)) {
+            Ok(device) => {
+                let handle = Box::new(IosDeviceHandle {
+                    _device: Mutex::new(Some(Arc::new(device))),
+                });
+                *out = Box::into_raw(handle);
+                IOS_SUCCESS
+            }
+            Err(_) => IOS_ERR_CORE,
+        }
+    })
 }
 
 /// Close and free a handle created by `ios_device_open`.
@@ -332,18 +358,24 @@ pub unsafe extern "C" fn ios_get_product_version(
     handle: *const IosDeviceHandle,
     out: *mut *mut c_char,
 ) -> c_int {
-    if out.is_null() {
-        return IOS_ERR_NULL;
-    }
-    let device = match device_from_handle(handle) {
-        Ok(device) => device,
-        Err(code) => return code,
-    };
-    let version = match RUNTIME.block_on(device.product_version()) {
-        Ok(version) => version.to_string(),
-        Err(_) => return IOS_ERR_CORE,
-    };
-    write_owned_c_string(out, version)
+    ffi_status(|| {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let version = match runtime.block_on(device.product_version()) {
+            Ok(version) => version.to_string(),
+            Err(_) => return IOS_ERR_CORE,
+        };
+        write_owned_c_string(out, version)
+    })
 }
 
 /// Get a lockdown value as compact JSON in a newly-allocated UTF-8 C string.
@@ -360,31 +392,37 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
     key: *const c_char,
     out: *mut *mut c_char,
 ) -> c_int {
-    if out.is_null() {
-        return IOS_ERR_NULL;
-    }
-    let key_owned = if key.is_null() {
-        None
-    } else {
-        match CStr::from_ptr(key).to_str() {
-            Ok(s) => Some(s.to_string()),
-            Err(_) => return IOS_ERR_UTF8,
+    ffi_status(|| {
+        if out.is_null() {
+            return IOS_ERR_NULL;
         }
-    };
-    let device = match device_from_handle(handle) {
-        Ok(device) => device,
-        Err(code) => return code,
-    };
-    let plist_value = match RUNTIME.block_on(device.lockdown_get_value(key_owned.as_deref())) {
-        Ok(value) => value,
-        Err(_) => return IOS_ERR_CORE,
-    };
-    let json = plist_value_to_json(&plist_value);
-    let json_text = match serde_json::to_string(&json) {
-        Ok(text) => text,
-        Err(_) => return IOS_ERR_CORE,
-    };
-    write_owned_c_string(out, json_text)
+        let key_owned = if key.is_null() {
+            None
+        } else {
+            match CStr::from_ptr(key).to_str() {
+                Ok(s) => Some(s.to_string()),
+                Err(_) => return IOS_ERR_UTF8,
+            }
+        };
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let plist_value = match runtime.block_on(device.lockdown_get_value(key_owned.as_deref())) {
+            Ok(value) => value,
+            Err(_) => return IOS_ERR_CORE,
+        };
+        let json = plist_value_to_json(&plist_value);
+        let json_text = match serde_json::to_string(&json) {
+            Ok(text) => text,
+            Err(_) => return IOS_ERR_CORE,
+        };
+        write_owned_c_string(out, json_text)
+    })
 }
 
 /// Free a UTF-8 C string returned by ios_get_product_version or ios_get_lockdown_value_json.
@@ -420,38 +458,44 @@ pub unsafe extern "C" fn ios_start_tunnel(
     mode: IosTunMode,
     out: *mut *mut IosTunnel,
 ) -> c_int {
-    if udid.is_null() || out.is_null() {
-        return 1;
-    }
-    let udid_str = match CStr::from_ptr(udid).to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return 2,
-    };
-    let tun_mode = match mode {
-        IosTunMode::IOS_TUN_KERNEL => ios_core::TunMode::Kernel,
-        _ => ios_core::TunMode::Userspace,
-    };
-    let opts = ios_core::device::ConnectOptions {
-        tun_mode,
-        pair_record_path: None,
-        skip_tunnel: false,
-    };
-    match RUNTIME.block_on(ios_core::connect(&udid_str, opts)) {
-        Err(_) => 3,
-        Ok(device) => {
-            let server_address = device.server_address().unwrap_or("").to_string();
-            let rsd_port = device.rsd_port().unwrap_or(0);
-            let userspace_port = device.userspace_port().unwrap_or(0);
-            let tunnel = Box::new(IosTunnel {
-                server_address,
-                rsd_port,
-                userspace_port,
-                _device: Mutex::new(Some(device)),
-            });
-            *out = Box::into_raw(tunnel);
-            0
+    ffi_status(|| {
+        if udid.is_null() || out.is_null() {
+            return IOS_ERR_NULL;
         }
-    }
+        let udid_str = match CStr::from_ptr(udid).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return IOS_ERR_UTF8,
+        };
+        let tun_mode = match mode {
+            IosTunMode::IOS_TUN_KERNEL => ios_core::TunMode::Kernel,
+            _ => ios_core::TunMode::Userspace,
+        };
+        let opts = ios_core::device::ConnectOptions {
+            tun_mode,
+            pair_record_path: None,
+            skip_tunnel: false,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        match runtime.block_on(ios_core::connect(&udid_str, opts)) {
+            Err(_) => IOS_ERR_CORE,
+            Ok(device) => {
+                let server_address = device.server_address().unwrap_or("").to_string();
+                let rsd_port = device.rsd_port().unwrap_or(0);
+                let userspace_port = device.userspace_port().unwrap_or(0);
+                let tunnel = Box::new(IosTunnel {
+                    server_address,
+                    rsd_port,
+                    userspace_port,
+                    _device: Mutex::new(Some(device)),
+                });
+                *out = Box::into_raw(tunnel);
+                IOS_SUCCESS
+            }
+        }
+    })
 }
 
 /// Close and free a tunnel created by `ios_start_tunnel`.
@@ -486,17 +530,19 @@ pub unsafe extern "C" fn ios_tunnel_server_address(
     buf: *mut c_char,
     buf_len: usize,
 ) -> c_int {
-    if tunnel.is_null() || buf.is_null() {
-        return 1;
-    }
-    let addr = &(*tunnel).server_address;
-    let bytes = addr.as_bytes();
-    if bytes.len() + 1 > buf_len {
-        return 2;
-    }
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, bytes.len());
-    *buf.add(bytes.len()) = 0;
-    0
+    ffi_status(|| {
+        if tunnel.is_null() || buf.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let addr = &(*tunnel).server_address;
+        let bytes = addr.as_bytes();
+        if bytes.len() + 1 > buf_len {
+            return IOS_ERR_BUFFER_TOO_SMALL;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, bytes.len());
+        *buf.add(bytes.len()) = 0;
+        IOS_SUCCESS
+    })
 }
 
 /// Get the RSD port (Remote Service Discovery, iOS 17+).
@@ -594,6 +640,55 @@ mod tests {
         assert_eq!(
             validate_device_list_outputs(&mut devices, &mut count),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn ffi_status_converts_panics_to_status_code() {
+        let code = ffi_status(|| panic!("ffi panic boundary"));
+
+        assert_eq!(code, IOS_ERR_PANIC);
+    }
+
+    #[test]
+    fn status_codes_are_distinct() {
+        let codes = [
+            IOS_SUCCESS,
+            IOS_ERR_NULL,
+            IOS_ERR_UTF8,
+            IOS_ERR_CORE,
+            IOS_ERR_ALLOC,
+            IOS_ERR_STATE,
+            IOS_ERR_RUNTIME,
+            IOS_ERR_PANIC,
+            IOS_ERR_BUFFER_TOO_SMALL,
+        ];
+
+        for (index, code) in codes.iter().enumerate() {
+            assert!(!codes[..index].contains(code));
+        }
+    }
+
+    #[test]
+    fn tunnel_server_address_uses_named_error_codes() {
+        let mut buffer = [0; 4];
+        assert_eq!(
+            unsafe {
+                ios_tunnel_server_address(std::ptr::null(), buffer.as_mut_ptr(), buffer.len())
+            },
+            IOS_ERR_NULL
+        );
+
+        let tunnel = IosTunnel {
+            server_address: "fd00::1234".to_string(),
+            rsd_port: 1234,
+            userspace_port: 4321,
+            _device: Mutex::new(None),
+        };
+
+        assert_eq!(
+            unsafe { ios_tunnel_server_address(&tunnel, buffer.as_mut_ptr(), buffer.len()) },
+            IOS_ERR_BUFFER_TOO_SMALL
         );
     }
 }

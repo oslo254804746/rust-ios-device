@@ -22,6 +22,7 @@ use super::types::{DtxMessage, DtxPayload, NSObject};
 // ── DTX message type constants ────────────────────────────────────────────────
 
 const MAX_DTX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+const MAX_DTX_FRAGMENTS: u16 = 1024;
 
 const MSG_OK: u32 = 0;
 const MSG_UNKNOWN_TYPE_ONE: u32 = 1; // sysmontap data messages
@@ -145,6 +146,11 @@ fn parse_dtx_header(hdr: &[u8; 32]) -> Result<DtxHeader, DtxError> {
     let frag_cnt = u16::from_le_bytes(hdr[10..12].try_into().unwrap());
     if frag_cnt == 0 {
         return Err(DtxError::Protocol("invalid DTX fragment count: 0".into()));
+    }
+    if frag_cnt > MAX_DTX_FRAGMENTS {
+        return Err(DtxError::Protocol(format!(
+            "DTX message has too many fragments: {frag_cnt} exceeds {MAX_DTX_FRAGMENTS}"
+        )));
     }
     if frag_idx >= frag_cnt {
         return Err(DtxError::Protocol(format!(
@@ -1146,6 +1152,22 @@ mod tests {
         assert!(matches!(
             err,
             DtxError::Protocol(message) if message.contains("fragment metadata mismatch")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_recv_rejects_excessive_fragment_count_before_allocation() {
+        let first = encode_fragment(72, 0, MAX_DTX_FRAGMENTS + 1, 4, false, 16, &[]);
+        let mut cursor = std::io::Cursor::new(first);
+
+        let err = match read_dtx_header(&mut cursor).await {
+            Ok(_) => panic!("excessive fragment count should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("too many fragments")
         ));
     }
 }

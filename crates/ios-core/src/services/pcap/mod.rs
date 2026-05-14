@@ -92,13 +92,18 @@ pub fn write_packet_record<W: std::io::Write>(
     writer: &mut W,
     packet: &CapturedPacket,
 ) -> Result<(), PcapError> {
-    let length = packet.payload.len() as u32;
+    let length = checked_packet_record_len(packet.payload.len())?;
     writer.write_all(&packet.ts_sec.to_le_bytes())?;
     writer.write_all(&packet.ts_usec.to_le_bytes())?;
     writer.write_all(&length.to_le_bytes())?;
     writer.write_all(&length.to_le_bytes())?;
     writer.write_all(&packet.payload)?;
     Ok(())
+}
+
+fn checked_packet_record_len(len: usize) -> Result<u32, PcapError> {
+    u32::try_from(len)
+        .map_err(|_| PcapError::Protocol(format!("packet payload too large for pcap: {len}")))
 }
 
 fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
@@ -214,6 +219,16 @@ mod tests {
         assert_eq!(packet.proc_name, "Safari");
         assert_eq!(&packet.payload[..14], &FAKE_ETHERNET_HEADER);
         assert_eq!(&packet.payload[14..], &[0x45, 0x00, 0x00, 0x14]);
+    }
+
+    #[test]
+    fn checked_packet_record_len_rejects_large_lengths() {
+        let err = checked_packet_record_len(u32::MAX as usize + 1).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PcapError::Protocol(message) if message.contains("packet payload too large")
+        ));
     }
 
     #[tokio::test]

@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use ios_core::MuxClient;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8100";
+const MAX_WDA_HEADER_BYTES: usize = 64 * 1024;
+const MAX_WDA_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(clap::Args)]
 pub struct WdaCmd {
@@ -89,7 +91,7 @@ impl WdaCmd {
                 device_port,
                 self.timeout_secs,
             ),
-            None => WdaHttpClient::new_http(self.base_url, self.timeout_secs),
+            None => WdaHttpClient::new_http(self.base_url, self.timeout_secs)?,
         };
         match self.sub {
             WdaSub::Status => print_json(client.get("/status").await?)?,
@@ -234,19 +236,19 @@ enum WdaTransport {
 }
 
 impl WdaHttpClient {
-    fn new_http(base_url: String, timeout_secs: u64) -> Self {
+    fn new_http(base_url: String, timeout_secs: u64) -> Result<Self> {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .expect("valid reqwest client");
-        Self {
+            .context("failed to create WDA HTTP client")?;
+        Ok(Self {
             transport: WdaTransport::Http {
                 client,
                 base_url: base_url.trim_end_matches('/').to_string(),
             },
             timeout,
-        }
+        })
     }
 
     fn new_device_port(udid: String, port: u16, timeout_secs: u64) -> Self {
@@ -329,9 +331,7 @@ impl WdaHttpClient {
             stream.write_all(request.as_bytes()).await?;
             stream.flush().await?;
 
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response).await?;
-            parse_device_http_json_response(&response)
+            read_device_http_json_response(&mut stream).await
         };
 
         tokio::time::timeout(self.timeout, fut)
@@ -440,6 +440,49 @@ fn parse_device_http_json_response(response: &[u8]) -> Result<Value> {
     Ok(value)
 }
 
+async fn read_device_http_json_response<R>(reader: &mut R) -> Result<Value>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut response = Vec::with_capacity(8192);
+    let header_end = loop {
+        if response.len() >= MAX_WDA_HEADER_BYTES {
+            anyhow::bail!("WDA device port response headers exceeded {MAX_WDA_HEADER_BYTES} bytes");
+        }
+        let mut byte = [0u8; 1];
+        reader
+            .read_exact(&mut byte)
+            .await
+            .context("read WDA device port response headers")?;
+        response.push(byte[0]);
+        if let Some(pos) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos;
+        }
+    };
+
+    let headers = std::str::from_utf8(&response[..header_end])
+        .context("WDA device port returned non-UTF8 HTTP headers")?;
+    let body_len = content_length(headers)
+        .context("WDA device port response missing Content-Length header")?;
+    if body_len > MAX_WDA_BODY_BYTES {
+        anyhow::bail!("WDA device port response body exceeded {MAX_WDA_BODY_BYTES} bytes");
+    }
+
+    let current_body_len = response.len() - (header_end + 4);
+    if current_body_len < body_len {
+        response.resize(response.len() + body_len - current_body_len, 0);
+        let body_start = header_end + 4;
+        reader
+            .read_exact(&mut response[body_start + current_body_len..])
+            .await
+            .context("read WDA device port response body")?;
+    } else if current_body_len > body_len {
+        response.truncate(header_end + 4 + body_len);
+    }
+
+    parse_device_http_json_response(&response)
+}
+
 fn content_length(headers: &str) -> Option<usize> {
     headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -513,5 +556,23 @@ mod tests {
         let value = parse_device_http_json_response(response).unwrap();
 
         assert_eq!(value["value"]["ready"], true);
+    }
+
+    #[tokio::test]
+    async fn reads_device_http_response_from_content_length_without_eof() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 24\r\n\r\n{\"value\":{\"ready\":true}}ignored";
+        let mut reader = std::io::Cursor::new(response);
+
+        let value = read_device_http_json_response(&mut reader).await.unwrap();
+
+        assert_eq!(value["value"]["ready"], true);
+        let expected_position = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4
+            + 24;
+        assert_eq!(reader.position(), expected_position as u64);
     }
 }

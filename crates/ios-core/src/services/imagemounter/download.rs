@@ -193,21 +193,39 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), ImageMounterError> {
             .by_index(i)
             .map_err(|e| ImageMounterError::Download(format!("read zip entry: {e}")))?;
 
-        let name = file.name().to_string();
+        let entry_name = file.name().to_string();
         // Skip directories and __MACOSX entries
-        if file.is_dir() || name.starts_with("__MACOSX") {
+        if file.is_dir() || entry_name.starts_with("__MACOSX") {
             continue;
         }
 
-        // Strip leading directory component if present (e.g. "ddi-15F31d/Restore/...")
-        let rel_path = name
-            .split('/')
-            .skip_while(|s| !s.eq_ignore_ascii_case("Restore"))
-            .collect::<Vec<_>>();
-        if rel_path.is_empty() {
+        if file.enclosed_name().is_none() {
+            tracing::warn!(entry = %entry_name, "skipping unsafe DDI zip entry");
             continue;
         }
-        let out_path = dest.join(rel_path.join("/"));
+        let normalized_name = entry_name.replace('\\', "/");
+        let raw_components = normalized_name
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect::<Vec<_>>();
+        let Some(restore_pos) = raw_components
+            .iter()
+            .position(|component| component.eq_ignore_ascii_case("Restore"))
+        else {
+            continue;
+        };
+        let restore_tail = &raw_components[restore_pos + 1..];
+        if restore_tail.is_empty()
+            || restore_tail
+                .iter()
+                .any(|component| matches!(*component, "." | ".."))
+        {
+            tracing::warn!(entry = %entry_name, "skipping unsafe DDI Restore entry");
+            continue;
+        }
+        let mut rel_path = PathBuf::from("Restore");
+        rel_path.extend(restore_tail);
+        let out_path = dest.join(rel_path);
 
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)
@@ -218,7 +236,7 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), ImageMounterError> {
             ImageMounterError::Download(format!("create file {}: {e}", out_path.display()))
         })?;
         std::io::copy(&mut file, &mut out_file)
-            .map_err(|e| ImageMounterError::Download(format!("extract {}: {e}", name)))?;
+            .map_err(|e| ImageMounterError::Download(format!("extract {}: {e}", entry_name)))?;
     }
 
     Ok(())
@@ -290,4 +308,48 @@ fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), I
         ImageMounterError::Download("DeveloperDiskImage.dmg.signature not found in zip".into())
     })?;
     Ok((image, signature))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut bytes);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, data) in entries {
+                zip.start_file(*name, options).unwrap();
+                zip.write_all(data).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn extract_zip_skips_restore_entries_that_escape_destination() {
+        let root = std::env::temp_dir().join(format!("ios-rs-ddi-escape-{}", std::process::id()));
+        let dest = root.join("cache");
+        let outside = root.join("outside");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let zip = zip_with_entries(&[
+            ("ddi/Restore/../../outside", b"escape"),
+            ("ddi/Restore/PersonalizedDMG.trustcache", b"safe"),
+        ]);
+
+        extract_zip(&zip, &dest).unwrap();
+
+        assert!(!outside.exists());
+        assert_eq!(
+            std::fs::read(dest.join("Restore").join("PersonalizedDMG.trustcache")).unwrap(),
+            b"safe"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -452,6 +452,7 @@ impl TestRunRecorder {
         {
             return &mut suite.cases[index];
         }
+        let index = suite.cases.len();
         suite.cases.push(TestCaseSummary {
             class_name: class_name.to_string(),
             method_name: method_name.to_string(),
@@ -459,13 +460,14 @@ impl TestRunRecorder {
             duration_seconds: None,
             failure: None,
         });
-        suite.cases.last_mut().expect("just pushed test case")
+        &mut suite.cases[index]
     }
 
     fn find_or_create_suite(&mut self, name: &str) -> &mut TestSuiteSummary {
         if let Some(index) = self.suites.iter().rposition(|suite| suite.name == name) {
             return &mut self.suites[index];
         }
+        let index = self.suites.len();
         self.suites.push(TestSuiteSummary {
             name: name.to_string(),
             started_at: None,
@@ -480,7 +482,7 @@ impl TestRunRecorder {
             total_duration_seconds: None,
             cases: Vec::new(),
         });
-        self.suites.last_mut().expect("just pushed suite")
+        &mut self.suites[index]
     }
 }
 

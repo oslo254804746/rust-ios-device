@@ -18,6 +18,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> FileRelayClient<S> {
     }
 
     pub async fn request_sources(&mut self, sources: &[&str]) -> Result<Vec<u8>, FileRelayError> {
+        self.send_request_sources(sources).await?;
+        let mut data = Vec::new();
+        self.stream.read_to_end(&mut data).await?;
+        Ok(data)
+    }
+
+    pub async fn request_sources_to_writer<W>(
+        &mut self,
+        sources: &[&str],
+        writer: &mut W,
+    ) -> Result<u64, FileRelayError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        self.send_request_sources(sources).await?;
+        tokio::io::copy(&mut self.stream, writer)
+            .await
+            .map_err(FileRelayError::from)
+    }
+
+    async fn send_request_sources(&mut self, sources: &[&str]) -> Result<(), FileRelayError> {
         let request = plist::Dictionary::from_iter([(
             "Sources".to_string(),
             plist::Value::Array(
@@ -44,10 +65,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> FileRelayClient<S> {
                 ));
             }
         }
-
-        let mut data = Vec::new();
-        self.stream.read_to_end(&mut data).await?;
-        Ok(data)
+        Ok(())
     }
 }
 
@@ -57,7 +75,9 @@ async fn send_plist<S: AsyncWrite + Unpin>(
 ) -> Result<(), FileRelayError> {
     let mut buf = Vec::new();
     plist::to_writer_xml(&mut buf, value)?;
-    stream.write_all(&(buf.len() as u32).to_be_bytes()).await?;
+    let len = u32::try_from(buf.len())
+        .map_err(|_| FileRelayError::Protocol(format!("plist frame too large: {}", buf.len())))?;
+    stream.write_all(&len.to_be_bytes()).await?;
     stream.write_all(&buf).await?;
     stream.flush().await?;
     Ok(())
@@ -104,5 +124,25 @@ mod tests {
         let dict: plist::Dictionary = plist::from_bytes(payload).unwrap();
         let sources = dict["Sources"].as_array().unwrap();
         assert_eq!(sources[0].as_string(), Some("Network"));
+    }
+
+    #[tokio::test]
+    async fn request_sources_to_writer_streams_acknowledged_archive() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::String("Acknowledged".into()),
+        )]));
+        let mut stream =
+            MockStream::with_plist_response_and_trailing_bytes(response, b"archive-bytes");
+        let mut client = FileRelayClient::new(&mut stream);
+        let mut output = Vec::new();
+
+        let bytes = client
+            .request_sources_to_writer(&["Network"], &mut output)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, 13);
+        assert_eq!(output, b"archive-bytes");
     }
 }

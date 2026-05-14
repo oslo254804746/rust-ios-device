@@ -6,6 +6,11 @@ use serde::Deserialize;
 pub enum PairRecordError {
     #[error("pair record not found for UDID: {0}")]
     NotFound(String),
+    #[error("failed to read pair record {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to parse pair record: {0}")]
     Parse(String),
 }
@@ -45,7 +50,18 @@ impl PairRecord {
 
     /// Load from an explicit path.
     pub fn load_from_path(path: &std::path::Path, udid: &str) -> Result<Self, PairRecordError> {
-        let data = std::fs::read(path).map_err(|_| PairRecordError::NotFound(udid.to_string()))?;
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PairRecordError::NotFound(udid.to_string()));
+            }
+            Err(source) => {
+                return Err(PairRecordError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        };
         plist::from_bytes(&data).map_err(|e| PairRecordError::Parse(e.to_string()))
     }
 }
@@ -119,5 +135,18 @@ mod tests {
         let path = pair_record_dir_for_platform(false, true, "C:\\ProgramData");
         assert!(path.starts_with("C:\\ProgramData"));
         assert!(path.ends_with(PathBuf::from("Apple").join("Lockdown")));
+    }
+
+    #[test]
+    fn load_from_path_preserves_non_missing_read_errors() {
+        let dir =
+            std::env::temp_dir().join(format!("ios-rs-pair-record-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let err = PairRecord::load_from_path(&dir, "UDID").unwrap_err();
+
+        assert!(matches!(err, PairRecordError::Read { path, .. } if path == dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

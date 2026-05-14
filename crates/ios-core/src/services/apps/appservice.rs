@@ -217,7 +217,7 @@ impl AppServiceClient {
             .call(build_request(
                 &self.device_identifier,
                 FEATURE_SEND_SIGNAL,
-                build_send_signal_input(pid, signal),
+                build_send_signal_input(pid, signal)?,
             ))
             .await?;
         ensure_no_error(&response)?;
@@ -307,7 +307,7 @@ impl AppServiceClient {
             .call(build_request(
                 &self.device_identifier,
                 FEATURE_MONITOR_PROCESS_TERMINATION,
-                build_monitor_process_termination_input(pid),
+                build_monitor_process_termination_input(pid)?,
             ))
             .await?;
         parse_process_termination(&response)
@@ -349,17 +349,18 @@ fn build_list_roots_input() -> XpcValue {
     )]))
 }
 
-fn build_send_signal_input(pid: u64, signal: i64) -> XpcValue {
-    XpcValue::Dictionary(IndexMap::from([
+fn build_send_signal_input(pid: u64, signal: i64) -> Result<XpcValue, AppServiceError> {
+    let pid = process_identifier_to_i64(pid)?;
+    Ok(XpcValue::Dictionary(IndexMap::from([
         (
             "process".to_string(),
             XpcValue::Dictionary(IndexMap::from([(
                 "processIdentifier".to_string(),
-                XpcValue::Int64(pid as i64),
+                XpcValue::Int64(pid),
             )])),
         ),
         ("signal".to_string(), XpcValue::Int64(signal)),
-    ]))
+    ])))
 }
 
 fn build_spawn_executable_input(
@@ -445,14 +446,21 @@ fn build_fetch_app_icons_input(
     ]))
 }
 
-fn build_monitor_process_termination_input(pid: u64) -> XpcValue {
-    XpcValue::Dictionary(IndexMap::from([(
+fn build_monitor_process_termination_input(pid: u64) -> Result<XpcValue, AppServiceError> {
+    let pid = process_identifier_to_i64(pid)?;
+    Ok(XpcValue::Dictionary(IndexMap::from([(
         "processToken".to_string(),
         XpcValue::Dictionary(IndexMap::from([(
             "processIdentifier".to_string(),
-            XpcValue::Int64(pid as i64),
+            XpcValue::Int64(pid),
         )])),
-    )]))
+    )])))
+}
+
+fn process_identifier_to_i64(pid: u64) -> Result<i64, AppServiceError> {
+    i64::try_from(pid).map_err(|_| {
+        AppServiceError::Protocol(format!("process id exceeds DTX integer range: {pid}"))
+    })
 }
 
 fn build_launch_application_input(bundle_id: &str) -> Result<XpcValue, AppServiceError> {
@@ -867,12 +875,21 @@ mod tests {
 
     #[test]
     fn build_send_signal_input_nests_process_identifier() {
-        let input = build_send_signal_input(42, SIGKILL);
+        let input = build_send_signal_input(42, SIGKILL).unwrap();
         let dict = input.as_dict().unwrap();
         let process = dict["process"].as_dict().unwrap();
 
         assert_eq!(process["processIdentifier"], XpcValue::Int64(42));
         assert_eq!(dict["signal"], XpcValue::Int64(SIGKILL));
+    }
+
+    #[test]
+    fn build_send_signal_input_rejects_pid_above_i64_max() {
+        let err = build_send_signal_input(u64::MAX, SIGKILL).unwrap_err();
+
+        assert!(
+            matches!(err, AppServiceError::Protocol(message) if message.contains("process id exceeds"))
+        );
     }
 
     #[test]
@@ -1094,11 +1111,20 @@ mod tests {
 
     #[test]
     fn build_monitor_process_termination_input_nests_process_token() {
-        let input = build_monitor_process_termination_input(1234);
+        let input = build_monitor_process_termination_input(1234).unwrap();
         let dict = input.as_dict().unwrap();
         let process_token = dict["processToken"].as_dict().unwrap();
 
         assert_eq!(process_token["processIdentifier"], XpcValue::Int64(1234));
+    }
+
+    #[test]
+    fn build_monitor_process_termination_input_rejects_pid_above_i64_max() {
+        let err = build_monitor_process_termination_input(u64::MAX).unwrap_err();
+
+        assert!(
+            matches!(err, AppServiceError::Protocol(message) if message.contains("process id exceeds"))
+        );
     }
 
     #[test]

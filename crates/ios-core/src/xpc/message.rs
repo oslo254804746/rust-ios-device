@@ -123,7 +123,7 @@ pub fn encode_message(msg: &XpcMessage) -> Result<Bytes, XpcError> {
     let mut out = BytesMut::new();
     out.put_u32_le(WRAPPER_MAGIC);
     out.put_u32_le(msg.flags);
-    out.put_u64_le(body_buf.len() as u64);
+    out.put_u64_le(checked_u64_len("body", body_buf.len())?);
     out.put_u64_le(msg.msg_id);
     out.extend_from_slice(&body_buf);
     Ok(out.freeze())
@@ -159,9 +159,9 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
         }
         XpcValue::Data(d) => {
             out.put_u32_le(TYPE_DATA);
-            out.put_u32_le(d.len() as u32);
+            out.put_u32_le(checked_u32_len("data", d.len())?);
             out.put_slice(d);
-            let padded = align4(d.len());
+            let padded = checked_align4("data", d.len())?;
             for _ in d.len()..padded {
                 out.put_u8(0);
             }
@@ -169,10 +169,13 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
         XpcValue::String(s) => {
             out.put_u32_le(TYPE_STRING);
             let raw = s.as_bytes();
-            let total = raw.len() + 1; // includes null terminator
-            out.put_u32_le(total as u32);
+            let total = raw
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| XpcError::Tls("XPC string length overflow".to_string()))?;
+            out.put_u32_le(checked_u32_len("string", total)?);
             out.put_slice(raw);
-            let padded = align4(total);
+            let padded = checked_align4("string", total)?;
             for _ in raw.len()..padded {
                 out.put_u8(0);
             }
@@ -186,7 +189,7 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
             let len_pos = out.len();
             out.put_u32_le(0); // placeholder
             let start = out.len();
-            out.put_u32_le(arr.len() as u32);
+            out.put_u32_le(checked_u32_len("array count", arr.len())?);
             for v in arr {
                 encode_value(v, out)?;
             }
@@ -199,9 +202,9 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
             let len_pos = out.len();
             out.put_u32_le(0); // placeholder
             let start = out.len();
-            out.put_u32_le(map.len() as u32);
+            out.put_u32_le(checked_u32_len("dict count", map.len())?);
             for (k, v) in map {
-                encode_dict_key(k, out);
+                encode_dict_key(k, out)?;
                 encode_value(v, out)?;
             }
             let len_usize = out.len() - start;
@@ -226,15 +229,35 @@ fn checked_collection_len(kind: &str, len: usize) -> Result<u32, XpcError> {
         .map_err(|_| XpcError::Tls(format!("XPC {kind} encoded size exceeds u32::MAX: {len}")))
 }
 
-fn encode_dict_key(key: &str, out: &mut BytesMut) {
+fn checked_u32_len(kind: &str, len: usize) -> Result<u32, XpcError> {
+    u32::try_from(len)
+        .map_err(|_| XpcError::Tls(format!("XPC {kind} length exceeds u32::MAX: {len}")))
+}
+
+fn checked_u64_len(kind: &str, len: usize) -> Result<u64, XpcError> {
+    u64::try_from(len)
+        .map_err(|_| XpcError::Tls(format!("XPC {kind} length exceeds u64::MAX: {len}")))
+}
+
+fn checked_align4(kind: &str, len: usize) -> Result<usize, XpcError> {
+    len.checked_add(3)
+        .map(|value| value & !3)
+        .ok_or_else(|| XpcError::Tls(format!("XPC {kind} padded length overflow: {len}")))
+}
+
+fn encode_dict_key(key: &str, out: &mut BytesMut) -> Result<(), XpcError> {
     let raw = key.as_bytes();
     out.put_slice(raw);
     out.put_u8(0);
-    let total = raw.len() + 1;
-    let padded = align4(total);
+    let total = raw
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| XpcError::Tls("XPC dict key length overflow".to_string()))?;
+    let padded = checked_align4("dict key", total)?;
     for _ in total..padded {
         out.put_u8(0);
     }
+    Ok(())
 }
 
 fn decode_dict_key(buf: &mut Bytes) -> Result<String, XpcError> {
@@ -566,6 +589,12 @@ mod tests {
         assert!(err
             .to_string()
             .contains("array encoded size exceeds u32::MAX"));
+    }
+
+    #[test]
+    fn checked_xpc_u32_len_rejects_values_above_u32_max() {
+        let err = checked_u32_len("data", u32::MAX as usize + 1).unwrap_err();
+        assert!(err.to_string().contains("data length exceeds u32::MAX"));
     }
 
     #[test]

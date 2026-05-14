@@ -5,15 +5,27 @@ use crate::mux::MuxError;
 
 const MAX_MUX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
-pub fn encode_message(payload: &[u8], tag: u32) -> Vec<u8> {
-    let total = 16 + payload.len();
+pub fn encode_message(payload: &[u8], tag: u32) -> Result<Vec<u8>, MuxError> {
+    let total = checked_mux_message_len(payload.len())?;
     let mut buf = Vec::with_capacity(total);
     buf.extend_from_slice(&(total as u32).to_le_bytes());
     buf.extend_from_slice(&1u32.to_le_bytes()); // version
     buf.extend_from_slice(&8u32.to_le_bytes()); // type = plist
     buf.extend_from_slice(&tag.to_le_bytes());
     buf.extend_from_slice(payload);
-    buf
+    Ok(buf)
+}
+
+fn checked_mux_message_len(payload_len: usize) -> Result<usize, MuxError> {
+    let total = payload_len
+        .checked_add(16)
+        .ok_or_else(|| MuxError::Protocol("mux message length overflow".to_string()))?;
+    if total > u32::MAX as usize {
+        return Err(MuxError::Protocol(format!(
+            "mux message too large: {total} bytes exceeds u32::MAX"
+        )));
+    }
+    Ok(total)
 }
 
 pub async fn send_plist<W, T>(writer: &mut W, value: &T, tag: u32) -> Result<(), MuxError>
@@ -23,7 +35,7 @@ where
 {
     let mut plist_bytes = Vec::new();
     plist::to_writer_xml(&mut plist_bytes, value).map_err(|e| MuxError::Protocol(e.to_string()))?;
-    let msg = encode_message(&plist_bytes, tag);
+    let msg = encode_message(&plist_bytes, tag)?;
     writer.write_all(&msg).await?;
     writer.flush().await?;
     Ok(())
@@ -179,5 +191,15 @@ mod tests {
         assert!(
             matches!(err, MuxError::Protocol(message) if message.contains("message too large"))
         );
+    }
+
+    #[test]
+    fn checked_mux_message_len_rejects_overflow() {
+        let err = checked_mux_message_len(usize::MAX).unwrap_err();
+
+        assert!(matches!(
+            err,
+            MuxError::Protocol(message) if message.contains("mux message length overflow")
+        ));
     }
 }
