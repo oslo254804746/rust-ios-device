@@ -689,6 +689,199 @@ async fn change_password_streams_requested_manifest_files() {
 }
 
 #[tokio::test]
+async fn change_password_streams_large_requested_file_in_chunks() {
+    let backup_root = temp_backup_root();
+    let device_id = "00008150-000A584C0E62401C";
+    let snapshot_dir = backup_root.join(device_id).join("Snapshot");
+    std::fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
+    let large = vec![0x5A; 8 * 1024 * 1024 + 123];
+    std::fs::write(snapshot_dir.join("Manifest.db"), &large).expect("write large manifest");
+    let (client_side, mut server_side) = tokio::io::duplex(32 * 1024);
+
+    let server = tokio::spawn(async move {
+        server_side
+            .write_all(&encode_plist(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageVersionExchange".into()),
+                plist::Value::Integer(300.into()),
+                plist::Value::Integer(0.into()),
+            ])))
+            .await
+            .expect("write version exchange");
+
+        let mut ack_len = [0u8; 4];
+        server_side
+            .read_exact(&mut ack_len)
+            .await
+            .expect("read ack len");
+        let ack_len = u32::from_be_bytes(ack_len) as usize;
+        let mut ack_payload = vec![0u8; ack_len];
+        server_side
+            .read_exact(&mut ack_payload)
+            .await
+            .expect("read ack payload");
+
+        server_side
+            .write_all(&encode_plist(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageDeviceReady".into()),
+            ])))
+            .await
+            .expect("write device ready");
+
+        let mut hello_len = [0u8; 4];
+        server_side
+            .read_exact(&mut hello_len)
+            .await
+            .expect("read hello len");
+        let hello_len = u32::from_be_bytes(hello_len) as usize;
+        let mut hello_payload = vec![0u8; hello_len];
+        server_side
+            .read_exact(&mut hello_payload)
+            .await
+            .expect("read hello payload");
+
+        server_side
+            .write_all(&encode_plist(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    (String::from("ErrorCode"), plist::Value::Integer(0.into())),
+                    (String::from("ProtocolVersion"), plist::Value::Real(2.1)),
+                ])),
+            ])))
+            .await
+            .expect("write hello response");
+
+        let mut change_len = [0u8; 4];
+        server_side
+            .read_exact(&mut change_len)
+            .await
+            .expect("read change-password len");
+        let change_len = u32::from_be_bytes(change_len) as usize;
+        let mut change_payload = vec![0u8; change_len];
+        server_side
+            .read_exact(&mut change_payload)
+            .await
+            .expect("read change-password payload");
+
+        server_side
+            .write_all(&encode_plist(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageDownloadFiles".into()),
+                plist::Value::Array(vec![plist::Value::String(format!(
+                    "{device_id}/Snapshot/Manifest.db"
+                ))]),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "DLDeviceIOCallbacks".to_string(),
+                    plist::Value::Integer(0.into()),
+                )])),
+                plist::Value::Real(0.0),
+                plist::Value::Integer(0.into()),
+            ])))
+            .await
+            .expect("write download-files request");
+
+        let mut name_len = [0u8; 4];
+        server_side
+            .read_exact(&mut name_len)
+            .await
+            .expect("read file name len");
+        let name_len = u32::from_be_bytes(name_len) as usize;
+        let mut name_buf = vec![0u8; name_len];
+        server_side
+            .read_exact(&mut name_buf)
+            .await
+            .expect("read file name");
+        let file_name = String::from_utf8(name_buf).expect("utf8 file name");
+        assert_eq!(file_name, format!("{device_id}/Snapshot/Manifest.db"));
+
+        let mut data_frame_count = 0usize;
+        let mut total_data_bytes = 0usize;
+        loop {
+            let mut frame_len = [0u8; 4];
+            server_side
+                .read_exact(&mut frame_len)
+                .await
+                .expect("read transfer frame len");
+            let frame_len = u32::from_be_bytes(frame_len) as usize;
+            assert!(frame_len >= 1);
+            let mut frame_code = [0u8; 1];
+            server_side
+                .read_exact(&mut frame_code)
+                .await
+                .expect("read transfer frame code");
+
+            if frame_code[0] == 0x00 {
+                assert_eq!(frame_len, 1);
+                break;
+            }
+
+            assert_eq!(frame_code[0], 0x0c);
+            let mut chunk = vec![0u8; frame_len - 1];
+            server_side
+                .read_exact(&mut chunk)
+                .await
+                .expect("read chunk bytes");
+            assert!(chunk.iter().all(|byte| *byte == 0x5A));
+            data_frame_count += 1;
+            total_data_bytes += chunk.len();
+        }
+        assert!(
+            data_frame_count >= 2,
+            "large file should be sent in multiple transfer frames"
+        );
+        assert_eq!(total_data_bytes, 8 * 1024 * 1024 + 123);
+
+        let mut terminator = [0u8; 4];
+        server_side
+            .read_exact(&mut terminator)
+            .await
+            .expect("read terminator");
+        assert_eq!(u32::from_be_bytes(terminator), 0);
+
+        let mut status_len = [0u8; 4];
+        server_side
+            .read_exact(&mut status_len)
+            .await
+            .expect("read status len");
+        let status_len = u32::from_be_bytes(status_len) as usize;
+        let mut status_payload = vec![0u8; status_len];
+        server_side
+            .read_exact(&mut status_payload)
+            .await
+            .expect("read status payload");
+        let status_message: plist::Value =
+            plist::from_bytes(&status_payload).expect("decode status payload");
+        assert_eq!(
+            status_message,
+            plist::Value::Array(vec![
+                plist::Value::String("DLMessageStatusResponse".into()),
+                plist::Value::Integer(0.into()),
+                plist::Value::String("___EmptyParameterString___".into()),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+            ])
+        );
+
+        server_side
+            .write_all(&encode_plist(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    String::from("ErrorCode"),
+                    plist::Value::Integer(0.into()),
+                )])),
+            ])))
+            .await
+            .expect("write completion");
+    });
+
+    let mut client = Mobilebackup2Client::new(client_side);
+    client
+        .change_password(&backup_root, device_id, None, Some("example1234"))
+        .await
+        .expect("change password should succeed");
+
+    server.await.expect("server task should finish");
+    std::fs::remove_dir_all(&backup_root).expect("cleanup temp backup root");
+}
+
+#[tokio::test]
 async fn change_password_reports_multi_status_when_requested_file_is_missing() {
     let backup_root = temp_backup_root();
     let device_id = "00008150-000A584C0E62401C";

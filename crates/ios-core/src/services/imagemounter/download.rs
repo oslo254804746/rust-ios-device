@@ -148,19 +148,48 @@ impl DdiDownloader {
             )));
         }
 
-        let zip_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ImageMounterError::Download(format!("read DDI zip: {e}")))?;
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            ImageMounterError::Download(format!("create personalized DDI cache dir: {e}"))
+        })?;
+        let zip_path = dir.join("ddi.zip.tmp");
+        download_response_to_file(resp, &zip_path).await?;
 
         // Extract zip (blocking zip decompression + filesystem writes)
         let dir_clone = dir.clone();
-        tokio::task::spawn_blocking(move || extract_zip(&zip_bytes, &dir_clone))
-            .await
-            .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
+        let zip_path_clone = zip_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(&zip_path_clone)
+                .map_err(|e| ImageMounterError::Download(format!("open DDI zip: {e}")))?;
+            extract_zip_from_reader(std::io::BufReader::new(file), &dir_clone)
+        })
+        .await
+        .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
+        let _ = tokio::fs::remove_file(&zip_path).await;
 
         load_personalized_from_dir(&dir).await
     }
+}
+
+async fn download_response_to_file(
+    mut response: reqwest::Response,
+    path: &Path,
+) -> Result<(), ImageMounterError> {
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| ImageMounterError::Download(format!("create DDI zip cache: {e}")))?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| ImageMounterError::Download(format!("read DDI zip chunk: {e}")))?
+    {
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .map_err(|e| ImageMounterError::Download(format!("write DDI zip chunk: {e}")))?;
+    }
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .map_err(|e| ImageMounterError::Download(format!("flush DDI zip: {e}")))?;
+    Ok(())
 }
 
 async fn load_personalized_from_dir(dir: &Path) -> Result<PersonalizedDdi, ImageMounterError> {
@@ -183,11 +212,27 @@ async fn load_personalized_from_dir(dir: &Path) -> Result<PersonalizedDdi, Image
     })
 }
 
+#[cfg(test)]
 fn extract_zip(data: &[u8], dest: &Path) -> Result<(), ImageMounterError> {
-    let cursor = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| ImageMounterError::Download(format!("open zip: {e}")))?;
+    extract_zip_from_reader(std::io::Cursor::new(data), dest)
+}
 
+fn extract_zip_from_reader<R>(reader: R, dest: &Path) -> Result<(), ImageMounterError>
+where
+    R: std::io::Read + std::io::Seek,
+{
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| ImageMounterError::Download(format!("open zip: {e}")))?;
+    extract_zip_archive(&mut archive, dest)
+}
+
+fn extract_zip_archive<R>(
+    archive: &mut zip::ZipArchive<R>,
+    dest: &Path,
+) -> Result<(), ImageMounterError>
+where
+    R: std::io::Read + std::io::Seek,
+{
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)

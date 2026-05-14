@@ -1,7 +1,19 @@
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 service_error!(DeviceLinkError);
+
+const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+
+impl From<super::plist_frame::PlistFrameError> for DeviceLinkError {
+    fn from(error: super::plist_frame::PlistFrameError) -> Self {
+        match error {
+            super::plist_frame::PlistFrameError::Io(error) => Self::Io(error),
+            super::plist_frame::PlistFrameError::Plist(error) => Self::Plist(error),
+            super::plist_frame::PlistFrameError::Protocol(message) => Self::Protocol(message),
+        }
+    }
+}
 
 pub struct DeviceLinkClient<S> {
     stream: S,
@@ -128,30 +140,15 @@ where
     where
         T: Serialize,
     {
-        let mut payload = Vec::new();
-        plist::to_writer_xml(&mut payload, message)?;
-        self.stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .await?;
-        self.stream.write_all(&payload).await?;
-        self.stream.flush().await?;
-        Ok(())
+        super::plist_frame::write_xml_plist_frame(&mut self.stream, message, MAX_PLIST_SIZE)
+            .await
+            .map_err(DeviceLinkError::from)
     }
 
     pub async fn recv_message(&mut self) -> Result<plist::Value, DeviceLinkError> {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
-        if len > MAX_PLIST_SIZE {
-            return Err(DeviceLinkError::Protocol(format!(
-                "plist length {len} exceeds maximum of {MAX_PLIST_SIZE}"
-            )));
-        }
-
-        let mut payload = vec![0u8; len];
-        self.stream.read_exact(&mut payload).await?;
-        Ok(plist::from_bytes(&payload)?)
+        super::plist_frame::read_plist_frame(&mut self.stream, MAX_PLIST_SIZE)
+            .await
+            .map_err(DeviceLinkError::from)
     }
 
     pub async fn disconnect(&mut self) -> Result<(), DeviceLinkError> {

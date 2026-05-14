@@ -41,6 +41,8 @@ pub enum XpcError {
     UnknownType(u32),
     #[error("invalid UTF-8 in string")]
     InvalidUtf8,
+    #[error("invalid XPC data: {0}")]
+    InvalidData(String),
 }
 
 // XPC type tags
@@ -57,31 +59,42 @@ const TYPE_ARRAY: u32 = 0x0000E000;
 const TYPE_DICTIONARY: u32 = 0x0000F000;
 
 /// Encode an XPC message to bytes.
-pub fn encode_xpc(msg: &XpcMessage) -> Bytes {
+pub fn encode_xpc(msg: &XpcMessage) -> Result<Bytes, XpcError> {
     let mut buf = BytesMut::new();
     buf.put_u32_le(XPC_MAGIC);
     buf.put_u32_le(msg.flags);
     buf.put_u64_le(msg.msg_id);
 
     if let Some(body) = &msg.body {
-        let body_bytes = encode_body(body);
-        buf.put_u32_le(body_bytes.len() as u32);
+        let body_bytes = encode_body(body)?;
+        buf.put_u32_le(checked_u32_len("body", body_bytes.len())?);
         buf.put_slice(&body_bytes);
     } else {
         buf.put_u32_le(0);
     }
 
-    buf.freeze()
+    Ok(buf.freeze())
 }
 
-fn encode_body(value: &XpcValue) -> BytesMut {
+fn encode_body(value: &XpcValue) -> Result<BytesMut, XpcError> {
     let mut buf = BytesMut::new();
     buf.put_u32_le(XPC_BODY_MAGIC);
-    encode_value(value, &mut buf);
-    buf
+    encode_value(value, &mut buf)?;
+    Ok(buf)
 }
 
-fn encode_value(value: &XpcValue, buf: &mut BytesMut) {
+fn checked_u32_len(what: &str, len: usize) -> Result<u32, XpcError> {
+    u32::try_from(len)
+        .map_err(|_| XpcError::InvalidData(format!("XPC {what} length exceeds u32::MAX: {len}")))
+}
+
+fn checked_padded_len(what: &str, len: usize) -> Result<usize, XpcError> {
+    len.checked_add(3)
+        .map(|value| value & !3)
+        .ok_or_else(|| XpcError::InvalidData(format!("XPC {what} padded length overflow: {len}")))
+}
+
+fn encode_value(value: &XpcValue, buf: &mut BytesMut) -> Result<(), XpcError> {
     match value {
         XpcValue::Null => {
             buf.put_u32_le(TYPE_NULL);
@@ -115,8 +128,8 @@ fn encode_value(value: &XpcValue, buf: &mut BytesMut) {
         }
         XpcValue::Data(d) => {
             buf.put_u32_le(TYPE_DATA);
-            let padded = (d.len() + 3) & !3;
-            buf.put_u32_le(d.len() as u32);
+            let padded = checked_padded_len("data", d.len())?;
+            buf.put_u32_le(checked_u32_len("data", d.len())?);
             buf.put_slice(d);
             for _ in d.len()..padded {
                 buf.put_u8(0);
@@ -125,9 +138,11 @@ fn encode_value(value: &XpcValue, buf: &mut BytesMut) {
         XpcValue::String(s) => {
             buf.put_u32_le(TYPE_STRING);
             let bytes = s.as_bytes();
-            let total = bytes.len() + 1; // null terminator
-            let padded = (total + 3) & !3;
-            buf.put_u32_le(total as u32);
+            let total = bytes.len().checked_add(1).ok_or_else(|| {
+                XpcError::InvalidData(format!("XPC string length overflow: {}", bytes.len()))
+            })?;
+            let padded = checked_padded_len("string", total)?;
+            buf.put_u32_le(checked_u32_len("string", total)?);
             buf.put_slice(bytes);
             for _ in bytes.len()..padded {
                 buf.put_u8(0);
@@ -143,11 +158,11 @@ fn encode_value(value: &XpcValue, buf: &mut BytesMut) {
             let len_offset = buf.len();
             buf.put_u32_le(0); // placeholder
             let start = buf.len();
-            buf.put_u32_le(arr.len() as u32);
+            buf.put_u32_le(checked_u32_len("array count", arr.len())?);
             for v in arr {
-                encode_value(v, buf);
+                encode_value(v, buf)?;
             }
-            let len = (buf.len() - start) as u32;
+            let len = checked_u32_len("array body", buf.len() - start)?;
             buf[len_offset..len_offset + 4].copy_from_slice(&len.to_le_bytes());
         }
         XpcValue::Dictionary(map) => {
@@ -155,15 +170,16 @@ fn encode_value(value: &XpcValue, buf: &mut BytesMut) {
             let len_offset = buf.len();
             buf.put_u32_le(0); // placeholder
             let start = buf.len();
-            buf.put_u32_le(map.len() as u32);
+            buf.put_u32_le(checked_u32_len("dictionary count", map.len())?);
             for (k, v) in map {
-                encode_value(&XpcValue::String(k.clone()), buf);
-                encode_value(v, buf);
+                encode_value(&XpcValue::String(k.clone()), buf)?;
+                encode_value(v, buf)?;
             }
-            let len = (buf.len() - start) as u32;
+            let len = checked_u32_len("dictionary body", buf.len() - start)?;
             buf[len_offset..len_offset + 4].copy_from_slice(&len.to_le_bytes());
         }
     }
+    Ok(())
 }
 
 /// Decode an XPC message from a byte buffer.
@@ -314,5 +330,29 @@ fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
             Ok(XpcValue::Dictionary(map))
         }
         other => Err(XpcError::UnknownType(other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_proto_xpc_u32_len_rejects_large_lengths() {
+        let err = checked_u32_len("data", u32::MAX as usize + 1).unwrap_err();
+        assert!(err.to_string().contains("data"));
+    }
+
+    #[test]
+    fn encode_xpc_roundtrips_simple_string() {
+        let msg = XpcMessage {
+            flags: 0,
+            msg_id: 7,
+            body: Some(XpcValue::String("hello".to_string())),
+        };
+        let mut bytes = encode_xpc(&msg).unwrap();
+        let decoded = decode_xpc(&mut bytes).unwrap();
+        assert_eq!(decoded.msg_id, 7);
+        assert_eq!(decoded.body, Some(XpcValue::String("hello".to_string())));
     }
 }

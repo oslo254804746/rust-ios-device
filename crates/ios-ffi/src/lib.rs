@@ -111,6 +111,14 @@ fn ffi_status(f: impl FnOnce() -> c_int + std::panic::UnwindSafe) -> c_int {
     }
 }
 
+fn ffi_void(f: impl FnOnce() + std::panic::UnwindSafe) {
+    let _ = std::panic::catch_unwind(f);
+}
+
+fn ffi_u16(f: impl FnOnce() -> u16 + std::panic::UnwindSafe) -> u16 {
+    std::panic::catch_unwind(f).unwrap_or(0)
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -160,6 +168,7 @@ unsafe fn write_owned_c_string(out: *mut *mut c_char, value: String) -> c_int {
     if out.is_null() {
         return IOS_ERR_NULL;
     }
+    *out = std::ptr::null_mut();
     match to_owned_c_string(value) {
         Ok(ptr) => {
             *out = ptr;
@@ -208,7 +217,7 @@ unsafe fn drop_ios_devices_allocation(devices: *mut IosDevice, count: usize) {
 ///
 /// On success: fills `*devices_out` with a newly-allocated array of `IosDevice`,
 /// sets `*count_out` to the number of elements, and returns 0.
-/// On error: returns non-zero; `*devices_out` and `*count_out` are unchanged.
+/// On error: returns non-zero; non-null output pointers are cleared before fallible work.
 ///
 /// Free the result with `ios_free_devices(*devices_out, *count_out)`.
 ///
@@ -221,6 +230,12 @@ pub unsafe extern "C" fn ios_list_devices(
     count_out: *mut usize,
 ) -> c_int {
     ffi_status(|| {
+        if !devices_out.is_null() {
+            *devices_out = std::ptr::null_mut();
+        }
+        if !count_out.is_null() {
+            *count_out = 0;
+        }
         if let Err(code) = validate_device_list_outputs(devices_out, count_out) {
             return code;
         }
@@ -269,19 +284,21 @@ pub unsafe extern "C" fn ios_list_devices(
 /// Caller must pass a pointer previously returned by `ios_list_devices` with the correct count.
 #[no_mangle]
 pub unsafe extern "C" fn ios_free_devices(devices: *mut IosDevice, count: usize) {
-    if devices.is_null() {
-        return;
-    }
-    let slice = std::slice::from_raw_parts_mut(devices, count);
-    for d in &mut *slice {
-        if !d.udid.is_null() {
-            drop(CString::from_raw(d.udid));
+    ffi_void(|| {
+        if devices.is_null() {
+            return;
         }
-        if !d.connection_type.is_null() {
-            drop(CString::from_raw(d.connection_type));
+        let slice = std::slice::from_raw_parts_mut(devices, count);
+        for d in &mut *slice {
+            if !d.udid.is_null() {
+                drop(CString::from_raw(d.udid));
+            }
+            if !d.connection_type.is_null() {
+                drop(CString::from_raw(d.connection_type));
+            }
         }
-    }
-    drop_ios_devices_allocation(devices, count);
+        drop_ios_devices_allocation(devices, count);
+    });
 }
 
 // ── Device handle ────────────────────────────────────────────────────────────
@@ -300,7 +317,11 @@ pub unsafe extern "C" fn ios_device_open(
     out: *mut *mut IosDeviceHandle,
 ) -> c_int {
     ffi_status(|| {
-        if udid.is_null() || out.is_null() {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        if udid.is_null() {
             return IOS_ERR_NULL;
         }
         let udid_str = match CStr::from_ptr(udid).to_str() {
@@ -336,14 +357,16 @@ pub unsafe extern "C" fn ios_device_open(
 /// Caller must pass a handle previously returned by `ios_device_open`, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_device_close(handle: *mut IosDeviceHandle) {
-    if handle.is_null() {
-        return;
-    }
-    let mut handle = Box::from_raw(handle);
-    if let Ok(guard) = handle._device.get_mut() {
-        guard.take();
-    }
-    drop(handle);
+    ffi_void(|| {
+        if handle.is_null() {
+            return;
+        }
+        let mut handle = Box::from_raw(handle);
+        if let Ok(guard) = handle._device.get_mut() {
+            guard.take();
+        }
+        drop(handle);
+    });
 }
 
 /// Get the device product version as a newly-allocated UTF-8 C string.
@@ -362,6 +385,7 @@ pub unsafe extern "C" fn ios_get_product_version(
         if out.is_null() {
             return IOS_ERR_NULL;
         }
+        *out = std::ptr::null_mut();
         let device = match device_from_handle(handle) {
             Ok(device) => device,
             Err(code) => return code,
@@ -396,6 +420,7 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
         if out.is_null() {
             return IOS_ERR_NULL;
         }
+        *out = std::ptr::null_mut();
         let key_owned = if key.is_null() {
             None
         } else {
@@ -432,10 +457,12 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
 /// Caller must pass a string previously returned by an `ios_get_*` function, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_free_string(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    drop(CString::from_raw(s));
+    ffi_void(|| {
+        if s.is_null() {
+            return;
+        }
+        drop(CString::from_raw(s));
+    });
 }
 
 // ── Tunnel ────────────────────────────────────────────────────────────────────
@@ -459,7 +486,11 @@ pub unsafe extern "C" fn ios_start_tunnel(
     out: *mut *mut IosTunnel,
 ) -> c_int {
     ffi_status(|| {
-        if udid.is_null() || out.is_null() {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        if udid.is_null() {
             return IOS_ERR_NULL;
         }
         let udid_str = match CStr::from_ptr(udid).to_str() {
@@ -505,15 +536,17 @@ pub unsafe extern "C" fn ios_start_tunnel(
 /// Caller must pass a tunnel pointer previously returned by `ios_start_tunnel`, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_tunnel_close(tunnel: *mut IosTunnel) {
-    if tunnel.is_null() {
-        return;
-    }
-    let mut t = Box::from_raw(tunnel);
-    // Drop the ConnectedDevice first (cancels tunnel), then drop the box
-    if let Ok(guard) = t._device.get_mut() {
-        guard.take();
-    }
-    drop(t);
+    ffi_void(|| {
+        if tunnel.is_null() {
+            return;
+        }
+        let mut t = Box::from_raw(tunnel);
+        // Drop the ConnectedDevice first (cancels tunnel), then drop the box
+        if let Ok(guard) = t._device.get_mut() {
+            guard.take();
+        }
+        drop(t);
+    });
 }
 
 /// Get the device's tunnel IPv6 address (null-terminated string).
@@ -553,10 +586,12 @@ pub unsafe extern "C" fn ios_tunnel_server_address(
 /// Caller must pass a valid `IosTunnel` pointer, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_tunnel_rsd_port(tunnel: *const IosTunnel) -> u16 {
-    if tunnel.is_null() {
-        return 0;
-    }
-    (*tunnel).rsd_port
+    ffi_u16(|| {
+        if tunnel.is_null() {
+            return 0;
+        }
+        (*tunnel).rsd_port
+    })
 }
 
 /// Get the local userspace proxy port (for IOS_TUN_USERSPACE mode).
@@ -575,10 +610,12 @@ pub unsafe extern "C" fn ios_tunnel_rsd_port(tunnel: *const IosTunnel) -> u16 {
 /// Caller must pass a valid `IosTunnel` pointer, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_tunnel_userspace_port(tunnel: *const IosTunnel) -> u16 {
-    if tunnel.is_null() {
-        return 0;
-    }
-    (*tunnel).userspace_port
+    ffi_u16(|| {
+        if tunnel.is_null() {
+            return 0;
+        }
+        (*tunnel).userspace_port
+    })
 }
 
 #[cfg(test)]
@@ -648,6 +685,22 @@ mod tests {
         let code = ffi_status(|| panic!("ffi panic boundary"));
 
         assert_eq!(code, IOS_ERR_PANIC);
+    }
+
+    #[test]
+    fn device_open_clears_out_pointer_on_error() {
+        let mut out = 0x1usize as *mut IosDeviceHandle;
+        let code = unsafe { ios_device_open(std::ptr::null(), &mut out) };
+
+        assert_eq!(code, IOS_ERR_NULL);
+        assert!(out.is_null());
+    }
+
+    #[test]
+    fn list_devices_clears_outputs_on_error() {
+        let code = unsafe { ios_list_devices(std::ptr::null_mut(), std::ptr::null_mut()) };
+
+        assert_eq!(code, IOS_ERR_NULL);
     }
 
     #[test]

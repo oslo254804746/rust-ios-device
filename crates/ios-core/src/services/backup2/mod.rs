@@ -628,38 +628,44 @@ where
             let local_path = resolve_relative_path(layout, rel)?;
             write_prefixed_string(self.device_link.stream_mut(), rel).await?;
 
-            match tokio::fs::read(&local_path).await {
-                Ok(contents) => {
-                    let mut offset = 0usize;
-                    while offset < contents.len() {
-                        let end = (offset + DOWNLOAD_CHUNK_SIZE).min(contents.len());
+            match tokio::fs::File::open(&local_path).await {
+                Ok(mut file) => {
+                    let mut buf = vec![0u8; DOWNLOAD_CHUNK_SIZE];
+                    let mut read_failed = false;
+                    loop {
+                        let n = match file.read(&mut buf).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(err) => {
+                                insert_file_failure(&mut failures, rel, &err);
+                                write_transfer_frame(
+                                    self.device_link.stream_mut(),
+                                    FILE_TRANSFER_CODE_LOCAL_ERROR,
+                                    err.to_string().as_bytes(),
+                                )
+                                .await?;
+                                read_failed = true;
+                                break;
+                            }
+                        };
                         write_transfer_frame(
                             self.device_link.stream_mut(),
                             FILE_TRANSFER_CODE_FILE_DATA,
-                            &contents[offset..end],
+                            &buf[..n],
                         )
                         .await?;
-                        offset = end;
                     }
-                    write_transfer_frame(
-                        self.device_link.stream_mut(),
-                        FILE_TRANSFER_CODE_SUCCESS,
-                        &[],
-                    )
-                    .await?;
+                    if !read_failed {
+                        write_transfer_frame(
+                            self.device_link.stream_mut(),
+                            FILE_TRANSFER_CODE_SUCCESS,
+                            &[],
+                        )
+                        .await?;
+                    }
                 }
                 Err(err) => {
-                    let mut failure = plist::Dictionary::from_iter([(
-                        "DLFileErrorString".to_string(),
-                        plist::Value::String(err.to_string()),
-                    )]);
-                    if let Some(code) = file_error_code_from_os_error(&err) {
-                        failure.insert(
-                            "DLFileErrorCode".to_string(),
-                            plist::Value::Integer(code.into()),
-                        );
-                    }
-                    failures.insert(rel.to_string(), plist::Value::Dictionary(failure));
+                    insert_file_failure(&mut failures, rel, &err);
                     write_transfer_frame(
                         self.device_link.stream_mut(),
                         FILE_TRANSFER_CODE_LOCAL_ERROR,
@@ -1141,6 +1147,20 @@ fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
             .or_else(|| value.as_unsigned().map(|value| value != 0)),
         _ => None,
     }
+}
+
+fn insert_file_failure(failures: &mut plist::Dictionary, rel: &str, err: &std::io::Error) {
+    let mut failure = plist::Dictionary::from_iter([(
+        "DLFileErrorString".to_string(),
+        plist::Value::String(err.to_string()),
+    )]);
+    if let Some(code) = file_error_code_from_os_error(err) {
+        failure.insert(
+            "DLFileErrorCode".to_string(),
+            plist::Value::Integer(code.into()),
+        );
+    }
+    failures.insert(rel.to_string(), plist::Value::Dictionary(failure));
 }
 
 fn file_error_code_from_os_error(error: &std::io::Error) -> Option<i64> {

@@ -2,11 +2,21 @@
 //!
 //! Service: `com.apple.mobile.file_relay`
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.file_relay";
 
 service_error!(FileRelayError);
+
+impl From<super::plist_frame::PlistFrameError> for FileRelayError {
+    fn from(error: super::plist_frame::PlistFrameError) -> Self {
+        match error {
+            super::plist_frame::PlistFrameError::Io(error) => Self::Io(error),
+            super::plist_frame::PlistFrameError::Plist(error) => Self::Plist(error),
+            super::plist_frame::PlistFrameError::Protocol(message) => Self::Protocol(message),
+        }
+    }
+}
 
 pub struct FileRelayClient<S> {
     stream: S,
@@ -73,31 +83,19 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     stream: &mut S,
     value: &plist::Value,
 ) -> Result<(), FileRelayError> {
-    let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, value)?;
-    let len = u32::try_from(buf.len())
-        .map_err(|_| FileRelayError::Protocol(format!("plist frame too large: {}", buf.len())))?;
-    stream.write_all(&len.to_be_bytes()).await?;
-    stream.write_all(&buf).await?;
-    stream.flush().await?;
-    Ok(())
+    const MAX_PLIST_SIZE: usize = 1024 * 1024;
+    super::plist_frame::write_xml_plist_frame(stream, value, MAX_PLIST_SIZE)
+        .await
+        .map_err(FileRelayError::from)
 }
 
 async fn recv_plist<S: AsyncRead + Unpin>(
     stream: &mut S,
 ) -> Result<plist::Dictionary, FileRelayError> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
     const MAX_PLIST_SIZE: usize = 1024 * 1024;
-    if len > MAX_PLIST_SIZE {
-        return Err(FileRelayError::Protocol(format!(
-            "plist length {len} exceeds max {MAX_PLIST_SIZE}"
-        )));
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(plist::from_bytes(&buf)?)
+    super::plist_frame::read_plist_frame(stream, MAX_PLIST_SIZE)
+        .await
+        .map_err(FileRelayError::from)
 }
 
 #[cfg(test)]

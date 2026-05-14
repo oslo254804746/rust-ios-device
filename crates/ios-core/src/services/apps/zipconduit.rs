@@ -55,9 +55,20 @@ where
     let entries = extract_zip_entries(&ipa_data)?;
 
     // Calculate totals for ZipMetadata
-    let total_uncompressed: u64 = entries.iter().map(|e| e.data.len() as u64).sum();
+    let total_uncompressed = entries.iter().try_fold(0u64, |acc, entry| {
+        let len = u64::try_from(entry.data.len())
+            .map_err(|_| ZipConduitError::Protocol(format!("entry too large: {}", entry.name)))?;
+        acc.checked_add(len).ok_or_else(|| {
+            ZipConduitError::Protocol("total uncompressed ZIP metadata size overflow".to_string())
+        })
+    })?;
     // RecordCount = META-INF dir + ZipMetadata file + all entries
-    let record_count = 2 + entries.len() as u64;
+    let record_count = u64::try_from(entries.len())
+        .ok()
+        .and_then(|len| len.checked_add(2))
+        .ok_or_else(|| {
+            ZipConduitError::Protocol("ZIP metadata record count overflow".to_string())
+        })?;
 
     // 2. Send InitTransfer plist
     let init_plist = build_init_transfer(filename);
@@ -69,7 +80,7 @@ where
     write_zip_dir_entry(stream, "META-INF/").await?;
 
     // 3b. com.apple.ZipMetadata.plist
-    let metadata = build_zip_metadata(record_count, total_uncompressed);
+    let metadata = build_zip_metadata(record_count, total_uncompressed)?;
     let metadata_bytes = plist_to_xml_bytes(&metadata)?;
     write_zip_file_entry(
         stream,
@@ -200,7 +211,7 @@ async fn write_zip_file_entry<S: AsyncWrite + Unpin>(
     data: &[u8],
 ) -> Result<(), ZipConduitError> {
     let crc = crc32fast::hash(data);
-    let size = data.len() as u32;
+    let size = checked_zip_u32_len("file data", data.len())?;
     write_local_file_header(stream, name, crc, size, size).await?;
     stream.write_all(data).await?;
     Ok(())
@@ -214,6 +225,8 @@ async fn write_local_file_header<S: AsyncWrite + Unpin>(
     uncompressed_size: u32,
 ) -> Result<(), ZipConduitError> {
     let name_bytes = filename.as_bytes();
+    let filename_len = checked_zip_u16_len("filename", name_bytes.len())?;
+    let extra_len = checked_zip_u16_len("extra field", EXTRA_FIELD.len())?;
     let mut header = Vec::with_capacity(30 + name_bytes.len() + EXTRA_FIELD.len());
 
     // Local file header signature
@@ -235,9 +248,9 @@ async fn write_local_file_header<S: AsyncWrite + Unpin>(
     // Uncompressed size
     header.extend_from_slice(&uncompressed_size.to_le_bytes());
     // Filename length
-    header.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+    header.extend_from_slice(&filename_len.to_le_bytes());
     // Extra field length
-    header.extend_from_slice(&(EXTRA_FIELD.len() as u16).to_le_bytes());
+    header.extend_from_slice(&extra_len.to_le_bytes());
     // Filename
     header.extend_from_slice(name_bytes);
     // Extra field
@@ -248,6 +261,22 @@ async fn write_local_file_header<S: AsyncWrite + Unpin>(
 }
 
 // ── Plist helpers ───────────────────────────────────────────────────────────
+
+fn checked_zip_u32_len(what: &str, len: usize) -> Result<u32, ZipConduitError> {
+    u32::try_from(len)
+        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u32 range: {len}")))
+}
+
+fn checked_zip_u16_len(what: &str, len: usize) -> Result<u16, ZipConduitError> {
+    u16::try_from(len)
+        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u16 range: {len}")))
+}
+
+fn checked_zip_i64(what: &str, value: u64) -> Result<i64, ZipConduitError> {
+    i64::try_from(value).map_err(|_| {
+        ZipConduitError::Protocol(format!("{what} exceeds plist integer range: {value}"))
+    })
+}
 
 fn build_init_transfer(filename: &str) -> plist::Value {
     let mut dict = plist::Dictionary::new();
@@ -290,11 +319,14 @@ fn build_init_transfer(filename: &str) -> plist::Value {
     plist::Value::Dictionary(dict)
 }
 
-fn build_zip_metadata(record_count: u64, total_uncompressed: u64) -> plist::Value {
+fn build_zip_metadata(
+    record_count: u64,
+    total_uncompressed: u64,
+) -> Result<plist::Value, ZipConduitError> {
     let mut dict = plist::Dictionary::new();
     dict.insert(
         "RecordCount".to_string(),
-        plist::Value::Integer((record_count as i64).into()),
+        plist::Value::Integer(checked_zip_i64("RecordCount", record_count)?.into()),
     );
     dict.insert(
         "StandardDirectoryPerms".to_string(),
@@ -306,10 +338,12 @@ fn build_zip_metadata(record_count: u64, total_uncompressed: u64) -> plist::Valu
     );
     dict.insert(
         "TotalUncompressedBytes".to_string(),
-        plist::Value::Integer((total_uncompressed as i64).into()),
+        plist::Value::Integer(
+            checked_zip_i64("TotalUncompressedBytes", total_uncompressed)?.into(),
+        ),
     );
     dict.insert("Version".to_string(), plist::Value::Integer(2.into()));
-    plist::Value::Dictionary(dict)
+    Ok(plist::Value::Dictionary(dict))
 }
 
 fn plist_to_xml_bytes(value: &plist::Value) -> Result<Vec<u8>, ZipConduitError> {
@@ -367,7 +401,7 @@ mod tests {
 
     #[test]
     fn build_zip_metadata_has_correct_structure() {
-        let meta = build_zip_metadata(42, 1_000_000);
+        let meta = build_zip_metadata(42, 1_000_000).unwrap();
         let dict = meta.as_dictionary().unwrap();
         assert_eq!(dict["RecordCount"].as_signed_integer(), Some(42));
         assert_eq!(dict["Version"].as_signed_integer(), Some(2));
@@ -379,6 +413,24 @@ mod tests {
             dict["StandardDirectoryPerms"].as_signed_integer(),
             Some(16877)
         );
+    }
+
+    #[test]
+    fn checked_zip_u32_len_rejects_large_file_sizes() {
+        let err = checked_zip_u32_len("file data", u32::MAX as usize + 1).unwrap_err();
+        assert!(err.to_string().contains("file data"));
+    }
+
+    #[test]
+    fn checked_zip_u16_len_rejects_long_file_names() {
+        let err = checked_zip_u16_len("filename", u16::MAX as usize + 1).unwrap_err();
+        assert!(err.to_string().contains("filename"));
+    }
+
+    #[test]
+    fn build_zip_metadata_rejects_i64_overflow() {
+        let err = build_zip_metadata(u64::MAX, 1).unwrap_err();
+        assert!(err.to_string().contains("RecordCount"));
     }
 
     #[test]

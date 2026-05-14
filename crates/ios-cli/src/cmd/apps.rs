@@ -317,10 +317,10 @@ impl AppsCmd {
                             .with_context(|| format!("failed to clear staged file {stale_path}"))?;
                     }
 
-                    let ipa_bytes = tokio::fs::read(source_path)
+                    let mut ipa_file = tokio::fs::File::open(source_path)
                         .await
-                        .with_context(|| format!("failed to read IPA file {ipa_path}"))?;
-                    afc.write_file(&install_paths.temp_remote_path, &ipa_bytes)
+                        .with_context(|| format!("open {}", source_path.display()))?;
+                    afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
                         .await
                         .context(format!(
                             "failed to upload IPA to {}",
@@ -409,10 +409,10 @@ impl AppsCmd {
                         .with_context(|| format!("failed to clear staged file {stale_path}"))?;
                 }
 
-                let ipa_bytes = tokio::fs::read(source_path)
+                let mut ipa_file = tokio::fs::File::open(source_path)
                     .await
-                    .with_context(|| format!("failed to read IPA file {ipa_path}"))?;
-                afc.write_file(&install_paths.temp_remote_path, &ipa_bytes)
+                    .with_context(|| format!("open {}", source_path.display()))?;
+                afc.write_file_from_reader(&install_paths.temp_remote_path, &mut ipa_file)
                     .await
                     .context(format!(
                         "failed to upload IPA to {}",
@@ -963,10 +963,10 @@ where
             }
 
             if file_type.is_file() {
-                let data = tokio::fs::read(&local_path)
+                let mut file = tokio::fs::File::open(&local_path)
                     .await
-                    .with_context(|| format!("failed to read {}", local_path.display()))?;
-                afc.write_file(&remote_path, &data)
+                    .with_context(|| format!("open {}", local_path.display()))?;
+                afc.write_file_from_reader(&remote_path, &mut file)
                     .await
                     .with_context(|| format!("failed to upload {}", remote_path))?;
                 continue;

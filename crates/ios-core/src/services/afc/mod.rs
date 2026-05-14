@@ -384,11 +384,37 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
 
     /// Write data to a file (creates or truncates).
     pub async fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), AfcError> {
+        let mut reader = std::io::Cursor::new(data);
+        self.write_file_from_reader(path, &mut reader).await
+    }
+
+    /// Write data from an async reader to a file (creates or truncates).
+    pub async fn write_file_from_reader<R>(
+        &mut self,
+        path: &str,
+        reader: &mut R,
+    ) -> Result<(), AfcError>
+    where
+        R: AsyncRead + Unpin,
+    {
         let fd = self
             .file_open(path, Self::FILE_MODE_WRITE_ONLY_CREATE_TRUNC)
-            .await?; // WRITE_ONLY_CREATE_TRUNC
-        self.file_write(fd, data).await?;
-        self.file_close(fd).await?;
+            .await?;
+        let result = async {
+            let mut buf = vec![0u8; 1024 * 1024];
+            loop {
+                let n = reader.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                self.file_write(fd, &buf[..n]).await?;
+            }
+            Ok::<(), AfcError>(())
+        }
+        .await;
+        let close_result = self.file_close(fd).await;
+        result?;
+        close_result?;
         Ok(())
     }
 
@@ -534,7 +560,53 @@ pub mod mode {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::MockStream;
+
     use super::*;
+    use zerocopy::FromBytes;
+
+    fn afc_frame(opcode: AfcOpcode, header_payload: &[u8], payload: &[u8]) -> Vec<u8> {
+        let header = AfcHeader::new(1, opcode, header_payload.len(), payload.len());
+        let mut frame = header.as_bytes().to_vec();
+        frame.extend_from_slice(header_payload);
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn afc_status_success_frame() -> Vec<u8> {
+        afc_frame(AfcOpcode::Status, &0u64.to_le_bytes(), &[])
+    }
+
+    fn afc_open_result_frame(fd: u64) -> Vec<u8> {
+        afc_frame(AfcOpcode::FileRefOpenResult, &fd.to_le_bytes(), &[])
+    }
+
+    fn afc_write_success_responses(write_count: usize) -> Vec<u8> {
+        let mut responses = afc_open_result_frame(42);
+        for _ in 0..write_count {
+            responses.extend_from_slice(&afc_status_success_frame());
+        }
+        responses.extend_from_slice(&afc_status_success_frame());
+        responses
+    }
+
+    fn file_write_payloads(written: &[u8]) -> Vec<Vec<u8>> {
+        let mut pos = 0;
+        let mut payloads = Vec::new();
+        while pos + AfcHeader::SIZE <= written.len() {
+            let header = AfcHeader::ref_from_bytes(&written[pos..pos + AfcHeader::SIZE]).unwrap();
+            let entire_len = header.entire_len.get() as usize;
+            let this_len = header.this_len.get() as usize;
+            let payload_start = pos + this_len;
+            let payload_end = pos + entire_len;
+            if header.operation.get() == AfcOpcode::FileRefWrite as u64 {
+                payloads.push(written[payload_start..payload_end].to_vec());
+            }
+            pos += entire_len;
+        }
+        assert_eq!(pos, written.len());
+        payloads
+    }
 
     #[test]
     fn test_split_null_strings() {
@@ -645,5 +717,28 @@ mod tests {
         assert_eq!(AfcStatusCode::from_u64(31), AfcStatusCode::NoMem);
         assert_eq!(AfcStatusCode::from_u64(32), AfcStatusCode::NotEnoughData);
         assert_eq!(AfcStatusCode::from_u64(33), AfcStatusCode::DirNotEmpty);
+    }
+
+    #[tokio::test]
+    async fn write_file_from_reader_sends_chunks_without_prebuffering() {
+        let payload = vec![0xAB; 1024 * 1024 + 17];
+        let mut reader = std::io::Cursor::new(payload.clone());
+        let mut stream = MockStream::new(afc_write_success_responses(2));
+        let mut client = AfcClient::new(&mut stream);
+
+        client
+            .write_file_from_reader("/PublicStaging/app.ipa", &mut reader)
+            .await
+            .unwrap();
+
+        let payloads = file_write_payloads(&stream.written);
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0].len(), 1024 * 1024);
+        assert_eq!(payloads[1].len(), 17);
+        assert_eq!(
+            payloads.concat(),
+            payload,
+            "AFC file writes should preserve the streamed payload"
+        );
     }
 }

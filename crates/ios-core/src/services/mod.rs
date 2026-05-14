@@ -99,6 +99,7 @@ pub mod backup2;
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
+pub(crate) mod plist_frame;
 
 #[cfg(feature = "afc")]
 pub mod afc;
