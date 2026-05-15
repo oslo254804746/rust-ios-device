@@ -43,6 +43,9 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
 
       - name: Rustfmt
         run: cargo fmt --all -- --check
@@ -62,6 +65,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
 
       - name: Check no-default-features
         run: cargo check -p ios-core --no-default-features
@@ -92,6 +98,9 @@ jobs:
           toolchain: "1.80"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
 
       - name: Check workspace compiles on MSRV
         run: cargo check --workspace --exclude ios-py
@@ -125,6 +134,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
 
       - name: Build
         run: cargo build --workspace --exclude ios-py
@@ -185,7 +197,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust
           key: release-${{ matrix.target }}
+          cache-bin: false
 
       - name: Build release binary + FFI library
         run: cargo build --release --package ios-cli --package ios-ffi --target ${{ matrix.target }}
@@ -307,7 +321,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust
           key: python-${{ matrix.target }}
+          cache-bin: false
 
       - name: Build wheel
         shell: bash
