@@ -1,9 +1,11 @@
 //! App management service – unified iOS <17 (InstallationProxy) and iOS 17+ (coredevice.appservice).
 
+#[cfg(feature = "tunnel")]
 pub mod appservice;
 pub mod installation;
 pub mod zipconduit;
 
+#[cfg(feature = "tunnel")]
 pub use appservice::{AppServiceClient, AppServiceError, RunningAppProcess};
 pub use installation::{AppInfo, InstallationProxy};
 pub use zipconduit::{install_ipa, ZipConduitError};

@@ -228,9 +228,10 @@ mod tests {
         assert!(matches!(io_error, MacroSmokeError::Io(_)));
 
         // Plist variant now wraps plist::Error via #[from]
-        let plist_err: MacroSmokeError = plist::from_bytes::<plist::Value>(b"not valid plist")
-            .unwrap_err()
-            .into();
+        let plist_err: MacroSmokeError =
+            plist::from_bytes::<plist::Value>(br#"<?xml version="1.0"?><plist><dict>"#)
+                .unwrap_err()
+                .into();
         assert!(matches!(plist_err, MacroSmokeError::Plist(_)));
         assert!(plist_err.to_string().starts_with("plist error: "));
 

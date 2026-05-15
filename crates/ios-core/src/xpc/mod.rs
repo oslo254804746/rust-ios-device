@@ -8,7 +8,12 @@
 
 #[cfg(feature = "tunnel")]
 pub mod client;
-#[cfg(feature = "tunnel")]
+#[cfg(any(
+    feature = "tunnel",
+    feature = "dproxy",
+    feature = "fetchsymbols",
+    feature = "restore"
+))]
 pub mod h2_raw;
 pub mod message;
 pub mod rsd;

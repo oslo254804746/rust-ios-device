@@ -32,7 +32,7 @@ tracing      = "0.1"
 rustls       = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 h2           = "0.4"
-lz4_flex     = "0.11"
+lz4_flex     = "0.10"
 smoltcp      = { version = "0.11", default-features = false, features = ["std","proto-ipv6","socket-tcp","async","medium-ip"] }
 p256         = "0.13"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
