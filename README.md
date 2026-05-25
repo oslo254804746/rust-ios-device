@@ -2,145 +2,157 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Rust libraries, bindings, and an `ios` command-line tool for working with real
-iOS devices through usbmuxd, lockdown, CoreDevice tunnels, Remote Service
-Discovery (RSD), RemoteXPC, and common Apple device services.
+Rust libraries, language bindings, and the `ios` command-line tool for talking
+to real iOS devices over usbmuxd, lockdown, CoreDevice/RemoteXPC, and the
+common Apple device services.
 
-This project is **experimental but already broad**: it is useful for device
-automation, protocol research, developer tooling, diagnostics, and compatibility
-checks against workflows from `go-ios` and `pymobiledevice3`. The API and CLI can
-still change before a stable release, and many service surfaces depend on the
-device, iOS version, trust state, Developer Mode, supervision, and installed
-Apple components.
+[![Crates.io — ios-core](https://img.shields.io/crates/v/ios-core.svg?label=ios-core)](https://crates.io/crates/ios-core)
+[![Crates.io — ios-cli](https://img.shields.io/crates/v/ios-cli.svg?label=ios-cli)](https://crates.io/crates/ios-cli)
+[![PyPI — rust-ios-device-tunnel](https://img.shields.io/pypi/v/rust-ios-device-tunnel.svg?label=rust-ios-device-tunnel)](https://pypi.org/project/rust-ios-device-tunnel/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#requirements)
 
-## What is in this workspace
+> **Status: experimental.** The project covers a wide capability surface and is
+> useful for automation, protocol work, and developer tooling, but the public
+> API and CLI may still change before a 1.0 release. Service availability
+> depends on iOS version, pairing/trust state, Developer Mode, supervision,
+> and the host's Apple Mobile Device components.
 
-| Entry point | Purpose |
-| --- | --- |
-| `ios-core` | Rust library with discovery, pairing, lockdown, usbmux, tunnel, XPC/RSD, protocol codecs, and feature-gated service clients. |
-| `ios-cli` | End-user CLI binary named `ios`; enables the full `ios-core` service surface. |
-| `ios-py` | PyO3 module published as `rust-ios-device-tunnel` and imported as `ios_rs`; focused on device listing and CoreDevice tunnel workflows. |
-| `ios-ffi` | C ABI wrapper that builds static/shared libraries and the `ios_rs.h` header. |
-| `docs/` | Task guides for build, usage, architecture, feature flags, CLI mapping, tunneling, protocols, Python bindings, and troubleshooting. |
+## Highlights
 
-## Capability overview
+- **Cross-platform CLI (`ios`)** with 54+ subcommands covering devices, files,
+  apps, instruments, debugging, profiles, restore, supervision, and tunnels.
+- **iOS 17+ first-class support** — CoreDevice tunnel (userspace and kernel
+  TUN), RSD service discovery, RemoteXPC over HTTP/2, appservice, fileservice,
+  diagnosticsservice, deviceinfo, Instruments, and TestManager.
+- **Lockdown-era services** — AFC, House Arrest, syslog, screenshots,
+  configuration/provisioning profiles, crash reports, diagnostics relay,
+  notification proxy, springboard, backup, and more.
+- **Developer workflows** — Developer Disk Image mounting, DTX/Instruments,
+  debugserver, WebInspector, XCTest runner, WebDriverAgent helpers,
+  accessibility audit, pcap, and symbol fetching.
+- **Multi-language consumers** — pure Rust library (`ios-core`),
+  PyO3 Python module (`ios_rs`), and C FFI (`ios-ffi`) sharing one
+  implementation.
 
-`rust-ios-device` currently covers these major areas:
+## Workspace
 
-- Device discovery over usbmuxd and Bonjour/mDNS, plus attach/detach event
-  listening.
-- Lockdown access, TLS sessions, pair records, SRP pairing, service startup, and
-  selected device settings.
-- Classic lockdown/usbmux services: AFC, House Arrest, crash reports,
-  diagnostics relay, file relay, heartbeat, installation/app management,
-  notification proxy, profiles, provisioning profiles, screenshots, SpringBoard,
-  syslog, backup helpers, and related management services.
-- iOS 17+ CoreDevice workflows: CDTunnel, userspace and kernel tunnel modes, RSD
-  service inspection, RemoteXPC/HTTP2 transport, appservice, fileservice,
-  diagnosticsservice, deviceinfo, Instruments, TestManager, and forwarding where
-  the device exposes the required services.
-- Developer workflows: Developer Disk Image mounting, DTX/Instruments,
-  debugserver helpers, WebInspector, XCTest launching, WebDriverAgent helpers,
-  accessibility audit, packet capture, symbols, os_trace, process control, and
-  induced device-state conditions.
-- Device management and supervised-device helpers: activation state, AMFI
-  developer-mode helpers, arbitration, companion devices, global HTTP proxy,
-  IDAM, power assertions, preboard, prepare/supervision certificate helpers,
-  restore-mode event helpers, erase, and restore entry points.
-- Protocol building blocks: usbmuxd, lockdown, AFC, DTX, OPACK,
-  NSKeyedArchiver, XPC, HTTP/2 XPC, TLV, TLS/PSK, and tunnel packet forwarding.
-- Python and C integration surfaces for tooling that needs to reuse discovery or
-  tunnel support outside Rust.
+| Crate    | Artifact                                            | Purpose                                                                 |
+| -------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
+| `ios-core` | crates.io                                          | Library: discovery, pairing, lockdown, tunnel, RSD/XPC, service clients |
+| `ios-cli`  | crates.io · prebuilt `ios` binary                  | End-user command-line tool                                              |
+| `ios-py`   | PyPI as `rust-ios-device-tunnel` (import `ios_rs`) | Python bindings (PyO3) for device listing and tunnel workflows          |
+| `ios-ffi`  | prebuilt `cdylib` + `staticlib` + `ios_rs.h`       | C ABI for non-Rust consumers                                            |
 
-The short version: use the CLI for day-to-day inspection and automation, use
-`ios-core` when building Rust tooling, use `ios_rs` when you need a Python
-userspace tunnel bridge, and use `ios-ffi` for C-compatible consumers.
+Detailed docs live in [`docs/`](docs/): [architecture](docs/architecture.md),
+[build](docs/build.md), [features](docs/features.md),
+[usage](docs/usage.md), [CLI map](docs/cli-map.md),
+[tunnel](docs/tunnel.md), [protocol](docs/protocol.md),
+[python binding](docs/python-binding.md), and
+[troubleshooting](docs/troubleshooting.md).
 
-## Requirements
+## Install
 
-- Rust 1.80 or newer.
-- A trusted physical iOS device for most real-device operations.
-- Host usbmux support:
-  - macOS: Apple device support from Finder/Xcode is usually enough.
-  - Linux: install and run `usbmuxd`; udev permissions may be required.
-  - Windows: install Apple Mobile Device Support, usually via iTunes or Apple
-    Devices.
-- Linux builds may need OpenSSL development files such as `libssl-dev` and
-  `pkg-config`.
-- Windows builds that use OpenSSL are expected to link through vcpkg with
-  `x64-windows-static-md`.
-- Python 3.9+ and `maturin` are only needed for `ios-py`.
+### Pre-built CLI binary
 
-## Build from source
+Download the latest `ios-<version>-<target>.{tar.gz,zip}` from the
+[Releases page](https://github.com/oslo254804746/rust-ios-device/releases).
+Targets published per release:
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+
+A matching `ios-ffi-*` archive ships the FFI library and the `ios_rs.h` header
+for the same targets. Each asset has a sibling `.sha256` file.
+
+### From crates.io
 
 ```sh
-cargo build --workspace --exclude ios-py
-cargo build --release --package ios-cli
+cargo install ios-cli            # installs the `ios` binary
 ```
 
-Run the CLI from the checkout:
+```toml
+# Cargo.toml — pull in the library
+[dependencies]
+ios-core = { version = "0.1.5", features = ["classic"] }
+```
+
+### Python
 
 ```sh
-cargo run -p ios-cli -- list
-cargo run -p ios-cli -- --help
+pip install rust-ios-device-tunnel    # imported as `ios_rs`
 ```
-
-The release binary is named `ios`.
-
-Most CLI commands print JSON by default for scripting. Pass `--no-json` when a
-human-readable table/text mode is available. Commands that target a device use
-the first device from `ios list` when `-u/--udid` is omitted; set `IOS_UDID` or
-pass `-u <UDID>` to choose explicitly.
 
 ## Quick start
 
 ```sh
-ios list
-ios info
-ios lockdown get --key ProductVersion
-ios syslog
+ios list                                       # connected devices (USB + network)
+ios info                                       # default device summary
+ios -u <UDID> lockdown get --key ProductVersion
+ios syslog                                     # stream device logs
 ios screenshot --output screenshot.png
+ios tunnel start --userspace                   # iOS 17+ CoreDevice tunnel
 ```
 
-Explore command groups:
+When a command targets a device and `-u/--udid` is omitted, the CLI uses the
+first device returned by `ios list`. Override with `-u <UDID>` or set
+`IOS_UDID` to pin a specific device. Most commands emit JSON by default; pass
+`--no-json` for human-readable tables.
+
+Explore each command group:
 
 ```sh
-ios file --help
+ios --help
 ios apps --help
-ios diagnostics --help
-ios tunnel --help
+ios file --help
 ios instruments --help
+ios tunnel --help
 ios prepare --help
 ```
 
-## Common CLI workflows
+## Capability matrix
 
-| Workflow | Representative commands |
-| --- | --- |
-| Discovery and pairing | `list`, `listen`, `discover`, `pair`, `lockdown` |
-| Device facts and settings | `info`, `diskspace`, `mobilegestalt`, `batterycheck`, `batteryregistry`, `activation`, `amfi` |
-| Files and containers | `file`, `file --app`, `file --coredevice`, `crash`, `file-relay` |
-| Apps and tests | `apps list/install/uninstall/launch/kill`, `runtest`, `runwda`, `wda` |
-| Logs and diagnostics | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap` |
-| Developer services | `ddi`, `instruments`, `debugserver`, `debug`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
-| iOS 17+ transport | `tunnel start`, `tunnel serve`, `tunnel list`, `rsd services`, `rsd check`, `forward` |
-| Management and supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
+The CLI groups closely follow the service modules in `ios-core`. The mapping
+below also lists the comparable surface in [go-ios] and [pymobiledevice3] for
+orientation.
 
-Task-focused examples live in [docs/usage.md](docs/usage.md). A go-ios /
-pymobiledevice3 comparison lives in [docs/cli-map.md](docs/cli-map.md).
+| Area                        | `ios` commands                                                                                  | Comparable go-ios / pymobiledevice3                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Discovery & pairing         | `list`, `listen`, `discover`, `pair`, `lockdown`                                                | go-ios `list`/`listen`/`pair`; pmd3 `usbmux`/`lockdown`/`bonjour`         |
+| Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi`   | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
+| Files & containers          | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                            | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`                                |
+| Apps & UI tests             | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                               | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
+| Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                           | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`  |
+| Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
+| iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
+| Management & supervision    | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`; pmd3 `profile`/`provision`/`restore` |
+| Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 
-## CoreDevice, RSD, and fileservice notes
+Task-focused walkthroughs: [`docs/usage.md`](docs/usage.md). Side-by-side
+command map: [`docs/cli-map.md`](docs/cli-map.md).
 
-iOS 17+ support is service-surface dependent. A device can have working USB,
-lockdown, tunnel, RSD, AFC, and InstallationProxy while still not exposing a
-specific CoreDevice service.
+## CoreDevice / iOS 17+ tunnel
 
-For example, CoreDevice fileservice uses:
+iOS 17+ workflows route through a CoreDevice tunnel and a per-device RSD
+service directory. Whether a specific feature is reachable depends on the
+service surface that the device exposes — not on the iOS version alone.
 
-- `com.apple.coredevice.fileservice.control`
-- `com.apple.coredevice.fileservice.data`
+```sh
+# Start a single tunnel (default = userspace mode)
+ios tunnel start --userspace
 
-Check availability before assuming an implementation bug:
+# Run the local tunnel manager HTTP service (go-ios compatible JSON)
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151
+```
+
+Userspace tunnels publish a local TCP proxy. Clients send a 16-byte IPv6
+address followed by a 4-byte little-endian port, then proxy traffic. Kernel
+TUN mode is also available but typically requires admin/root.
+
+Inspect what the device actually exposes before assuming an implementation
+issue:
 
 ```sh
 ios rsd services --all
@@ -148,43 +160,30 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
-If RSD does not expose the fileservice control/data services, the CLI should
-report a clear missing-service error. That behavior matches current reference
-tooling rather than falling back to a different service name.
+If a device does not expose the requested CoreDevice service (e.g. the
+fileservice control/data pair), the CLI surfaces a clear missing-service
+error rather than silently falling back. See
+[`docs/tunnel.md`](docs/tunnel.md) for the full lifecycle.
 
-## Tunnels
+## Library usage (Rust)
 
-Start one CoreDevice tunnel:
-
-```sh
-ios tunnel start --userspace
-```
-
-Run the local tunnel manager used by integration tools:
-
-```sh
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
-```
-
-Userspace mode is the recommended first choice. It exposes a local TCP proxy
-where clients send a 16-byte IPv6 address followed by a 4-byte little-endian
-port before proxying traffic. Kernel TUN mode is also available, but may require
-administrator/root privileges.
-
-See [docs/tunnel.md](docs/tunnel.md) for details.
-
-## Rust API
-
-`ios-core` has no default service features. Enable only the services your tool
-uses:
+`ios-core` ships **no default service features**. Pick what you need, or use
+a grouped flag:
 
 ```toml
 [dependencies]
 ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
 ```
 
-Use grouped features for wider tools: `classic`, `developer`, `management`,
-`ios17`, or `full`. The CLI uses `full`; library users usually should not.
+| Group        | Includes                                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------------------- |
+| `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
+| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+
+The CLI builds with `full`; libraries should usually pick a smaller subset.
 
 ```rust
 use ios_core::{ConnectOptions, list_devices};
@@ -197,10 +196,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let connected = ios_core::connect(&device.udid, ConnectOptions {
-        skip_tunnel: true,
-        ..Default::default()
-    }).await?;
+    let connected = ios_core::connect(
+        &device.udid,
+        ConnectOptions { skip_tunnel: true, ..Default::default() },
+    )
+    .await?;
 
     let version = connected.product_version().await?;
     println!("{} runs iOS {}", connected.info.udid, version);
@@ -208,25 +208,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Feature details are in [docs/features.md](docs/features.md). Architecture notes
-are in [docs/architecture.md](docs/architecture.md).
+For lower-level access, use the modules re-exported at the crate root, such as
+`ios_core::mux`, `ios_core::lockdown`, `ios_core::xpc`, and the gated service
+modules `ios_core::afc`, `ios_core::apps`, `ios_core::syslog`, etc.
 
-## Python binding
-
-Install the Python package:
+## Python bindings
 
 ```sh
 pip install rust-ios-device-tunnel
 ```
 
-Build the local module from this checkout:
+Or build the local checkout into a venv:
 
 ```sh
 cd crates/ios-py
 uvx maturin develop
 ```
-
-Example:
 
 ```python
 import ios_rs
@@ -236,88 +233,125 @@ tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():
-    # asyncio.open_connection() calls to the device tunnel address are routed
+    # asyncio.open_connection() to the device tunnel address is routed
     # through the userspace proxy while this context is active.
-    pass
+    ...
 
 tunnel.close()
 ```
 
-The example bridge in
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` shows how to run
-pymobiledevice3 RemoteXPC code over the Rust userspace tunnel.
+pymobiledevice3 RemoteXPC code on top of the Rust userspace tunnel.
 
 ## C FFI
 
-Build the C-compatible library and header:
+Build the C-compatible library and its header:
 
 ```sh
 cargo build --release -p ios-ffi
 ```
 
-The FFI crate exposes device listing, pairing/service access, and tunnel
-lifecycle functions for consumers that cannot call the Rust API directly.
+Outputs include `libios_ffi.{so,dylib,a}` (or `ios_ffi.dll` + `.lib` on
+Windows) and `crates/ios-ffi/include/ios_rs.h`. The FFI surface covers device
+listing, lockdown queries, pairing/service access, and tunnel lifecycle.
+Pre-built archives for the supported targets are attached to each release.
 
-## Examples
+## Build from source
 
-The CLI crate includes Rust examples:
+### Requirements
 
-```sh
-cargo run -p ios-cli --example device_info -- <UDID>
-cargo run -p ios-cli --example app_list -- <UDID>
-cargo run -p ios-cli --example file_transfer -- <UDID>
-cargo run -p ios-cli --example screenshot -- <UDID>
-cargo run -p ios-cli --example syslog_stream -- <UDID>
-cargo run -p ios-cli --example instruments_cpu -- <UDID>
-```
+- Rust **1.80+** (workspace MSRV).
+- usbmux on the host:
+  - **macOS** — Apple device support from Xcode/Finder, normally pre-installed.
+  - **Linux** — `usbmuxd` running with appropriate udev rules.
+  - **Windows** — Apple Mobile Device Support, via iTunes or Apple Devices.
+- OpenSSL development headers on Linux (`libssl-dev`, `pkg-config`).
+- On Windows, OpenSSL is linked statically through vcpkg
+  (`x64-windows-static-md`); set `VCPKG_ROOT`, `VCPKGRS_TRIPLET`,
+  `OPENSSL_STATIC=1`.
+- Python 3.9+ and `maturin` only when building `ios-py`.
 
-Exact arguments may vary by example; inspect the source or command output if an
-example expects paths or app identifiers.
-
-## Safety and limitations
-
-- This is not an Apple-supported SDK and does not replace Xcode, Finder, Apple
-  Configurator, or official MDM tooling.
-- Not every command has been validated on every iOS release or host OS.
-- Some services require Developer Mode, a mounted Developer Disk Image,
-  supervision, installed test bundles, or app-specific entitlements.
-- Commands such as `erase`, `restore`, `prepare`, `httpproxy`, `location`,
-  `preboard`, profile management, and backup restore paths can change device
-  state. Prefer test devices and read `--help` first.
-- Pair records and supervision credentials are sensitive. Do not commit them or
-  include them in logs.
-
-## Troubleshooting
-
-- Device not visible: unlock it, trust the host, reconnect USB, and verify
-  usbmuxd or Apple Mobile Device Support.
-- Pairing fails: remove stale pair records only if you understand the impact,
-  then pair again from an unlocked device.
-- Tunnel fails: verify the device exposes the required CoreDevice tunnel/RSD
-  services; fall back to classic lockdown/usbmux services where appropriate.
-- CoreDevice fileservice fails: inspect RSD for the control/data service names
-  before assuming the implementation is wrong.
-- Kernel tunnel fails: retry userspace mode or run with privileges needed to
-  create a TUN interface.
-- Developer services fail: enable Developer Mode and mount a compatible
-  Developer Disk Image where the service requires it.
-
-More detail is in [docs/troubleshooting.md](docs/troubleshooting.md).
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for
-development setup, tests, formatting, linting, and PR expectations.
-
-Useful checks:
+### Common commands
 
 ```sh
+# Workspace build (excludes ios-py, which needs maturin)
 cargo build --workspace --exclude ios-py
+
+# Release CLI binary
+cargo build --release -p ios-cli
+
+# Tests
 cargo test --workspace --exclude ios-core --exclude ios-py
 cargo test -p ios-core --all-features
+
+# Lint / format
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+Run the CLI from a checkout:
+
+```sh
+cargo run -p ios-cli -- list
+cargo run -p ios-cli -- --help
+```
+
+## Examples
+
+The CLI crate ships runnable Rust examples:
+
+```sh
+cargo run -p ios-cli --example device_info     -- <UDID>
+cargo run -p ios-cli --example app_list        -- <UDID>
+cargo run -p ios-cli --example file_transfer   -- <UDID>
+cargo run -p ios-cli --example screenshot      -- <UDID>
+cargo run -p ios-cli --example syslog_stream   -- <UDID>
+cargo run -p ios-cli --example instruments_cpu -- <UDID>
+cargo run -p ios-cli --example afc_debug       -- <UDID>
+```
+
+Some examples take additional arguments (paths, bundle IDs); check the source
+or run with `--help` first.
+
+## Troubleshooting
+
+- **Device not visible** — unlock the device, trust the host, reconnect USB,
+  and verify usbmuxd / Apple Mobile Device Support is running.
+- **Pairing failures** — only delete stale pair records when you understand
+  the impact, then re-pair from an unlocked device.
+- **Tunnel failures on older devices** — the device may not expose CoreDevice
+  tunnel/RSD; fall back to lockdown/usbmux service paths.
+- **Kernel tunnel fails** — retry with userspace mode or run with the
+  privileges required to create a TUN interface.
+- **Developer services fail** — enable Developer Mode and mount a compatible
+  Developer Disk Image where the service requires it (`ios ddi`).
+- **CoreDevice fileservice unavailable** — verify `com.apple.coredevice.fileservice.control`
+  and `.data` are listed in `ios rsd services --all`. Absence is a device-side
+  service-surface issue, not a client bug.
+
+More detail: [`docs/troubleshooting.md`](docs/troubleshooting.md).
+
+## Safety and limitations
+
+- This is **not an Apple-supported SDK**. It does not replace Xcode, Finder,
+  Apple Configurator, or official MDM tooling.
+- Not every command is validated on every iOS version, host OS, or pairing
+  state; some advanced commands are best treated as protocol experiments.
+- Commands that mutate device state — `erase`, `restore`, `prepare`,
+  `httpproxy`, `location`, `preboard`, profile install/remove, backup
+  restore — can be disruptive. Read `--help` and prefer test devices.
+- Pair records and supervision certificates are sensitive credentials. Do not
+  commit them or write them into shared logs.
+
+## Contributing
+
+Contributions are welcome. Development setup, testing expectations, and PR
+guidance live in [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature
+requests have templates in [`.github/ISSUE_TEMPLATE`](.github/ISSUE_TEMPLATE).
+
+## Security
+
+Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 ## License
 
@@ -330,10 +364,15 @@ at your option.
 
 ## Acknowledgements
 
-This project is informed by the broader iOS device tooling ecosystem, especially:
+This project is informed by the broader iOS device tooling ecosystem.
+Special thanks to:
 
-- [go-ios](https://github.com/danielpaulus/go-ios.git)
-- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3.git)
+- [go-ios](https://github.com/danielpaulus/go-ios)
+- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3)
 
-Compatibility is implemented only where this repository's code and tests support
-it.
+Compatibility is implemented only where this repository's code and tests
+support it.
+
+[go-ios]: https://github.com/danielpaulus/go-ios
+[pymobiledevice3]: https://github.com/doronz88/pymobiledevice3
+

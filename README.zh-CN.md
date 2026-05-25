@@ -2,115 +2,148 @@
 
 [English](README.md) | 简体中文
 
-一组用于操作真实 iOS 设备的 Rust 库、语言绑定和 `ios` 命令行工具。项目通过
-usbmuxd、lockdown、CoreDevice 隧道、Remote Service Discovery (RSD)、
-RemoteXPC 以及常见 Apple 设备服务与设备通信。
+一组用于操作真实 iOS 设备的 Rust 库、语言绑定和 `ios` 命令行工具，通过
+usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备通信。
 
-本项目目前 **仍是实验性项目，但能力面已经较宽**：适合设备自动化、协议研究、开发者工具、诊断排障，以及与
-`go-ios`、`pymobiledevice3` 常见工作流做兼容性对照。稳定版本前 API 和 CLI 仍可能变化，很多服务是否可用也取决于设备型号、iOS 版本、信任状态、开发者模式、监督状态和主机上的 Apple 组件。
+[![Crates.io — ios-core](https://img.shields.io/crates/v/ios-core.svg?label=ios-core)](https://crates.io/crates/ios-core)
+[![Crates.io — ios-cli](https://img.shields.io/crates/v/ios-cli.svg?label=ios-cli)](https://crates.io/crates/ios-cli)
+[![PyPI — rust-ios-device-tunnel](https://img.shields.io/pypi/v/rust-ios-device-tunnel.svg?label=rust-ios-device-tunnel)](https://pypi.org/project/rust-ios-device-tunnel/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
+[![MSRV](https://img.shields.io/badge/MSRV-1.80-orange.svg)](#环境要求)
 
-## 工作区内容
+> **状态：实验性。** 项目能力面已经较宽，可用于自动化、协议研究和开发者工具，
+> 但稳定版本前公开 API 与 CLI 仍可能变化。具体服务是否可用取决于 iOS 版本、
+> 设备信任与配对状态、Developer Mode、监督状态以及主机的 Apple Mobile Device 组件。
 
-| 入口 | 用途 |
-| --- | --- |
-| `ios-core` | Rust 库，包含发现、配对、lockdown、usbmux、隧道、XPC/RSD、协议编解码和 feature-gated 服务客户端。 |
-| `ios-cli` | 面向终端用户的 CLI，二进制名为 `ios`，启用完整 `ios-core` 服务能力。 |
-| `ios-py` | PyO3 模块，包名为 `rust-ios-device-tunnel`，导入名为 `ios_rs`，重点覆盖设备列表和 CoreDevice 隧道工作流。 |
-| `ios-ffi` | C ABI 包装，构建静态/动态库以及 `ios_rs.h` 头文件。 |
-| `docs/` | 构建、用法、架构、feature flags、CLI 对照、隧道、协议、Python 绑定和故障排查文档。 |
+## 亮点
 
-## 能力概览
+- **跨平台 CLI（`ios`）**——54+ 子命令，覆盖设备、文件、应用、Instruments、
+  调试、描述文件、恢复、监督和隧道。
+- **iOS 17+ 一等支持**——CoreDevice 隧道（用户态与内核 TUN）、RSD 服务发现、
+  HTTP/2 RemoteXPC、appservice、fileservice、diagnosticsservice、deviceinfo、
+  Instruments 与 TestManager。
+- **Lockdown 经典服务**——AFC、House Arrest、syslog、截图、配置/provisioning
+  描述文件、崩溃报告、diagnostics relay、notification proxy、SpringBoard、
+  备份等。
+- **开发者工作流**——开发者磁盘镜像挂载、DTX/Instruments、debugserver、
+  WebInspector、XCTest runner、WebDriverAgent 辅助、可访问性审计、抓包、
+  符号下载。
+- **多语言消费者**——纯 Rust 库（`ios-core`）、PyO3 Python 模块（`ios_rs`）、
+  C FFI（`ios-ffi`）共用同一份实现。
 
-`rust-ios-device` 目前覆盖这些主要能力：
+## 工作区结构
 
-- 通过 usbmuxd 与 Bonjour/mDNS 发现设备，并监听连接/断开事件。
-- Lockdown 访问、TLS 会话、配对记录、SRP 配对、服务启动和部分设备设置。
-- 经典 lockdown/usbmux 服务：AFC、House Arrest、崩溃报告、diagnostics relay、file relay、heartbeat、安装/应用管理、notification proxy、配置描述文件、provisioning profiles、截图、SpringBoard、syslog、备份辅助能力以及相关管理服务。
-- iOS 17+ CoreDevice 工作流：CDTunnel、用户态和内核隧道模式、RSD 服务检查、RemoteXPC/HTTP2 传输、appservice、fileservice、diagnosticsservice、deviceinfo、Instruments、TestManager，以及设备暴露相应服务时的端口转发。
-- 开发者工作流：开发者磁盘镜像挂载、DTX/Instruments、debugserver 辅助、WebInspector、XCTest 启动、WebDriverAgent 辅助、可访问性审计、抓包、符号、os_trace、进程控制和诱导设备状态。
-- 设备管理与监督设备辅助：激活状态、AMFI 开发者模式辅助、arbitration、companion devices、全局 HTTP 代理、IDAM、power assertion、preboard、prepare/监督证书辅助、restore-mode 事件辅助、erase 和 restore 入口。
-- 协议基础模块：usbmuxd、lockdown、AFC、DTX、OPACK、NSKeyedArchiver、XPC、HTTP/2 XPC、TLV、TLS/PSK 和隧道包转发。
-- 面向非 Rust 工具的 Python 与 C 集成接口，可复用设备发现和隧道能力。
+| Crate    | 发布产物                                            | 用途                                                                |
+| -------- | --------------------------------------------------- | ------------------------------------------------------------------- |
+| `ios-core` | crates.io                                          | 库：发现、配对、lockdown、隧道、RSD/XPC 与服务客户端                |
+| `ios-cli`  | crates.io · 预编译 `ios` 二进制                    | 终端用户 CLI 工具                                                   |
+| `ios-py`   | PyPI 包名 `rust-ios-device-tunnel`（导入名 `ios_rs`） | PyO3 Python 绑定：设备列表与隧道工作流                              |
+| `ios-ffi`  | 预编译 `cdylib` + `staticlib` + `ios_rs.h`         | 给非 Rust 消费者使用的 C ABI                                         |
 
-简短地说：日常检查和自动化用 CLI；写 Rust 工具用 `ios-core`；Python 里需要用户态隧道桥接时用 `ios_rs`；C 兼容消费者用 `ios-ffi`。
+详细文档位于 [`docs/`](docs/)：[架构](docs/architecture.md)、
+[构建](docs/build.md)、[feature flags](docs/features.md)、
+[用法](docs/usage.md)、[CLI 对照](docs/cli-map.md)、
+[隧道](docs/tunnel.md)、[协议](docs/protocol.md)、
+[Python 绑定](docs/python-binding.md)、[故障排查](docs/troubleshooting.md)。
 
-## 环境要求
+## 安装
 
-- Rust 1.80 或更新版本。
-- 大多数真实设备操作需要一台已信任的实体 iOS 设备。
-- 主机需要支持 usbmux：
-  - macOS：通常 Finder/Xcode 提供的 Apple 设备支持即可。
-  - Linux：安装并运行 `usbmuxd`；可能还需要 udev 权限。
-  - Windows：安装 Apple Mobile Device Support，通常可通过 iTunes 或 Apple Devices 获取。
-- Linux 构建可能需要 OpenSSL 开发文件，例如 `libssl-dev` 和 `pkg-config`。
-- Windows 上使用 OpenSSL 的构建预期通过 vcpkg 链接 `x64-windows-static-md`。
-- 只有使用 `ios-py` 时才需要 Python 3.9+ 和 `maturin`。
+### 预编译 CLI 二进制
 
-## 从源码构建
+到 [Releases 页面](https://github.com/oslo254804746/rust-ios-device/releases)
+下载最新版本的 `ios-<version>-<target>.{tar.gz,zip}`。每个发布版本包含以下
+target：
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+
+同名的 `ios-ffi-*` 归档包含 FFI 库文件和 `ios_rs.h` 头文件。每个产物都附带
+`.sha256` 校验文件。
+
+### 通过 crates.io
 
 ```sh
-cargo build --workspace --exclude ios-py
-cargo build --release --package ios-cli
+cargo install ios-cli            # 安装 `ios` 二进制
 ```
 
-从 checkout 运行 CLI：
+```toml
+# Cargo.toml — 引用库
+[dependencies]
+ios-core = { version = "0.1.5", features = ["classic"] }
+```
+
+### Python
 
 ```sh
-cargo run -p ios-cli -- list
-cargo run -p ios-cli -- --help
+pip install rust-ios-device-tunnel    # 导入名为 `ios_rs`
 ```
-
-发布构建生成的二进制名为 `ios`。
-
-大多数 CLI 命令默认输出 JSON，方便脚本使用。支持表格/文本输出的命令可通过 `--no-json` 切换。需要目标设备的命令在省略 `-u/--udid` 时会使用 `ios list` 返回的第一台设备；如需明确选择设备，请设置 `IOS_UDID` 或传入 `-u <UDID>`。
 
 ## 快速开始
 
 ```sh
-ios list
-ios info
-ios lockdown get --key ProductVersion
-ios syslog
+ios list                                       # 已连接设备（USB + 网络）
+ios info                                       # 默认设备信息摘要
+ios -u <UDID> lockdown get --key ProductVersion
+ios syslog                                     # 实时设备日志
 ios screenshot --output screenshot.png
+ios tunnel start --userspace                   # iOS 17+ CoreDevice 隧道
 ```
 
-查看命令组：
+需要选择设备且省略 `-u/--udid` 时，CLI 会使用 `ios list` 返回的第一台设备。
+传入 `-u <UDID>` 或设置 `IOS_UDID` 可锁定某台设备。大多数命令默认输出 JSON，
+便于脚本解析；传 `--no-json` 可获得人类友好的表格输出。
+
+查看每个命令组：
 
 ```sh
-ios file --help
+ios --help
 ios apps --help
-ios diagnostics --help
-ios tunnel --help
+ios file --help
 ios instruments --help
+ios tunnel --help
 ios prepare --help
 ```
 
-## 常见 CLI 工作流
+## 能力矩阵
 
-| 工作流 | 代表命令 |
-| --- | --- |
-| 发现与配对 | `list`, `listen`, `discover`, `pair`, `lockdown` |
-| 设备信息与设置 | `info`, `diskspace`, `mobilegestalt`, `batterycheck`, `batteryregistry`, `activation`, `amfi` |
-| 文件与容器 | `file`, `file --app`, `file --coredevice`, `crash`, `file-relay` |
-| 应用与测试 | `apps list/install/uninstall/launch/kill`, `runtest`, `runwda`, `wda` |
-| 日志与诊断 | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap` |
-| 开发者服务 | `ddi`, `instruments`, `debugserver`, `debug`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
-| iOS 17+ 传输 | `tunnel start`, `tunnel serve`, `tunnel list`, `rsd services`, `rsd check`, `forward` |
-| 管理与监督 | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
+CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列出了 [go-ios] 与
+[pymobiledevice3] 的近似命令族，便于熟悉这两个项目的用户做对照。
 
-按任务组织的示例见 [docs/usage.md](docs/usage.md)。与 go-ios /
-pymobiledevice3 的命令族对照见 [docs/cli-map.md](docs/cli-map.md)。
+| 领域                    | `ios` 命令                                                                                  | go-ios / pymobiledevice3 对照                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 发现与配对              | `list`, `listen`, `discover`, `pair`, `lockdown`                                            | go-ios `list`/`listen`/`pair`；pmd3 `usbmux`/`lockdown`/`bonjour`           |
+| 设备信息与设置          | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi` | go-ios `info`/`mobilegestalt`；pmd3 `lockdown`/`amfi`/`activation`         |
+| 文件与容器              | `file`（AFC、应用、CoreDevice）、`crash`、`file-relay`                                       | go-ios `fsync`/`crash`；pmd3 `afc`/`crash`                                  |
+| 应用与 UI 测试          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                           | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`；pmd3 `apps`/dvt        |
+| 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                       | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`    |
+| 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
+| iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
+| 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`；pmd3 `profile`/`provision`/`restore` |
+| 备份、定位与屏幕        | `backup`, `location`, `screenshot`, `notify`                                                | go-ios / pmd3 `backup`/`location`/`screenshot`                              |
 
-## CoreDevice、RSD 与 fileservice 说明
+按任务组织的示例见 [`docs/usage.md`](docs/usage.md)；与 go-ios / pmd3 命令族
+的并排对照见 [`docs/cli-map.md`](docs/cli-map.md)。
 
-iOS 17+ 能力取决于设备实际暴露的服务面。设备可能 USB、lockdown、tunnel、RSD、AFC 和 InstallationProxy 都正常，但仍然不暴露某个具体 CoreDevice 服务。
+## CoreDevice / iOS 17+ 隧道
 
-例如 CoreDevice fileservice 使用：
+iOS 17+ 工作流通过 CoreDevice 隧道与每台设备的 RSD 服务目录路由。能否使用某项
+具体功能取决于设备暴露的服务面，而不是仅看 iOS 版本。
 
-- `com.apple.coredevice.fileservice.control`
-- `com.apple.coredevice.fileservice.data`
+```sh
+# 启动单个隧道（默认 = 用户态模式）
+ios tunnel start --userspace
 
-排查前先检查服务是否存在：
+# 运行本地隧道管理器 HTTP 服务（go-ios 兼容 JSON 字段）
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151
+```
+
+用户态隧道暴露一个本地 TCP 代理：客户端连接代理后，先发送 16 字节 IPv6 地址，
+再发送 4 字节小端序端口号，然后开始转发数据。内核 TUN 模式也可用，但通常需要
+管理员/root 权限。
+
+在判断是否为实现 bug 之前，先确认设备实际暴露了哪些服务：
 
 ```sh
 ios rsd services --all
@@ -118,36 +151,28 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
-如果 RSD 不暴露 fileservice control/data，CLI 应报告清晰的缺失服务错误。这与当前参考工具行为一致，而不是回退到另一个服务名。
+如果设备未暴露所需 CoreDevice 服务（例如 fileservice 的 control/data 对），CLI
+会报告清晰的缺失服务错误，而不是回退到别的服务名。完整的隧道生命周期见
+[`docs/tunnel.md`](docs/tunnel.md)。
 
-## 隧道
+## Rust 库用法
 
-启动单个 CoreDevice 隧道：
-
-```sh
-ios tunnel start --userspace
-```
-
-运行给集成工具使用的本地隧道管理器：
-
-```sh
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
-```
-
-建议优先使用用户态模式。它暴露一个本地 TCP 代理：客户端代理流量前需要先发送 16 字节 IPv6 地址，再发送 4 字节小端序端口号。内核 TUN 模式也可用，但可能需要管理员/root 权限。
-
-详情见 [docs/tunnel.md](docs/tunnel.md)。
-
-## Rust API
-
-`ios-core` 默认不启用具体服务 feature。请只启用工具实际需要的服务：
+`ios-core` **默认不启用任何具体服务 feature**。请按需启用，或使用分组 feature：
 
 ```toml
 [dependencies]
 ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
 ```
 
-需要更宽能力面时可使用分组 feature：`classic`、`developer`、`management`、`ios17` 或 `full`。CLI 使用 `full`；库用户通常不建议这么宽。
+| 分组         | 包含内容                                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------------------- |
+| `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
+| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+
+CLI 使用 `full`；库消费者通常应选择更窄的子集。
 
 ```rust
 use ios_core::{ConnectOptions, list_devices};
@@ -160,10 +185,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let connected = ios_core::connect(&device.udid, ConnectOptions {
-        skip_tunnel: true,
-        ..Default::default()
-    }).await?;
+    let connected = ios_core::connect(
+        &device.udid,
+        ConnectOptions { skip_tunnel: true, ..Default::default() },
+    )
+    .await?;
 
     let version = connected.product_version().await?;
     println!("{} runs iOS {}", connected.info.udid, version);
@@ -171,24 +197,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Feature 细节见 [docs/features.md](docs/features.md)，架构说明见 [docs/architecture.md](docs/architecture.md)。
+需要更底层的访问时，可使用 crate 根部重新导出的模块，例如 `ios_core::mux`、
+`ios_core::lockdown`、`ios_core::xpc`，以及对应 feature 启用后的服务模块
+`ios_core::afc`、`ios_core::apps`、`ios_core::syslog` 等。
 
 ## Python 绑定
-
-安装 Python 包：
 
 ```sh
 pip install rust-ios-device-tunnel
 ```
 
-从当前 checkout 构建本地模块：
+或在本地 checkout 中构建：
 
 ```sh
 cd crates/ios-py
 uvx maturin develop
 ```
-
-示例：
 
 ```python
 import ios_rs
@@ -198,73 +222,119 @@ tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():
-    # asyncio.open_connection() calls to the device tunnel address are routed
-    # through the userspace proxy while this context is active.
-    pass
+    # asyncio.open_connection() 在 with 作用域内会自动通过本地用户态代理
+    # 路由到设备隧道地址。
+    ...
 
 tunnel.close()
 ```
 
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` 展示了如何让
-pymobiledevice3 RemoteXPC 代码跑在 Rust 用户态隧道之上。
+pymobiledevice3 的 RemoteXPC 代码跑在 Rust 用户态隧道之上。
 
 ## C FFI
 
-构建 C 兼容库和头文件：
+构建 C 兼容库与头文件：
 
 ```sh
 cargo build --release -p ios-ffi
 ```
 
-FFI crate 为不能直接调用 Rust API 的消费者暴露设备列表、配对/服务访问和隧道生命周期函数。
+输出包括 `libios_ffi.{so,dylib,a}`（Windows 上是 `ios_ffi.dll` + `.lib`）以及
+`crates/ios-ffi/include/ios_rs.h`。FFI 表面覆盖设备列表、lockdown 查询、
+配对/服务访问与隧道生命周期。每个发布版本都为支持的 target 附带预编译归档。
 
-## 示例
+## 从源码构建
 
-CLI crate 包含 Rust 示例：
+### 环境要求
 
-```sh
-cargo run -p ios-cli --example device_info -- <UDID>
-cargo run -p ios-cli --example app_list -- <UDID>
-cargo run -p ios-cli --example file_transfer -- <UDID>
-cargo run -p ios-cli --example screenshot -- <UDID>
-cargo run -p ios-cli --example syslog_stream -- <UDID>
-cargo run -p ios-cli --example instruments_cpu -- <UDID>
-```
+- Rust **1.80+**（工作区 MSRV）。
+- 主机 usbmux 支持：
+  - **macOS** —— 通常 Xcode/Finder 提供的 Apple 设备支持已经够用。
+  - **Linux** —— 需要运行 `usbmuxd`，并配置 udev 权限。
+  - **Windows** —— 通过 iTunes 或 Apple Devices 安装 Apple Mobile Device Support。
+- Linux 需要 OpenSSL 开发文件（`libssl-dev`、`pkg-config`）。
+- Windows 通过 vcpkg 静态链接 OpenSSL（`x64-windows-static-md`），需要设置
+  `VCPKG_ROOT`、`VCPKGRS_TRIPLET`、`OPENSSL_STATIC=1`。
+- 仅在构建 `ios-py` 时需要 Python 3.9+ 和 `maturin`。
 
-不同示例的参数可能不同；如果示例需要路径或 app identifier，请阅读源码或命令输出。
-
-## 安全和限制
-
-- 这不是 Apple 支持的 SDK，也不能替代 Xcode、Finder、Apple Configurator 或官方 MDM 工具。
-- 并非每个命令都在所有 iOS 版本和主机系统上验证过。
-- 部分服务需要开发者模式、已挂载的开发者磁盘镜像、监督模式、已安装测试 bundle 或应用特定 entitlement。
-- `erase`、`restore`、`prepare`、`httpproxy`、`location`、`preboard`、描述文件管理和 backup restore 路径可能修改设备状态。请优先使用测试设备，并先阅读 `--help`。
-- 配对记录和监督证书属于敏感凭据。不要提交到仓库，也不要写入日志。
-
-## 故障排查
-
-- 设备不可见：解锁设备、信任主机、重新连接 USB，并确认 usbmuxd 或 Apple Mobile Device Support 正常。
-- 配对失败：只有在理解影响时才删除旧配对记录，然后从已解锁设备重新配对。
-- 隧道失败：确认设备暴露所需 CoreDevice tunnel/RSD 服务；适合时回退到经典 lockdown/usbmux 服务。
-- CoreDevice fileservice 失败：先检查 RSD 是否包含 control/data 服务名，再判断是否是实现问题。
-- 内核隧道失败：改用用户态模式，或使用创建 TUN 接口所需的权限运行。
-- 开发者服务失败：按需启用开发者模式，并在服务需要时挂载兼容的开发者磁盘镜像。
-
-更多细节见 [docs/troubleshooting.md](docs/troubleshooting.md)。
-
-## 贡献
-
-欢迎贡献。开发环境、测试、格式化、lint 和 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-常用检查：
+### 常用命令
 
 ```sh
+# 工作区构建（排除 ios-py，它需要 maturin）
 cargo build --workspace --exclude ios-py
+
+# 发布版 CLI 二进制
+cargo build --release -p ios-cli
+
+# 测试
 cargo test --workspace --exclude ios-core --exclude ios-py
 cargo test -p ios-core --all-features
+
+# Lint / 格式
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+从 checkout 直接运行 CLI：
+
+```sh
+cargo run -p ios-cli -- list
+cargo run -p ios-cli -- --help
+```
+
+## 示例
+
+CLI crate 包含可运行的 Rust 示例：
+
+```sh
+cargo run -p ios-cli --example device_info     -- <UDID>
+cargo run -p ios-cli --example app_list        -- <UDID>
+cargo run -p ios-cli --example file_transfer   -- <UDID>
+cargo run -p ios-cli --example screenshot      -- <UDID>
+cargo run -p ios-cli --example syslog_stream   -- <UDID>
+cargo run -p ios-cli --example instruments_cpu -- <UDID>
+cargo run -p ios-cli --example afc_debug       -- <UDID>
+```
+
+部分示例需要额外参数（路径、bundle ID 等），请先看源码或加 `--help`。
+
+## 故障排查
+
+- **设备不可见** —— 解锁设备、信任主机、重新插拔 USB，并确认 usbmuxd / Apple
+  Mobile Device Support 在运行。
+- **配对失败** —— 在确认影响后再删除旧的 pair record，然后从已解锁的设备重新
+  配对。
+- **旧设备隧道失败** —— 设备可能未暴露 CoreDevice tunnel/RSD；回退到 lockdown /
+  usbmux 服务路径。
+- **内核隧道失败** —— 改用用户态模式，或以创建 TUN 接口所需的权限运行。
+- **开发者服务失败** —— 启用 Developer Mode，并按需挂载兼容的开发者磁盘镜像
+  （`ios ddi`）。
+- **CoreDevice fileservice 不可用** —— 用 `ios rsd services --all` 确认
+  `com.apple.coredevice.fileservice.control` 与 `.data` 是否在列。缺失是设备侧
+  服务面问题，而不是客户端 bug。
+
+更多内容见 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
+
+## 安全与限制
+
+- 这**不是 Apple 官方支持的 SDK**，不能替代 Xcode、Finder、Apple Configurator
+  或官方 MDM 工具。
+- 并非每个命令都在所有 iOS 版本、主机系统或配对状态下验证过；部分高级命令应
+  视为协议实验。
+- 修改设备状态的命令——`erase`、`restore`、`prepare`、`httpproxy`、`location`、
+  `preboard`、描述文件安装/删除、备份恢复——都可能造成破坏。请先看 `--help`，
+  优先在测试设备上使用。
+- pair record 与监督证书是敏感凭据。请勿提交到仓库或写入共享日志。
+
+## 贡献
+
+欢迎贡献。开发环境配置、测试要求与 PR 指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Bug 报告与功能请求模板位于 [`.github/ISSUE_TEMPLATE`](.github/ISSUE_TEMPLATE)。
+
+## 安全报告
+
+请通过私有渠道报告漏洞。详见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证
 
@@ -277,7 +347,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 本项目受到更广泛的 iOS 设备工具生态启发，尤其是：
 
-- [go-ios](https://github.com/danielpaulus/go-ios.git)
-- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3.git)
+- [go-ios](https://github.com/danielpaulus/go-ios)
+- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3)
 
-兼容性仅在本仓库代码和测试支持的范围内实现。
+兼容性仅在本仓库代码与测试支持的范围内实现。
+
+[go-ios]: https://github.com/danielpaulus/go-ios
+[pymobiledevice3]: https://github.com/doronz88/pymobiledevice3
+

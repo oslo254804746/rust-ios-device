@@ -1,38 +1,75 @@
 # ios-cli
 
-Command-line tool for iOS device management, tunneling, and service interaction.
+Cross-platform command-line tool for iOS device management, tunneling, and
+service interaction. The published binary name is `ios`.
 
-This is a binary crate in the [`rust-ios-device`](https://github.com/oslo254804746/rust-ios-device) workspace.
+This is the binary crate in the
+[`rust-ios-device`](https://github.com/oslo254804746/rust-ios-device)
+workspace.
 
 ## Highlights
 
-- Lists devices, pairs with devices, starts tunnels, and runs service commands.
-- Wraps the rust-ios-device workspace libraries in an end-user CLI named `ios`.
-- Useful for diagnostics, development workflows, and automation around attached iOS devices.
-- Covers common task families from go-ios and pymobiledevice3, including AFC
-  file access, app management, syslog, pcap, crash reports, Developer Disk Image
-  mounting, Instruments/DTX, WebInspector, CoreDevice tunnels, RSD, profiles,
-  provisioning profiles, restore helpers, and supervision workflows.
+- 54+ subcommands covering device discovery, pairing, files, apps,
+  diagnostics, instruments, debugging, profiles, restore, supervision, and
+  CoreDevice tunneling.
+- Default JSON output for scripting; pass `--no-json` for human-readable
+  tables where supported.
+- iOS 17+ CoreDevice tunnel manager (`ios tunnel serve`) with go-ios-compatible
+  fields (`tunnel-address`, `tunnel-port`, `userspace-port`).
+- Built on `ios-core` with the `full` feature set.
 
 ## Install
 
+From crates.io:
+
 ```sh
-cargo install ios-cli
+cargo install ios-cli            # installs the `ios` binary
 ```
 
-## Example
+Pre-built binaries (`x86_64-linux`, `aarch64-linux`, `aarch64-apple-darwin`,
+`x86_64-windows-msvc`) are attached to each
+[GitHub Release](https://github.com/oslo254804746/rust-ios-device/releases)
+together with `.sha256` files.
+
+## Quick start
 
 ```sh
-cargo install ios-cli
 ios --help
-ios list
-ios info
-ios tunnel start --userspace
+ios list                                         # connected devices (USB + network)
+ios info                                         # default device summary
+ios -u <UDID> lockdown get --key ProductVersion
+ios syslog                                       # stream device logs
+ios screenshot --output screenshot.png
+ios tunnel start --userspace                     # iOS 17+ CoreDevice tunnel
 ```
 
-When a command targets a device and `-u/--udid` is omitted, the CLI uses the
-first device returned by `ios list`. Pass `-u <UDID>` or set `IOS_UDID` to
-choose a specific device.
+## Device selection
+
+Commands that target a device default to the first device returned by
+`ios list`. Override with one of:
+
+- `-u <UDID>` on the command line.
+- `IOS_UDID=<UDID>` environment variable.
+
+`ios list`, `ios listen`, and `ios discover` do not need a UDID.
+
+## Command groups
+
+| Area                     | Examples                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`                                          |
+| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation`, `amfi`                |
+| Files & containers       | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                      |
+| Apps & UI tests          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                         |
+| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                     |
+| Developer services       | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
+| iOS 17+ transport        | `tunnel`, `rsd`, `forward`, `dproxy`                                                      |
+| Management & supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
+| Backup, location, screen | `backup`, `location`, `screenshot`                                                        |
+
+For each command, `ios <command> --help` lists the exact subcommands and
+flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
+[docs/cli-map.md](https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md).
 
 ## Documentation
 
@@ -40,7 +77,10 @@ choose a specific device.
 - API docs: <https://docs.rs/ios-cli>
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>
 - CLI map: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md>
+- CoreDevice tunnel: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/tunnel.md>
+- Troubleshooting: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/troubleshooting.md>
 
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
+

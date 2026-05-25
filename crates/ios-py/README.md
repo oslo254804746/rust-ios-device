@@ -10,7 +10,15 @@ Built on top of [rust-ios-device](https://github.com/oslo254804746/rust-ios-devi
 pip install rust-ios-device-tunnel
 ```
 
-Requires Python 3.9+. Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Apple Silicon), and Windows (x86_64).
+Requires Python 3.9+. Pre-built abi3 wheels are published for:
+
+- Linux x86_64 (`x86_64-unknown-linux-gnu`)
+- Linux aarch64 (`aarch64-unknown-linux-gnu`)
+- macOS Apple Silicon (`aarch64-apple-darwin`)
+- Windows x86_64 (`x86_64-pc-windows-msvc`)
+
+A source distribution is also available for other targets via `pip install
+--no-binary rust-ios-device-tunnel rust-ios-device-tunnel`.
 
 ## Quick start
 
@@ -114,3 +122,4 @@ not capture a full sysdiagnose.
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
+
