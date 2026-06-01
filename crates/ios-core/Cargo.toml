@@ -110,6 +110,7 @@ prepare = ["afc", "mcinstall", "supervised-pair"]
 restore = []
 dproxy = ["dtx"]
 webinspector = []
+valeria = ["dep:nusb"]
 full = [
     "classic",
     "developer",
@@ -118,6 +119,7 @@ full = [
     "ostrace",
     "supervised-pair",
     "tunnel-kernel",
+    "valeria",
 ]
 
 [dependencies]
@@ -156,6 +158,7 @@ h2           = { workspace = true }
 http         = { workspace = true }
 smoltcp      = { workspace = true, optional = true }
 tun-rs       = { workspace = true, optional = true }
+nusb         = { workspace = true, optional = true }
 p256         = { workspace = true }
 sha2         = { workspace = true }
 hkdf         = { workspace = true }

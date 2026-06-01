@@ -176,6 +176,37 @@ sysdiagnose bundle.
 Use a test device for commands that restart the device, change state, or collect
 large streams.
 
+## Experimental screen recording
+
+`valeria record` uses the raw USB Valeria/QuickTime path to write video-only
+Annex-B H.264:
+
+```sh
+ios --udid <UDID> valeria record --output capture.h264 --duration 10
+ios --udid <UDID> valeria record --output capture.h264 --duration 10 --json
+```
+
+Decode or remux the output with:
+
+```sh
+ffplay -f h264 capture.h264
+ffmpeg -f h264 -i capture.h264 capture.mp4
+```
+
+This path is experimental and intentionally narrow in P0: video only, no audio,
+no playback controls, no transcoding, and no GUI streaming. It temporarily
+switches the device into Apple's hidden QuickTime USB configuration, so stop
+other tools that may hold the same USB interfaces and unplug/replug the device
+if the stream does not start cleanly.
+
+Host support is intentionally conservative while the raw USB backend is being
+validated. Linux with libusb-compatible access to the Apple USB device is the
+preferred validation path. On Windows, a device can appear in `ios list`,
+iTunes, or third-party tools while the Apple USBMux interface still rejects raw
+`nusb` access with Windows error 50; that stock Apple driver path is not treated
+as supported for Valeria P0. The current pymobiledevice3 Valeria PR uses a
+macOS CoreMediaIO backend rather than demonstrating a Windows raw USB path.
+
 ## Developer services
 
 ```sh

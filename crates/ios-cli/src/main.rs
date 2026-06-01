@@ -47,6 +47,8 @@ enum Commands {
     Lockdown(cmd::lockdown::LockdownCmd),
     /// Establish a CDTunnel to the device (iOS 17+ required)
     Tunnel(cmd::tunnel::TunnelCmd),
+    /// Experimental raw USB H.264 screen recording
+    Valeria(cmd::valeria::ValeriaCmd),
     /// Pair a new (untrusted) device via SRP
     Pair(cmd::pair::PairCmd),
     /// Inspect installed provisioning profiles
@@ -150,6 +152,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Listen(c) => Box::pin(async move { c.run(!no_json).await }),
         Commands::Lockdown(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Tunnel(c) => Box::pin(async move { c.run(udid).await }),
+        Commands::Valeria(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Pair(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Provisioning(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Profiles(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -199,7 +202,9 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
 
 fn command_needs_default_udid(command: &Commands) -> bool {
     match command {
-        Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) => false,
+        Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) | Commands::Valeria(_) => {
+            false
+        }
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
@@ -591,6 +596,12 @@ mod tests {
     fn parses_forward_command() {
         let parsed = Cli::try_parse_from(["ios", "forward", "1234", "62078", "--once"]);
         assert!(parsed.is_ok(), "forward command should parse");
+    }
+
+    #[test]
+    fn parses_valeria_record_command() {
+        let parsed = Cli::try_parse_from(["ios", "valeria", "record", "--duration", "1"]);
+        assert!(parsed.is_ok(), "valeria record command should parse");
     }
 
     #[test]

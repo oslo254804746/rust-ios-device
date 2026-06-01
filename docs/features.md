@@ -30,9 +30,9 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, `fetchsymbols`, and `valeria`.
 
-Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
+Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`, `valeria`.
 
 Some features add heavier optional dependencies only when enabled:
 
@@ -46,5 +46,6 @@ Some features add heavier optional dependencies only when enabled:
 | `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
 | `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |
 | `supervised-pair` | Supervised pairing/P12 signing helpers via `openssl`; implied by `prepare`. |
+| `valeria` | Experimental raw USB Valeria/QuickTime H.264 screen recording via `nusb`. |
 
 The `ios-cli` crate enables `ios-core/full` because the binary exposes many commands. Library users should prefer a narrower feature list.

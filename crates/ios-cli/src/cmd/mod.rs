@@ -50,5 +50,6 @@ pub mod springboard;
 pub mod symbols;
 pub mod syslog;
 pub mod tunnel;
+pub mod valeria;
 pub mod wda;
 pub mod webinspector;

@@ -44,6 +44,7 @@
 //! | `restore` | [`restore`] | Recovery/restore mode operations |
 //! | `dproxy` | [`dproxy`] | DTX debug proxy recording (requires `dtx`) |
 //! | `webinspector` | [`webinspector`] | Safari/WebView remote debugging |
+//! | `valeria` | [`valeria`] | Experimental raw USB H.264 screen recording |
 
 macro_rules! service_error {
     ($name:ident $(,)?) => {
@@ -202,7 +203,10 @@ pub mod webinspector;
 
 #[cfg(feature = "mobileactivation")]
 pub mod mobileactivation;
+
 pub mod simlocation;
+#[cfg(feature = "valeria")]
+pub mod valeria;
 
 #[cfg(feature = "imagemounter")]
 pub mod imagemounter;

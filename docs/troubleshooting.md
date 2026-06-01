@@ -29,6 +29,15 @@
 - Mount a compatible Developer Disk Image when a service depends on developer tooling.
 - Confirm that a test bundle, WebDriverAgent runner, app, or provisioning profile exists before running commands that refer to it.
 
+## Valeria recording fails
+
+- `ios valeria record` is experimental and records video only as raw Annex-B H.264.
+- Stop other tools that may hold the device USB interfaces, then unplug/replug the device and retry.
+- On Linux, ensure udev permissions allow access to the Apple USB device and that another process has not claimed the interface. This is the preferred host path for validating the raw USB backend.
+- On Windows, the stock Apple Mobile Device / Apple USBMux driver stack can expose the device to usbmux tools while still refusing raw `nusb` access. `failed to claim Apple USB interface ... Windows error 50` means the current Windows raw USB backend cannot open that interface on this host; use a Linux/libusb-compatible host or a driver stack that permits raw USB access.
+- On macOS, Apple services may already own the interface. Close screen mirroring, QuickTime, Xcode device windows, and other device tools before retrying.
+- If recording succeeds but the file does not play, verify the file starts with `00 00 00 01` and decode it with `ffplay -f h264 capture.h264`.
+
 ## Build fails on Linux
 
 Install OpenSSL headers and `pkg-config`:

@@ -73,6 +73,7 @@ time         = { version = "0.3", features = ["parsing", "local-offset"] }
 tokio-openssl = "0.6"
 tracing-subscriber = "0.3"
 tun-rs       = { version = "2", features = ["async"] }
+nusb         = "0.2.3"
 zip          = { version = "2", default-features = false, features = ["deflate"] }
 crc32fast    = "1"
 libc         = "0.2"

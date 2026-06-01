@@ -174,6 +174,8 @@ pub use services::springboard;
 pub use services::syslog;
 #[cfg(feature = "testmanager")]
 pub use services::testmanager;
+#[cfg(feature = "valeria")]
+pub use services::valeria;
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
