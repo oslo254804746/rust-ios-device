@@ -64,6 +64,9 @@ ios17 = [
     "mdns",
     "tunnel-userspace",
 ]
+coredevice-base = ["tunnel-userspace", "mdns"]
+coredevice-files = ["coredevice-base", "fileservice"]
+coredevice-info = ["coredevice-base", "deviceinfo"]
 mdns = ["dep:mdns-sd"]
 tunnel = ["dep:openssl", "dep:tokio-openssl"]
 tunnel-kernel = ["tunnel", "dep:tun-rs"]

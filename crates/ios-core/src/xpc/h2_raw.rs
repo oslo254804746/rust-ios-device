@@ -178,11 +178,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Read data from the serverClient stream (device → client).
     /// Blocks until `n` bytes are available.
+    #[cfg(feature = "tunnel")]
     pub async fn read_server_client(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_SERVER_CLIENT, n).await
     }
 
     /// Read data from the clientServer stream (client ← device, used for ack).
+    #[cfg(feature = "tunnel")]
     pub async fn read_client_server(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_CLIENT_SERVER, n).await
     }

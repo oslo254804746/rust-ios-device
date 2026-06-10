@@ -136,9 +136,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         #[cfg(not(feature = "supervised-pair"))]
         {
             let _ = (payload, p12_bytes, password);
-            return Err(McInstallError::Crypto(
+            Err(McInstallError::Crypto(
                 "silent profile installation requires ios-core feature 'supervised-pair'".into(),
-            ));
+            ))
         }
 
         #[cfg(feature = "supervised-pair")]

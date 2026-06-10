@@ -92,7 +92,7 @@ macro_rules! service_error {
 
 pub mod backup2;
 #[cfg(any(
-    feature = "apps",
+    all(feature = "apps", feature = "tunnel"),
     feature = "deviceinfo",
     feature = "diagnosticsservice",
     feature = "fileservice"

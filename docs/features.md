@@ -23,6 +23,9 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 | `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, and related developer workflows. |
 | `management` | Device management, supervision/preparation, restore, power assertion, and companion-device helpers. |
 | `ios17` | CoreDevice/RSD-oriented services and tunnel workflows used primarily by iOS 17+ devices. |
+| `coredevice-base` | Minimal CoreDevice transport support: userspace tunnel plus mDNS discovery. |
+| `coredevice-files` | CoreDevice fileservice plus the base CoreDevice transport support. |
+| `coredevice-info` | CoreDevice deviceinfo plus the base CoreDevice transport support. |
 | `full` | Everything exposed by `ios-core`; intended for the CLI and integration testing. |
 
 ## Service features

@@ -337,11 +337,13 @@ pub fn decode_message(mut buf: Bytes) -> Result<XpcMessage, XpcError> {
 }
 
 /// Incrementally reassembles complete XPC messages from DATA frame payloads.
+#[cfg(any(feature = "restore", feature = "fetchsymbols", test))]
 #[derive(Debug, Default)]
 pub(crate) struct XpcMessageBuffer {
     pending: BytesMut,
 }
 
+#[cfg(any(feature = "restore", feature = "fetchsymbols", test))]
 impl XpcMessageBuffer {
     pub(crate) fn new() -> Self {
         Self {

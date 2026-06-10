@@ -7,6 +7,7 @@ pub mod backup;
 pub mod batterycheck;
 pub mod batteryregistry;
 pub mod companion;
+pub mod connect;
 pub mod crash;
 pub mod ddi;
 pub mod debug;

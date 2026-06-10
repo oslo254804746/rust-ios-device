@@ -24,7 +24,10 @@
 //! RSD while omitting a specific feature service such as fileservice.
 //!
 //! Internal transport modules are not part of the public API. Use top-level
-//! re-exports for supported types:
+//! re-exports for supported types. Low-level transport/client re-exports, such as
+//! [`MuxClient`], are advanced interfaces intended for tooling and diagnostics;
+//! prefer the high-level device and service APIs unless you need protocol-level
+//! control.
 //!
 //! ```
 //! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
