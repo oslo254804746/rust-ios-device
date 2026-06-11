@@ -11,9 +11,13 @@ use std::path::{Path, PathBuf};
 
 use super::protocol::ImageMounterError;
 
-const DDI_PERSONALIZED_URL: &str = "https://deviceboxhq.com/ddi-15F31d.zip";
+pub const LATEST_PERSONALIZED_DDI_BUILD_ID: &str = "27A5194q";
 const DDI_GITHUB_RELEASES: &str =
     "https://github.com/mspvirajpatel/Xcode_Developer_Disk_Images/releases/download";
+
+fn personalized_ddi_url() -> String {
+    format!("https://deviceboxhq.com/ddi-{LATEST_PERSONALIZED_DDI_BUILD_ID}.zip")
+}
 
 /// DDI downloader with local caching.
 pub struct DdiDownloader {
@@ -120,7 +124,10 @@ impl DdiDownloader {
 
     /// Download a personalized DDI for iOS 17+.
     pub async fn download_personalized(&self) -> Result<PersonalizedDdi, ImageMounterError> {
-        let dir = self.cache_dir.join("personalized");
+        let dir = self
+            .cache_dir
+            .join("personalized")
+            .join(LATEST_PERSONALIZED_DDI_BUILD_ID);
 
         // Check cache
         let img_path = dir.join("Restore").join("PersonalizedDMG.dmg");
@@ -129,14 +136,16 @@ impl DdiDownloader {
 
         if img_path.exists() && tc_path.exists() && bm_path.exists() {
             tracing::info!("Using cached personalized DDI from {}", dir.display());
-            return load_personalized_from_dir(&dir).await;
+            let ddi = load_personalized_from_dir(&dir).await?;
+            validate_personalized_build_id(&ddi.build_manifest)?;
+            return Ok(ddi);
         }
 
         // Download zip
         eprintln!("Downloading personalized DDI...");
         let client = build_client()?;
         let resp = client
-            .get(DDI_PERSONALIZED_URL)
+            .get(personalized_ddi_url())
             .send()
             .await
             .map_err(|e| ImageMounterError::Download(format!("fetch DDI zip: {e}")))?;
@@ -166,8 +175,29 @@ impl DdiDownloader {
         .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
         let _ = tokio::fs::remove_file(&zip_path).await;
 
-        load_personalized_from_dir(&dir).await
+        let ddi = load_personalized_from_dir(&dir).await?;
+        validate_personalized_build_id(&ddi.build_manifest)?;
+        Ok(ddi)
     }
+}
+
+fn validate_personalized_build_id(build_manifest: &[u8]) -> Result<(), ImageMounterError> {
+    let manifest: plist::Value = plist::from_bytes(build_manifest)?;
+    let build_id = manifest
+        .as_dictionary()
+        .and_then(|dict| dict.get("ProductBuildVersion"))
+        .and_then(plist::Value::as_string)
+        .ok_or_else(|| {
+            ImageMounterError::Download(
+                "personalized DDI BuildManifest missing ProductBuildVersion".into(),
+            )
+        })?;
+    if build_id != LATEST_PERSONALIZED_DDI_BUILD_ID {
+        return Err(ImageMounterError::Download(format!(
+            "personalized DDI build {build_id} does not match expected {LATEST_PERSONALIZED_DDI_BUILD_ID}"
+        )));
+    }
+    Ok(())
 }
 
 async fn download_response_to_file(
@@ -359,6 +389,15 @@ fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), I
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn latest_personalized_ddi_build_tracks_reference() {
+        assert_eq!(LATEST_PERSONALIZED_DDI_BUILD_ID, "27A5194q");
+        assert!(
+            personalized_ddi_url().contains(LATEST_PERSONALIZED_DDI_BUILD_ID),
+            "personalized DDI URL should include latest build id"
+        );
+    }
 
     fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut bytes = Vec::new();

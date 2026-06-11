@@ -4,6 +4,7 @@
 //! Reference: pymobiledevice3 `dtfetchsymbols.py`
 
 use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -131,7 +132,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         let file = files.get(index as usize).ok_or_else(|| {
             FetchSymbolsError::Protocol(format!("symbol index {index} out of range"))
         })?;
+        self.download_known(index, file, &mut writer, max_bytes)
+            .await
+    }
 
+    pub async fn download_known<W: Write>(
+        &mut self,
+        index: u32,
+        file: &RemoteSymbolFile,
+        mut writer: W,
+        max_bytes: Option<u64>,
+    ) -> Result<u64, FetchSymbolsError> {
         let stream_id = (index + 1) * 2;
         self.framer
             .write_stream(
@@ -352,6 +363,26 @@ fn as_u64(value: &crate::xpc::XpcValue) -> Option<u64> {
     }
 }
 
+pub fn remote_symbol_output_path(root: &Path, remote_path: &str) -> PathBuf {
+    let relative = sanitize_remote_symbol_path(remote_path);
+    root.join(relative)
+}
+
+fn sanitize_remote_symbol_path(remote_path: &str) -> PathBuf {
+    let normalized = remote_path.replace('\\', "/");
+    let mut out = PathBuf::new();
+    for component in Path::new(&normalized).components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir
+            | Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
 async fn bootstrap_remote_xpc<S>(
     framer: &mut crate::xpc::h2_raw::H2Framer<S>,
 ) -> Result<(), FetchSymbolsError>
@@ -415,4 +446,28 @@ where
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn remote_symbol_output_path_trims_root_prefix_and_rejects_traversal() {
+        let root = Path::new("/tmp/Symbols");
+        assert_eq!(
+            remote_symbol_output_path(root, "/System/Library/Foo").to_string_lossy(),
+            "/tmp/Symbols/System/Library/Foo"
+        );
+        assert_eq!(
+            remote_symbol_output_path(root, "/System/../Library/Foo").to_string_lossy(),
+            "/tmp/Symbols/System/Library/Foo"
+        );
+        assert_eq!(
+            remote_symbol_output_path(root, "../private/var").to_string_lossy(),
+            "/tmp/Symbols/private/var"
+        );
+    }
 }

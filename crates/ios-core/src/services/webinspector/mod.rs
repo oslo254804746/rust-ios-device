@@ -18,6 +18,8 @@ service_error!(
     between {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Web Inspector is not enabled on the device")]
+    Disabled,
     },
     after {
     #[error("timed out waiting for webinspector response after {0:?}")]
@@ -274,12 +276,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     }
 
     pub async fn start(&mut self, timeout_duration: Duration) -> Result<(), WebInspectorError> {
-        self.report_identifier().await?;
+        self.report_identifier()
+            .await
+            .map_err(map_handshake_disabled_error)?;
         let deadline = Instant::now() + timeout_duration;
         loop {
             let event = self
                 .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await?;
+                .await
+                .map_err(map_handshake_disabled_error)?;
             if matches!(event, WebInspectorEvent::CurrentState { .. }) {
                 return Ok(());
             }
@@ -1782,6 +1787,23 @@ fn remaining_time(deadline: Instant, fallback: Duration) -> Result<Duration, Web
     Ok(deadline.duration_since(now))
 }
 
+fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
+    match &error {
+        WebInspectorError::Io(io_error)
+            if matches!(
+                io_error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+            ) =>
+        {
+            WebInspectorError::Disabled
+        }
+        WebInspectorError::Timeout(_) => WebInspectorError::Disabled,
+        _ => error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
@@ -2243,5 +2265,11 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(session.target_id(), Some("target-2"));
+    }
+
+    #[test]
+    fn disabled_error_renders_clear_action() {
+        let message = WebInspectorError::Disabled.to_string();
+        assert!(message.contains("Web Inspector is not enabled"));
     }
 }

@@ -21,6 +21,8 @@ enum SymbolsSub {
         #[arg(long, help = "Maximum number of bytes to copy for probing")]
         max_bytes: Option<u64>,
     },
+    /// Download all symbol files into a directory
+    Download { output_dir: PathBuf },
 }
 
 impl SymbolsCmd {
@@ -70,6 +72,31 @@ impl SymbolsCmd {
                 let bytes = client.download(index, file, max_bytes).await?;
                 render_pull(index, &output, bytes, max_bytes.is_some(), json)
             }
+            SymbolsSub::Download { output_dir } => {
+                std::fs::create_dir_all(&output_dir)
+                    .with_context(|| format!("failed to create {}", output_dir.display()))?;
+                let files = client.list_files().await?;
+                let mut downloaded = std::collections::HashSet::<PathBuf>::new();
+                let mut total = 0u64;
+                for (index, remote_path) in files.iter().enumerate() {
+                    let output =
+                        ios_core::fetchsymbols::remote_symbol_output_path(&output_dir, remote_path);
+                    if downloaded.insert(output.clone()) {
+                        let _ = std::fs::remove_file(&output);
+                    }
+                    if let Some(parent) = output.parent() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("failed to create {}", parent.display()))?;
+                    }
+                    let file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&output)
+                        .with_context(|| format!("failed to open {}", output.display()))?;
+                    total += client.download(index as u32, file, None).await?;
+                }
+                render_download(&output_dir, files.len(), total, json)
+            }
         }
     }
 
@@ -108,6 +135,27 @@ impl SymbolsCmd {
                 let file = create_output(&output)?;
                 let bytes = client.download(index, file, max_bytes).await?;
                 render_pull(index, &output, bytes, max_bytes.is_some(), json)
+            }
+            SymbolsSub::Download { output_dir } => {
+                std::fs::create_dir_all(&output_dir)
+                    .with_context(|| format!("failed to create {}", output_dir.display()))?;
+                let files = client.list_files().await?;
+                let mut total = 0u64;
+                for (index, remote_file) in files.iter().enumerate() {
+                    let output = ios_core::fetchsymbols::remote_symbol_output_path(
+                        &output_dir,
+                        &remote_file.path,
+                    );
+                    if let Some(parent) = output.parent() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("failed to create {}", parent.display()))?;
+                    }
+                    let file = create_output(&output)?;
+                    total += client
+                        .download_known(index as u32, remote_file, file, None)
+                        .await?;
+                }
+                render_download(&output_dir, files.len(), total, json)
             }
         }
     }
@@ -154,6 +202,25 @@ fn render_pull(index: u32, output: &Path, bytes: u64, truncated: bool, json: boo
     Ok(())
 }
 
+fn render_download(output_dir: &Path, files: usize, bytes: u64, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "output_dir": output_dir.display().to_string(),
+                "files": files,
+                "bytes": bytes,
+            }))?
+        );
+    } else {
+        println!(
+            "Downloaded {files} symbol files ({bytes} bytes) to {}",
+            output_dir.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -183,5 +250,11 @@ mod tests {
             "1024",
         ]);
         assert!(parsed.is_ok(), "symbols pull should parse");
+    }
+
+    #[test]
+    fn parses_symbols_download_subcommand() {
+        let parsed = TestCli::try_parse_from(["symbols", "download", "ios-rs-tmp/Symbols"]);
+        assert!(parsed.is_ok(), "symbols download should parse");
     }
 }
