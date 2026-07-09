@@ -20,7 +20,7 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 | Feature | Purpose |
 | --- | --- |
 | `classic` | Common lockdown/usbmux services used across many iOS versions. |
-| `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, and related developer workflows. |
+| `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, Bluetooth packet logging, and related developer workflows. |
 | `management` | Device management, supervision/preparation, restore, power assertion, and companion-device helpers. |
 | `ios17` | CoreDevice/RSD-oriented services and tunnel workflows used primarily by iOS 17+ devices. |
 | `coredevice-base` | Minimal CoreDevice transport support: userspace tunnel plus mDNS discovery. |
@@ -30,7 +30,7 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 

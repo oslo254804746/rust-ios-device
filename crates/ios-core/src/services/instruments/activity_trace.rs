@@ -44,6 +44,7 @@ pub struct ActivityTraceDecoder {
     generation: u32,
     background: u32,
     tables: Vec<ActivityTraceTable>,
+    carry: Vec<u8>,
 }
 
 pub struct ActivityTraceClient<S> {
@@ -59,10 +60,26 @@ impl ActivityTraceDecoder {
             return Ok(vec![]);
         }
 
+        let message = if self.carry.is_empty() {
+            std::borrow::Cow::Borrowed(message)
+        } else {
+            let mut combined = std::mem::take(&mut self.carry);
+            combined.extend_from_slice(message);
+            std::borrow::Cow::Owned(combined)
+        };
+        let message = message.as_ref();
         let mut entries = Vec::new();
         let mut cursor = 0usize;
-        while cursor + 2 <= message.len() {
-            let word = read_word(message, &mut cursor)?;
+        while cursor < message.len() {
+            let opcode_start = cursor;
+            let word = match read_word(message, &mut cursor) {
+                Ok(word) => word,
+                Err(err) if is_incomplete_activity_trace_opcode(&err) => {
+                    self.carry.extend_from_slice(&message[opcode_start..]);
+                    break;
+                }
+                Err(err) => return Err(err),
+            };
             let opcode = word >> 8;
             let result = match opcode {
                 CMD_TABLE_RESET => {
@@ -95,10 +112,17 @@ impl ActivityTraceDecoder {
                     None
                 }
                 CMD_CONVERT_MACH_CONTINUOUS => None,
-                _ => {
-                    self.stack.push(handle_push(message, &mut cursor, word)?);
-                    None
-                }
+                _ => match handle_push(message, &mut cursor, word) {
+                    Ok(value) => {
+                        self.stack.push(value);
+                        None
+                    }
+                    Err(err) if is_incomplete_activity_trace_opcode(&err) => {
+                        self.carry.extend_from_slice(&message[opcode_start..]);
+                        break;
+                    }
+                    Err(err) => return Err(err),
+                },
             };
 
             if let Some(entry) = result {
@@ -289,6 +313,14 @@ impl ActivityTraceDecoder {
         }
         Ok(self.stack.split_off(self.stack.len() - count))
     }
+}
+
+fn is_incomplete_activity_trace_opcode(error: &DtxError) -> bool {
+    matches!(
+        error,
+        DtxError::Protocol(message)
+            if message == "activity trace message ended mid-word"
+    )
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> ActivityTraceClient<S> {
@@ -626,6 +658,22 @@ mod tests {
         assert_eq!(entry.message_type, "info");
         assert_eq!(entry.sender_image_path, "app");
         assert_eq!(entry.rendered_message, "hello");
+    }
+
+    #[test]
+    fn carries_opcode_split_across_dtx_frames() {
+        let mut decoder = ActivityTraceDecoder::default();
+        let payload = build_trace_message();
+        let split = payload.len() - 1;
+
+        let first = decoder.decode_message(&payload[..split]).unwrap();
+        assert!(first.is_empty());
+        assert_eq!(decoder.carry, payload[split - 1..split]);
+
+        let second = decoder.decode_message(&payload[split..]).unwrap();
+        assert_eq!(second.len(), 1);
+        assert!(decoder.carry.is_empty());
+        assert_eq!(second[0].rendered_message, "hello");
     }
 
     fn build_trace_message() -> Vec<u8> {

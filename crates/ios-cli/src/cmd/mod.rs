@@ -6,6 +6,7 @@ pub mod arbitration;
 pub mod backup;
 pub mod batterycheck;
 pub mod batteryregistry;
+pub mod btlogger;
 pub mod companion;
 pub mod connect;
 pub mod crash;

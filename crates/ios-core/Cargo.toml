@@ -33,6 +33,7 @@ classic = [
 developer = [
     "accessibility_audit",
     "amfi",
+    "btlogger",
     "debugserver",
     "dproxy",
     "dtx",
@@ -92,6 +93,7 @@ syslog = []
 screenshot = []
 misagent = []
 amfi = []
+btlogger = []
 dtx = ["lz4_flex"]
 instruments = ["dtx"]
 testmanager = ["dtx"]

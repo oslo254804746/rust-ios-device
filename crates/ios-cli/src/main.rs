@@ -59,6 +59,8 @@ enum Commands {
     Apps(cmd::apps::AppsCmd),
     /// MobileBackup2 service helpers
     Backup(cmd::backup::BackupCmd),
+    /// Capture Bluetooth HCI traffic via BTPacketLogger
+    Btlogger(cmd::btlogger::BtLoggerCmd),
     /// Read battery status via lockdown
     Batterycheck(cmd::batterycheck::BatterycheckCmd),
     /// Read detailed battery IORegistry values via diagnostics relay
@@ -156,6 +158,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Rsd(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Apps(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Backup(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Btlogger(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Batterycheck(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Batteryregistry(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Companion(c) => Box::pin(async move { c.run(udid, !no_json).await }),

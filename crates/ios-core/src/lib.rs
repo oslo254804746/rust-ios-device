@@ -116,6 +116,8 @@ pub use services::amfi;
 pub use services::apps;
 #[cfg(feature = "arbitration")]
 pub use services::arbitration;
+#[cfg(feature = "btlogger")]
+pub use services::bt_packet_logger;
 #[cfg(feature = "companion")]
 pub use services::companion;
 #[cfg(feature = "crashreport")]

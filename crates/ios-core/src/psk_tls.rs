@@ -11,6 +11,10 @@ pub enum PskTlsError {
     Io(#[from] std::io::Error),
     #[error("OpenSSL error: {0}")]
     Openssl(#[from] ErrorStack),
+    #[error(
+        "OpenSSL backend cannot select PSK ciphers required for the CoreDevice TCP tunnel; use an OpenSSL build with PSK cipher support: {0}"
+    )]
+    PskCipherUnsupported(ErrorStack),
     #[error("OpenSSL handshake error: {0}")]
     OpensslHandshake(#[from] Error),
 }
@@ -40,12 +44,14 @@ pub async fn connect_psk_tls(
     connect_psk_tls_stream(host, tcp, psk).await
 }
 
-fn build_psk_client_context(psk: &[u8]) -> Result<SslContext, ErrorStack> {
+fn build_psk_client_context(psk: &[u8]) -> Result<SslContext, PskTlsError> {
     let mut builder = SslContext::builder(SslMethod::tls_client())?;
     builder.set_verify(SslVerifyMode::NONE);
     builder.set_min_proto_version(Some(SslVersion::TLS1_2))?;
     builder.set_max_proto_version(Some(SslVersion::TLS1_2))?;
-    builder.set_cipher_list("PSK")?;
+    builder
+        .set_cipher_list("PSK")
+        .map_err(PskTlsError::PskCipherUnsupported)?;
 
     let psk = psk.to_vec();
     builder.set_psk_client_callback(move |_ssl, _hint, identity, psk_buf| {

@@ -25,6 +25,7 @@
 //! | `screenshot` | [`screenshot`] | Screen capture / MJPEG stream |
 //! | `misagent` | [`misagent`] | Provisioning profile management |
 //! | `amfi` | [`amfi`] | Developer mode / code-signing trust |
+//! | `btlogger` | [`bt_packet_logger`] | Bluetooth HCI packet capture |
 //! | `dtx` | [`dtx`] | DTX RPC codec (base for instruments/testmanager) |
 //! | `instruments` | [`instruments`] | CPU/GPU/FPS/network/energy monitoring (requires `dtx`) |
 //! | `testmanager` | [`testmanager`] | XCTest execution framework (requires `dtx`) |
@@ -145,6 +146,9 @@ pub mod misagent;
 
 #[cfg(feature = "amfi")]
 pub mod amfi;
+
+#[cfg(feature = "btlogger")]
+pub mod bt_packet_logger;
 
 #[cfg(feature = "dtx")]
 pub mod dtx;
