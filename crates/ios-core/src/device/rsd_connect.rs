@@ -192,11 +192,15 @@ async fn open_rsd_proxy_framer(
     server_addr: &str,
     rsd_port: u16,
 ) -> Option<crate::xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpStream;
-
     tracing::info!("RSD via proxy: connecting to 127.0.0.1:{proxy_port}");
-    let mut proxy = match TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await {
+    let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            tracing::warn!("RSD bad server addr '{server_addr}': {e}");
+            return None;
+        }
+    };
+    let proxy = match endpoint.connect(rsd_port).await {
         Ok(stream) => {
             tracing::info!("RSD via proxy: connected to proxy");
             stream
@@ -206,27 +210,6 @@ async fn open_rsd_proxy_framer(
             return None;
         }
     };
-
-    let addr_bytes = match Ipv6Addr::from_str(server_addr) {
-        Ok(addr) => addr.octets(),
-        Err(e) => {
-            tracing::warn!("RSD bad server addr '{server_addr}': {e}");
-            return None;
-        }
-    };
-
-    if let Err(e) = proxy.write_all(&addr_bytes).await {
-        tracing::warn!("RSD write addr: {e}");
-        return None;
-    }
-    if let Err(e) = proxy.write_all(&(rsd_port as u32).to_le_bytes()).await {
-        tracing::warn!("RSD write port: {e}");
-        return None;
-    }
-    if let Err(e) = proxy.flush().await {
-        tracing::warn!("RSD flush header: {e}");
-        return None;
-    }
 
     tracing::info!(
         "RSD via proxy: connecting to [{server_addr}]:{rsd_port} through proxy port {proxy_port}"

@@ -2,9 +2,25 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    #[cfg(feature = "tunnel")]
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use tokio::io::duplex;
 
     use super::*;
+    #[cfg(feature = "tunnel")]
+    use crate::credentials::{PersistedCredentials, RemotePairingRecord};
+    #[cfg(feature = "tunnel")]
+    use crate::lockdown::pairing::HostIdentity;
+    #[cfg(feature = "tunnel")]
+    use super::tunnel_activation::TunnelTransport;
+    #[cfg(feature = "tunnel")]
+    use super::credentials::*;
+    #[cfg(feature = "tunnel")]
+    use super::pairing::{GuardedTunnelStream, RemotePairingControlChannel};
+    #[cfg(feature = "tunnel")]
+    use super::protocol::*;
+    #[cfg(feature = "tunnel")]
+    use crate::xpc::message::XpcValue;
 
     fn temp_test_dir(label: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
@@ -21,6 +37,21 @@ mod tests {
             private_key: identity.private_key_bytes(),
             remote_unlock_host_key: None,
         }
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn tunnel_transport_accepts_each_connection_strategy() {
+        fn assert_transport<T: TunnelTransport>() {}
+
+        // Lockdown's CoreDeviceProxy wrapper, direct RSD's XPC control-channel
+        // guard, and remote pairing's framed control-channel guard all enter
+        // the same activation path. A future protocol can exercise it with an
+        // in-memory duplex stream before hardware integration exists.
+        assert_transport::<ProxyStream>();
+        assert_transport::<GuardedTunnelStream<XpcClient>>();
+        assert_transport::<GuardedTunnelStream<RemotePairingControlChannel>>();
+        assert_transport::<tokio::io::DuplexStream>();
     }
 
     #[test]
@@ -475,13 +506,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "tunnel")]
-    fn resolve_tunnel_connection_target_uses_userspace_proxy_when_available() {
-        let target =
-            resolve_tunnel_connection_target("fd00::1", Some(60105)).expect("valid proxy target");
+    fn tunnel_endpoint_uses_userspace_proxy_when_available() {
+        let endpoint = TunnelEndpoint::resolve("fd00::1", Some(60105)).expect("valid endpoint");
 
         assert_eq!(
-            target,
-            TunnelConnectionTarget::UserspaceProxy {
+            endpoint,
+            TunnelEndpoint::UserspaceProxy {
                 proxy_port: 60105,
                 remote_addr: Ipv6Addr::from_str("fd00::1").expect("valid IPv6"),
             }
@@ -490,13 +520,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "tunnel")]
-    fn resolve_tunnel_connection_target_falls_back_to_direct_ipv6() {
-        let target =
-            resolve_tunnel_connection_target("fd00::2", None).expect("valid direct target");
+    fn tunnel_endpoint_falls_back_to_direct_ipv6() {
+        let endpoint = TunnelEndpoint::resolve("fd00::2", None).expect("valid endpoint");
 
         assert_eq!(
-            target,
-            TunnelConnectionTarget::DirectIpv6 {
+            endpoint,
+            TunnelEndpoint::DirectIpv6 {
                 remote_addr: Ipv6Addr::from_str("fd00::2").expect("valid IPv6"),
             }
         );
@@ -504,11 +533,44 @@ mod tests {
 
     #[test]
     #[cfg(feature = "tunnel")]
-    fn resolve_tunnel_connection_target_rejects_invalid_ipv6() {
-        let err = resolve_tunnel_connection_target("not-an-ipv6", Some(60105))
+    fn tunnel_endpoint_rejects_invalid_ipv6() {
+        let err = TunnelEndpoint::resolve("not-an-ipv6", Some(60105))
             .expect_err("invalid IPv6 should fail");
 
         assert!(err.to_string().contains("invalid IPv6 addr"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tunnel")]
+    async fn userspace_tunnel_endpoint_writes_go_ios_routing_header() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy listener");
+        let proxy_port = listener.local_addr().expect("listener address").port();
+        let remote_addr = Ipv6Addr::from_str("fd00::42").expect("valid IPv6");
+        let endpoint = TunnelEndpoint::UserspaceProxy {
+            proxy_port,
+            remote_addr,
+        };
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept proxy connection");
+            let mut header = [0u8; 20];
+            stream
+                .read_exact(&mut header)
+                .await
+                .expect("read routing header");
+            header
+        });
+
+        let _stream = endpoint.connect(62000).await.expect("connect through proxy");
+        let header = server.await.expect("join proxy task");
+
+        assert_eq!(&header[..16], &remote_addr.octets());
+        assert_eq!(u32::from_le_bytes(header[16..].try_into().unwrap()), 62000);
     }
 
     #[test]

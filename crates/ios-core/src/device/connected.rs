@@ -281,12 +281,12 @@ impl ConnectedDevice {
     }
 
     #[cfg(feature = "tunnel")]
-    fn tunnel_connection_target(&self) -> Result<TunnelConnectionTarget, CoreError> {
+    fn tunnel_endpoint(&self) -> Result<TunnelEndpoint, CoreError> {
         let server_addr = self
             .server_address()
             .ok_or_else(|| CoreError::Unsupported("no server address".into()))?;
 
-        resolve_tunnel_connection_target(server_addr, self.userspace_port())
+        TunnelEndpoint::resolve(server_addr, self.userspace_port())
     }
 
     async fn connect_tunnel_port(&self, port: u16) -> Result<ServiceStream, CoreError> {
@@ -298,29 +298,7 @@ impl ConnectedDevice {
 
         #[cfg(feature = "tunnel")]
         {
-            use tokio::io::AsyncWriteExt;
-            use tokio::net::TcpStream;
-
-            match self.tunnel_connection_target()? {
-                TunnelConnectionTarget::UserspaceProxy {
-                    proxy_port,
-                    remote_addr,
-                } => {
-                    let mut proxy = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await?;
-                    proxy.write_all(&remote_addr.octets()).await?;
-                    proxy.write_all(&(port as u32).to_le_bytes()).await?;
-                    Ok(Box::new(proxy))
-                }
-                TunnelConnectionTarget::DirectIpv6 { remote_addr } => {
-                    let addr = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-                        remote_addr,
-                        port,
-                        0,
-                        0,
-                    ));
-                    Ok(Box::new(TcpStream::connect(addr).await?))
-                }
-            }
+            Ok(Box::new(self.tunnel_endpoint()?.connect(port).await?))
         }
     }
 }
@@ -342,23 +320,6 @@ fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(S
     rsd.services
         .get(&shim_service)
         .map(|ServiceDescriptor { port }| (shim_service, *port))
-}
-
-#[cfg(feature = "tunnel")]
-fn resolve_tunnel_connection_target(
-    server_addr: &str,
-    userspace_port: Option<u16>,
-) -> Result<TunnelConnectionTarget, CoreError> {
-    let remote_addr = Ipv6Addr::from_str(server_addr)
-        .map_err(|e| CoreError::Protocol(format!("invalid IPv6 addr: {e}")))?;
-
-    Ok(match userspace_port {
-        Some(proxy_port) => TunnelConnectionTarget::UserspaceProxy {
-            proxy_port,
-            remote_addr,
-        },
-        None => TunnelConnectionTarget::DirectIpv6 { remote_addr },
-    })
 }
 
 fn validate_rsd_checkin_response(

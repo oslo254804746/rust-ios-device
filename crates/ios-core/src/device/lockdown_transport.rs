@@ -313,7 +313,7 @@ async fn connect_via_lockdown_transport(
         let proxy_stream_raw =
             connect_lockdown_port(&info.udid, &lockdown_transport, service_port, false).await?;
 
-        let mut proxy_stream = if enable_service_ssl {
+        let proxy_stream = if enable_service_ssl {
             tracing::info!("tunnel connect: wrapping CoreDeviceProxy with TLS");
             ProxyStream::Tls(Box::new(
                 wrap_service_tls(proxy_stream_raw, &pair_record).await?,
@@ -324,101 +324,17 @@ async fn connect_via_lockdown_transport(
         };
         tracing::info!("tunnel connect: CoreDeviceProxy stream ready");
 
-        tracing::info!(
-            "tunnel connect: exchanging CDTunnel parameters (timeout={} ms)",
-            TUNNEL_HANDSHAKE_TIMEOUT.as_millis()
-        );
-        let tunnel_info = crate::tunnel::handshake::exchange_tunnel_parameters_with_timeout(
-            &mut proxy_stream,
-            TUNNEL_HANDSHAKE_TIMEOUT,
+        activate_tunnel(
+            TunnelConnection::new(
+                info,
+                Some(pair_record),
+                lockdown_transport,
+                "lockdown CoreDeviceProxy",
+            ),
+            proxy_stream,
+            opts.tun_mode,
         )
         .await
-        .map_err(CoreError::Tunnel)?;
-        tracing::info!("tunnel connect: CDTunnel parameters received");
-        tracing::info!(
-            "tunnel_info: server={} rsd_port={} client={} mtu={}",
-            tunnel_info.server_address,
-            tunnel_info.server_rsd_port,
-            tunnel_info.client_address,
-            tunnel_info.client_mtu
-        );
-
-        match opts.tun_mode {
-            TunMode::Kernel => {
-                #[cfg(not(feature = "tunnel-kernel"))]
-                {
-                    return Err(CoreError::Unsupported(
-                        "kernel TUN support requires ios-core feature 'tunnel-kernel'".into(),
-                    ));
-                }
-                #[cfg(feature = "tunnel-kernel")]
-                {
-                    let (handle, cancel_rx) =
-                        TunnelHandle::new(info.udid.clone(), tunnel_info.clone(), None);
-                    let tun = KernelTunDevice::create(
-                        &tunnel_info.client_address,
-                        tunnel_info.client_mtu,
-                    )
-                    .await
-                    .map_err(CoreError::Tunnel)?;
-                    let mtu = tunnel_info.client_mtu;
-                    tokio::spawn(async move {
-                        if let Err(e) = forward_packets(proxy_stream, tun, mtu, cancel_rx).await {
-                            tracing::error!("kernel TUN forward: {e}");
-                        }
-                    });
-                    let rsd =
-                        attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
-                    Ok(ConnectedDevice {
-                        info,
-                        tunnel: Some(Arc::new(handle)),
-                        rsd,
-                        pair_record: Some(pair_record),
-                        lockdown_transport,
-                    })
-                }
-            }
-            TunMode::Userspace => {
-                #[cfg(not(feature = "tunnel-userspace"))]
-                {
-                    return Err(CoreError::Unsupported(
-                        "userspace tunnel support requires ios-core feature 'tunnel-userspace'"
-                            .into(),
-                    ));
-                }
-                #[cfg(feature = "tunnel-userspace")]
-                {
-                    let userspace = UserspaceTunDevice::start(
-                        &tunnel_info.client_address,
-                        &tunnel_info.server_address,
-                        tunnel_info.client_mtu,
-                        proxy_stream,
-                    )
-                    .await
-                    .map_err(CoreError::Tunnel)?;
-
-                    let proxy_port = userspace.local_port;
-                    let handle = TunnelHandle::new_userspace(
-                        info.udid.clone(),
-                        tunnel_info.clone(),
-                        userspace,
-                    );
-                    let rsd = attempt_rsd_via_proxy(
-                        proxy_port,
-                        &tunnel_info.server_address,
-                        tunnel_info.server_rsd_port,
-                    )
-                    .await;
-                    Ok(ConnectedDevice {
-                        info,
-                        tunnel: Some(Arc::new(handle)),
-                        rsd,
-                        pair_record: Some(pair_record),
-                        lockdown_transport,
-                    })
-                }
-            }
-        }
     }
 }
 
@@ -426,4 +342,3 @@ async fn connect_via_lockdown_transport(
 fn tunnel_unavailable() -> CoreError {
     CoreError::Unsupported("CoreDevice tunnel support requires ios-core feature 'tunnel'".into())
 }
-
