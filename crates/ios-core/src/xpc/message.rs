@@ -377,7 +377,26 @@ impl XpcMessageBuffer {
     }
 }
 
+/// Maximum container nesting accepted from a device.
+///
+/// [`MAX_XPC_COLLECTION_SIZE`] bounds how wide each level may be, not how deep
+/// the tree goes: a body of repeated array headers would otherwise recurse until
+/// the stack overflows.
+const MAX_XPC_NESTING_DEPTH: usize = 64;
+
+/// Element/entry ceiling for a single array or dictionary.
+const MAX_XPC_COLLECTION_SIZE: usize = 65536;
+
 fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
+    decode_value_at_depth(buf, 0)
+}
+
+fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcError> {
+    if depth > MAX_XPC_NESTING_DEPTH {
+        return Err(XpcError::Tls(format!(
+            "XPC: nesting exceeds {MAX_XPC_NESTING_DEPTH} levels"
+        )));
+    }
     if buf.remaining() < 4 {
         return Err(XpcError::Tls("XPC: value too short".into()));
     }
@@ -469,13 +488,12 @@ fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
                 return Err(XpcError::Tls("XPC: array count truncated".into()));
             }
             let count = buf.get_u32_le() as usize;
-            const MAX_XPC_COLLECTION_SIZE: usize = 65536;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
             }
             let mut arr = Vec::with_capacity(count.min(256));
             for _ in 0..count {
-                arr.push(decode_value(buf)?);
+                arr.push(decode_value_at_depth(buf, depth + 1)?);
             }
             Ok(XpcValue::Array(arr))
         }
@@ -488,14 +506,13 @@ fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
                 return Err(XpcError::Tls("XPC: dict count truncated".into()));
             }
             let count = buf.get_u32_le() as usize;
-            const MAX_XPC_COLLECTION_SIZE: usize = 65536;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
             }
             let mut map = IndexMap::with_capacity(count.min(256));
             for _ in 0..count {
                 let key = decode_dict_key(buf)?;
-                let val = decode_value(buf)?;
+                let val = decode_value_at_depth(buf, depth + 1)?;
                 map.insert(key, val);
             }
             Ok(XpcValue::Dictionary(map))
@@ -505,7 +522,7 @@ fn decode_value(buf: &mut Bytes) -> Result<XpcValue, XpcError> {
                 return Err(XpcError::Tls("XPC: file transfer truncated".into()));
             }
             let msg_id = buf.get_u64_le();
-            let data = decode_value(buf)?;
+            let data = decode_value_at_depth(buf, depth + 1)?;
             Ok(XpcValue::FileTransfer {
                 msg_id,
                 data: Box::new(data),

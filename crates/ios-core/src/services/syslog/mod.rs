@@ -5,37 +5,60 @@
 //!
 //! Reference: go-ios/ios/syslog/syslog.go
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio_stream::Stream;
 
 pub const SERVICE_NAME: &str = "com.apple.syslog_relay";
 pub const SHIM_SERVICE_NAME: &str = "com.apple.syslog_relay.shim.remote";
 
+/// Largest single log message accepted before the stream is treated as broken.
+///
+/// Messages are NUL-terminated with no length prefix, so a device that never
+/// sends the terminator would otherwise grow the buffer without bound.
+const MAX_SYSLOG_MESSAGE: usize = 1024 * 1024;
+
 /// Syslog stream that yields raw log message strings (null-byte terminated by the device).
 pub struct SyslogStream<S> {
-    stream: S,
+    stream: BufReader<S>,
     buf: Vec<u8>,
 }
 
 impl<S: AsyncRead + Unpin> SyslogStream<S> {
     pub fn new(stream: S) -> Self {
         Self {
-            stream,
+            stream: BufReader::new(stream),
             buf: Vec::with_capacity(4096),
         }
     }
 
     /// Read one null-terminated log message (blocking until available).
     pub async fn next_message(&mut self) -> Result<String, std::io::Error> {
-        let mut byte = [0u8; 1];
+        self.buf.clear();
         loop {
-            self.stream.read_exact(&mut byte).await?;
-            if byte[0] == 0 {
-                let msg = String::from_utf8_lossy(&self.buf).into_owned();
-                self.buf.clear();
-                return Ok(msg);
+            let available = self.stream.fill_buf().await?;
+            if available.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "syslog stream closed",
+                ));
             }
-            self.buf.push(byte[0]);
+
+            if let Some(terminator) = available.iter().position(|&b| b == 0) {
+                self.buf.extend_from_slice(&available[..terminator]);
+                self.stream.consume(terminator + 1);
+                return Ok(String::from_utf8_lossy(&self.buf).into_owned());
+            }
+
+            // No terminator in this chunk: it is all message body.
+            let len = available.len();
+            if self.buf.len() + len > MAX_SYSLOG_MESSAGE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("syslog message exceeds {MAX_SYSLOG_MESSAGE} bytes"),
+                ));
+            }
+            self.buf.extend_from_slice(available);
+            self.stream.consume(len);
         }
     }
 }

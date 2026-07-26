@@ -626,9 +626,17 @@ where
 {
     let file_size = read_file_data_header(stream).await?;
 
-    let mut data = BytesMut::with_capacity(file_size as usize);
-    data.resize(file_size as usize, 0);
-    stream.read_exact(&mut data).await?;
+    // Grow as the data actually arrives rather than reserving the full
+    // device-declared size (up to MAX_FILE_SIZE) before a single byte lands.
+    let mut data = BytesMut::new();
+    let mut remaining = file_size;
+    let mut buffer = [0u8; FILE_TRANSFER_CHUNK_SIZE];
+    while remaining > 0 {
+        let to_read = remaining.min(buffer.len() as u64) as usize;
+        stream.read_exact(&mut buffer[..to_read]).await?;
+        data.extend_from_slice(&buffer[..to_read]);
+        remaining -= to_read as u64;
+    }
     Ok(data.freeze())
 }
 

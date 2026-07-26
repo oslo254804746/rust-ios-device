@@ -21,12 +21,20 @@ pub enum OpackValue {
     Dict(Vec<(OpackValue, OpackValue)>),
 }
 
+/// Maximum container nesting accepted from a device.
+///
+/// The per-level element cap bounds width, not depth: ~1 MB of repeated `0xD1`
+/// or `0xE1` bytes would otherwise recurse until the stack overflows.
+const MAX_OPACK_DEPTH: usize = 64;
+
 #[derive(Debug, thiserror::Error)]
 pub enum OpackError {
     #[error("unexpected end of buffer")]
     UnexpectedEof,
     #[error("unknown opack tag: 0x{0:02X}")]
     UnknownTag(u8),
+    #[error("opack nesting exceeds {0} levels")]
+    TooDeep(usize),
     #[error("invalid UTF-8 in string")]
     InvalidUtf8,
     #[error("opack encode error: {0}")]
@@ -127,10 +135,13 @@ fn encode_value(value: &OpackValue, out: &mut Vec<u8>) -> Result<(), OpackError>
 
 /// Decode an OpackValue from bytes.
 pub fn decode(buf: &[u8]) -> Result<(OpackValue, usize), OpackError> {
-    decode_at(buf, 0)
+    decode_at(buf, 0, 0)
 }
 
-fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> {
+fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<(OpackValue, usize), OpackError> {
+    if depth > MAX_OPACK_DEPTH {
+        return Err(OpackError::TooDeep(MAX_OPACK_DEPTH));
+    }
     if pos >= buf.len() {
         return Err(OpackError::UnexpectedEof);
     }
@@ -234,7 +245,7 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
             let mut items = Vec::with_capacity(count);
             let mut cur = pos + 1;
             for _ in 0..count {
-                let (v, next) = decode_at(buf, cur)?;
+                let (v, next) = decode_at(buf, cur, depth + 1)?;
                 items.push(v);
                 cur = next;
             }
@@ -245,9 +256,9 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
             let mut pairs = Vec::with_capacity(count);
             let mut cur = pos + 1;
             for _ in 0..count {
-                let (k, next) = decode_at(buf, cur)?;
+                let (k, next) = decode_at(buf, cur, depth + 1)?;
                 cur = next;
-                let (v, next) = decode_at(buf, cur)?;
+                let (v, next) = decode_at(buf, cur, depth + 1)?;
                 cur = next;
                 pairs.push((k, v));
             }
@@ -259,7 +270,7 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, encode, OpackValue};
+    use super::{decode, encode, OpackError, OpackValue};
 
     fn roundtrip(value: OpackValue) -> OpackValue {
         let encoded = encode(&value).expect("encode should succeed");
@@ -410,6 +421,18 @@ mod tests {
             assert_eq!(decoded, OpackValue::Bytes(sample_bytes(len)));
             assert_eq!(used, encoded.len());
         }
+    }
+
+    #[test]
+    fn rejects_deeply_nested_input_instead_of_overflowing_the_stack() {
+        // Each 0xD1 byte opens a one-element array, so this is a stack-overflow
+        // payload in a few hundred kilobytes.
+        let nested = vec![0xD1u8; 200_000];
+        let err = decode(&nested).unwrap_err();
+        assert!(
+            matches!(err, OpackError::TooDeep(_)),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

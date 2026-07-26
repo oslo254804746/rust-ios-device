@@ -180,6 +180,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub const LOCK_EXCLUSIVE: u64 = 2 | 4;
     pub const LOCK_UNLOCK: u64 = 8 | 4;
 
+    /// Ceiling for the whole-file-into-memory helpers.
+    pub const MAX_IN_MEMORY_FILE: usize = 256 * 1024 * 1024;
+
     pub fn new(stream: S) -> Self {
         // go-ios uses atomic.Add(1) which returns 1 on first call.
         // Devices may reject packet_num=0 for some operations.
@@ -357,6 +360,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     }
 
     /// Read an entire file into memory.
+    ///
+    /// Refuses files above [`Self::MAX_IN_MEMORY_FILE`]; the device decides how
+    /// much it sends, and go-ios streams straight to disk for exactly that
+    /// reason. Use [`Self::file_read`] in a loop for anything larger.
     pub async fn read_file(&mut self, path: &str) -> Result<Bytes, AfcError> {
         let fd = self.file_open(path, Self::FILE_MODE_READ_ONLY).await?; // READ_ONLY
         let mut data = BytesMut::new();
@@ -365,6 +372,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             let buf = self.file_read(fd, chunk).await?;
             if buf.is_empty() {
                 break;
+            }
+            if data.len() + buf.len() > Self::MAX_IN_MEMORY_FILE {
+                self.file_close(fd).await?;
+                return Err(AfcError::Protocol(format!(
+                    "{path} exceeds the {} byte in-memory read limit",
+                    Self::MAX_IN_MEMORY_FILE
+                )));
             }
             data.extend_from_slice(&buf);
         }
