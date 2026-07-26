@@ -64,6 +64,17 @@ where
     }
 
     // 3. Upgrade to TLS
+    // `into_inner()` throws away whatever the BufReader read ahead, so anything the
+    // device coalesced behind the StartSession reply would silently vanish from the
+    // TLS stream. Devices send that reply on its own, so instead of corrupting the
+    // handshake we surface the (unrecoverable, from here) case as a protocol error.
+    if !reader.buffer().is_empty() {
+        return Err(LockdownError::Protocol(format!(
+            "device sent {} unexpected bytes after the StartSession response; \
+             refusing to start TLS and lose them",
+            reader.buffer().len()
+        )));
+    }
     let stream = reader.into_inner().unsplit(writer.into_inner());
     let tls_stream = build_rustls_connection(stream, pair_record, "lockdown").await?;
 
@@ -227,7 +238,7 @@ mod tests {
         PairRecord {
             device_certificate: b"ignored".to_vec(),
             host_certificate: cert.to_vec(),
-            host_private_key: key.to_vec(),
+            host_private_key: key.to_vec().into(),
             root_certificate: b"ignored".to_vec(),
             host_id: "test-host-id".into(),
             system_buid: "test-buid".into(),
@@ -309,6 +320,48 @@ h6sEdO4FSmZFwEQ9W7FVspA=
         assert!(
             err.to_string().contains("private key"),
             "expected private key error, got: {err}"
+        );
+    }
+
+    fn plist_frame(entries: &[(&str, plist::Value)]) -> Vec<u8> {
+        let mut dict = plist::Dictionary::new();
+        for (key, value) in entries {
+            dict.insert((*key).to_string(), value.clone());
+        }
+        let mut body = Vec::new();
+        plist::to_writer_xml(&mut body, &plist::Value::Dictionary(dict)).unwrap();
+        encode_frame(&body)
+    }
+
+    #[tokio::test]
+    async fn start_lockdown_session_rejects_read_ahead_before_tls_upgrade() {
+        let (mut device, host) = tokio::io::duplex(8192);
+
+        let mut wire = plist_frame(&[("Type", "com.apple.mobile.lockdown".into())]);
+        wire.extend_from_slice(&plist_frame(&[
+            ("SessionID", "test-session".into()),
+            ("EnableSessionSSL", true.into()),
+        ]));
+        // Bytes coalesced behind the StartSession reply: the BufReader reads them with
+        // the reply, and the pre-TLS handoff must not drop them on the floor.
+        wire.extend_from_slice(b"\x16\x03\x03\x00\x05");
+        tokio::io::AsyncWriteExt::write_all(&mut device, &wire)
+            .await
+            .unwrap();
+
+        let record = dummy_pair_record(TEST_CERT_PEM, TEST_KEY_PEM);
+        // The timeout keeps a regression from hanging the suite: without the guard the
+        // call would reach a TLS handshake this fake device never answers.
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            start_lockdown_session(host, &record),
+        )
+        .await
+        .expect("session upgrade should fail instead of blocking")
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("StartSession"),
+            "expected a read-ahead protocol error, got: {err}"
         );
     }
 

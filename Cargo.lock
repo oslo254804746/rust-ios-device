@@ -1447,6 +1447,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smoltcp",
+ "subtle",
  "thiserror 2.0.18",
  "time",
  "tokio",
