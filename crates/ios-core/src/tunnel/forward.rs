@@ -1,13 +1,24 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::tunnel::tun::TunDevice;
 use crate::tunnel::TunnelError;
 
+/// How many decoded packets may queue up between the stream reader and the
+/// forwarding loop before the reader has to wait for the TUN to catch up.
+const STREAM_PACKET_QUEUE: usize = 64;
+
 /// Bidirectionally forward IPv6 packets between an iOS TCP stream and a TUN device.
 /// Runs until the `cancel` watch receiver fires or an IO error occurs.
+///
+/// The stream is read by a dedicated task rather than directly in the `select!`.
+/// `read_ipv6_packet` is built on `read_exact`, which is *not* cancellation-safe:
+/// dropping it mid-packet discards both the bytes it consumed and its progress,
+/// which permanently desyncs the IPv6 framing for every packet that follows.
+/// Owning the reader means it is never cancelled mid-packet; the loop instead
+/// awaits an mpsc receive, which is cancellation-safe.
 pub async fn forward_packets<S, D>(
-    mut stream: S,
+    stream: S,
     mut tun: D,
     mtu: u32,
     mut cancel: watch::Receiver<()>,
@@ -16,32 +27,70 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     D: TunDevice,
 {
+    let (reader, mut writer) = tokio::io::split(stream);
+    let (packet_tx, mut packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
+    let reader_task = tokio::spawn(read_stream_packets(reader, mtu, packet_tx));
+
+    let outcome: Result<(), TunnelError> = async {
+        loop {
+            tokio::select! {
+                _ = cancel.changed() => return Ok(()),
+
+                // iOS stream → TUN: inject a fully-read packet into the TUN
+                packet = packet_rx.recv() => match packet {
+                    Some(Ok(packet)) => tun.write_packet(&packet).await?,
+                    Some(Err(err)) => return Err(err),
+                    // Reader task finished: the device closed its side.
+                    None => return Ok(()),
+                },
+
+                // TUN → iOS stream: read packet from OS, forward to device
+                result = tun.read_packet() => {
+                    let packet = result?;
+                    writer.write_all(&packet).await?;
+                    writer.flush().await?;
+                }
+            }
+        }
+    }
+    .await;
+
+    reader_task.abort();
+    outcome
+}
+
+/// Read whole IPv6 packets off `reader` and hand them to the forwarding loop.
+///
+/// Terminates on the first error, after reporting it downstream, and on
+/// receiver shutdown.
+async fn read_stream_packets<R>(
+    mut reader: R,
+    mtu: u32,
+    packet_tx: mpsc::Sender<Result<Vec<u8>, TunnelError>>,
+) where
+    R: AsyncRead + Unpin,
+{
     let mut ip6_header = vec![0u8; 40];
     let mut payload_buf = vec![0u8; mtu as usize];
 
     loop {
-        tokio::select! {
-            _ = cancel.changed() => break,
-
-            // iOS stream → TUN: read IPv6 packet, inject into TUN
-            result = read_ipv6_packet(&mut stream, &mut ip6_header, &mut payload_buf) => {
-                let payload_len = result?;
-                // Avoid clone on hot path: write header and payload as two separate slices
+        let packet = match read_ipv6_packet(&mut reader, &mut ip6_header, &mut payload_buf).await {
+            Ok(payload_len) => {
                 let mut packet = Vec::with_capacity(40 + payload_len);
                 packet.extend_from_slice(&ip6_header);
                 packet.extend_from_slice(&payload_buf[..payload_len]);
-                tun.write_packet(&packet).await?;
+                Ok(packet)
             }
+            Err(err) => {
+                let _ = packet_tx.send(Err(err)).await;
+                return;
+            }
+        };
 
-            // TUN → iOS stream: read packet from OS, forward to device
-            result = tun.read_packet() => {
-                let packet = result?;
-                stream.write_all(&packet).await?;
-                stream.flush().await?;
-            }
+        if packet_tx.send(packet).await.is_err() {
+            return;
         }
     }
-    Ok(())
 }
 
 async fn read_ipv6_packet<R: AsyncRead + Unpin>(
@@ -296,6 +345,73 @@ mod tests {
         let mut received = vec![0u8; expected.len()];
         peer.read_exact(&mut received).await.unwrap();
         assert_eq!(received, expected);
+
+        drop(cancel_tx);
+        task.await.unwrap().unwrap();
+    }
+
+    /// Yields `budget` packets as fast as the loop asks for them, then parks.
+    ///
+    /// This keeps the TUN branch of the `select!` permanently ready, which is
+    /// what used to cancel the stream reader mid-packet.
+    struct BusyTun {
+        packet: Vec<u8>,
+        budget: usize,
+        written: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl TunDevice for BusyTun {
+        async fn read_packet(&mut self) -> Result<Vec<u8>, TunnelError> {
+            if self.budget == 0 {
+                std::future::pending().await
+            } else {
+                self.budget -= 1;
+                Ok(self.packet.clone())
+            }
+        }
+
+        async fn write_packet(&mut self, packet: &[u8]) -> Result<(), TunnelError> {
+            self.written.lock().unwrap().push(packet.to_vec());
+            Ok(())
+        }
+    }
+
+    /// Regression test for the `read_exact`-inside-`select!` desync: a packet
+    /// that arrives in fragments must survive a TUN branch that is always ready.
+    #[tokio::test]
+    async fn forward_packets_reassembles_stream_packet_while_tun_is_busy() {
+        let from_ios = ipv6_packet(b"fragmented-from-ios");
+        let from_tun = ipv6_packet(b"from-tun");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let (mut peer, stream) = tokio::io::duplex(64 * 1024);
+        let tun = BusyTun {
+            packet: from_tun,
+            budget: 64,
+            written: written.clone(),
+        };
+        let (cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
+
+        // Feed the packet one byte at a time, yielding between bytes so the TUN
+        // branch gets to win the `select!` mid-packet.
+        for byte in &from_ios {
+            // A desync kills the forwarding task, which closes this duplex.
+            peer.write_all(&[*byte])
+                .await
+                .expect("forwarding task closed the stream mid-packet");
+            peer.flush().await.unwrap();
+            tokio::task::yield_now().await;
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if written.lock().unwrap().contains(&from_ios) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fragmented packet never reached the TUN intact");
 
         drop(cancel_tx);
         task.await.unwrap().unwrap();
