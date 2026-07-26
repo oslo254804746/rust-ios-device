@@ -35,7 +35,7 @@ impl ArbitrationCmd {
         match self.sub {
             ArbitrationSub::CheckIn { hostname, force } => {
                 let hostname = hostname
-                    .or_else(|| std::env::var("COMPUTERNAME").ok())
+                    .or_else(host_name_from_env)
                     .unwrap_or_else(|| "ios-cli".to_string());
                 client.check_in(&hostname, force).await?;
                 if json {
@@ -72,6 +72,16 @@ impl ArbitrationCmd {
         }
         Ok(())
     }
+}
+
+/// Windows exports `COMPUTERNAME`, most Unix shells export `HOSTNAME`; checking
+/// only the former made every non-Windows host report the `ios-cli` literal, so
+/// arbitration owners were indistinguishable.
+fn host_name_from_env() -> Option<String> {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.trim().is_empty())
 }
 
 async fn connect_arbitration(udid: &str) -> Result<ios_core::device::ServiceStream> {

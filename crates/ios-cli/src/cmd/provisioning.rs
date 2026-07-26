@@ -31,11 +31,15 @@ enum ProvisioningSub {
         query: String,
         #[arg(help = "Destination path for the .mobileprovision file")]
         output: PathBuf,
+        #[arg(long, help = "Overwrite the destination file if it already exists")]
+        force: bool,
     },
     /// Export all installed provisioning profiles into a local directory
     Dump {
         #[arg(help = "Destination directory for exported .mobileprovision files")]
         output_dir: PathBuf,
+        #[arg(long, help = "Overwrite destination files that already exist")]
+        force: bool,
     },
     /// Remove an installed provisioning profile by UUID
     Remove {
@@ -86,9 +90,14 @@ impl ProvisioningCmd {
                 client.install(&payload).await?;
                 println!("Installed provisioning profile from {}", path.display());
             }
-            ProvisioningSub::Export { query, output } => {
+            ProvisioningSub::Export {
+                query,
+                output,
+                force,
+            } => {
                 let profiles = client.list_profiles().await?;
                 let profile = find_profile(&profiles, &query)?;
+                crate::cmd::file::ensure_local_overwrite_allowed(&output, force)?;
                 std::fs::write(&output, &profile.raw_data)?;
 
                 if json {
@@ -107,17 +116,26 @@ impl ProvisioningCmd {
                     );
                 }
             }
-            ProvisioningSub::Dump { output_dir } => {
+            ProvisioningSub::Dump { output_dir, force } => {
                 let profiles = client.list_profiles().await?;
                 std::fs::create_dir_all(&output_dir)?;
 
+                let outputs: Vec<PathBuf> = profiles
+                    .iter()
+                    .map(|profile| output_dir.join(format!("{}.mobileprovision", profile.uuid)))
+                    .collect();
+                // Vet every destination up front so a collision cannot leave a
+                // half-written dump behind.
+                for output in &outputs {
+                    crate::cmd::file::ensure_local_overwrite_allowed(output, force)?;
+                }
+
                 let mut entries = Vec::with_capacity(profiles.len());
-                for profile in &profiles {
-                    let output = output_dir.join(format!("{}.mobileprovision", profile.uuid));
-                    std::fs::write(&output, &profile.raw_data)?;
+                for (profile, output) in profiles.iter().zip(&outputs) {
+                    std::fs::write(output, &profile.raw_data)?;
                     entries.push(dump_entry_json(
                         &profile.uuid,
-                        &output,
+                        output,
                         profile.raw_data.len(),
                     ));
                 }
@@ -343,10 +361,30 @@ mod tests {
             "profile.mobileprovision",
         ]);
         match cmd.command {
-            ProvisioningSub::Export { query, output } => {
+            ProvisioningSub::Export {
+                query,
+                output,
+                force,
+            } => {
                 assert_eq!(query, "ABC-123");
                 assert_eq!(output, PathBuf::from("profile.mobileprovision"));
+                assert!(!force);
             }
+            _ => panic!("expected export subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_provisioning_export_force_flag() {
+        let cmd = TestCli::parse_from([
+            "provisioning",
+            "export",
+            "ABC-123",
+            "profile.mobileprovision",
+            "--force",
+        ]);
+        match cmd.command {
+            ProvisioningSub::Export { force, .. } => assert!(force),
             _ => panic!("expected export subcommand"),
         }
     }
@@ -355,8 +393,9 @@ mod tests {
     fn parses_provisioning_dump_subcommand() {
         let cmd = TestCli::parse_from(["provisioning", "dump", "profiles"]);
         match cmd.command {
-            ProvisioningSub::Dump { output_dir } => {
+            ProvisioningSub::Dump { output_dir, force } => {
                 assert_eq!(output_dir, PathBuf::from("profiles"));
+                assert!(!force);
             }
             _ => panic!("expected dump subcommand"),
         }

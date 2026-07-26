@@ -16,8 +16,16 @@ enum ActivationSub {
     /// Show the current activation state
     State,
     /// Show the mobileactivationd Tunnel1 session-info payload
+    ///
+    /// The payload is printed verbatim and unredacted: it carries device
+    /// identifiers and DRM handshake material, so treat the output like a
+    /// secret and keep it out of shared logs or bug reports.
     SessionInfo,
     /// Show the activation-info payload without writing activation back to the device
+    ///
+    /// The payload is printed verbatim and unredacted: it carries device
+    /// identifiers, certificates and DRM material, so treat the output like a
+    /// secret and keep it out of shared logs or bug reports.
     Info,
 }
 

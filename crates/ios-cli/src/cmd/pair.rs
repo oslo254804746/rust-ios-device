@@ -37,7 +37,13 @@ enum PairSubcommand {
     Supervised {
         #[arg(long, help = "Path to P12 supervisor certificate file")]
         p12: String,
-        #[arg(long, help = "P12 password", default_value = "")]
+        #[arg(
+            long,
+            env = "P12_PASSWORD",
+            default_value = "",
+            help = "P12 password; prefer the P12_PASSWORD env var so it stays out of \
+                    shell history and the process list"
+        )]
         password: String,
         #[arg(long, help = "Target device UDID; falls back to global -u/--udid")]
         udid: Option<String>,
