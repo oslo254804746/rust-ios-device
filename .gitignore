@@ -29,6 +29,8 @@ ios-rs-tmp
 *.der
 pair-record*.plist
 remote_*.plist
+# go-ios writes its host identity (private key included) into the working dir
+selfIdentity.plist
 *.xcresult
 *.ipsw
 *.dmg
