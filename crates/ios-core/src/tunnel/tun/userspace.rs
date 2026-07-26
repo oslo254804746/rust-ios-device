@@ -26,6 +26,9 @@ const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
 const LOCAL_PROXY_CHANNEL_CAPACITY: usize = 4096;
 const SOCKET_BUFFER_BYTES: usize = 1_048_576;
 const SOCKET_RECV_CHUNK_BYTES: usize = 65_536;
+const EPHEMERAL_PORT_MIN: u16 = 40000;
+const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
+const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) as usize + 1;
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
 
@@ -255,6 +258,30 @@ fn smoltcp_poll_sleep_duration(
         .unwrap_or_else(|| Duration::from_millis(1))
 }
 
+/// Take the next free local port for a tunneled socket.
+///
+/// smoltcp identifies a socket by its full 4-tuple, so reusing a port that a live
+/// connection still holds makes `connect` fail — or, worse, lands two tunneled
+/// streams on the same tuple. Walks the ephemeral range from `cursor`, wrapping at
+/// its end (a plain `wrapping_add` would drop the cursor into the reserved low
+/// ports) and skipping everything `in_use` still claims. `None` means the range is
+/// fully taken.
+fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) -> Option<u16> {
+    for _ in 0..EPHEMERAL_PORT_COUNT {
+        let port = *cursor;
+        // EPHEMERAL_PORT_MAX is u16::MAX, so `==` is the whole wrap condition.
+        *cursor = if port == EPHEMERAL_PORT_MAX {
+            EPHEMERAL_PORT_MIN
+        } else {
+            port + 1
+        };
+        if !in_use(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 async fn run_smoltcp(
     client_ipv6: Ipv6Address,
     _mtu: u32,
@@ -274,7 +301,7 @@ async fn run_smoltcp(
 
     let mut sockets = SocketSet::new(vec![]);
     let mut connections: HashMap<SocketHandle, ConnState> = HashMap::new();
-    let mut ephemeral_port: u16 = 40000;
+    let mut ephemeral_port: u16 = EPHEMERAL_PORT_MIN;
     let mut pending_ios_tx = VecDeque::new();
 
     loop {
@@ -297,8 +324,21 @@ async fn run_smoltcp(
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_timeout(Some(smoltcp::time::Duration::from_secs(30)));
             socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(1)));
-            let local_port = ephemeral_port;
-            ephemeral_port = ephemeral_port.wrapping_add(1).max(40000);
+            let Some(local_port) = take_ephemeral_port(&mut ephemeral_port, |port| {
+                connections.keys().any(|&handle| {
+                    sockets
+                        .get::<tcp::Socket>(handle)
+                        .local_endpoint()
+                        .is_some_and(|endpoint| endpoint.port == port)
+                })
+            }) else {
+                tracing::error!(
+                    "userspace: no free ephemeral port for [{:?}]:{}",
+                    req.remote_ip,
+                    req.remote_port
+                );
+                continue;
+            };
             let remote_ep = IpEndpoint::new(IpAddress::Ipv6(req.remote_ip), req.remote_port);
             match socket.connect(iface.context(), remote_ep, local_port) {
                 Ok(()) => {
@@ -639,6 +679,41 @@ mod tests {
         assert!(flush_channel_queue(&tx, &mut pending));
         assert_eq!(rx.recv().await.unwrap(), vec![1, 2, 3]);
         assert_eq!(pending, VecDeque::from([vec![4, 5, 6]]));
+    }
+
+    #[test]
+    fn take_ephemeral_port_skips_ports_held_by_live_connections() {
+        let mut cursor = EPHEMERAL_PORT_MIN;
+        let busy = [EPHEMERAL_PORT_MIN, EPHEMERAL_PORT_MIN + 1];
+
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |port| busy.contains(&port)),
+            Some(EPHEMERAL_PORT_MIN + 2)
+        );
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN + 3);
+    }
+
+    #[test]
+    fn take_ephemeral_port_wraps_inside_the_ephemeral_range() {
+        let mut cursor = EPHEMERAL_PORT_MAX;
+
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |_| false),
+            Some(EPHEMERAL_PORT_MAX)
+        );
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN);
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |_| false),
+            Some(EPHEMERAL_PORT_MIN)
+        );
+    }
+
+    #[test]
+    fn take_ephemeral_port_reports_exhaustion_after_one_lap() {
+        let mut cursor = EPHEMERAL_PORT_MIN;
+
+        assert_eq!(take_ephemeral_port(&mut cursor, |_| true), None);
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN);
     }
 
     #[test]

@@ -116,9 +116,16 @@ fn decode_value(
     if let Some(s) = obj.as_string() {
         return Ok(ArchiveValue::String(s.to_string()));
     }
-    // Primitive: integer
+    // Primitive: integer.
+    // `ArchiveValue::Int` is signed, so anything above `i64::MAX` has no faithful
+    // representation. Truncating it would hand the caller a plausible-looking
+    // negative number instead of an error, which is worse than refusing the
+    // archive — real NSNumber payloads never reach that range.
     if let Some(n) = obj.as_unsigned_integer() {
-        return Ok(ArchiveValue::Int(n as i64));
+        let value = i64::try_from(n).map_err(|_| {
+            ArchiveError::Invalid(format!("unsigned integer {n} does not fit in i64"))
+        })?;
+        return Ok(ArchiveValue::Int(value));
     }
     if let Some(n) = obj.as_signed_integer() {
         return Ok(ArchiveValue::Int(n));
@@ -348,6 +355,27 @@ mod tests {
         assert!(matches!(result, ArchiveValue::Null));
         let result2 = decode_object(&objects, 1, 0).unwrap();
         assert_eq!(result2.as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn test_decode_unsigned_integer_primitives() {
+        let objects = vec![
+            plist::Value::Integer(plist::Integer::from(i64::MAX as u64)),
+            plist::Value::Integer(plist::Integer::from(i64::MAX as u64 + 1)),
+        ];
+
+        assert_eq!(
+            decode_object(&objects, 0, 0).unwrap().as_int(),
+            Some(i64::MAX)
+        );
+
+        let err = decode_object(&objects, 1, 0).unwrap_err();
+        match err {
+            ArchiveError::Invalid(message) => {
+                assert!(message.contains("does not fit in i64"), "{message}");
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]

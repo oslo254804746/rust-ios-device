@@ -4,8 +4,29 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::tunnel::TunnelError;
 
+/// CDTunnel packet magic.
+///
+/// The two references model the 10-byte header differently: go-ios writes the
+/// literal `"CDTunnel\0"` followed by a *single* length byte
+/// (`ios/tunnel/tunnel.go`, `exchangeCoreTunnelParameters`), while
+/// pymobiledevice3 models it as this 8-byte magic plus a big-endian `u16` length
+/// (`remote/tunnel_service.py`, `CDTunnelPacketData`). The two produce identical
+/// bytes for any body shorter than 256, because the `u16`'s high byte is exactly
+/// the NUL that terminates go-ios's magic — which is the only reason the `u16`
+/// model here has ever interoperated.
+///
+/// We keep the permissive pymobiledevice3 model on read, but must obey the
+/// stricter go-ios one on write: see [`MAX_BODY_LEN`].
 const MAGIC: &[u8] = b"CDTunnel";
 const HEADER_LEN: usize = 10;
+
+/// Largest body a single length byte can express.
+///
+/// A device parsing the go-ios way reads only `header[9]` as the length, so a
+/// body of 256 bytes or more would both truncate and put a non-zero byte where
+/// that parser expects the magic's NUL terminator. Refuse to emit such a frame
+/// rather than send something only half the ecosystem can read.
+const MAX_BODY_LEN: usize = u8::MAX as usize;
 
 /// Information returned by the CDTunnel handshake.
 #[derive(Debug, Clone)]
@@ -53,10 +74,10 @@ pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
     });
     let json_bytes = serde_json::to_vec(&json)
         .map_err(|e| TunnelError::Protocol(format!("failed to serialize handshake: {e}")))?;
-    if json_bytes.len() > u16::MAX as usize {
-        return Err(TunnelError::Protocol(
-            "handshake JSON exceeds 65535 bytes".into(),
-        ));
+    if json_bytes.len() > MAX_BODY_LEN {
+        return Err(TunnelError::Protocol(format!(
+            "handshake JSON exceeds {MAX_BODY_LEN} bytes"
+        )));
     }
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
@@ -90,7 +111,8 @@ where
     stream.write_all(&req).await?;
     stream.flush().await?;
 
-    // Response: "CDTunnel" (8 bytes) + body_len (u16, big-endian) = 10 bytes header
+    // Response: "CDTunnel" (8 bytes) + body_len (u16, big-endian) = 10 bytes header.
+    // go-ios reads the same 10 bytes as `"CDTunnel\0"` + one length byte; see MAGIC.
     let mut header = [0u8; HEADER_LEN];
     stream.read_exact(&mut header).await?;
 
@@ -155,6 +177,24 @@ mod tests {
         assert_eq!(json["mtu"], 1280);
     }
 
+    /// Requests must be byte-identical to what go-ios puts on the wire, since a
+    /// device parsing that way reads only the last header byte as the length.
+    #[test]
+    fn test_encode_cdtunnel_request_matches_go_ios_framing() {
+        let bytes = encode_handshake_request(1280).unwrap();
+        let body = &bytes[HEADER_LEN..];
+        assert!(body.len() <= MAX_BODY_LEN);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"CDTunnel\0");
+        expected.push(body.len() as u8);
+        expected.extend_from_slice(body);
+
+        assert_eq!(bytes, expected);
+    }
+
+    /// Reads stay on the permissive pymobiledevice3 model (`Int16ub`), so a body
+    /// past the single-length-byte limit is still accepted rather than rejected.
     #[tokio::test]
     async fn test_exchange_tunnel_parameters_with_16_bit_length() {
         let response_json = serde_json::json!({

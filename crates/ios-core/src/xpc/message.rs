@@ -299,32 +299,45 @@ pub fn decode_message(mut buf: Bytes) -> Result<XpcMessage, XpcError> {
         return Err(XpcError::Tls("XPC: buffer too short for header".into()));
     }
     let flags = buf.get_u32_le();
-    let body_len = buf.get_u64_le() as usize;
+    let body_len = buf.get_u64_le();
     let msg_id = buf.get_u64_le();
 
     let body = if body_len > 0 {
+        // `usize` is narrower than the wire field on 32-bit hosts; a silent `as`
+        // truncation there would slice a short prefix of an oversized body and
+        // decode the leftovers of the next message as if they belonged to it.
+        let body_len = usize::try_from(body_len).map_err(|_| {
+            XpcError::Tls(format!("XPC: body length {body_len} exceeds usize::MAX"))
+        })?;
         if buf.remaining() < body_len {
-            return Err(XpcError::Tls("XPC: body truncated".into()));
+            return Err(XpcError::Tls(format!(
+                "XPC: body truncated: header declares {body_len} bytes, {} available",
+                buf.remaining()
+            )));
         }
         let mut body_buf = buf.copy_to_bytes(body_len);
-        // Body header is object magic followed by protocol version.
-        if body_buf.remaining() >= 8 {
-            let obj_magic = body_buf.get_u32_le();
-            if obj_magic != OBJECT_MAGIC {
-                return Err(XpcError::Tls(format!(
-                    "XPC: bad object magic 0x{obj_magic:08X}"
-                )));
-            }
-            let version = body_buf.get_u32_le();
-            if version != BODY_VERSION {
-                return Err(XpcError::Tls(format!(
-                    "XPC: bad body version 0x{version:08X}"
-                )));
-            }
-            Some(decode_value(&mut body_buf)?)
-        } else {
-            None
+        // Body header is object magic followed by protocol version. A wrapper that
+        // announces a body must carry both; reporting `None` for a shorter one would
+        // make a malformed message indistinguishable from a legitimately body-less
+        // one and drop the payload without a trace.
+        if body_buf.remaining() < 8 {
+            return Err(XpcError::Tls(format!(
+                "XPC: body header truncated: {body_len} bytes, need at least 8"
+            )));
         }
+        let obj_magic = body_buf.get_u32_le();
+        if obj_magic != OBJECT_MAGIC {
+            return Err(XpcError::Tls(format!(
+                "XPC: bad object magic 0x{obj_magic:08X}"
+            )));
+        }
+        let version = body_buf.get_u32_le();
+        if version != BODY_VERSION {
+            return Err(XpcError::Tls(format!(
+                "XPC: bad body version 0x{version:08X}"
+            )));
+        }
+        Some(decode_value(&mut body_buf)?)
     } else {
         None
     };
@@ -600,6 +613,36 @@ mod tests {
                 .and_then(XpcValue::as_uint64),
             Some(4096)
         );
+    }
+
+    fn wrapper_header(body_len: u64) -> BytesMut {
+        let mut out = BytesMut::new();
+        out.put_u32_le(WRAPPER_MAGIC);
+        out.put_u32_le(flags::ALWAYS_SET | flags::DATA);
+        out.put_u64_le(body_len);
+        out.put_u64_le(1);
+        out
+    }
+
+    #[test]
+    fn decode_rejects_body_shorter_than_the_object_header() {
+        // A body too small to hold magic + version used to decode as `body: None`,
+        // which is also what a legitimate body-less message produces.
+        let mut bytes = wrapper_header(4);
+        bytes.put_u32_le(OBJECT_MAGIC);
+
+        let err = decode_message(bytes.freeze()).unwrap_err();
+        assert!(err.to_string().contains("body header truncated"), "{err}");
+    }
+
+    #[test]
+    fn decode_rejects_body_shorter_than_the_declared_length() {
+        let mut bytes = wrapper_header(32);
+        bytes.put_u32_le(OBJECT_MAGIC);
+        bytes.put_u32_le(BODY_VERSION);
+
+        let err = decode_message(bytes.freeze()).unwrap_err();
+        assert!(err.to_string().contains("body truncated"), "{err}");
     }
 
     #[test]

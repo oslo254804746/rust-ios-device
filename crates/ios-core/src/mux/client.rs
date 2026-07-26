@@ -70,7 +70,9 @@ impl MuxClient {
         device_id: u32,
         port: u16,
     ) -> Result<UsbmuxStream, MuxError> {
-        let be_port = port.to_be();
+        // usbmux always wants the port byte-swapped, matching go-ios Ntohs;
+        // `to_be()` is a no-op on big-endian hosts.
+        let be_port = port.swap_bytes();
         let req = ConnectRequest {
             message_type: "Connect",
             prog_name: "ios-rs",

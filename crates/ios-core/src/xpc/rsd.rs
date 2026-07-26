@@ -339,6 +339,16 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
     Ok(RsdHandshake { udid, services })
 }
 
+/// Ceiling on unmatched messages parked per stream while awaiting a reply id.
+///
+/// [`XpcConnection::recv_reply_on_stream`] holds on to every message that is not
+/// the reply it wants so a later `recv` can still see it. A device that never
+/// sends the awaited id would otherwise keep that queue growing for the lifetime
+/// of the connection, so an overlong backlog is treated as a protocol fault
+/// instead of being absorbed silently.
+#[cfg(feature = "tunnel")]
+const MAX_PENDING_MESSAGES_PER_STREAM: usize = 1024;
+
 /// A live XPC connection to an iOS 17+ service.
 #[cfg(feature = "tunnel")]
 pub struct XpcConnection<S> {
@@ -423,7 +433,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             if message.msg_id == msg_id {
                 return Ok(message);
             }
-            self.push_pending_message(stream_id, message);
+            self.push_pending_message(stream_id, message)?;
         }
     }
 
@@ -452,11 +462,20 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         decode_message(full.freeze())
     }
 
-    fn push_pending_message(&mut self, stream_id: u32, message: XpcMessage) {
-        self.pending_messages
-            .entry(stream_id)
-            .or_default()
-            .push_back(message);
+    fn push_pending_message(
+        &mut self,
+        stream_id: u32,
+        message: XpcMessage,
+    ) -> Result<(), XpcError> {
+        let pending = self.pending_messages.entry(stream_id).or_default();
+        if pending.len() >= MAX_PENDING_MESSAGES_PER_STREAM {
+            return Err(XpcError::Tls(format!(
+                "XPC: more than {MAX_PENDING_MESSAGES_PER_STREAM} unmatched messages \
+                 buffered on stream {stream_id} while waiting for a reply"
+            )));
+        }
+        pending.push_back(message);
+        Ok(())
     }
 
     fn pop_next_pending_message(&mut self, stream_id: u32) -> Option<XpcMessage> {
@@ -765,6 +784,63 @@ mod tests {
         .await
         .expect("bootstrap timed out")
         .unwrap();
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recv_reply_on_stream_rejects_an_unbounded_pending_backlog() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+
+            server
+                .write_all(&headers_frame(STREAM_SERVER_CLIENT))
+                .await
+                .unwrap();
+
+            // Every reply carries an id the caller is not waiting for, so each one
+            // is parked instead of returned.
+            let stray = encode_message(&XpcMessage {
+                flags: flags::ALWAYS_SET,
+                msg_id: 7,
+                body: None,
+            })
+            .unwrap();
+            for _ in 0..=MAX_PENDING_MESSAGES_PER_STREAM {
+                server
+                    .write_all(&data_frame(STREAM_SERVER_CLIENT, &stray))
+                    .await
+                    .unwrap();
+            }
+            server.flush().await.unwrap();
+        });
+
+        let framer = H2Framer::connect(client).await.unwrap();
+        let mut connection = XpcConnection::new(framer);
+        let err = timeout(
+            Duration::from_secs(5),
+            connection.recv_reply_on_stream(STREAM_SERVER_CLIENT, 99),
+        )
+        .await
+        .expect("the cap should trip instead of blocking forever")
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unmatched messages"), "{err}");
 
         server_task.await.unwrap();
     }

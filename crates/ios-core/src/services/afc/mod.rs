@@ -556,7 +556,16 @@ fn resolve_link_target(path: &str, info: &AfcFileInfo) -> String {
     let is_link = matches!(info.file_type.as_deref(), Some("S_IFLNK"));
     if is_link {
         if let Some(target) = &info.link_target {
-            return target.clone();
+            if target.starts_with('/') {
+                return target.clone();
+            }
+            // A relative target is relative to the link's own directory, not to
+            // the AFC root (pymobiledevice3 `resolve_path` joins it the same way).
+            return match path.rfind('/') {
+                Some(0) => format!("/{target}"),
+                Some(slash) => format!("{}/{target}", &path[..slash]),
+                None => target.clone(),
+            };
         }
     }
     path.to_string()
@@ -695,6 +704,28 @@ mod tests {
 
         let resolved = resolve_link_target("/var/mobile/link", &info);
         assert_eq!(resolved, "/var/mobile/real-file");
+    }
+
+    #[test]
+    fn test_resolve_link_target_joins_relative_target_to_the_links_directory() {
+        let mut raw = HashMap::new();
+        raw.insert("st_ifmt".to_string(), "S_IFLNK".to_string());
+        raw.insert("st_linktarget".to_string(), "real-file".to_string());
+        let info = parse_file_info("/var/mobile/link", raw);
+
+        let resolved = resolve_link_target("/var/mobile/link", &info);
+        assert_eq!(resolved, "/var/mobile/real-file");
+    }
+
+    #[test]
+    fn test_resolve_link_target_joins_relative_target_at_the_root() {
+        let mut raw = HashMap::new();
+        raw.insert("st_ifmt".to_string(), "S_IFLNK".to_string());
+        raw.insert("st_linktarget".to_string(), "real-file".to_string());
+        let info = parse_file_info("/link", raw);
+
+        let resolved = resolve_link_target("/link", &info);
+        assert_eq!(resolved, "/real-file");
     }
 
     #[test]
