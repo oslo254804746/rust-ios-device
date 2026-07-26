@@ -68,6 +68,12 @@ enum TunnelSub {
 }
 
 impl TunnelCmd {
+    /// `serve` auto-creates tunnels as devices appear and `list` only talks to
+    /// the HTTP manager, so neither needs a device attached at startup.
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        matches!(self.sub, TunnelSub::Start { .. } | TunnelSub::Stop { .. })
+    }
+
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         match self.sub {
             TunnelSub::Start {

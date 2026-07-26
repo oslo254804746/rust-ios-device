@@ -206,6 +206,7 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
+        Commands::Tunnel(command) => command.needs_default_udid(),
         _ => true,
     }
 }
@@ -694,5 +695,25 @@ mod tests {
 
         let http = Cli::try_parse_from(["ios", "wda", "status"]).expect("wda status should parse");
         assert!(!command_needs_default_udid(&http.command));
+    }
+
+    #[test]
+    fn tunnel_start_and_stop_resolve_default_udid_but_serve_and_list_do_not() {
+        let start =
+            Cli::try_parse_from(["ios", "tunnel", "start"]).expect("tunnel start should parse");
+        assert!(command_needs_default_udid(&start.command));
+
+        let stop =
+            Cli::try_parse_from(["ios", "tunnel", "stop"]).expect("tunnel stop should parse");
+        assert!(command_needs_default_udid(&stop.command));
+
+        // The manager daemon must come up with no device attached.
+        let serve =
+            Cli::try_parse_from(["ios", "tunnel", "serve"]).expect("tunnel serve should parse");
+        assert!(!command_needs_default_udid(&serve.command));
+
+        let list =
+            Cli::try_parse_from(["ios", "tunnel", "list"]).expect("tunnel list should parse");
+        assert!(!command_needs_default_udid(&list.command));
     }
 }
