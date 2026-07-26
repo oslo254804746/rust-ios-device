@@ -96,8 +96,9 @@ fn run_create_cert(
 
     std::fs::write(&der_path, &identity.certificate_der)?;
     std::fs::write(&pem_path, &identity.certificate_pem)?;
-    std::fs::write(&key_path, &identity.private_key_pem)?;
-    std::fs::write(&p12_path, &identity.pkcs12_der)?;
+    // The key PEM and the PKCS#12 bundle both carry the supervision private key.
+    ios_core::secret_file::write_secret(&key_path, &identity.private_key_pem)?;
+    ios_core::secret_file::write_secret(&p12_path, &identity.pkcs12_der)?;
 
     if json {
         println!(

@@ -70,6 +70,8 @@ pub(crate) mod pairing_transport;
 pub(crate) mod proto;
 #[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
+/// Owner-only persistence for files containing private-key material.
+pub mod secret_file;
 pub mod services;
 #[cfg(test)]
 pub(crate) mod test_util;

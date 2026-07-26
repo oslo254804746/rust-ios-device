@@ -606,23 +606,13 @@ pub fn save_pair_record(
         dict.insert("WiFiMACAddress".into(), Value::String(mac.to_string()));
     }
 
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                LockdownError::Protocol(format!(
-                    "failed to create pair record directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-    }
-
     let plist_value = Value::Dictionary(dict);
     let mut buf = Vec::new();
     plist::to_writer_xml(&mut buf, &plist_value)
         .map_err(|e| LockdownError::Protocol(format!("plist serialization failed: {e}")))?;
-    std::fs::write(path, &buf).map_err(|e| {
+    // Carries HostPrivateKey and RootPrivateKey; owner-only, like Apple's own
+    // /var/db/lockdown records.
+    crate::secret_file::write_secret(path, &buf).map_err(|e| {
         LockdownError::Protocol(format!(
             "failed to write pair record to {}: {e}",
             path.display()

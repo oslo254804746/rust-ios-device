@@ -59,11 +59,12 @@ impl PersistedCredentials {
     }
 
     /// Save to disk.
+    ///
+    /// Contains the Ed25519 host private-key seed, so it is written owner-only.
     pub fn save(&self, dir: &std::path::Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
         let path = Self::path_for(dir, &self.device_address);
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        crate::secret_file::write_secret(&path, json.as_bytes())
     }
 
     /// Load from disk by device address.
@@ -100,14 +101,17 @@ impl RemotePairingRecord {
         dir.join(format!("remote_{remote_identifier}.plist"))
     }
 
+    /// Save to disk.
+    ///
+    /// Contains the remote pairing private key, so it is written owner-only.
     pub fn save_for_identifier(
         &self,
         dir: &std::path::Path,
         remote_identifier: &str,
     ) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        plist::to_file_xml(Self::path_for_identifier(dir, remote_identifier), self)
-            .map_err(std::io::Error::other)
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, self).map_err(std::io::Error::other)?;
+        crate::secret_file::write_secret(&Self::path_for_identifier(dir, remote_identifier), &buf)
     }
 
     pub fn load_for_identifier(dir: &std::path::Path, remote_identifier: &str) -> Option<Self> {
