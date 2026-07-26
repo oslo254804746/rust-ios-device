@@ -456,18 +456,19 @@ mod tests {
 
     #[test]
     fn remote_symbol_output_path_trims_root_prefix_and_rejects_traversal() {
+        // Compare `Path`s rather than strings: the separator differs per host.
         let root = Path::new("/tmp/Symbols");
         assert_eq!(
-            remote_symbol_output_path(root, "/System/Library/Foo").to_string_lossy(),
-            "/tmp/Symbols/System/Library/Foo"
+            remote_symbol_output_path(root, "/System/Library/Foo"),
+            root.join("System").join("Library").join("Foo")
         );
         assert_eq!(
-            remote_symbol_output_path(root, "/System/../Library/Foo").to_string_lossy(),
-            "/tmp/Symbols/System/Library/Foo"
+            remote_symbol_output_path(root, "/System/../Library/Foo"),
+            root.join("System").join("Library").join("Foo")
         );
         assert_eq!(
-            remote_symbol_output_path(root, "../private/var").to_string_lossy(),
-            "/tmp/Symbols/private/var"
+            remote_symbol_output_path(root, "../private/var"),
+            root.join("private").join("var")
         );
     }
 }

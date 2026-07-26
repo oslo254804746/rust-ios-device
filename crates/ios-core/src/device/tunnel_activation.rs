@@ -11,10 +11,13 @@ use std::sync::Arc;
 #[cfg(feature = "tunnel")]
 use tokio::io::{AsyncRead, AsyncWrite};
 
+#[cfg(feature = "tunnel-kernel")]
+use super::attempt_rsd;
+#[cfg(feature = "tunnel-userspace")]
+use super::attempt_rsd_via_proxy;
 #[cfg(feature = "tunnel")]
 use super::{
-    attempt_rsd, attempt_rsd_via_proxy, ConnectedDevice, CoreError, DeviceInfo, LockdownTransport,
-    PairRecord, TUNNEL_HANDSHAKE_TIMEOUT,
+    ConnectedDevice, CoreError, DeviceInfo, LockdownTransport, PairRecord, TUNNEL_HANDSHAKE_TIMEOUT,
 };
 
 #[cfg(feature = "tunnel-kernel")]
