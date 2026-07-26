@@ -218,13 +218,19 @@ where
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
 
+/// Floor for a no-progress poll sleep.
+///
+/// smoltcp reports a zero delay whenever it wants to be polled again right away.
+/// This loop only sleeps once an iteration made no progress, so honouring a zero
+/// delay literally turns into a busy-spin on a core.
+const MIN_POLL_SLEEP: Duration = Duration::from_micros(50);
+
 fn smol_now() -> SmolInstant {
-    SmolInstant::from_millis(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64,
-    )
+    // smoltcp only needs a monotonic millisecond clock. Wall-clock time can step
+    // backwards (NTP correction, manual change), which wedges its timers.
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    SmolInstant::from_millis(start.elapsed().as_millis() as i64)
 }
 
 fn smoltcp_poll_sleep_duration(
@@ -235,14 +241,17 @@ fn smoltcp_poll_sleep_duration(
     // in the channel queue long enough to starve real-time streams like kperf/fps.
     if has_active_connections {
         return delay
-            .map(|delay| Duration::from_micros(delay.total_micros()).min(Duration::from_millis(1)))
+            .map(|delay| {
+                Duration::from_micros(delay.total_micros())
+                    .clamp(MIN_POLL_SLEEP, Duration::from_millis(1))
+            })
             .unwrap_or_else(|| Duration::from_millis(1));
     }
 
     // `None` means there is no internal timer deadline, but this loop still needs
     // to wake up periodically to observe channel activity.
     delay
-        .map(|delay| Duration::from_micros(delay.total_micros()))
+        .map(|delay| Duration::from_micros(delay.total_micros()).max(MIN_POLL_SLEEP))
         .unwrap_or_else(|| Duration::from_millis(1))
 }
 
@@ -636,7 +645,7 @@ mod tests {
     fn smoltcp_poll_sleep_duration_preserves_idle_smoltcp_backoff() {
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::ZERO), false),
-            Duration::ZERO
+            MIN_POLL_SLEEP
         );
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::from_micros(250)), false),
@@ -656,7 +665,7 @@ mod tests {
     fn smoltcp_poll_sleep_duration_keeps_active_connections_responsive() {
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::ZERO), true),
-            Duration::ZERO
+            MIN_POLL_SLEEP
         );
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::from_micros(250)), true),

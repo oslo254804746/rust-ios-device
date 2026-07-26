@@ -10,6 +10,7 @@ use ios_core::pcap::{
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Instant};
 
 #[derive(clap::Args)]
@@ -51,8 +52,13 @@ impl PcapCmd {
         let stream = device.connect_service(SERVICE_NAME).await?;
         let mut client = PcapClient::new(stream);
 
-        let mut file = std::fs::File::create(&self.output)?;
-        write_global_header(&mut file)?;
+        // The writer helpers build into any `std::io::Write`, so render each
+        // record into a buffer and hand it to async file I/O rather than
+        // blocking the runtime once per captured packet.
+        let mut file = tokio::fs::File::create(&self.output).await?;
+        let mut record = Vec::new();
+        write_global_header(&mut record)?;
+        file.write_all(&record).await?;
 
         let deadline = Instant::now() + Duration::from_secs(self.duration);
         let filter = PacketFilter {
@@ -77,7 +83,9 @@ impl PcapCmd {
             match timeout(remaining, client.next_packet()).await {
                 Ok(Ok(packet)) => {
                     if filter.matches(&packet) {
-                        write_packet_record(&mut file, &packet)?;
+                        record.clear();
+                        write_packet_record(&mut record, &packet)?;
+                        file.write_all(&record).await?;
                         written += 1;
                         capture_metadata.record(&packet);
                     }
@@ -86,6 +94,7 @@ impl PcapCmd {
                 Err(_) => break,
             }
         }
+        file.flush().await?;
 
         if self.json {
             let summary =

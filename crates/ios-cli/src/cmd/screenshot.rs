@@ -22,6 +22,14 @@ pub struct ScreenshotCmd {
         help = "Port for screenshot streaming mode"
     )]
     pub port: u16,
+    #[arg(
+        short = 'H',
+        long,
+        default_value = "127.0.0.1",
+        help = "Address to bind the screenshot stream to; the stream is unauthenticated, \
+                so only widen this on a network you trust"
+    )]
+    pub host: String,
 }
 
 impl ScreenshotCmd {
@@ -39,7 +47,9 @@ impl ScreenshotCmd {
     }
 
     async fn run_stream_server(&self, udid: &str) -> Result<()> {
-        let bind_addr = format!("0.0.0.0:{}", self.port);
+        // Loopback by default: the stream is a live, unauthenticated view of the
+        // device screen, and `forward` / `tunnel serve` bind loopback too.
+        let bind_addr = format!("{}:{}", self.host, self.port);
         let listener = TcpListener::bind(&bind_addr).await?;
         eprintln!("Serving screenshot stream on http://{bind_addr}/");
 

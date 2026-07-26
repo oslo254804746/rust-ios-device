@@ -90,7 +90,7 @@ async fn run_capture(
     };
     let stream = device.connect_service(SERVICE_NAME).await?;
     let mut client = BtPacketLoggerClient::new(stream);
-    let mut writer = CaptureOutput::create(&output)?;
+    let mut writer = CaptureOutput::create(&output).await?;
 
     if format == BtLoggerFormat::Pcapng {
         write_pcapng_header(&mut writer)?;
@@ -198,11 +198,16 @@ enum CaptureOutput {
 }
 
 impl CaptureOutput {
-    fn create(path: &PathBuf) -> Result<Self> {
+    /// Open the capture sink without blocking the runtime.
+    ///
+    /// The packet writes themselves go through `std::io::Write`, which is what
+    /// the pcap writer helpers take.
+    async fn create(path: &PathBuf) -> Result<Self> {
         if path.as_os_str() == std::ffi::OsStr::new("-") {
             Ok(Self::Stdout(std::io::stdout()))
         } else {
-            Ok(Self::File(std::fs::File::create(path)?))
+            let file = tokio::fs::File::create(path).await?;
+            Ok(Self::File(file.into_std().await))
         }
     }
 }

@@ -45,6 +45,7 @@ impl DiscoverCmd {
 
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
                 let mut devices = Vec::new();
+                let mut found = 0usize;
 
                 while let Ok(Some(device)) = tokio::time::timeout_at(deadline, stream.next()).await
                 {
@@ -61,11 +62,12 @@ impl DiscoverCmd {
                             device.udid, device.ipv6, device.rsd_port, device.name
                         );
                     }
+                    found += 1;
                 }
 
                 if json {
                     println!("{}", serde_json::to_string_pretty(&devices)?);
-                } else if devices.is_empty() {
+                } else if found == 0 {
                     println!("No mDNS devices discovered within {timeout}s.");
                 }
             }

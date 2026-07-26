@@ -22,6 +22,11 @@ enum HttpProxySub {
         p12: PathBuf,
         #[arg(long, env = "P12_PASSWORD", help = "Password for the .p12 file")]
         password: Option<String>,
+        #[arg(
+            long,
+            help = "Required confirmation: this routes all device traffic through the proxy"
+        )]
+        force: bool,
     },
     /// Remove the global HTTP proxy profile installed by this tool
     Remove,
@@ -50,7 +55,13 @@ impl HttpProxyCmd {
                 port,
                 p12,
                 password,
+                force,
             } => {
+                crate::output::require_force(
+                    force,
+                    "install a device-wide HTTP proxy profile",
+                    "every app's traffic is redirected through the proxy until it is removed",
+                )?;
                 let profile = build_http_proxy_profile(&host, port)?;
                 let p12_bytes = std::fs::read(&p12)
                     .with_context(|| format!("failed to read {}", p12.display()))?;

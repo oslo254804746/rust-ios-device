@@ -197,7 +197,11 @@ where
         new_password: Option<&str>,
     ) -> Result<(), Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
-        let layout = create_runtime_layout(backup_root, target_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = target_identifier.to_owned();
+            run_blocking(move || create_runtime_layout(&root, &id)).await?
+        };
 
         self.device_link
             .send_process_message(&ChangePasswordRequest {
@@ -220,9 +224,18 @@ where
         options: RestoreOptions<'_>,
     ) -> Result<RestoreResult, Mobilebackup2Error> {
         let source_identifier = options.source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, source_identifier)?;
-        let layout = create_runtime_layout(backup_root, source_identifier)?;
-        let manifest = read_backup_dictionary(&layout.device_directory.join("Manifest.plist"))?;
+        let (layout, manifest) = {
+            let root = backup_root.to_path_buf();
+            let id = source_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                let layout = create_runtime_layout(&root, &id)?;
+                let manifest =
+                    read_backup_dictionary(&layout.device_directory.join("Manifest.plist"))?;
+                Ok((layout, manifest))
+            })
+            .await?
+        };
         let password = if manifest
             .get("IsEncrypted")
             .and_then(plist_value_to_bool)
@@ -271,8 +284,15 @@ where
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
         let layout_identifier = source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, layout_identifier)?;
-        let layout = create_runtime_layout(backup_root, layout_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = layout_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
 
         self.device_link
             .send_process_message(&InfoRequest {
@@ -294,8 +314,15 @@ where
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
         let source_identifier = source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, source_identifier)?;
-        let layout = create_runtime_layout(backup_root, source_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = source_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
 
         self.device_link
             .send_process_message(&ListRequest {
@@ -406,7 +433,9 @@ where
                         .await?;
                 }
                 "DLMessageGetFreeDiskSpace" => {
-                    let free_bytes = available_space(&layout.device_directory)?;
+                    let device_directory = layout.device_directory.clone();
+                    let free_bytes =
+                        run_blocking(move || available_space(&device_directory)).await?;
                     self.send_status_response(0, "", plist::Value::Integer(free_bytes.into()))
                         .await?;
                 }
@@ -781,6 +810,21 @@ pub fn backup_status_is_full(device_directory: &Path) -> Result<bool, Mobileback
         .get("IsFullBackup")
         .and_then(plist_value_to_bool)
         .unwrap_or(false))
+}
+
+/// Run a synchronous filesystem step off the runtime's worker threads.
+///
+/// The helpers below stat, create and parse files on disk; calling them
+/// directly from an async fn blocks the reactor, which the `backup()` path
+/// already avoids via `spawn_blocking`.
+async fn run_blocking<T, F>(op: F) -> Result<T, Mobilebackup2Error>
+where
+    F: FnOnce() -> Result<T, Mobilebackup2Error> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .map_err(|err| Mobilebackup2Error::Io(std::io::Error::other(err.to_string())))?
 }
 
 fn create_runtime_layout(

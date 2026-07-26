@@ -68,12 +68,13 @@ impl SymbolsCmd {
                 output,
                 max_bytes,
             } => {
-                let file = create_output(&output)?;
+                let file = create_output(&output).await?;
                 let bytes = client.download(index, file, max_bytes).await?;
                 render_pull(index, &output, bytes, max_bytes.is_some(), json)
             }
             SymbolsSub::Download { output_dir } => {
-                std::fs::create_dir_all(&output_dir)
+                tokio::fs::create_dir_all(&output_dir)
+                    .await
                     .with_context(|| format!("failed to create {}", output_dir.display()))?;
                 let files = client.list_files().await?;
                 let mut downloaded = std::collections::HashSet::<PathBuf>::new();
@@ -82,17 +83,9 @@ impl SymbolsCmd {
                     let output =
                         ios_core::fetchsymbols::remote_symbol_output_path(&output_dir, remote_path);
                     if downloaded.insert(output.clone()) {
-                        let _ = std::fs::remove_file(&output);
+                        let _ = tokio::fs::remove_file(&output).await;
                     }
-                    if let Some(parent) = output.parent() {
-                        std::fs::create_dir_all(parent)
-                            .with_context(|| format!("failed to create {}", parent.display()))?;
-                    }
-                    let file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&output)
-                        .with_context(|| format!("failed to open {}", output.display()))?;
+                    let file = open_append(&output).await?;
                     total += client.download(index as u32, file, None).await?;
                 }
                 render_download(&output_dir, files.len(), total, json)
@@ -132,12 +125,13 @@ impl SymbolsCmd {
                 output,
                 max_bytes,
             } => {
-                let file = create_output(&output)?;
+                let file = create_output(&output).await?;
                 let bytes = client.download(index, file, max_bytes).await?;
                 render_pull(index, &output, bytes, max_bytes.is_some(), json)
             }
             SymbolsSub::Download { output_dir } => {
-                std::fs::create_dir_all(&output_dir)
+                tokio::fs::create_dir_all(&output_dir)
+                    .await
                     .with_context(|| format!("failed to create {}", output_dir.display()))?;
                 let files = client.list_files().await?;
                 let mut total = 0u64;
@@ -146,11 +140,7 @@ impl SymbolsCmd {
                         &output_dir,
                         &remote_file.path,
                     );
-                    if let Some(parent) = output.parent() {
-                        std::fs::create_dir_all(parent)
-                            .with_context(|| format!("failed to create {}", parent.display()))?;
-                    }
-                    let file = create_output(&output)?;
+                    let file = create_output(&output).await?;
                     total += client
                         .download_known(index as u32, remote_file, file, None)
                         .await?;
@@ -161,14 +151,41 @@ impl SymbolsCmd {
     }
 }
 
-fn create_output(output: &Path) -> Result<std::fs::File> {
+/// Open the download sink without blocking the runtime.
+///
+/// The download itself streams into a `std::io::Write`, which is the sink type
+/// `fetchsymbols` takes.
+async fn create_output(output: &Path) -> Result<std::fs::File> {
     if let Some(parent) = output.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
+            tokio::fs::create_dir_all(parent)
+                .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
     }
-    std::fs::File::create(output).with_context(|| format!("failed to create {}", output.display()))
+    let file = tokio::fs::File::create(output)
+        .await
+        .with_context(|| format!("failed to create {}", output.display()))?;
+    Ok(file.into_std().await)
+}
+
+/// Same as [`create_output`], but appends so a symbol file split across several
+/// remote entries accumulates instead of being truncated each time.
+async fn open_append(output: &Path) -> Result<std::fs::File> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output)
+        .await
+        .with_context(|| format!("failed to open {}", output.display()))?;
+    Ok(file.into_std().await)
 }
 
 fn render_list(files: Vec<String>, json: bool) -> Result<()> {

@@ -10,9 +10,11 @@ pub struct EraseCmd {
 
 impl EraseCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
-        if !self.force {
-            return Err(anyhow::anyhow!("refusing to erase device without --force"));
-        }
+        crate::output::require_force(
+            self.force,
+            "erase device",
+            "all user data is destroyed and the device reboots",
+        )?;
 
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for erase"))?;
         let device = connect(

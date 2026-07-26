@@ -89,6 +89,8 @@ enum BackupSubcommand {
         remove: bool,
         #[arg(long)]
         skip_apps: bool,
+        #[arg(long, help = "Required confirmation: restoring overwrites device data")]
+        force: bool,
     },
     /// Change or enable the backup password used by MobileBackup2
     ChangePassword {
@@ -129,7 +131,13 @@ impl BackupCmd {
                 settings,
                 remove,
                 skip_apps,
+                force,
             } => {
+                crate::output::require_force(
+                    force,
+                    "restore this backup",
+                    "existing device data is overwritten and the device reboots",
+                )?;
                 run_restore(
                     &udid,
                     &backup_directory,
