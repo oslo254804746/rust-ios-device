@@ -6,7 +6,8 @@
 ///   - String:     0x40 | len (if len < 0x20), then bytes; or 0x61 + u8 len + bytes
 ///   - Bytes:      0x70..0x7F (len 0..15), 0x80..0x8F (len 16..31),
 ///     or 0x91 + u8 len + bytes
-///   - Integer:    0x08..0x0F (single byte values), 0x30 (i8), 0x31 (i16 le), etc.
+///   - Integer:    0x08..0x2F (immediate values 0..39), 0x30 (i8), 0x31 (i16 le),
+///     0x32 (i32 le), 0x33 (i64 le)
 ///   - Bool:       0x01 = true, 0x02 = false
 ///   - Null:       0x04
 #[derive(Debug, Clone, PartialEq)]
@@ -138,7 +139,9 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
         0x04 => Ok((OpackValue::Null, pos + 1)),
         0x01 => Ok((OpackValue::Bool(true), pos + 1)),
         0x02 => Ok((OpackValue::Bool(false), pos + 1)),
-        0x08..=0x0F => Ok((OpackValue::Int((tag - 0x08) as i64), pos + 1)),
+        // Immediate small integers 0..=39. Apple's encoder emits the shortest form, so a
+        // device-supplied `20` arrives as the single byte 0x1C.
+        0x08..=0x2F => Ok((OpackValue::Int((tag - 0x08) as i64), pos + 1)),
         0x30 => {
             if pos + 2 > buf.len() {
                 return Err(OpackError::UnexpectedEof);
@@ -152,6 +155,13 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
             let n = i16::from_le_bytes([buf[pos + 1], buf[pos + 2]]);
             Ok((OpackValue::Int(n as i64), pos + 3))
         }
+        0x32 => {
+            if pos + 5 > buf.len() {
+                return Err(OpackError::UnexpectedEof);
+            }
+            let n = i32::from_le_bytes([buf[pos + 1], buf[pos + 2], buf[pos + 3], buf[pos + 4]]);
+            Ok((OpackValue::Int(n as i64), pos + 5))
+        }
         0x33 => {
             if pos + 9 > buf.len() {
                 return Err(OpackError::UnexpectedEof);
@@ -160,7 +170,9 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
             arr.copy_from_slice(&buf[pos + 1..pos + 9]);
             Ok((OpackValue::Int(i64::from_le_bytes(arr)), pos + 9))
         }
-        0x40..=0x5F => {
+        // Immediate strings of length 0..=32 (the encoder only ever emits up to 31, but
+        // Apple's encoder uses the full range).
+        0x40..=0x60 => {
             let len = (tag - 0x40) as usize;
             if pos + 1 + len > buf.len() {
                 return Err(OpackError::UnexpectedEof);
@@ -193,18 +205,9 @@ fn decode_at(buf: &[u8], pos: usize) -> Result<(OpackValue, usize), OpackError> 
                 .map_err(|_| OpackError::InvalidUtf8)?;
             Ok((OpackValue::String(s.to_string()), pos + 3 + len))
         }
-        0x70..=0x7F => {
+        // Immediate byte strings of length 0..=32.
+        0x70..=0x90 => {
             let len = (tag - 0x70) as usize;
-            if pos + 1 + len > buf.len() {
-                return Err(OpackError::UnexpectedEof);
-            }
-            Ok((
-                OpackValue::Bytes(buf[pos + 1..pos + 1 + len].to_vec()),
-                pos + 1 + len,
-            ))
-        }
-        0x80..=0x8F => {
-            let len = 0x10 + (tag - 0x80) as usize;
             if pos + 1 + len > buf.len() {
                 return Err(OpackError::UnexpectedEof);
             }
@@ -281,6 +284,39 @@ mod tests {
             roundtrip(OpackValue::Int(i64::MIN)),
             OpackValue::Int(i64::MIN)
         );
+    }
+
+    #[test]
+    fn decodes_minimal_integer_encodings_from_devices() {
+        // Apple's encoder emits the shortest form; our encoder does not, so these tags only
+        // ever arrive from a device.
+        for n in 0i64..=39 {
+            let tag = 0x08u8 + n as u8;
+            let (decoded, used) = decode(&[tag]).expect("immediate int should decode");
+            assert_eq!(decoded, OpackValue::Int(n));
+            assert_eq!(used, 1);
+        }
+
+        let mut encoded = vec![0x32];
+        encoded.extend_from_slice(&(-123_456i32).to_le_bytes());
+        let (decoded, used) = decode(&encoded).expect("i32 should decode");
+        assert_eq!(decoded, OpackValue::Int(-123_456));
+        assert_eq!(used, encoded.len());
+    }
+
+    #[test]
+    fn decodes_maximum_immediate_string_and_bytes_tags() {
+        let mut encoded = vec![0x60];
+        encoded.extend_from_slice(&[b'x'; 32]);
+        let (decoded, used) = decode(&encoded).expect("32-byte string should decode");
+        assert_eq!(decoded, OpackValue::String("x".repeat(32)));
+        assert_eq!(used, encoded.len());
+
+        let mut encoded = vec![0x90];
+        encoded.extend_from_slice(&sample_bytes(32));
+        let (decoded, used) = decode(&encoded).expect("32-byte data should decode");
+        assert_eq!(decoded, OpackValue::Bytes(sample_bytes(32)));
+        assert_eq!(used, encoded.len());
     }
 
     #[test]
