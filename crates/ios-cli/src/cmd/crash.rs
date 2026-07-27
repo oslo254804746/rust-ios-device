@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use comfy_table::{presets::UTF8_FULL, Table};
@@ -30,6 +31,8 @@ enum CrashSub {
         report: String,
         #[arg(help = "Optional local destination path")]
         local: Option<String>,
+        #[arg(long, help = "Overwrite the local destination if it already exists")]
+        force: bool,
     },
     /// Print a crash report to stdout
     Show {
@@ -44,6 +47,8 @@ enum CrashSub {
         pattern: String,
         #[arg(help = "Optional local destination directory", default_value = ".")]
         local_dir: String,
+        #[arg(long, help = "Overwrite local files that already exist")]
+        force: bool,
     },
     /// Remove matching crash reports from the device
     Rm {
@@ -95,7 +100,15 @@ impl CrashCmd {
                     println!("{table}");
                 }
             }
-            CrashSub::Pull { report, local } => {
+            CrashSub::Pull {
+                report,
+                local,
+                force,
+            } => {
+                let local_path = local.unwrap_or_else(|| default_local_path(&report));
+                // Checked before the transfer so a doomed pull costs nothing.
+                crate::cmd::file::ensure_local_overwrite_allowed(Path::new(&local_path), force)?;
+
                 let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
                 prepare_reports(&mut mover).await?;
 
@@ -104,7 +117,6 @@ impl CrashCmd {
                     .await?;
                 let mut client = CrashReportClient::new(stream);
                 let data = client.read_report(&report).await?;
-                let local_path = local.unwrap_or_else(|| default_local_path(&report));
                 fs::write(&local_path, &data).await?;
                 println!("Downloaded {} bytes to {}", data.len(), local_path);
             }
@@ -124,7 +136,11 @@ impl CrashCmd {
                     print!("{text}");
                 }
             }
-            CrashSub::PullAll { pattern, local_dir } => {
+            CrashSub::PullAll {
+                pattern,
+                local_dir,
+                force,
+            } => {
                 let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
                 prepare_reports(&mut mover).await?;
 
@@ -135,9 +151,12 @@ impl CrashCmd {
                 let reports = client.list_reports(Some(&pattern)).await?;
 
                 fs::create_dir_all(&local_dir).await?;
+                let mut taken = HashSet::new();
                 for report in reports {
+                    let local_path =
+                        unique_local_path(Path::new(&local_dir), &report.path, &mut taken);
+                    crate::cmd::file::ensure_local_overwrite_allowed(&local_path, force)?;
                     let data = client.read_report(&report.path).await?;
-                    let local_path = Path::new(&local_dir).join(default_local_path(&report.path));
                     fs::write(&local_path, &data).await?;
                     println!(
                         "Downloaded {} bytes to {}",
@@ -173,6 +192,41 @@ fn default_local_path(report: &str) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| report.to_string())
+}
+
+/// Pick a destination inside `local_dir` that no earlier report in this run claimed.
+///
+/// Reports keep their device directory structure, so `pull-all` flattening to
+/// basenames makes same-named reports from different directories collide; without
+/// a suffix the last download would be the only one left on disk.
+fn unique_local_path(local_dir: &Path, report: &str, taken: &mut HashSet<PathBuf>) -> PathBuf {
+    let file_name = default_local_path(report);
+    let candidate = local_dir.join(&file_name);
+    if taken.insert(candidate.clone()) {
+        return candidate;
+    }
+
+    let name = Path::new(&file_name);
+    let stem = name
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.clone());
+    let extension = name
+        .extension()
+        .map(|extension| extension.to_string_lossy().into_owned());
+
+    let mut suffix = 1u32;
+    loop {
+        let candidate_name = match &extension {
+            Some(extension) => format!("{stem}-{suffix}.{extension}"),
+            None => format!("{stem}-{suffix}"),
+        };
+        let candidate = local_dir.join(candidate_name);
+        if taken.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn decode_report_text(data: &[u8]) -> Result<String> {
@@ -230,10 +284,24 @@ mod tests {
     fn parses_crash_pull_subcommand() {
         let cmd = TestCli::parse_from(["crash", "pull", "Example.ips", "local.ips"]);
         match cmd.command {
-            CrashSub::Pull { report, local } => {
+            CrashSub::Pull {
+                report,
+                local,
+                force,
+            } => {
                 assert_eq!(report, "Example.ips");
                 assert_eq!(local.as_deref(), Some("local.ips"));
+                assert!(!force);
             }
+            _ => panic!("expected pull subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_crash_pull_force_flag() {
+        let cmd = TestCli::parse_from(["crash", "pull", "Example.ips", "local.ips", "--force"]);
+        match cmd.command {
+            CrashSub::Pull { force, .. } => assert!(force),
             _ => panic!("expected pull subcommand"),
         }
     }
@@ -254,9 +322,14 @@ mod tests {
     fn parses_crash_pull_all_subcommand_with_defaults() {
         let cmd = TestCli::parse_from(["crash", "pull-all"]);
         match cmd.command {
-            CrashSub::PullAll { pattern, local_dir } => {
+            CrashSub::PullAll {
+                pattern,
+                local_dir,
+                force,
+            } => {
                 assert_eq!(pattern, "*");
                 assert_eq!(local_dir, ".");
+                assert!(!force);
             }
             _ => panic!("expected pull-all subcommand"),
         }
@@ -264,11 +337,16 @@ mod tests {
 
     #[test]
     fn parses_crash_pull_all_subcommand_with_args() {
-        let cmd = TestCli::parse_from(["crash", "pull-all", "*.ips", "exports"]);
+        let cmd = TestCli::parse_from(["crash", "pull-all", "*.ips", "exports", "--force"]);
         match cmd.command {
-            CrashSub::PullAll { pattern, local_dir } => {
+            CrashSub::PullAll {
+                pattern,
+                local_dir,
+                force,
+            } => {
                 assert_eq!(pattern, "*.ips");
                 assert_eq!(local_dir, "exports");
+                assert!(force);
             }
             _ => panic!("expected pull-all subcommand"),
         }
@@ -297,6 +375,33 @@ mod tests {
         assert_eq!(
             super::default_local_path("./foo/Example.ips"),
             "Example.ips"
+        );
+    }
+
+    #[test]
+    fn unique_local_path_suffixes_colliding_basenames() {
+        let dir = std::path::Path::new("exports");
+        let mut taken = std::collections::HashSet::new();
+
+        assert_eq!(
+            super::unique_local_path(dir, "./Foo/Example.ips", &mut taken),
+            dir.join("Example.ips")
+        );
+        assert_eq!(
+            super::unique_local_path(dir, "./Bar/Example.ips", &mut taken),
+            dir.join("Example-1.ips")
+        );
+        assert_eq!(
+            super::unique_local_path(dir, "./Baz/Example.ips", &mut taken),
+            dir.join("Example-2.ips")
+        );
+        assert_eq!(
+            super::unique_local_path(dir, "./Foo/stacks", &mut taken),
+            dir.join("stacks")
+        );
+        assert_eq!(
+            super::unique_local_path(dir, "./Bar/stacks", &mut taken),
+            dir.join("stacks-1")
         );
     }
 

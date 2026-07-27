@@ -180,6 +180,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub const LOCK_EXCLUSIVE: u64 = 2 | 4;
     pub const LOCK_UNLOCK: u64 = 8 | 4;
 
+    /// Ceiling for the whole-file-into-memory helpers.
+    pub const MAX_IN_MEMORY_FILE: usize = 256 * 1024 * 1024;
+
     pub fn new(stream: S) -> Self {
         // go-ios uses atomic.Add(1) which returns 1 on first call.
         // Devices may reject packet_num=0 for some operations.
@@ -357,6 +360,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     }
 
     /// Read an entire file into memory.
+    ///
+    /// Refuses files above [`Self::MAX_IN_MEMORY_FILE`]; the device decides how
+    /// much it sends, and go-ios streams straight to disk for exactly that
+    /// reason. Use [`Self::file_read`] in a loop for anything larger.
     pub async fn read_file(&mut self, path: &str) -> Result<Bytes, AfcError> {
         let fd = self.file_open(path, Self::FILE_MODE_READ_ONLY).await?; // READ_ONLY
         let mut data = BytesMut::new();
@@ -365,6 +372,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             let buf = self.file_read(fd, chunk).await?;
             if buf.is_empty() {
                 break;
+            }
+            if data.len() + buf.len() > Self::MAX_IN_MEMORY_FILE {
+                self.file_close(fd).await?;
+                return Err(AfcError::Protocol(format!(
+                    "{path} exceeds the {} byte in-memory read limit",
+                    Self::MAX_IN_MEMORY_FILE
+                )));
             }
             data.extend_from_slice(&buf);
         }
@@ -542,7 +556,16 @@ fn resolve_link_target(path: &str, info: &AfcFileInfo) -> String {
     let is_link = matches!(info.file_type.as_deref(), Some("S_IFLNK"));
     if is_link {
         if let Some(target) = &info.link_target {
-            return target.clone();
+            if target.starts_with('/') {
+                return target.clone();
+            }
+            // A relative target is relative to the link's own directory, not to
+            // the AFC root (pymobiledevice3 `resolve_path` joins it the same way).
+            return match path.rfind('/') {
+                Some(0) => format!("/{target}"),
+                Some(slash) => format!("{}/{target}", &path[..slash]),
+                None => target.clone(),
+            };
         }
     }
     path.to_string()
@@ -681,6 +704,28 @@ mod tests {
 
         let resolved = resolve_link_target("/var/mobile/link", &info);
         assert_eq!(resolved, "/var/mobile/real-file");
+    }
+
+    #[test]
+    fn test_resolve_link_target_joins_relative_target_to_the_links_directory() {
+        let mut raw = HashMap::new();
+        raw.insert("st_ifmt".to_string(), "S_IFLNK".to_string());
+        raw.insert("st_linktarget".to_string(), "real-file".to_string());
+        let info = parse_file_info("/var/mobile/link", raw);
+
+        let resolved = resolve_link_target("/var/mobile/link", &info);
+        assert_eq!(resolved, "/var/mobile/real-file");
+    }
+
+    #[test]
+    fn test_resolve_link_target_joins_relative_target_at_the_root() {
+        let mut raw = HashMap::new();
+        raw.insert("st_ifmt".to_string(), "S_IFLNK".to_string());
+        raw.insert("st_linktarget".to_string(), "real-file".to_string());
+        let info = parse_file_info("/link", raw);
+
+        let resolved = resolve_link_target("/link", &info);
+        assert_eq!(resolved, "/real-file");
     }
 
     #[test]

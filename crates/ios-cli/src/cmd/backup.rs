@@ -52,7 +52,10 @@ enum BackupSubcommand {
     /// Create a MobileBackup2 backup in the given directory
     Create {
         output_dir: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Force a full backup. Without this flag, valid existing metadata is used for incremental backup; empty or incomplete backup directories automatically use full mode."
+        )]
         full: bool,
     },
     /// Query metadata for an existing MobileBackup2 backup
@@ -86,6 +89,8 @@ enum BackupSubcommand {
         remove: bool,
         #[arg(long)]
         skip_apps: bool,
+        #[arg(long, help = "Required confirmation: restoring overwrites device data")]
+        force: bool,
     },
     /// Change or enable the backup password used by MobileBackup2
     ChangePassword {
@@ -126,7 +131,13 @@ impl BackupCmd {
                 settings,
                 remove,
                 skip_apps,
+                force,
             } => {
+                crate::output::require_force(
+                    force,
+                    "restore this backup",
+                    "existing device data is overwritten and the device reboots",
+                )?;
                 run_restore(
                     &udid,
                     &backup_directory,
@@ -261,6 +272,7 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
     let release_result = release_backup_lock(&mut afc, &mut notification_proxy, lock_handle).await;
     let result = backup_result?;
     release_result?;
+    let full_backup = ios_core::backup2::backup_status_is_full(&result.layout.device_directory)?;
 
     if json {
         println!(
@@ -269,7 +281,8 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
                 "device_directory": result.layout.device_directory,
                 "device_link_version": result.device_link_version,
                 "protocol_version": result.protocol_version,
-                "full_backup": full,
+                "full_backup": full_backup,
+                "requested_full_backup": full,
             }))?
         );
     } else {
@@ -282,6 +295,7 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
             "ProtocolVersion: {}",
             format_protocol_version(result.protocol_version)
         );
+        println!("FullBackup: {full_backup}");
     }
 
     Ok(())

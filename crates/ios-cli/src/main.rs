@@ -59,6 +59,8 @@ enum Commands {
     Apps(cmd::apps::AppsCmd),
     /// MobileBackup2 service helpers
     Backup(cmd::backup::BackupCmd),
+    /// Capture Bluetooth HCI traffic via BTPacketLogger
+    Btlogger(cmd::btlogger::BtLoggerCmd),
     /// Read battery status via lockdown
     Batterycheck(cmd::batterycheck::BatterycheckCmd),
     /// Read detailed battery IORegistry values via diagnostics relay
@@ -156,6 +158,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Rsd(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Apps(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Backup(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Btlogger(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Batterycheck(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Batteryregistry(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Companion(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -203,6 +206,7 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
+        Commands::Tunnel(command) => command.needs_default_udid(),
         _ => true,
     }
 }
@@ -691,5 +695,25 @@ mod tests {
 
         let http = Cli::try_parse_from(["ios", "wda", "status"]).expect("wda status should parse");
         assert!(!command_needs_default_udid(&http.command));
+    }
+
+    #[test]
+    fn tunnel_start_and_stop_resolve_default_udid_but_serve_and_list_do_not() {
+        let start =
+            Cli::try_parse_from(["ios", "tunnel", "start"]).expect("tunnel start should parse");
+        assert!(command_needs_default_udid(&start.command));
+
+        let stop =
+            Cli::try_parse_from(["ios", "tunnel", "stop"]).expect("tunnel stop should parse");
+        assert!(command_needs_default_udid(&stop.command));
+
+        // The manager daemon must come up with no device attached.
+        let serve =
+            Cli::try_parse_from(["ios", "tunnel", "serve"]).expect("tunnel serve should parse");
+        assert!(!command_needs_default_udid(&serve.command));
+
+        let list =
+            Cli::try_parse_from(["ios", "tunnel", "list"]).expect("tunnel list should parse");
+        assert!(!command_needs_default_udid(&list.command));
     }
 }

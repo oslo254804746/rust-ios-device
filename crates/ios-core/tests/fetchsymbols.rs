@@ -95,7 +95,6 @@ async fn remote_list_files_bootstraps_xpc_and_decodes_catalog() {
             remote_catalog_entry("/System/Library/Caches/com.apple.dyld/foo.symbols", 7),
         )
         .await;
-        read_window_update_pair(&mut server, 2).await;
     });
 
     let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
@@ -141,7 +140,6 @@ async fn remote_download_opens_file_stream_and_copies_bytes() {
         write_file_transfer_request(&mut server, 4).await;
         write_xpc_response(&mut server, 3, remote_catalog_entry("/second", 11)).await;
 
-        read_window_update_pair(&mut server, 4).await;
         read_headers_frame(&mut server, 4).await;
         let open = read_xpc_request(&mut server, 4).await;
         assert_eq!(
@@ -151,12 +149,6 @@ async fn remote_download_opens_file_stream_and_copies_bytes() {
         assert!(open.body.is_none());
 
         write_data_frame(&mut server, 4, b"hello world").await;
-        let conn_window = read_raw_frame(&mut server).await;
-        assert_eq!(conn_window.frame_type, 0x08);
-        assert_eq!(conn_window.stream_id, 0);
-        let stream_window = read_raw_frame(&mut server).await;
-        assert_eq!(stream_window.frame_type, 0x08);
-        assert_eq!(stream_window.stream_id, 4);
     });
 
     let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(client)
@@ -184,15 +176,15 @@ where
         .unwrap();
     assert_eq!(&preface, H2_PREFACE);
 
-    let settings = read_raw_frame(stream).await;
+    let settings = read_any_raw_frame(stream).await;
     assert_eq!(settings.frame_type, 0x04);
 
-    let window_update = read_raw_frame(stream).await;
+    let window_update = read_any_raw_frame(stream).await;
     assert_eq!(window_update.frame_type, 0x08);
 
     write_raw_frame(stream, 0x04, 0, 0, &[]).await;
 
-    let settings_ack = read_raw_frame(stream).await;
+    let settings_ack = read_any_raw_frame(stream).await;
     assert_eq!(settings_ack.frame_type, 0x04);
     assert_eq!(settings_ack.flags, 0x01);
 }
@@ -369,19 +361,6 @@ where
     .await;
 }
 
-async fn read_window_update_pair<S>(stream: &mut S, stream_id: u32)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let conn_window = read_raw_frame(stream).await;
-    assert_eq!(conn_window.frame_type, 0x08);
-    assert_eq!(conn_window.stream_id, 0);
-
-    let stream_window = read_raw_frame(stream).await;
-    assert_eq!(stream_window.frame_type, 0x08);
-    assert_eq!(stream_window.stream_id, stream_id);
-}
-
 async fn write_raw_frame<S>(
     stream: &mut S,
     frame_type: u8,
@@ -406,7 +385,24 @@ async fn write_raw_frame<S>(
     tokio::io::AsyncWriteExt::flush(stream).await.unwrap();
 }
 
+/// Read the next frame that carries protocol content.
+///
+/// The client replenishes the HTTP/2 receive window once enough data has
+/// accumulated on a stream, so WINDOW_UPDATE frames can appear anywhere in the
+/// traffic these tests care about. Flow control has its own `h2_raw` unit tests.
 async fn read_raw_frame<S>(stream: &mut S) -> TestFrame
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    loop {
+        let frame = read_any_raw_frame(stream).await;
+        if frame.frame_type != 0x08 {
+            return frame;
+        }
+    }
+}
+
+async fn read_any_raw_frame<S>(stream: &mut S) -> TestFrame
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {

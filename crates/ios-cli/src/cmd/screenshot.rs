@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 use bytes::Bytes;
 use ios_core::screenshot::{ScreenshotFormat, ScreenshotImage};
@@ -9,6 +11,8 @@ use tokio::time::{sleep, Duration};
 pub struct ScreenshotCmd {
     #[arg(short, long, default_value = "screenshot.png")]
     pub output: String,
+    #[arg(long, help = "Overwrite the output file if it already exists")]
+    pub force: bool,
     #[arg(short = 'j', long, help = "Output JSON metadata")]
     pub json: bool,
     #[arg(
@@ -22,6 +26,14 @@ pub struct ScreenshotCmd {
         help = "Port for screenshot streaming mode"
     )]
     pub port: u16,
+    #[arg(
+        short = 'H',
+        long,
+        default_value = "127.0.0.1",
+        help = "Address to bind the screenshot stream to; the stream is unauthenticated, \
+                so only widen this on a network you trust"
+    )]
+    pub host: String,
 }
 
 impl ScreenshotCmd {
@@ -32,6 +44,9 @@ impl ScreenshotCmd {
             return self.run_stream_server(&udid).await;
         }
 
+        // Checked before the capture so a doomed shot costs nothing; stream mode
+        // writes no file and is deliberately not guarded.
+        crate::cmd::file::ensure_local_overwrite_allowed(Path::new(&self.output), self.force)?;
         let (image, transport) = capture_screenshot(&udid).await?;
         tokio::fs::write(&self.output, &image.data).await?;
         print_screenshot_result(&self.output, &image, transport, self.json)?;
@@ -39,7 +54,9 @@ impl ScreenshotCmd {
     }
 
     async fn run_stream_server(&self, udid: &str) -> Result<()> {
-        let bind_addr = format!("0.0.0.0:{}", self.port);
+        // Loopback by default: the stream is a live, unauthenticated view of the
+        // device screen, and `forward` / `tunnel serve` bind loopback too.
+        let bind_addr = format!("{}:{}", self.host, self.port);
         let listener = TcpListener::bind(&bind_addr).await?;
         eprintln!("Serving screenshot stream on http://{bind_addr}/");
 
@@ -175,7 +192,14 @@ mod tests {
         assert_eq!(cmd.command.output, "shot.png");
         assert!(cmd.command.json);
         assert!(!cmd.command.stream);
+        assert!(!cmd.command.force);
         assert_eq!(cmd.command.port, 3333);
+    }
+
+    #[test]
+    fn parses_screenshot_force_flag() {
+        let cmd = TestCli::parse_from(["screenshot", "--output", "shot.png", "--force"]);
+        assert!(cmd.command.force);
     }
 
     #[test]

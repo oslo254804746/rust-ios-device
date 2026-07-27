@@ -193,8 +193,13 @@ where
         request: &'static str,
     }
     send_plist(stream, &Request { request: "Restart" }).await?;
-    recv_plist_raw(stream).await?;
-    Ok(())
+    // A successful restart tears the connection down, often before the ack
+    // arrives, so EOF here means the request was accepted — not that it failed.
+    match recv_plist_raw(stream).await {
+        Ok(_) => Ok(()),
+        Err(DiagnosticsError::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 // ── plist framing ──────────────────────────────────────────────────────────────

@@ -33,7 +33,16 @@ pub enum ArchiveError {
     Plist(String),
     #[error("invalid archive: {0}")]
     Invalid(String),
+    #[error("archive nesting exceeds {0} levels (cycle or hostile input?)")]
+    TooDeep(usize),
 }
+
+/// Maximum object nesting followed when resolving `$objects` UIDs.
+///
+/// `$objects` is a flat pool addressed by UID, so nothing stops an entry from
+/// referring back to itself. Bounding the depth turns what would be unbounded
+/// recursion into an error.
+const MAX_ARCHIVE_DEPTH: usize = 64;
 
 /// Decode NSKeyedArchiver binary plist data.
 ///
@@ -74,21 +83,29 @@ pub fn unarchive(data: &[u8]) -> Result<ArchiveValue, ArchiveError> {
         .and_then(uid_from_plist)
         .ok_or_else(|| ArchiveError::Invalid("missing $top.root uid".into()))?;
 
-    decode_object(objects, root_uid)
+    decode_object(objects, root_uid, 0)
 }
 
 /// Decode a single object by its UID index into the $objects array.
-fn decode_object(objects: &[plist::Value], uid: usize) -> Result<ArchiveValue, ArchiveError> {
+fn decode_object(
+    objects: &[plist::Value],
+    uid: usize,
+    depth: usize,
+) -> Result<ArchiveValue, ArchiveError> {
+    if depth > MAX_ARCHIVE_DEPTH {
+        return Err(ArchiveError::TooDeep(MAX_ARCHIVE_DEPTH));
+    }
     if uid >= objects.len() {
         return Err(ArchiveError::Invalid(format!("uid {uid} out of bounds")));
     }
 
-    decode_value(objects, &objects[uid])
+    decode_value(objects, &objects[uid], depth)
 }
 
 fn decode_value(
     objects: &[plist::Value],
     obj: &plist::Value,
+    depth: usize,
 ) -> Result<ArchiveValue, ArchiveError> {
     // $null sentinel
     if obj.as_string() == Some("$null") {
@@ -99,9 +116,16 @@ fn decode_value(
     if let Some(s) = obj.as_string() {
         return Ok(ArchiveValue::String(s.to_string()));
     }
-    // Primitive: integer
+    // Primitive: integer.
+    // `ArchiveValue::Int` is signed, so anything above `i64::MAX` has no faithful
+    // representation. Truncating it would hand the caller a plausible-looking
+    // negative number instead of an error, which is worse than refusing the
+    // archive — real NSNumber payloads never reach that range.
     if let Some(n) = obj.as_unsigned_integer() {
-        return Ok(ArchiveValue::Int(n as i64));
+        let value = i64::try_from(n).map_err(|_| {
+            ArchiveError::Invalid(format!("unsigned integer {n} does not fit in i64"))
+        })?;
+        return Ok(ArchiveValue::Int(value));
     }
     if let Some(n) = obj.as_signed_integer() {
         return Ok(ArchiveValue::Int(n));
@@ -166,7 +190,7 @@ fn decode_value(
                     .unwrap_or_default();
                 let mut result = Vec::with_capacity(items.len());
                 for uid in items {
-                    result.push(decode_object(objects, uid)?);
+                    result.push(decode_object(objects, uid, depth + 1)?);
                 }
                 return Ok(ArchiveValue::Array(result));
             }
@@ -183,14 +207,14 @@ fn decode_value(
                     .unwrap_or_default();
                 let mut map = HashMap::new();
                 for (k_uid, v_uid) in keys.into_iter().zip(vals) {
-                    let key_str = match decode_object(objects, k_uid) {
+                    let key_str = match decode_object(objects, k_uid, depth + 1) {
                         Ok(ArchiveValue::String(k)) => k,
                         Ok(ArchiveValue::Int(n)) => n.to_string(),
                         Ok(ArchiveValue::Float(f)) => f.to_string(),
                         Ok(ArchiveValue::Bool(b)) => b.to_string(),
                         _ => continue,
                     };
-                    let v = decode_object(objects, v_uid)?;
+                    let v = decode_object(objects, v_uid, depth + 1)?;
                     map.insert(key_str, v);
                 }
                 return Ok(ArchiveValue::Dict(map));
@@ -208,7 +232,7 @@ fn decode_value(
             | "DTTapStatusMessage"
             | "DTKTraceTapMessage" => {
                 if let Some(uid) = dict.get("DTTapMessagePlist").and_then(uid_from_plist) {
-                    return decode_object(objects, uid);
+                    return decode_object(objects, uid, depth + 1);
                 }
                 return Ok(ArchiveValue::Unknown(class_name.to_string()));
             }
@@ -218,7 +242,7 @@ fn decode_value(
                     if key == "$class" {
                         continue;
                     }
-                    map.insert(key.clone(), decode_field_value(objects, value)?);
+                    map.insert(key.clone(), decode_field_value(objects, value, depth + 1)?);
                 }
                 if !map.contains_key("ObjectType") {
                     map.insert(
@@ -237,26 +261,30 @@ fn decode_value(
 fn decode_field_value(
     objects: &[plist::Value],
     value: &plist::Value,
+    depth: usize,
 ) -> Result<ArchiveValue, ArchiveError> {
+    if depth > MAX_ARCHIVE_DEPTH {
+        return Err(ArchiveError::TooDeep(MAX_ARCHIVE_DEPTH));
+    }
     if let Some(uid) = uid_from_plist(value) {
-        return decode_object(objects, uid);
+        return decode_object(objects, uid, depth + 1);
     }
 
     match value {
         plist::Value::Array(items) => Ok(ArchiveValue::Array(
             items
                 .iter()
-                .map(|item| decode_field_value(objects, item))
+                .map(|item| decode_field_value(objects, item, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         plist::Value::Dictionary(dict) if !dict.contains_key("$class") => {
             let mut map = HashMap::new();
             for (key, value) in dict {
-                map.insert(key.clone(), decode_field_value(objects, value)?);
+                map.insert(key.clone(), decode_field_value(objects, value, depth + 1)?);
             }
             Ok(ArchiveValue::Dict(map))
         }
-        _ => decode_value(objects, value),
+        _ => decode_value(objects, value, depth),
     }
 }
 
@@ -323,10 +351,31 @@ mod tests {
             plist::Value::String("$null".to_string()),
             plist::Value::String("hello".to_string()),
         ];
-        let result = decode_object(&objects, 0).unwrap();
+        let result = decode_object(&objects, 0, 0).unwrap();
         assert!(matches!(result, ArchiveValue::Null));
-        let result2 = decode_object(&objects, 1).unwrap();
+        let result2 = decode_object(&objects, 1, 0).unwrap();
         assert_eq!(result2.as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn test_decode_unsigned_integer_primitives() {
+        let objects = vec![
+            plist::Value::Integer(plist::Integer::from(i64::MAX as u64)),
+            plist::Value::Integer(plist::Integer::from(i64::MAX as u64 + 1)),
+        ];
+
+        assert_eq!(
+            decode_object(&objects, 0, 0).unwrap().as_int(),
+            Some(i64::MAX)
+        );
+
+        let err = decode_object(&objects, 1, 0).unwrap_err();
+        match err {
+            ArchiveError::Invalid(message) => {
+                assert!(message.contains("does not fit in i64"), "{message}");
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -357,7 +406,7 @@ mod tests {
             plist::Value::String("payload".to_string()),
         ];
 
-        let decoded = decode_object(&objects, 1).unwrap();
+        let decoded = decode_object(&objects, 1, 0).unwrap();
         let map = decoded
             .as_dict()
             .expect("unknown class should decode to dict");
@@ -394,7 +443,7 @@ mod tests {
             ])),
         ];
 
-        let decoded = decode_object(&objects, 1).unwrap();
+        let decoded = decode_object(&objects, 1, 0).unwrap();
         assert!(matches!(decoded, ArchiveValue::Null));
     }
 }

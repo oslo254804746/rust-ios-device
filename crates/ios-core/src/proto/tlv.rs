@@ -40,7 +40,6 @@ impl TlvBuffer {
     /// Consecutive items with the same tag are concatenated (Apple TLV8 coalescing).
     pub fn decode(buf: &[u8]) -> HashMap<u8, Bytes> {
         let mut map: HashMap<u8, bytes::BytesMut> = HashMap::new();
-        let mut last_tag: Option<u8> = None;
         let mut i = 0;
         while i + 2 <= buf.len() {
             let tag = buf[i];
@@ -51,13 +50,9 @@ impl TlvBuffer {
             }
             let chunk = &buf[i..i + len];
             i += len;
-            // Coalesce same-tag consecutive chunks
-            if last_tag == Some(tag) {
-                map.entry(tag).or_default().extend_from_slice(chunk);
-            } else {
-                map.entry(tag).or_default().extend_from_slice(chunk);
-                last_tag = Some(tag);
-            }
+            // Fragments of a tag are concatenated in arrival order, so the
+            // same-tag and new-tag cases do the same thing.
+            map.entry(tag).or_default().extend_from_slice(chunk);
         }
         map.into_iter().map(|(k, v)| (k, v.freeze())).collect()
     }

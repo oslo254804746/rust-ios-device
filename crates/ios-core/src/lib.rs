@@ -24,7 +24,10 @@
 //! RSD while omitting a specific feature service such as fileservice.
 //!
 //! Internal transport modules are not part of the public API. Use top-level
-//! re-exports for supported types:
+//! re-exports for supported types. Low-level transport/client re-exports, such as
+//! [`MuxClient`], are advanced interfaces intended for tooling and diagnostics;
+//! prefer the high-level device and service APIs unless you need protocol-level
+//! control.
 //!
 //! ```
 //! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
@@ -67,6 +70,8 @@ pub(crate) mod pairing_transport;
 pub(crate) mod proto;
 #[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
+/// Owner-only persistence for files containing private-key material.
+pub mod secret_file;
 pub mod services;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -113,6 +118,8 @@ pub use services::amfi;
 pub use services::apps;
 #[cfg(feature = "arbitration")]
 pub use services::arbitration;
+#[cfg(feature = "btlogger")]
+pub use services::bt_packet_logger;
 #[cfg(feature = "companion")]
 pub use services::companion;
 #[cfg(feature = "crashreport")]

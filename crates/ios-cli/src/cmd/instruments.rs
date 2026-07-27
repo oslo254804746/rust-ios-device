@@ -1,7 +1,8 @@
 use anyhow::Result;
-use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
+use ios_core::device::{ConnectedDevice, ServiceStream};
 use ios_core::instruments::{SERVICE_IOS14, SERVICE_IOS17, SERVICE_LEGACY};
-use ios_core::TunMode;
+
+use crate::cmd::connect::connect_by_ios_major;
 
 #[derive(clap::Args)]
 pub struct InstrumentsCmd {
@@ -346,36 +347,13 @@ async fn run_notifications(_udid: String, _count: u64, _timeout_secs: u64) -> Re
 /// - iOS 14-16: lockdown → `DVTSecureSocketProxy`
 /// - iOS ≤13: lockdown → `remoteserver`
 pub async fn connect_instruments(udid: &str) -> Result<(ConnectedDevice, ServiceStream)> {
-    // First, query the device version with a lightweight lockdown-only connection
-    let probe_opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let probe = ios_core::connect(udid, probe_opts).await?;
-    let version = probe.product_version().await?;
-    drop(probe);
+    let (device, version) = connect_by_ios_major(udid, |major| major >= 17).await?;
 
     if version.major >= 17 {
-        // iOS 17+: need tunnel + RSD for dtservicehub
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: false,
-        };
-        let device = ios_core::connect(udid, opts).await?;
-        // Give the device time to initialize RSD after tunnel establishment
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let stream = device.connect_rsd_service(SERVICE_IOS17).await?;
         Ok((device, stream))
     } else {
-        // iOS ≤16: lockdown path, no tunnel needed
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
-        };
-        let device = ios_core::connect(udid, opts).await?;
         let stream = match device.connect_service(SERVICE_IOS14).await {
             Ok(s) => s,
             Err(_) => device.connect_service(SERVICE_LEGACY).await?,
@@ -631,19 +609,25 @@ async fn run_apps(udid: String, json_output: bool) -> Result<()> {
                             .and_then(plist::Value::as_string)
                             .unwrap_or(""),
                     ),
+                    // The DTX applicationListing channel answers with DisplayName /
+                    // Version / Type, not the Info.plist key names; keep those as
+                    // fallbacks for anything that does report them.
                     comfy_table::Cell::new(
-                        dict.get("CFBundleDisplayName")
+                        dict.get("DisplayName")
+                            .or_else(|| dict.get("CFBundleDisplayName"))
                             .or_else(|| dict.get("CFBundleName"))
                             .and_then(plist::Value::as_string)
                             .unwrap_or(""),
                     ),
                     comfy_table::Cell::new(
-                        dict.get("CFBundleShortVersionString")
+                        dict.get("Version")
+                            .or_else(|| dict.get("CFBundleShortVersionString"))
                             .and_then(plist::Value::as_string)
                             .unwrap_or(""),
                     ),
                     comfy_table::Cell::new(
-                        dict.get("ApplicationType")
+                        dict.get("Type")
+                            .or_else(|| dict.get("ApplicationType"))
                             .and_then(plist::Value::as_string)
                             .unwrap_or(""),
                     ),

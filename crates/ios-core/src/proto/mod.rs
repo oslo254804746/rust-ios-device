@@ -6,7 +6,7 @@
 //! - **Lockdown** — Lockdown plist request/response types
 //! - **NSKeyedArchiver** — NSKeyedArchiver/NSKeyedUnarchiver encode/decode
 //! - **OPACK** — OPACK binary serialization (XPC, RemoteXPC)
-//! - **XPC** — XPC message types
+//! - **XPC** — see `crate::xpc::message` for the live codec
 
 #[allow(dead_code)]
 pub mod afc;
@@ -24,5 +24,3 @@ pub mod tls;
 pub mod tlv;
 #[allow(dead_code)]
 pub mod usbmuxd;
-#[allow(dead_code)]
-pub mod xpc;

@@ -21,7 +21,7 @@ pub mod rsd;
 #[cfg(feature = "tunnel")]
 pub use client::XpcClient;
 #[cfg(any(
-    feature = "apps",
+    all(feature = "apps", feature = "tunnel"),
     feature = "deviceinfo",
     feature = "diagnosticsservice",
     feature = "dproxy",

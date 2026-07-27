@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 authors = ["oslo254804746"]
 license = "MIT OR Apache-2.0"
@@ -19,7 +19,7 @@ keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
 categories = ["development-tools", "api-bindings"]
 
 [workspace.dependencies]
-ios-core     = { version = "0.1.5", path = "crates/ios-core" }
+ios-core     = { version = "0.1.8", path = "crates/ios-core" }
 tokio        = "1"
 bytes        = "1"
 zerocopy     = { version = "0.8", features = ["derive"] }
@@ -41,6 +41,7 @@ sha2         = "0.10"
 hkdf         = "0.12"
 chacha20poly1305 = "0.10"
 zeroize      = { version = "1", features = ["derive"] }
+subtle       = "2"
 clap         = { version = "4", features = ["derive", "env"] }
 pyo3         = { version = "0.22", features = ["extension-module"] }
 mdns-sd      = "0.11"

@@ -21,6 +21,8 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 pub const MAX_INLINE_DATA_SIZE: u64 = 500;
 
 const FILE_WIRE_MAGIC: &[u8; 8] = b"rwb!FILE";
+const FILE_WIRE_HEADER_LEN: usize = 40;
+const FILE_TRANSFER_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Errors returned by the CoreDevice fileservice client.
 #[derive(Debug, thiserror::Error)]
@@ -293,11 +295,7 @@ impl FileServiceClient {
         file_size: u64,
         options: FileWriteOptions,
     ) -> Result<FileTransferTicket, FileServiceError> {
-        if file_size > MAX_FILE_SIZE {
-            return Err(FileServiceError::Protocol(format!(
-                "file size {file_size} exceeds maximum allowed size {MAX_FILE_SIZE}"
-            )));
-        }
+        validate_file_size(file_size)?;
         if file_size <= MAX_INLINE_DATA_SIZE {
             return Err(FileServiceError::Protocol(format!(
                 "file size {file_size} fits inline; use upload_inline_file"
@@ -556,26 +554,34 @@ where
     S: AsyncWrite + Unpin,
 {
     stream
-        .write_all(&build_download_wire_request(ticket.clone()))
+        .write_all(&build_download_wire_request(ticket))
         .await?;
     stream.flush().await?;
     Ok(())
 }
 
-fn build_download_wire_request(ticket: FileTransferTicket) -> [u8; 40] {
-    let mut request = [0u8; 40];
-    request[0..8].copy_from_slice(FILE_WIRE_MAGIC);
-    request[8..16].copy_from_slice(&ticket.response_token.to_be_bytes());
-    request[24..32].copy_from_slice(&ticket.file_id.to_be_bytes());
-    request
+fn build_download_wire_request(ticket: &FileTransferTicket) -> [u8; FILE_WIRE_HEADER_LEN] {
+    build_file_wire_header(ticket.response_token, ticket.file_id, 0)
 }
 
-fn build_upload_wire_header(ticket: &FileTransferTicket, file_size: u64) -> [u8; 40] {
-    let mut request = [0u8; 40];
-    request[0..8].copy_from_slice(FILE_WIRE_MAGIC);
-    request[24..32].copy_from_slice(&ticket.file_id.to_be_bytes());
-    request[32..40].copy_from_slice(&file_size.to_be_bytes());
-    request
+fn build_upload_wire_header(
+    ticket: &FileTransferTicket,
+    file_size: u64,
+) -> [u8; FILE_WIRE_HEADER_LEN] {
+    build_file_wire_header(0, ticket.file_id, file_size)
+}
+
+fn build_file_wire_header(
+    response_token: u64,
+    file_id: u64,
+    file_size: u64,
+) -> [u8; FILE_WIRE_HEADER_LEN] {
+    let mut header = [0u8; FILE_WIRE_HEADER_LEN];
+    header[0..8].copy_from_slice(FILE_WIRE_MAGIC);
+    header[8..16].copy_from_slice(&response_token.to_be_bytes());
+    header[24..32].copy_from_slice(&file_id.to_be_bytes());
+    header[32..40].copy_from_slice(&file_size.to_be_bytes());
+    header
 }
 
 async fn upload_file_data<S, R>(
@@ -588,12 +594,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
+    validate_file_size(file_size)?;
     stream
         .write_all(&build_upload_wire_header(ticket, file_size))
         .await?;
 
     let mut remaining = file_size;
-    let mut buffer = [0u8; 256 * 1024];
+    let mut buffer = [0u8; FILE_TRANSFER_CHUNK_SIZE];
     while remaining > 0 {
         let to_read = remaining.min(buffer.len() as u64) as usize;
         let n = reader.read(&mut buffer[..to_read]).await?;
@@ -610,13 +617,7 @@ where
 
     let mut confirmation = [0u8; 32];
     stream.read_exact(&mut confirmation).await?;
-    if &confirmation[0..8] != FILE_WIRE_MAGIC {
-        return Err(FileServiceError::Protocol(format!(
-            "invalid upload confirmation magic: {:?}",
-            &confirmation[0..8]
-        )));
-    }
-    Ok(())
+    ensure_file_wire_magic(&confirmation, "upload confirmation")
 }
 
 async fn receive_file_data<S>(stream: &mut S) -> Result<Bytes, FileServiceError>
@@ -624,15 +625,18 @@ where
     S: AsyncRead + Unpin,
 {
     let file_size = read_file_data_header(stream).await?;
-    if file_size > MAX_FILE_SIZE {
-        return Err(FileServiceError::Protocol(format!(
-            "file size {file_size} exceeds maximum allowed size {MAX_FILE_SIZE}"
-        )));
-    }
 
-    let mut data = BytesMut::with_capacity(file_size as usize);
-    data.resize(file_size as usize, 0);
-    stream.read_exact(&mut data).await?;
+    // Grow as the data actually arrives rather than reserving the full
+    // device-declared size (up to MAX_FILE_SIZE) before a single byte lands.
+    let mut data = BytesMut::new();
+    let mut remaining = file_size;
+    let mut buffer = [0u8; FILE_TRANSFER_CHUNK_SIZE];
+    while remaining > 0 {
+        let to_read = remaining.min(buffer.len() as u64) as usize;
+        stream.read_exact(&mut buffer[..to_read]).await?;
+        data.extend_from_slice(&buffer[..to_read]);
+        remaining -= to_read as u64;
+    }
     Ok(data.freeze())
 }
 
@@ -645,14 +649,9 @@ where
     W: AsyncWrite + Unpin,
 {
     let file_size = read_file_data_header(stream).await?;
-    if file_size > MAX_FILE_SIZE {
-        return Err(FileServiceError::Protocol(format!(
-            "file size {file_size} exceeds maximum allowed size {MAX_FILE_SIZE}"
-        )));
-    }
 
     let mut remaining = file_size;
-    let mut buffer = [0u8; 256 * 1024];
+    let mut buffer = [0u8; FILE_TRANSFER_CHUNK_SIZE];
     while remaining > 0 {
         let to_read = remaining.min(buffer.len() as u64) as usize;
         stream.read_exact(&mut buffer[..to_read]).await?;
@@ -667,19 +666,35 @@ async fn read_file_data_header<S>(stream: &mut S) -> Result<u64, FileServiceErro
 where
     S: AsyncRead + Unpin,
 {
-    let mut header = [0u8; 40];
+    let mut header = [0u8; FILE_WIRE_HEADER_LEN];
     stream.read_exact(&mut header).await?;
-    if &header[0..8] != FILE_WIRE_MAGIC {
-        return Err(FileServiceError::Protocol(format!(
-            "invalid file data magic: {:?}",
-            &header[0..8]
-        )));
-    }
-    Ok(u32::from_be_bytes(
+    ensure_file_wire_magic(&header, "file data")?;
+    let file_size = u32::from_be_bytes(
         header[36..40]
             .try_into()
             .map_err(|_| FileServiceError::Protocol("invalid file data size header".into()))?,
-    ) as u64)
+    ) as u64;
+    validate_file_size(file_size)?;
+    Ok(file_size)
+}
+
+fn ensure_file_wire_magic(bytes: &[u8], context: &str) -> Result<(), FileServiceError> {
+    if bytes.get(..FILE_WIRE_MAGIC.len()) != Some(FILE_WIRE_MAGIC.as_slice()) {
+        return Err(FileServiceError::Protocol(format!(
+            "invalid {context} magic: {:?}",
+            bytes.get(..FILE_WIRE_MAGIC.len()).unwrap_or(bytes)
+        )));
+    }
+    Ok(())
+}
+
+fn validate_file_size(file_size: u64) -> Result<(), FileServiceError> {
+    if file_size > MAX_FILE_SIZE {
+        return Err(FileServiceError::Protocol(format!(
+            "file size {file_size} exceeds maximum allowed size {MAX_FILE_SIZE}"
+        )));
+    }
+    Ok(())
 }
 
 fn response_body(response: XpcMessage) -> Result<XpcValue, FileServiceError> {
@@ -958,10 +973,11 @@ mod tests {
 
     #[test]
     fn download_wire_request_uses_rwb_file_big_endian_header() {
-        let header = build_download_wire_request(FileTransferTicket {
+        let ticket = FileTransferTicket {
             response_token: 0x0102_0304_0506_0708,
             file_id: 0x1112_1314_1516_1718,
-        });
+        };
+        let header = build_download_wire_request(&ticket);
 
         assert_eq!(&header[0..8], b"rwb!FILE");
         assert_eq!(&header[8..16], &[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -992,6 +1008,13 @@ mod tests {
         assert_eq!(&header[32..40], &[1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
+    #[test]
+    fn file_size_validation_rejects_values_above_the_transfer_limit() {
+        let error = validate_file_size(MAX_FILE_SIZE + 1).unwrap_err();
+
+        assert!(error.to_string().contains("exceeds maximum allowed size"));
+    }
+
     #[tokio::test]
     async fn receive_file_data_reads_size_from_offset_36() {
         let (mut client, mut server) = tokio::io::duplex(128);
@@ -1006,6 +1029,22 @@ mod tests {
         let data = receive_file_data(&mut client).await.unwrap();
 
         assert_eq!(data, Bytes::from_static(b"hello"));
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn receive_file_data_rejects_oversized_payload_before_allocation() {
+        let (mut client, mut server) = tokio::io::duplex(FILE_WIRE_HEADER_LEN);
+        let writer = tokio::spawn(async move {
+            let mut header = [0u8; FILE_WIRE_HEADER_LEN];
+            header[0..8].copy_from_slice(FILE_WIRE_MAGIC);
+            header[36..40].copy_from_slice(&((MAX_FILE_SIZE as u32 + 1).to_be_bytes()));
+            server.write_all(&header).await.unwrap();
+        });
+
+        let error = receive_file_data(&mut client).await.unwrap_err();
+
+        assert!(error.to_string().contains("exceeds maximum allowed size"));
         writer.await.unwrap();
     }
 
@@ -1044,5 +1083,25 @@ mod tests {
         .unwrap();
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upload_file_data_rejects_oversized_payload_before_writing() {
+        let (mut data_client, _) = tokio::io::duplex(1);
+        let (mut reader_client, _) = tokio::io::duplex(1);
+
+        let error = upload_file_data(
+            &mut data_client,
+            &FileTransferTicket {
+                response_token: 7,
+                file_id: 9,
+            },
+            &mut reader_client,
+            MAX_FILE_SIZE + 1,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("exceeds maximum allowed size"));
     }
 }

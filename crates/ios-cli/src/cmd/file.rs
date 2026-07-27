@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 
 use anyhow::Result;
@@ -95,6 +96,8 @@ enum FileSub {
         remote: String,
         #[arg(help = "Local destination path")]
         local: String,
+        #[arg(long, help = "Overwrite the local destination if it already exists")]
+        force: bool,
     },
     /// Upload a file to the device
     Push {
@@ -243,7 +246,13 @@ impl FileCmd {
                         }
                     }
                 }
-                FileSub::Pull { remote, local } => {
+                FileSub::Pull {
+                    remote,
+                    local,
+                    force,
+                } => {
+                    // Checked before the transfer so a doomed pull costs nothing.
+                    ensure_local_overwrite_allowed(Path::new(&local), force)?;
                     eprintln!("Downloading {remote} → {local}");
                     let data = afc.read_file_follow_links(&remote).await?;
                     fs::write(&local, &data).await?;
@@ -363,6 +372,22 @@ impl FileCmd {
     }
 }
 
+/// Refuse to replace an existing local file unless the caller passed `--force`.
+///
+/// Every command that saves device data to disk routes through this so `file
+/// pull`, `screenshot`, `provisioning export` and `crash pull` all fail with
+/// the same sentence instead of quietly destroying the previous download.
+pub(crate) fn ensure_local_overwrite_allowed(path: &Path, force: bool) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    crate::output::require_force(
+        force,
+        &format!("overwrite {}", path.display()),
+        "the existing local file would be replaced",
+    )
+}
+
 fn connect_coredevice_file_device(
     udid: &str,
 ) -> Pin<Box<dyn Future<Output = Result<ios_core::ConnectedDevice>> + '_>> {
@@ -419,7 +444,12 @@ fn run_coredevice_subcommand<'a>(
             }
             Ok(())
         }),
-        FileSub::Pull { remote, local } => Box::pin(async move {
+        FileSub::Pull {
+            remote,
+            local,
+            force,
+        } => Box::pin(async move {
+            ensure_local_overwrite_allowed(Path::new(&local), force)?;
             eprintln!("Downloading {remote} -> {local}");
             ensure_coredevice_rsd_service_available(
                 device.rsd(),
@@ -806,6 +836,41 @@ mod tests {
             }
             _ => panic!("expected push subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_pull_force_flag() {
+        let cmd = TestCli::parse_from(["file", "pull", "/var/log/foo.txt", "foo.txt", "--force"]);
+        match cmd.file.sub {
+            FileSub::Pull {
+                remote,
+                local,
+                force,
+            } => {
+                assert_eq!(remote, "/var/log/foo.txt");
+                assert_eq!(local, "foo.txt");
+                assert!(force);
+            }
+            _ => panic!("expected pull subcommand"),
+        }
+    }
+
+    #[test]
+    fn local_overwrite_guard_names_the_path_and_the_flag() {
+        // The running test binary is the one file we know exists.
+        let existing = std::env::current_exe().expect("test binary path");
+        let existing_text = existing.display().to_string();
+
+        let err = ensure_local_overwrite_allowed(&existing, false).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("--force"), "{message}");
+        assert!(message.contains(&existing_text), "{message}");
+
+        assert!(ensure_local_overwrite_allowed(&existing, true).is_ok());
+        assert!(
+            ensure_local_overwrite_allowed(&existing.join("missing-child"), false).is_ok(),
+            "a fresh destination should not need --force"
+        );
     }
 
     #[test]

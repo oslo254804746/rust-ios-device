@@ -84,7 +84,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CrashReportClient<S> {
 
     async fn resolve_report_path(&mut self, report: &str) -> Result<String, CrashReportError> {
         if report.contains('/') {
-            return Ok(normalize_report_path(report));
+            return normalize_report_path(report);
         }
 
         let reports = self.list_reports(Some("*")).await?;
@@ -157,12 +157,26 @@ fn join_path(dir: &str, name: &str) -> String {
     }
 }
 
-fn normalize_report_path(report: &str) -> String {
-    if report.starts_with("./") {
-        report.to_string()
-    } else {
-        format!("./{}", report.trim_start_matches('/'))
+/// Turn a caller-supplied report path into one rooted at the crash-log jail.
+///
+/// The leading `/` was already stripped, but `..` was not, and the result is
+/// sent verbatim over `crashreportcopymobile`, where the device-side AFC has
+/// historically honoured it. Reject traversal rather than normalising it away,
+/// matching how `backup2::sanitize_relative_path` treats device-supplied paths.
+fn normalize_report_path(report: &str) -> Result<String, CrashReportError> {
+    let trimmed = report.trim_start_matches('/');
+    let relative = trimmed.strip_prefix("./").unwrap_or(trimmed);
+
+    if relative.is_empty() {
+        return Err(CrashReportError::Protocol("empty crash report path".into()));
     }
+    if relative.split(['/', '\\']).any(|part| part == "..") {
+        return Err(CrashReportError::Protocol(format!(
+            "crash report path must stay inside the crash log directory: {report}"
+        )));
+    }
+
+    Ok(format!("./{relative}"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

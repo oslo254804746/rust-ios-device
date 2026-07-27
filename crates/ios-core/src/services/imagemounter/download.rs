@@ -1,6 +1,6 @@
 //! DDI download and caching.
 //!
-//! - iOS 17+: personalized DDI from `https://deviceboxhq.com/ddi-15F31d.zip`
+//! - iOS 17+: personalized DDI from `https://deviceboxhq.com/ddi-<build>.zip`
 //! - iOS <17: standard DDI from GitHub `mspvirajpatel/Xcode_Developer_Disk_Images`
 //!
 //! Cache directory: `~/.ios-rs/ddi/`
@@ -11,9 +11,19 @@ use std::path::{Path, PathBuf};
 
 use super::protocol::ImageMounterError;
 
-const DDI_PERSONALIZED_URL: &str = "https://deviceboxhq.com/ddi-15F31d.zip";
+/// Build ID of the universal personalized DDI hosted on deviceboxhq.
+///
+/// Must name a zip that actually exists there — the host answers unknown IDs
+/// with an HTML page under HTTP 200, so a wrong value here surfaces as a
+/// corrupt-archive error rather than a 404. Keep in step with go-ios
+/// `ios/imagemounter/imagedownloader.go`.
+pub const LATEST_PERSONALIZED_DDI_BUILD_ID: &str = "17E5179g";
 const DDI_GITHUB_RELEASES: &str =
     "https://github.com/mspvirajpatel/Xcode_Developer_Disk_Images/releases/download";
+
+fn personalized_ddi_url() -> String {
+    format!("https://deviceboxhq.com/ddi-{LATEST_PERSONALIZED_DDI_BUILD_ID}.zip")
+}
 
 /// DDI downloader with local caching.
 pub struct DdiDownloader {
@@ -120,7 +130,10 @@ impl DdiDownloader {
 
     /// Download a personalized DDI for iOS 17+.
     pub async fn download_personalized(&self) -> Result<PersonalizedDdi, ImageMounterError> {
-        let dir = self.cache_dir.join("personalized");
+        let dir = self
+            .cache_dir
+            .join("personalized")
+            .join(LATEST_PERSONALIZED_DDI_BUILD_ID);
 
         // Check cache
         let img_path = dir.join("Restore").join("PersonalizedDMG.dmg");
@@ -129,14 +142,16 @@ impl DdiDownloader {
 
         if img_path.exists() && tc_path.exists() && bm_path.exists() {
             tracing::info!("Using cached personalized DDI from {}", dir.display());
-            return load_personalized_from_dir(&dir).await;
+            let ddi = load_personalized_from_dir(&dir).await?;
+            validate_personalized_build_id(&ddi.build_manifest)?;
+            return Ok(ddi);
         }
 
         // Download zip
         eprintln!("Downloading personalized DDI...");
         let client = build_client()?;
         let resp = client
-            .get(DDI_PERSONALIZED_URL)
+            .get(personalized_ddi_url())
             .send()
             .await
             .map_err(|e| ImageMounterError::Download(format!("fetch DDI zip: {e}")))?;
@@ -166,25 +181,77 @@ impl DdiDownloader {
         .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
         let _ = tokio::fs::remove_file(&zip_path).await;
 
-        load_personalized_from_dir(&dir).await
+        let ddi = load_personalized_from_dir(&dir).await?;
+        validate_personalized_build_id(&ddi.build_manifest)?;
+        Ok(ddi)
     }
 }
+
+fn validate_personalized_build_id(build_manifest: &[u8]) -> Result<(), ImageMounterError> {
+    let manifest: plist::Value = plist::from_bytes(build_manifest)?;
+    let build_id = manifest
+        .as_dictionary()
+        .and_then(|dict| dict.get("ProductBuildVersion"))
+        .and_then(plist::Value::as_string)
+        .ok_or_else(|| {
+            ImageMounterError::Download(
+                "personalized DDI BuildManifest missing ProductBuildVersion".into(),
+            )
+        })?;
+    if build_id != LATEST_PERSONALIZED_DDI_BUILD_ID {
+        return Err(ImageMounterError::Download(format!(
+            "personalized DDI build {build_id} does not match expected {LATEST_PERSONALIZED_DDI_BUILD_ID}"
+        )));
+    }
+    Ok(())
+}
+
+/// Local ZIP header magic, checked before we hand the file to the zip reader.
+const ZIP_LOCAL_FILE_HEADER: &[u8] = b"PK\x03\x04";
 
 async fn download_response_to_file(
     mut response: reqwest::Response,
     path: &Path,
 ) -> Result<(), ImageMounterError> {
+    // The DDI host answers an unknown build ID with an HTML page under HTTP 200,
+    // so a status check alone lets a web page reach the zip reader and fail there
+    // as "Could not find EOCD", which says nothing about the real cause.
+    let url = response.url().clone();
+    if let Some(content_type) = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    {
+        if content_type.starts_with("text/") {
+            return Err(ImageMounterError::Download(format!(
+                "{url} returned {content_type}, not an archive — the DDI build id \
+                 ({LATEST_PERSONALIZED_DDI_BUILD_ID}) is probably no longer published"
+            )));
+        }
+    }
+
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(|e| ImageMounterError::Download(format!("create DDI zip cache: {e}")))?;
+    let mut leading = Vec::with_capacity(ZIP_LOCAL_FILE_HEADER.len());
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|e| ImageMounterError::Download(format!("read DDI zip chunk: {e}")))?
     {
+        if leading.len() < ZIP_LOCAL_FILE_HEADER.len() {
+            let wanted = ZIP_LOCAL_FILE_HEADER.len() - leading.len();
+            leading.extend_from_slice(&chunk[..wanted.min(chunk.len())]);
+        }
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
             .await
             .map_err(|e| ImageMounterError::Download(format!("write DDI zip chunk: {e}")))?;
+    }
+
+    if leading != ZIP_LOCAL_FILE_HEADER {
+        return Err(ImageMounterError::Download(format!(
+            "{url} did not return a zip archive (leading bytes {leading:02x?})"
+        )));
     }
     tokio::io::AsyncWriteExt::flush(&mut file)
         .await
@@ -359,6 +426,25 @@ fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), I
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Pins the build id so bumping it is a deliberate, reviewed edit.
+    ///
+    /// This can only catch a typo, not a dead id: the host answers unknown ids
+    /// with HTML under HTTP 200, so whoever bumps this must fetch the URL and
+    /// confirm it is really an archive. `download_response_to_file` checks that
+    /// at runtime.
+    #[test]
+    fn latest_personalized_ddi_build_tracks_reference() {
+        assert_eq!(
+            LATEST_PERSONALIZED_DDI_BUILD_ID, "17E5179g",
+            "keep in step with go-ios ios/imagemounter/imagedownloader.go, and \
+             confirm https://deviceboxhq.com/ddi-<id>.zip still serves a zip"
+        );
+        assert!(
+            personalized_ddi_url().contains(LATEST_PERSONALIZED_DDI_BUILD_ID),
+            "personalized DDI URL should include latest build id"
+        );
+    }
 
     fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut bytes = Vec::new();

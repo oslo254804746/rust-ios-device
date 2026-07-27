@@ -26,14 +26,14 @@ top of it.
 
 ```toml
 [dependencies]
-ios-core = "0.1.5"
+ios-core = "0.1.8"
 ```
 
 The crate ships **no default service features**. Pick the services you need,
 or use a grouped flag:
 
 ```toml
-ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |

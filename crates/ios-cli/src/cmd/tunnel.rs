@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::time::Instant;
 
 const DEFAULT_AGENT_HOST: &str = "127.0.0.1";
 const DEFAULT_AGENT_PORT: u16 = 49151;
@@ -67,6 +68,12 @@ enum TunnelSub {
 }
 
 impl TunnelCmd {
+    /// `serve` auto-creates tunnels as devices appear and `list` only talks to
+    /// the HTTP manager, so neither needs a device attached at startup.
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        matches!(self.sub, TunnelSub::Start { .. } | TunnelSub::Stop { .. })
+    }
+
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         match self.sub {
             TunnelSub::Start {
@@ -245,6 +252,7 @@ struct TunnelAgentState {
 struct TunnelAgentInner {
     tun_mode: TunMode,
     tunnels: RwLock<HashMap<String, ManagedTunnel>>,
+    failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
     ready: RwLock<bool>,
     lifecycle_lock: Mutex<()>,
     shutdown: Notify,
@@ -252,6 +260,23 @@ struct TunnelAgentInner {
 
 struct ManagedTunnel {
     device: ConnectedDevice,
+}
+
+#[derive(Debug, Clone)]
+struct FailedTunnelAttempt {
+    last_attempt: Instant,
+    fail_count: u32,
+}
+
+impl FailedTunnelAttempt {
+    fn should_skip(&self, now: Instant) -> bool {
+        now.duration_since(self.last_attempt) < failed_device_backoff(self.fail_count)
+    }
+}
+
+fn failed_device_backoff(fail_count: u32) -> Duration {
+    let shift = fail_count.saturating_sub(1).min(4);
+    Duration::from_secs((30 * (1u64 << shift)).min(300))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,6 +361,7 @@ impl TunnelAgentState {
             inner: Arc::new(TunnelAgentInner {
                 tun_mode,
                 tunnels: RwLock::new(HashMap::new()),
+                failed_attempts: RwLock::new(HashMap::new()),
                 ready: RwLock::new(false),
                 lifecycle_lock: Mutex::new(()),
                 shutdown: Notify::new(),
@@ -357,6 +383,7 @@ impl TunnelAgentState {
 
     async fn clear(&self) {
         self.inner.tunnels.write().await.clear();
+        self.inner.failed_attempts.write().await.clear();
     }
 
     async fn list_records(&self) -> Vec<TunnelRecord> {
@@ -561,7 +588,13 @@ impl TunnelAgentState {
         let _guard = self.inner.lifecycle_lock.lock().await;
 
         let mut mux = MuxClient::connect().await?;
-        let devices = mux.list_devices().await?;
+        let devices = match mux.list_devices().await {
+            Ok(devices) => devices,
+            Err(err) => {
+                self.inner.tunnels.write().await.clear();
+                return Err(err.into());
+            }
+        };
         drop(mux);
 
         let attached_udids = devices
@@ -590,6 +623,16 @@ impl TunnelAgentState {
             if existing.contains(&device.serial_number) {
                 continue;
             }
+            if self
+                .inner
+                .failed_attempts
+                .read()
+                .await
+                .get(&device.serial_number)
+                .is_some_and(|failed| failed.should_skip(Instant::now()))
+            {
+                continue;
+            }
 
             match tokio::time::timeout(
                 TUNNEL_CONNECT_TIMEOUT,
@@ -609,18 +652,25 @@ impl TunnelAgentState {
                         device.serial_number.clone(),
                         ManagedTunnel { device: connected },
                     );
+                    self.inner
+                        .failed_attempts
+                        .write()
+                        .await
+                        .remove(&device.serial_number);
                 }
                 Ok(Err(err)) => {
                     tracing::warn!(
                         "tunnel agent: failed to establish tunnel for {}: {err}",
                         device.serial_number
                     );
+                    self.record_failed_attempt(&device.serial_number).await;
                 }
                 Err(_) => {
                     tracing::warn!(
                         "tunnel agent: timed out establishing tunnel for {}",
                         device.serial_number
                     );
+                    self.record_failed_attempt(&device.serial_number).await;
                 }
             }
         }
@@ -638,24 +688,55 @@ impl TunnelAgentState {
             if existing.contains(&target.udid) {
                 continue;
             }
+            if self
+                .inner
+                .failed_attempts
+                .read()
+                .await
+                .get(&target.udid)
+                .is_some_and(|failed| failed.should_skip(Instant::now()))
+            {
+                continue;
+            }
 
             match self
                 .connect_mobdev2_tunnel_locked(&target.udid, &target.host)
                 .await
             {
-                Ok(_) => {}
+                Ok(_) => {
+                    self.inner
+                        .failed_attempts
+                        .write()
+                        .await
+                        .remove(&target.udid);
+                }
                 Err(err) => {
                     tracing::warn!(
                         "tunnel agent: failed to establish mobdev2 tunnel for {} via {}: {err}",
                         target.udid,
                         target.host
                     );
+                    self.record_failed_attempt(&target.udid).await;
                 }
             }
         }
 
         self.mark_ready().await;
         Ok(())
+    }
+
+    async fn record_failed_attempt(&self, udid: &str) {
+        let mut failed = self.inner.failed_attempts.write().await;
+        failed
+            .entry(udid.to_string())
+            .and_modify(|attempt| {
+                attempt.last_attempt = Instant::now();
+                attempt.fail_count = attempt.fail_count.saturating_add(1);
+            })
+            .or_insert(FailedTunnelAttempt {
+                last_attempt: Instant::now(),
+                fail_count: 1,
+            });
     }
 }
 
@@ -1065,6 +1146,31 @@ mod tests {
         assert_eq!(query.ip.as_deref(), Some("192.168.31.247"));
         assert_eq!(query.connection_type, Some(StartTunnelConnectionType::Wifi));
         assert_eq!(query.unsupported_transport_message(), None);
+    }
+
+    #[test]
+    fn failed_device_backoff_is_exponential_and_capped() {
+        assert_eq!(failed_device_backoff(0), Duration::from_secs(30));
+        assert_eq!(failed_device_backoff(1), Duration::from_secs(30));
+        assert_eq!(failed_device_backoff(2), Duration::from_secs(60));
+        assert_eq!(failed_device_backoff(3), Duration::from_secs(120));
+        assert_eq!(failed_device_backoff(99), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn failed_tunnel_attempt_skip_honors_backoff_window() {
+        let now = Instant::now();
+        let failed = FailedTunnelAttempt {
+            last_attempt: now - Duration::from_secs(10),
+            fail_count: 2,
+        };
+        assert!(failed.should_skip(now));
+
+        let expired = FailedTunnelAttempt {
+            last_attempt: now - Duration::from_secs(61),
+            fail_count: 2,
+        };
+        assert!(!expired.should_skip(now));
     }
 
     #[test]

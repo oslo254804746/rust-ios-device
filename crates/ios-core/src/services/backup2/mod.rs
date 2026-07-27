@@ -22,6 +22,8 @@ const FILE_TRANSFER_CODE_REMOTE_ERROR: u8 = 0x0b; // Remote (device) reported an
 const BULK_OPERATION_ERROR: i64 = -13;
 const EMPTY_PARAMETER_STRING: &str = "___EmptyParameterString___";
 const DOWNLOAD_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] =
+    &["Manifest.plist", "Manifest.db", "Status.plist"];
 // 978_307_200 seconds = 2001-01-01T00:00:00Z Unix timestamp
 // This is the Apple Core Data / NSDate epoch offset (seconds between Unix epoch and Apple epoch)
 const APPLE_EPOCH_OFFSET: Duration = Duration::from_secs(978_307_200);
@@ -195,7 +197,11 @@ where
         new_password: Option<&str>,
     ) -> Result<(), Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
-        let layout = create_runtime_layout(backup_root, target_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = target_identifier.to_owned();
+            run_blocking(move || create_runtime_layout(&root, &id)).await?
+        };
 
         self.device_link
             .send_process_message(&ChangePasswordRequest {
@@ -218,9 +224,18 @@ where
         options: RestoreOptions<'_>,
     ) -> Result<RestoreResult, Mobilebackup2Error> {
         let source_identifier = options.source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, source_identifier)?;
-        let layout = create_runtime_layout(backup_root, source_identifier)?;
-        let manifest = read_backup_dictionary(&layout.device_directory.join("Manifest.plist"))?;
+        let (layout, manifest) = {
+            let root = backup_root.to_path_buf();
+            let id = source_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                let layout = create_runtime_layout(&root, &id)?;
+                let manifest =
+                    read_backup_dictionary(&layout.device_directory.join("Manifest.plist"))?;
+                Ok((layout, manifest))
+            })
+            .await?
+        };
         let password = if manifest
             .get("IsEncrypted")
             .and_then(plist_value_to_bool)
@@ -269,8 +284,15 @@ where
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
         let layout_identifier = source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, layout_identifier)?;
-        let layout = create_runtime_layout(backup_root, layout_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = layout_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
 
         self.device_link
             .send_process_message(&InfoRequest {
@@ -292,8 +314,15 @@ where
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         let _ = self.version_exchange().await?;
         let source_identifier = source_identifier.unwrap_or(target_identifier);
-        ensure_backup_directory(backup_root, source_identifier)?;
-        let layout = create_runtime_layout(backup_root, source_identifier)?;
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = source_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
 
         self.device_link
             .send_process_message(&ListRequest {
@@ -404,7 +433,9 @@ where
                         .await?;
                 }
                 "DLMessageGetFreeDiskSpace" => {
-                    let free_bytes = available_space(&layout.device_directory)?;
+                    let device_directory = layout.device_directory.clone();
+                    let free_bytes =
+                        run_blocking(move || available_space(&device_directory)).await?;
                     self.send_status_response(0, "", plist::Value::Integer(free_bytes.into()))
                         .await?;
                 }
@@ -706,6 +737,7 @@ pub fn initialize_backup_directory(
     let root = backup_root.to_path_buf();
     let device_directory = root.join(target_identifier);
     fs::create_dir_all(&device_directory)?;
+    let full = should_do_full_backup(full, &device_directory)?;
 
     let mut info_file = File::create(device_directory.join("Info.plist"))?;
     plist::to_writer_xml(
@@ -747,6 +779,52 @@ pub fn initialize_backup_directory(
         device_directory,
         target_identifier: target_identifier.to_string(),
     })
+}
+
+pub fn should_do_full_backup(
+    full: bool,
+    device_directory: &Path,
+) -> Result<bool, Mobilebackup2Error> {
+    Ok(full || !has_incremental_backup_metadata(device_directory)?)
+}
+
+pub fn has_incremental_backup_metadata(
+    device_directory: &Path,
+) -> Result<bool, Mobilebackup2Error> {
+    for filename in INCREMENTAL_BACKUP_REQUIRED_FILES {
+        let metadata = match fs::metadata(device_directory.join(filename)) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(err.into()),
+        };
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn backup_status_is_full(device_directory: &Path) -> Result<bool, Mobilebackup2Error> {
+    let status = read_backup_dictionary(&device_directory.join("Status.plist"))?;
+    Ok(status
+        .get("IsFullBackup")
+        .and_then(plist_value_to_bool)
+        .unwrap_or(false))
+}
+
+/// Run a synchronous filesystem step off the runtime's worker threads.
+///
+/// The helpers below stat, create and parse files on disk; calling them
+/// directly from an async fn blocks the reactor, which the `backup()` path
+/// already avoids via `spawn_blocking`.
+async fn run_blocking<T, F>(op: F) -> Result<T, Mobilebackup2Error>
+where
+    F: FnOnce() -> Result<T, Mobilebackup2Error> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .map_err(|err| Mobilebackup2Error::Io(std::io::Error::other(err.to_string())))?
 }
 
 fn create_runtime_layout(
@@ -1216,6 +1294,74 @@ mod tests {
         assert!(layout.device_directory.join("Info.plist").exists());
         assert!(layout.device_directory.join("Status.plist").exists());
         assert!(layout.device_directory.join("Manifest.plist").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_backup_becomes_full_when_incremental_metadata_is_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-initial-full-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+
+        let layout =
+            initialize_backup_directory(&root, "device-id", &plist::Dictionary::new(), false)
+                .unwrap();
+
+        let status = plist::Value::from_file(layout.device_directory.join("Status.plist"))
+            .unwrap()
+            .into_dictionary()
+            .unwrap();
+        assert_eq!(status["IsFullBackup"].as_boolean(), Some(true));
+        assert!(backup_status_is_full(&layout.device_directory).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_backup_is_preserved_when_required_metadata_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-incremental-{}",
+            std::process::id()
+        ));
+        let device_dir = root.join("device-id");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&device_dir).unwrap();
+        for filename in INCREMENTAL_BACKUP_REQUIRED_FILES {
+            std::fs::write(device_dir.join(filename), b"data").unwrap();
+        }
+
+        let layout =
+            initialize_backup_directory(&root, "device-id", &plist::Dictionary::new(), false)
+                .unwrap();
+        assert!(!backup_status_is_full(&layout.device_directory).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_incremental_metadata_forces_full_backup() {
+        let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-empty-metadata-{}",
+            std::process::id()
+        ));
+        let device_dir = root.join("device-id");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&device_dir).unwrap();
+        std::fs::write(device_dir.join("Manifest.plist"), b"").unwrap();
+        std::fs::write(device_dir.join("Manifest.db"), b"data").unwrap();
+        std::fs::write(device_dir.join("Status.plist"), b"data").unwrap();
+
+        assert!(should_do_full_backup(false, &device_dir).unwrap());
 
         std::fs::remove_dir_all(root).unwrap();
     }

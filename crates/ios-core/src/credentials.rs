@@ -59,30 +59,66 @@ impl PersistedCredentials {
     }
 
     /// Save to disk.
+    ///
+    /// Contains the Ed25519 host private-key seed, so it is written owner-only.
     pub fn save(&self, dir: &std::path::Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
         let path = Self::path_for(dir, &self.device_address);
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        crate::secret_file::write_secret(&path, json.as_bytes())
     }
 
     /// Load from disk by device address.
     pub fn load(dir: &std::path::Path, device_addr: &str) -> Option<Self> {
-        let path = Self::path_for(dir, device_addr);
-        let json = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&json).ok()
+        Self::load_from_path(&Self::path_for(dir, device_addr))
+    }
+
+    /// Read a single credential file.
+    ///
+    /// Callers treat `None` as "not paired yet" and pair again from scratch, so
+    /// a file that exists but cannot be read or parsed must not look the same as
+    /// a missing one: the record is still on disk and the surprise re-pair needs
+    /// a trace to explain it.
+    fn load_from_path(path: &std::path::Path) -> Option<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(json) => match serde_json::from_str(&json) {
+                Ok(creds) => Some(creds),
+                Err(err) => {
+                    tracing::warn!("ignoring corrupt credential file {}: {err}", path.display());
+                    None
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("no credential file at {}", path.display());
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "ignoring unreadable credential file {}: {err}",
+                    path.display()
+                );
+                None
+            }
+        }
     }
 
     /// List all saved credentials in a directory.
     pub fn list(dir: &std::path::Path) -> Vec<Self> {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return vec![];
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("no credential directory at {}", dir.display());
+                return vec![];
+            }
+            Err(err) => {
+                tracing::warn!("cannot list credentials in {}: {err}", dir.display());
+                return vec![];
+            }
         };
         entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-            .filter_map(|s| serde_json::from_str(&s).ok())
+            .map(|e| e.path())
+            .filter(|path| path.extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(|path| Self::load_from_path(&path))
             .collect()
     }
 }
@@ -100,36 +136,84 @@ impl RemotePairingRecord {
         dir.join(format!("remote_{remote_identifier}.plist"))
     }
 
+    /// Save to disk.
+    ///
+    /// Contains the remote pairing private key, so it is written owner-only.
     pub fn save_for_identifier(
         &self,
         dir: &std::path::Path,
         remote_identifier: &str,
     ) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        plist::to_file_xml(Self::path_for_identifier(dir, remote_identifier), self)
-            .map_err(std::io::Error::other)
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, self).map_err(std::io::Error::other)?;
+        crate::secret_file::write_secret(&Self::path_for_identifier(dir, remote_identifier), &buf)
     }
 
     pub fn load_for_identifier(dir: &std::path::Path, remote_identifier: &str) -> Option<Self> {
-        plist::from_file(Self::path_for_identifier(dir, remote_identifier)).ok()
+        Self::load_from_path(&Self::path_for_identifier(dir, remote_identifier))
+    }
+
+    /// Read a single pairing record.
+    ///
+    /// Same reasoning as `PersistedCredentials::load_from_path`: a missing
+    /// record is routine, an unusable one is not. The file is read separately
+    /// from the plist parse so that the two cases stay distinguishable —
+    /// `plist::from_file` folds the io error into its own error type.
+    fn load_from_path(path: &std::path::Path) -> Option<Self> {
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("no remote pairing record at {}", path.display());
+                return None;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "ignoring unreadable remote pairing record {}: {err}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+
+        plist::from_bytes(&data)
+            .inspect_err(|err| {
+                tracing::warn!(
+                    "ignoring corrupt remote pairing record {}: {err}",
+                    path.display()
+                );
+            })
+            .ok()
     }
 
     pub fn list(dir: &std::path::Path) -> Vec<(String, Self)> {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return vec![];
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("no remote pairing record directory at {}", dir.display());
+                return vec![];
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "cannot list remote pairing records in {}: {err}",
+                    dir.display()
+                );
+                return vec![];
+            }
         };
 
         entries
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
+                // Files that do not follow the naming scheme belong to someone
+                // else and are skipped without a trace; only records we claim
+                // and then fail to read are worth warning about.
                 let path = entry.path();
                 let file_name = path.file_name()?.to_str()?;
                 let remote_identifier = file_name
                     .strip_prefix("remote_")?
                     .strip_suffix(".plist")?
                     .to_string();
-                let record = plist::from_file(&path).ok()?;
-                Some((remote_identifier, record))
+                Some((remote_identifier, Self::load_from_path(&path)?))
             })
             .collect()
     }
@@ -183,6 +267,56 @@ mod tests {
         assert!(loaded.host_private_key_hex.is_none());
         assert!(loaded.remote_identifier.is_none());
         assert!(loaded.remote_unlock_host_key.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_corrupt_credential_file_is_skipped_not_treated_as_valid() {
+        let dir = std::env::temp_dir().join("ios_rs_test_creds_corrupt");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            PersistedCredentials::path_for(&dir, "fd00::3"),
+            b"{ this is not json",
+        )
+        .unwrap();
+
+        let good = PersistedCredentials {
+            remote_identifier: None,
+            host_identifier: "good-id".into(),
+            host_public_key_hex: "deadbeef".into(),
+            host_private_key_hex: None,
+            remote_unlock_host_key: None,
+            device_address: "fd00::4".into(),
+            rsd_port: 58783,
+        };
+        good.save(&dir).unwrap();
+
+        assert!(PersistedCredentials::load(&dir, "fd00::3").is_none());
+        assert!(PersistedCredentials::load(&dir, "fd00::5").is_none());
+
+        let listed = PersistedCredentials::list(&dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].host_identifier, "good-id");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_corrupt_remote_pairing_record_is_skipped() {
+        let dir = std::env::temp_dir().join("ios_rs_test_remote_pair_record_corrupt");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            RemotePairingRecord::path_for_identifier(&dir, "BROKEN"),
+            b"not a plist",
+        )
+        .unwrap();
+
+        assert!(RemotePairingRecord::load_for_identifier(&dir, "BROKEN").is_none());
+        assert!(RemotePairingRecord::load_for_identifier(&dir, "MISSING").is_none());
+        assert!(RemotePairingRecord::list(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

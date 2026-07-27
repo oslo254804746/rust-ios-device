@@ -13,7 +13,10 @@ pub struct DiagnosticsCmd {
 #[derive(clap::Subcommand)]
 enum DiagnosticsSub {
     /// Reboot the device via diagnostics_relay
-    Reboot,
+    Reboot {
+        #[arg(long, help = "Required confirmation for the reboot")]
+        force: bool,
+    },
     /// Read battery diagnostics from diagnostics_relay
     Battery,
     /// Monitor battery diagnostics from diagnostics_relay
@@ -79,7 +82,12 @@ impl DiagnosticsCmd {
             .await?;
 
         match sub {
-            DiagnosticsSub::Reboot => {
+            DiagnosticsSub::Reboot { force } => {
+                crate::output::require_force(
+                    force,
+                    "reboot the device",
+                    "the device restarts immediately and any running session is lost",
+                )?;
                 ios_core::diagnostics::reboot(&mut *stream).await?;
                 if json {
                     println!(
@@ -370,7 +378,7 @@ mod tests {
     #[test]
     fn parses_reboot_subcommand() {
         let cmd = TestCli::parse_from(["diagnostics", "reboot"]);
-        assert!(matches!(cmd.command, DiagnosticsSub::Reboot));
+        assert!(matches!(cmd.command, DiagnosticsSub::Reboot { .. }));
     }
 
     #[test]

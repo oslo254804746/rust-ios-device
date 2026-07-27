@@ -76,7 +76,7 @@ cargo install ios-cli            # installs the `ios` binary
 ```toml
 # Cargo.toml — pull in the library
 [dependencies]
-ios-core = { version = "0.1.5", features = ["classic"] }
+ios-core = { version = "0.1.8", features = ["classic"] }
 ```
 
 ### Python
@@ -124,7 +124,7 @@ orientation.
 | Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi`   | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
 | Files & containers          | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                            | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`                                |
 | Apps & UI tests             | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                               | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
-| Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                           | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`  |
+| Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                               | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
 | Management & supervision    | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`; pmd3 `profile`/`provision`/`restore` |
@@ -172,13 +172,13 @@ a grouped flag:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
 | `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
@@ -375,4 +375,3 @@ support it.
 
 [go-ios]: https://github.com/danielpaulus/go-ios
 [pymobiledevice3]: https://github.com/doronz88/pymobiledevice3
-

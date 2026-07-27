@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use ios_core::error::CoreError;
 
+use crate::cmd::connect::{connect_by_ios_major, userspace_options};
+
 #[derive(clap::Args)]
 pub struct AppsCmd {
     #[command(subcommand)]
@@ -136,29 +138,17 @@ impl AppsCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for apps commands"))?;
 
-        let skip_tunnel = if apps_subcommand_requires_version_probe(&self.sub) {
-            let probe = ios_core::connect(
-                &udid,
-                ios_core::device::ConnectOptions {
-                    tun_mode: ios_core::TunMode::Userspace,
-                    pair_record_path: None,
-                    skip_tunnel: true,
-                },
-            )
+        let device = if apps_subcommand_requires_version_probe(&self.sub) {
+            let (device, _version) = connect_by_ios_major(&udid, |major| {
+                apps_subcommand_prefers_tunnel(&self.sub, major)
+            })
             .await
-            .context("failed to probe device version for apps command")?;
-            let product_version = probe.product_version().await?;
-            drop(probe);
-            !apps_subcommand_prefers_tunnel(&self.sub, product_version.major)
+            .context("failed to connect device for apps command")?;
+            device
         } else {
-            true
+            ios_core::connect(&udid, userspace_options(true)).await?
         };
-        let opts = ios_core::device::ConnectOptions {
-            tun_mode: ios_core::TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel,
-        };
-        let device = ios_core::connect(&udid, opts).await?;
+        let skip_tunnel = device.tunnel_handle().is_none();
 
         match self.sub {
             AppsSub::List {

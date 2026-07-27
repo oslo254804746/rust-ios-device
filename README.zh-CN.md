@@ -71,7 +71,7 @@ cargo install ios-cli            # 安装 `ios` 二进制
 ```toml
 # Cargo.toml — 引用库
 [dependencies]
-ios-core = { version = "0.1.5", features = ["classic"] }
+ios-core = { version = "0.1.8", features = ["classic"] }
 ```
 
 ### Python
@@ -117,7 +117,7 @@ CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列�
 | 设备信息与设置          | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi` | go-ios `info`/`mobilegestalt`；pmd3 `lockdown`/`amfi`/`activation`         |
 | 文件与容器              | `file`（AFC、应用、CoreDevice）、`crash`、`file-relay`                                       | go-ios `fsync`/`crash`；pmd3 `afc`/`crash`                                  |
 | 应用与 UI 测试          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                           | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`；pmd3 `apps`/dvt        |
-| 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                       | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`    |
+| 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                           | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
 | 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`；pmd3 `profile`/`provision`/`restore` |
@@ -161,13 +161,13 @@ ios file --coredevice --domain temporary ls /
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
 ```
 
 | 分组         | 包含内容                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
 | `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
@@ -354,4 +354,3 @@ Bug 报告与功能请求模板位于 [`.github/ISSUE_TEMPLATE`](.github/ISSUE_T
 
 [go-ios]: https://github.com/danielpaulus/go-ios
 [pymobiledevice3]: https://github.com/doronz88/pymobiledevice3
-

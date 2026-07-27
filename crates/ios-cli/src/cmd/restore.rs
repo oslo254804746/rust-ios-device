@@ -13,11 +13,23 @@ pub struct RestoreCmd {
 #[derive(clap::Subcommand)]
 enum RestoreSub {
     /// Reboot the device into recovery mode
-    EnterRecovery,
+    EnterRecovery {
+        #[arg(long, help = "Required confirmation for entering recovery mode")]
+        force: bool,
+    },
     /// Set delay-recovery-image for supported devices
-    DelayRecoveryImage,
+    DelayRecoveryImage {
+        #[arg(
+            long,
+            help = "Required confirmation for changing the recovery image delay"
+        )]
+        force: bool,
+    },
     /// Reboot the device via restore service
-    Reboot,
+    Reboot {
+        #[arg(long, help = "Required confirmation for the reboot")]
+        force: bool,
+    },
     /// Query restore preflight info
     PreflightInfo,
     /// Query AP/SEP nonces from restore service
@@ -43,10 +55,31 @@ enum RestoreSub {
 impl RestoreCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for restore"))?;
+        // Guard before connecting: these three change device state, unlike the
+        // read-only queries below.
+        match &self.sub {
+            RestoreSub::EnterRecovery { force } => crate::output::require_force(
+                *force,
+                "put the device into recovery mode",
+                "the device leaves normal operation until it is restored or force-restarted",
+            )?,
+            RestoreSub::DelayRecoveryImage { force } => crate::output::require_force(
+                *force,
+                "set delay-recovery-image",
+                "this changes how the device boots into recovery",
+            )?,
+            RestoreSub::Reboot { force } => crate::output::require_force(
+                *force,
+                "reboot the device",
+                "the device restarts immediately and any running session is lost",
+            )?,
+            _ => {}
+        }
+
         let success_message = match &self.sub {
-            RestoreSub::EnterRecovery => Some("Recovery request accepted."),
-            RestoreSub::DelayRecoveryImage => Some("Delay recovery image request accepted."),
-            RestoreSub::Reboot => Some("Reboot request accepted."),
+            RestoreSub::EnterRecovery { .. } => Some("Recovery request accepted."),
+            RestoreSub::DelayRecoveryImage { .. } => Some("Delay recovery image request accepted."),
+            RestoreSub::Reboot { .. } => Some("Reboot request accepted."),
             _ => None,
         };
         let device = connect(
@@ -85,9 +118,9 @@ impl RestoreCmd {
         }
 
         let response = match self.sub {
-            RestoreSub::EnterRecovery => client.enter_recovery().await?,
-            RestoreSub::DelayRecoveryImage => client.delay_recovery_image().await?,
-            RestoreSub::Reboot => client.reboot().await?,
+            RestoreSub::EnterRecovery { .. } => client.enter_recovery().await?,
+            RestoreSub::DelayRecoveryImage { .. } => client.delay_recovery_image().await?,
+            RestoreSub::Reboot { .. } => client.reboot().await?,
             RestoreSub::PreflightInfo => client.get_preflight_info().await?,
             RestoreSub::Nonces => client.get_nonces().await?,
             RestoreSub::AppParameters => client.get_app_parameters().await?,

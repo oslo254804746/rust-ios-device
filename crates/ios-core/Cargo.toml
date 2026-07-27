@@ -33,6 +33,7 @@ classic = [
 developer = [
     "accessibility_audit",
     "amfi",
+    "btlogger",
     "debugserver",
     "dproxy",
     "dtx",
@@ -64,6 +65,9 @@ ios17 = [
     "mdns",
     "tunnel-userspace",
 ]
+coredevice-base = ["tunnel-userspace", "mdns"]
+coredevice-files = ["coredevice-base", "fileservice"]
+coredevice-info = ["coredevice-base", "deviceinfo"]
 mdns = ["dep:mdns-sd"]
 tunnel = ["dep:openssl", "dep:tokio-openssl"]
 tunnel-kernel = ["tunnel", "dep:tun-rs"]
@@ -89,6 +93,7 @@ syslog = []
 screenshot = []
 misagent = []
 amfi = []
+btlogger = []
 dtx = ["lz4_flex"]
 instruments = ["dtx"]
 testmanager = ["dtx"]
@@ -157,6 +162,7 @@ p256         = { workspace = true }
 sha2         = { workspace = true }
 hkdf         = { workspace = true }
 zeroize      = { workspace = true }
+subtle       = { workspace = true }
 num-bigint   = { workspace = true }
 num-traits   = { workspace = true }
 uuid         = { workspace = true }

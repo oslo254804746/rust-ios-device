@@ -5,15 +5,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ios_core::apps::{AppInfo, InstallationProxy};
-use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
+use ios_core::device::{ConnectedDevice, ServiceStream};
 use ios_core::instruments::process_control::ProcessControl;
 use ios_core::testmanager::results::{TestRunRecorder, TestRunSummary};
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;
 use ios_core::MuxClient;
-use ios_core::TunMode;
 use uuid::Uuid;
+
+use crate::cmd::connect::{connect_lockdown_only, connect_userspace_tunnel};
 
 #[derive(clap::Args)]
 pub struct RunTestCmd {
@@ -285,24 +286,16 @@ pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result
 }
 
 pub async fn connect_testmanager_device(udid: &str) -> Result<ConnectedDevice> {
-    let probe_opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: true,
-    };
-    let probe = ios_core::connect(udid, probe_opts)
-        .await
-        .context("failed to connect device for product version probe")?;
-    let product_version = probe.product_version().await?;
+    let product_version = crate::cmd::connect::probe_product_version(udid).await?;
     let connect_plan = testmanager_connect_plan(product_version.major);
-    drop(probe);
 
-    let opts = ConnectOptions {
-        tun_mode: TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: !connect_plan.requires_tunnel,
+    let device = if connect_plan.requires_tunnel {
+        connect_userspace_tunnel(udid).await
+    } else {
+        connect_lockdown_only(udid).await
     };
-    ios_core::connect(udid, opts).await.with_context(|| {
+
+    device.with_context(|| {
         if connect_plan.requires_tunnel {
             "failed to establish device tunnel for testmanager".to_string()
         } else {

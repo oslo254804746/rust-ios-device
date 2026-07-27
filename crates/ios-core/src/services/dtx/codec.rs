@@ -23,6 +23,7 @@ use super::types::{DtxMessage, DtxPayload, NSObject};
 
 const MAX_DTX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 const MAX_DTX_FRAGMENTS: u16 = 1024;
+const MAX_DTX_HEADER_SIZE: usize = 64 * 1024;
 
 const MSG_OK: u32 = 0;
 const MSG_UNKNOWN_TYPE_ONE: u32 = 1; // sysmontap data messages
@@ -137,7 +138,9 @@ fn parse_dtx_header(hdr: &[u8; 32]) -> Result<DtxHeader, DtxError> {
         return Err(DtxError::BadMagic(magic));
     }
     let header_len = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
-    if header_len < 32 {
+    // Both references emit a fixed 32-byte header; the upper bound only stops a
+    // bogus length from driving a multi-gigabyte skip buffer.
+    if !(32..=MAX_DTX_HEADER_SIZE).contains(&header_len) {
         return Err(DtxError::Protocol(format!(
             "invalid DTX header length: {header_len}"
         )));
@@ -420,6 +423,8 @@ struct FragmentAccum {
     fragments: Vec<Option<Vec<u8>>>,
     /// Number of body fragments still expected.
     remaining: u16,
+    /// Bytes buffered so far, checked before each fragment is allocated.
+    received: usize,
 }
 
 // ── DtxConnection ─────────────────────────────────────────────────────────────
@@ -536,17 +541,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                     FragmentAccum {
                         fragments: vec![None; (h.frag_cnt - 1) as usize],
                         remaining: h.frag_cnt - 1,
+                        received: 0,
                         header: h,
                     },
                 );
                 continue;
             }
 
-            // Subsequent fragment: read msg_len bytes of body
+            // Subsequent fragment: read msg_len bytes of body.
+            //
+            // Check the running total against the announced size *before*
+            // allocating: each fragment may declare up to MAX_DTX_MESSAGE_SIZE
+            // on its own, and there can be MAX_DTX_FRAGMENTS of them, so
+            // validating only the assembled total lets a crafted stream buffer
+            // orders of magnitude more than one message is allowed to be.
+            let id = h.identifier;
+            if let Some(accum) = self.fragments.get(&id) {
+                let announced = accum.header.msg_len;
+                if accum.received + h.msg_len > announced {
+                    return Err(DtxError::Protocol(format!(
+                        "fragmented body for id={id} exceeds announced size {announced}"
+                    )));
+                }
+            }
+
             let mut frag_body = vec![0u8; h.msg_len];
             self.stream.read_exact(&mut frag_body).await?;
 
-            let id = h.identifier;
             if let Some(accum) = self.fragments.get_mut(&id) {
                 if h.frag_cnt != accum.header.frag_cnt {
                     return Err(DtxError::Protocol(format!(
@@ -584,6 +605,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                         h.frag_idx
                     )));
                 }
+                accum.received += frag_body.len();
                 *slot = Some(frag_body);
                 accum.remaining -= 1;
                 if accum.remaining == 0 {

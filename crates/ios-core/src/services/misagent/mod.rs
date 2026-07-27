@@ -10,7 +10,7 @@ pub const SERVICE_NAME: &str = "com.apple.misagent";
 service_error!(
     MisagentError,
     #[error("status {0}")]
-    Status(u32),
+    Status(u64),
 );
 
 /// Provisioning profile entry.
@@ -54,7 +54,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             .as_dictionary()
             .and_then(|d| d.get("Status"))
             .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
 
         if status != 0 {
             return Err(MisagentError::Status(status));
@@ -106,7 +106,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             .as_dictionary()
             .and_then(|d| d.get("Status"))
             .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         if status != 0 {
             return Err(MisagentError::Status(status));
         }
@@ -136,7 +136,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MisagentClient<S> {
             .as_dictionary()
             .and_then(|d| d.get("Status"))
             .and_then(|v| v.as_unsigned_integer())
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         if status != 0 {
             return Err(MisagentError::Status(status));
         }

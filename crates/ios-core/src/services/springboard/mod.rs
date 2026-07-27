@@ -307,7 +307,7 @@ fn parse_screens(value: plist::Value) -> Result<Vec<Vec<Icon>>, SpringboardError
             let icons = screen.into_array().ok_or_else(|| {
                 SpringboardError::Protocol("screen entry was not an array".into())
             })?;
-            icons.into_iter().map(parse_icon).collect()
+            icons.into_iter().map(|icon| parse_icon(icon, 0)).collect()
         })
         .collect()
 }
@@ -350,7 +350,18 @@ fn parse_metrics(value: plist::Value) -> Result<plist::Value, SpringboardError> 
     Ok(plist::Value::Dictionary(dict))
 }
 
-fn parse_icon(value: plist::Value) -> Result<Icon, SpringboardError> {
+/// Maximum folder nesting followed when parsing an icon list.
+///
+/// Folders nest through `iconLists`, and the depth comes from the device.
+const MAX_ICON_DEPTH: usize = 16;
+
+fn parse_icon(value: plist::Value, depth: usize) -> Result<Icon, SpringboardError> {
+    if depth > MAX_ICON_DEPTH {
+        return Err(SpringboardError::Protocol(format!(
+            "springboard icon folders nested deeper than {MAX_ICON_DEPTH} levels"
+        )));
+    }
+
     let dict = value
         .into_dictionary()
         .ok_or_else(|| SpringboardError::Protocol("icon entry was not a dictionary".into()))?;
@@ -383,7 +394,11 @@ fn parse_icon(value: plist::Value) -> Result<Icon, SpringboardError> {
                 let page_icons = page.as_array().ok_or_else(|| {
                     SpringboardError::Protocol("folder page was not an array".into())
                 })?;
-                page_icons.iter().cloned().map(parse_icon).collect()
+                page_icons
+                    .iter()
+                    .cloned()
+                    .map(|icon| parse_icon(icon, depth + 1))
+                    .collect()
             })
             .collect::<Result<Vec<Vec<Icon>>, SpringboardError>>()?;
         return Ok(Icon::Folder(Folder {

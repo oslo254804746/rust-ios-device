@@ -8,6 +8,7 @@ use bytes::{Buf, Bytes};
 use super::types::NSObject;
 
 const PRIMITIVE_NULL: u32 = 0x0000000A;
+const PRIMITIVE_STRING: u32 = 0x00000001;
 const PRIMITIVE_INT: u32 = 0x00000003;
 const PRIMITIVE_LONG: u32 = 0x00000006;
 const PRIMITIVE_DOUBLE: u32 = 0x00000009;
@@ -55,15 +56,13 @@ fn read_entry(mut data: Bytes) -> Option<(u32, Bytes, Bytes)> {
             Some((type_tag, Bytes::copy_from_slice(&data.split_to(4)), data))
         }
         PRIMITIVE_LONG | PRIMITIVE_DOUBLE => {
-            if data.remaining() < 12 && type_tag == PRIMITIVE_LONG {
-                // unreachable due to split_to semantics, handled by remaining check below
-            }
             if data.remaining() < 8 {
                 return None;
             }
             Some((type_tag, Bytes::copy_from_slice(&data.split_to(8)), data))
         }
-        PRIMITIVE_BYTES => {
+        // Both are length-prefixed; go-ios `hasLength()` covers t_string and t_bytearray.
+        PRIMITIVE_STRING | PRIMITIVE_BYTES => {
             if data.remaining() < 4 {
                 return None;
             }
@@ -79,6 +78,7 @@ fn read_entry(mut data: Bytes) -> Option<(u32, Bytes, Bytes)> {
 
 fn entry_to_nsobject(type_tag: u32, value: Bytes) -> NSObject {
     match type_tag {
+        PRIMITIVE_STRING => NSObject::String(String::from_utf8_lossy(&value).into_owned()),
         PRIMITIVE_INT if value.len() >= 4 => {
             NSObject::Int(i32::from_le_bytes(value[..4].try_into().unwrap()) as i64)
         }
@@ -127,6 +127,41 @@ mod tests {
         let encoded = encode_primitive_dict(&[PrimArg::Int64(36)]);
         let decoded = decode_auxiliary(encoded);
         assert_eq!(decoded, vec![NSObject::Int(36)]);
+    }
+
+    /// Devices emit the length-prefixed string primitive (`t_string = 0x01`); our encoder
+    /// never does, so this has to be built by hand.
+    fn encode_string_entry(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&PRIMITIVE_NULL.to_le_bytes());
+        out.extend_from_slice(&PRIMITIVE_STRING.to_le_bytes());
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    #[test]
+    fn decode_auxiliary_decodes_string_primitive() {
+        let decoded = decode_auxiliary(Bytes::from(encode_string_entry("com.example.app")));
+        assert_eq!(
+            decoded,
+            vec![NSObject::String("com.example.app".to_string())]
+        );
+    }
+
+    #[test]
+    fn decode_auxiliary_keeps_arguments_after_a_string() {
+        let mut encoded = encode_string_entry("selector-arg");
+        encoded.extend_from_slice(&encode_primitive_dict(&[PrimArg::Int64(7)]));
+
+        let decoded = decode_auxiliary(Bytes::from(encoded));
+        assert_eq!(
+            decoded,
+            vec![
+                NSObject::String("selector-arg".to_string()),
+                NSObject::Int(7)
+            ]
+        );
     }
 
     #[test]

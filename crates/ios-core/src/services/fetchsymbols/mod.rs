@@ -4,6 +4,7 @@
 //! Reference: pymobiledevice3 `dtfetchsymbols.py`
 
 use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -131,7 +132,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         let file = files.get(index as usize).ok_or_else(|| {
             FetchSymbolsError::Protocol(format!("symbol index {index} out of range"))
         })?;
+        self.download_known(index, file, &mut writer, max_bytes)
+            .await
+    }
 
+    pub async fn download_known<W: Write>(
+        &mut self,
+        index: u32,
+        file: &RemoteSymbolFile,
+        mut writer: W,
+        max_bytes: Option<u64>,
+    ) -> Result<u64, FetchSymbolsError> {
         let stream_id = (index + 1) * 2;
         self.framer
             .write_stream(
@@ -302,10 +313,7 @@ fn try_parse_catalog_entry(
     message: &crate::xpc::XpcMessage,
 ) -> Option<Result<RemoteSymbolFile, FetchSymbolsError>> {
     let dict = message.body.as_ref()?.as_dict()?;
-    let entry = match dict.get("DSCFilePaths") {
-        Some(value) => value.as_dict()?,
-        None => return None,
-    };
+    let entry = dict.get("DSCFilePaths")?.as_dict()?;
     let path = entry
         .get("filePath")
         .and_then(crate::xpc::XpcValue::as_str)
@@ -350,6 +358,26 @@ fn as_u64(value: &crate::xpc::XpcValue) -> Option<u64> {
         crate::xpc::XpcValue::Int64(n) if *n >= 0 => Some(*n as u64),
         _ => None,
     }
+}
+
+pub fn remote_symbol_output_path(root: &Path, remote_path: &str) -> PathBuf {
+    let relative = sanitize_remote_symbol_path(remote_path);
+    root.join(relative)
+}
+
+fn sanitize_remote_symbol_path(remote_path: &str) -> PathBuf {
+    let normalized = remote_path.replace('\\', "/");
+    let mut out = PathBuf::new();
+    for component in Path::new(&normalized).components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir
+            | Component::Prefix(_) => {}
+        }
+    }
+    out
 }
 
 async fn bootstrap_remote_xpc<S>(
@@ -415,4 +443,29 @@ where
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn remote_symbol_output_path_trims_root_prefix_and_rejects_traversal() {
+        // Compare `Path`s rather than strings: the separator differs per host.
+        let root = Path::new("/tmp/Symbols");
+        assert_eq!(
+            remote_symbol_output_path(root, "/System/Library/Foo"),
+            root.join("System").join("Library").join("Foo")
+        );
+        assert_eq!(
+            remote_symbol_output_path(root, "/System/../Library/Foo"),
+            root.join("System").join("Library").join("Foo")
+        );
+        assert_eq!(
+            remote_symbol_output_path(root, "../private/var"),
+            root.join("private").join("var")
+        );
+    }
 }

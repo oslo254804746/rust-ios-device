@@ -54,9 +54,11 @@ pub async fn get_tss_ticket(
         .find("<?xml")
         .or_else(|| body.find("<plist"))
         .ok_or_else(|| {
+            // Take chars, not bytes: slicing can land inside a UTF-8 sequence
+            // and panic on the error path.
             ImageMounterError::Tss(format!(
                 "no plist in TSS response: {}",
-                &body[..body.len().min(200)]
+                body.chars().take(200).collect::<String>()
             ))
         })?;
 

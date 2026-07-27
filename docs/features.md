@@ -6,13 +6,13 @@ Enable only the services your application needs:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.5", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
 ```
 
 For tools that intentionally expose a broad surface, use grouped features:
 
 ```toml
-ios-core = { version = "0.1.5", features = ["classic", "developer"] }
+ios-core = { version = "0.1.8", features = ["classic", "developer"] }
 ```
 
 ## Groups
@@ -20,14 +20,17 @@ ios-core = { version = "0.1.5", features = ["classic", "developer"] }
 | Feature | Purpose |
 | --- | --- |
 | `classic` | Common lockdown/usbmux services used across many iOS versions. |
-| `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, and related developer workflows. |
+| `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, Bluetooth packet logging, and related developer workflows. |
 | `management` | Device management, supervision/preparation, restore, power assertion, and companion-device helpers. |
 | `ios17` | CoreDevice/RSD-oriented services and tunnel workflows used primarily by iOS 17+ devices. |
+| `coredevice-base` | Minimal CoreDevice transport support: userspace tunnel plus mDNS discovery. |
+| `coredevice-files` | CoreDevice fileservice plus the base CoreDevice transport support. |
+| `coredevice-info` | CoreDevice deviceinfo plus the base CoreDevice transport support. |
 | `full` | Everything exposed by `ios-core`; intended for the CLI and integration testing. |
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `restore`, `dproxy`, and `fetchsymbols`.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 

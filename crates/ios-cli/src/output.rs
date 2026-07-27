@@ -1,21 +1,35 @@
-use comfy_table::{Cell, Table};
-use serde::Serialize;
+//! Shared CLI helpers.
 
-/// Print a serializable value as JSON, writing to stderr on serialization failure.
-#[allow(dead_code)]
-pub fn print_json<T: Serialize>(value: &T, _json: bool) {
-    match serde_json::to_string_pretty(value) {
-        Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("error: failed to serialize output: {e}"),
+use anyhow::Result;
+
+/// Refuse a destructive operation unless the caller opted in with `--force`.
+///
+/// Commands that reboot, overwrite device data, or install a device-wide
+/// profile all route through this so the guard reads the same everywhere.
+pub fn require_force(force: bool, operation: &str, consequence: &str) -> Result<()> {
+    if force {
+        return Ok(());
     }
+    Err(anyhow::anyhow!(
+        "refusing to {operation} without --force: {consequence}"
+    ))
 }
 
-/// Build a simple two-column key-value table.
-#[allow(dead_code)]
-pub fn kv_table(pairs: &[(&str, String)]) -> String {
-    let mut table = Table::new();
-    for (k, v) in pairs {
-        table.add_row(vec![Cell::new(k), Cell::new(v)]);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passes_through_when_forced() {
+        assert!(require_force(true, "erase device", "all data is lost").is_ok());
     }
-    table.to_string()
+
+    #[test]
+    fn explains_what_the_flag_would_have_done() {
+        let err = require_force(false, "erase device", "all data is lost").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("--force"), "{message}");
+        assert!(message.contains("erase device"), "{message}");
+        assert!(message.contains("all data is lost"), "{message}");
+    }
 }

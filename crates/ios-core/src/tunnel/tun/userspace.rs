@@ -26,6 +26,9 @@ const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
 const LOCAL_PROXY_CHANNEL_CAPACITY: usize = 4096;
 const SOCKET_BUFFER_BYTES: usize = 1_048_576;
 const SOCKET_RECV_CHUNK_BYTES: usize = 65_536;
+const EPHEMERAL_PORT_MIN: u16 = 40000;
+const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
+const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) as usize + 1;
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
 
@@ -218,13 +221,19 @@ where
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
 
+/// Floor for a no-progress poll sleep.
+///
+/// smoltcp reports a zero delay whenever it wants to be polled again right away.
+/// This loop only sleeps once an iteration made no progress, so honouring a zero
+/// delay literally turns into a busy-spin on a core.
+const MIN_POLL_SLEEP: Duration = Duration::from_micros(50);
+
 fn smol_now() -> SmolInstant {
-    SmolInstant::from_millis(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64,
-    )
+    // smoltcp only needs a monotonic millisecond clock. Wall-clock time can step
+    // backwards (NTP correction, manual change), which wedges its timers.
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    SmolInstant::from_millis(start.elapsed().as_millis() as i64)
 }
 
 fn smoltcp_poll_sleep_duration(
@@ -235,15 +244,42 @@ fn smoltcp_poll_sleep_duration(
     // in the channel queue long enough to starve real-time streams like kperf/fps.
     if has_active_connections {
         return delay
-            .map(|delay| Duration::from_micros(delay.total_micros()).min(Duration::from_millis(1)))
+            .map(|delay| {
+                Duration::from_micros(delay.total_micros())
+                    .clamp(MIN_POLL_SLEEP, Duration::from_millis(1))
+            })
             .unwrap_or_else(|| Duration::from_millis(1));
     }
 
     // `None` means there is no internal timer deadline, but this loop still needs
     // to wake up periodically to observe channel activity.
     delay
-        .map(|delay| Duration::from_micros(delay.total_micros()))
+        .map(|delay| Duration::from_micros(delay.total_micros()).max(MIN_POLL_SLEEP))
         .unwrap_or_else(|| Duration::from_millis(1))
+}
+
+/// Take the next free local port for a tunneled socket.
+///
+/// smoltcp identifies a socket by its full 4-tuple, so reusing a port that a live
+/// connection still holds makes `connect` fail — or, worse, lands two tunneled
+/// streams on the same tuple. Walks the ephemeral range from `cursor`, wrapping at
+/// its end (a plain `wrapping_add` would drop the cursor into the reserved low
+/// ports) and skipping everything `in_use` still claims. `None` means the range is
+/// fully taken.
+fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) -> Option<u16> {
+    for _ in 0..EPHEMERAL_PORT_COUNT {
+        let port = *cursor;
+        // EPHEMERAL_PORT_MAX is u16::MAX, so `==` is the whole wrap condition.
+        *cursor = if port == EPHEMERAL_PORT_MAX {
+            EPHEMERAL_PORT_MIN
+        } else {
+            port + 1
+        };
+        if !in_use(port) {
+            return Some(port);
+        }
+    }
+    None
 }
 
 async fn run_smoltcp(
@@ -265,7 +301,7 @@ async fn run_smoltcp(
 
     let mut sockets = SocketSet::new(vec![]);
     let mut connections: HashMap<SocketHandle, ConnState> = HashMap::new();
-    let mut ephemeral_port: u16 = 40000;
+    let mut ephemeral_port: u16 = EPHEMERAL_PORT_MIN;
     let mut pending_ios_tx = VecDeque::new();
 
     loop {
@@ -288,8 +324,21 @@ async fn run_smoltcp(
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
             socket.set_timeout(Some(smoltcp::time::Duration::from_secs(30)));
             socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(1)));
-            let local_port = ephemeral_port;
-            ephemeral_port = ephemeral_port.wrapping_add(1).max(40000);
+            let Some(local_port) = take_ephemeral_port(&mut ephemeral_port, |port| {
+                connections.keys().any(|&handle| {
+                    sockets
+                        .get::<tcp::Socket>(handle)
+                        .local_endpoint()
+                        .is_some_and(|endpoint| endpoint.port == port)
+                })
+            }) else {
+                tracing::error!(
+                    "userspace: no free ephemeral port for [{:?}]:{}",
+                    req.remote_ip,
+                    req.remote_port
+                );
+                continue;
+            };
             let remote_ep = IpEndpoint::new(IpAddress::Ipv6(req.remote_ip), req.remote_port);
             match socket.connect(iface.context(), remote_ep, local_port) {
                 Ok(()) => {
@@ -633,10 +682,45 @@ mod tests {
     }
 
     #[test]
+    fn take_ephemeral_port_skips_ports_held_by_live_connections() {
+        let mut cursor = EPHEMERAL_PORT_MIN;
+        let busy = [EPHEMERAL_PORT_MIN, EPHEMERAL_PORT_MIN + 1];
+
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |port| busy.contains(&port)),
+            Some(EPHEMERAL_PORT_MIN + 2)
+        );
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN + 3);
+    }
+
+    #[test]
+    fn take_ephemeral_port_wraps_inside_the_ephemeral_range() {
+        let mut cursor = EPHEMERAL_PORT_MAX;
+
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |_| false),
+            Some(EPHEMERAL_PORT_MAX)
+        );
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN);
+        assert_eq!(
+            take_ephemeral_port(&mut cursor, |_| false),
+            Some(EPHEMERAL_PORT_MIN)
+        );
+    }
+
+    #[test]
+    fn take_ephemeral_port_reports_exhaustion_after_one_lap() {
+        let mut cursor = EPHEMERAL_PORT_MIN;
+
+        assert_eq!(take_ephemeral_port(&mut cursor, |_| true), None);
+        assert_eq!(cursor, EPHEMERAL_PORT_MIN);
+    }
+
+    #[test]
     fn smoltcp_poll_sleep_duration_preserves_idle_smoltcp_backoff() {
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::ZERO), false),
-            Duration::ZERO
+            MIN_POLL_SLEEP
         );
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::from_micros(250)), false),
@@ -656,7 +740,7 @@ mod tests {
     fn smoltcp_poll_sleep_duration_keeps_active_connections_responsive() {
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::ZERO), true),
-            Duration::ZERO
+            MIN_POLL_SLEEP
         );
         assert_eq!(
             smoltcp_poll_sleep_duration(Some(smoltcp::time::Duration::from_micros(250)), true),

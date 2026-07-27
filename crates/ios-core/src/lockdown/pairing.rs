@@ -26,6 +26,7 @@ use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha512};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 // ── TLV type codes (from go-ios tunnel/tlvbuffer.go) ──────────────────────────
 
@@ -46,6 +47,12 @@ const STATE_PHASE5: u8 = 0x05;
 
 // ── Identity (host keys, generated fresh each pairing) ────────────────────────
 
+/// Host signing identity.
+///
+/// `SigningKey` is `ZeroizeOnDrop` in ed25519-dalek, so the seed held here is
+/// wiped with the identity; only the plain copy handed out by
+/// [`HostIdentity::private_key_bytes`] outlives it, and that copy belongs to the
+/// caller that persists it.
 pub struct HostIdentity {
     pub identifier: String,
     pub signing_key: SigningKey,
@@ -66,15 +73,17 @@ impl HostIdentity {
         identifier: impl Into<String>,
         private_key: &[u8],
     ) -> Result<Self, PairingError> {
-        let private_key: [u8; 32] = private_key.try_into().map_err(|_| {
+        // Our own copy of the seed: the caller's slice is theirs to manage, this
+        // one must not survive the constructor.
+        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(private_key.try_into().map_err(|_| {
             PairingError::Crypto(format!(
                 "expected 32-byte Ed25519 private key seed, got {} bytes",
                 private_key.len()
             ))
-        })?;
+        })?);
         Ok(Self {
             identifier: identifier.into(),
-            signing_key: SigningKey::from_bytes(&private_key),
+            signing_key: SigningKey::from_bytes(&seed),
         })
     }
 
@@ -100,7 +109,10 @@ impl HostIdentity {
 pub struct SrpSession {
     pub client_public: Vec<u8>,
     pub client_proof: Vec<u8>,
-    pub session_key: Vec<u8>,
+    /// Every later key in the handshake is derived from this, and the session
+    /// outlives the exchange, so it is wiped on drop. It still derefs to
+    /// `&[u8]` for the callers that feed it to the HKDF steps.
+    pub session_key: Zeroizing<Vec<u8>>,
     // Internal SRP state for server proof verification
     verifier: SrpVerifier,
 }
@@ -118,19 +130,23 @@ impl SrpSession {
             h.update(b"Pair-Setup:000000");
             h.finalize()
         };
-        let x_hash = {
+        // x is the SRP password equivalent — as sensitive as the session key.
+        let x_hash = Zeroizing::new({
             let mut h = Sha512::new();
             h.update(salt);
             h.update(inner);
-            h.finalize()
-        };
+            h.finalize().to_vec()
+        });
 
         // RFC 5054 SRP-3072 with the custom x
-        srp_compute(salt, device_public, &x_hash)
+        srp_compute(salt, device_public, x_hash.as_slice())
     }
 
     pub fn verify_server_proof(&self, server_proof: &[u8]) -> bool {
-        server_proof == self.verifier.m2_expected.as_slice()
+        // Constant time: a byte-at-a-time `==` leaks how much of M2 matched.
+        use subtle::ConstantTimeEq;
+        let expected = self.verifier.m2_expected.as_slice();
+        server_proof.len() == expected.len() && bool::from(server_proof.ct_eq(expected))
     }
 }
 
@@ -187,8 +203,10 @@ fn srp_compute(salt: &[u8], device_public_b: &[u8], x: &[u8]) -> Result<SrpSessi
     };
 
     // Step 2: Generate ephemeral private a (random 256-bit scalar)
-    let a_secret: [u8; 32] = rand::random();
-    let a = BigUint::from_bytes_be(&a_secret);
+    // The BigUint values derived below cannot be wiped (num-bigint has no
+    // Zeroize impl), but the raw scalar buffer can be.
+    let a_secret: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
+    let a = BigUint::from_bytes_be(a_secret.as_slice());
     // Step 3: A = g^a mod N — client ephemeral public key
     let big_a = g.modpow(&a, &n);
     let big_a_bytes = big_a.to_bytes_be();
@@ -225,19 +243,20 @@ fn srp_compute(salt: &[u8], device_public_b: &[u8], x: &[u8]) -> Result<SrpSessi
     };
     let exp = (&a + &u * &x_big) % (&n - BigUint::one());
     let s = base.modpow(&exp, &n);
-    let s_bytes = {
-        let raw = s.to_bytes_be();
+    // The premaster secret is the input to K; it must not linger once K exists.
+    let s_bytes = Zeroizing::new({
+        let raw = Zeroizing::new(s.to_bytes_be());
         let mut padded = vec![0u8; n_len.saturating_sub(raw.len())];
-        padded.extend_from_slice(&raw);
+        padded.extend_from_slice(raw.as_slice());
         padded
-    };
+    });
 
     // Step 6: K = H(S) — session key derived from premaster secret
-    let session_key = {
+    let session_key = Zeroizing::new({
         let mut h = Sha512::new();
-        h.update(&s_bytes);
+        h.update(s_bytes.as_slice());
         h.finalize().to_vec()
-    };
+    });
 
     // Step 7: M1 = H(H(N) XOR H(g) || H(I) || salt || A || B || K) — client proof
     let h_n = {
@@ -264,7 +283,7 @@ fn srp_compute(salt: &[u8], device_public_b: &[u8], x: &[u8]) -> Result<SrpSessi
         h.update(salt);
         h.update(&big_a_bytes);
         h.update(device_public_b);
-        h.update(&session_key);
+        h.update(session_key.as_slice());
         h.finalize().to_vec()
     };
 
@@ -273,7 +292,7 @@ fn srp_compute(salt: &[u8], device_public_b: &[u8], x: &[u8]) -> Result<SrpSessi
         let mut h = Sha512::new();
         h.update(&big_a_bytes);
         h.update(&m1);
-        h.update(&session_key);
+        h.update(session_key.as_slice());
         h.finalize().to_vec()
     };
 
@@ -372,13 +391,15 @@ pub fn build_device_info_tlv(
     // 1. HKDF for controller sign
     let controller_salt = b"Pair-Setup-Controller-Sign-Salt";
     let controller_info = b"Pair-Setup-Controller-Sign-Info";
-    let sign_key = hkdf_sha512(session_key, controller_salt, controller_info)?;
+    // Derived from the session key and never leaves this function, so it is
+    // wiped together with the message it is prefixed to.
+    let sign_key = Zeroizing::new(hkdf_sha512(session_key, controller_salt, controller_info)?);
 
     // 2. Sign: H_controller || identifier || ed25519_public
-    let mut sign_msg = sign_key.to_vec();
+    let mut sign_msg = Zeroizing::new(sign_key.to_vec());
     sign_msg.extend_from_slice(identity.identifier.as_bytes());
     sign_msg.extend_from_slice(&identity.public_key_bytes());
-    let signature = identity.sign(&sign_msg);
+    let signature = identity.sign(sign_msg.as_slice());
 
     // 3. Opack-encode device info
     // The altIRK, btAddr, mac, remotepairing_serial_number values below are
@@ -458,6 +479,10 @@ pub fn verify_device_info_response(
 }
 
 /// Derive the two session cipher keys from the SRP session key.
+///
+/// Returned as bare arrays rather than `Zeroizing`: the caller copies them into
+/// the long-lived pairing credentials, so wrapping them here would protect the
+/// temporary and not the copy that actually survives.
 pub fn derive_cipher_keys(session_key: &[u8]) -> Result<([u8; 32], [u8; 32]), PairingError> {
     let client_key = hkdf_sha512(session_key, &[], b"ClientEncrypt-main")?;
     let server_key = hkdf_sha512(session_key, &[], b"ServerEncrypt-main")?;
@@ -487,6 +512,21 @@ pub struct VerifyPairSession {
     pub server_key: [u8; 32],
 }
 
+/// The session is held for as long as the tunnel lives, so its three keys are
+/// wiped on drop instead of being left in freed memory. Written out rather than
+/// derived because `tlv` is wire data that already went out in the clear and is
+/// deliberately left alone.
+#[cfg(feature = "tunnel")]
+impl Drop for VerifyPairSession {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+
+        self.encryption_key.zeroize();
+        self.client_key.zeroize();
+        self.server_key.zeroize();
+    }
+}
+
 /// Build the pair verify step-2 TLV and derive the keys required for the
 /// subsequent encrypted control channel and TLS-PSK listener connection.
 #[cfg(feature = "tunnel")]
@@ -500,14 +540,15 @@ pub fn build_verify_step2_tlv(
     use x25519_dalek::{PublicKey as X25519Pub, StaticSecret};
     let our = StaticSecret::from(our_secret);
     let dev = X25519Pub::from(*device_public);
-    let shared = our.diffie_hellman(&dev).to_bytes();
+    // `SharedSecret` wipes itself on drop, but `to_bytes` hands out a bare copy.
+    let shared = Zeroizing::new(our.diffie_hellman(&dev).to_bytes());
 
     // Derive encryption key
-    let derived = hkdf_sha512(
-        &shared,
+    let derived = Zeroizing::new(hkdf_sha512(
+        shared.as_slice(),
         b"Pair-Verify-Encrypt-Salt",
         b"Pair-Verify-Encrypt-Info",
-    )?;
+    )?);
 
     // Sign: our_public || identifier || device_public
     let mut sign_msg = our_public.to_vec();
@@ -527,12 +568,12 @@ pub fn build_verify_step2_tlv(
     outer.push_bytes(TYPE_ENCRYPTED_DATA, &encrypted);
 
     // Session keys from shared secret
-    let client_key = hkdf_sha512(&shared, &[], b"ClientEncrypt-main")?;
-    let server_key = hkdf_sha512(&shared, &[], b"ServerEncrypt-main")?;
+    let client_key = hkdf_sha512(shared.as_slice(), &[], b"ClientEncrypt-main")?;
+    let server_key = hkdf_sha512(shared.as_slice(), &[], b"ServerEncrypt-main")?;
 
     Ok(VerifyPairSession {
         tlv: outer.into_bytes(),
-        encryption_key: shared,
+        encryption_key: *shared,
         client_key,
         server_key,
     })
@@ -586,6 +627,27 @@ mod tests {
         assert_ne!(ck, sk);
         assert_eq!(ck.len(), 32);
         assert_eq!(sk.len(), 32);
+    }
+
+    #[test]
+    fn test_srp_session_key_feeds_byte_slice_apis() {
+        // `session_key` is wrapped in `Zeroizing`, and the pairing transport hands
+        // `&srp.session_key` straight to the `&[u8]` derivation steps — the
+        // wrapper has to stay transparent to them.
+        let session = SrpSession {
+            client_public: vec![0x01; 384],
+            client_proof: vec![0x02; 64],
+            session_key: Zeroizing::new(vec![0x42; 64]),
+            verifier: SrpVerifier {
+                m2_expected: vec![0x03; 64],
+            },
+        };
+
+        assert_eq!(session.session_key.len(), 64);
+        let derived = derive_cipher_keys(&session.session_key).unwrap();
+        assert_eq!(derived, derive_cipher_keys(&[0x42u8; 64]).unwrap());
+        assert!(session.verify_server_proof(&[0x03; 64]));
+        assert!(!session.verify_server_proof(b"wrong length"));
     }
 
     #[test]

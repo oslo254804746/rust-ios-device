@@ -136,8 +136,7 @@ mod tests {
         encode_message(&XpcMessage {
             flags,
             msg_id: 0,
-            body: Some(XpcValue::Dictionary(IndexMap::new()))
-                .filter(|_| flags == flags::ALWAYS_SET),
+            body: (flags == flags::ALWAYS_SET).then_some(XpcValue::Dictionary(IndexMap::new())),
         })
         .expect("message should encode")
     }

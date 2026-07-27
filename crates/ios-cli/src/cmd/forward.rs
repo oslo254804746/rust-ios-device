@@ -49,6 +49,7 @@ pub async fn run_port_forward(
     host: String,
     once: bool,
 ) -> Result<()> {
+    validate_forward_ports(host_port, device_port)?;
     let connector = resolve_forward_connector(udid).await?;
     let listen_addr = format!("{}:{}", host, host_port);
     let listener = TcpListener::bind(&listen_addr).await?;
@@ -80,6 +81,16 @@ pub async fn run_port_forward(
         }
     }
 
+    Ok(())
+}
+
+fn validate_forward_ports(host_port: u16, device_port: u16) -> Result<()> {
+    if host_port == 0 {
+        anyhow::bail!("invalid host port: port must be at least 1");
+    }
+    if device_port == 0 {
+        anyhow::bail!("invalid device port: port must be at least 1");
+    }
     Ok(())
 }
 
@@ -246,5 +257,12 @@ mod tests {
     fn skips_tunnel_proxy_target_when_metadata_is_missing() {
         assert_eq!(tunnel_proxy_target(Some("fd00::1"), None), None);
         assert_eq!(tunnel_proxy_target(None, Some(60105)), None);
+    }
+
+    #[test]
+    fn validate_forward_ports_rejects_zero_values() {
+        assert!(validate_forward_ports(1, 1).is_ok());
+        assert!(validate_forward_ports(0, 1).is_err());
+        assert!(validate_forward_ports(1, 0).is_err());
     }
 }

@@ -38,6 +38,28 @@ const FLAG_SETTINGS_ACK: u8 = 0x01;
 const SETTINGS_MAX_CONCURRENT_STREAMS: u16 = 0x03;
 const SETTINGS_INITIAL_WINDOW_SIZE: u16 = 0x04;
 
+// ── Flow control ────────────────────────────────────────────────────────────
+
+/// Per-stream receive window we advertise, matching pymobiledevice3's
+/// `DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE`.
+const INITIAL_WINDOW_SIZE: u32 = 16 * 1024 * 1024;
+
+/// Connection-window bump needed to reach [`INITIAL_WINDOW_SIZE`] from the
+/// RFC 9113 default of 65535.
+const INITIAL_WINDOW_INCREMENT: u32 = INITIAL_WINDOW_SIZE - 65_535;
+
+/// Consume this much on a window before spending a WINDOW_UPDATE frame on it,
+/// matching pymobiledevice3's `WINDOW_UPDATE_THRESHOLD`. With the 16 MiB initial
+/// window this keeps every window above 15 MiB without a frame pair per DATA.
+const WINDOW_UPDATE_THRESHOLD: u32 = 1024 * 1024;
+
+/// Largest frame payload we will accept.
+///
+/// We never advertise `SETTINGS_MAX_FRAME_SIZE`, so RFC 9113 fixes the peer's
+/// limit at the 16 KiB default. Without this check the 24-bit length field lets
+/// a device drive repeated 16 MiB allocations.
+const MAX_FRAME_PAYLOAD: usize = 16_384;
+
 // ── H2 preface ──────────────────────────────────────────────────────────────
 
 pub const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -58,6 +80,9 @@ pub struct H2Framer<S> {
     // Whether HEADERS have been sent on each stream
     client_server_open: bool,
     server_client_open: bool,
+    // Bytes consumed per window (keyed by stream id, `STREAM_INIT` = connection)
+    // since the last WINDOW_UPDATE we sent for it.
+    pending_window_updates: HashMap<u32, u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,17 +109,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         stream.write_all(H2_PREFACE).await?;
 
         // 2. Send SETTINGS
-        // INITIAL_WINDOW_SIZE = 1,048,576 (1 MiB), matching Apple's RemoteXPC implementation
         let settings = build_settings_frame(&[
             (SETTINGS_MAX_CONCURRENT_STREAMS, 100),
-            (SETTINGS_INITIAL_WINDOW_SIZE, 1_048_576),
+            (SETTINGS_INITIAL_WINDOW_SIZE, INITIAL_WINDOW_SIZE),
         ]);
         stream.write_all(&settings).await?;
 
-        // 3. Send WINDOW_UPDATE on stream 0
-        // Increment = 983,041 = 1,048,576 (1 MiB) - 65,535 (RFC 9113 default window)
-        // This brings the connection-level window up to 1 MiB to match the stream-level setting
-        let wupdate = build_window_update_frame(STREAM_INIT, 983_041);
+        // 3. Bring the connection-level window up to match the stream-level setting.
+        let wupdate = build_window_update_frame(STREAM_INIT, INITIAL_WINDOW_INCREMENT);
         stream.write_all(&wupdate).await?;
         stream.flush().await?;
 
@@ -106,6 +128,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             locally_open_streams: HashSet::new(),
             client_server_open: false,
             server_client_open: false,
+            pending_window_updates: HashMap::new(),
         };
 
         // 4. Read server SETTINGS, send ACK
@@ -146,6 +169,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         }
                         _ => {}
                     }
+                    self.replenish_receive_window(frame.stream_id, frame.payload.len())
+                        .await?;
                 }
                 _ => {}
             }
@@ -163,6 +188,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         let flags = header[4];
         let stream_id = u32::from_be_bytes([header[5] & 0x7F, header[6], header[7], header[8]]);
 
+        if length > MAX_FRAME_PAYLOAD {
+            return Err(H2Error::Protocol(format!(
+                "frame payload {length} exceeds max frame size {MAX_FRAME_PAYLOAD}"
+            )));
+        }
+
         let mut payload = vec![0u8; length];
         if length > 0 {
             self.stream.read_exact(&mut payload).await?;
@@ -178,11 +209,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Read data from the serverClient stream (device → client).
     /// Blocks until `n` bytes are available.
+    #[cfg(feature = "tunnel")]
     pub async fn read_server_client(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_SERVER_CLIENT, n).await
     }
 
     /// Read data from the clientServer stream (client ← device, used for ack).
+    #[cfg(feature = "tunnel")]
     pub async fn read_client_server(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_CLIENT_SERVER, n).await
     }
@@ -221,14 +254,59 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             }
             _ => {}
         }
-        if frame.frame_type == FRAME_DATA && frame.stream_id % 2 == 0 && !frame.payload.is_empty() {
-            let conn_window = build_window_update_frame(STREAM_INIT, frame.payload.len() as u32);
-            let stream_window =
-                build_window_update_frame(frame.stream_id, frame.payload.len() as u32);
-            self.stream.write_all(&conn_window).await?;
-            self.stream.write_all(&stream_window).await?;
-            self.stream.flush().await?;
+        if frame.frame_type == FRAME_DATA {
+            self.replenish_receive_window(frame.stream_id, frame.payload.len())
+                .await?;
         }
+        Ok(())
+    }
+
+    /// Give the peer back the receive window that `consumed` bytes of DATA used.
+    ///
+    /// Applies to every stream, not just even-numbered ones. The two primary XPC
+    /// data streams (clientServer = 1, serverClient = 3) are odd, and HTTP/2
+    /// windows are cumulative for the life of the connection, so skipping them
+    /// meant any service streaming more than [`INITIAL_WINDOW_SIZE`] in total
+    /// stalled forever with no timeout at this layer.
+    ///
+    /// Updates are batched at [`WINDOW_UPDATE_THRESHOLD`], as the reference does,
+    /// so a busy stream does not pay for a frame pair per DATA frame.
+    async fn replenish_receive_window(
+        &mut self,
+        stream_id: u32,
+        consumed: usize,
+    ) -> Result<(), H2Error> {
+        if consumed == 0 {
+            return Ok(());
+        }
+        // `read_raw_frame` caps the payload well below u32::MAX.
+        let consumed = consumed as u32;
+
+        let mut frames = Vec::new();
+        // The connection window is shared by every stream, so it always accrues.
+        let connection = self.pending_window_updates.entry(STREAM_INIT).or_default();
+        *connection += consumed;
+        if *connection >= WINDOW_UPDATE_THRESHOLD {
+            frames.push(build_window_update_frame(STREAM_INIT, *connection));
+            *connection = 0;
+        }
+
+        if stream_id != STREAM_INIT {
+            let stream = self.pending_window_updates.entry(stream_id).or_default();
+            *stream += consumed;
+            if *stream >= WINDOW_UPDATE_THRESHOLD {
+                frames.push(build_window_update_frame(stream_id, *stream));
+                *stream = 0;
+            }
+        }
+
+        if frames.is_empty() {
+            return Ok(());
+        }
+        for frame in &frames {
+            self.stream.write_all(frame).await?;
+        }
+        self.stream.flush().await?;
         Ok(())
     }
 
@@ -245,15 +323,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             );
             match frame.frame_type {
                 FRAME_DATA => {
-                    if frame.stream_id % 2 == 0 && !frame.payload.is_empty() {
-                        let conn_window =
-                            build_window_update_frame(STREAM_INIT, frame.payload.len() as u32);
-                        let stream_window =
-                            build_window_update_frame(frame.stream_id, frame.payload.len() as u32);
-                        self.stream.write_all(&conn_window).await?;
-                        self.stream.write_all(&stream_window).await?;
-                        self.stream.flush().await?;
-                    }
+                    self.replenish_receive_window(frame.stream_id, frame.payload.len())
+                        .await?;
                     return Ok(DataFrame {
                         stream_id: frame.stream_id,
                         flags: frame.flags,
@@ -454,6 +525,7 @@ mod tests {
             locally_open_streams: HashSet::new(),
             client_server_open: false,
             server_client_open: false,
+            pending_window_updates: HashMap::new(),
         };
 
         framer
@@ -483,6 +555,7 @@ mod tests {
             locally_open_streams: HashSet::new(),
             client_server_open: false,
             server_client_open: false,
+            pending_window_updates: HashMap::new(),
         };
 
         framer
@@ -497,32 +570,8 @@ mod tests {
 
         framer.open_stream(4).await.unwrap();
 
-        let mut conn_window = [0u8; 13];
-        server.read_exact(&mut conn_window).await.unwrap();
-        assert_eq!(conn_window[3], FRAME_WINDOW_UPDATE);
-        assert_eq!(
-            u32::from_be_bytes([
-                conn_window[5] & 0x7F,
-                conn_window[6],
-                conn_window[7],
-                conn_window[8]
-            ]),
-            STREAM_INIT
-        );
-
-        let mut stream_window = [0u8; 13];
-        server.read_exact(&mut stream_window).await.unwrap();
-        assert_eq!(stream_window[3], FRAME_WINDOW_UPDATE);
-        assert_eq!(
-            u32::from_be_bytes([
-                stream_window[5] & 0x7F,
-                stream_window[6],
-                stream_window[7],
-                stream_window[8]
-            ]),
-            4
-        );
-
+        // 3 bytes is far below the batching threshold, so HEADERS is the first
+        // thing on the wire.
         let mut headers = [0u8; 9];
         server.read_exact(&mut headers).await.unwrap();
         assert_eq!(headers[3], FRAME_HEADERS);
@@ -531,6 +580,95 @@ mod tests {
             u32::from_be_bytes([headers[5] & 0x7F, headers[6], headers[7], headers[8]]),
             4
         );
+    }
+
+    fn test_framer<S>(stream: S) -> H2Framer<S> {
+        H2Framer {
+            stream,
+            client_server_buf: BytesMut::new(),
+            server_client_buf: BytesMut::new(),
+            stream_bufs: HashMap::new(),
+            locally_open_streams: HashSet::new(),
+            client_server_open: false,
+            server_client_open: false,
+            pending_window_updates: HashMap::new(),
+        }
+    }
+
+    fn read_window_update(frame: &[u8]) -> (u32, u32) {
+        assert_eq!(frame[3], FRAME_WINDOW_UPDATE);
+        let stream_id = u32::from_be_bytes([frame[5] & 0x7F, frame[6], frame[7], frame[8]]);
+        let increment = u32::from_be_bytes([frame[9], frame[10], frame[11], frame[12]]);
+        (stream_id, increment)
+    }
+
+    /// Streams 1 and 3 carry all XPC traffic and are odd; the old `% 2 == 0`
+    /// guard meant their windows were never given back, so a service streaming
+    /// more than the initial window in total stalled forever.
+    #[tokio::test]
+    async fn replenishes_receive_window_for_the_odd_xpc_streams() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let mut framer = test_framer(client);
+
+        // Stay just under the threshold: nothing should go out yet.
+        let below = (WINDOW_UPDATE_THRESHOLD as usize) / MAX_FRAME_PAYLOAD - 1;
+        for _ in 0..below {
+            framer
+                .replenish_receive_window(STREAM_SERVER_CLIENT, MAX_FRAME_PAYLOAD)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            framer.pending_window_updates[&STREAM_SERVER_CLIENT],
+            (below * MAX_FRAME_PAYLOAD) as u32
+        );
+
+        // Crossing it gives back both the connection window and the stream window.
+        framer
+            .replenish_receive_window(STREAM_SERVER_CLIENT, MAX_FRAME_PAYLOAD)
+            .await
+            .unwrap();
+
+        let mut frames = [0u8; 26];
+        server.read_exact(&mut frames).await.unwrap();
+        assert_eq!(
+            read_window_update(&frames[..13]),
+            (STREAM_INIT, WINDOW_UPDATE_THRESHOLD)
+        );
+        assert_eq!(
+            read_window_update(&frames[13..]),
+            (STREAM_SERVER_CLIENT, WINDOW_UPDATE_THRESHOLD)
+        );
+        assert_eq!(framer.pending_window_updates[&STREAM_SERVER_CLIENT], 0);
+        assert_eq!(framer.pending_window_updates[&STREAM_INIT], 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_frames_larger_than_the_negotiated_max_frame_size() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+
+        let oversized = MAX_FRAME_PAYLOAD + 1;
+        let mut header = vec![
+            ((oversized >> 16) & 0xFF) as u8,
+            ((oversized >> 8) & 0xFF) as u8,
+            (oversized & 0xFF) as u8,
+            FRAME_DATA,
+            0,
+        ];
+        header.extend_from_slice(&STREAM_SERVER_CLIENT.to_be_bytes());
+        server.write_all(&header).await.unwrap();
+
+        let err = match framer.read_raw_frame().await {
+            Ok(_) => panic!("oversized frame was accepted"),
+            Err(err) => err,
+        };
+        match err {
+            H2Error::Protocol(message) => {
+                assert!(message.contains("exceeds max frame size"), "{message}")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -544,6 +682,7 @@ mod tests {
             locally_open_streams: HashSet::new(),
             client_server_open: false,
             server_client_open: false,
+            pending_window_updates: HashMap::new(),
         };
 
         server

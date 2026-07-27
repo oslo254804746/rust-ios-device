@@ -12,6 +12,12 @@ use crate::services::dtx::codec::{DtxConnection, DtxError};
 use crate::services::dtx::primitive_enc::archived_object;
 use crate::services::dtx::types::{DtxPayload, NSObject};
 
+const LAUNCH_TRANSIENT_RETRIES: usize = 3;
+
+fn is_transient_launch_failure(message: &str) -> bool {
+    message.contains("NSError") && message.contains("Code=2")
+}
+
 /// Info about a running process.
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -63,6 +69,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ProcessControl<S> {
 
     /// Launch an app by bundle ID with explicit process-control options; returns its PID.
     pub async fn launch_with_options(
+        &mut self,
+        bundle_id: &str,
+        args: &[&str],
+        env: &HashMap<String, String>,
+        options: &[(String, plist::Value)],
+    ) -> Result<u64, DtxError> {
+        let mut last_error = None;
+        for attempt in 0..LAUNCH_TRANSIENT_RETRIES {
+            match self
+                .launch_with_options_once(bundle_id, args, env, options)
+                .await
+            {
+                Ok(pid) => return Ok(pid),
+                Err(err) if is_transient_launch_failure(&err.to_string()) => {
+                    last_error = Some(err);
+                    if attempt + 1 < LAUNCH_TRANSIENT_RETRIES {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            DtxError::Protocol("transient launch retry exhausted without error".into())
+        }))
+    }
+
+    async fn launch_with_options_once(
         &mut self,
         bundle_id: &str,
         args: &[&str],
@@ -292,5 +326,15 @@ mod tests {
             .unwrap();
 
         assert!(task.await.unwrap());
+    }
+
+    #[test]
+    fn transient_launch_failure_detection_matches_nserror_code_2() {
+        assert!(is_transient_launch_failure(
+            "NSError: NSPOSIXErrorDomain Code=2 \"No such file or directory\""
+        ));
+        assert!(!is_transient_launch_failure(
+            "NSError: NSPOSIXErrorDomain Code=13 \"Permission denied\""
+        ));
     }
 }
