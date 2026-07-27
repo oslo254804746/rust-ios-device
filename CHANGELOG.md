@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-07-27
+
+### Added
+
+- Added Bluetooth HCI capture through `ios btlogger`, CoreDevice feature groups, and remote symbol download support.
+
 ### Changed
 
-- Bumped workspace version to `0.1.5`.
+- Refactored tunnel, RemoteXPC, and device connection orchestration for direct and userspace-proxy transports.
+- Added explicit overwrite and destructive-operation guards across the CLI.
+- Bumped workspace crates and internal `ios-core` dependency versions to `0.1.8`.
+
+### Security
+
+- Restricted persisted private-key material to the owner on Unix and zeroized pairing secrets where supported.
+- Bounded device-controlled allocations and parser recursion across XPC, DTX, OPACK, NSKeyedArchiver, AFC, fileservice, SpringBoard, and syslog paths.
+
+### Fixed
+
+- Fixed XPC HTTP/2 receive-window replenishment and cancellation-safe tunnel packet reads.
+- Corrected personalized DDI selection and download validation.
+- Fixed protocol decoding, device discovery, file/path handling, and CLI/service correctness issues.
 
 ## [0.1.4] — 2026-04-27
 
@@ -113,7 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.7...v0.1.8
 [0.1.4]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.2...v0.1.4
 [0.1.2]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.0...v0.1.1
