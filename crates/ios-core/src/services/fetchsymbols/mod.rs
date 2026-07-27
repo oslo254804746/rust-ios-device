@@ -313,10 +313,7 @@ fn try_parse_catalog_entry(
     message: &crate::xpc::XpcMessage,
 ) -> Option<Result<RemoteSymbolFile, FetchSymbolsError>> {
     let dict = message.body.as_ref()?.as_dict()?;
-    let entry = match dict.get("DSCFilePaths") {
-        Some(value) => value.as_dict()?,
-        None => return None,
-    };
+    let entry = dict.get("DSCFilePaths")?.as_dict()?;
     let path = entry
         .get("filePath")
         .and_then(crate::xpc::XpcValue::as_str)
