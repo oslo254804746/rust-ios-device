@@ -42,9 +42,14 @@ print(tunnel.connect_info())
 tunnel.close()
 ```
 
-`service_ports` and `service_features` use service-name ordering. Every discovered
-service appears in both dictionaries; an empty feature list means the RSD entry
-did not advertise capability metadata, not that every operation is unsupported.
+The `services` list is sorted by service name; treat the two mapping attributes
+as unordered dictionaries. `service_ports` contains every discovered service.
+`service_features` contains
+only services with a non-empty advertised feature list; a service missing from
+that dictionary did not provide capability metadata. The FFI JSON API uses a
+different, explicit representation and includes every service with
+`features: []` when metadata is absent. In either API, missing metadata is not
+an explicit deny-all result.
 
 `start_tunnel(..., mode="kernel")` requests kernel TUN mode and may require elevated privileges.
 

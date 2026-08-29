@@ -17,6 +17,12 @@ workspace. Builds a `cdylib` and a `staticlib` plus a public C header
   CoreDevice tunnels work without elevated privileges.
 - Released as binary archives rather than a crates.io package.
 
+`ios_tunnel_rsd_services_json` returns a compact object of the form
+`{"service.name":{"port":1234,"features":["capability"]}}`. Service keys are
+sorted for repeatable output, and a service with no advertised capability
+metadata has an empty `features` array. The returned string is owned by the
+caller and must be released with `ios_free_string()`.
+
 ## Install
 
 This crate is **not published to crates.io**. Use one of:

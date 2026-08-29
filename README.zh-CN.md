@@ -71,7 +71,7 @@ cargo install ios-cli            # 安装 `ios` 二进制
 ```toml
 # Cargo.toml — 引用库
 [dependencies]
-ios-core = { version = "0.1.8", features = ["classic"] }
+ios-core = { version = "0.1.9", features = ["classic"] }
 ```
 
 ### Python
@@ -152,6 +152,14 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
+RSD 服务列表默认以 JSON 输出，每项包含 `name`、`port`、`features`，并按服务名排序；
+配合 `--no-json` 使用时，`--features` 会在可读文本中显示 feature 标识符。缺少
+feature 列表时输出 `[]`，表示设备没有公布能力元数据，并不表示所有操作都不支持。
+
+隧道/RSD/XPC 的 TCP 连接与初始协议建立现在有 15 秒上限；基于 TCP 的远程配对与
+lockdown 建立也使用相同上限。遇到失效的隧道路由时会尽快返回超时，而不会等待主机
+操作系统漫长的 SYN 重试窗口。后续服务请求仍遵循各自的超时行为。
+
 如果设备未暴露所需 CoreDevice 服务（例如 fileservice 的 control/data 对），CLI
 会报告清晰的缺失服务错误，而不是回退到别的服务名。完整的隧道生命周期见
 [`docs/tunnel.md`](docs/tunnel.md)。
@@ -162,7 +170,7 @@ ios file --coredevice --domain temporary ls /
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 ```
 
 | 分组         | 包含内容                                                                                              |
@@ -220,6 +228,9 @@ import ios_rs
 
 devices = ios_rs.list_devices()
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
+print(tunnel.services)
+print(tunnel.service_ports)    # 服务名 -> 设备端口
+print(tunnel.service_features) # 有设备公布 feature 标识符的服务
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():
@@ -243,7 +254,9 @@ cargo build --release -p ios-ffi
 
 输出包括 `libios_ffi.{so,dylib,a}`（Windows 上是 `ios_ffi.dll` + `.lib`）以及
 `crates/ios-ffi/include/ios_rs.h`。FFI 表面覆盖设备列表、lockdown 查询、
-配对/服务访问与隧道生命周期。每个发布版本都为支持的 target 附带预编译归档。
+配对/服务访问与隧道生命周期。`ios_tunnel_rsd_services_json` 返回稳定排序的紧凑
+JSON 服务映射，每个服务值包含 `port` 与 `features`。每个发布版本都为支持的 target
+附带预编译归档。
 
 ## 从源码构建
 

@@ -76,7 +76,7 @@ cargo install ios-cli            # installs the `ios` binary
 ```toml
 # Cargo.toml — pull in the library
 [dependencies]
-ios-core = { version = "0.1.8", features = ["classic"] }
+ios-core = { version = "0.1.9", features = ["classic"] }
 ```
 
 ### Python
@@ -161,6 +161,17 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
+RSD service listings are JSON by default. Each entry contains `name`, `port`,
+and `features`, and entries are sorted by service name; `--features` adds the
+feature identifiers to human-readable output used with `--no-json`. A missing
+feature list is emitted as `[]` and means that the device did not advertise
+capability metadata, not that every operation is unsupported.
+
+TCP dials and initial tunnel/RSD/XPC setup are bounded by a 15-second timeout;
+TCP-backed remote pairing and lockdown setup use the same bound. Stale tunnel
+routes therefore fail promptly instead of waiting through the host's long SYN
+retry window. Later service requests keep their own timeout behavior.
+
 If a device does not expose the requested CoreDevice service (e.g. the
 fileservice control/data pair), the CLI surfaces a clear missing-service
 error rather than silently falling back. See
@@ -173,7 +184,7 @@ a grouped flag:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |
@@ -231,6 +242,9 @@ import ios_rs
 
 devices = ios_rs.list_devices()
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
+print(tunnel.services)
+print(tunnel.service_ports)    # service name -> device port
+print(tunnel.service_features) # services with advertised feature identifiers
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():
@@ -243,6 +257,8 @@ tunnel.close()
 
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` shows how to run
 pymobiledevice3 RemoteXPC code on top of the Rust userspace tunnel.
+`service_ports` includes every discovered service; `service_features` includes
+only services whose RSD entry advertises at least one feature identifier.
 
 ## C FFI
 
@@ -255,6 +271,8 @@ cargo build --release -p ios-ffi
 Outputs include `libios_ffi.{so,dylib,a}` (or `ios_ffi.dll` + `.lib` on
 Windows) and `crates/ios-ffi/include/ios_rs.h`. The FFI surface covers device
 listing, lockdown queries, pairing/service access, and tunnel lifecycle.
+`ios_tunnel_rsd_services_json` returns the discovered RSD service map as
+deterministic compact JSON; each service value contains `port` and `features`.
 Pre-built archives for the supported targets are attached to each release.
 
 ## Build from source

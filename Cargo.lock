@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "ios-cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "ios-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "ios-ffi"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ios-core",
  "plist",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "ios-py"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ios-core",
  "pyo3",

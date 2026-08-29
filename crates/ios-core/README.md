@@ -26,14 +26,14 @@ top of it.
 
 ```toml
 [dependencies]
-ios-core = "0.1.8"
+ios-core = "0.1.9"
 ```
 
 The crate ships **no default service features**. Pick the services you need,
 or use a grouped flag:
 
 ```toml
-ios-core = { version = "0.1.8", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |
@@ -48,6 +48,14 @@ CoreDevice service availability is **service-surface dependent**: a device can
 expose USB, lockdown, tunnel, and RSD while still omitting a specific
 CoreDevice feature service. Inspect the RSD service list at runtime instead
 of relying on `ProductVersion` alone.
+
+`ios_core::RsdHandshake::services` maps names to `ServiceDescriptor` values
+with a device port and advertised capability identifiers. Missing RSD feature
+metadata is represented by an empty list and remains permissive through
+`supports_feature`. Prefer `ServiceDescriptor::new(port)` over struct literals
+so downstream code is resilient when this public descriptor gains fields.
+When upgrading from 0.1.8, existing struct literals must add the new
+`features` field or switch to that constructor.
 
 ## Example
 
@@ -95,4 +103,3 @@ become available with the matching feature.
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
-

@@ -176,6 +176,28 @@ sysdiagnose bundle.
 Use a test device for commands that restart the device, change state, or collect
 large streams.
 
+The syslog client decodes the BSD `vis(3)` escapes used by Apple's relay, while
+retaining unknown/control escapes as text. `--process Name` also matches the
+common `Name(Library)` sender annotation; an exact annotated name remains
+accepted. `--filter`, regex, PID, count, timeout, parsed text, and JSON output
+continue to apply after decoding and parsing.
+
+## Backups
+
+```sh
+ios -u <UDID> backup version
+ios -u <UDID> backup create ./backup
+ios -u <UDID> backup create ./backup --full
+ios -u <UDID> backup info ./backup
+ios -u <UDID> backup list ./backup
+```
+
+MobileBackup2 transfers use bounded host buffers and smaller transfer frames.
+When the device reports insufficient space after a purge request, the error
+includes the last host free-space report and the device's estimated requirement
+when available. This is diagnostic information only; the backup command still
+returns a failure and does not delete arbitrary host files.
+
 ## Developer services
 
 ```sh
@@ -215,6 +237,21 @@ ios -u <UDID> forward 1234 62078 --once
 
 Userspace tunnels expose a local TCP proxy. Kernel TUN mode may require
 administrator or root privileges. See [tunnel.md](tunnel.md) for details.
+
+TCP dials and initial protocol setup on the tunnel/RSD/XPC paths are bounded by
+15 seconds; TCP-backed remote pairing and lockdown setup use the same bound. A
+stale tunnel route therefore returns a timeout error instead of waiting for the
+operating system's much longer TCP retry window. The timeout is not a guarantee
+that every later service operation completes within 15 seconds; device-side
+request and stream timeouts remain service-specific.
+
+For machine-readable output, the default `rsd services` mode always emits a
+sorted JSON array of objects with `name`, `port`, and `features`; use the global
+`--no-json` flag for human-readable output, where `--features` adds feature
+lines. The default JSON mode of `rsd check` includes the same feature list for
+the resolved service. Older consumers should ignore the additive `features`
+field. A missing RSD feature list is represented by `[]` and is treated as
+unknown capability metadata rather than an explicit deny-all list.
 
 Comparable upstream workflows:
 
@@ -271,6 +308,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Use lower-level modules when you need direct control over usbmux, lockdown
 sessions, service startup, DTX, XPC, or tunnel setup.
+
+For RSD consumers, `ios_core::RsdHandshake::services` maps each service name to
+an `ios_core::ServiceDescriptor` containing its `port` and advertised
+`features`. Construct descriptors with `ServiceDescriptor::new(port)` and use
+`supports_feature` when capability metadata is present. Since this public
+descriptor may gain fields in future 0.1.x releases, downstream code should
+prefer the constructor and accessors over struct literals.
 
 ## Related documents
 
