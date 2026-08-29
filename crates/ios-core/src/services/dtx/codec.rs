@@ -24,6 +24,15 @@ use super::types::{DtxMessage, DtxPayload, NSObject};
 const MAX_DTX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 const MAX_DTX_FRAGMENTS: u16 = 1024;
 const MAX_DTX_HEADER_SIZE: usize = 64 * 1024;
+/// Bound the number of fragmented messages whose first header has arrived but
+/// whose body fragments have not all been received yet. A first fragment only
+/// costs a small amount of state, so without a connection-wide cap a peer could
+/// keep sending first fragments forever and grow this map without bound.
+const MAX_IN_FLIGHT_FRAGMENTED_MESSAGES: usize = 64;
+/// A synchronous DTX call still has to consume unrelated device messages while
+/// it waits for its reply. Keep that backlog finite so a peer that never sends
+/// the requested reply cannot exhaust host memory.
+const MAX_QUEUED_MESSAGES: usize = 1024;
 
 const MSG_OK: u32 = 0;
 const MSG_UNKNOWN_TYPE_ONE: u32 = 1; // sysmontap data messages
@@ -106,7 +115,11 @@ pub fn encode_ack(msg: &DtxMessage) -> Bytes {
     out.put_u16_le(1);
     out.put_u32_le(16); // message_length = 16 (payload header only)
     out.put_u32_le(msg.identifier);
-    out.put_u32_le(msg.conversation_idx + 1);
+    // A malformed peer can supply the conversation index to this helper. Do
+    // not let the host panic in debug builds when it happens to be u32::MAX;
+    // the saturated value is still preferable to terminating the process while
+    // attempting to acknowledge the frame.
+    out.put_u32_le(msg.conversation_idx.saturating_add(1));
     out.put_u32_le(msg.channel_code as u32);
     out.put_u32_le(0); // expects_reply = false
                        // Payload header: type=0 (OK/Ack)
@@ -196,13 +209,17 @@ async fn read_dtx_header<R: AsyncRead + Unpin>(reader: &mut R) -> Result<DtxHead
 
 fn decode_dtx_body_from_slice(h: &DtxHeader, body_slice: &[u8]) -> Result<DtxMessage, DtxError> {
     if body_slice.len() < 16 {
-        return Ok(DtxMessage {
-            identifier: h.identifier,
-            conversation_idx: h.conv_idx,
-            channel_code: h.channel_code,
-            expects_reply: h.expects_reply,
-            payload: DtxPayload::Empty,
-        });
+        return Err(DtxError::Protocol(format!(
+            "DTX payload header truncated: got {} bytes, need at least 16",
+            body_slice.len()
+        )));
+    }
+    if body_slice.len() != h.msg_len {
+        return Err(DtxError::Protocol(format!(
+            "DTX body size mismatch: got {} bytes, header declares {}",
+            body_slice.len(),
+            h.msg_len
+        )));
     }
 
     let ph = &body_slice[0..16];
@@ -215,13 +232,28 @@ fn decode_dtx_body_from_slice(h: &DtxHeader, body_slice: &[u8]) -> Result<DtxMes
             "aux_len ({aux_len}) exceeds total_pay ({total_pay})"
         )));
     }
+    if aux_len > 0 && aux_len < 16 {
+        return Err(DtxError::Protocol(format!(
+            "auxiliary section is too short for its header: {aux_len} bytes"
+        )));
+    }
     let pay_len = total_pay - aux_len;
     let rest = &body_slice[16..];
 
+    // The payload header's total length describes all bytes after the payload
+    // header, including the optional auxiliary header. Accepting a shorter
+    // body and silently returning an empty payload hides a corrupt frame and
+    // can desynchronise the next frame on a stream.
+    if total_pay != rest.len() {
+        return Err(DtxError::Protocol(format!(
+            "DTX payload length mismatch: header declares {total_pay} bytes, body has {}",
+            rest.len()
+        )));
+    }
+
     let aux_data = if aux_len > 0 {
-        if rest.len() < 16 {
-            return Err(DtxError::Protocol("aux header truncated".into()));
-        }
+        // `aux_len == rest.len()` was checked above, so this also verifies the
+        // auxiliary header is wholly inside the declared section.
         let actual_aux = u32::from_le_bytes(rest[8..12].try_into().unwrap()) as usize;
         if actual_aux > aux_len.saturating_sub(16) {
             return Err(DtxError::Protocol(format!(
@@ -240,8 +272,19 @@ fn decode_dtx_body_from_slice(h: &DtxHeader, body_slice: &[u8]) -> Result<DtxMes
     };
 
     let pay_start = aux_len;
-    let pay_end = pay_start + pay_len;
-    let payload_bytes = if pay_len > 0 && rest.len() >= pay_end {
+    let pay_end = pay_start
+        .checked_add(pay_len)
+        .ok_or_else(|| DtxError::Protocol("DTX payload length overflow".into()))?;
+    // total_pay == rest.len() and aux_len <= total_pay establish these bounds,
+    // but keep the check local to the slice operation so future changes cannot
+    // turn malformed length fields into a panic.
+    if pay_end > rest.len() {
+        return Err(DtxError::Protocol(format!(
+            "DTX payload extends beyond body: end={pay_end}, body={}",
+            rest.len()
+        )));
+    }
+    let payload_bytes = if pay_len > 0 {
         Bytes::copy_from_slice(&rest[pay_start..pay_end])
     } else {
         Bytes::new()
@@ -463,16 +506,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         }
     }
 
-    fn next_id(&mut self) -> u32 {
+    fn next_id(&mut self) -> Result<u32, DtxError> {
         let id = self.identifier;
-        self.identifier += 1;
-        id
+        self.identifier = self
+            .identifier
+            .checked_add(1)
+            .ok_or_else(|| DtxError::Protocol("DTX message identifier exhausted".into()))?;
+        Ok(id)
     }
 
-    fn next_channel_code(&mut self) -> i32 {
+    fn next_channel_code(&mut self) -> Result<i32, DtxError> {
         let code = self.channel_counter;
-        self.channel_counter += 1;
-        code
+        self.channel_counter = self
+            .channel_counter
+            .checked_add(1)
+            .ok_or_else(|| DtxError::Protocol("DTX channel code exhausted".into()))?;
+        Ok(code)
     }
 
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), DtxError> {
@@ -494,6 +543,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                 msg.conversation_idx
             );
         }
+    }
+
+    fn queue_message(&mut self, msg: DtxMessage) {
+        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            if let Some(dropped) = self.queued_messages.pop_front() {
+                tracing::warn!(
+                    identifier = dropped.identifier,
+                    channel_code = dropped.channel_code,
+                    "DTX message backlog full; dropping oldest unrelated message"
+                );
+            }
+        }
+        self.queued_messages.push_back(msg);
     }
 
     fn is_reply_message(&self, msg: &DtxMessage) -> bool {
@@ -536,6 +598,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                         h.identifier
                     )));
                 }
+                if self.fragments.len() >= MAX_IN_FLIGHT_FRAGMENTED_MESSAGES {
+                    return Err(DtxError::Protocol(format!(
+                        "too many in-flight fragmented DTX messages: {} exceeds {}",
+                        self.fragments.len(),
+                        MAX_IN_FLIGHT_FRAGMENTED_MESSAGES
+                    )));
+                }
                 self.fragments.insert(
                     h.identifier,
                     FragmentAccum {
@@ -556,19 +625,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             // validating only the assembled total lets a crafted stream buffer
             // orders of magnitude more than one message is allowed to be.
             let id = h.identifier;
-            if let Some(accum) = self.fragments.get(&id) {
-                let announced = accum.header.msg_len;
-                if accum.received + h.msg_len > announced {
-                    return Err(DtxError::Protocol(format!(
-                        "fragmented body for id={id} exceeds announced size {announced}"
-                    )));
-                }
-            }
-
-            let mut frag_body = vec![0u8; h.msg_len];
-            self.stream.read_exact(&mut frag_body).await?;
-
-            if let Some(accum) = self.fragments.get_mut(&id) {
+            let slot_idx = h
+                .frag_idx
+                .checked_sub(1)
+                .map(|idx| idx as usize)
+                .ok_or_else(|| {
+                    DtxError::Protocol(format!("invalid fragment index {} for id={id}", h.frag_idx))
+                })?;
+            {
+                let accum = self.fragments.get(&id).ok_or_else(|| {
+                    DtxError::Protocol(format!(
+                        "fragment id={id} frag_idx={} without first fragment",
+                        h.frag_idx
+                    ))
+                })?;
                 if h.frag_cnt != accum.header.frag_cnt {
                     return Err(DtxError::Protocol(format!(
                         "fragment count mismatch for id={id}: got={} expected={}",
@@ -583,30 +653,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                         "fragment metadata mismatch for id={id}"
                     )));
                 }
-                let slot_idx = h
-                    .frag_idx
-                    .checked_sub(1)
-                    .map(|idx| idx as usize)
-                    .ok_or_else(|| {
-                        DtxError::Protocol(format!(
-                            "invalid fragment index {} for id={id}",
-                            h.frag_idx
-                        ))
-                    })?;
-                let slot = accum.fragments.get_mut(slot_idx).ok_or_else(|| {
-                    DtxError::Protocol(format!(
+                if accum.fragments.get(slot_idx).is_none() {
+                    return Err(DtxError::Protocol(format!(
                         "fragment index {} out of range for id={id}",
                         h.frag_idx
-                    ))
-                })?;
-                if slot.is_some() {
+                    )));
+                }
+                if accum.fragments[slot_idx].is_some() {
                     return Err(DtxError::Protocol(format!(
                         "duplicate fragment {} for id={id}",
                         h.frag_idx
                     )));
                 }
+                let announced = accum.header.msg_len;
+                if h.msg_len > announced.saturating_sub(accum.received) {
+                    return Err(DtxError::Protocol(format!(
+                        "fragmented body for id={id} exceeds announced size {announced}"
+                    )));
+                }
+            }
+
+            let mut frag_body = vec![0u8; h.msg_len];
+            self.stream.read_exact(&mut frag_body).await?;
+
+            if let Some(accum) = self.fragments.get_mut(&id) {
                 accum.received += frag_body.len();
-                *slot = Some(frag_body);
+                accum.fragments[slot_idx] = Some(frag_body);
                 accum.remaining -= 1;
                 if accum.remaining == 0 {
                     let accum = self.fragments.remove(&id).ok_or_else(|| {
@@ -672,7 +744,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             if msg.expects_reply {
                 self.send_ack(&msg).await?;
             }
-            self.queued_messages.push_back(msg);
+            self.queue_message(msg);
         }
     }
 
@@ -695,8 +767,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     /// Request a DTX channel by service name.
     /// Returns the assigned channel code.
     pub async fn request_channel(&mut self, service_name: &str) -> Result<i32, DtxError> {
-        let channel_code = self.next_channel_code();
-        let id = self.next_id();
+        let channel_code = self.next_channel_code()?;
+        let id = self.next_id()?;
 
         let selector =
             nskeyedarchiver_encode::archive_string("_requestChannelWithCode:identifier:");
@@ -731,7 +803,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         selector: &str,
         args: &[PrimArg],
     ) -> Result<DtxMessage, DtxError> {
-        let id = self.next_id();
+        let id = self.next_id()?;
         let sel_bytes = nskeyedarchiver_encode::archive_string(selector);
         let aux = if args.is_empty() {
             Bytes::new()
@@ -768,7 +840,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         selector: &str,
         args: &[PrimArg],
     ) -> Result<(), DtxError> {
-        let id = self.next_id();
+        let id = self.next_id()?;
         let sel_bytes = nskeyedarchiver_encode::archive_string(selector);
         let aux = if args.is_empty() {
             Bytes::new()
@@ -1025,6 +1097,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rejects_truncated_payload_header() {
+        let frame = encode_fragment(22, 0, 1, 4, false, 8, &[0u8; 8]);
+        let mut cur = std::io::Cursor::new(frame);
+        let err = read_dtx_frame(&mut cur).await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("payload header truncated")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_rejects_payload_length_mismatch_instead_of_silently_dropping_bytes() {
+        let mut body = BytesMut::with_capacity(20);
+        body.put_u32_le(MSG_UNKNOWN_TYPE_ONE);
+        body.put_u32_le(0);
+        body.put_u32_le(0); // total payload length claims no bytes
+        body.put_u32_le(0);
+        body.extend_from_slice(b"extra");
+
+        let frame = encode_fragment(24, 0, 1, 4, false, body.len(), &body);
+        let mut cur = std::io::Cursor::new(frame);
+        let err = read_dtx_frame(&mut cur).await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("payload length mismatch")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_rejects_auxiliary_length_smaller_than_auxiliary_header() {
+        let mut body = BytesMut::with_capacity(24);
+        body.put_u32_le(MSG_METHOD_INVOCATION);
+        body.put_u32_le(8); // impossible: an auxiliary section includes a 16-byte header
+        body.put_u32_le(8);
+        body.put_u32_le(0);
+        body.extend_from_slice(&[0u8; 8]);
+
+        let frame = encode_fragment(25, 0, 1, 4, false, body.len(), &body);
+        let mut cur = std::io::Cursor::new(frame);
+        let err = read_dtx_frame(&mut cur).await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("too short for its header")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_error_reply_decodes_like_response_object() {
         let payload = nskeyedarchiver_encode::archive_string("selector failed");
         let frame = encode_dtx(24, 1, 4, false, MSG_ERROR, &payload, &[]);
@@ -1190,6 +1309,94 @@ mod tests {
         assert!(matches!(
             err,
             DtxError::Protocol(message) if message.contains("too many fragments")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_recv_rejects_fragment_without_first_before_allocating_body() {
+        let stray = encode_fragment(73, 1, 2, 4, false, MAX_DTX_MESSAGE_SIZE, &[]);
+        let (client, mut server) = tokio::io::duplex(128);
+        server.write_all(&stray).await.unwrap();
+        let mut conn = DtxConnection::new(client);
+
+        let err = conn.recv_from_stream().await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("without first fragment")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_recv_bounds_in_flight_fragmented_messages() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let mut conn = DtxConnection::new(client);
+        for id in 0..=(MAX_IN_FLIGHT_FRAGMENTED_MESSAGES as u32) {
+            let first = encode_fragment(id + 100, 0, 2, 4, false, 16, &[]);
+            server.write_all(&first).await.unwrap();
+        }
+
+        let err = conn.recv_from_stream().await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("in-flight fragmented")
+        ));
+    }
+
+    #[test]
+    fn test_queue_message_drops_oldest_when_backlog_is_full() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::new(client);
+        for identifier in 0..=(MAX_QUEUED_MESSAGES as u32) {
+            conn.queue_message(DtxMessage {
+                identifier,
+                conversation_idx: 0,
+                channel_code: 0,
+                expects_reply: false,
+                payload: DtxPayload::Empty,
+            });
+        }
+
+        assert_eq!(conn.queued_messages.len(), MAX_QUEUED_MESSAGES);
+        assert_eq!(
+            conn.queued_messages.front().map(|msg| msg.identifier),
+            Some(1)
+        );
+        assert_eq!(
+            conn.queued_messages.back().map(|msg| msg.identifier),
+            Some(MAX_QUEUED_MESSAGES as u32)
+        );
+    }
+
+    #[test]
+    fn test_ack_conversation_index_does_not_overflow() {
+        let msg = DtxMessage {
+            identifier: 1,
+            conversation_idx: u32::MAX,
+            channel_code: 0,
+            expects_reply: true,
+            payload: DtxPayload::Empty,
+        };
+        let ack = encode_ack(&msg);
+        assert_eq!(
+            u32::from_le_bytes(ack[20..24].try_into().unwrap()),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn test_identifiers_and_channel_codes_fail_cleanly_at_limits() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::new(client);
+        conn.identifier = u32::MAX;
+        assert!(matches!(
+            conn.next_id(),
+            Err(DtxError::Protocol(message)) if message.contains("identifier exhausted")
+        ));
+
+        conn.channel_counter = i32::MAX;
+        assert!(matches!(
+            conn.next_channel_code(),
+            Err(DtxError::Protocol(message)) if message.contains("channel code exhausted")
         ));
     }
 }

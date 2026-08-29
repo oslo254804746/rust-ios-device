@@ -306,11 +306,7 @@ fn archive_xctest_configuration_into(
     let automation_uid =
         archive_value_into(Value::String(config.automation_framework_path), objects);
 
-    let object_idx = objects.len();
-    let class_idx = object_idx + 1;
-
     let mut object = Dictionary::new();
-    object.insert("$class".to_string(), Value::Uid(Uid::new(class_idx as u64)));
     object.insert("sessionIdentifier".to_string(), session_uid);
     object.insert("testBundleURL".to_string(), bundle_uid);
     object.insert("IDECapabilities".to_string(), caps_uid);
@@ -332,8 +328,20 @@ fn archive_xctest_configuration_into(
         Value::Boolean(config.test_timeouts_enabled),
     );
     for (key, value) in config.additional_fields {
-        object.insert(key, value);
+        // XCTestConfiguration stores object-valued fields as keyed references.
+        // Keep scalar NSNumber values inline (as the system archive does), but
+        // archive strings, data, arrays, and dictionaries before attaching them
+        // to the configuration object. Inlining an NSArray/NSDictionary here
+        // produces a plist that our decoder can read but NSKeyedUnarchiver on
+        // device cannot resolve as an object reference.
+        object.insert(key, archive_configuration_field(value, objects));
     }
+
+    // Object-valued additional fields may have appended entries to the object
+    // table, so compute these indexes only after all fields are archived.
+    let object_idx = objects.len();
+    let class_idx = object_idx + 1;
+    object.insert("$class".to_string(), Value::Uid(Uid::new(class_idx as u64)));
     objects.push(Value::Dictionary(object));
     objects.push(class_descriptor(
         "XCTestConfiguration",
@@ -341,6 +349,21 @@ fn archive_xctest_configuration_into(
     ));
 
     Value::Uid(Uid::new(object_idx as u64))
+}
+
+fn archive_configuration_field(value: Value, objects: &mut Vec<Value>) -> Value {
+    match value {
+        Value::String(_)
+        | Value::Data(_)
+        | Value::Date(_)
+        | Value::Array(_)
+        | Value::Dictionary(_) => archive_value_into(value, objects),
+        // UID(0) is the NSKeyedArchiver `$null` sentinel. Preserve all existing
+        // references supplied by callers instead of wrapping the UID itself in
+        // another object-table entry.
+        Value::Uid(_) | Value::Integer(_) | Value::Real(_) | Value::Boolean(_) => value,
+        other => other,
+    }
 }
 
 fn class_descriptor(classname: &str, classes: &[&str]) -> Value {
@@ -397,6 +420,7 @@ fn to_binary_plist(val: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::nskeyedarchiver::ArchiveValue;
 
     fn plist_doc(data: &[u8]) -> Value {
         plist::from_bytes(data).unwrap()
@@ -623,5 +647,90 @@ mod tests {
         assert!(matches!(root.get("IDECapabilities"), Some(Value::Uid(_))));
         assert_eq!(root["reportResultsToIDE"].as_boolean(), Some(true));
         assert_eq!(root["testsMustRunOnMainThread"].as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_archive_xctest_configuration_archives_object_valued_additional_fields() {
+        let data = archive_xctest_configuration(XcTestConfiguration {
+            session_identifier: Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+            test_bundle_url: NsUrl {
+                path: "/private/tmp/WebDriverAgentRunner.xctest".to_string(),
+            },
+            ide_capabilities: XctCapabilities {
+                capabilities: Vec::new(),
+            },
+            automation_framework_path:
+                "/System/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework"
+                    .to_string(),
+            initialize_for_ui_testing: true,
+            report_results_to_ide: true,
+            tests_must_run_on_main_thread: true,
+            test_timeouts_enabled: false,
+            additional_fields: vec![
+                (
+                    "targetApplicationPath".to_string(),
+                    Value::String("/private/var/containers/Bundle/Application/App.app".into()),
+                ),
+                (
+                    "targetApplicationArguments".to_string(),
+                    Value::Array(vec![Value::String("-AppleLanguages".into())]),
+                ),
+                (
+                    "targetApplicationEnvironment".to_string(),
+                    Value::Dictionary(Dictionary::from_iter([(
+                        "LANG".to_string(),
+                        Value::String("en_US".into()),
+                    )])),
+                ),
+            ],
+        });
+
+        let archived_objects = objects(&data);
+        let root = root_object(&data, &archived_objects);
+
+        let path_uid = match &root["targetApplicationPath"] {
+            Value::Uid(uid) => uid.get() as usize,
+            other => panic!("targetApplicationPath should be a UID, got {other:?}"),
+        };
+        assert_eq!(
+            archived_objects[path_uid].as_string(),
+            Some("/private/var/containers/Bundle/Application/App.app")
+        );
+
+        let args_uid = match &root["targetApplicationArguments"] {
+            Value::Uid(uid) => uid.get() as usize,
+            other => panic!("targetApplicationArguments should be a UID, got {other:?}"),
+        };
+        let args_object = archived_objects[args_uid]
+            .as_dictionary()
+            .expect("arguments should be an NSArray object");
+        let arg_uid = match args_object["NS.objects"].as_array().unwrap().first() {
+            Some(Value::Uid(uid)) => uid.get() as usize,
+            other => panic!("array item should be a UID, got {other:?}"),
+        };
+        assert_eq!(
+            archived_objects[arg_uid].as_string(),
+            Some("-AppleLanguages")
+        );
+
+        assert!(matches!(
+            root["targetApplicationEnvironment"],
+            Value::Uid(_)
+        ));
+
+        let decoded = crate::proto::nskeyedarchiver::unarchive(&data).unwrap();
+        let decoded = decoded
+            .as_dict()
+            .expect("configuration should decode as dict");
+        assert_eq!(
+            decoded
+                .get("targetApplicationPath")
+                .and_then(ArchiveValue::as_str),
+            Some("/private/var/containers/Bundle/Application/App.app")
+        );
+        assert!(decoded
+            .get("targetApplicationArguments")
+            .and_then(ArchiveValue::as_array)
+            .is_some());
     }
 }
