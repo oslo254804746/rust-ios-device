@@ -11,6 +11,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.installation_proxy";
 
+/// Maximum number of Browse response chunks accepted without a Complete status.
+///
+/// A healthy device normally returns only a handful of chunks. Keeping a hard
+/// upper bound prevents a device or a broken connection from making the client
+/// retain responses forever.
+const MAX_BROWSE_CHUNKS: usize = 1_000;
+
+/// Maximum number of app entries retained from one Browse operation.
+const MAX_BROWSE_ENTRIES: usize = 1_000_000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum IpError {
     #[error("IO error: {0}")]
@@ -217,21 +227,40 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         .await?;
 
         let mut apps = Vec::new();
+        let mut chunks = 0usize;
         loop {
             let data = recv_plist_raw(&mut self.stream).await?;
             let resp: plist::Dictionary = plist::from_bytes(&data)?;
+            chunks += 1;
 
-            for item in resp
+            let current_list = resp
                 .get("CurrentList")
                 .and_then(plist::Value::as_array)
                 .cloned()
-                .unwrap_or_default()
-            {
+                .unwrap_or_default();
+            let chunk_entries = current_list.len();
+            let total_entries = apps
+                .len()
+                .checked_add(chunk_entries)
+                .ok_or_else(|| IpError::Protocol("Browse entry count overflow".to_string()))?;
+            if total_entries > MAX_BROWSE_ENTRIES {
+                return Err(IpError::Protocol(format!(
+                    "Browse returned {total_entries} app entries, exceeding maximum of {MAX_BROWSE_ENTRIES}"
+                )));
+            }
+
+            for item in current_list {
                 apps.push(parse_app_info(item));
             }
 
-            if resp.get("Status").and_then(plist::Value::as_string) == Some("Complete") {
+            let complete = resp.get("Status").and_then(plist::Value::as_string) == Some("Complete");
+            if complete {
                 break;
+            }
+            if chunks >= MAX_BROWSE_CHUNKS {
+                return Err(IpError::Protocol(format!(
+                    "Browse exceeded {MAX_BROWSE_CHUNKS} response chunks without Status Complete"
+                )));
             }
         }
         Ok(apps)
@@ -523,6 +552,28 @@ mod tests {
         let apps = proxy.list_file_sharing_apps().await.unwrap();
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].bundle_id, "com.example.Files");
+    }
+
+    #[tokio::test]
+    async fn browse_rejects_endless_non_complete_responses() {
+        let response = plist_frame(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::String("BrowsingApplications".into()),
+        )])));
+        let complete = plist_frame(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Status".to_string(),
+            plist::Value::String("Complete".into()),
+        )])));
+        let mut responses = vec![response; MAX_BROWSE_CHUNKS];
+        responses.push(complete);
+        let mut stream = ResponseStream::with_frames(responses);
+        let mut proxy = InstallationProxy::new(&mut stream);
+
+        let err = proxy
+            .list_all_apps()
+            .await
+            .expect_err("browse must stop before retaining unbounded responses");
+        assert!(matches!(err, IpError::Protocol(message) if message.contains("response chunks")));
     }
 
     #[tokio::test]
