@@ -24,7 +24,8 @@ common Apple device services.
   apps, instruments, debugging, profiles, restore, supervision, and tunnels.
 - **iOS 17+ first-class support** — CoreDevice tunnel (userspace and kernel
   TUN), RSD service discovery, RemoteXPC over HTTP/2, appservice, fileservice,
-  diagnosticsservice, deviceinfo, pasteboard, Instruments, and TestManager.
+  diagnosticsservice, deviceinfo, pasteboard, CoreDevice configuration/orientation,
+  Instruments, and TestManager.
 - **Lockdown-era services** — AFC, House Arrest, syslog, screenshots,
   configuration/provisioning profiles, crash reports, diagnostics relay,
   notification proxy, springboard, backup, and more.
@@ -128,6 +129,8 @@ orientation.
 | Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
 | Device pasteboard           | `pasteboard get`, `pasteboard set TEXT`, `pasteboard set --url URL`                            | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy`                     |
+| CoreDevice configuration    | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
+| CoreDevice orientation      | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
 | Management & supervision    | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`; pmd3 `profile`/`provision`/`restore` |
 | Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 
@@ -194,8 +197,8 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, pasteboard, testmanager, mdns, tunnel-userspace |
-| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+| `ios17`      | apps, configuration, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, pasteboard, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 The CLI builds with `full`; libraries should usually pick a smaller subset.
 

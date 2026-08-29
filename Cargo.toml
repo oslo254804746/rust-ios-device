@@ -38,6 +38,11 @@ p256         = "0.13"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek= { version = "2", features = ["rand_core"] }
 sha2         = "0.10"
+sha1         = "0.10"
+aes          = "0.8"
+aes-kw       = "0.2"
+cbc          = "0.1.2"
+pbkdf2       = "0.12"
 hkdf         = "0.12"
 chacha20poly1305 = "0.10"
 zeroize      = { version = "1", features = ["derive"] }
@@ -69,6 +74,7 @@ num-bigint   = "0.4"
 num-traits   = "0.2"
 quick-xml    = { version = "0.38", features = ["serialize"] }
 regex        = "1"
+rusqlite     = { version = "0.31", default-features = false, features = ["bundled"] }
 serde_bytes  = "0.11"
 time         = { version = "0.3", features = ["parsing", "local-offset"] }
 tokio-openssl = "0.6"

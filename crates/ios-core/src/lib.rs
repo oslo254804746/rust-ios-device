@@ -122,6 +122,8 @@ pub use services::arbitration;
 pub use services::bt_packet_logger;
 #[cfg(feature = "companion")]
 pub use services::companion;
+#[cfg(feature = "configuration")]
+pub use services::configuration;
 #[cfg(feature = "crashreport")]
 pub use services::crashreport;
 #[cfg(feature = "debugserver")]
@@ -158,6 +160,8 @@ pub use services::misagent;
 pub use services::mobileactivation;
 #[cfg(feature = "notificationproxy")]
 pub use services::notificationproxy;
+#[cfg(feature = "orientation")]
+pub use services::orientation;
 #[cfg(feature = "ostrace")]
 pub use services::ostrace;
 #[cfg(feature = "pasteboard")]

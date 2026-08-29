@@ -35,6 +35,19 @@ const LEGACY_COREDEVICE_PROTOCOL_VERSION: i64 = 0;
 const LEGACY_COREDEVICE_VERSION: &str = "325.3";
 const LEGACY_COREDEVICE_VERSION_COMPONENTS: &[u64] = &[325, 3];
 
+/// Select the CoreDevice request envelope used for a feature invocation.
+///
+/// `Modern` is the current DDI protocol. `Legacy` is retained for the few
+/// existing callers that have device-specific evidence for the pre-629
+/// envelope; new CoreDevice services must reject it when their daemon only
+/// accepts the modern contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoreDeviceEnvelopeMode {
+    #[default]
+    Modern,
+    Legacy,
+}
+
 #[cfg(feature = "tunnel")]
 const STREAM_STATUS_KEY: &str = "CoreDevice.XPCMessageKey.sideChannelStatus";
 #[cfg(feature = "tunnel")]
@@ -66,6 +79,62 @@ fn build_modern_request(feature_identifier: &str, input: XpcValue) -> XpcValue {
         COREDEVICE_VERSION_COMPONENTS,
         COREDEVICE_VERSION,
     )
+}
+
+/// Build an action-only CoreDevice invocation.
+///
+/// ConfigurationService uses `CoreDevice.actionIdentifier` and deliberately
+/// omits `CoreDevice.featureIdentifier`/`CoreDevice.action`; this is the exact
+/// action-only shape emitted by pymobiledevice3's `CoreDeviceService.invoke`.
+pub(crate) fn build_action_request(
+    _device_identifier: &str,
+    action_identifier: &str,
+    input: XpcValue,
+) -> XpcValue {
+    let request_device_identifier = uuid::Uuid::new_v4().to_string();
+    let mut coredevice_version = IndexMap::new();
+    coredevice_version.insert(
+        "components".to_string(),
+        XpcValue::Array(
+            COREDEVICE_VERSION_COMPONENTS
+                .iter()
+                .copied()
+                .map(XpcValue::Uint64)
+                .collect(),
+        ),
+    );
+    coredevice_version.insert(
+        "originalComponentsCount".to_string(),
+        XpcValue::Int64(COREDEVICE_VERSION_COMPONENTS.len() as i64),
+    );
+    coredevice_version.insert(
+        "stringValue".to_string(),
+        XpcValue::String(COREDEVICE_VERSION.to_string()),
+    );
+
+    XpcValue::Dictionary(IndexMap::from([
+        (
+            "CoreDevice.CoreDeviceDDIProtocolVersion".to_string(),
+            XpcValue::Int64(COREDEVICE_PROTOCOL_VERSION),
+        ),
+        (
+            "CoreDevice.actionIdentifier".to_string(),
+            XpcValue::String(action_identifier.to_string()),
+        ),
+        (
+            "CoreDevice.coreDeviceVersion".to_string(),
+            XpcValue::Dictionary(coredevice_version),
+        ),
+        (
+            "CoreDevice.deviceIdentifier".to_string(),
+            XpcValue::String(request_device_identifier),
+        ),
+        ("CoreDevice.input".to_string(), input),
+        (
+            "CoreDevice.invocationIdentifier".to_string(),
+            XpcValue::String(uuid::Uuid::new_v4().to_string()),
+        ),
+    ]))
 }
 
 /// Build the pre-modern CoreDevice envelope for a caller that has explicitly
@@ -457,6 +526,49 @@ mod tests {
         assert_ne!(
             first["CoreDevice.invocationIdentifier"],
             second["CoreDevice.invocationIdentifier"]
+        );
+    }
+
+    #[test]
+    fn action_request_matches_configuration_envelope_exactly() {
+        let request = build_action_request(
+            "DEVICE-ID",
+            "com.apple.coredevice.action.setuserinterfacestyle",
+            XpcValue::Dictionary(IndexMap::from([(
+                "style".into(),
+                XpcValue::String("dark".into()),
+            )])),
+        );
+        let dict = request.as_dict().unwrap();
+        assert_eq!(dict.len(), 6);
+        assert_eq!(
+            dict["CoreDevice.CoreDeviceDDIProtocolVersion"],
+            XpcValue::Int64(2)
+        );
+        assert_eq!(
+            dict["CoreDevice.actionIdentifier"].as_str(),
+            Some("com.apple.coredevice.action.setuserinterfacestyle")
+        );
+        assert!(dict["CoreDevice.actionIdentifier"].as_str().is_some());
+        assert!(!dict.contains_key("CoreDevice.action"));
+        assert!(!dict.contains_key("CoreDevice.featureIdentifier"));
+        assert_eq!(
+            dict["CoreDevice.input"].as_dict().unwrap()["style"].as_str(),
+            Some("dark")
+        );
+        let version = dict["CoreDevice.coreDeviceVersion"].as_dict().unwrap();
+        assert_eq!(
+            version["components"],
+            XpcValue::Array(vec![XpcValue::Uint64(629), XpcValue::Uint64(3)])
+        );
+        assert_eq!(version["originalComponentsCount"], XpcValue::Int64(2));
+        assert_eq!(version["stringValue"].as_str(), Some("629.3"));
+        assert!(
+            uuid::Uuid::parse_str(dict["CoreDevice.deviceIdentifier"].as_str().unwrap()).is_ok()
+        );
+        assert!(
+            uuid::Uuid::parse_str(dict["CoreDevice.invocationIdentifier"].as_str().unwrap())
+                .is_ok()
         );
     }
 

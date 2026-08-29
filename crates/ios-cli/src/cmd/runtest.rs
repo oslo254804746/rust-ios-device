@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use ios_core::apps::{AppInfo, InstallationProxy};
 use ios_core::device::{ConnectedDevice, ServiceStream};
 use ios_core::instruments::process_control::ProcessControl;
-use ios_core::testmanager::results::{TestRunRecorder, TestRunSummary};
+use ios_core::testmanager::results::{
+    write_junit_xml_atomic, write_junit_xml_atomic_with_diagnostic, TestRunRecorder, TestRunSummary,
+};
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;
@@ -36,39 +38,121 @@ pub struct RunTestCmd {
     pub wait: bool,
     #[arg(long, default_value_t = 300, help = "Result wait timeout in seconds")]
     pub result_timeout_secs: u64,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write the completed XCTest result as atomically-written JUnit XML (requires --wait)"
+    )]
+    pub junit_output: Option<PathBuf>,
 }
 
 impl RunTestCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runtest"))?;
+        if self.junit_output.is_some() && !self.wait {
+            return Err(anyhow::anyhow!(
+                "--junit-output requires --wait because an early XCTest startup result is not a complete test report"
+            ));
+        }
         eprintln!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet.");
 
-        let device = connect_testmanager_device(&udid).await?;
-        let configs = parse_xctestrun_file(&self.xctestrun)
-            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))?;
-        let (configuration_name, plan) = build_plan_from_xctestrun(
+        let device = match connect_testmanager_device(&udid).await {
+            Ok(device) => device,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
+        let configs = match parse_xctestrun_file(&self.xctestrun)
+            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))
+        {
+            Ok(configs) => configs,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
+        let (configuration_name, plan) = match build_plan_from_xctestrun(
             &device,
             &self.xctestrun,
             &configs,
             self.configuration.as_deref(),
             self.test_target.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
 
         if self.wait {
-            let mut session = tokio::time::timeout(
+            let startup = tokio::time::timeout(
                 std::time::Duration::from_secs(self.startup_timeout_secs),
                 start_test_plan_session(&udid, plan),
             )
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest startup"))??;
+            .await;
+            let mut session = match startup {
+                Err(_) => {
+                    let error = anyhow::anyhow!("timed out waiting for XCTest startup");
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Err(error)) => {
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Ok(session)) => session,
+            };
             let result = session.startup_result().clone();
-            let summary = tokio::time::timeout(
+            let result_wait = tokio::time::timeout(
                 std::time::Duration::from_secs(self.result_timeout_secs),
                 session.wait_for_results(),
             )
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest results"))??;
+            .await;
+            let summary = match result_wait {
+                Err(_) => {
+                    let error = anyhow::anyhow!("timed out waiting for XCTest results");
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(true),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Err(error)) => {
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(true),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Ok(summary)) => summary,
+            };
+            write_junit_summary(self.junit_output.as_deref(), &summary)?;
 
             println!(
                 "{}",
@@ -112,6 +196,40 @@ impl RunTestCmd {
 
         Ok(())
     }
+}
+
+fn incomplete_summary(began: bool) -> TestRunSummary {
+    TestRunSummary {
+        began,
+        finished: false,
+        total_tests: 0,
+        failed_tests: 0,
+        skipped_tests: 0,
+        logs: Vec::new(),
+        debug_logs: Vec::new(),
+        suites: Vec::new(),
+    }
+}
+
+fn write_junit_summary(path: Option<&Path>, summary: &TestRunSummary) -> Result<()> {
+    if let Some(path) = path {
+        write_junit_xml_atomic(summary, path)
+            .with_context(|| format!("failed writing JUnit XML to {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn write_junit_diagnostic(
+    path: Option<&Path>,
+    summary: &TestRunSummary,
+    error: &anyhow::Error,
+) -> Result<()> {
+    if let Some(path) = path {
+        write_junit_xml_atomic_with_diagnostic(summary, path, &error.to_string()).with_context(
+            || format!("failed writing diagnostic JUnit XML to {}", path.display()),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -507,6 +625,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -552,12 +671,15 @@ mod tests {
             "--wait",
             "--result-timeout-secs",
             "120",
+            "--junit-output",
+            "results.xml",
         ]);
 
         assert_eq!(cmd.command.configuration.as_deref(), Some("UITests"));
         assert_eq!(cmd.command.test_target.as_deref(), Some("LoginTarget"));
         assert!(cmd.command.wait);
         assert_eq!(cmd.command.result_timeout_secs, 120);
+        assert_eq!(cmd.command.junit_output, Some(PathBuf::from("results.xml")));
     }
 
     #[test]

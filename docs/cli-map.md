@@ -42,21 +42,24 @@ schemas, service routing, and iOS-version support can differ.
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
 | Device pasteboard | `ios pasteboard get`, `ios pasteboard set TEXT`, `ios pasteboard set --url URL` | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
-| Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows |
+| Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; direct runner execution remains unsupported |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
 | Diagnostics | `ios diagnostics ...`, `ios diagnostics sysdiagnose` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...`, CoreDevice sysdiagnose workflows |
+| MobileBackup2 | `ios backup create|restore|info|list`, `backup unback|extract` (local compatibility), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including `unback`/`extract` | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
 | Restart or restore mode | `ios diagnostics reboot`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
 | Packet capture | `ios pcap --output device.pcap` | `ios pcap ...` | `pymobiledevice3 pcap ...` |
 | Bluetooth HCI capture | `ios btlogger capture trace.pklg`, `ios btlogger capture --format pcapng trace.pcapng` | Bluetooth packet logging workflows | `pymobiledevice3 btlogger ...` |
-| OS trace | `ios os-trace ps`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog` |
+| OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog` |
 | Developer Disk Image | `ios ddi status`, `ios ddi mount ...` | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount` |
 | Instruments process list | `ios instruments ps` | `ios ps`, `ios instruments ...` | `pymobiledevice3 developer dvt sysmon ...` |
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |
+| CoreDevice appearance/accessibility | `ios device-control configuration get|set ...` | `pymobiledevice3 developer core-device user-interface-style ...` and accessibility controls | iOS 17+ `com.apple.coredevice.configuration`; setters mutate device-wide UI state |
+| CoreDevice orientation | `ios device-control orientation [left|right]` | `pymobiledevice3 developer core-device rotate [left|right]` | iOS 17+ `com.apple.coredevice.devicecontrol`; rotates the active device UI |
 | Network and GPU metrics | `ios instruments network`, `ios instruments gpu` | instruments/sysmontap workflows | developer DVT metrics workflows |
 | Debugserver | `ios debugserver ...`, `ios debug ...` | `ios debug ...` | debugserver developer workflows |
 | Accessibility audit | `ios accessibility-audit ...` | `ios ax ...`, accessibility toggles | accessibilityaudit service workflows |
-| WebInspector | `ios webinspector ...` | WebInspector-related workflows | `pymobiledevice3 webinspector ...` |
+| WebInspector | `ios webinspector opened-tabs|eval|launch|js-shell|cdp|selenium` | WebInspector launch/evaluation and bridge workflows | `pymobiledevice3 webinspector ...` |
 | Symbols | `ios symbols list`, `ios symbols pull ...` | symbol fetch workflows | `dtfetchsymbols` / remote symbols workflows |
 | Tunnel start | `ios tunnel start --userspace` | `ios tunnel start` | iOS 17+ tunnel and RemoteXPC workflows |
 | Tunnel manager | `ios tunnel serve --userspace ...` | go-ios tunnel HTTP manager | tunneld/remote workflows |

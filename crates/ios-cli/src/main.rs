@@ -121,6 +121,8 @@ enum Commands {
     Mobilegestalt(cmd::mobilegestalt::MobileGestaltCmd),
     /// Developer Disk Image management (status, mount)
     Ddi(cmd::ddi::DdiCmd),
+    /// iOS 17+ CoreDevice configuration and orientation controls
+    DeviceControl(cmd::device_control::DeviceControlCmd),
     /// Show the os_trace_relay process list
     OsTrace(cmd::os_trace::OsTraceCmd),
     /// Create a device power assertion
@@ -193,6 +195,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Memlimitoff(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Mobilegestalt(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Ddi(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::DeviceControl(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::OsTrace(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::PowerAssert(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Preboard(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -213,6 +216,7 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
         Commands::Tunnel(command) => command.needs_default_udid(),
+        Commands::Backup(command) => command.needs_default_udid(),
         _ => true,
     }
 }

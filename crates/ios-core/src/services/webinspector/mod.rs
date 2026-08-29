@@ -276,10 +276,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     }
 
     pub async fn start(&mut self, timeout_duration: Duration) -> Result<(), WebInspectorError> {
-        self.report_identifier()
-            .await
-            .map_err(map_handshake_disabled_error)?;
-        let deadline = Instant::now() + timeout_duration;
+        let deadline = deadline_after(timeout_duration)?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            self.report_identifier(),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
+        .map_err(map_handshake_disabled_error)?;
         loop {
             let event = self
                 .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
@@ -301,7 +305,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         &mut self,
         idle_timeout: Duration,
     ) -> Result<Vec<ApplicationPage>, WebInspectorError> {
-        self.request_connected_applications().await?;
+        timeout(idle_timeout, self.request_connected_applications())
+            .await
+            .map_err(|_| WebInspectorError::Timeout(idle_timeout))??;
         loop {
             match self.next_event_with_timeout(idle_timeout).await {
                 Ok(_) => continue,
@@ -471,7 +477,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         &mut self,
         timeout_duration: Duration,
     ) -> Result<WebInspectorEvent, WebInspectorError> {
-        let deadline = Instant::now() + timeout_duration;
+        let deadline = deadline_after(timeout_duration)?;
         loop {
             let event = self
                 .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
@@ -556,10 +562,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                         )
                     })?;
 
-                let pages = self
-                    .application_pages
-                    .entry(application_id.clone())
-                    .or_default();
                 let mut listed_pages = Vec::with_capacity(listing.len());
                 for (listing_key, page) in listing {
                     let page = page.as_dictionary().ok_or_else(|| {
@@ -568,8 +570,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                         )
                     })?;
                     let page = Page::from_plist(listing_key, page)?;
-                    pages.insert(page.id, page.clone());
                     listed_pages.push(page);
+                }
+
+                // A listing is a complete snapshot, not a delta. Replace the
+                // cache only after every page has parsed successfully so a
+                // malformed update cannot partially corrupt the last snapshot.
+                let pages = self
+                    .application_pages
+                    .entry(application_id.clone())
+                    .or_default();
+                pages.clear();
+                for page in &listed_pages {
+                    pages.insert(page.id, page.clone());
                 }
 
                 Ok(WebInspectorEvent::Listing {
@@ -693,11 +706,16 @@ impl InspectorSession {
         wait_for_target: bool,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
-        client
-            .send_socket_setup(&self.session_id, &self.application_id, self.page_id, true)
-            .await?;
+        let deadline = deadline_after(timeout_duration)?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, true),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
         if wait_for_target {
-            self.wait_for_target(client, timeout_duration).await?;
+            self.wait_for_target(client, deadline, timeout_duration)
+                .await?;
         }
         Ok(())
     }
@@ -788,7 +806,13 @@ impl InspectorSession {
         params: JsonValue,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let command_id = self.send_command(client, method, params).await?;
+        let deadline = deadline_after(timeout_duration)?;
+        let command_id = timeout(
+            remaining_time(deadline, timeout_duration)?,
+            self.send_command(client, method, params),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
         self.wait_for_response(client, command_id, timeout_duration)
             .await
     }
@@ -859,9 +883,9 @@ impl InspectorSession {
     async fn wait_for_target<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         client: &mut WebInspectorClient<S>,
+        deadline: Instant,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
-        let deadline = Instant::now() + timeout_duration;
         let mut skipped = Vec::new();
         while self.target_id.is_none() {
             let event = match client
@@ -892,7 +916,7 @@ impl InspectorSession {
         command_id: u64,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = Instant::now() + timeout_duration;
+        let deadline = deadline_after(timeout_duration)?;
         let mut skipped = Vec::new();
         loop {
             let event = match client
@@ -1140,6 +1164,7 @@ impl AutomationSession {
         client: &mut WebInspectorClient<S>,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
+        let deadline = deadline_after(timeout_duration)?;
         if matches!(
             client.automation_availability(),
             Some(AutomationAvailability::NotAvailable)
@@ -1148,22 +1173,38 @@ impl AutomationSession {
                 "remote automation is not available".to_string(),
             ));
         }
-        client
-            .request_automation_session(&self.session_id, &self.application_id)
-            .await?;
-        client.request_listing(&self.application_id).await?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.request_automation_session(&self.session_id, &self.application_id),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.request_listing(&self.application_id),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
 
         let page = self
-            .wait_for_automation_page(client, timeout_duration, false)
+            .wait_for_automation_page(client, deadline, timeout_duration, false)
             .await?;
         self.page_id = Some(page.id);
 
-        client
-            .send_socket_setup(&self.session_id, &self.application_id, page.id, true)
-            .await?;
-        client.request_listing(&self.application_id).await?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.send_socket_setup(&self.session_id, &self.application_id, page.id, true),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.request_listing(&self.application_id),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
         let page = self
-            .wait_for_automation_page(client, timeout_duration, true)
+            .wait_for_automation_page(client, deadline, timeout_duration, true)
             .await?;
         self.page_id = Some(page.id);
         Ok(())
@@ -1557,7 +1598,13 @@ impl AutomationSession {
         params: JsonValue,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let command_id = self.send_command(client, method, params).await?;
+        let deadline = deadline_after(timeout_duration)?;
+        let command_id = timeout(
+            remaining_time(deadline, timeout_duration)?,
+            self.send_command(client, method, params),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
         self.wait_for_response(client, command_id, timeout_duration)
             .await
     }
@@ -1594,7 +1641,7 @@ impl AutomationSession {
         command_id: u64,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = Instant::now() + timeout_duration;
+        let deadline = deadline_after(timeout_duration)?;
         let mut skipped = Vec::new();
         loop {
             let event = match client
@@ -1629,10 +1676,10 @@ impl AutomationSession {
     async fn wait_for_automation_page<S: AsyncRead + AsyncWrite + Unpin>(
         &self,
         client: &mut WebInspectorClient<S>,
+        deadline: Instant,
         timeout_duration: Duration,
         require_connection_id: bool,
     ) -> Result<Page, WebInspectorError> {
-        let deadline = Instant::now() + timeout_duration;
         loop {
             if let Some(page) =
                 client.automation_page_by_session(&self.application_id, &self.session_id)
@@ -1684,9 +1731,19 @@ async fn send_plist<S: AsyncWrite + Unpin>(
 ) -> Result<(), WebInspectorError> {
     let mut payload = Vec::new();
     plist::to_writer_xml(&mut payload, value)?;
-    stream
-        .write_all(&(payload.len() as u32).to_be_bytes())
-        .await?;
+    if payload.len() > MAX_PLIST_SIZE {
+        return Err(WebInspectorError::Protocol(format!(
+            "plist length {} exceeds max {MAX_PLIST_SIZE}",
+            payload.len()
+        )));
+    }
+    let length = u32::try_from(payload.len()).map_err(|_| {
+        WebInspectorError::Protocol(format!(
+            "plist length {} does not fit in a 32-bit frame",
+            payload.len()
+        ))
+    })?;
+    stream.write_all(&length.to_be_bytes()).await?;
     stream.write_all(&payload).await?;
     stream.flush().await?;
     Ok(())
@@ -1785,6 +1842,12 @@ fn remaining_time(deadline: Instant, fallback: Duration) -> Result<Duration, Web
         return Err(WebInspectorError::Timeout(fallback));
     }
     Ok(deadline.duration_since(now))
+}
+
+fn deadline_after(timeout_duration: Duration) -> Result<Instant, WebInspectorError> {
+    Instant::now().checked_add(timeout_duration).ok_or_else(|| {
+        WebInspectorError::Protocol("webinspector timeout is too large for the system clock".into())
+    })
 }
 
 fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
@@ -1927,6 +1990,13 @@ mod tests {
         assert!(matches!(err, WebInspectorError::Timeout(duration) if duration == fallback));
     }
 
+    #[test]
+    fn deadline_after_rejects_clock_overflow() {
+        let err = deadline_after(Duration::from_secs(u64::MAX))
+            .expect_err("an unrepresentable deadline must not panic");
+        assert!(err.to_string().contains("timeout is too large"));
+    }
+
     #[allow(clippy::type_complexity)]
     fn application_listing_message(
         application_id: &str,
@@ -2003,6 +2073,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automation_attach_timeout_covers_initial_writes() {
+        // A one-byte duplex with no reader forces the first plist write to
+        // remain pending. The public attach timeout must cover that write,
+        // rather than only the later application-list wait.
+        let (client_stream, _server_stream) = duplex(1);
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST");
+        let mut session =
+            AutomationSession::with_session_id("PID:42", "com.apple.mobilesafari", "TEST-SESSION");
+
+        let error = session
+            .attach(&mut client, Duration::from_millis(10))
+            .await
+            .expect_err("a stalled setup write must time out");
+        assert!(matches!(error, WebInspectorError::Timeout(_)));
+    }
+
+    #[tokio::test]
     async fn handle_message_application_disconnected_clears_cached_state() {
         let stream = tokio::io::empty();
         let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
@@ -2048,7 +2135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_message_application_listing_merges_existing_page_cache() {
+    async fn handle_message_application_listing_replaces_existing_page_cache() {
         let stream = tokio::io::empty();
         let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
 
@@ -2101,7 +2188,7 @@ mod tests {
         let pages = client
             .application_pages("PID:42")
             .expect("application pages must exist after listing");
-        assert_eq!(pages.len(), 2);
+        assert_eq!(pages.len(), 1);
         assert_eq!(
             pages.get(&1).and_then(|page| page.title.as_deref()),
             Some("Updated Example")
@@ -2110,14 +2197,7 @@ mod tests {
             pages.get(&1).and_then(|page| page.url.as_deref()),
             Some("https://updated.example.com")
         );
-        assert_eq!(
-            pages.get(&2).and_then(|page| page.title.as_deref()),
-            Some("Second")
-        );
-        assert_eq!(
-            pages.get(&2).and_then(|page| page.url.as_deref()),
-            Some("https://second.example.com")
-        );
+        assert!(pages.get(&2).is_none());
     }
 
     #[tokio::test]

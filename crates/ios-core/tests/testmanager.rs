@@ -1,9 +1,16 @@
 #[cfg(feature = "testmanager")]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use bytes::Bytes;
     use ios_core::dtx::primitive_enc::{archived_object, encode_primitive_dict};
     use ios_core::dtx::{read_dtx_frame, DtxError, DtxMessage, DtxPayload, NSObject};
-    use ios_core::testmanager::results::{TestCaseStatus, TestExecutionEvent, TestRunRecorder};
+    use ios_core::testmanager::results::{
+        write_junit_xml_atomic, write_junit_xml_atomic_with_diagnostic, TestCaseStatus,
+        TestCaseSummary, TestExecutionEvent, TestFailure, TestRunRecorder, TestRunSummary,
+        TestSuiteSummary,
+    };
     use ios_core::testmanager::TestmanagerClient;
     use ios_core::{NsUrl, XcTestConfiguration, XctCapabilities};
     use tokio::io::{duplex, AsyncWriteExt};
@@ -180,6 +187,173 @@ mod tests {
             Some(TestCaseStatus::Passed)
         );
         assert_eq!(summary.suites[0].cases[0].duration_seconds, Some(1.25));
+    }
+
+    fn junit_fixture_summary() -> TestRunSummary {
+        TestRunSummary {
+            began: true,
+            finished: true,
+            total_tests: 5,
+            failed_tests: 1,
+            skipped_tests: 1,
+            logs: vec!["stdout <ok>\u{1}".to_string()],
+            debug_logs: vec!["stderr & detail".to_string()],
+            suites: vec![TestSuiteSummary {
+                name: "Suite <主>&".to_string(),
+                started_at: None,
+                finished_at: None,
+                test_count: Some(5),
+                skipped: Some(1),
+                failures: Some(1),
+                expected_failures: Some(1),
+                unexpected_failures: Some(0),
+                uncaught_exceptions: Some(0),
+                test_duration_seconds: Some(2.25),
+                total_duration_seconds: Some(2.5),
+                cases: vec![
+                    TestCaseSummary {
+                        class_name: "Suite <主>&".to_string(),
+                        method_name: "passes你好".to_string(),
+                        status: Some(TestCaseStatus::Passed),
+                        duration_seconds: Some(0.5),
+                        failure: None,
+                    },
+                    TestCaseSummary {
+                        class_name: "Suite <主>&".to_string(),
+                        method_name: "fails".to_string(),
+                        status: Some(TestCaseStatus::Failed),
+                        duration_seconds: Some(1.0),
+                        failure: Some(TestFailure {
+                            message: "bad <value> & \"quote\"\u{1}".to_string(),
+                            file: Some("Tests.swift".to_string()),
+                            line: Some(7),
+                        }),
+                    },
+                    TestCaseSummary {
+                        class_name: "Suite <主>&".to_string(),
+                        method_name: "skips".to_string(),
+                        status: Some(TestCaseStatus::Skipped),
+                        duration_seconds: Some(0.0),
+                        failure: None,
+                    },
+                    TestCaseSummary {
+                        class_name: "Suite <主>&".to_string(),
+                        method_name: "expected".to_string(),
+                        status: Some(TestCaseStatus::ExpectedFailure),
+                        duration_seconds: Some(0.25),
+                        failure: None,
+                    },
+                    TestCaseSummary {
+                        class_name: "Suite <主>&".to_string(),
+                        method_name: "future".to_string(),
+                        status: Some(TestCaseStatus::Other("new status".to_string())),
+                        duration_seconds: Some(0.75),
+                        failure: None,
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn junit_xml_preserves_statuses_counts_and_escapes_invalid_text() {
+        let xml = junit_fixture_summary().to_junit_xml();
+        assert!(xml.contains("tests=\"5\" failures=\"1\" errors=\"1\" skipped=\"2\""));
+        assert!(xml.contains("name=\"Suite &lt;主&gt;&amp;\""));
+        assert!(xml.contains("bad &lt;value&gt; &amp; &quot;quote&quot;�"));
+        assert!(xml.contains("name=\"status\" value=\"expected_failure\""));
+        assert!(xml.contains("<skipped message=\"expected failure\"/>"));
+        assert!(xml.contains("<skipped/>") && xml.contains("type=\"unknown_status\""));
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        reader.config_mut().check_end_names = true;
+        while reader.read_event().expect("JUnit XML must parse") != quick_xml::events::Event::Eof {}
+    }
+
+    #[test]
+    fn junit_xml_diagnostic_and_atomic_write_are_available() {
+        let summary = junit_fixture_summary();
+        let xml = summary.to_junit_xml_with_diagnostic(Some("connection <lost>"));
+        assert!(xml.contains("name=\"xctest-diagnostic\""));
+        assert!(xml.contains("connection &lt;lost&gt;"));
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("ios-junit-{nonce}.xml"));
+        std::fs::write(&output, b"old report").expect("seed existing report");
+        write_junit_xml_atomic(&summary, &output).expect("JUnit report should be written");
+        let written = std::fs::read_to_string(&output).expect("JUnit report should be readable");
+        assert_eq!(written, summary.to_junit_xml());
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&output)
+                .expect("report metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        std::fs::remove_file(&output).expect("test report cleanup");
+
+        let missing_parent = std::env::temp_dir()
+            .join(format!("ios-junit-missing-{nonce}"))
+            .join("report.xml");
+        let error =
+            write_junit_xml_atomic_with_diagnostic(&summary, &missing_parent, "not connected")
+                .expect_err("missing parent must not create a partial report");
+        assert!(matches!(error.kind(), std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn recorder_attaches_cases_to_running_suite_and_uses_test_duration() {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::SuiteStarted {
+            name: "BundleSuite".into(),
+            started_at: None,
+        });
+        recorder.apply(TestExecutionEvent::CaseStarted {
+            class_name: "LoginTests".into(),
+            method_name: "testLogin".into(),
+        });
+        recorder.apply(TestExecutionEvent::CaseFinished {
+            class_name: "LoginTests".into(),
+            method_name: "testLogin".into(),
+            status: TestCaseStatus::Passed,
+            duration_seconds: 0.5,
+        });
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: "BundleSuite".into(),
+            finished_at: None,
+            test_count: 9,
+            skipped: 0,
+            failures: 0,
+            expected_failures: 0,
+            unexpected_failures: 0,
+            uncaught_exceptions: 0,
+            test_duration_seconds: 1.25,
+            total_duration_seconds: 9.0,
+        });
+        let summary = recorder.summary();
+        assert_eq!(summary.suites.len(), 1);
+        assert_eq!(summary.suites[0].cases.len(), 1);
+        let xml = summary.to_junit_xml();
+        assert!(xml.contains("tests=\"1\""));
+        assert!(xml.contains("time=\"1.250\""));
+    }
+
+    #[test]
+    fn recorder_bounds_device_log_retention() {
+        let mut recorder = TestRunRecorder::default();
+        for _ in 0..20_000 {
+            recorder.apply(TestExecutionEvent::Log {
+                message: "x".repeat(1024),
+                debug: false,
+            });
+        }
+        let summary = recorder.summary();
+        assert!(summary.logs.len() <= 16_384);
+        assert!(summary.logs.iter().map(String::len).sum::<usize>() <= 8 * 1024 * 1024);
     }
 
     #[tokio::test]

@@ -1,6 +1,8 @@
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -8,12 +10,289 @@ use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::warn;
+#[cfg(feature = "backup2-manifest")]
+use zeroize::Zeroizing;
 
 use crate::services::device_link::{DeviceLinkClient, DeviceLinkError};
+
+#[cfg(feature = "backup2-manifest")]
+mod crypto;
+#[cfg(feature = "backup2-manifest")]
+mod manifest;
+
+#[cfg(feature = "backup2-manifest")]
+pub use manifest::{
+    extract_backup_file, patch_backup_directory, unback_backup, ExtractionResult,
+    ManifestPatchResult,
+};
 
 pub const SERVICE_NAME: &str = "com.apple.mobilebackup2";
 pub const RSD_SERVICE_NAME: &str = "com.apple.mobilebackup2.shim.remote";
 pub const SUPPORTED_PROTOCOL_VERSIONS: [f64; 2] = [2.0, 2.1];
+// Metadata plists are small control-plane documents. Bound them before invoking the plist
+// decoder so a sparse or hostile backup cannot make parsing allocate without limit. Payload and
+// Manifest.db data have separate, substantially larger limits in backup2::manifest.
+const MAX_BACKUP_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Built-in host-side file selections accepted by `backup --only`.
+///
+/// These names deliberately mirror pymobiledevice3. They are predicates used while
+/// receiving a DeviceLink upload; they are not additional MobileBackup2 message names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupSelection {
+    Bookmarks,
+    CallHistory,
+    Contacts,
+    Messages,
+    Sms,
+    Whatsapp,
+}
+
+impl BackupSelection {
+    pub const NAMES: [&'static str; 6] = [
+        "bookmarks",
+        "call_history",
+        "contacts",
+        "messages",
+        "sms",
+        "whatsapp",
+    ];
+
+    pub fn rules(self) -> &'static [BackupSelectionRule] {
+        match self {
+            Self::Bookmarks => &BOOKMARK_RULES,
+            Self::CallHistory => &CALL_HISTORY_RULES,
+            Self::Contacts => &CONTACT_RULES,
+            Self::Messages => &MESSAGE_RULES,
+            Self::Sms => &SMS_RULES,
+            Self::Whatsapp => &WHATSAPP_RULES,
+        }
+    }
+}
+
+impl FromStr for BackupSelection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "bookmarks" => Ok(Self::Bookmarks),
+            "call_history" | "call-history" => Ok(Self::CallHistory),
+            "contacts" => Ok(Self::Contacts),
+            "messages" => Ok(Self::Messages),
+            "sms" => Ok(Self::Sms),
+            "whatsapp" | "whats_app" | "whats-app" => Ok(Self::Whatsapp),
+            _ => Err(format!(
+                "unknown backup selection {value:?}; expected one of {}",
+                Self::NAMES.join(", ")
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackupSelectionRule {
+    pub domain: &'static str,
+    pub relative_path: &'static str,
+    pub recursive: bool,
+}
+
+impl BackupSelectionRule {
+    const fn new(domain: &'static str, relative_path: &'static str, recursive: bool) -> Self {
+        Self {
+            domain,
+            relative_path,
+            recursive,
+        }
+    }
+
+    fn matches(&self, domain: &str, relative_path: &str) -> bool {
+        self.domain == domain
+            && (self.relative_path == relative_path
+                || (self.recursive
+                    && relative_path
+                        .strip_prefix(self.relative_path)
+                        .is_some_and(|suffix| suffix.starts_with('/'))))
+    }
+
+    fn matches_device_name(&self, device_name: &str) -> bool {
+        let expected = self.relative_path.trim_end_matches('/');
+        let exact = [
+            format!("{}/{}", self.domain, expected),
+            format!("{}-{}", self.domain, expected),
+            expected.to_string(),
+        ];
+        exact.iter().any(|candidate| {
+            device_name == candidate
+                || (self.recursive && device_name.starts_with(&format!("{candidate}/")))
+        }) || device_name.ends_with(&format!("/{expected}"))
+            || (self.recursive && device_name.contains(&format!("/{expected}/")))
+    }
+}
+
+static BOOKMARK_RULES: [BackupSelectionRule; 3] = [
+    BackupSelectionRule::new("HomeDomain", "Library/Safari/Bookmarks.db", false),
+    BackupSelectionRule::new("HomeDomain", "Library/Safari/Bookmarks.db-shm", false),
+    BackupSelectionRule::new("HomeDomain", "Library/Safari/Bookmarks.db-wal", false),
+];
+static CALL_HISTORY_RULES: [BackupSelectionRule; 3] = [
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/CallHistoryDB/CallHistory.storedata",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/CallHistoryDB/CallHistory.storedata-shm",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/CallHistoryDB/CallHistory.storedata-wal",
+        false,
+    ),
+];
+static CONTACT_RULES: [BackupSelectionRule; 3] = [
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/AddressBook/AddressBook.sqlitedb",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/AddressBook/AddressBook.sqlitedb-shm",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "HomeDomain",
+        "Library/AddressBook/AddressBook.sqlitedb-wal",
+        false,
+    ),
+];
+static MESSAGE_RULES: [BackupSelectionRule; 2] = [
+    BackupSelectionRule::new("HomeDomain", "Library/SMS", true),
+    BackupSelectionRule::new("MediaDomain", "Library/SMS", true),
+];
+static SMS_RULES: [BackupSelectionRule; 1] = [BackupSelectionRule::new(
+    "HomeDomain",
+    "Library/SMS/sms.db",
+    false,
+)];
+static WHATSAPP_RULES: [BackupSelectionRule; 6] = [
+    BackupSelectionRule::new(
+        "AppDomain-net.whatsapp.WhatsApp",
+        "Documents/ChatStorage.sqlite",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "AppDomain-net.whatsapp.WhatsApp",
+        "Documents/ChatStorage.sqlite-shm",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "AppDomain-net.whatsapp.WhatsApp",
+        "Documents/ChatStorage.sqlite-wal",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "AppDomainGroup-group.net.whatsapp.WhatsApp.shared",
+        "ChatStorage.sqlite",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "AppDomainGroup-group.net.whatsapp.WhatsApp.shared",
+        "ChatStorage.sqlite-shm",
+        false,
+    ),
+    BackupSelectionRule::new(
+        "AppDomainGroup-group.net.whatsapp.WhatsApp.shared",
+        "ChatStorage.sqlite-wal",
+        false,
+    ),
+];
+
+/// A bounded host-side filter applied to received backup entries.
+#[derive(Debug, Clone)]
+pub struct BackupFilter {
+    selections: Vec<BackupSelection>,
+    regexes: Vec<regex::Regex>,
+}
+
+impl BackupFilter {
+    pub fn matches_device_name(&self, device_name: &str) -> bool {
+        self.selections
+            .iter()
+            .flat_map(|selection| selection.rules())
+            .any(|rule| rule.matches_device_name(device_name))
+            || self.regexes.iter().any(|regex| regex.is_match(device_name))
+    }
+
+    pub fn matches_manifest_entry(&self, domain: &str, relative_path: &str) -> bool {
+        self.selections
+            .iter()
+            .flat_map(|selection| selection.rules())
+            .any(|rule| rule.matches(domain, relative_path))
+            || self.regexes.iter().any(|regex| {
+                candidate_names(domain, relative_path)
+                    .iter()
+                    .any(|name| regex.is_match(name))
+            })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.selections.is_empty() && self.regexes.is_empty()
+    }
+}
+
+/// Parse and validate the `--only` and `--only-regex` forms before a device session starts.
+pub fn build_backup_filter(
+    selections: &[String],
+    regex_patterns: &[String],
+) -> Result<Option<BackupFilter>, Mobilebackup2Error> {
+    if selections.is_empty() && regex_patterns.is_empty() {
+        return Ok(None);
+    }
+    if selections.len() + regex_patterns.len() > MAX_FILTER_TERMS {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup filter has too many terms ({}; max {MAX_FILTER_TERMS})",
+            selections.len() + regex_patterns.len()
+        )));
+    }
+    let selections = selections
+        .iter()
+        .map(|selection| BackupSelection::from_str(selection).map_err(Mobilebackup2Error::Protocol))
+        .collect::<Result<Vec<_>, _>>()?;
+    let regexes = regex_patterns
+        .iter()
+        .map(|pattern| {
+            if pattern.len() > MAX_FILTER_PATTERN_BYTES {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup --only-regex pattern is too large ({} bytes; max {MAX_FILTER_PATTERN_BYTES})",
+                    pattern.len()
+                )));
+            }
+            regex::Regex::new(pattern).map_err(|error| {
+                Mobilebackup2Error::Protocol(format!(
+                    "invalid backup --only-regex pattern {pattern:?}: {error}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(BackupFilter {
+        selections,
+        regexes,
+    }))
+}
+
+fn candidate_names<'a>(domain: &'a str, relative_path: &'a str) -> [String; 3] {
+    [
+        format!("{domain}/{relative_path}"),
+        format!("{domain}-{relative_path}"),
+        relative_path.to_string(),
+    ]
+}
+
+const MAX_FILTER_TERMS: usize = 128;
+const MAX_FILTER_PATTERN_BYTES: usize = 16 * 1024;
 
 const FILE_TRANSFER_CODE_SUCCESS: u8 = 0x00; // Transfer completed successfully
 const FILE_TRANSFER_CODE_LOCAL_ERROR: u8 = 0x06; // Local (host) file I/O error
@@ -30,6 +309,12 @@ const EMPTY_PARAMETER_STRING: &str = "___EmptyParameterString___";
 // enough for large incremental Manifest.db files to avoid exhausting the device process.
 const DOWNLOAD_CHUNK_SIZE: usize = 32 * 1024;
 const MAX_TRANSFER_ERROR_PREVIEW_SIZE: usize = 64 * 1024;
+const MAX_DEVICE_TRANSFER_FILES: u64 = 1_000_000;
+const MAX_DEVICE_TRANSFER_BYTES: u64 = 512 * 1024 * 1024 * 1024;
+// Device-side Unback/Extract are long-running DeviceLink operations. Keep one
+// bounded lifetime for the complete exchange, including version negotiation,
+// so a peer that stops sending cannot leave a caller waiting forever.
+const DEVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] =
     &["Manifest.plist", "Manifest.db", "Status.plist"];
 // 978_307_200 seconds = 2001-01-01T00:00:00Z Unix timestamp
@@ -57,7 +342,7 @@ pub struct BackupResult {
     pub protocol_version: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RestoreOptions<'a> {
     pub system: bool,
     pub reboot: bool,
@@ -66,6 +351,44 @@ pub struct RestoreOptions<'a> {
     pub remove: bool,
     pub password: Option<&'a str>,
     pub source_identifier: Option<&'a str>,
+}
+
+/// Optional host-side policy applied while a device sends backup files.
+///
+/// `patch_manifest` and local extraction are enabled by the `backup2-manifest` feature. The
+/// DeviceLink transfer filter itself is available in every build and never changes the wire
+/// `MessageName` used by MobileBackup2.
+#[derive(Clone, Default)]
+pub struct BackupOptions {
+    pub filter: Option<BackupFilter>,
+    pub patch_manifest: bool,
+    pub password: Option<String>,
+}
+
+impl fmt::Debug for RestoreOptions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RestoreOptions")
+            .field("system", &self.system)
+            .field("reboot", &self.reboot)
+            .field("copy", &self.copy)
+            .field("settings", &self.settings)
+            .field("remove", &self.remove)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("source_identifier", &self.source_identifier)
+            .finish()
+    }
+}
+
+impl fmt::Debug for BackupOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackupOptions")
+            .field("filter", &self.filter)
+            .field("patch_manifest", &self.patch_manifest)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl Default for RestoreOptions<'_> {
@@ -104,6 +427,10 @@ pub struct Mobilebackup2Client<S> {
     // us turn the device's follow-up MBErrorDomain/105 into a useful diagnostic.
     reported_free_space: Option<u64>,
     required_free_space: Option<u64>,
+    backup_filter: Option<BackupFilter>,
+    discarded_files: Vec<PathBuf>,
+    transfer_files: u64,
+    transfer_bytes: u64,
 }
 
 impl<S> Mobilebackup2Client<S> {
@@ -112,6 +439,10 @@ impl<S> Mobilebackup2Client<S> {
             device_link: DeviceLinkClient::new(stream),
             reported_free_space: None,
             required_free_space: None,
+            backup_filter: None,
+            discarded_files: Vec::new(),
+            transfer_files: 0,
+            transfer_bytes: 0,
         }
     }
 }
@@ -125,6 +456,8 @@ where
         // diagnostics from a previous DeviceLink session must not leak into the next one.
         self.reported_free_space = None;
         self.required_free_space = None;
+        self.transfer_files = 0;
+        self.transfer_bytes = 0;
 
         let device_link_version = self.device_link.version_exchange().await?;
         let local_versions = SUPPORTED_PROTOCOL_VERSIONS.to_vec();
@@ -142,12 +475,14 @@ where
             .and_then(plist_number_to_u64)
             .ok_or_else(|| {
                 Mobilebackup2Error::Protocol(format!(
-                    "backup2 hello response missing ErrorCode: {response:?}"
+                    "backup2 hello response missing ErrorCode: {:?}",
+                    redacted_protocol_dictionary(&response)
                 ))
             })?;
         if error_code != 0 {
             return Err(Mobilebackup2Error::Protocol(format!(
-                "backup2 hello returned ErrorCode={error_code}: {response:?}"
+                "backup2 hello returned ErrorCode={error_code}: {:?}",
+                redacted_protocol_dictionary(&response)
             )));
         }
 
@@ -156,7 +491,8 @@ where
             .and_then(plist_number_to_f64)
             .ok_or_else(|| {
                 Mobilebackup2Error::Protocol(format!(
-                    "backup2 hello response missing ProtocolVersion: {response:?}"
+                    "backup2 hello response missing ProtocolVersion: {:?}",
+                    redacted_protocol_dictionary(&response)
                 ))
             })?;
         if !local_versions.contains(&protocol_version) {
@@ -179,14 +515,50 @@ where
         full: bool,
         info_plist: &plist::Dictionary,
     ) -> Result<BackupResult, Mobilebackup2Error> {
+        self.backup_with_options(
+            backup_root,
+            target_identifier,
+            full,
+            info_plist,
+            BackupOptions::default(),
+        )
+        .await
+    }
+
+    /// Run the real MobileBackup2 `Backup` request with optional host-side selection policy.
+    pub async fn backup_with_options(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        full: bool,
+        info_plist: &plist::Dictionary,
+        options: BackupOptions,
+    ) -> Result<BackupResult, Mobilebackup2Error> {
+        #[cfg(feature = "backup2-manifest")]
+        let mut options = options;
+        #[cfg(feature = "backup2-manifest")]
+        let password = options.password.take().map(Zeroizing::new);
         validate_backup_identifier(target_identifier)?;
+        if options.patch_manifest && options.filter.is_none() {
+            return Err(Mobilebackup2Error::Protocol(
+                "patching a backup manifest requires a file selection filter".into(),
+            ));
+        }
+        #[cfg(not(feature = "backup2-manifest"))]
+        if options.patch_manifest {
+            return Err(Mobilebackup2Error::Protocol(
+                "manifest patching requires the ios-core backup2-manifest feature".into(),
+            ));
+        }
         let version = self.version_exchange().await?;
+        self.backup_filter = options.filter.clone();
+        self.discarded_files.clear();
         let layout = {
             let root = backup_root.to_path_buf();
             let id = target_identifier.to_owned();
             let info = info_plist.clone();
             tokio::task::spawn_blocking(move || {
-                initialize_backup_directory(&root, &id, &info, full)
+                initialize_backup_directory(&root, &id, &info, full || options.patch_manifest)
             })
             .await
             .map_err(|e| Mobilebackup2Error::Io(std::io::Error::other(e.to_string())))?
@@ -200,7 +572,27 @@ where
             .await?;
 
         let run_result = self.run_loop(&layout).await;
-        let _ = self.finish_session(run_result).await?;
+        let session_result = self.finish_session(run_result).await;
+        self.backup_filter = None;
+        let discarded_files = std::mem::take(&mut self.discarded_files);
+        let cleanup_layout = layout.clone();
+        let cleanup_result =
+            run_blocking(move || cleanup_discarded_files(&cleanup_layout, &discarded_files)).await;
+        let _content = session_result?;
+        cleanup_result?;
+
+        #[cfg(feature = "backup2-manifest")]
+        if options.patch_manifest {
+            let root = layout.root.clone();
+            let id = layout.target_identifier.clone();
+            let filter = options.filter.clone().ok_or_else(|| {
+                Mobilebackup2Error::Protocol("manifest patch filter unexpectedly missing".into())
+            })?;
+            run_blocking(move || {
+                patch_backup_directory(&root, &id, &filter, password.as_deref().map(String::as_str))
+            })
+            .await?;
+        }
 
         Ok(BackupResult {
             layout,
@@ -370,6 +762,161 @@ where
         self.finish_session(run_result).await
     }
 
+    /// Ask the device to expand a completed backup with MobileBackup2's real
+    /// `Unback` operation. This is distinct from the host-side Manifest.db
+    /// helper exposed behind the `backup2-manifest` feature.
+    pub async fn unback(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        source_identifier: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        let deadline = tokio::time::Instant::now() + DEVICE_OPERATION_TIMEOUT;
+        let result = match tokio::time::timeout_at(
+            deadline,
+            self.run_device_unback(backup_root, target_identifier, source_identifier, password),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
+                "device-side Unback exceeded the total timeout of {} seconds",
+                DEVICE_OPERATION_TIMEOUT.as_secs()
+            ))),
+        };
+        match tokio::time::timeout_at(deadline, self.finish_session(result)).await {
+            Ok(result) => result,
+            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
+                "device-side Unback exceeded the total timeout of {} seconds",
+                DEVICE_OPERATION_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    async fn run_device_unback(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        source_identifier: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
+        let source_identifier = non_empty_protocol_string(source_identifier);
+        if let Some(source_identifier) = source_identifier {
+            validate_backup_identifier(source_identifier)?;
+        }
+        let layout_identifier = source_identifier.unwrap_or(target_identifier);
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = layout_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
+
+        self.version_exchange().await?;
+        self.device_link
+            .send_process_message(&UnbackRequest {
+                message_name: "Unback",
+                target_identifier,
+                source_identifier,
+                password: non_empty_protocol_string(password),
+            })
+            .await?;
+        self.run_loop(&layout).await
+    }
+
+    /// Ask the device to extract one domain/path from a completed backup with
+    /// MobileBackup2's real `Extract` operation. `backup_root` is the local
+    /// directory used by the DeviceLink file-transfer loop, not an output path.
+    pub async fn extract(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        domain_name: &str,
+        relative_path: &str,
+        source_identifier: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        let deadline = tokio::time::Instant::now() + DEVICE_OPERATION_TIMEOUT;
+        let result = match tokio::time::timeout_at(
+            deadline,
+            self.run_device_extract(
+                backup_root,
+                target_identifier,
+                domain_name,
+                relative_path,
+                source_identifier,
+                password,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
+                "device-side Extract exceeded the total timeout of {} seconds",
+                DEVICE_OPERATION_TIMEOUT.as_secs()
+            ))),
+        };
+        match tokio::time::timeout_at(deadline, self.finish_session(result)).await {
+            Ok(result) => result,
+            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
+                "device-side Extract exceeded the total timeout of {} seconds",
+                DEVICE_OPERATION_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    async fn run_device_extract(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        domain_name: &str,
+        relative_path: &str,
+        source_identifier: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
+        // Domain names are single backup-domain components (HomeDomain,
+        // AppDomain-* and so on). The relative path uses the same traversal
+        // and platform-separator checks as DeviceLink file transfers.
+        validate_backup_identifier(domain_name)?;
+        let relative_path = sanitize_relative_path(relative_path)?;
+        let relative_path = relative_path.to_str().ok_or_else(|| {
+            Mobilebackup2Error::Protocol("backup relative path was not valid UTF-8".into())
+        })?;
+        let source_identifier = non_empty_protocol_string(source_identifier);
+        if let Some(source_identifier) = source_identifier {
+            validate_backup_identifier(source_identifier)?;
+        }
+        let layout_identifier = source_identifier.unwrap_or(target_identifier);
+        let layout = {
+            let root = backup_root.to_path_buf();
+            let id = layout_identifier.to_owned();
+            run_blocking(move || {
+                ensure_backup_directory(&root, &id)?;
+                create_runtime_layout(&root, &id)
+            })
+            .await?
+        };
+
+        self.version_exchange().await?;
+        self.device_link
+            .send_process_message(&ExtractRequest {
+                message_name: "Extract",
+                target_identifier,
+                domain_name,
+                relative_path,
+                source_identifier,
+                password: non_empty_protocol_string(password),
+            })
+            .await?;
+        self.run_loop(&layout).await
+    }
+
     async fn disconnect_best_effort(&mut self) {
         if let Err(err) = self.device_link.disconnect().await {
             if !should_suppress_disconnect_error(&err) {
@@ -394,7 +941,8 @@ where
             let message = self.device_link.recv_message().await?;
             let parts = message.as_array().ok_or_else(|| {
                 Mobilebackup2Error::Protocol(format!(
-                    "device link loop expected array message, got {message:?}"
+                    "device link loop expected array message, got {:?}",
+                    redacted_protocol_value(&message)
                 ))
             })?;
 
@@ -403,7 +951,8 @@ where
                 .and_then(plist::Value::as_string)
                 .ok_or_else(|| {
                     Mobilebackup2Error::Protocol(format!(
-                        "device link message missing command: {message:?}"
+                        "device link message missing command: {:?}",
+                        redacted_protocol_value(&message)
                     ))
                 })?;
             match command {
@@ -413,25 +962,33 @@ where
                         .and_then(plist::Value::as_dictionary)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "process message missing dictionary payload: {message:?}"
+                                "process message missing dictionary payload: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
-                    let error_code = payload.get("ErrorCode").and_then(plist_number_to_u64);
-                    if let Some(code) = error_code {
-                        if code != 0 {
-                            if code == MB_ERROR_INSUFFICIENT_DISK_SPACE {
-                                return Err(Mobilebackup2Error::Protocol(
-                                    insufficient_disk_space_message(
-                                        payload,
-                                        self.reported_free_space,
-                                        self.required_free_space,
-                                    ),
-                                ));
-                            }
-                            return Err(Mobilebackup2Error::Protocol(format!(
-                                "backup process returned ErrorCode={code}: {payload:?}"
-                            )));
+                    let error_code = payload
+                        .get("ErrorCode")
+                        .and_then(plist_number_to_u64)
+                        .ok_or_else(|| {
+                            Mobilebackup2Error::Protocol(format!(
+                                "backup process response missing numeric ErrorCode: {:?}",
+                                redacted_protocol_dictionary(payload)
+                            ))
+                        })?;
+                    if error_code != 0 {
+                        let safe_payload = redacted_protocol_dictionary(payload);
+                        if error_code == MB_ERROR_INSUFFICIENT_DISK_SPACE {
+                            return Err(Mobilebackup2Error::Protocol(
+                                insufficient_disk_space_message(
+                                    &safe_payload,
+                                    self.reported_free_space,
+                                    self.required_free_space,
+                                ),
+                            ));
                         }
+                        return Err(Mobilebackup2Error::Protocol(format!(
+                            "backup process returned ErrorCode={error_code}: {safe_payload:?}"
+                        )));
                     }
                     return Ok(payload.get("Content").cloned());
                 }
@@ -441,7 +998,8 @@ where
                         .and_then(plist::Value::as_string)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "create directory missing path: {message:?}"
+                                "create directory missing path: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     let directory = resolve_relative_path(layout, path)?;
@@ -468,7 +1026,8 @@ where
                         .and_then(plist::Value::as_array)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "download files missing array payload: {message:?}"
+                                "download files missing array payload: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     let (status_code, status_message, status_payload) =
@@ -495,19 +1054,31 @@ where
                         .and_then(plist::Value::as_dictionary)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "move items missing mapping payload: {message:?}"
+                                "move items missing mapping payload: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     for (src, dst_value) in items {
                         let dst = dst_value.as_string().ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "move target for {src} was not a string: {message:?}"
+                                "move target for {src} was not a string: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                         let src_path = resolve_relative_path(layout, src)?;
                         let dst_path = resolve_relative_path(layout, dst)?;
+                        if self.backup_filter.is_some()
+                            && matches!(
+                                fs::symlink_metadata(&src_path),
+                                Err(error) if error.kind() == ErrorKind::NotFound
+                            )
+                        {
+                            continue;
+                        }
                         create_layout_parent_directory(layout, &dst_path)?;
+                        let source_is_directory = fs::symlink_metadata(&src_path)?.is_dir();
                         rename_layout_path(layout, &src_path, &dst_path).await?;
+                        self.relocate_discarded_files(&src_path, &dst_path, source_is_directory);
                     }
                     self.send_status_response(
                         0,
@@ -522,17 +1093,20 @@ where
                         .and_then(plist::Value::as_array)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "remove items missing array payload: {message:?}"
+                                "remove items missing array payload: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     for item in items {
                         let rel = item.as_string().ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "remove item path was not a string: {message:?}"
+                                "remove item path was not a string: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                         let target = resolve_relative_path(layout, rel)?;
                         remove_layout_path(layout, &target).await?;
+                        self.forget_discarded_files(&target);
                     }
                     self.send_status_response(
                         0,
@@ -547,7 +1121,8 @@ where
                         .and_then(plist::Value::as_string)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "contents-of-directory missing path: {message:?}"
+                                "contents-of-directory missing path: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     let path = resolve_relative_path(layout, rel)?;
@@ -567,7 +1142,8 @@ where
                         .and_then(plist::Value::as_string)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "copy item missing source: {message:?}"
+                                "copy item missing source: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     let dst = parts
@@ -575,17 +1151,36 @@ where
                         .and_then(plist::Value::as_string)
                         .ok_or_else(|| {
                             Mobilebackup2Error::Protocol(format!(
-                                "copy item missing destination: {message:?}"
+                                "copy item missing destination: {:?}",
+                                redacted_protocol_value(&message)
                             ))
                         })?;
                     let src_path = resolve_relative_path(layout, src)?;
                     let dst_path = resolve_relative_path(layout, dst)?;
+                    if self.backup_filter.is_some()
+                        && matches!(
+                            fs::symlink_metadata(&src_path),
+                            Err(error) if error.kind() == ErrorKind::NotFound
+                        )
+                    {
+                        self.send_status_response(
+                            0,
+                            "",
+                            plist::Value::Dictionary(plist::Dictionary::new()),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    let source_is_directory = fs::symlink_metadata(&src_path)?.is_dir();
                     let root = layout.root.clone();
-                    tokio::task::spawn_blocking(move || copy_item(&root, &src_path, &dst_path))
-                        .await
-                        .map_err(|e| {
-                            Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
-                        })??;
+                    let copy_source = src_path.clone();
+                    let copy_destination = dst_path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        copy_item(&root, &copy_source, &copy_destination)
+                    })
+                    .await
+                    .map_err(|e| Mobilebackup2Error::Io(std::io::Error::other(e.to_string())))??;
+                    self.copy_discarded_files(&src_path, &dst_path, source_is_directory);
                     self.send_status_response(
                         0,
                         "",
@@ -629,11 +1224,39 @@ where
                 }
                 other => {
                     return Err(Mobilebackup2Error::Protocol(format!(
-                        "unsupported backup device-link command {other}: {message:?}"
+                        "unsupported backup device-link command {other}: {:?}",
+                        redacted_protocol_value(&message)
                     )));
                 }
             }
         }
+    }
+
+    fn account_transfer_file(&mut self) -> Result<(), Mobilebackup2Error> {
+        self.transfer_files = self.transfer_files.checked_add(1).ok_or_else(|| {
+            Mobilebackup2Error::Protocol("backup transfer file count overflow".into())
+        })?;
+        if self.transfer_files > MAX_DEVICE_TRANSFER_FILES {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "backup transfer has too many files (max {MAX_DEVICE_TRANSFER_FILES})"
+            )));
+        }
+        Ok(())
+    }
+
+    fn account_transfer_bytes(&mut self, bytes: usize) -> Result<(), Mobilebackup2Error> {
+        let bytes = u64::try_from(bytes).map_err(|_| {
+            Mobilebackup2Error::Protocol("backup transfer byte count does not fit in u64".into())
+        })?;
+        self.transfer_bytes = self.transfer_bytes.checked_add(bytes).ok_or_else(|| {
+            Mobilebackup2Error::Protocol("backup transfer byte count overflow".into())
+        })?;
+        if self.transfer_bytes > MAX_DEVICE_TRANSFER_BYTES {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "backup transfer exceeds byte budget (max {MAX_DEVICE_TRANSFER_BYTES} bytes)"
+            )));
+        }
+        Ok(())
     }
 
     async fn receive_uploaded_files(
@@ -646,11 +1269,27 @@ where
                 break;
             }
 
+            self.account_transfer_file()?;
+
             let file_name = read_prefixed_string(self.device_link.stream_mut()).await?;
             let output_path = resolve_relative_path(layout, &file_name)?;
             create_layout_parent_directory(layout, &output_path)?;
-            let mut file =
-                tokio::fs::File::from_std(open_layout_file_for_write(layout, &output_path)?);
+            let preserve = self.backup_filter.as_ref().map_or(true, |filter| {
+                should_preserve_backup_file(&file_name, &device_name, filter)
+            });
+            let mut file = if preserve {
+                Some(tokio::fs::File::from_std(open_layout_file_for_write(
+                    layout,
+                    &output_path,
+                )?))
+            } else {
+                // BackupAgent2 may refer to a rejected file in a subsequent Move/Copy command.
+                // A zero-byte placeholder keeps that protocol exchange valid; it is removed
+                // only after the DeviceLink loop completes.
+                let _ = open_layout_file_for_write(layout, &output_path)?;
+                self.discarded_files.push(output_path.clone());
+                None
+            };
 
             loop {
                 let frame_size = read_u32_be(self.device_link.stream_mut()).await?;
@@ -664,14 +1303,16 @@ where
 
                 match code[0] {
                     FILE_TRANSFER_CODE_FILE_DATA => {
+                        self.account_transfer_bytes(payload_len)?;
                         // A device can advertise a very large frame size. Stream its payload in
                         // bounded pieces instead of allocating the complete frame up front.
-                        copy_transfer_payload(
-                            self.device_link.stream_mut(),
-                            &mut file,
-                            payload_len,
-                        )
-                        .await?;
+                        if let Some(file) = file.as_mut() {
+                            copy_transfer_payload(self.device_link.stream_mut(), file, payload_len)
+                                .await?;
+                        } else {
+                            discard_transfer_payload(self.device_link.stream_mut(), payload_len)
+                                .await?;
+                        }
                     }
                     FILE_TRANSFER_CODE_SUCCESS => {
                         discard_transfer_payload(self.device_link.stream_mut(), payload_len)
@@ -699,10 +1340,44 @@ where
                     }
                 }
             }
-            file.flush().await?;
+            if let Some(file) = file.as_mut() {
+                file.flush().await?;
+            }
         }
 
         Ok(())
+    }
+
+    fn relocate_discarded_files(&mut self, source: &Path, destination: &Path, is_directory: bool) {
+        let mut relocated = Vec::with_capacity(self.discarded_files.len());
+        for path in self.discarded_files.drain(..) {
+            let should_relocate = path == source || (is_directory && path.starts_with(source));
+            if should_relocate {
+                let suffix = path.strip_prefix(source).unwrap_or(Path::new(""));
+                relocated.push(destination.join(suffix));
+            } else {
+                relocated.push(path);
+            }
+        }
+        self.discarded_files = relocated;
+    }
+
+    fn copy_discarded_files(&mut self, source: &Path, destination: &Path, is_directory: bool) {
+        let copied = self
+            .discarded_files
+            .iter()
+            .filter(|path| *path == source || (is_directory && path.starts_with(source)))
+            .map(|path| {
+                let suffix = path.strip_prefix(source).unwrap_or(Path::new(""));
+                destination.join(suffix)
+            })
+            .collect::<Vec<_>>();
+        self.discarded_files.extend(copied);
+    }
+
+    fn forget_discarded_files(&mut self, target: &Path) {
+        self.discarded_files
+            .retain(|path| path != target && !path.starts_with(target));
     }
 
     async fn send_status_response(
@@ -756,6 +1431,7 @@ where
                 ))
             })?;
             let local_path = resolve_relative_path(layout, rel)?;
+            self.account_transfer_file()?;
             write_prefixed_string(self.device_link.stream_mut(), rel).await?;
 
             match open_layout_file_for_read(layout, &local_path) {
@@ -779,6 +1455,7 @@ where
                                 break;
                             }
                         };
+                        self.account_transfer_bytes(n)?;
                         write_transfer_frame(
                             self.device_link.stream_mut(),
                             FILE_TRANSFER_CODE_FILE_DATA,
@@ -829,6 +1506,66 @@ where
     }
 }
 
+fn should_preserve_backup_file(file_name: &str, device_name: &str, filter: &BackupFilter) -> bool {
+    let metadata_name = file_name.rsplit('/').next().unwrap_or(file_name);
+    matches!(
+        metadata_name,
+        "Info.plist"
+            | "Manifest.plist"
+            | "Manifest.db"
+            | "Manifest.db-shm"
+            | "Manifest.db-wal"
+            | "Status.plist"
+    ) || filter.matches_device_name(device_name)
+}
+
+fn cleanup_discarded_files(
+    layout: &BackupDirectoryLayout,
+    paths: &[PathBuf],
+) -> Result<(), Mobilebackup2Error> {
+    for path in paths {
+        let relative = layout_relative_path(layout, path)?;
+        ensure_no_symlink_components_at_root(&layout.root, &relative)?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(symlink_path_error(path));
+        }
+        if metadata.is_dir() {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "filtered backup placeholder unexpectedly became a directory: {}",
+                path.display()
+            )));
+        }
+        fs::remove_file(path)?;
+
+        // Remove only empty placeholder directories, stopping at the device directory. Existing
+        // user/backup data is never recursively removed by this cleanup pass.
+        let mut parent = path.parent().map(Path::to_path_buf);
+        while let Some(directory) = parent {
+            if directory == layout.device_directory
+                || !directory.starts_with(&layout.device_directory)
+            {
+                break;
+            }
+            ensure_no_symlink_components_at_root(
+                &layout.root,
+                &layout_relative_path(layout, &directory)?,
+            )?;
+            let mut entries = fs::read_dir(&directory)?;
+            if entries.next().is_some() {
+                break;
+            }
+            fs::remove_dir(&directory)?;
+            parent = directory.parent().map(Path::to_path_buf);
+        }
+    }
+    Ok(())
+}
+
 pub fn initialize_backup_directory(
     backup_root: &Path,
     target_identifier: &str,
@@ -851,42 +1588,57 @@ pub fn initialize_backup_directory(
         &plist::Value::Dictionary(info_plist.clone()),
     )?;
 
-    let status = plist::Dictionary::from_iter([
-        (
-            "BackupState".to_string(),
-            plist::Value::String("new".into()),
-        ),
-        (
-            "Date".to_string(),
-            plist::Value::Date(plist::Date::from(SystemTime::now())),
-        ),
-        ("IsFullBackup".to_string(), plist::Value::Boolean(full)),
-        ("Version".to_string(), plist::Value::String("3.3".into())),
-        (
-            "SnapshotState".to_string(),
-            plist::Value::String("finished".into()),
-        ),
-        (
-            "UUID".to_string(),
-            plist::Value::String(generate_backup_uuid()),
-        ),
-    ]);
-    let mut status_file = open_file_for_write(&device_directory.join("Status.plist"))?;
-    plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))?;
+    let status_path = device_directory.join("Status.plist");
+    let status_missing = matches!(
+        fs::symlink_metadata(&status_path),
+        Err(error) if error.kind() == ErrorKind::NotFound
+    );
+    // Apple keeps the previous Status.plist for an incremental backup. Replacing it here would
+    // discard the device's incremental state (and differs from pymobiledevice3's
+    // `if full or not status_path.exists()` behavior).
+    if full || status_missing {
+        let status = plist::Dictionary::from_iter([
+            (
+                "BackupState".to_string(),
+                plist::Value::String("new".into()),
+            ),
+            (
+                "Date".to_string(),
+                plist::Value::Date(plist::Date::from(SystemTime::now())),
+            ),
+            ("IsFullBackup".to_string(), plist::Value::Boolean(full)),
+            ("Version".to_string(), plist::Value::String("3.3".into())),
+            (
+                "SnapshotState".to_string(),
+                plist::Value::String("finished".into()),
+            ),
+            (
+                "UUID".to_string(),
+                plist::Value::String(generate_backup_uuid()),
+            ),
+        ]);
+        let mut status_file = open_file_for_write(&status_path)?;
+        plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))?;
+    }
 
     let manifest_path = device_directory.join("Manifest.plist");
-    match fs::symlink_metadata(&manifest_path) {
+    let create_manifest = match fs::symlink_metadata(&manifest_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(symlink_path_error(&manifest_path));
         }
         Ok(_) if full => {
             fs::remove_file(&manifest_path)?;
+            true
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(_) => false,
+        Err(error) if error.kind() == ErrorKind::NotFound => true,
         Err(error) => return Err(error.into()),
+    };
+    // `touch` the manifest only when it is new or a full backup removed it. In incremental mode
+    // its existing plist is part of the backup state and must not be truncated.
+    if create_manifest {
+        let _ = open_file_for_write(&manifest_path)?;
     }
-    let _ = open_file_for_write(&manifest_path)?;
 
     Ok(BackupDirectoryLayout {
         root,
@@ -1017,7 +1769,7 @@ pub fn load_backup_applications(
 ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
     ensure_backup_directory(backup_root, target_identifier)?;
     let info_path = metadata_file_path(backup_root, target_identifier, "Info.plist")?;
-    let info = plist::Value::from_reader(open_file_for_read(&info_path)?)?;
+    let info = plist::Value::from_reader(open_backup_metadata_for_read(&info_path)?)?;
     Ok(info
         .as_dictionary()
         .and_then(|dict| dict.get("Applications"))
@@ -1037,7 +1789,7 @@ pub fn backup_is_encrypted(
 }
 
 fn read_backup_dictionary(path: &Path) -> Result<plist::Dictionary, Mobilebackup2Error> {
-    plist::Value::from_reader(open_file_for_read(path)?)?
+    plist::Value::from_reader(open_backup_metadata_for_read(path)?)?
         .into_dictionary()
         .ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!(
@@ -1045,6 +1797,19 @@ fn read_backup_dictionary(path: &Path) -> Result<plist::Dictionary, Mobilebackup
                 path.display()
             ))
         })
+}
+
+fn open_backup_metadata_for_read(path: &Path) -> Result<File, Mobilebackup2Error> {
+    let file = open_file_for_read(path)?;
+    let length = file.metadata()?.len();
+    if length > MAX_BACKUP_METADATA_BYTES {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup metadata file is too large ({} bytes; max {MAX_BACKUP_METADATA_BYTES}): {}",
+            length,
+            path.display()
+        )));
+    }
+    Ok(file)
 }
 
 #[derive(Serialize)]
@@ -1110,6 +1875,30 @@ struct ListRequest<'a> {
     source_identifier: &'a str,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct UnbackRequest<'a> {
+    message_name: &'static str,
+    target_identifier: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_identifier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct ExtractRequest<'a> {
+    message_name: &'static str,
+    target_identifier: &'a str,
+    domain_name: &'a str,
+    relative_path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_identifier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<&'a str>,
+}
+
 // A fresh random UUID is generated for each backup session.
 // Backup UUIDs are not required to be deterministic across sessions.
 fn generate_backup_uuid() -> String {
@@ -1151,6 +1940,10 @@ pub fn validate_backup_identifier(identifier: &str) -> Result<(), Mobilebackup2E
             "backup identifier must be one normal path component: {identifier:?}"
         ))),
     }
+}
+
+fn non_empty_protocol_string(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
 }
 
 fn has_windows_drive_prefix(value: &str) -> bool {
@@ -1400,6 +2193,9 @@ fn open_file_for_write(path: &Path) -> Result<File, Mobilebackup2Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        // Backup metadata and incoming payloads can contain personal data. Keep newly created
+        // files private; extraction widens permissions only after an atomic replacement.
+        options.mode(0o600);
         options.custom_flags(libc::O_NOFOLLOW);
     }
     options.open(path).map_err(Mobilebackup2Error::Io)
@@ -1693,7 +2489,6 @@ fn device_link_local_wall_clock(modified: SystemTime) -> SystemTime {
 /// paths are never anywhere near this limit; the guard protects against
 /// corrupted or malicious size fields causing unbounded allocation.
 const MAX_PREFIXED_STRING_SIZE: usize = 64 * 1024;
-
 async fn read_prefixed_string<S>(stream: &mut S) -> Result<String, Mobilebackup2Error>
 where
     S: AsyncRead + Unpin,
@@ -1890,6 +2685,44 @@ fn plist_number_to_f64(value: &plist::Value) -> Option<f64> {
     }
 }
 
+fn redacted_protocol_dictionary(dict: &plist::Dictionary) -> plist::Dictionary {
+    dict.iter()
+        .map(|(key, value)| {
+            let value = if is_sensitive_protocol_key(key) {
+                plist::Value::String("<redacted>".into())
+            } else {
+                redacted_protocol_value(value)
+            };
+            (key.clone(), value)
+        })
+        .collect()
+}
+
+fn redacted_protocol_value(value: &plist::Value) -> plist::Value {
+    match value {
+        plist::Value::Array(values) => {
+            plist::Value::Array(values.iter().map(redacted_protocol_value).collect())
+        }
+        plist::Value::Dictionary(dict) => {
+            plist::Value::Dictionary(redacted_protocol_dictionary(dict))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn is_sensitive_protocol_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "password"
+            | "oldpassword"
+            | "newpassword"
+            | "passcode"
+            | "unlocktoken"
+            | "p12"
+            | "privatekey"
+    )
+}
+
 fn derive_required_free_space(reported: Option<u64>, requested: Option<u64>) -> Option<u64> {
     let reported = reported?;
     let requested = requested?;
@@ -2001,6 +2834,377 @@ mod tests {
             .await
             .expect("frame payload");
         plist::from_bytes(&payload).expect("plist frame")
+    }
+
+    fn test_backup_root(label: &str, identifier: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-device-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let directory = root.join(identifier);
+        std::fs::create_dir_all(&directory).expect("backup fixture directory");
+        for name in ["Info.plist", "Manifest.plist", "Status.plist"] {
+            std::fs::write(directory.join(name), b"fixture").expect("backup fixture metadata");
+        }
+        root
+    }
+
+    async fn complete_device_link_handshake(stream: &mut tokio::io::DuplexStream) {
+        stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageVersionExchange".into()),
+                plist::Value::Integer(300u64.into()),
+            ])))
+            .await
+            .expect("write version exchange");
+        assert_eq!(
+            read_test_frame(stream).await,
+            plist::Value::Array(vec![
+                plist::Value::String("DLMessageVersionExchange".into()),
+                plist::Value::String("DLVersionsOk".into()),
+                plist::Value::Integer(300u64.into()),
+            ])
+        );
+        stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageDeviceReady".into()),
+            ])))
+            .await
+            .expect("write device ready");
+        let hello = read_test_frame(stream).await;
+        let hello = hello.as_array().expect("hello frame");
+        assert_eq!(hello[0].as_string(), Some("DLMessageProcessMessage"));
+        let hello = hello[1].as_dictionary().expect("hello dictionary");
+        assert_eq!(
+            hello.get("MessageName").and_then(plist::Value::as_string),
+            Some("Hello")
+        );
+        stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("ErrorCode".to_string(), plist::Value::Integer(0u64.into())),
+                    ("ProtocolVersion".to_string(), plist::Value::Real(2.1)),
+                ])),
+            ])))
+            .await
+            .expect("write hello response");
+    }
+
+    async fn complete_process_message(
+        stream: &mut tokio::io::DuplexStream,
+        error_code: u64,
+        content: Option<plist::Value>,
+    ) {
+        let mut response = plist::Dictionary::from_iter([(
+            "ErrorCode".to_string(),
+            plist::Value::Integer(error_code.into()),
+        )]);
+        if let Some(content) = content {
+            response.insert("Content".into(), content);
+        }
+        stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(response),
+            ])))
+            .await
+            .expect("write process response");
+    }
+
+    #[tokio::test]
+    async fn device_unback_sends_exact_request_and_returns_content() {
+        let root = test_backup_root("unback", "source-id");
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let client_root = root.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client
+                .unback(
+                    &client_root,
+                    "target-device",
+                    Some("source-id"),
+                    Some("秘密🔐"),
+                )
+                .await
+        });
+
+        complete_device_link_handshake(&mut server_stream).await;
+        let request = read_test_frame(&mut server_stream).await;
+        let request = request.as_array().expect("Unback process frame");
+        assert_eq!(request[0].as_string(), Some("DLMessageProcessMessage"));
+        assert_eq!(
+            request[1]
+                .as_dictionary()
+                .expect("Unback request dictionary"),
+            &plist::Dictionary::from_iter([
+                (
+                    "MessageName".to_string(),
+                    plist::Value::String("Unback".into()),
+                ),
+                (
+                    "TargetIdentifier".to_string(),
+                    plist::Value::String("target-device".into()),
+                ),
+                (
+                    "SourceIdentifier".to_string(),
+                    plist::Value::String("source-id".into()),
+                ),
+                (
+                    "Password".to_string(),
+                    plist::Value::String("秘密🔐".into()),
+                ),
+            ])
+        );
+
+        complete_process_message(
+            &mut server_stream,
+            0,
+            Some(plist::Value::String("expanded".into())),
+        )
+        .await;
+        assert_eq!(
+            task.await
+                .expect("Unback client task")
+                .expect("Unback result"),
+            Some(plist::Value::String("expanded".into()))
+        );
+        assert_eq!(
+            read_test_frame(&mut server_stream).await,
+            plist::Value::Array(vec![
+                plist::Value::String("DLMessageDisconnect".into()),
+                plist::Value::String("___EmptyParameterString___".into()),
+            ])
+        );
+        std::fs::remove_dir_all(root).expect("remove backup fixture");
+    }
+
+    #[tokio::test]
+    async fn device_extract_preserves_unicode_and_omits_empty_optional_fields() {
+        let root = test_backup_root("extract", "target-device");
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let client_root = root.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client
+                .extract(
+                    &client_root,
+                    "target-device",
+                    "AppDomain-com.example.测试",
+                    "Library/数据/файл.txt",
+                    Some(""),
+                    Some(""),
+                )
+                .await
+        });
+
+        complete_device_link_handshake(&mut server_stream).await;
+        let request = read_test_frame(&mut server_stream).await;
+        let request = request.as_array().expect("Extract process frame");
+        let request = request[1].as_dictionary().expect("Extract dictionary");
+        assert_eq!(
+            request.get("MessageName").and_then(plist::Value::as_string),
+            Some("Extract")
+        );
+        assert_eq!(
+            request
+                .get("TargetIdentifier")
+                .and_then(plist::Value::as_string),
+            Some("target-device")
+        );
+        assert_eq!(
+            request.get("DomainName").and_then(plist::Value::as_string),
+            Some("AppDomain-com.example.测试")
+        );
+        assert_eq!(
+            request
+                .get("RelativePath")
+                .and_then(plist::Value::as_string),
+            Some("Library/数据/файл.txt")
+        );
+        assert!(!request.contains_key("SourceIdentifier"));
+        assert!(!request.contains_key("Password"));
+
+        complete_process_message(&mut server_stream, 0, None).await;
+        assert_eq!(
+            task.await
+                .expect("Extract client task")
+                .expect("Extract result"),
+            None
+        );
+        let _ = read_test_frame(&mut server_stream).await;
+        std::fs::remove_dir_all(root).expect("remove backup fixture");
+    }
+
+    #[tokio::test]
+    async fn device_unback_error_is_redacted_and_disconnects() {
+        let root = test_backup_root("error", "target-device");
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let client_root = root.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client
+                .unback(
+                    &client_root,
+                    "target-device",
+                    None,
+                    Some("do-not-leak-this-password"),
+                )
+                .await
+        });
+
+        complete_device_link_handshake(&mut server_stream).await;
+        let _ = read_test_frame(&mut server_stream).await;
+        let response = plist::Value::Array(vec![
+            plist::Value::String("DLMessageProcessMessage".into()),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("ErrorCode".to_string(), plist::Value::Integer(77u64.into())),
+                (
+                    "Password".to_string(),
+                    plist::Value::String("do-not-leak-this-password".into()),
+                ),
+            ])),
+        ]);
+        server_stream
+            .write_all(&encode_test_frame(&response))
+            .await
+            .expect("write Unback error");
+        let error = task
+            .await
+            .expect("Unback client task")
+            .expect_err("device error should fail Unback");
+        assert!(!error.to_string().contains("do-not-leak-this-password"));
+        let _ = read_test_frame(&mut server_stream).await;
+        std::fs::remove_dir_all(root).expect("remove backup fixture");
+    }
+
+    #[tokio::test]
+    async fn device_process_response_requires_error_code() {
+        let root = test_backup_root("missing-error-code", "target-device");
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let client_root = root.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client
+                .unback(&client_root, "target-device", None, None)
+                .await
+        });
+
+        complete_device_link_handshake(&mut server_stream).await;
+        let _ = read_test_frame(&mut server_stream).await;
+        let response = plist::Value::Array(vec![
+            plist::Value::String("DLMessageProcessMessage".into()),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "Content".to_string(),
+                    plist::Value::String("unexpected-success".into()),
+                ),
+                (
+                    "Password".to_string(),
+                    plist::Value::String("secret-not-for-errors".into()),
+                ),
+            ])),
+        ]);
+        server_stream
+            .write_all(&encode_test_frame(&response))
+            .await
+            .expect("write malformed process response");
+        let error = task
+            .await
+            .expect("Unback client task")
+            .expect_err("missing ErrorCode must fail the operation");
+        assert!(error.to_string().contains("missing numeric ErrorCode"));
+        assert!(!error.to_string().contains("secret-not-for-errors"));
+        let _ = read_test_frame(&mut server_stream).await;
+        std::fs::remove_dir_all(root).expect("remove backup fixture");
+    }
+
+    #[tokio::test]
+    async fn device_extract_rejects_path_escape_before_connecting() {
+        let (client_stream, _server_stream) = duplex(1024);
+        let mut client = Mobilebackup2Client::new(client_stream);
+        let error = client
+            .extract(
+                Path::new("does-not-exist"),
+                "target-device",
+                "HomeDomain",
+                "../outside",
+                None,
+                None,
+            )
+            .await
+            .expect_err("path traversal must be rejected");
+        assert!(error.to_string().contains("escapes"));
+    }
+
+    #[tokio::test]
+    async fn device_link_upload_frame_is_written_with_bounded_payload_handling() {
+        let root = test_backup_root("upload", "source-id");
+        let layout = BackupDirectoryLayout {
+            root: root.clone(),
+            device_directory: root.join("source-id"),
+            target_identifier: "source-id".into(),
+        };
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let client_layout = layout.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client.run_loop(&client_layout).await
+        });
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageUploadFiles".into()),
+            ])))
+            .await
+            .expect("write upload command");
+        write_prefixed_string(&mut server_stream, "HomeDomain/数据.txt")
+            .await
+            .expect("write device path");
+        write_prefixed_string(&mut server_stream, "HomeDomain/数据.txt")
+            .await
+            .expect("write local path");
+        write_transfer_frame(
+            &mut server_stream,
+            FILE_TRANSFER_CODE_FILE_DATA,
+            "内容".as_bytes(),
+        )
+        .await
+        .expect("write upload data");
+        write_transfer_frame(&mut server_stream, FILE_TRANSFER_CODE_SUCCESS, &[])
+            .await
+            .expect("write upload completion");
+        write_prefixed_string(&mut server_stream, "")
+            .await
+            .expect("write upload terminator");
+
+        assert_eq!(
+            read_test_frame(&mut server_stream).await,
+            plist::Value::Array(vec![
+                plist::Value::String("DLMessageStatusResponse".into()),
+                plist::Value::Integer(0i64.into()),
+                plist::Value::String(EMPTY_PARAMETER_STRING.into()),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+            ])
+        );
+        complete_process_message(&mut server_stream, 0, None).await;
+        assert_eq!(task.await.expect("upload client task").unwrap(), None);
+        assert_eq!(
+            std::fs::read(root.join("source-id/HomeDomain/数据.txt")).unwrap(),
+            "内容".as_bytes()
+        );
+        std::fs::remove_dir_all(root).expect("remove backup fixture");
+    }
+
+    #[test]
+    fn transfer_budgets_reject_excess_files_and_bytes() {
+        let (stream, _) = duplex(16);
+        let mut client = Mobilebackup2Client::new(stream);
+        client.transfer_files = MAX_DEVICE_TRANSFER_FILES;
+        assert!(client.account_transfer_file().is_err());
+        client.transfer_bytes = MAX_DEVICE_TRANSFER_BYTES;
+        assert!(client.account_transfer_bytes(1).is_err());
     }
 
     #[tokio::test]
@@ -2205,14 +3409,35 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
         std::fs::create_dir_all(&device_dir).unwrap();
-        for filename in INCREMENTAL_BACKUP_REQUIRED_FILES {
-            std::fs::write(device_dir.join(filename), b"data").unwrap();
-        }
+        plist::to_file_xml(
+            device_dir.join("Manifest.plist"),
+            &plist::Value::Dictionary(plist::Dictionary::new()),
+        )
+        .unwrap();
+        plist::to_file_xml(
+            device_dir.join("Status.plist"),
+            &plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "IsFullBackup".to_string(),
+                plist::Value::Boolean(false),
+            )])),
+        )
+        .unwrap();
+        std::fs::write(device_dir.join("Manifest.db"), b"data").unwrap();
+        let old_status = std::fs::read(device_dir.join("Status.plist")).unwrap();
+        let old_manifest = std::fs::read(device_dir.join("Manifest.plist")).unwrap();
 
         let layout =
             initialize_backup_directory(&root, "device-id", &plist::Dictionary::new(), false)
                 .unwrap();
         assert!(!backup_status_is_full(&layout.device_directory).unwrap());
+        assert_eq!(
+            std::fs::read(layout.device_directory.join("Status.plist")).unwrap(),
+            old_status
+        );
+        assert_eq!(
+            std::fs::read(layout.device_directory.join("Manifest.plist")).unwrap(),
+            old_manifest
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2449,6 +3674,24 @@ mod tests {
     }
 
     #[test]
+    fn backup_option_debug_redacts_passwords() {
+        let backup = BackupOptions {
+            password: Some("backup-secret".into()),
+            ..BackupOptions::default()
+        };
+        let restore = RestoreOptions {
+            password: Some("restore-secret"),
+            ..RestoreOptions::default()
+        };
+        let backup_debug = format!("{backup:?}");
+        let restore_debug = format!("{restore:?}");
+        assert!(!backup_debug.contains("backup-secret"));
+        assert!(!restore_debug.contains("restore-secret"));
+        assert!(backup_debug.contains("<redacted>"));
+        assert!(restore_debug.contains("<redacted>"));
+    }
+
+    #[test]
     fn backup_is_encrypted_reads_manifest_flag() {
         let root = std::env::temp_dir().join(format!(
             "ios-core-backup2-encryption-{}",
@@ -2472,6 +3715,25 @@ mod tests {
 
         assert!(backup_is_encrypted(&root, "device-id").unwrap());
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_plist_size_is_checked_before_decoding() {
+        let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-metadata-limit-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("Manifest.plist");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_BACKUP_METADATA_BYTES + 1).unwrap();
+        let error = read_backup_dictionary(&path).expect_err("sparse metadata must be rejected");
+        assert!(error.to_string().contains("too large"));
+        assert!(error.to_string().contains("16777217"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2537,5 +3799,61 @@ mod tests {
         let mut cursor = std::io::Cursor::new(data);
         let result = read_prefixed_string(&mut cursor).await.unwrap();
         assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn backup_filter_matches_upstream_presets_and_manifest_candidates() {
+        let filter = build_backup_filter(&["sms".into()], &[])
+            .expect("selection should parse")
+            .expect("selection should create a filter");
+        assert!(filter.matches_device_name("HomeDomain/Library/SMS/sms.db"));
+        assert!(filter.matches_manifest_entry("HomeDomain", "Library/SMS/sms.db"));
+        assert!(!filter.matches_manifest_entry("HomeDomain", "Library/Notes/notes.db"));
+
+        let recursive = build_backup_filter(&["messages".into()], &[])
+            .expect("selection should parse")
+            .expect("selection should create a filter");
+        assert!(recursive.matches_device_name("MediaDomain/Library/SMS/Attachments/a.bin"));
+    }
+
+    #[test]
+    fn backup_filter_regex_is_or_combined_and_bounded() {
+        let filter = build_backup_filter(&["sms".into()], &["Notes/.*\\.db".into()])
+            .expect("regex should parse")
+            .expect("filter should exist");
+        assert!(filter.matches_manifest_entry("HomeDomain", "Library/SMS/sms.db"));
+        assert!(filter.matches_manifest_entry("HomeDomain", "Library/Notes/notes.db"));
+        assert!(!filter.matches_manifest_entry("HomeDomain", "Library/Notes/notes.plist"));
+
+        let too_long = "x".repeat(MAX_FILTER_PATTERN_BYTES + 1);
+        assert!(build_backup_filter(&[], &[too_long]).is_err());
+        assert!(build_backup_filter(&[], &["[".into()]).is_err());
+    }
+
+    #[test]
+    fn backup_filter_keeps_metadata_and_discards_unmatched_device_paths() {
+        let filter = build_backup_filter(&["sms".into()], &[])
+            .expect("selection")
+            .expect("filter");
+        assert!(should_preserve_backup_file(
+            "aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "HomeDomain/Library/SMS/sms.db",
+            &filter
+        ));
+        assert!(!should_preserve_backup_file(
+            "bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "HomeDomain/Library/Notes/notes.db",
+            &filter
+        ));
+        for metadata in [
+            "Info.plist",
+            "Manifest.plist",
+            "Manifest.db",
+            "Manifest.db-shm",
+            "Manifest.db-wal",
+            "Status.plist",
+        ] {
+            assert!(should_preserve_backup_file(metadata, "", &filter));
+        }
     }
 }

@@ -121,6 +121,8 @@ CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列�
 | 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
 | 设备剪贴板              | `pasteboard get`、`pasteboard set TEXT`、`pasteboard set --url URL`                          | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy`                     |
+| CoreDevice 配置         | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
+| CoreDevice 旋转         | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
 | 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`；pmd3 `profile`/`provision`/`restore` |
 | 备份、定位与屏幕        | `backup`, `location`, `screenshot`, `notify`                                                | go-ios / pmd3 `backup`/`location`/`screenshot`                              |
 
@@ -180,8 +182,8 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, pasteboard, testmanager, mdns, tunnel-userspace |
-| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+| `ios17`      | apps, configuration, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, pasteboard, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 CLI 使用 `full`；库消费者通常应选择更窄的子集。
 

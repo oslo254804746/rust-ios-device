@@ -8,6 +8,7 @@ use ios_core::springboard::SpringboardClient;
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::time::{sleep, Duration};
+use zeroize::Zeroizing;
 
 const BACKUP_DOMAIN: &str = "com.apple.mobile.backup";
 const WILL_ENCRYPT_KEY: &str = "WillEncrypt";
@@ -43,6 +44,15 @@ pub struct BackupCmd {
     sub: BackupSubcommand,
 }
 
+impl BackupCmd {
+    pub fn needs_default_udid(&self) -> bool {
+        !matches!(
+            &self.sub,
+            BackupSubcommand::Unback { .. } | BackupSubcommand::Extract { .. }
+        )
+    }
+}
+
 #[derive(Debug, clap::Subcommand)]
 enum BackupSubcommand {
     /// Query the mobilebackup2 protocol version handshake
@@ -57,6 +67,21 @@ enum BackupSubcommand {
             help = "Force a full backup. Without this flag, valid existing metadata is used for incremental backup; empty or incomplete backup directories automatically use full mode."
         )]
         full: bool,
+        /// Keep only one or more built-in domain/path selections (repeatable)
+        #[arg(long = "only", action = clap::ArgAction::Append, value_name = "PRESET")]
+        only: Vec<String>,
+        /// Keep files whose device/manifest path matches a regular expression (repeatable)
+        #[arg(long = "only-regex", action = clap::ArgAction::Append, value_name = "REGEX")]
+        only_regex: Vec<String>,
+        /// Prune Manifest.db and stored payloads after applying a host-side selection
+        #[arg(long)]
+        patch_manifest: bool,
+        /// Password used by device-side backup and local post-processing
+        #[arg(long)]
+        password: Option<String>,
+        /// Expand the completed backup into a local domain/path tree
+        #[arg(long)]
+        unback: bool,
     },
     /// Query metadata for an existing MobileBackup2 backup
     Info {
@@ -101,26 +126,190 @@ enum BackupSubcommand {
         #[arg(long, default_value = ".")]
         backup_directory: String,
     },
+    /// Expand a completed backup locally using Manifest.db (does not contact a device)
+    #[command(visible_alias = "unback-local")]
+    Unback {
+        backup_directory: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Extract one Manifest.db domain/path entry locally (does not contact a device)
+    #[command(visible_alias = "extract-local")]
+    Extract {
+        backup_directory: String,
+        domain: String,
+        relative_path: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Ask the connected device to expand a backup with MobileBackup2 Unback
+    UnbackDevice {
+        backup_directory: String,
+        #[arg(
+            long,
+            help = "Backup source identifier; defaults to the connected device UDID"
+        )]
+        source: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Ask the connected device to extract one domain/path with MobileBackup2 Extract
+    ExtractDevice {
+        backup_directory: String,
+        domain: String,
+        relative_path: String,
+        #[arg(
+            long,
+            help = "Backup source identifier; defaults to the connected device UDID"
+        )]
+        source: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Query or change the device-side MobileBackup2 encryption setting
+    Encryption {
+        #[arg(value_enum)]
+        mode: Option<EncryptionMode>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(long, default_value = ".")]
+        backup_directory: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum EncryptionMode {
+    On,
+    Off,
 }
 
 impl BackupCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
-        let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for backup"))?;
-
         match self.sub {
-            BackupSubcommand::Version => run_version(&udid, json).await,
-            BackupSubcommand::EncryptionStatus => run_encryption_status(&udid, json).await,
-            BackupSubcommand::Create { output_dir, full } => {
-                run_create(&udid, &output_dir, full, json).await
+            BackupSubcommand::Unback {
+                backup_directory,
+                source,
+                output,
+                password,
+            } => {
+                let password = password.map(Zeroizing::new);
+                run_unback(
+                    &backup_directory,
+                    source.as_deref().or(udid.as_deref()),
+                    output.as_deref(),
+                    password.as_deref().map(String::as_str),
+                    json,
+                )
+            }
+            BackupSubcommand::Extract {
+                backup_directory,
+                domain,
+                relative_path,
+                source,
+                output,
+                password,
+            } => {
+                let password = password.map(Zeroizing::new);
+                run_extract(
+                    &backup_directory,
+                    source.as_deref().or(udid.as_deref()),
+                    &domain,
+                    &relative_path,
+                    output.as_deref(),
+                    password.as_deref().map(String::as_str),
+                    json,
+                )
+            }
+            BackupSubcommand::UnbackDevice {
+                backup_directory,
+                source,
+                password,
+            } => {
+                let udid = required_udid(udid)?;
+                let password = password.map(Zeroizing::new);
+                run_unback_device(
+                    &udid,
+                    &backup_directory,
+                    source.as_deref(),
+                    password.as_deref().map(String::as_str),
+                    json,
+                )
+                .await
+            }
+            BackupSubcommand::ExtractDevice {
+                backup_directory,
+                domain,
+                relative_path,
+                source,
+                password,
+            } => {
+                let udid = required_udid(udid)?;
+                let password = password.map(Zeroizing::new);
+                run_extract_device(
+                    &udid,
+                    &backup_directory,
+                    &domain,
+                    &relative_path,
+                    source.as_deref(),
+                    password.as_deref().map(String::as_str),
+                    json,
+                )
+                .await
+            }
+            BackupSubcommand::Version => {
+                let udid = required_udid(udid)?;
+                run_version(&udid, json).await
+            }
+            BackupSubcommand::EncryptionStatus => {
+                let udid = required_udid(udid)?;
+                run_encryption_status(&udid, json).await
+            }
+            BackupSubcommand::Create {
+                output_dir,
+                full,
+                only,
+                only_regex,
+                patch_manifest,
+                password,
+                unback,
+            } => {
+                let udid = required_udid(udid)?;
+                let password = password.map(Zeroizing::new);
+                run_create(
+                    &udid,
+                    &output_dir,
+                    full,
+                    &only,
+                    &only_regex,
+                    patch_manifest,
+                    password.as_deref().map(String::as_str),
+                    unback,
+                    json,
+                )
+                .await
             }
             BackupSubcommand::Info {
                 backup_directory,
                 source,
-            } => run_info(&udid, &backup_directory, source.as_deref(), json).await,
+            } => {
+                let udid = required_udid(udid)?;
+                run_info(&udid, &backup_directory, source.as_deref(), json).await
+            }
             BackupSubcommand::List {
                 backup_directory,
                 source,
-            } => run_list(&udid, &backup_directory, source.as_deref(), json).await,
+            } => {
+                let udid = required_udid(udid)?;
+                run_list(&udid, &backup_directory, source.as_deref(), json).await
+            }
             BackupSubcommand::Restore {
                 backup_directory,
                 source,
@@ -133,6 +322,8 @@ impl BackupCmd {
                 skip_apps,
                 force,
             } => {
+                let udid = required_udid(udid)?;
+                let password = password.map(Zeroizing::new);
                 crate::output::require_force(
                     force,
                     "restore this backup",
@@ -142,7 +333,7 @@ impl BackupCmd {
                     &udid,
                     &backup_directory,
                     source.as_deref(),
-                    password.as_deref(),
+                    password.as_deref().map(String::as_str),
                     system,
                     reboot,
                     copy,
@@ -158,17 +349,40 @@ impl BackupCmd {
                 new_password,
                 backup_directory,
             } => {
+                let udid = required_udid(udid)?;
+                let old_password = old_password.map(Zeroizing::new);
+                let new_password = new_password.map(Zeroizing::new);
                 run_change_password(
                     &udid,
-                    old_password.as_deref(),
-                    new_password.as_deref(),
+                    old_password.as_deref().map(String::as_str),
+                    new_password.as_deref().map(String::as_str),
                     &backup_directory,
+                    json,
+                )
+                .await
+            }
+            BackupSubcommand::Encryption {
+                mode,
+                password,
+                backup_directory,
+            } => {
+                let udid = required_udid(udid)?;
+                let password = password.map(Zeroizing::new);
+                run_encryption(
+                    &udid,
+                    &backup_directory,
+                    mode,
+                    password.as_deref().map(String::as_str),
                     json,
                 )
                 .await
             }
         }
     }
+}
+
+fn required_udid(udid: Option<String>) -> Result<String> {
+    udid.ok_or_else(|| anyhow::anyhow!("--udid required for this backup operation"))
 }
 
 async fn run_version(udid: &str, json: bool) -> Result<()> {
@@ -245,7 +459,117 @@ async fn run_encryption_status(udid: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Result<()> {
+async fn run_encryption(
+    udid: &str,
+    backup_directory: &str,
+    mode: Option<EncryptionMode>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: true,
+        },
+    )
+    .await?;
+    let current = resolve_will_encrypt(
+        device
+            .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+            .await,
+    )?;
+    let Some(mode) = mode else {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    WILL_ENCRYPT_KEY: current,
+                }))?
+            );
+        } else {
+            println!("{current}");
+        }
+        return Ok(());
+    };
+
+    let password =
+        password.ok_or_else(|| anyhow::anyhow!("backup encryption on/off requires --password"))?;
+    match mode {
+        EncryptionMode::On if current => {
+            return Err(anyhow::anyhow!(
+                "device backup encryption is already enabled"
+            ));
+        }
+        EncryptionMode::Off if !current => {
+            return Err(anyhow::anyhow!(
+                "device backup encryption is already disabled"
+            ));
+        }
+        _ => {}
+    }
+
+    let stream = device
+        .connect_service(ios_core::backup2::SERVICE_NAME)
+        .await?;
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
+    match mode {
+        EncryptionMode::On => {
+            client
+                .change_password(Path::new(backup_directory), udid, None, Some(password))
+                .await?;
+        }
+        EncryptionMode::Off => {
+            client
+                .change_password(Path::new(backup_directory), udid, Some(password), None)
+                .await?;
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "changed": true,
+                "mode": match mode { EncryptionMode::On => "on", EncryptionMode::Off => "off" },
+            }))?
+        );
+    } else {
+        println!(
+            "Backup encryption {} request completed.",
+            match mode {
+                EncryptionMode::On => "enable",
+                EncryptionMode::Off => "disable",
+            }
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_create(
+    udid: &str,
+    output_dir: &str,
+    full: bool,
+    only: &[String],
+    only_regex: &[String],
+    patch_manifest: bool,
+    password: Option<&str>,
+    unback: bool,
+    json: bool,
+) -> Result<()> {
+    let filter = ios_core::backup2::build_backup_filter(only, only_regex)?;
+    if patch_manifest && filter.is_none() {
+        return Err(anyhow::anyhow!(
+            "--patch-manifest requires at least one --only or --only-regex"
+        ));
+    }
+    if unback && filter.is_some() && !patch_manifest {
+        return Err(anyhow::anyhow!(
+            "filtered --unback requires --patch-manifest so the local Manifest.db matches the payloads"
+        ));
+    }
+
     let device = connect(
         udid,
         ConnectOptions {
@@ -256,6 +580,18 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
     )
     .await?;
 
+    // A patch of an encrypted backup must be able to decrypt/re-encrypt Manifest.db. Query the
+    // device before taking the sync lock or sending MobileBackup2::Backup, so a missing password
+    // cannot trigger a large transfer that is guaranteed to fail at the end.
+    if patch_manifest && password.is_none() {
+        let will_encrypt = resolve_will_encrypt(
+            device
+                .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+                .await,
+        )?;
+        ensure_patch_password(patch_manifest, password, will_encrypt)?;
+    }
+
     let info_plist = build_backup_info_plist(&device).await?;
     let (mut afc, mut notification_proxy, lock_handle) = acquire_backup_lock(&device).await?;
     let backup_result: Result<_> = async {
@@ -264,7 +600,17 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
             .await?;
         let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
         client
-            .backup(Path::new(output_dir), udid, full, &info_plist)
+            .backup_with_options(
+                Path::new(output_dir),
+                udid,
+                full,
+                &info_plist,
+                ios_core::backup2::BackupOptions {
+                    filter,
+                    patch_manifest,
+                    password: password.map(str::to_owned),
+                },
+            )
             .await
             .map_err(Into::into)
     }
@@ -273,6 +619,16 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
     let result = backup_result?;
     release_result?;
     let full_backup = ios_core::backup2::backup_status_is_full(&result.layout.device_directory)?;
+    let extracted = if unback {
+        Some(ios_core::backup2::unback_backup(
+            Path::new(output_dir),
+            udid,
+            None,
+            password,
+        )?)
+    } else {
+        None
+    };
 
     if json {
         println!(
@@ -283,6 +639,8 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
                 "protocol_version": result.protocol_version,
                 "full_backup": full_backup,
                 "requested_full_backup": full,
+                "patch_manifest": patch_manifest,
+                "unback": extracted,
             }))?
         );
     } else {
@@ -296,8 +654,141 @@ async fn run_create(udid: &str, output_dir: &str, full: bool, json: bool) -> Res
             format_protocol_version(result.protocol_version)
         );
         println!("FullBackup: {full_backup}");
+        if let Some(extracted) = extracted {
+            println!(
+                "Unback extracted {} files ({} bytes) to {}",
+                extracted.files_extracted,
+                extracted.bytes_extracted,
+                extracted.output_directory.display()
+            );
+        }
     }
 
+    Ok(())
+}
+
+fn run_unback(
+    backup_directory: &str,
+    source: Option<&str>,
+    output: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let source = source.ok_or_else(|| {
+        anyhow::anyhow!("backup unback requires --source (or --udid as the backup identifier)")
+    })?;
+    let result = ios_core::backup2::unback_backup(
+        Path::new(backup_directory),
+        source,
+        output.map(Path::new),
+        password,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!(
+            "Unback extracted {} files ({} bytes) to {}",
+            result.files_extracted,
+            result.bytes_extracted,
+            result.output_directory.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_extract(
+    backup_directory: &str,
+    source: Option<&str>,
+    domain: &str,
+    relative_path: &str,
+    output: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let source = source.ok_or_else(|| {
+        anyhow::anyhow!("backup extract requires --source (or --udid as the backup identifier)")
+    })?;
+    let result = ios_core::backup2::extract_backup_file(
+        Path::new(backup_directory),
+        source,
+        domain,
+        relative_path,
+        output.map(Path::new),
+        password,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!(
+            "Extracted {} file(s), {} bytes to {}",
+            result.files_extracted,
+            result.bytes_extracted,
+            result.output_directory.display()
+        );
+    }
+    Ok(())
+}
+
+async fn run_unback_device(
+    udid: &str,
+    backup_directory: &str,
+    source: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: true,
+        },
+    )
+    .await?;
+    let stream = device
+        .connect_service(ios_core::backup2::SERVICE_NAME)
+        .await?;
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
+    let content = client
+        .unback(Path::new(backup_directory), udid, source, password)
+        .await?;
+    print_device_operation_content("Unback", content, password, json)?;
+    Ok(())
+}
+
+async fn run_extract_device(
+    udid: &str,
+    backup_directory: &str,
+    domain: &str,
+    relative_path: &str,
+    source: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let device = connect(
+        udid,
+        ConnectOptions {
+            tun_mode: TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: true,
+        },
+    )
+    .await?;
+    let stream = device
+        .connect_service(ios_core::backup2::SERVICE_NAME)
+        .await?;
+    let mut client = ios_core::backup2::Mobilebackup2Client::new(stream);
+    let content = client
+        .extract(
+            Path::new(backup_directory),
+            udid,
+            domain,
+            relative_path,
+            source,
+            password,
+        )
+        .await?;
+    print_device_operation_content("Extract", content, password, json)?;
     Ok(())
 }
 
@@ -798,6 +1289,72 @@ fn print_process_message_content(content: Option<plist::Value>, json: bool) -> R
     Ok(())
 }
 
+fn print_device_operation_content(
+    operation: &str,
+    content: Option<plist::Value>,
+    secret: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let value = redact_device_operation_value(
+        &content.unwrap_or(plist::Value::Dictionary(plist::Dictionary::new())),
+        secret,
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "operation": operation,
+                "side": "device",
+                "content": value,
+            }))?
+        );
+    } else {
+        println!("{operation} request completed on device.");
+        if let Some(text) = value.as_string() {
+            println!("{text}");
+        } else if !matches!(value, plist::Value::Dictionary(ref dict) if dict.is_empty()) {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+    }
+    Ok(())
+}
+
+fn redact_device_operation_value(value: &plist::Value, secret: Option<&str>) -> plist::Value {
+    match value {
+        plist::Value::String(value)
+            if secret.is_some_and(|secret| !secret.is_empty() && secret == value) =>
+        {
+            plist::Value::String("<redacted>".into())
+        }
+        plist::Value::Array(values) => plist::Value::Array(
+            values
+                .iter()
+                .map(|value| redact_device_operation_value(value, secret))
+                .collect(),
+        ),
+        plist::Value::Dictionary(dict) => plist::Value::Dictionary(
+            dict.iter()
+                .map(|(key, value)| {
+                    let value = if is_sensitive_backup_key(key) {
+                        plist::Value::String("<redacted>".into())
+                    } else {
+                        redact_device_operation_value(value, secret)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn is_sensitive_backup_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "password" | "oldpassword" | "newpassword" | "passcode" | "unlocktoken" | "p12"
+    )
+}
+
 fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
     match value {
         plist::Value::Boolean(value) => Some(*value),
@@ -828,15 +1385,29 @@ where
     }
 }
 
+fn ensure_patch_password(
+    patch_manifest: bool,
+    password: Option<&str>,
+    will_encrypt: bool,
+) -> Result<()> {
+    if patch_manifest && password.is_none() && will_encrypt {
+        return Err(anyhow::anyhow!(
+            "--patch-manifest requires --password when device backup encryption is enabled"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
     use ios_core::LockdownError;
 
     use super::{
-        build_backup_guid, format_protocol_version, plist_value_to_bool, resolve_will_encrypt,
+        build_backup_guid, ensure_patch_password, format_protocol_version, plist_value_to_bool,
+        redact_device_operation_value, resolve_will_encrypt,
     };
-    use super::{BackupCmd, BackupSubcommand};
+    use super::{BackupCmd, BackupSubcommand, EncryptionMode};
 
     #[derive(clap::Parser)]
     struct BackupTestCli {
@@ -873,11 +1444,22 @@ mod tests {
     }
 
     #[test]
+    fn patch_manifest_preflight_rejects_encrypted_backup_without_password() {
+        let error = ensure_patch_password(true, None, true).expect_err("must reject");
+        assert!(error.to_string().contains("requires --password"));
+        ensure_patch_password(true, None, false).expect("unencrypted backups need no password");
+        ensure_patch_password(true, Some("secret"), true).expect("password satisfies preflight");
+    }
+
+    #[test]
     fn parses_backup_create_subcommand() {
         let parsed = BackupTestCli::try_parse_from(["backup", "create", "ios-rs-tmp/backup"])
             .expect("backup create command should parse");
 
-        let BackupSubcommand::Create { output_dir, full } = parsed.backup.sub else {
+        let BackupSubcommand::Create {
+            output_dir, full, ..
+        } = parsed.backup.sub
+        else {
             panic!("expected backup create subcommand");
         };
         assert_eq!(output_dir, "ios-rs-tmp/backup");
@@ -890,11 +1472,151 @@ mod tests {
             BackupTestCli::try_parse_from(["backup", "create", "ios-rs-tmp/backup", "--full"])
                 .expect("backup create --full command should parse");
 
-        let BackupSubcommand::Create { output_dir, full } = parsed.backup.sub else {
+        let BackupSubcommand::Create {
+            output_dir, full, ..
+        } = parsed.backup.sub
+        else {
             panic!("expected backup create subcommand");
         };
         assert_eq!(output_dir, "ios-rs-tmp/backup");
         assert!(full, "backup create should honor --full");
+    }
+
+    #[test]
+    fn parses_backup_create_selection_and_local_expand_flags() {
+        let parsed = BackupTestCli::try_parse_from([
+            "backup",
+            "create",
+            "ios-rs-tmp/backup",
+            "--only",
+            "sms",
+            "--only-regex",
+            "Library/Notes/.*",
+            "--patch-manifest",
+            "--password",
+            "secret",
+            "--unback",
+        ])
+        .expect("backup filter flags should parse");
+        let BackupSubcommand::Create {
+            only,
+            only_regex,
+            patch_manifest,
+            password,
+            unback,
+            ..
+        } = parsed.backup.sub
+        else {
+            panic!("expected backup create subcommand");
+        };
+        assert_eq!(only, ["sms"]);
+        assert_eq!(only_regex, ["Library/Notes/.*"]);
+        assert!(patch_manifest);
+        assert_eq!(password.as_deref(), Some("secret"));
+        assert!(unback);
+    }
+
+    #[test]
+    fn parses_local_unback_and_extract_without_device_flags() {
+        assert!(BackupTestCli::try_parse_from([
+            "backup",
+            "unback",
+            "/tmp/backups",
+            "--source",
+            "device-id",
+            "--output",
+            "/tmp/unback",
+        ])
+        .is_ok());
+        assert!(BackupTestCli::try_parse_from([
+            "backup",
+            "extract",
+            "/tmp/backups",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+            "--source",
+            "device-id",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn parses_device_unback_and_extract_commands() {
+        let parsed = BackupTestCli::try_parse_from([
+            "backup",
+            "unback-device",
+            "/tmp/backups",
+            "--source",
+            "source-id",
+            "--password",
+            "secret",
+        ])
+        .expect("device-side unback command should parse");
+        assert!(matches!(
+            parsed.backup.sub,
+            BackupSubcommand::UnbackDevice { .. }
+        ));
+
+        let parsed = BackupTestCli::try_parse_from([
+            "backup",
+            "extract-device",
+            "/tmp/backups",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+        ])
+        .expect("device-side extract command should parse");
+        assert!(matches!(
+            parsed.backup.sub,
+            BackupSubcommand::ExtractDevice { .. }
+        ));
+
+        assert!(BackupTestCli::try_parse_from(["backup", "unback-local", "/tmp/backups"]).is_ok());
+        assert!(BackupTestCli::try_parse_from([
+            "backup",
+            "extract-local",
+            "/tmp/backups",
+            "HomeDomain",
+            "Library/SMS/sms.db",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn device_side_commands_require_a_udid_but_local_aliases_do_not() {
+        let local = BackupTestCli::try_parse_from(["backup", "unback", "/tmp/backups"])
+            .expect("local compatibility command should parse");
+        assert!(!local.backup.needs_default_udid());
+
+        let device = BackupTestCli::try_parse_from(["backup", "unback-device", "/tmp/backups"])
+            .expect("device command should parse");
+        assert!(device.backup.needs_default_udid());
+    }
+
+    #[test]
+    fn device_operation_output_redacts_password_fields_and_exact_secret_strings() {
+        let content = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "Password".to_string(),
+                plist::Value::String("secret".into()),
+            ),
+            ("Content".to_string(), plist::Value::String("secret".into())),
+        ]));
+        let redacted = redact_device_operation_value(&content, Some("secret"));
+        let rendered = format!("{redacted:?}");
+        assert!(!rendered.contains("secret"));
+        assert!(rendered.matches("<redacted>").count() >= 2);
+    }
+
+    #[test]
+    fn parses_device_encryption_mode_and_password() {
+        let parsed =
+            BackupTestCli::try_parse_from(["backup", "encryption", "on", "--password", "secret"])
+                .expect("backup encryption on should parse");
+        let BackupSubcommand::Encryption { mode, password, .. } = parsed.backup.sub else {
+            panic!("expected encryption subcommand");
+        };
+        assert!(matches!(mode, Some(EncryptionMode::On)));
+        assert_eq!(password.as_deref(), Some("secret"));
     }
 
     #[test]

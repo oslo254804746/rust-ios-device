@@ -13,6 +13,7 @@ pub mod crash;
 pub mod ddi;
 pub mod debug;
 pub mod debugserver;
+pub mod device_control;
 pub mod devicestate;
 pub mod diagnostics;
 pub mod discover;

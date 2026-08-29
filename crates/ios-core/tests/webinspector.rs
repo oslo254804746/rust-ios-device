@@ -1,3 +1,5 @@
+#![cfg(feature = "webinspector")]
+
 use std::time::Duration;
 
 use ios_core::webinspector::{
@@ -761,4 +763,76 @@ async fn automation_session_find_elements_rewrites_class_name_to_css_selector() 
 
     let nodes = task.await.unwrap();
     assert_eq!(nodes, vec![json!("node-1"), json!("node-2")]);
+}
+
+#[tokio::test]
+async fn automation_session_navigates_and_reads_unicode_title() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session =
+            AutomationSession::with_page("PID:42", "com.apple.mobilesafari", "TEST-SESSION", 2);
+        session
+            .navigate(&mut client, "https://例え.テスト/你好")
+            .await
+            .unwrap();
+        session.get_title(&mut client).await.unwrap()
+    });
+
+    let navigate = read_plist_frame(&mut server_stream).await;
+    let navigate = navigate.as_dictionary().expect("navigate socket data dict");
+    let navigate_arg = navigate
+        .get("__argument")
+        .and_then(plist::Value::as_dictionary)
+        .expect("navigate socket data arg");
+    let navigate_payload = navigate_arg
+        .get("WIRSocketDataKey")
+        .and_then(plist::Value::as_data)
+        .map(|payload| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("navigate socket payload");
+    assert_eq!(
+        navigate_payload["method"],
+        "Automation.navigateBrowsingContext"
+    );
+    assert_eq!(navigate_payload["params"]["handle"], "");
+    assert_eq!(
+        navigate_payload["params"]["url"],
+        "https://例え.テスト/你好"
+    );
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            1,
+            json!({}),
+        )))
+        .await
+        .unwrap();
+
+    let title = read_plist_frame(&mut server_stream).await;
+    let title = title.as_dictionary().expect("title socket data dict");
+    let title_arg = title
+        .get("__argument")
+        .and_then(plist::Value::as_dictionary)
+        .expect("title socket data arg");
+    let title_payload = title_arg
+        .get("WIRSocketDataKey")
+        .and_then(plist::Value::as_data)
+        .map(|payload| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("title socket payload");
+    assert_eq!(
+        title_payload["method"],
+        "Automation.evaluateJavaScriptFunction"
+    );
+    assert!(title_payload["params"]["function"]
+        .as_str()
+        .unwrap()
+        .contains("document.title"));
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            2,
+            json!({"result": "\"你好\""}),
+        )))
+        .await
+        .unwrap();
+
+    assert_eq!(task.await.unwrap(), "你好");
 }

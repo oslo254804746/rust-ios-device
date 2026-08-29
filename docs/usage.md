@@ -132,6 +132,7 @@ ios -u <UDID> apps icons com.example.app --output-dir ./icons
 ios -u <UDID> apps monitor <PID> --timeout-secs 30
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests --test-target com.example.Runner --wait
+ios -u <UDID> runtest ./Build/Products/Example.xctestrun --wait --junit-output ./test-results.xml
 ios -u <UDID> runwda --help
 ios wda status --base-url http://127.0.0.1:8100
 ios -u <UDID> wda --device-port 8100 status
@@ -148,6 +149,20 @@ Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
 older versions use the legacy lockdown service. `wda --device-port` talks to a
 WDA listener directly through usbmux, so it does not require a local `forward`
 process when the runner is already listening on the device.
+
+`--junit-output` requires `--wait` and writes the complete result event summary
+as standard JUnit XML using an atomic same-directory temporary file and rename.
+On Unix an existing destination is atomically replaced; platforms that reject
+replacement return an error. Startup or result-stream failures still write a
+diagnostic `testsuite` and return a non-zero exit status. Passed, failed,
+skipped, stalled, and unknown cases map to standard JUnit elements; expected
+failures and newer unknown statuses are retained in testcase properties,
+without falsely increasing the skipped/failure totals. Existing XCTest events
+currently provide log text only, so normal/debug logs are mapped to
+`system-out` / `system-err`; actual stdout/stderr provenance and attachment
+metadata are not available in the current model.
+Direct runner execution (`runxctest`) and richer XCTest result/attachment
+collection remain upstream parity gaps.
 
 Comparable upstream workflows:
 
@@ -205,6 +220,33 @@ and redacts any secret-bearing fields before JSON or human output. MCInstall
 failures expose only status/ErrorChain domain, code, and safe descriptions,
 never the full response dictionary.
 
+## CoreDevice appearance and orientation (iOS 17+)
+
+The CoreDevice configuration and orientation services require a userspace
+tunnel and a canonical RSD RemoteXPC endpoint. Configuration setters change
+device-wide UI/accessibility state; rotation changes the active UI, so use
+them with a device whose current user can tolerate the change:
+
+```sh
+ios -u <UDID> device-control configuration get style
+ios -u <UDID> device-control configuration set style dark
+ios -u <UDID> device-control configuration get color-filter
+ios -u <UDID> device-control configuration set color-filter true --filter-type Protanopia --intensity 0.5
+ios -u <UDID> device-control configuration set reduce-motion false
+ios -u <UDID> device-control orientation left
+```
+
+JSON is the default output (`--no-json` selects stable human-readable lines).
+The color-filter JSON value uses a flat `filterType` string even though the
+CoreDevice wire dictionary is `filterType: {"name": "..."}`. Unknown style,
+filter, text-size, and orientation strings from a newer device are preserved
+in JSON; setters still reject unknown values until their semantics are known.
+The daemon does not expose getters for `increase-contrast` or
+`liquid-glass-opacity`; attempting `configuration get` for either returns a
+clear local error. Devices that only expose a legacy or `.shim.remote` route
+are rejected before the XPC request because these operations require the
+modern CoreDevice envelope.
+
 ## Logs, diagnostics, and packet capture
 
 ```sh
@@ -213,6 +255,8 @@ ios -u <UDID> diagnostics list
 ios -u <UDID> diagnostics sysdiagnose
 ios -u <UDID> diagnostics reboot
 ios -u <UDID> os-trace ps
+ios -u <UDID> os-trace stream --process SpringBoard --level error,info
+ios -u <UDID> os-trace live --pid 42 --subsystem com.example --match timeout
 ios -u <UDID> pcap --output device.pcap
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
@@ -231,6 +275,25 @@ common `Name(Library)` sender annotation; an exact annotated name remains
 accepted. `--filter`, regex, PID, count, timeout, parsed text, and JSON output
 continue to apply after decoding and parsing.
 
+`os-trace stream` (also available as `os-trace live`) performs the binary
+`StartActivity` handshake and emits one structured record per line. Filters
+for PID, process, level, subsystem, category, message inclusion, message
+exclusion, and regular expressions are applied without changing the core stream
+API. Repeat `--match` to require every substring, repeat `--exclude` to reject
+if any substring matches, and repeat `--regex` to accept if any expression
+matches the message. `--ignore-case` applies to all text filters. Invalid or
+oversized expressions are rejected before connecting. JSON is the default
+output; use `--no-json` for a human-readable line. Ctrl+C and `--timeout`
+cancel the complete operation, including connection, RSDCheckin, handshake,
+and reads. On iOS 17 and later it establishes the userspace CoreDevice tunnel
+and uses the `com.apple.os_trace_relay.shim.remote` RSD service; older devices
+use the classic `com.apple.os_trace_relay` lockdown service. Stream JSON uses
+`schema_version: 2`, standard UUID strings, an RFC3339 `timestamp`, and enum
+`level`; the `*_hex`, `timestamp_parts`, and `level_value` fields retain the
+prior raw representations for consumers migrating from the initial schema.
+Archive/collect retrieval is not exposed until its tar framing and safe
+extraction contract can be implemented and tested independently.
+
 ## Backups
 
 ```sh
@@ -239,7 +302,49 @@ ios -u <UDID> backup create ./backup
 ios -u <UDID> backup create ./backup --full
 ios -u <UDID> backup info ./backup
 ios -u <UDID> backup list ./backup
+# Keep selected domains/files while creating a backup (repeatable filters).
+ios -u <UDID> backup create ./backup --only sms --only-regex 'Library/Notes/.*'
+ios -u <UDID> backup create ./backup --only sms --patch-manifest
+# Host-only operations; --source is the backup directory identifier, not a device connection.
+ios backup unback ./backup --source <UDID> --output ./expanded
+ios backup extract ./backup HomeDomain Library/SMS/sms.db --source <UDID> --output ./sms.db
+# Device-side MobileBackup2 operations (the connected UDID is required).
+ios -u <UDID> backup unback-device ./backup
+ios -u <UDID> backup extract-device ./backup HomeDomain Library/SMS/sms.db
+ios -u <UDID> backup encryption
+ios -u <UDID> backup encryption on --password '<new-password>'
+ios -u <UDID> backup encryption off --password '<current-password>'
 ```
+
+`--only` accepts the `bookmarks`, `call_history`, `contacts`, `messages`, `sms`,
+and `whatsapp` presets; `--only-regex` is matched against the device and
+Manifest.db domain/path forms. Selection is host-side and uses the normal
+`Backup` DeviceLink request. `--patch-manifest` prunes rejected Manifest.db
+rows and stored payloads after the transfer and requires a selection. The
+optional `backup2-manifest` feature (included by the CLI's `full` feature)
+provides local SQLite manifest filtering and extraction. Modern encrypted
+backups (ProductVersion greater than 10.2) are supported when `--password` is
+provided: the host verifies the BackupKeyBag, decrypts/re-encrypts Manifest.db,
+and decrypts file payloads. Passwords and key material are never included in
+operation output. Legacy backups using Manifest.mbdb (10.2 and older) and
+encrypted backups without a password are rejected explicitly. Non-empty
+Manifest.db WAL/SHM/journal sidecars are also rejected because they cannot be
+decrypted safely as an isolated completed backup.
+
+`unback` and `extract` are retained compatibility names for local operations
+over a completed backup. They preserve regular-file bytes, basic Unix
+permission bits, and safe relative symlinks. The explicit
+`unback-device` and `extract-device` commands send the real MobileBackup2
+`Unback` and `Extract` messages over the connected device's DeviceLink session;
+the device performs any encrypted-backup handling. Their backup directory is
+the local DeviceLink transfer workspace, and is not an output directory for a
+host expansion. Each device-side Unback/Extract exchange has one five-minute
+deadline covering version negotiation, the transfer loop, and best-effort
+disconnect cleanup; a stalled peer is abandoned when that deadline expires.
+Device-side `backup encryption on|off` uses the real
+MobileBackup2 `ChangePassword` request; it does not decrypt or rewrite a local
+backup. No backup erase-device command is exposed because that destructive
+DeviceLink operation needs an explicit two-step confirmation contract.
 
 The backup directory is a security boundary: use a path owned exclusively by
 the current user and do not share it with untrusted local processes. Existing
@@ -269,10 +374,31 @@ ios -u <UDID> debug --help
 ios -u <UDID> symbols list
 ios -u <UDID> accessibility-audit capabilities
 ios -u <UDID> webinspector opened-tabs
+ios -u <UDID> webinspector launch https://example.com
+ios -u <UDID> webinspector launch https://example.com --bundle-id com.example.app
+ios -u <UDID> webinspector js-shell --bundle-id com.apple.mobilesafari
+printf 'document.title\n1 + 1\n.exit\n' | ios -u <UDID> webinspector js-shell --page-id 1
 ```
 
 Many developer services require Developer Mode, a mounted Developer Disk Image,
 or the CoreDevice tunnel path on newer iOS versions.
+
+`webinspector launch` uses Remote Automation to launch the selected bundle,
+create one browsing context, optionally navigate to the positional URL, and
+report page/title/connection metadata. The connection, launch, page wait,
+navigation, and title lookup share one deadline; Ctrl+C cancels the operation
+without retrying the launch. The default bundle is Safari.
+
+`webinspector js-shell` selects an existing Web/WebPage/JavaScript page by
+`--page-id` or `--bundle-id` (otherwise the first matching page), optionally
+opens Safari and navigates first, then evaluates stdin one line at a time.
+It works with a TTY or a piped script, accepts `.exit`, `exit`, and `quit`, and
+continues after an evaluation error by default. Use
+`--continue-on-error=false` to stop at the first error. JSON mode emits one
+session metadata/result/error object per line; human mode keeps results on
+stdout and evaluation errors on stderr. `--timeout` bounds connection and
+initial page setup, and each individual evaluation; it does not expire an
+otherwise idle interactive shell. Ctrl+C or EOF exits the shell.
 
 Comparable upstream workflows:
 

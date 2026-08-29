@@ -34,13 +34,15 @@
 //! | `fileservice` | [`fileservice`] | iOS 17+ XPC file service |
 //! | `deviceinfo` | [`deviceinfo`] | iOS 17+ XPC device info |
 //! | `diagnosticsservice` | [`diagnosticsservice`] | iOS 17+ XPC diagnostics service |
+//! | `configuration` | [`configuration`] | iOS 17+ CoreDevice appearance/accessibility actions |
+//! | `orientation` | [`orientation`] | iOS 17+ CoreDevice device rotation |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
 //! | `preboard` | [`preboard`] | Stashbag commit/rollback |
 //! | `idam` | [`idam`] | Identity and device auth |
 //! | `fetchsymbols` | [`fetchsymbols`] | Debug symbol download |
-//! | `ostrace` | [`ostrace`] | OS trace relay process listing |
+//! | `ostrace` | [`ostrace`] | Structured OS trace relay log streaming and process listing |
 //! | `pasteboard` | [`pasteboard`] | iOS 17+ CoreDevice general pasteboard |
 //! | `prepare` | [`prepare`] | Supervised device preparation (requires `afc`+`mcinstall`) |
 //! | `restore` | [`restore`] | Recovery/restore mode operations |
@@ -95,9 +97,11 @@ macro_rules! service_error {
 pub mod backup2;
 #[cfg(any(
     all(feature = "apps", feature = "tunnel"),
+    feature = "configuration",
     feature = "deviceinfo",
     feature = "diagnosticsservice",
-    feature = "fileservice"
+    feature = "fileservice",
+    feature = "orientation"
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
@@ -195,6 +199,12 @@ pub mod ostrace;
 
 #[cfg(feature = "pasteboard")]
 pub mod pasteboard;
+
+#[cfg(feature = "configuration")]
+pub mod configuration;
+
+#[cfg(feature = "orientation")]
+pub mod orientation;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

@@ -30,9 +30,21 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `mcinstall` (profiles and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `ostrace`, `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `mcinstall` (profiles and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `configuration`, `orientation`, `ostrace` (process listing and structured live log stream), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
+
+`configuration` and `orientation` are iOS 17+ CoreDevice services. They use
+the modern RemoteXPC/RSD tunnel and return an explicit unsupported error when
+the resolved endpoint is a legacy or `.shim.remote` service. Configuration
+setters change device-wide appearance/accessibility state; orientation rotates
+the active UI, so callers should treat both as mutating operations.
+
+MobileBackup2's DeviceLink client is part of the core service surface and
+includes the device-side `Unback` and `Extract` operations. The optional
+`backup2-manifest` feature is only for host-side Manifest.db filtering and
+local expansion (including modern encrypted backups); it does not gate or
+provide the device protocol.
 
 Some features add heavier optional dependencies only when enabled:
 
@@ -46,5 +58,6 @@ Some features add heavier optional dependencies only when enabled:
 | `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
 | `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |
 | `supervised-pair` | Supervised pairing/P12 signing helpers via `openssl`; implied by `prepare`. |
+| `backup2-manifest` | Host-side Backup2 Manifest.db filtering and local extraction, including modern (iOS 10.3+) BackupKeyBag/AES encrypted backups, via bundled SQLite. |
 
 The `ios-cli` crate enables `ios-core/full` because the binary exposes many commands. Library users should prefer a narrower feature list.

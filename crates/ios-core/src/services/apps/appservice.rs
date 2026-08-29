@@ -160,19 +160,7 @@ pub struct ProcessTermination {
     pub reason: Option<String>,
 }
 
-/// Select the CoreDevice invocation envelope used by appservice requests.
-///
-/// [`Self::Modern`] is the current CoreDevice contract (DDI protocol 2,
-/// version 629.3, and fresh UUIDs for both request identifiers). [`Self::Legacy`]
-/// retains the pre-modern protocol used by older devices. Since RSD does not
-/// consistently advertise a CoreDevice version, legacy mode is an explicit
-/// caller choice rather than a retry after a request has been sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CoreDeviceEnvelopeMode {
-    #[default]
-    Modern,
-    Legacy,
-}
+pub use crate::services::coredevice::CoreDeviceEnvelopeMode;
 
 /// Client for CoreDevice appservice feature calls.
 pub struct AppServiceClient {
