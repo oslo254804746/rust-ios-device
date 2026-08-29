@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
 use plist::{Dictionary, Uid, Value};
@@ -27,6 +27,368 @@ pub struct TestLaunchPlan {
     pub env: HashMap<String, String>,
     pub tests_to_run: Vec<String>,
     pub tests_to_skip: Vec<String>,
+}
+
+/// A direct XCTest invocation, independent of an .xctestrun file.
+///
+/// The plan deliberately keeps bundle identifiers and selectors as strings:
+/// XCTest accepts Unicode names and the device is the authority for whether a
+/// particular identifier exists. Structural validation is done by the builder
+/// so malformed paths/control characters cannot accidentally become a bundle
+/// or test-bundle path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunXcTestPlan {
+    /// Optional application-under-test bundle identifier. Unit tests do not
+    /// need one; UI tests normally do.
+    pub bundle_id: Option<String>,
+    /// Installed XCTest runner application bundle identifier.
+    pub test_runner_bundle_id: String,
+    /// Test bundle name inside the runner, normally FooTests.xctest.
+    pub xctest_config: String,
+    /// XCTest selectors to execute, in the spelling accepted by testmanagerd.
+    pub tests_to_run: Vec<String>,
+    /// XCTest selectors to skip.
+    pub tests_to_skip: Vec<String>,
+    /// Arguments passed to the runner process.
+    pub args: Vec<String>,
+    /// Environment passed to the runner process.
+    pub env: HashMap<String, String>,
+    /// Whether this is a unit-test bundle (true) rather than a UI-test bundle
+    /// (false).
+    pub is_xctest: bool,
+}
+
+/// Validation failures for a direct XCTest plan.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunXcTestPlanError {
+    #[error("test runner bundle identifier is required")]
+    MissingRunnerBundleId,
+    #[error("xctest config name is required")]
+    MissingXcTestConfig,
+    #[error("xctest config name must be a single .xctest bundle component: {0:?}")]
+    InvalidXcTestConfig(String),
+    #[error("{field} must not be empty")]
+    EmptyField { field: &'static str },
+    #[error("{field} contains a NUL or control character")]
+    InvalidText { field: &'static str },
+    #[error("xctest {field} must be a single component without '/' or '\\\\': {value:?}")]
+    InvalidComponent { field: &'static str, value: String },
+    #[error("--method requires --class")]
+    MethodWithoutClass,
+    #[error("--test cannot be combined with --class or --method")]
+    ConflictingSelection,
+    #[error("duplicate {field}: {value:?}")]
+    DuplicateValue { field: &'static str, value: String },
+    #[error("environment variable name must not be empty")]
+    EmptyEnvironmentName,
+    #[error("environment variable name contains '=' or a NUL/control character: {0:?}")]
+    InvalidEnvironmentName(String),
+}
+
+/// Builder for RunXcTestPlan.
+///
+/// --test-style selectors and the class/method convenience pair are
+/// intentionally mutually exclusive. This keeps the resulting XCTest
+/// configuration deterministic and catches accidental combinations before a
+/// device connection is opened.
+#[derive(Debug, Clone, Default)]
+pub struct RunXcTestPlanBuilder {
+    bundle_id: Option<String>,
+    test_runner_bundle_id: Option<String>,
+    xctest_config: Option<String>,
+    tests_to_run: Vec<String>,
+    tests_to_skip: Vec<String>,
+    class: Option<String>,
+    method: Option<String>,
+    args: Vec<String>,
+    env_entries: Vec<(String, String)>,
+    is_xctest: bool,
+}
+
+impl RunXcTestPlan {
+    /// Start a direct-runner plan with the required runner and test-bundle
+    /// names.
+    pub fn builder(
+        test_runner_bundle_id: impl Into<String>,
+        xctest_config: impl Into<String>,
+    ) -> RunXcTestPlanBuilder {
+        RunXcTestPlanBuilder::new(test_runner_bundle_id, xctest_config)
+    }
+
+    /// Convert this device-independent plan into the existing testmanager
+    /// launch representation after installed app metadata has been resolved.
+    pub fn into_test_launch_plan(
+        self,
+        runner: InstalledAppInfo,
+        target: Option<InstalledAppInfo>,
+    ) -> TestLaunchPlan {
+        TestLaunchPlan {
+            runner,
+            target,
+            xctest_bundle_name: self.xctest_config,
+            is_xctest: self.is_xctest,
+            args: self.args,
+            env: self.env,
+            tests_to_run: self.tests_to_run,
+            tests_to_skip: self.tests_to_skip,
+        }
+    }
+}
+
+impl RunXcTestPlanBuilder {
+    pub fn new(test_runner_bundle_id: impl Into<String>, xctest_config: impl Into<String>) -> Self {
+        Self {
+            test_runner_bundle_id: Some(test_runner_bundle_id.into()),
+            xctest_config: Some(xctest_config.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn bundle_id(mut self, bundle_id: impl Into<String>) -> Self {
+        self.bundle_id = Some(bundle_id.into());
+        self
+    }
+
+    /// Alias useful to callers that use the same terminology as the CLI.
+    pub fn target_bundle_id(self, bundle_id: impl Into<String>) -> Self {
+        self.bundle_id(bundle_id)
+    }
+
+    pub fn test_runner_bundle_id(mut self, bundle_id: impl Into<String>) -> Self {
+        self.test_runner_bundle_id = Some(bundle_id.into());
+        self
+    }
+
+    pub fn xctest_config(mut self, config: impl Into<String>) -> Self {
+        self.xctest_config = Some(config.into());
+        self
+    }
+
+    pub fn test(mut self, selector: impl Into<String>) -> Self {
+        self.tests_to_run.push(selector.into());
+        self
+    }
+
+    pub fn tests_to_run<I, S>(mut self, selectors: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tests_to_run
+            .extend(selectors.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn skip(mut self, selector: impl Into<String>) -> Self {
+        self.tests_to_skip.push(selector.into());
+        self
+    }
+
+    pub fn tests_to_skip<I, S>(mut self, selectors: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tests_to_skip
+            .extend(selectors.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.class = Some(class.into());
+        self
+    }
+
+    pub fn method(mut self, method: impl Into<String>) -> Self {
+        self.method = Some(method.into());
+        self
+    }
+
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_entries.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn environment_variable(self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env(key, value)
+    }
+
+    pub fn xctest(mut self, is_xctest: bool) -> Self {
+        self.is_xctest = is_xctest;
+        self
+    }
+
+    pub fn build(self) -> Result<RunXcTestPlan, RunXcTestPlanError> {
+        let test_runner_bundle_id = self
+            .test_runner_bundle_id
+            .ok_or(RunXcTestPlanError::MissingRunnerBundleId)?;
+        if test_runner_bundle_id.is_empty() {
+            return Err(RunXcTestPlanError::MissingRunnerBundleId);
+        }
+        validate_text("test runner bundle identifier", &test_runner_bundle_id)?;
+
+        let xctest_config = self
+            .xctest_config
+            .ok_or(RunXcTestPlanError::MissingXcTestConfig)?;
+        if xctest_config.is_empty() {
+            return Err(RunXcTestPlanError::MissingXcTestConfig);
+        }
+        validate_component("xctest config name", &xctest_config)?;
+        if !xctest_config.ends_with(".xctest") {
+            return Err(RunXcTestPlanError::InvalidXcTestConfig(xctest_config));
+        }
+
+        let bundle_id = match self.bundle_id {
+            Some(bundle_id) => {
+                if bundle_id.is_empty() {
+                    return Err(RunXcTestPlanError::EmptyField {
+                        field: "application bundle identifier",
+                    });
+                }
+                validate_text("application bundle identifier", &bundle_id)?;
+                Some(bundle_id)
+            }
+            None => None,
+        };
+
+        if self.method.is_some() && self.class.is_none() {
+            return Err(RunXcTestPlanError::MethodWithoutClass);
+        }
+        if !self.tests_to_run.is_empty() && (self.class.is_some() || self.method.is_some()) {
+            return Err(RunXcTestPlanError::ConflictingSelection);
+        }
+
+        let mut tests_to_run = self.tests_to_run;
+        if let Some(class) = self.class {
+            validate_component("test class", &class)?;
+            let selector = match self.method {
+                Some(method) => {
+                    validate_component("test method", &method)?;
+                    format!("{class}/{method}")
+                }
+                None => class,
+            };
+            tests_to_run.push(selector);
+        }
+        validate_unique_selectors("test selector", &tests_to_run)?;
+        validate_unique_selectors("skip selector", &self.tests_to_skip)?;
+
+        for arg in &self.args {
+            validate_text("runner argument", arg)?;
+        }
+
+        let mut env = HashMap::with_capacity(self.env_entries.len());
+        for (key, value) in self.env_entries {
+            if key.is_empty() {
+                return Err(RunXcTestPlanError::EmptyEnvironmentName);
+            }
+            if key.contains('=') {
+                return Err(RunXcTestPlanError::InvalidEnvironmentName(key));
+            }
+            validate_text("environment variable name", &key)?;
+            validate_text("environment variable value", &value)?;
+            if env.insert(key.clone(), value).is_some() {
+                return Err(RunXcTestPlanError::DuplicateValue {
+                    field: "environment variable",
+                    value: key,
+                });
+            }
+        }
+
+        Ok(RunXcTestPlan {
+            bundle_id,
+            test_runner_bundle_id,
+            xctest_config,
+            tests_to_run,
+            tests_to_skip: self.tests_to_skip,
+            args: self.args,
+            env,
+            is_xctest: self.is_xctest,
+        })
+    }
+}
+
+fn validate_text(field: &'static str, value: &str) -> Result<(), RunXcTestPlanError> {
+    if value
+        .chars()
+        .any(|character| character == '\0' || character.is_control())
+    {
+        Err(RunXcTestPlanError::InvalidText { field })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_component(field: &'static str, value: &str) -> Result<(), RunXcTestPlanError> {
+    if value.is_empty() {
+        return Err(RunXcTestPlanError::EmptyField { field });
+    }
+    validate_text(field, value)?;
+    if value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.starts_with(':')
+    {
+        return Err(RunXcTestPlanError::InvalidComponent {
+            field,
+            value: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_unique_selectors(
+    field: &'static str,
+    selectors: &[String],
+) -> Result<(), RunXcTestPlanError> {
+    let mut seen = HashSet::with_capacity(selectors.len());
+    for selector in selectors {
+        validate_selector(field, selector)?;
+        if !seen.insert(selector) {
+            return Err(RunXcTestPlanError::DuplicateValue {
+                field,
+                value: selector.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_selector(field: &'static str, selector: &str) -> Result<(), RunXcTestPlanError> {
+    validate_text(field, selector)?;
+    if selector.is_empty() {
+        return Err(RunXcTestPlanError::EmptyField { field });
+    }
+    let mut components = selector.split('/');
+    let class = components
+        .next()
+        .ok_or(RunXcTestPlanError::EmptyField { field })?;
+    validate_component("test class", class)?;
+    if let Some(method) = components.next() {
+        validate_component("test method", method)?;
+    }
+    if components.next().is_some() {
+        return Err(RunXcTestPlanError::InvalidComponent {
+            field,
+            value: selector.to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl TestLaunchPlan {
@@ -130,7 +492,15 @@ impl TestLaunchPlan {
         XcTestConfiguration {
             session_identifier,
             test_bundle_url: NsUrl {
-                path: self.test_bundle_path(),
+                // iOS 12+ resolves this URL relative to the installed runner
+                // bundle (the same in-memory configuration used by go-ios).
+                // iOS 11 still consumes the absolute path from its on-device
+                // configuration-file workflow.
+                path: if product_major_version >= 12 {
+                    format!("PlugIns/{}", self.xctest_bundle_name)
+                } else {
+                    self.test_bundle_path()
+                },
             },
             ide_capabilities: default_capabilities(),
             automation_framework_path: automation_framework_path.to_string(),
@@ -171,7 +541,11 @@ impl TestLaunchPlan {
             ("XCTestBundlePath".to_string(), self.test_bundle_path()),
             (
                 "XCTestSessionIdentifier".to_string(),
-                session_identifier.to_string().to_uppercase(),
+                if product_major_version >= 17 {
+                    session_identifier.to_string().to_uppercase()
+                } else {
+                    session_identifier.to_string()
+                },
             ),
             (
                 "XCODE_DBG_XPC_EXCLUSIONS".to_string(),
@@ -179,14 +553,15 @@ impl TestLaunchPlan {
             ),
         ]);
 
-        if let Some(container) = &self.runner.container {
-            env.insert(
-                "XCTestConfigurationFilePath".to_string(),
-                format!(
-                    "{container}/tmp/{}.xctestconfiguration",
-                    session_identifier.to_string().to_uppercase()
-                ),
-            );
+        if product_major_version < 14 {
+            if let Some(container) = &self.runner.container {
+                env.insert(
+                    "XCTestConfigurationFilePath".to_string(),
+                    format!("{container}/tmp/{}.xctestconfiguration", session_identifier),
+                );
+            }
+        } else {
+            env.insert("XCTestConfigurationFilePath".to_string(), String::new());
         }
         if product_major_version >= 11 {
             env.insert(
@@ -207,9 +582,16 @@ impl TestLaunchPlan {
                 "DYLD_LIBRARY_PATH".to_string(),
                 format!("{}/Frameworks:/System/Developer/usr/lib", self.runner.path),
             );
-            // iOS 17+ uses DDI path; clear the container-based config file path set above.
-            env.insert("XCTestConfigurationFilePath".to_string(), String::new());
+            // iOS 17+ uses the DDI path and the in-memory testmanager
+            // configuration; the config file path remains empty.
             env.insert("XCTestManagerVariant".to_string(), "DDI".to_string());
+            if self.is_xctest {
+                env.insert(
+                    "DYLD_INSERT_LIBRARIES".to_string(),
+                    "/Developer/usr/lib/libMainThreadChecker.dylib:/System/Developer/usr/lib/libXCTestBundleInject.dylib"
+                        .to_string(),
+                );
+            }
         }
 
         for (key, value) in &self.env {
@@ -236,6 +618,9 @@ impl TestLaunchPlan {
         let mut options = vec![("StartSuspendedKey".to_string(), Value::Boolean(false))];
         if product_major_version >= 12 {
             options.push(("ActivateSuspended".to_string(), Value::Boolean(true)));
+        }
+        if product_major_version >= 17 && !self.is_xctest {
+            options.push(("__ActivateSuspended".to_string(), Value::Boolean(true)));
         }
         options
     }
@@ -448,6 +833,88 @@ mod tests {
     }
 
     #[test]
+    fn launch_environment_uses_in_memory_configuration_on_classic_ios14() {
+        let plan = TestLaunchPlan {
+            runner: runner(),
+            target: None,
+            xctest_bundle_name: "DemoTests.xctest".to_string(),
+            is_xctest: false,
+            args: Vec::new(),
+            env: HashMap::new(),
+            tests_to_run: Vec::new(),
+            tests_to_skip: Vec::new(),
+        };
+
+        let env = plan.launch_environment(
+            14,
+            Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+        );
+        assert_eq!(
+            env.get("XCTestConfigurationFilePath").map(String::as_str),
+            Some("")
+        );
+        assert!(!env.contains_key("XCTestManagerVariant"));
+        assert_eq!(
+            env.get("XCTestSessionIdentifier").map(String::as_str),
+            Some("00112233-4455-6677-8899-aabbccddeeff")
+        );
+    }
+
+    #[test]
+    fn launch_environment_uses_legacy_container_configuration_on_ios13() {
+        let plan = TestLaunchPlan {
+            runner: runner(),
+            target: None,
+            xctest_bundle_name: "DemoTests.xctest".to_string(),
+            is_xctest: true,
+            args: Vec::new(),
+            env: HashMap::new(),
+            tests_to_run: Vec::new(),
+            tests_to_skip: Vec::new(),
+        };
+
+        let env = plan.launch_environment(
+            13,
+            Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+        );
+        assert_eq!(
+            env.get("XCTestConfigurationFilePath").map(String::as_str),
+            Some(
+                "/private/var/mobile/Containers/Data/Application/Runner/tmp/00112233-4455-6677-8899-aabbccddeeff.xctestconfiguration"
+            )
+        );
+        assert_eq!(
+            env.get("XCTestSessionIdentifier").map(String::as_str),
+            Some("00112233-4455-6677-8899-aabbccddeeff")
+        );
+    }
+
+    #[test]
+    fn launch_environment_injects_xctest_bundle_library_for_unit_tests_on_ios17() {
+        let plan = TestLaunchPlan {
+            runner: runner(),
+            target: None,
+            xctest_bundle_name: "DemoTests.xctest".to_string(),
+            is_xctest: true,
+            args: Vec::new(),
+            env: HashMap::new(),
+            tests_to_run: Vec::new(),
+            tests_to_skip: Vec::new(),
+        };
+
+        let env = plan.launch_environment(
+            17,
+            Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+        );
+        assert_eq!(
+            env.get("DYLD_INSERT_LIBRARIES").map(String::as_str),
+            Some(
+                "/Developer/usr/lib/libMainThreadChecker.dylib:/System/Developer/usr/lib/libXCTestBundleInject.dylib"
+            )
+        );
+    }
+
+    #[test]
     fn from_scheme_preserves_target_app_context_without_changing_runner_env_behavior() {
         let scheme = SchemeData {
             test_host_bundle_identifier: "com.example.Runner".to_string(),
@@ -529,6 +996,7 @@ mod tests {
             17,
             Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
         );
+        assert_eq!(config.test_bundle_url.path, "PlugIns/DemoAppUITests.xctest");
         assert!(config
             .additional_fields
             .iter()
@@ -557,6 +1025,39 @@ mod tests {
                         if items.get("TARGET_ENV") == Some(&Value::String("target".to_string()))
                 )
         }));
+    }
+
+    #[test]
+    fn configuration_uses_relative_bundle_url_since_ios12_and_absolute_on_ios11() {
+        let plan = TestLaunchPlan {
+            runner: runner(),
+            target: None,
+            xctest_bundle_name: "DemoTests.xctest".to_string(),
+            is_xctest: true,
+            args: Vec::new(),
+            env: HashMap::new(),
+            tests_to_run: Vec::new(),
+            tests_to_skip: Vec::new(),
+        };
+
+        assert_eq!(
+            plan.xctest_configuration(
+                16,
+                Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap()
+            )
+            .test_bundle_url
+            .path,
+            "PlugIns/DemoTests.xctest"
+        );
+        assert_eq!(
+            plan.xctest_configuration(
+                11,
+                Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap()
+            )
+            .test_bundle_url
+            .path,
+            "/private/var/containers/Bundle/Application/Runner.app/PlugIns/DemoTests.xctest"
+        );
     }
 
     #[test]
@@ -600,5 +1101,91 @@ mod tests {
         assert!(config.additional_fields.iter().any(|(key, value)| {
             key == "testsDrivenByIDE" && value.as_boolean() == Some(false)
         }));
+    }
+
+    #[test]
+    fn direct_plan_builder_supports_unicode_selection_environment_and_arguments() {
+        let plan = RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+            .bundle_id("com.example.App")
+            .test("模块.LoginTests/test通过")
+            .skip("模块.FlakyTests")
+            .env("ключ", "значение=✓")
+            .arg("--название")
+            .xctest(false)
+            .build()
+            .unwrap();
+
+        assert_eq!(plan.bundle_id.as_deref(), Some("com.example.App"));
+        assert_eq!(plan.tests_to_run, ["模块.LoginTests/test通过"]);
+        assert_eq!(plan.tests_to_skip, ["模块.FlakyTests"]);
+        assert_eq!(plan.env.get("ключ").map(String::as_str), Some("значение=✓"));
+        assert_eq!(plan.args, ["--название"]);
+        assert!(!plan.is_xctest);
+    }
+
+    #[test]
+    fn direct_plan_builder_supports_class_and_method_selection() {
+        let plan = RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+            .class("LoginTests")
+            .method("testHappyPath")
+            .build()
+            .unwrap();
+
+        assert_eq!(plan.tests_to_run, ["LoginTests/testHappyPath"]);
+    }
+
+    #[test]
+    fn direct_plan_builder_rejects_ambiguous_or_unsafe_inputs() {
+        assert_eq!(
+            RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+                .method("test")
+                .build()
+                .unwrap_err(),
+            RunXcTestPlanError::MethodWithoutClass
+        );
+        assert_eq!(
+            RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+                .class("LoginTests")
+                .test("OtherTests/test")
+                .build()
+                .unwrap_err(),
+            RunXcTestPlanError::ConflictingSelection
+        );
+        assert!(matches!(
+            RunXcTestPlan::builder("com.example.Runner", "../DemoTests.xctest").build(),
+            Err(RunXcTestPlanError::InvalidComponent { .. })
+        ));
+        assert!(matches!(
+            RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+                .env("A=B", "value")
+                .build(),
+            Err(RunXcTestPlanError::InvalidEnvironmentName(_))
+        ));
+        assert!(matches!(
+            RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+                .test("LoginTests/")
+                .build(),
+            Err(RunXcTestPlanError::EmptyField { .. })
+        ));
+        assert!(matches!(
+            RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+                .test("LoginTests/test/extra")
+                .build(),
+            Err(RunXcTestPlanError::InvalidComponent { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_plan_converts_to_existing_launch_plan() {
+        let plan = RunXcTestPlan::builder("com.example.Runner", "DemoTests.xctest")
+            .bundle_id("com.example.App")
+            .xctest(true)
+            .build()
+            .unwrap();
+        let launch = plan.into_test_launch_plan(runner(), None);
+
+        assert_eq!(launch.runner.bundle_id, "com.example.Runner");
+        assert_eq!(launch.xctest_bundle_name, "DemoTests.xctest");
+        assert!(launch.is_xctest);
     }
 }

@@ -146,6 +146,10 @@ pub use services::file_relay;
 pub use services::fileservice;
 #[cfg(feature = "heartbeat")]
 pub use services::heartbeat;
+#[cfg(feature = "iconservice")]
+pub use services::iconservice;
+#[cfg(feature = "iconservice")]
+pub use services::iconservice as icon_service;
 #[cfg(feature = "idam")]
 pub use services::idam;
 #[cfg(feature = "imagemounter")]
@@ -176,6 +180,10 @@ pub use services::preboard;
 pub use services::prepare;
 #[cfg(feature = "restore")]
 pub use services::restore;
+#[cfg(feature = "screencapture")]
+pub use services::screencapture;
+#[cfg(feature = "screencapture")]
+pub use services::screencapture as screen_capture;
 #[cfg(feature = "screenshot")]
 pub use services::screenshot;
 #[cfg(feature = "springboard")]
@@ -184,6 +192,10 @@ pub use services::springboard;
 pub use services::syslog;
 #[cfg(feature = "testmanager")]
 pub use services::testmanager;
+#[cfg(feature = "testmanager")]
+pub use services::testmanager::workflow::{
+    RunXcTestPlan, RunXcTestPlanBuilder, RunXcTestPlanError,
+};
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};

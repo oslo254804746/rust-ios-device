@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use ios_core::crashreport::{
@@ -10,6 +11,7 @@ use ios_core::crashreport::{
 use serde::Serialize;
 use serde_json::json;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 #[derive(clap::Args)]
 pub struct FileCmd {
@@ -378,14 +380,132 @@ impl FileCmd {
 /// pull`, `screenshot`, `provisioning export` and `crash pull` all fail with
 /// the same sentence instead of quietly destroying the previous download.
 pub(crate) fn ensure_local_overwrite_allowed(path: &Path, force: bool) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+    // `Path::exists()` follows symlinks and reports false for a dangling
+    // symlink. Inspect the directory entry itself so an output path cannot
+    // silently replace a pre-existing (possibly attacker-created) link unless
+    // the caller explicitly opts into replacement with `--force`.
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if local_path_entry_missing(&error) => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
     crate::output::require_force(
         force,
         &format!("overwrite {}", path.display()),
         "the existing local file would be replaced",
     )
+}
+
+// `ErrorKind::NotADirectory` is not available on the repository's MSRV yet.
+// Keep the equivalent errno fallback local and platform-specific so a path
+// below a regular file is treated like a fresh destination without requiring a
+// newer compiler or an extra libc dependency.
+fn local_path_entry_missing(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(20) // ENOTDIR
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(267) // ERROR_DIRECTORY
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Write device bytes with a private temporary file and atomic replacement.
+///
+/// This is used by CoreDevice image commands. The temporary is always 0600;
+/// the destination is replaced only after the complete payload is flushed.
+pub(crate) async fn write_local_bytes_atomic(path: &Path, data: &[u8], force: bool) -> Result<()> {
+    ensure_local_overwrite_allowed(path, force)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    for attempt in 0..16u32 {
+        let temporary = parent.join(format!(
+            ".{}.ios-image-{pid}-{nonce}-{attempt}.tmp",
+            file_name.to_string_lossy()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary).await {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let result = async {
+            file.write_all(data).await?;
+            file.sync_all().await
+        }
+        .await;
+        drop(file);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(error.into());
+        }
+        let result = replace_local_file(&temporary, path).await;
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary).await;
+        }
+        return result;
+    }
+
+    Err(anyhow::anyhow!(
+        "could not allocate a unique temporary image output path"
+    ))
+}
+
+#[cfg(not(windows))]
+async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).await?;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x2;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(once(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect();
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    let result = unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 fn connect_coredevice_file_device(
@@ -759,6 +879,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn atomic_image_write_replaces_only_with_force_and_keeps_private_mode() {
+        let path = std::env::temp_dir().join(format!(
+            "ios-image-write-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"old").unwrap();
+        assert!(write_local_bytes_atomic(&path, b"new", false)
+            .await
+            .is_err());
+        write_local_bytes_atomic(&path, b"new", true).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn parses_crash_flag() {
         let cmd = TestCli::parse_from(["file", "--crash", "ls", "/"]);
@@ -871,6 +1018,28 @@ mod tests {
             ensure_local_overwrite_allowed(&existing.join("missing-child"), false).is_ok(),
             "a fresh destination should not need --force"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_overwrite_guard_detects_dangling_symlink() {
+        let directory = std::env::temp_dir().join(format!(
+            "ios-output-symlink-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("output");
+        std::os::unix::fs::symlink(directory.join("missing-target"), &output).unwrap();
+
+        assert!(ensure_local_overwrite_allowed(&output, false).is_err());
+        assert!(ensure_local_overwrite_allowed(&output, true).is_ok());
+
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

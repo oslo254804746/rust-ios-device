@@ -81,5 +81,6 @@ tokio-openssl = "0.6"
 tracing-subscriber = "0.3"
 tun-rs       = { version = "2", features = ["async"] }
 zip          = { version = "2", default-features = false, features = ["deflate"] }
+tar          = { version = "0.4", default-features = false }
 crc32fast    = "1"
 libc         = "0.2"

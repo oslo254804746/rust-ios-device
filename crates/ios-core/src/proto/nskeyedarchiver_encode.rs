@@ -328,6 +328,33 @@ fn archive_xctest_configuration_into(
         Value::Boolean(config.test_timeouts_enabled),
     );
     for (key, value) in config.additional_fields {
+        if key == "testsToRun" || key == "testsToSkip" {
+            if let Value::Array(items) = &value {
+                let selectors = items
+                    .iter()
+                    .filter_map(Value::as_string)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                if selectors.len() == items.len() {
+                    // XCTestConfiguration uses NSSet for the legacy selector
+                    // fields and an XCTTestIdentifierSet for the newer, richer
+                    // representation. Sending NSArray here happens to decode
+                    // in our permissive parser but is rejected by some
+                    // testmanagerd releases.
+                    object.insert(key.clone(), archive_nsset_into(&selectors, objects));
+                    let identifier_key = if key == "testsToRun" {
+                        "testIdentifiersToRun"
+                    } else {
+                        "testIdentifiersToSkip"
+                    };
+                    object.insert(
+                        identifier_key.to_string(),
+                        archive_xct_test_identifier_set_into(&selectors, objects),
+                    );
+                    continue;
+                }
+            }
+        }
         // XCTestConfiguration stores object-valued fields as keyed references.
         // Keep scalar NSNumber values inline (as the system archive does), but
         // archive strings, data, arrays, and dictionaries before attaching them
@@ -348,6 +375,103 @@ fn archive_xctest_configuration_into(
         &["XCTestConfiguration", "NSObject"],
     ));
 
+    Value::Uid(Uid::new(object_idx as u64))
+}
+
+fn archive_nsset_into(values: &[String], objects: &mut Vec<Value>) -> Value {
+    let object_idx = objects.len();
+    objects.push(Value::Boolean(false));
+    let class_idx = objects.len();
+    objects.push(class_descriptor("NSSet", &["NSSet", "NSObject"]));
+
+    let item_uids = values
+        .iter()
+        .map(|value| archive_value_into(Value::String(value.clone()), objects))
+        .collect::<Vec<_>>();
+
+    let mut object = Dictionary::new();
+    object.insert("$class".to_string(), Value::Uid(Uid::new(class_idx as u64)));
+    object.insert("NS.objects".to_string(), Value::Array(item_uids));
+    objects[object_idx] = Value::Dictionary(object);
+    Value::Uid(Uid::new(object_idx as u64))
+}
+
+fn archive_xct_test_identifier_set_into(values: &[String], objects: &mut Vec<Value>) -> Value {
+    let set_idx = objects.len();
+    objects.push(Value::Boolean(false));
+
+    let array_idx = objects.len();
+    objects.push(Value::Boolean(false));
+    let array_class_idx = objects.len();
+    objects.push(class_descriptor(
+        "NSMutableArray",
+        &["NSMutableArray", "NSArray", "NSObject"],
+    ));
+
+    let identifier_uids = values
+        .iter()
+        .map(|selector| archive_xct_test_identifier_into(selector, objects))
+        .collect::<Vec<_>>();
+    let mut array = Dictionary::new();
+    array.insert(
+        "$class".to_string(),
+        Value::Uid(Uid::new(array_class_idx as u64)),
+    );
+    array.insert("NS.objects".to_string(), Value::Array(identifier_uids));
+    objects[array_idx] = Value::Dictionary(array);
+
+    let set_class_idx = objects.len();
+    objects.push(class_descriptor(
+        "XCTTestIdentifierSet",
+        &["XCTTestIdentifierSet", "NSObject"],
+    ));
+    let mut set = Dictionary::new();
+    set.insert(
+        "$class".to_string(),
+        Value::Uid(Uid::new(set_class_idx as u64)),
+    );
+    set.insert(
+        "identifiers".to_string(),
+        Value::Uid(Uid::new(array_idx as u64)),
+    );
+    objects[set_idx] = Value::Dictionary(set);
+    Value::Uid(Uid::new(set_idx as u64))
+}
+
+fn archive_xct_test_identifier_into(selector: &str, objects: &mut Vec<Value>) -> Value {
+    let class_idx = objects.len();
+    objects.push(class_descriptor(
+        "XCTTestIdentifier",
+        &["XCTTestIdentifier", "NSObject"],
+    ));
+
+    let (class, method) = selector
+        .split_once('/')
+        .map(|(class, method)| (class, Some(method)))
+        .unwrap_or((selector, None));
+    // The upstream implementation intentionally ignores the optional module
+    // in this representation: testmanagerd's identifier set expects class and
+    // method components, while the module remains in testsToRun.
+    let class = class
+        .split_once('.')
+        .map(|(_, class)| class)
+        .unwrap_or(class);
+    let components = match method {
+        Some(method) => vec![
+            Value::String(class.to_string()),
+            Value::String(method.to_string()),
+        ],
+        None => vec![Value::String(class.to_string())],
+    };
+    let options = if method.is_some() { 2 } else { 3 };
+    let components_uid = archive_value_into(Value::Array(components), objects);
+
+    let object_idx = objects.len();
+    let mut object = Dictionary::new();
+    object.insert("$class".to_string(), Value::Uid(Uid::new(class_idx as u64)));
+    object.insert("c".to_string(), components_uid);
+    object.insert("o".to_string(), Value::Integer(options.into()));
+    objects.push(Value::Dictionary(object));
     Value::Uid(Uid::new(object_idx as u64))
 }
 
@@ -732,5 +856,110 @@ mod tests {
             .get("targetApplicationArguments")
             .and_then(ArchiveValue::as_array)
             .is_some());
+    }
+
+    #[test]
+    fn test_archive_xctest_configuration_uses_selector_sets_and_identifiers() {
+        let data = archive_xctest_configuration(XcTestConfiguration {
+            session_identifier: Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap(),
+            test_bundle_url: NsUrl {
+                path: "PlugIns/DemoTests.xctest".to_string(),
+            },
+            ide_capabilities: XctCapabilities {
+                capabilities: Vec::new(),
+            },
+            automation_framework_path:
+                "/System/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework"
+                    .to_string(),
+            initialize_for_ui_testing: false,
+            report_results_to_ide: true,
+            tests_must_run_on_main_thread: true,
+            test_timeouts_enabled: false,
+            additional_fields: vec![
+                (
+                    "testsToRun".to_string(),
+                    Value::Array(vec![
+                        Value::String("DemoTests.LoginTests/testHappyPath".to_string()),
+                        Value::String("UnicodeTests".to_string()),
+                    ]),
+                ),
+                (
+                    "testsToSkip".to_string(),
+                    Value::Array(vec![Value::String("FlakyTests/testEventually".to_string())]),
+                ),
+            ],
+        });
+        let archived_objects = objects(&data);
+        let root = root_object(&data, &archived_objects);
+
+        let class_name = |uid: &Value| {
+            let class_uid = match uid {
+                Value::Uid(uid) => uid.get() as usize,
+                other => panic!("expected object uid, got {other:?}"),
+            };
+            let class_ref = match archived_objects[class_uid]
+                .as_dictionary()
+                .and_then(|object| object.get("$class"))
+            {
+                Some(Value::Uid(uid)) => uid.get() as usize,
+                other => panic!("expected class uid, got {other:?}"),
+            };
+            archived_objects[class_ref]
+                .as_dictionary()
+                .and_then(|class| class.get("$classname"))
+                .and_then(Value::as_string)
+        };
+
+        assert_eq!(
+            class_name(&root["testsToRun"]),
+            Some("NSSet"),
+            "legacy selectors must use NSSet"
+        );
+        assert_eq!(
+            class_name(&root["testIdentifiersToRun"]),
+            Some("XCTTestIdentifierSet")
+        );
+        assert_eq!(
+            class_name(&root["testIdentifiersToSkip"]),
+            Some("XCTTestIdentifierSet")
+        );
+
+        let identifier_set_uid = match &root["testIdentifiersToRun"] {
+            Value::Uid(uid) => uid.get() as usize,
+            _ => panic!("expected identifier-set uid"),
+        };
+        let identifier_set = archived_objects[identifier_set_uid]
+            .as_dictionary()
+            .unwrap();
+        let array_uid = match &identifier_set["identifiers"] {
+            Value::Uid(uid) => uid.get() as usize,
+            _ => panic!("expected identifier array uid"),
+        };
+        assert_eq!(
+            class_name(&Value::Uid(Uid::new(array_uid as u64))),
+            Some("NSMutableArray")
+        );
+        let array = archived_objects[array_uid].as_dictionary().unwrap();
+        let first_uid = match array["NS.objects"].as_array().unwrap().first() {
+            Some(Value::Uid(uid)) => uid.get() as usize,
+            _ => panic!("expected first identifier uid"),
+        };
+        let first = archived_objects[first_uid].as_dictionary().unwrap();
+        assert_eq!(first["o"].as_signed_integer(), Some(2));
+        let components_uid = match &first["c"] {
+            Value::Uid(uid) => uid.get() as usize,
+            _ => panic!("expected components uid"),
+        };
+        let components = archived_objects[components_uid].as_dictionary().unwrap();
+        let component_strings = components["NS.objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| match value {
+                Value::Uid(uid) => archived_objects[uid.get() as usize].as_string().unwrap(),
+                _ => panic!("expected component uid"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(component_strings, ["LoginTests", "testHappyPath"]);
     }
 }

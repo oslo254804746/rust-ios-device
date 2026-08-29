@@ -69,6 +69,26 @@ pub(crate) fn build_request(
     build_modern_request(feature_identifier, input)
 }
 
+/// Build a modern feature invocation that also carries an explicit action
+/// identifier.  ScreenCaptureService uses this shape; keeping it next to the
+/// ordinary builder prevents its CoreDevice version and identifier fields from
+/// drifting from the other feature services.
+pub(crate) fn build_request_with_action(
+    _device_identifier: &str,
+    feature_identifier: &str,
+    action_identifier: &str,
+    input: XpcValue,
+) -> XpcValue {
+    let mut request = build_modern_request(feature_identifier, input);
+    if let XpcValue::Dictionary(dict) = &mut request {
+        dict.insert(
+            "CoreDevice.actionIdentifier".to_string(),
+            XpcValue::String(action_identifier.to_string()),
+        );
+    }
+    request
+}
+
 fn build_modern_request(feature_identifier: &str, input: XpcValue) -> XpcValue {
     let request_device_identifier = uuid::Uuid::new_v4().to_string();
     build_request_with_version(

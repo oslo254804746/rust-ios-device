@@ -30,7 +30,13 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `mcinstall` (profiles and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `configuration`, `orientation`, `ostrace` (process listing and structured live log stream), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+
+`iconservice` and `screencapture` are modern CoreDevice/RSD services. The
+`apps icons` and `screenshot` CLI commands select them automatically on iOS
+17+ when the resolved RSD service is present, and use the legacy SpringBoard /
+lockdown paths on older devices. `icon_service` and `screen_capture` are
+feature aliases for downstream naming conventions.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 

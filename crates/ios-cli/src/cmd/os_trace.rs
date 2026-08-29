@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -121,6 +122,42 @@ enum OsTraceSub {
         #[arg(long)]
         timeout: Option<u64>,
     },
+    /// Save the device's raw PAX log archive without extracting it.
+    Archive {
+        /// Destination archive path. Existing files are atomically replaced.
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+        /// Maximum archive size requested from the device and enforced locally.
+        #[arg(long)]
+        size_limit: Option<u64>,
+        /// Maximum age in days of entries requested from the device.
+        #[arg(long)]
+        age_limit: Option<u64>,
+        /// Earliest entry as a Unix timestamp.
+        #[arg(long)]
+        start_time: Option<i64>,
+        /// Stop after this many seconds, including connection and extraction.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Fetch and safely extract the device's log archive into a new directory.
+    Collect {
+        /// Destination .logarchive directory. It must not already exist.
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+        /// Maximum archive size requested from the device and enforced locally.
+        #[arg(long)]
+        size_limit: Option<u64>,
+        /// Maximum age in days of entries requested from the device.
+        #[arg(long)]
+        age_limit: Option<u64>,
+        /// Earliest entry as a Unix timestamp.
+        #[arg(long)]
+        start_time: Option<i64>,
+        /// Stop after this many seconds, including connection and extraction.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
 }
 
 impl OsTraceCmd {
@@ -161,8 +198,185 @@ impl OsTraceCmd {
                 )
                 .await
             }
+            OsTraceSub::Archive {
+                output,
+                size_limit,
+                age_limit,
+                start_time,
+                timeout,
+            } => {
+                run_archive(
+                    &udid, output, size_limit, age_limit, start_time, timeout, json,
+                )
+                .await
+            }
+            OsTraceSub::Collect {
+                output,
+                size_limit,
+                age_limit,
+                start_time,
+                timeout,
+            } => {
+                run_collect(
+                    &udid, output, size_limit, age_limit, start_time, timeout, json,
+                )
+                .await
+            }
         }
     }
+}
+
+fn archive_options(
+    size_limit: Option<u64>,
+    age_limit: Option<u64>,
+    start_time: Option<i64>,
+) -> ios_core::ostrace::ArchiveOptions {
+    ios_core::ostrace::ArchiveOptions {
+        size_limit,
+        age_limit,
+        start_time,
+        max_total_bytes: size_limit.unwrap_or(ios_core::ostrace::DEFAULT_MAX_ARCHIVE_BYTES),
+        ..Default::default()
+    }
+}
+
+async fn connect_trace_client(
+    udid: &str,
+    stop: &mut StopSignal,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<
+    std::result::Result<
+        ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+        RunTermination,
+    >,
+> {
+    let (device, _version) = match wait_for_trace_stage(
+        connect_by_ios_major(udid, |major| major >= 17),
+        stop,
+        deadline,
+    )
+    .await?
+    {
+        Ok(value) => value,
+        Err(termination) => return Ok(Err(termination)),
+    };
+    let stream = if device.rsd().is_some() {
+        match wait_for_trace_stage(
+            device.connect_rsd_service(ios_core::ostrace::SHIM_SERVICE_NAME),
+            stop,
+            deadline,
+        )
+        .await?
+        {
+            Ok(stream) => stream,
+            Err(termination) => return Ok(Err(termination)),
+        }
+    } else {
+        match wait_for_trace_stage(
+            device.connect_service(ios_core::ostrace::SERVICE_NAME),
+            stop,
+            deadline,
+        )
+        .await?
+        {
+            Ok(stream) => stream,
+            Err(termination) => return Ok(Err(termination)),
+        }
+    };
+    Ok(Ok(ios_core::ostrace::OsTraceClient::new(stream)))
+}
+
+async fn run_archive(
+    udid: &str,
+    output: PathBuf,
+    size_limit: Option<u64>,
+    age_limit: Option<u64>,
+    start_time: Option<i64>,
+    timeout: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    let options = archive_options(size_limit, age_limit, start_time);
+    let deadline = trace_deadline(timeout)?;
+    let mut stop = stop_signal();
+    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
+        Ok(client) => client,
+        Err(termination) => return finish_termination(termination, timeout),
+    };
+    let stats = match wait_for_trace_stage(
+        client.archive_to_path(&output, options),
+        &mut stop,
+        deadline,
+    )
+    .await?
+    {
+        Ok(stats) => stats,
+        Err(termination) => return finish_termination(termination, timeout),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "operation": "archive",
+                "format": "pax-tar",
+                "output": output,
+                "bytes": stats.bytes,
+                "chunks": stats.chunks,
+            }))?
+        );
+    } else {
+        println!(
+            "Saved raw PAX log archive to {} ({} bytes, {} chunks)",
+            output.display(),
+            stats.bytes,
+            stats.chunks
+        );
+    }
+    Ok(())
+}
+
+async fn run_collect(
+    udid: &str,
+    output: PathBuf,
+    size_limit: Option<u64>,
+    age_limit: Option<u64>,
+    start_time: Option<i64>,
+    timeout: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    let options = archive_options(size_limit, age_limit, start_time);
+    let deadline = trace_deadline(timeout)?;
+    let mut stop = stop_signal();
+    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
+        Ok(client) => client,
+        Err(termination) => return finish_termination(termination, timeout),
+    };
+    let stats =
+        match wait_for_trace_stage(client.collect(&output, options), &mut stop, deadline).await? {
+            Ok(stats) => stats,
+            Err(termination) => return finish_termination(termination, timeout),
+        };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "operation": "collect",
+                "format": "pax-tar",
+                "output": output,
+                "bytes": stats.bytes,
+                "chunks": stats.chunks,
+                "entries": stats.entries,
+                "extracted_bytes": stats.extracted_bytes,
+            }))?
+        );
+    } else {
+        println!(
+            "Collected log archive in {} ({} entries, {} bytes)",
+            output.display(),
+            stats.entries,
+            stats.extracted_bytes
+        );
+    }
+    Ok(())
 }
 
 async fn run_ps(udid: &str, json: bool) -> Result<()> {
@@ -566,6 +780,43 @@ mod tests {
         assert!(ignore_case);
         assert_eq!(count, Some(2));
         assert_eq!(timeout, Some(5));
+    }
+
+    #[test]
+    fn parses_archive_and_collect_limits() {
+        let parsed = TestCli::try_parse_from([
+            "os-trace",
+            "archive",
+            "logs.tar",
+            "--size-limit",
+            "4096",
+            "--age-limit",
+            "7",
+            "--start-time",
+            "42",
+            "--timeout",
+            "30",
+        ])
+        .expect("archive should parse");
+        let OsTraceSub::Archive {
+            output,
+            size_limit,
+            age_limit,
+            start_time,
+            timeout,
+        } = parsed.command
+        else {
+            panic!("expected archive subcommand");
+        };
+        assert_eq!(output, PathBuf::from("logs.tar"));
+        assert_eq!(size_limit, Some(4096));
+        assert_eq!(age_limit, Some(7));
+        assert_eq!(start_time, Some(42));
+        assert_eq!(timeout, Some(30));
+
+        let parsed = TestCli::try_parse_from(["os-trace", "collect", "logs.logarchive"])
+            .expect("collect should parse");
+        assert!(matches!(parsed.command, OsTraceSub::Collect { .. }));
     }
 
     #[test]

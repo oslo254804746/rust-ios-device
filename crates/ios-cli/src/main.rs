@@ -135,6 +135,8 @@ enum Commands {
     Restore(cmd::restore::RestoreCmd),
     /// Start an XCTest runner from a .xctestrun file
     Runtest(cmd::runtest::RunTestCmd),
+    /// Start an installed XCTest runner directly by bundle identifier
+    Runxctest(cmd::runxctest::RunXcTestCmd),
     /// Start WebDriverAgent and forward its HTTP port locally
     Runwda(cmd::runwda::RunWdaCmd),
     /// Send HTTP commands to a running WebDriverAgent endpoint or device port
@@ -202,6 +204,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Prepare(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Restore(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Runtest(c) => Box::pin(async move { c.run(udid).await }),
+        Commands::Runxctest(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Runwda(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Wda(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Webinspector(c) => Box::pin(async move { c.run(udid, !no_json).await }),

@@ -29,6 +29,8 @@ pub use client::XpcClient;
     feature = "fetchsymbols",
     feature = "fileservice",
     feature = "orientation",
+    feature = "iconservice",
+    feature = "screencapture",
     feature = "restore"
 ))]
 pub(crate) use message::{XpcMessage, XpcValue};

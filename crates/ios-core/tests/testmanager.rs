@@ -1006,4 +1006,22 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn authorize_test_session_rejects_pid_outside_dtx_integer_range() {
+        let (session_client, _session_server) = duplex(4096);
+        let (control_client, _control_server) = duplex(4096);
+        let mut testmanager =
+            TestmanagerClient::from_connections_for_test(session_client, 3, control_client, 4);
+
+        let err = testmanager
+            .authorize_test_session_with_process_id(u64::MAX)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message)
+                if message.contains("exceeds DTX signed integer range")
+        ));
+    }
 }

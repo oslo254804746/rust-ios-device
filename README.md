@@ -124,8 +124,8 @@ orientation.
 | Discovery & pairing         | `list`, `listen`, `discover`, `pair`, `lockdown`                                                | go-ios `list`/`listen`/`pair`; pmd3 `usbmux`/`lockdown`/`bonjour`         |
 | Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi`   | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
 | Files & containers          | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                            | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`                                |
-| Apps & UI tests             | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                               | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
-| Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                               | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
+| Apps & UI tests             | `apps`, `runtest`, `runxctest`, `runwda`, `wda`, `springboard`                                  | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
+| Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace` (including raw archive/collect), `notify`, `pcap`, `btlogger` | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
 | Device pasteboard           | `pasteboard get`, `pasteboard set TEXT`, `pasteboard set --url URL`                            | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy`                     |

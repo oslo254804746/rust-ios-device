@@ -16,7 +16,8 @@ top of it.
   pairing helpers.
 - iOS 17+ CoreDevice support: CDTunnel (userspace and kernel TUN modes),
   Remote Service Discovery (RSD), HTTP/2 RemoteXPC transport, appservice,
-  fileservice, diagnosticsservice, deviceinfo, Instruments, and TestManager.
+  iconservice, screencapture, fileservice, diagnosticsservice, deviceinfo,
+  Instruments, and TestManager.
 - 30+ feature-gated service modules covering AFC, syslog, screenshots,
   configuration/provisioning profiles, crash reports, Instruments, debugserver,
   WebInspector, ImageMounter, pcap, and more.
@@ -41,7 +42,7 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, instruments, orientation, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
 
 CoreDevice service availability is **service-surface dependent**: a device can

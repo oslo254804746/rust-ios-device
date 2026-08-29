@@ -37,20 +37,22 @@ schemas, service routing, and iOS-version support can differ.
 | Crash reports | `ios crash list`, `ios file --crash ...` | `ios crash ls`, `ios crash cp` | `pymobiledevice3 crash pull ...` |
 | File relay | `ios file-relay <SOURCE>` | file relay service workflows | file relay service workflows |
 | List apps | `ios apps list` | `ios apps` | `pymobiledevice3 apps list` |
+| App icons | `ios apps icons BUNDLE_ID` (alias: `apps icon`) | app icon workflows | `pymobiledevice3 developer core-device icon ...` |
 | Install app | `ios apps install PATH` | `ios install --path=PATH` | `pymobiledevice3 apps install PATH` |
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
 | Device pasteboard | `ios pasteboard get`, `ios pasteboard set TEXT`, `ios pasteboard set --url URL` | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
-| Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; direct runner execution remains unsupported |
+| Run XCTest | `ios runtest FILE.xctestrun [...]` or `ios runxctest --test-runner-bundle-id BUNDLE --xctest-config BUNDLE.xctest [--bundle-id APP ... --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; runner must already be installed and signed |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
+| Screenshot | `ios screenshot [--output PATH]` | `ios screenshot ...` | `pymobiledevice3 developer dvt screenshot` / CoreDevice screen capture |
 | Diagnostics | `ios diagnostics ...`, `ios diagnostics sysdiagnose` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...`, CoreDevice sysdiagnose workflows |
 | MobileBackup2 | `ios backup create|restore|info|list`, `backup unback|extract` (local compatibility), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including `unback`/`extract` | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
 | Restart or restore mode | `ios diagnostics reboot`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
 | Packet capture | `ios pcap --output device.pcap` | `ios pcap ...` | `pymobiledevice3 pcap ...` |
 | Bluetooth HCI capture | `ios btlogger capture trace.pklg`, `ios btlogger capture --format pcapng trace.pcapng` | Bluetooth packet logging workflows | `pymobiledevice3 btlogger ...` |
-| OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog` |
+| OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios os-trace archive`/`collect`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog`, `syslog collect` |
 | Developer Disk Image | `ios ddi status`, `ios ddi mount ...` | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount` |
 | Instruments process list | `ios instruments ps` | `ios ps`, `ios instruments ...` | `pymobiledevice3 developer dvt sysmon ...` |
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |

@@ -450,6 +450,9 @@ impl AppServiceClient {
     }
 
     /// Fetch one or more rendered app icons for a bundle.
+    #[deprecated(
+        note = "CoreDevice icons are served by iconservice; use IconServiceClient::fetch_icon instead"
+    )]
     pub async fn fetch_app_icons(
         &mut self,
         bundle_id: &str,

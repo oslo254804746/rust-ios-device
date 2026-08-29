@@ -63,6 +63,8 @@ ios17 = [
     "fileservice",
     "instruments",
     "orientation",
+    "iconservice",
+    "screencapture",
     "pasteboard",
     "testmanager",
     "mdns",
@@ -110,10 +112,16 @@ power_assertion = []
 preboard = []
 idam = []
 fetchsymbols = []
-ostrace = []
+ostrace = ["dep:tar"]
 pasteboard = ["tunnel", "mdns"]
 configuration = ["tunnel"]
 orientation = ["tunnel"]
+iconservice = ["tunnel"]
+screencapture = ["tunnel"]
+# Naming aliases for downstream callers that follow the upstream Python file
+# names or Rust's snake_case convention.
+icon_service = ["iconservice"]
+screen_capture = ["screencapture"]
 prepare = ["afc", "mcinstall", "supervised-pair"]
 restore = []
 dproxy = ["dtx"]
@@ -194,6 +202,7 @@ reqwest      = { workspace = true, optional = true }
 zip          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
 rusqlite     = { workspace = true, optional = true }
+tar          = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc         = { workspace = true }

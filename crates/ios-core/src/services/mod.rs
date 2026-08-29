@@ -36,13 +36,15 @@
 //! | `diagnosticsservice` | [`diagnosticsservice`] | iOS 17+ XPC diagnostics service |
 //! | `configuration` | [`configuration`] | iOS 17+ CoreDevice appearance/accessibility actions |
 //! | `orientation` | [`orientation`] | iOS 17+ CoreDevice device rotation |
+//! | `iconservice` | [`iconservice`] | iOS 17+ CoreDevice application icons |
+//! | `screencapture` | [`screencapture`] | iOS 17+ CoreDevice screenshot capture |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
 //! | `preboard` | [`preboard`] | Stashbag commit/rollback |
 //! | `idam` | [`idam`] | Identity and device auth |
 //! | `fetchsymbols` | [`fetchsymbols`] | Debug symbol download |
-//! | `ostrace` | [`ostrace`] | Structured OS trace relay log streaming and process listing |
+//! | `ostrace` | [`ostrace`] | OS trace process listing, structured live logs, and raw PAX archive/collect |
 //! | `pasteboard` | [`pasteboard`] | iOS 17+ CoreDevice general pasteboard |
 //! | `prepare` | [`prepare`] | Supervised device preparation (requires `afc`+`mcinstall`) |
 //! | `restore` | [`restore`] | Recovery/restore mode operations |
@@ -101,7 +103,9 @@ pub mod backup2;
     feature = "deviceinfo",
     feature = "diagnosticsservice",
     feature = "fileservice",
-    feature = "orientation"
+    feature = "orientation",
+    feature = "iconservice",
+    feature = "screencapture"
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
@@ -205,6 +209,12 @@ pub mod configuration;
 
 #[cfg(feature = "orientation")]
 pub mod orientation;
+
+#[cfg(feature = "iconservice")]
+pub mod iconservice;
+
+#[cfg(feature = "screencapture")]
+pub mod screencapture;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

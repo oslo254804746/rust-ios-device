@@ -129,10 +129,12 @@ ios -u <UDID> apps kill <PID>
 ios -u <UDID> apps roots
 ios -u <UDID> apps spawn /usr/bin/log -- stream --style json
 ios -u <UDID> apps icons com.example.app --output-dir ./icons
+ios -u <UDID> apps icons com.example.app --output-dir ./icons --force
 ios -u <UDID> apps monitor <PID> --timeout-secs 30
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests --test-target com.example.Runner --wait
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --wait --junit-output ./test-results.xml
+ios -u <UDID> runxctest --test-runner-bundle-id com.example.Runner --xctest-config ExampleTests.xctest --bundle-id com.example.App --test LoginTests/testHappyPath --wait --junit-output ./test-results.xml
 ios -u <UDID> runwda --help
 ios wda status --base-url http://127.0.0.1:8100
 ios -u <UDID> wda --device-port 8100 status
@@ -140,9 +142,18 @@ ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
 
 `apps list --coredevice`, `apps processes`, `apps launch`, `apps roots`,
-`apps spawn`, `apps icons`, `apps monitor`, and related process-control commands
-use newer app service paths and are mainly intended for iOS versions that expose
-those services through CoreDevice/RSD.
+`apps spawn`, and `apps monitor` use newer app service paths. `apps icons` uses
+the independent CoreDevice `iconservice` on iOS 17+ and the legacy SpringBoard
+icon service on older devices. Icon output is written through a private
+temporary file and atomic replacement; JSON reports metadata and paths rather
+than embedding image bytes. CoreDevice icon requests default to 60x60 points,
+scale 2, and allow a placeholder; use `--no-placeholder` to reject one. The
+legacy SpringBoard path cannot apply those rendering options.
+
+The `screenshot` command similarly selects CoreDevice
+`screencaptureservice` on iOS 17+, then uses the read-only DTX/lockdown paths as
+an explicit fallback when that service is unavailable. Use `--force` to replace
+an existing output file.
 
 `runtest` chooses the XCTest transport by iOS generation: iOS 17+ uses Remote
 Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
@@ -161,13 +172,20 @@ without falsely increasing the skipped/failure totals. Existing XCTest events
 currently provide log text only, so normal/debug logs are mapped to
 `system-out` / `system-err`; actual stdout/stderr provenance and attachment
 metadata are not available in the current model.
-Direct runner execution (`runxctest`) and richer XCTest result/attachment
-collection remain upstream parity gaps.
+The direct runner command (`runxctest`) builds the XCTest configuration in
+memory and accepts repeated `--test`, `--test-to-skip`, `--env KEY=VALUE`,
+and `--arg` options, plus the `--class`/`--method` convenience selector.
+The test runner application and its `*.xctest` bundle must already be
+installed and signed for the device. This command does not build, install,
+sign, or provision a runner; Apple signing services and App Store Connect
+workflows remain outside this CLI. iOS 17+ uses the DDI/testmanagerd route and
+older classic devices use the corresponding lockdown testmanager service.
+Result attachments and runner stdout/stderr provenance are not yet exposed.
 
 Comparable upstream workflows:
 
-- go-ios: `ios apps`, `ios install`, `ios launch`, `ios kill`, `ios runtest`,
-  `ios runwda`.
+- go-ios: `ios apps`, `ios install`, `ios launch`, `ios kill`, `ios runtest`
+  (bundle-ID runner), `ios runxctest` (.xctestrun), and `ios runwda`.
 - pymobiledevice3: `pymobiledevice3 apps ...` and developer DVT launch/kill
   commands.
 
@@ -257,6 +275,8 @@ ios -u <UDID> diagnostics reboot
 ios -u <UDID> os-trace ps
 ios -u <UDID> os-trace stream --process SpringBoard --level error,info
 ios -u <UDID> os-trace live --pid 42 --subsystem com.example --match timeout
+ios -u <UDID> os-trace archive ./diagnostics.tar --size-limit 1073741824
+ios -u <UDID> os-trace collect ./diagnostics.logarchive --age-limit 7
 ios -u <UDID> pcap --output device.pcap
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
@@ -291,8 +311,18 @@ use the classic `com.apple.os_trace_relay` lockdown service. Stream JSON uses
 `schema_version: 2`, standard UUID strings, an RFC3339 `timestamp`, and enum
 `level`; the `*_hex`, `timestamp_parts`, and `level_value` fields retain the
 prior raw representations for consumers migrating from the initial schema.
-Archive/collect retrieval is not exposed until its tar framing and safe
-extraction contract can be implemented and tested independently.
+`os-trace archive` requests the relay's raw PAX-format tar stream and installs
+it with a 0600 temporary file followed by an atomic rename. It does not create
+or claim to create a zip file. `os-trace collect` performs the same transfer,
+validates tar metadata and path/type/size limits, extracts into a 0700 staging
+directory, and atomically installs a new `.logarchive` directory; an existing
+collect destination is refused. Both commands use the classic
+`com.apple.os_trace_relay` service on older devices and the
+`com.apple.os_trace_relay.shim.remote` RSD service on iOS 17+, and `--timeout`
+covers connection, transfer, validation, and extraction. Device-side
+`SizeLimit`, `AgeLimit`, and Unix-timestamp `StartTime` are sent unchanged;
+the core API also enforces bounded host-side archive, entry, and extracted-byte
+budgets. Ctrl+C removes incomplete temporary output.
 
 ## Backups
 

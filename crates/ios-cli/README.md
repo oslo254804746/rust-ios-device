@@ -60,8 +60,8 @@ Commands that target a device default to the first device returned by
 | Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`                                          |
 | Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation`, `amfi`                |
 | Files & containers       | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                      |
-| Apps & UI tests          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                         |
-| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                     |
+| Apps & UI tests          | `apps`, `runtest`, `runxctest`, `runwda`, `wda`, `springboard`                            |
+| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace` (including archive/collect), `notify`, `pcap`          |
 | Developer services       | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
 | iOS 17+ transport        | `tunnel`, `rsd`, `forward`, `dproxy`                                                      |
 | Management & supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
@@ -83,4 +83,3 @@ flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
-

@@ -49,6 +49,7 @@ pub mod restore;
 pub mod rsd;
 pub mod runtest;
 pub mod runwda;
+pub mod runxctest;
 pub mod screenshot;
 pub mod springboard;
 pub mod symbols;
