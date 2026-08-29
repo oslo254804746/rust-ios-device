@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Exposed RSD-advertised service feature identifiers through `ios-core`, the
+  `ios rsd services --features` command, the C FFI, and Python tunnel objects.
+- Added detailed MobileBackup2 free-space diagnostics after device purge
+  requests.
+
+### Changed
+
+- Reduced MobileBackup2 host-to-device transfer frames to 32 KiB and streamed
+  device-to-host payloads through bounded buffers.
+- Decoded BSD `vis(3)` escapes in syslog relay messages and made process filters
+  recognize Apple's `Process(Library)` annotation.
+
+### Fixed
+
+- Bounded tunnel TCP connection attempts, InstallationProxy Browse responses,
+  and pending DTX state so stale or malformed device traffic cannot stall or
+  grow memory indefinitely.
+- Rejected invalid RSD ports and malformed DTX length/fragment metadata instead
+  of truncating values or accepting incomplete frames.
+
 ## [0.1.8] — 2026-07-27
 
 ### Added

@@ -1,5 +1,13 @@
 //! CDTunnel handshake, TUN device abstraction, and packet forwarding.
 
+use std::time::Duration;
+
+/// Maximum time allowed for a TCP dial or initial protocol setup through a tunnel.
+///
+/// A stale kernel route can otherwise inherit the operating system's much
+/// longer SYN retry window and stall every RSD/service operation.
+pub const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[cfg(feature = "tunnel")]
 pub mod forward;
 #[cfg(feature = "tunnel")]

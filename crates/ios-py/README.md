@@ -45,6 +45,8 @@ print(tunnel.server_address)   # device tunnel IPv6 address
 print(tunnel.rsd_port)         # Remote Service Discovery port
 print(tunnel.userspace_port)   # local TCP proxy port
 print(tunnel.services)         # discovered RSD service names
+print(tunnel.service_ports)    # service name -> device TCP port
+print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
 print(tunnel.connect_info())   # connection summary dict
 
 tunnel.close()
@@ -103,6 +105,8 @@ not capture a full sysdiagnose.
 | `Tunnel.rsd_port` | Remote Service Discovery port. |
 | `Tunnel.userspace_port` | Local TCP proxy port (userspace mode only). |
 | `Tunnel.services` | List of discovered RSD service names. |
+| `Tunnel.service_ports` | Dict mapping RSD service names to device TCP ports. |
+| `Tunnel.service_features` | Dict of capability identifiers advertised by each RSD service; an empty list means metadata was not advertised. |
 | `Tunnel.connect_info()` | Dict summarizing connection parameters. |
 | `Tunnel.asyncio_proxy()` | Context manager that patches `asyncio.open_connection`. |
 | `Tunnel.close()` | Tears down the tunnel. |
@@ -122,4 +126,3 @@ not capture a full sysdiagnose.
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
-

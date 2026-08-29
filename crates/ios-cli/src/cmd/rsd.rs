@@ -21,11 +21,15 @@ enum RsdSub {
         all: bool,
         #[arg(long, help = "Filter services by prefix")]
         prefix: Option<String>,
+        #[arg(long, help = "Show feature identifiers advertised by each service")]
+        features: bool,
     },
     /// Check whether a specific RSD service is currently exposed
     Check {
         #[arg(help = "Service name (e.g. com.apple.coredevice.deviceinfo)")]
         service: String,
+        #[arg(long, help = "Show feature identifiers advertised by the service")]
+        features: bool,
     },
 }
 
@@ -44,31 +48,67 @@ impl RsdCmd {
             .ok_or_else(|| anyhow::anyhow!("RSD not available on this device/session"))?;
 
         match self.sub {
-            RsdSub::Services { all, prefix } => {
+            RsdSub::Services {
+                all,
+                prefix,
+                features,
+            } => {
                 let services = filtered_services(&rsd, all, prefix.as_deref());
                 if json {
-                    let list: Vec<_> = services
-                        .iter()
-                        .map(|(name, port)| serde_json::json!({ "name": name, "port": port }))
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    if features {
+                        println!("{}", serde_json::to_string_pretty(&services)?);
+                    } else {
+                        let legacy: Vec<_> = services
+                            .iter()
+                            .map(|service| {
+                                serde_json::json!({
+                                    "name": service.name,
+                                    "port": service.port,
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&legacy)?);
+                    }
                 } else {
-                    for (name, port) in services {
-                        println!("{:<55} {}", name, port);
+                    for service in services {
+                        println!("{:<55} {}", service.name, service.port);
+                        if features {
+                            for feature in service.features {
+                                println!("  {feature}");
+                            }
+                        }
                     }
                 }
             }
-            RsdSub::Check { service } => {
+            RsdSub::Check { service, features } => {
                 let result = service_check(&rsd, &service);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    if features {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "requested_name": result.requested_name,
+                                "available": result.available,
+                                "resolved_name": result.resolved_name,
+                                "port": result.port,
+                                "features": result.features,
+                            }))?
+                        );
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    }
                 } else if result.available {
-                    if let Some(resolved) = result.resolved_name {
+                    if let Some(resolved) = result.resolved_name.as_deref() {
                         println!("available: true");
                         println!("service: {resolved}");
                         println!("port: {}", result.port.unwrap_or_default());
                     } else {
                         println!("available: true");
+                    }
+                    if features {
+                        for feature in result.features {
+                            println!("feature: {feature}");
+                        }
                     }
                 } else {
                     println!("available: false");
@@ -87,6 +127,8 @@ struct ServiceCheckResult {
     available: bool,
     resolved_name: Option<String>,
     port: Option<u16>,
+    #[serde(skip)]
+    features: Vec<String>,
 }
 
 fn service_check(rsd: &ios_core::RsdHandshake, service: &str) -> ServiceCheckResult {
@@ -96,6 +138,7 @@ fn service_check(rsd: &ios_core::RsdHandshake, service: &str) -> ServiceCheckRes
             available: true,
             resolved_name: Some(service.to_string()),
             port: Some(descriptor.port),
+            features: descriptor.features.clone(),
         };
     }
 
@@ -106,22 +149,36 @@ fn service_check(rsd: &ios_core::RsdHandshake, service: &str) -> ServiceCheckRes
         available: shim_match.is_some(),
         resolved_name: shim_match.map(|_| shim),
         port: shim_match.map(|descriptor| descriptor.port),
+        features: shim_match
+            .map(|descriptor| descriptor.features.clone())
+            .unwrap_or_default(),
     }
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+struct ServiceSummary {
+    name: String,
+    port: u16,
+    features: Vec<String>,
 }
 
 fn filtered_services(
     rsd: &ios_core::RsdHandshake,
     all: bool,
     prefix: Option<&str>,
-) -> Vec<(String, u16)> {
+) -> Vec<ServiceSummary> {
     let effective_prefix = prefix.or_else(|| (!all).then_some(COREDEVICE_PREFIX));
     let mut services: Vec<_> = rsd
         .services
         .iter()
         .filter(|(name, _)| effective_prefix.map_or(true, |prefix| name.starts_with(prefix)))
-        .map(|(name, svc)| (name.clone(), svc.port))
+        .map(|(name, svc)| ServiceSummary {
+            name: name.clone(),
+            port: svc.port,
+            features: svc.features.clone(),
+        })
         .collect();
-    services.sort_by(|a, b| a.0.cmp(&b.0));
+    services.sort_by(|a, b| a.name.cmp(&b.name));
     services
 }
 
@@ -144,12 +201,43 @@ mod tests {
     fn parses_rsd_services_subcommand() {
         let cmd = TestCli::parse_from(["rsd", "services", "--all"]);
         match cmd.command {
-            RsdSub::Services { all, prefix } => {
+            RsdSub::Services {
+                all,
+                prefix,
+                features,
+            } => {
                 assert!(all);
                 assert_eq!(prefix, None);
+                assert!(!features);
             }
             _ => panic!("expected services subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_rsd_check_features_flag() {
+        let cmd = TestCli::parse_from([
+            "rsd",
+            "check",
+            "com.apple.coredevice.appservice",
+            "--features",
+        ]);
+        assert!(matches!(cmd.command, RsdSub::Check { features: true, .. }));
+    }
+
+    #[test]
+    fn default_check_json_shape_omits_features() {
+        let result = ServiceCheckResult {
+            requested_name: "requested".into(),
+            available: true,
+            resolved_name: Some("resolved".into()),
+            port: Some(1234),
+            features: vec!["feature.one".into()],
+        };
+        let json = serde_json::to_value(result).unwrap();
+
+        assert!(json.get("features").is_none());
+        assert_eq!(json["port"], 1234);
     }
 
     #[test]
@@ -159,11 +247,11 @@ mod tests {
             services: HashMap::from([
                 (
                     "com.apple.coredevice.appservice".into(),
-                    ServiceDescriptor { port: 1234 },
+                    ServiceDescriptor::new(1234),
                 ),
                 (
                     "com.apple.instruments.dtservicehub".into(),
-                    ServiceDescriptor { port: 5678 },
+                    ServiceDescriptor::new(5678),
                 ),
             ]),
         };
@@ -171,7 +259,11 @@ mod tests {
         let services = filtered_services(&rsd, false, None);
         assert_eq!(
             services,
-            vec![("com.apple.coredevice.appservice".into(), 1234)]
+            vec![ServiceSummary {
+                name: "com.apple.coredevice.appservice".into(),
+                port: 1234,
+                features: Vec::new(),
+            }]
         );
     }
 
@@ -182,11 +274,11 @@ mod tests {
             services: HashMap::from([
                 (
                     "com.apple.coredevice.appservice".into(),
-                    ServiceDescriptor { port: 1234 },
+                    ServiceDescriptor::new(1234),
                 ),
                 (
                     "com.apple.instruments.dtservicehub".into(),
-                    ServiceDescriptor { port: 5678 },
+                    ServiceDescriptor::new(5678),
                 ),
             ]),
         };
@@ -197,7 +289,11 @@ mod tests {
         let instruments = filtered_services(&rsd, true, Some("com.apple.instruments."));
         assert_eq!(
             instruments,
-            vec![("com.apple.instruments.dtservicehub".into(), 5678)]
+            vec![ServiceSummary {
+                name: "com.apple.instruments.dtservicehub".into(),
+                port: 5678,
+                features: Vec::new(),
+            }]
         );
     }
 
@@ -208,11 +304,11 @@ mod tests {
             services: HashMap::from([
                 (
                     "com.apple.afc.shim.remote".into(),
-                    ServiceDescriptor { port: 1234 },
+                    ServiceDescriptor::new(1234),
                 ),
                 (
                     "com.apple.instruments.dtservicehub".into(),
-                    ServiceDescriptor { port: 5678 },
+                    ServiceDescriptor::new(5678),
                 ),
             ]),
         };
@@ -224,6 +320,7 @@ mod tests {
             Some("com.apple.instruments.dtservicehub")
         );
         assert_eq!(exact.port, Some(5678));
+        assert!(exact.features.is_empty());
 
         let shim = service_check(&rsd, "com.apple.afc");
         assert!(shim.available);
@@ -237,5 +334,25 @@ mod tests {
         assert!(!missing.available);
         assert_eq!(missing.resolved_name, None);
         assert_eq!(missing.port, None);
+        assert!(missing.features.is_empty());
+    }
+
+    #[test]
+    fn filtered_services_preserves_advertised_features() {
+        let rsd = RsdHandshake {
+            udid: "test".into(),
+            services: HashMap::from([(
+                "com.apple.coredevice.appservice".into(),
+                ServiceDescriptor {
+                    port: 1234,
+                    features: vec!["com.apple.coredevice.feature.listapps".into()],
+                },
+            )]),
+        };
+
+        assert_eq!(
+            filtered_services(&rsd, true, None)[0].features,
+            ["com.apple.coredevice.feature.listapps"]
+        );
     }
 }

@@ -312,14 +312,14 @@ struct RsdCheckinRequest {
 }
 
 fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(String, u16)> {
-    if let Some(ServiceDescriptor { port }) = rsd.services.get(requested_service) {
+    if let Some(ServiceDescriptor { port, .. }) = rsd.services.get(requested_service) {
         return Some((requested_service.to_string(), *port));
     }
 
     let shim_service = format!("{requested_service}.shim.remote");
     rsd.services
         .get(&shim_service)
-        .map(|ServiceDescriptor { port }| (shim_service, *port))
+        .map(|ServiceDescriptor { port, .. }| (shim_service, *port))
 }
 
 fn validate_rsd_checkin_response(

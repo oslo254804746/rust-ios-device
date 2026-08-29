@@ -36,9 +36,15 @@ print(tunnel.server_address)
 print(tunnel.rsd_port)
 print(tunnel.userspace_port)
 print(tunnel.services)
+print(tunnel.service_ports)
+print(tunnel.service_features)
 print(tunnel.connect_info())
 tunnel.close()
 ```
+
+`service_ports` and `service_features` use service-name ordering. Every discovered
+service appears in both dictionaries; an empty feature list means the RSD entry
+did not advertise capability metadata, not that every operation is unsupported.
 
 `start_tunnel(..., mode="kernel")` requests kernel TUN mode and may require elevated privileges.
 

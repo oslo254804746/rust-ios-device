@@ -94,7 +94,17 @@ pub async fn pair_new_device(
 
     // 2. XPC connection to the untrusted service
     let sock_addr = SocketAddr::new(device_addr.into(), port);
-    let stream = TcpStream::connect(sock_addr).await?;
+    let stream = tokio::time::timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+        TcpStream::connect(sock_addr),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("pairing service dial to {sock_addr} timed out"),
+        )
+    })??;
 
     let mut framer = crate::xpc::h2_raw::H2Framer::connect(stream)
         .await

@@ -488,7 +488,7 @@ mod tests {
             udid: "test-udid".into(),
             services: HashMap::from([(
                 "com.apple.mobile.notification_proxy.shim.remote".into(),
-                ServiceDescriptor { port: 1234 },
+                ServiceDescriptor::new(1234),
             )]),
         };
 

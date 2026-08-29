@@ -40,7 +40,17 @@ pub async fn connect_psk_tls(
     port: u16,
     psk: &[u8],
 ) -> Result<SslStream<TcpStream>, PskTlsError> {
-    let tcp = TcpStream::connect((host, port)).await?;
+    let tcp = tokio::time::timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+        TcpStream::connect((host, port)),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("PSK tunnel dial to {host}:{port} timed out"),
+        )
+    })??;
     connect_psk_tls_stream(host, tcp, psk).await
 }
 

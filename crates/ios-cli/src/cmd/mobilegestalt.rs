@@ -220,7 +220,7 @@ mod tests {
             udid: "test".into(),
             services: HashMap::from([(
                 "com.apple.coredevice.appservice".into(),
-                ServiceDescriptor { port: 1234 },
+                ServiceDescriptor::new(1234),
             )]),
         };
 
@@ -236,7 +236,7 @@ mod tests {
             udid: "test".into(),
             services: HashMap::from([(
                 "com.apple.coredevice.deviceinfo.shim.remote".into(),
-                ServiceDescriptor { port: 1234 },
+                ServiceDescriptor::new(1234),
             )]),
         };
 

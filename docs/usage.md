@@ -209,6 +209,7 @@ ios -u <UDID> tunnel start --userspace
 ios tunnel serve --userspace --host 127.0.0.1 --port 49151
 ios tunnel list
 ios -u <UDID> rsd services
+ios -u <UDID> rsd services --all --features
 ios -u <UDID> forward 1234 62078 --once
 ```
 

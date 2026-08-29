@@ -59,7 +59,7 @@ schemas, service routing, and iOS-version support can differ.
 | Symbols | `ios symbols list`, `ios symbols pull ...` | symbol fetch workflows | `dtfetchsymbols` / remote symbols workflows |
 | Tunnel start | `ios tunnel start --userspace` | `ios tunnel start` | iOS 17+ tunnel and RemoteXPC workflows |
 | Tunnel manager | `ios tunnel serve --userspace ...` | go-ios tunnel HTTP manager | tunneld/remote workflows |
-| RSD services | `ios rsd services` | `ios rsd ls` | Remote Service Discovery workflows |
+| RSD services | `ios rsd services --all --features` | `ios rsd ls` | Remote Service Discovery workflows |
 | Port forwarding | `ios forward HOST_PORT DEVICE_PORT` | `ios forward HOST_PORT TARGET_PORT` | `pymobiledevice3 usbmux forward HOST_PORT DEVICE_PORT` |
 | Profiles | `ios profiles list` | `ios profile list`, `ios profile add`, `ios profile remove` | `pymobiledevice3 profile ...` |
 | Provisioning profiles | `ios provisioning list` | provisioning/profile workflows | `pymobiledevice3 provision ...` |

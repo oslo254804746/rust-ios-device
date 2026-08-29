@@ -147,6 +147,7 @@ ios tunnel serve --userspace --host 127.0.0.1 --port 49151
 
 ```sh
 ios rsd services --all
+ios rsd services --all --features
 ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```

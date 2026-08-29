@@ -9,6 +9,8 @@ workspace. Builds a `cdylib` and a `staticlib` plus a public C header
 
 - C-callable surface for device listing, lockdown queries, pairing/service
   access, and CoreDevice tunnel lifecycle.
+- RSD service ports and advertised capability identifiers available as compact
+  JSON through `ios_tunnel_rsd_services_json`.
 - Both shared (`libios_ffi.so` / `.dylib` / `ios_ffi.dll`) and static
   (`libios_ffi.a` / `ios_ffi.lib`) artifacts.
 - Built with `ios-core` features `mdns` and `tunnel-userspace`, so userspace
@@ -88,4 +90,3 @@ and `dl`.
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
-
