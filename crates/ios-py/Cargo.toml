@@ -12,6 +12,13 @@ publish = false
 keywords = ["ios", "apple", "python", "mobile", "usbmuxd"]
 categories = ["api-bindings", "development-tools::ffi"]
 
+[features]
+# Host-side Cargo tests link PyO3 to the active Python runtime. Wheel builds
+# enable this feature through pyproject.toml so the extension can resolve
+# Python symbols at import time.
+default = []
+extension-module = ["pyo3/extension-module"]
+
 [lib]
 name = "ios_rs"
 crate-type = ["cdylib"]

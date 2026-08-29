@@ -257,7 +257,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload);
+            self.control_messages.push(&frame.payload).map_err(|err| {
+                RestoreError::Protocol(format!("restore response buffer failed: {err}"))
+            })?;
         }
     }
 
@@ -336,8 +338,7 @@ where
     framer
         .write_client_server(
             &crate::xpc::message::encode_message(&XpcMessage {
-                flags: crate::xpc::message::flags::ALWAYS_SET
-                    | crate::xpc::message::flags::DATA_PRESENT,
+                flags: crate::xpc::message::flags::ALWAYS_SET,
                 msg_id: 0,
                 body: Some(XpcValue::Dictionary(IndexMap::new())),
             })
@@ -351,9 +352,16 @@ where
         })?;
 
     framer
+        .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+        .await
+        .map_err(|err| {
+            RestoreError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
+        })?;
+
+    framer
         .write_client_server(
             &crate::xpc::message::encode_message(&XpcMessage {
-                flags: crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::REPLY,
+                flags: crate::xpc::message::flags::ALWAYS_SET | 0x200,
                 msg_id: 0,
                 body: None,
             })
@@ -847,10 +855,15 @@ mod tests {
         let _ = read_xpc_request(stream, 1).await;
         write_empty_xpc(stream, 1).await;
 
-        let _ = read_xpc_request(stream, 1).await;
+        read_headers_frame(stream, 3).await;
+        let second = read_xpc_request(stream, 1).await;
+        assert_eq!(
+            second.flags,
+            crate::xpc::message::flags::ALWAYS_SET | 0x200,
+            "bootstrap stream-1 terminator must use the 0x0201 flags"
+        );
         write_empty_xpc(stream, 1).await;
 
-        read_headers_frame(stream, 3).await;
         let _ = read_xpc_request(stream, 3).await;
         write_empty_xpc(stream, 3).await;
     }

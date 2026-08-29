@@ -2,7 +2,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
 
 use crate::tunnel::tun::TunDevice;
-use crate::tunnel::TunnelError;
+use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
 /// How many decoded packets may queue up between the stream reader and the
 /// forwarding loop before the reader has to wait for the TUN to catch up.
@@ -17,19 +17,35 @@ const STREAM_PACKET_QUEUE: usize = 64;
 /// which permanently desyncs the IPv6 framing for every packet that follows.
 /// Owning the reader means it is never cancelled mid-packet; the loop instead
 /// awaits an mpsc receive, which is cancellation-safe.
+#[allow(dead_code)]
 pub async fn forward_packets<S, D>(
     stream: S,
-    mut tun: D,
+    tun: D,
     mtu: u32,
+    cancel: watch::Receiver<()>,
+) -> Result<(), TunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    D: TunDevice,
+{
+    let mtu = ValidatedMtu::new(mtu)?;
+    forward_packets_inner(stream, tun, mtu, cancel).await
+}
+
+pub(crate) async fn forward_packets_inner<S, D>(
+    stream: S,
+    mut tun: D,
+    mtu: ValidatedMtu,
     mut cancel: watch::Receiver<()>,
 ) -> Result<(), TunnelError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     D: TunDevice,
 {
+    let payload_capacity = mtu.ipv6_payload_capacity()?;
     let (reader, mut writer) = tokio::io::split(stream);
     let (packet_tx, mut packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
-    let reader_task = tokio::spawn(read_stream_packets(reader, mtu, packet_tx));
+    let reader_task = tokio::spawn(read_stream_packets(reader, payload_capacity, packet_tx));
 
     let outcome: Result<(), TunnelError> = async {
         loop {
@@ -47,6 +63,13 @@ where
                 // TUN → iOS stream: read packet from OS, forward to device
                 result = tun.read_packet() => {
                     let packet = result?;
+                    if packet.len() > mtu.as_usize() {
+                        return Err(TunnelError::Protocol(format!(
+                            "TUN packet length {} exceeds negotiated MTU {}",
+                            packet.len(),
+                            mtu.as_u16()
+                        )));
+                    }
                     writer.write_all(&packet).await?;
                     writer.flush().await?;
                 }
@@ -65,18 +88,29 @@ where
 /// receiver shutdown.
 async fn read_stream_packets<R>(
     mut reader: R,
-    mtu: u32,
+    payload_capacity: usize,
     packet_tx: mpsc::Sender<Result<Vec<u8>, TunnelError>>,
 ) where
     R: AsyncRead + Unpin,
 {
-    let mut ip6_header = vec![0u8; 40];
-    let mut payload_buf = vec![0u8; mtu as usize];
+    let mut ip6_header = vec![0u8; IPV6_HEADER_LEN];
+    let mut payload_buf = vec![0u8; payload_capacity];
 
     loop {
         let packet = match read_ipv6_packet(&mut reader, &mut ip6_header, &mut payload_buf).await {
             Ok(payload_len) => {
-                let mut packet = Vec::with_capacity(40 + payload_len);
+                let packet_len = match IPV6_HEADER_LEN.checked_add(payload_len) {
+                    Some(packet_len) => packet_len,
+                    None => {
+                        let _ = packet_tx
+                            .send(Err(TunnelError::Protocol(
+                                "IPv6 packet length overflow".into(),
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+                let mut packet = Vec::with_capacity(packet_len);
                 packet.extend_from_slice(&ip6_header);
                 packet.extend_from_slice(&payload_buf[..payload_len]);
                 Ok(packet)
@@ -110,7 +144,7 @@ async fn read_ipv6_packet<R: AsyncRead + Unpin>(
     let payload_len = u16::from_be_bytes([header_buf[4], header_buf[5]]) as usize;
     if payload_len > payload_buf.len() {
         return Err(TunnelError::Protocol(format!(
-            "IPv6 payload {payload_len} exceeds buffer {}",
+            "IPv6 payload {payload_len} exceeds negotiated payload capacity {}",
             payload_buf.len()
         )));
     }
@@ -305,7 +339,46 @@ mod tests {
 
         match err {
             TunnelError::Protocol(message) => assert!(
-                message.contains("exceeds buffer 8"),
+                message.contains("exceeds negotiated payload capacity 8"),
+                "unexpected error: {message}"
+            ),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_ipv6_packet_accepts_payload_that_fits_the_full_mtu() {
+        let mtu = ValidatedMtu::new(1280).unwrap();
+        let payload = vec![0xaa; mtu.ipv6_payload_capacity().unwrap()];
+        let packet = ipv6_packet(&payload);
+        let mut reader = tokio::io::BufReader::new(&packet[..]);
+        let mut header = [0u8; IPV6_HEADER_LEN];
+        let mut payload_buf = vec![0u8; mtu.ipv6_payload_capacity().unwrap()];
+
+        let payload_len = read_ipv6_packet(&mut reader, &mut header, &mut payload_buf)
+            .await
+            .unwrap();
+
+        assert_eq!(payload_len, payload.len());
+        assert_eq!(payload_len + IPV6_HEADER_LEN, mtu.as_usize());
+    }
+
+    #[tokio::test]
+    async fn read_ipv6_packet_rejects_payload_that_exceeds_the_full_mtu() {
+        let mtu = ValidatedMtu::new(1280).unwrap();
+        let payload = vec![0xaa; mtu.ipv6_payload_capacity().unwrap() + 1];
+        let packet = ipv6_packet(&payload);
+        let mut reader = tokio::io::BufReader::new(&packet[..]);
+        let mut header = [0u8; IPV6_HEADER_LEN];
+        let mut payload_buf = vec![0u8; mtu.ipv6_payload_capacity().unwrap()];
+
+        let err = read_ipv6_packet(&mut reader, &mut header, &mut payload_buf)
+            .await
+            .unwrap_err();
+
+        match err {
+            TunnelError::Protocol(message) => assert!(
+                message.contains("exceeds negotiated payload capacity 1240"),
                 "unexpected error: {message}"
             ),
             other => panic!("unexpected error variant: {other:?}"),
@@ -348,6 +421,23 @@ mod tests {
 
         drop(cancel_tx);
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn forward_packets_rejects_tun_packet_over_negotiated_mtu() {
+        let oversized = ipv6_packet(&vec![0xaa; 1241]);
+        let (_peer, stream) = tokio::io::duplex(4096);
+        let tun = MockTun::with_read_packets([oversized]);
+        let (_cancel_tx, task) = run_forward_for_packet_test(stream, tun).await;
+
+        let err = task.await.unwrap().unwrap_err();
+        match err {
+            TunnelError::Protocol(message) => assert!(
+                message.contains("TUN packet length 1281 exceeds negotiated MTU 1280"),
+                "unexpected error: {message}"
+            ),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     /// Yields `budget` packets as fast as the loop asks for them, then parks.

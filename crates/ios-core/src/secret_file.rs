@@ -67,9 +67,53 @@ pub fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
         return Err(err);
     }
 
-    fs::rename(&tmp, path).inspect_err(|_| {
+    replace_secret_file(&tmp, path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+#[cfg(not(windows))]
+fn replace_secret_file(tmp: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp, path)
+}
+
+#[cfg(windows)]
+fn replace_secret_file(tmp: &Path, path: &Path) -> io::Result<()> {
+    // `std::fs::rename` cannot replace an existing file on Windows. Move the
+    // old record aside first, then install the fully-written temporary file;
+    // if installation fails, restore the old record so a transient sharing or
+    // ACL error does not destroy the previous credentials.
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.file_type().is_dir())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            format!("secret file path is a directory: {}", path.display()),
+        ));
+    }
+
+    let Some(()) = metadata.map(|_| ()) else {
+        return fs::rename(tmp, path);
+    };
+
+    let backup = temp_path(path);
+    fs::rename(path, &backup)?;
+    match fs::rename(tmp, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&backup);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&backup, path);
+            Err(error)
+        }
+    }
 }
 
 fn create_secret_file(path: &Path) -> io::Result<File> {

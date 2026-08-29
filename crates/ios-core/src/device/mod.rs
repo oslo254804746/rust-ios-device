@@ -7,11 +7,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 #[cfg(any(feature = "tunnel", feature = "mdns"))]
 use std::time::Duration;
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+use std::time::Instant;
 #[cfg(feature = "tunnel")]
 use std::{
     pin::Pin,
     task::{Context, Poll},
-    time::Instant,
 };
 
 #[cfg(feature = "mdns")]
@@ -33,14 +34,14 @@ use crate::xpc::XpcClient;
 use tokio::io::ReadBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-#[cfg(feature = "tunnel")]
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 use tokio_stream::StreamExt;
 
 use crate::discovery::DeviceInfo;
 #[cfg(feature = "mdns")]
-use crate::discovery::{
-    browse_mobdev2, browse_remotepairing, mobdev2_wifi_mac, BonjourService, MdnsDevice,
-};
+use crate::discovery::{browse_mobdev2, mobdev2_wifi_mac, BonjourService};
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+use crate::discovery::{browse_remotepairing, MdnsDevice};
 use crate::error::CoreError;
 
 // ── ConnectOptions ─────────────────────────────────────────────────────────────
@@ -68,6 +69,18 @@ pub type ServiceStream = Box<dyn ServiceStreamTrait>;
 
 pub trait ServiceStreamTrait: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ServiceStreamTrait for T {}
+
+/// Metadata for the RSD service entry used to establish an XPC connection.
+///
+/// The resolved name is the exact canonical or `.shim.remote` key selected by
+/// the same lookup that opened the socket.  Features are copied from that
+/// descriptor so callers do not need to inspect a possibly stale cached RSD
+/// handshake after an on-demand handshake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedServiceMetadata {
+    pub resolved_service_name: String,
+    pub features: Vec<String>,
+}
 
 #[cfg(feature = "tunnel")]
 const TUNNEL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);

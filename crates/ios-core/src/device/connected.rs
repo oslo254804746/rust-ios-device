@@ -175,44 +175,79 @@ impl ConnectedDevice {
 
     /// Connect to an RSD service as a raw TCP stream (no XPC/H2 framing).
     ///
-    /// Suitable for DTX-based services like `com.apple.instruments.dtservicehub`.
+    /// Suitable for DTX-based services like `com.apple.instruments.dtservicehub`
+    /// and RSD lockdown shims. A resolved `.shim.remote` entry receives the
+    /// required RSDCheckin exchange before the stream is returned.
     /// Supports userspace proxy and direct IPv6/kernel tunnel connections.
     /// Performs an on-demand RSD handshake if rsd is not already populated.
     pub async fn connect_rsd_service(
         &self,
         service_name: &str,
     ) -> Result<ServiceStream, CoreError> {
-        let (resolved_service_name, port) =
-            self.resolve_rsd_service_with_retry(service_name).await?;
+        let resolved = self.resolve_rsd_service_with_retry(service_name).await?;
 
-        let mut stream = self.connect_tunnel_port(port).await?;
-        if resolved_service_name.ends_with(".shim.remote") {
-            rsd_checkin(&mut stream).await?;
+        let mut stream = self.connect_tunnel_port(resolved.port).await?;
+        if resolved.resolved_service_name.ends_with(".shim.remote") {
+            rsd_checkin_with_timeout(&mut stream, RSD_CHECKIN_TIMEOUT).await?;
         }
         Ok(stream)
     }
 
     /// Connect to an iOS 17+ XPC service via RSD.
     ///
-    /// Returns an XpcClient ready for method calls.
+    /// Returns an XpcClient ready for method calls. This endpoint accepts
+    /// canonical RemoteXPC services only; a `.shim.remote` fallback is
+    /// rejected because it needs the raw RSDCheckin path.
     /// Performs an on-demand RSD handshake if rsd is not already populated.
     #[cfg(feature = "tunnel")]
     pub async fn connect_xpc_service(&self, service_name: &str) -> Result<XpcClient, CoreError> {
-        let (_resolved_service_name, port) =
-            self.resolve_rsd_service_with_retry(service_name).await?;
-        let stream = self.connect_tunnel_port(port).await?;
-
-        XpcClient::connect_stream(stream)
+        self.connect_xpc_service_with_metadata(service_name)
             .await
-            .map_err(CoreError::from)
+            .map(|(client, _metadata)| client)
+    }
+
+    /// Connect to an XPC service and return the exact RSD descriptor used for
+    /// that connection.
+    ///
+    /// This performs one RSD lookup (using the cached handshake when present,
+    /// otherwise one on-demand handshake) and one service socket connection.
+    /// The returned metadata is from that same lookup; callers must not make
+    /// a second connection merely to rediscover feature capabilities.
+    #[cfg(feature = "tunnel")]
+    pub async fn connect_xpc_service_with_metadata(
+        &self,
+        service_name: &str,
+    ) -> Result<(XpcClient, ResolvedServiceMetadata), CoreError> {
+        let resolved = self.resolve_rsd_service_with_retry(service_name).await?;
+        // RSD entries ending in ".shim.remote" are lockdown-style services
+        // exposed through RSD. They require the plist RSDCheckin exchange
+        // before their protocol starts; feeding the raw socket to XpcClient
+        // would send an H2 preface and can reset or wedge the service. There
+        // is no safe conversion from that checked-in stream to this
+        // RemoteXPC-only return type, so reject before dialing and direct
+        // callers to connect_rsd_service, which performs check-in.
+        ensure_remote_xpc_service(service_name, &resolved.resolved_service_name)?;
+        let stream = self.connect_tunnel_port(resolved.port).await?;
+
+        let client = XpcClient::connect_stream(stream)
+            .await
+            .map_err(CoreError::from)?;
+
+        Ok((
+            client,
+            ResolvedServiceMetadata {
+                resolved_service_name: resolved.resolved_service_name,
+                features: resolved.features,
+            },
+        ))
     }
 
     async fn resolve_rsd_service_with_retry(
         &self,
         service_name: &str,
-    ) -> Result<(String, u16), CoreError> {
+    ) -> Result<ResolvedRsdService, CoreError> {
         if let Some(rsd) = self.rsd.as_ref() {
-            return resolve_rsd_service(rsd, service_name).ok_or_else(|| {
+            return resolve_rsd_service_details(rsd, service_name).ok_or_else(|| {
                 CoreError::Unsupported(format!(
                     "service '{service_name}' not found in RSD directory"
                 ))
@@ -220,7 +255,7 @@ impl ConnectedDevice {
         }
 
         let rsd = self.resolve_rsd_with_retry().await?;
-        resolve_rsd_service(&rsd, service_name).ok_or_else(|| {
+        resolve_rsd_service_details(&rsd, service_name).ok_or_else(|| {
             CoreError::Unsupported(format!(
                 "service '{service_name}' not found in RSD directory"
             ))
@@ -311,15 +346,56 @@ struct RsdCheckinRequest {
     request: &'static str,
 }
 
-fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(String, u16)> {
-    if let Some(ServiceDescriptor { port, .. }) = rsd.services.get(requested_service) {
-        return Some((requested_service.to_string(), *port));
+const RSD_CHECKIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRsdService {
+    resolved_service_name: String,
+    port: u16,
+    features: Vec<String>,
+}
+
+fn find_rsd_service<'a>(
+    rsd: &'a RsdHandshake,
+    requested_service: &str,
+) -> Option<(&'a String, &'a ServiceDescriptor)> {
+    if let Some(entry) = rsd.services.get_key_value(requested_service) {
+        return Some(entry);
     }
 
     let shim_service = format!("{requested_service}.shim.remote");
-    rsd.services
-        .get(&shim_service)
-        .map(|ServiceDescriptor { port, .. }| (shim_service, *port))
+    rsd.services.get_key_value(&shim_service)
+}
+
+fn resolve_rsd_service_details(
+    rsd: &RsdHandshake,
+    requested_service: &str,
+) -> Option<ResolvedRsdService> {
+    let (resolved_service_name, descriptor) = find_rsd_service(rsd, requested_service)?;
+    Some(ResolvedRsdService {
+        resolved_service_name: resolved_service_name.clone(),
+        port: descriptor.port,
+        features: descriptor.features.clone(),
+    })
+}
+
+#[cfg(test)]
+fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(String, u16)> {
+    find_rsd_service(rsd, requested_service)
+        .map(|(resolved_service_name, descriptor)| (resolved_service_name.clone(), descriptor.port))
+}
+
+#[cfg(any(feature = "tunnel", test))]
+fn ensure_remote_xpc_service(
+    requested_service: &str,
+    resolved_service: &str,
+) -> Result<(), CoreError> {
+    if resolved_service.ends_with(".shim.remote") {
+        return Err(CoreError::Unsupported(format!(
+            "service '{requested_service}' resolved to lockdown shim '{resolved_service}'; it cannot be opened as RemoteXPC/XPC. Use connect_rsd_service(\"{requested_service}\") for the RSDCheckin path or request the canonical RSD service"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_rsd_checkin_response(
@@ -384,6 +460,23 @@ where
         "RSD start-service response",
     )?;
     Ok(())
+}
+
+async fn rsd_checkin_with_timeout<S>(
+    stream: &mut S,
+    timeout: std::time::Duration,
+) -> Result<(), CoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(timeout, rsd_checkin(stream))
+        .await
+        .map_err(|_| {
+            CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("RSD check-in timed out after {} ms", timeout.as_millis()),
+            ))
+        })?
 }
 
 // ── connect() ─────────────────────────────────────────────────────────────────

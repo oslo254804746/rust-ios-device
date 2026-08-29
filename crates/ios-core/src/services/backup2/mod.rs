@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -179,6 +179,7 @@ where
         full: bool,
         info_plist: &plist::Dictionary,
     ) -> Result<BackupResult, Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
         let version = self.version_exchange().await?;
         let layout = {
             let root = backup_root.to_path_buf();
@@ -215,6 +216,7 @@ where
         old_password: Option<&str>,
         new_password: Option<&str>,
     ) -> Result<(), Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
         let _ = self.version_exchange().await?;
         let layout = {
             let root = backup_root.to_path_buf();
@@ -243,14 +245,19 @@ where
         options: RestoreOptions<'_>,
     ) -> Result<RestoreResult, Mobilebackup2Error> {
         let source_identifier = options.source_identifier.unwrap_or(target_identifier);
+        validate_backup_identifier(target_identifier)?;
+        validate_backup_identifier(source_identifier)?;
         let (layout, manifest) = {
             let root = backup_root.to_path_buf();
             let id = source_identifier.to_owned();
             run_blocking(move || {
                 ensure_backup_directory(&root, &id)?;
                 let layout = create_runtime_layout(&root, &id)?;
-                let manifest =
-                    read_backup_dictionary(&layout.device_directory.join("Manifest.plist"))?;
+                let manifest = read_backup_dictionary(&metadata_file_path(
+                    &layout.root,
+                    &layout.target_identifier,
+                    "Manifest.plist",
+                )?)?;
                 Ok((layout, manifest))
             })
             .await?
@@ -301,6 +308,10 @@ where
         target_identifier: &str,
         source_identifier: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
+        if let Some(source_identifier) = source_identifier {
+            validate_backup_identifier(source_identifier)?;
+        }
         let _ = self.version_exchange().await?;
         let layout_identifier = source_identifier.unwrap_or(target_identifier);
         let layout = {
@@ -331,6 +342,10 @@ where
         target_identifier: &str,
         source_identifier: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        validate_backup_identifier(target_identifier)?;
+        if let Some(source_identifier) = source_identifier {
+            validate_backup_identifier(source_identifier)?;
+        }
         let _ = self.version_exchange().await?;
         let source_identifier = source_identifier.unwrap_or(target_identifier);
         let layout = {
@@ -429,7 +444,8 @@ where
                                 "create directory missing path: {message:?}"
                             ))
                         })?;
-                    tokio::fs::create_dir_all(resolve_relative_path(layout, path)?).await?;
+                    let directory = resolve_relative_path(layout, path)?;
+                    create_layout_directory(layout, &directory)?;
                     self.send_status_response(
                         0,
                         "",
@@ -490,10 +506,8 @@ where
                         })?;
                         let src_path = resolve_relative_path(layout, src)?;
                         let dst_path = resolve_relative_path(layout, dst)?;
-                        if let Some(parent) = dst_path.parent() {
-                            tokio::fs::create_dir_all(parent).await?;
-                        }
-                        tokio::fs::rename(src_path, dst_path).await?;
+                        create_layout_parent_directory(layout, &dst_path)?;
+                        rename_layout_path(layout, &src_path, &dst_path).await?;
                     }
                     self.send_status_response(
                         0,
@@ -518,11 +532,7 @@ where
                             ))
                         })?;
                         let target = resolve_relative_path(layout, rel)?;
-                        if target.is_dir() {
-                            tokio::fs::remove_dir_all(&target).await?;
-                        } else if target.exists() {
-                            tokio::fs::remove_file(&target).await?;
-                        }
+                        remove_layout_path(layout, &target).await?;
                     }
                     self.send_status_response(
                         0,
@@ -541,11 +551,13 @@ where
                             ))
                         })?;
                     let path = resolve_relative_path(layout, rel)?;
-                    let listing = tokio::task::spawn_blocking(move || contents_of_directory(&path))
-                        .await
-                        .map_err(|e| {
-                            Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
-                        })??;
+                    let root = layout.root.clone();
+                    let listing =
+                        tokio::task::spawn_blocking(move || contents_of_directory(&root, &path))
+                            .await
+                            .map_err(|e| {
+                                Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
+                            })??;
                     self.send_status_response(0, "", plist::Value::Dictionary(listing))
                         .await?;
                 }
@@ -568,7 +580,8 @@ where
                         })?;
                     let src_path = resolve_relative_path(layout, src)?;
                     let dst_path = resolve_relative_path(layout, dst)?;
-                    tokio::task::spawn_blocking(move || copy_item(&src_path, &dst_path))
+                    let root = layout.root.clone();
+                    tokio::task::spawn_blocking(move || copy_item(&root, &src_path, &dst_path))
                         .await
                         .map_err(|e| {
                             Mobilebackup2Error::Io(std::io::Error::other(e.to_string()))
@@ -635,10 +648,9 @@ where
 
             let file_name = read_prefixed_string(self.device_link.stream_mut()).await?;
             let output_path = resolve_relative_path(layout, &file_name)?;
-            if let Some(parent) = output_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            let mut file = tokio::fs::File::create(&output_path).await?;
+            create_layout_parent_directory(layout, &output_path)?;
+            let mut file =
+                tokio::fs::File::from_std(open_layout_file_for_write(layout, &output_path)?);
 
             loop {
                 let frame_size = read_u32_be(self.device_link.stream_mut()).await?;
@@ -746,8 +758,9 @@ where
             let local_path = resolve_relative_path(layout, rel)?;
             write_prefixed_string(self.device_link.stream_mut(), rel).await?;
 
-            match tokio::fs::File::open(&local_path).await {
-                Ok(mut file) => {
+            match open_layout_file_for_read(layout, &local_path) {
+                Ok(file) => {
+                    let mut file = tokio::fs::File::from_std(file);
                     let mut buf = vec![0u8; DOWNLOAD_CHUNK_SIZE];
                     let mut read_failed = false;
                     loop {
@@ -782,7 +795,7 @@ where
                         .await?;
                     }
                 }
-                Err(err) => {
+                Err(Mobilebackup2Error::Io(err)) => {
                     insert_file_failure(&mut failures, rel, &err);
                     write_transfer_frame(
                         self.device_link.stream_mut(),
@@ -791,6 +804,7 @@ where
                     )
                     .await?;
                 }
+                Err(err) => return Err(err),
             }
         }
 
@@ -821,12 +835,17 @@ pub fn initialize_backup_directory(
     info_plist: &plist::Dictionary,
     full: bool,
 ) -> Result<BackupDirectoryLayout, Mobilebackup2Error> {
-    let root = backup_root.to_path_buf();
-    let device_directory = root.join(target_identifier);
-    fs::create_dir_all(&device_directory)?;
+    validate_backup_identifier(target_identifier)?;
+    reject_symlink_components(backup_root)?;
+    fs::create_dir_all(backup_root)?;
+    let root = canonical_backup_root(backup_root)?;
+    let device_directory = create_dir_all_no_symlink(&root, Path::new(target_identifier))?;
+    for file_name in ["Info.plist", "Status.plist", "Manifest.plist"] {
+        validate_seed_file_path(&device_directory.join(file_name))?;
+    }
     let full = should_do_full_backup(full, &device_directory)?;
 
-    let mut info_file = File::create(device_directory.join("Info.plist"))?;
+    let mut info_file = open_file_for_write(&device_directory.join("Info.plist"))?;
     plist::to_writer_xml(
         &mut info_file,
         &plist::Value::Dictionary(info_plist.clone()),
@@ -852,20 +871,42 @@ pub fn initialize_backup_directory(
             plist::Value::String(generate_backup_uuid()),
         ),
     ]);
-    let mut status_file = File::create(device_directory.join("Status.plist"))?;
+    let mut status_file = open_file_for_write(&device_directory.join("Status.plist"))?;
     plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))?;
 
     let manifest_path = device_directory.join("Manifest.plist");
-    if full && manifest_path.exists() {
-        fs::remove_file(&manifest_path)?;
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(symlink_path_error(&manifest_path));
+        }
+        Ok(_) if full => {
+            fs::remove_file(&manifest_path)?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
-    let _ = File::create(&manifest_path)?;
+    let _ = open_file_for_write(&manifest_path)?;
 
     Ok(BackupDirectoryLayout {
         root,
         device_directory,
         target_identifier: target_identifier.to_string(),
     })
+}
+
+fn validate_seed_file_path(path: &Path) -> Result<(), Mobilebackup2Error> {
+    reject_symlink_components(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(symlink_path_error(path)),
+        Ok(metadata) if !metadata.is_file() => Err(Mobilebackup2Error::Protocol(format!(
+            "backup seed path is not a regular file: {}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn should_do_full_backup(
@@ -879,11 +920,16 @@ pub fn has_incremental_backup_metadata(
     device_directory: &Path,
 ) -> Result<bool, Mobilebackup2Error> {
     for filename in INCREMENTAL_BACKUP_REQUIRED_FILES {
-        let metadata = match fs::metadata(device_directory.join(filename)) {
+        let path = device_directory.join(filename);
+        reject_symlink_components(&path)?;
+        let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
             Err(err) => return Err(err.into()),
         };
+        if metadata.file_type().is_symlink() {
+            return Err(symlink_path_error(&path));
+        }
         if !metadata.is_file() || metadata.len() == 0 {
             return Ok(false);
         }
@@ -892,7 +938,8 @@ pub fn has_incremental_backup_metadata(
 }
 
 pub fn backup_status_is_full(device_directory: &Path) -> Result<bool, Mobilebackup2Error> {
-    let status = read_backup_dictionary(&device_directory.join("Status.plist"))?;
+    let status_path = safe_file_in_directory(device_directory, "Status.plist")?;
+    let status = read_backup_dictionary(&status_path)?;
     Ok(status
         .get("IsFullBackup")
         .and_then(plist_value_to_bool)
@@ -918,9 +965,11 @@ fn create_runtime_layout(
     backup_root: &Path,
     target_identifier: &str,
 ) -> Result<BackupDirectoryLayout, Mobilebackup2Error> {
-    let root = backup_root.to_path_buf();
-    let device_directory = root.join(target_identifier);
-    fs::create_dir_all(&device_directory)?;
+    validate_backup_identifier(target_identifier)?;
+    reject_symlink_components(backup_root)?;
+    fs::create_dir_all(backup_root)?;
+    let root = canonical_backup_root(backup_root)?;
+    let device_directory = create_dir_all_no_symlink(&root, Path::new(target_identifier))?;
     Ok(BackupDirectoryLayout {
         root,
         device_directory,
@@ -932,12 +981,29 @@ fn ensure_backup_directory(
     backup_root: &Path,
     target_identifier: &str,
 ) -> Result<(), Mobilebackup2Error> {
-    let device_directory = backup_root.join(target_identifier);
+    let root = canonical_backup_root(backup_root)?;
+    validate_backup_identifier(target_identifier)?;
+    let device_directory = safe_path_from_root(&root, Path::new(target_identifier))?;
     for file_name in ["Info.plist", "Manifest.plist", "Status.plist"] {
         let path = device_directory.join(file_name);
-        if !path.exists() {
+        let relative = Path::new(target_identifier).join(file_name);
+        ensure_no_symlink_components_at_root(&root, &relative)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup directory missing required file {}",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(symlink_path_error(&path));
+        }
+        if !metadata.is_file() {
             return Err(Mobilebackup2Error::Protocol(format!(
-                "backup directory missing required file {}",
+                "backup directory required path is not a file {}",
                 path.display()
             )));
         }
@@ -950,7 +1016,8 @@ pub fn load_backup_applications(
     target_identifier: &str,
 ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
     ensure_backup_directory(backup_root, target_identifier)?;
-    let info = plist::Value::from_file(backup_root.join(target_identifier).join("Info.plist"))?;
+    let info_path = metadata_file_path(backup_root, target_identifier, "Info.plist")?;
+    let info = plist::Value::from_reader(open_file_for_read(&info_path)?)?;
     Ok(info
         .as_dictionary()
         .and_then(|dict| dict.get("Applications"))
@@ -962,16 +1029,15 @@ pub fn backup_is_encrypted(
     target_identifier: &str,
 ) -> Result<bool, Mobilebackup2Error> {
     ensure_backup_directory(backup_root, target_identifier)?;
-    Ok(
-        read_backup_dictionary(&backup_root.join(target_identifier).join("Manifest.plist"))?
-            .get("IsEncrypted")
-            .and_then(plist_value_to_bool)
-            .unwrap_or(false),
-    )
+    let manifest_path = metadata_file_path(backup_root, target_identifier, "Manifest.plist")?;
+    Ok(read_backup_dictionary(&manifest_path)?
+        .get("IsEncrypted")
+        .and_then(plist_value_to_bool)
+        .unwrap_or(false))
 }
 
 fn read_backup_dictionary(path: &Path) -> Result<plist::Dictionary, Mobilebackup2Error> {
-    plist::Value::from_file(path)?
+    plist::Value::from_reader(open_file_for_read(path)?)?
         .into_dictionary()
         .ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!(
@@ -1050,18 +1116,90 @@ fn generate_backup_uuid() -> String {
     uuid::Uuid::new_v4().to_string().to_uppercase()
 }
 
+/// Validate an identifier before it is ever used as a child of the backup root.
+///
+/// Device and source identifiers identify one backup directory, not a path.
+/// Treating them as a single normal component keeps the contract explicit on
+/// Unix and Windows alike; the explicit separator checks are needed because a
+/// Windows-style path is a normal filename component on Unix.
+pub fn validate_backup_identifier(identifier: &str) -> Result<(), Mobilebackup2Error> {
+    if identifier.is_empty() {
+        return Err(Mobilebackup2Error::Protocol(
+            "backup identifier must not be empty".into(),
+        ));
+    }
+    if identifier.as_bytes().contains(&0) {
+        return Err(Mobilebackup2Error::Protocol(
+            "backup identifier must not contain NUL".into(),
+        ));
+    }
+    if identifier.contains('/') || identifier.contains('\\') {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup identifier must be one path component: {identifier:?}"
+        )));
+    }
+    if has_windows_drive_prefix(identifier) {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup identifier must not contain a platform path prefix: {identifier:?}"
+        )));
+    }
+
+    let mut components = Path::new(identifier).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => Err(Mobilebackup2Error::Protocol(format!(
+            "backup identifier must be one normal path component: {identifier:?}"
+        ))),
+    }
+}
+
+fn has_windows_drive_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
 fn sanitize_relative_path(path: &str) -> Result<PathBuf, Mobilebackup2Error> {
+    if path.is_empty() {
+        return Err(Mobilebackup2Error::Protocol(
+            "backup relative path must not be empty".into(),
+        ));
+    }
+    if path.as_bytes().contains(&0) {
+        return Err(Mobilebackup2Error::Protocol(
+            "backup relative path must not contain NUL".into(),
+        ));
+    }
+    if path.contains('\\') || has_windows_drive_prefix(path) {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup relative path uses an unsupported platform separator or prefix: {path:?}"
+        )));
+    }
+
     let mut clean = PathBuf::new();
+    let mut saw_component = false;
     for component in Path::new(path).components() {
         match component {
-            Component::Normal(part) => clean.push(part),
-            Component::CurDir => {}
+            Component::Normal(part) => {
+                clean.push(part);
+                saw_component = true;
+            }
+            Component::CurDir => {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup relative path contains a current-directory component: {path:?}"
+                )));
+            }
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(Mobilebackup2Error::Protocol(format!(
                     "backup path escapes backup root: {path}"
                 )));
             }
         }
+    }
+
+    if !saw_component {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup relative path must contain a normal component: {path:?}"
+        )));
     }
 
     Ok(clean)
@@ -1072,6 +1210,7 @@ fn resolve_relative_path(
     rel: &str,
 ) -> Result<PathBuf, Mobilebackup2Error> {
     let clean = sanitize_relative_path(rel)?;
+    validate_backup_identifier(&layout.target_identifier)?;
     let prefixed_with_target = clean
         .components()
         .next()
@@ -1081,37 +1220,402 @@ fn resolve_relative_path(
         })
         == Some(layout.target_identifier.as_str());
 
-    Ok(if prefixed_with_target {
-        layout.root.join(clean)
+    let relative = if prefixed_with_target {
+        clean
     } else {
-        layout.device_directory.join(clean)
-    })
+        let mut relative = PathBuf::from(&layout.target_identifier);
+        relative.push(clean);
+        relative
+    };
+    let root = canonical_backup_root(&layout.root)?;
+    ensure_no_symlink_components_at_root(&root, &relative)?;
+    Ok(root.join(&relative))
 }
 
-fn copy_item(src: &Path, dst: &Path) -> Result<(), Mobilebackup2Error> {
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
+fn canonical_backup_root(root: &Path) -> Result<PathBuf, Mobilebackup2Error> {
+    reject_symlink_components(root)?;
+    fs::canonicalize(root).map_err(Mobilebackup2Error::Io)
+}
+
+fn symlink_path_error(path: &Path) -> Mobilebackup2Error {
+    Mobilebackup2Error::Protocol(format!(
+        "backup path contains a symlink component: {}",
+        path.display()
+    ))
+}
+
+fn ensure_no_symlink_components_at_root(
+    root: &Path,
+    relative: &Path,
+) -> Result<(), Mobilebackup2Error> {
+    let mut current = root.to_path_buf();
+    let component_count = relative.components().count();
+    for (index, component) in relative.components().enumerate() {
+        let part = match component {
+            Component::Normal(part) => part,
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup path is not a safe relative path: {}",
+                    relative.display()
+                )));
+            }
+        };
+        current.push(part);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(symlink_path_error(&current));
+        }
+        if index + 1 < component_count && !metadata.is_dir() {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "backup path component is not a directory: {}",
+                current.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn safe_path_from_root(root: &Path, relative: &Path) -> Result<PathBuf, Mobilebackup2Error> {
+    ensure_no_symlink_components_at_root(root, relative)?;
+    Ok(root.join(relative))
+}
+
+fn create_dir_all_no_symlink(root: &Path, relative: &Path) -> Result<PathBuf, Mobilebackup2Error> {
+    let root = canonical_backup_root(root)?;
+    let mut current = root.clone();
+    for component in relative.components() {
+        let part = match component {
+            Component::Normal(part) => part,
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup directory path is not safe: {}",
+                    relative.display()
+                )));
+            }
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(symlink_path_error(&current));
+                }
+                if !metadata.is_dir() {
+                    return Err(Mobilebackup2Error::Protocol(format!(
+                        "backup directory path is not a directory: {}",
+                        current.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let metadata = fs::symlink_metadata(&current)?;
+                if metadata.file_type().is_symlink() {
+                    return Err(symlink_path_error(&current));
+                }
+                if !metadata.is_dir() {
+                    return Err(Mobilebackup2Error::Protocol(format!(
+                        "backup directory path is not a directory: {}",
+                        current.display()
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        let canonical = fs::canonicalize(&current)?;
+        if !canonical.starts_with(&root) {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "backup directory path escapes backup root: {}",
+                current.display()
+            )));
+        }
+    }
+    Ok(current)
+}
+
+fn reject_symlink_components(path: &Path) -> Result<(), Mobilebackup2Error> {
+    let mut current = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir()?
+    };
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => current.push(part),
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "backup path is not safe: {}",
+                    path.display()
+                )));
+            }
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(symlink_path_error(&current));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Open a backup file without following a final symlink. Unix uses the
+/// kernel's `O_NOFOLLOW`; other platforms retain the component metadata check
+/// above as the portable fallback.
+fn open_file_for_read(path: &Path) -> Result<File, Mobilebackup2Error> {
+    reject_symlink_components(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path).map_err(Mobilebackup2Error::Io)
+}
+
+fn open_file_for_write(path: &Path) -> Result<File, Mobilebackup2Error> {
+    reject_symlink_components(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path).map_err(Mobilebackup2Error::Io)
+}
+
+fn metadata_file_path(
+    backup_root: &Path,
+    target_identifier: &str,
+    file_name: &str,
+) -> Result<PathBuf, Mobilebackup2Error> {
+    validate_backup_identifier(target_identifier)?;
+    let root = canonical_backup_root(backup_root)?;
+    let relative = Path::new(target_identifier).join(file_name);
+    let path = safe_path_from_root(&root, &relative)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(&path));
+    }
+    if !metadata.is_file() {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup metadata path is not a file: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn layout_relative_path(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<PathBuf, Mobilebackup2Error> {
+    path.strip_prefix(&layout.root)
+        .map(PathBuf::from)
+        .map_err(|_| {
+            Mobilebackup2Error::Protocol(format!(
+                "backup path is outside backup root: {}",
+                path.display()
+            ))
+        })
+}
+
+fn create_layout_directory(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<(), Mobilebackup2Error> {
+    let relative = layout_relative_path(layout, path)?;
+    create_dir_all_no_symlink(&layout.root, &relative)?;
+    Ok(())
+}
+
+fn create_layout_parent_directory(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<(), Mobilebackup2Error> {
+    let parent = path.parent().ok_or_else(|| {
+        Mobilebackup2Error::Protocol(format!(
+            "backup path has no parent directory: {}",
+            path.display()
+        ))
+    })?;
+    let relative = layout_relative_path(layout, parent)?;
+    create_dir_all_no_symlink(&layout.root, &relative)?;
+    Ok(())
+}
+
+fn open_layout_file_for_write(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<File, Mobilebackup2Error> {
+    let relative = layout_relative_path(layout, path)?;
+    ensure_no_symlink_components_at_root(&layout.root, &relative)?;
+    open_file_for_write(path)
+}
+
+fn open_layout_file_for_read(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<File, Mobilebackup2Error> {
+    let relative = layout_relative_path(layout, path)?;
+    ensure_no_symlink_components_at_root(&layout.root, &relative)?;
+    open_file_for_read(path)
+}
+
+async fn rename_layout_path(
+    layout: &BackupDirectoryLayout,
+    src: &Path,
+    dst: &Path,
+) -> Result<(), Mobilebackup2Error> {
+    let src_relative = layout_relative_path(layout, src)?;
+    let dst_relative = layout_relative_path(layout, dst)?;
+    ensure_no_symlink_components_at_root(&layout.root, &src_relative)?;
+    ensure_no_symlink_components_at_root(&layout.root, &dst_relative)?;
+    tokio::fs::rename(src, dst).await?;
+    Ok(())
+}
+
+fn ensure_tree_has_no_symlinks(path: &Path) -> Result<(), Mobilebackup2Error> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(path));
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            ensure_tree_has_no_symlinks(&entry?.path())?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_layout_path(
+    layout: &BackupDirectoryLayout,
+    path: &Path,
+) -> Result<(), Mobilebackup2Error> {
+    let relative = layout_relative_path(layout, path)?;
+    ensure_no_symlink_components_at_root(&layout.root, &relative)?;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(path));
+    }
+    if metadata.is_dir() {
+        ensure_tree_has_no_symlinks(path)?;
+        tokio::fs::remove_dir_all(path).await?;
+    } else {
+        tokio::fs::remove_file(path).await?;
+    }
+    Ok(())
+}
+
+fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobilebackup2Error> {
+    let src_relative = src.strip_prefix(root).map_err(|_| {
+        Mobilebackup2Error::Protocol(format!(
+            "backup copy source is outside backup root: {}",
+            src.display()
+        ))
+    })?;
+    let dst_relative = dst.strip_prefix(root).map_err(|_| {
+        Mobilebackup2Error::Protocol(format!(
+            "backup copy destination is outside backup root: {}",
+            dst.display()
+        ))
+    })?;
+    ensure_no_symlink_components_at_root(root, src_relative)?;
+    ensure_no_symlink_components_at_root(root, dst_relative)?;
+    if src == dst || dst.starts_with(src) {
+        return Err(Mobilebackup2Error::Protocol(
+            "cannot copy a directory into itself".into(),
+        ));
     }
 
-    if src.is_dir() {
-        fs::create_dir_all(dst)?;
+    let source_metadata = fs::symlink_metadata(src)?;
+    if source_metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(src));
+    }
+    if source_metadata.is_dir() {
+        create_dir_all_no_symlink(root, dst_relative)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
-            copy_item(&entry.path(), &dst.join(entry.file_name()))?;
+            copy_item(root, &entry.path(), &dst.join(entry.file_name()))?;
         }
+    } else if source_metadata.is_file() {
+        if let Some(parent) = dst.parent() {
+            let parent_relative = parent.strip_prefix(root).map_err(|_| {
+                Mobilebackup2Error::Protocol(format!(
+                    "backup copy destination parent is outside backup root: {}",
+                    parent.display()
+                ))
+            })?;
+            create_dir_all_no_symlink(root, parent_relative)?;
+        }
+        let mut source = open_file_for_read(src)?;
+        let mut destination = open_file_for_write(dst)?;
+        std::io::copy(&mut source, &mut destination)?;
     } else {
-        fs::copy(src, dst)?;
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup copy source is neither a file nor a directory: {}",
+            src.display()
+        )));
     }
 
     Ok(())
 }
 
-fn contents_of_directory(path: &Path) -> Result<plist::Dictionary, Mobilebackup2Error> {
+fn contents_of_directory(
+    root: &Path,
+    path: &Path,
+) -> Result<plist::Dictionary, Mobilebackup2Error> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        Mobilebackup2Error::Protocol(format!(
+            "backup directory is outside backup root: {}",
+            path.display()
+        ))
+    })?;
+    ensure_no_symlink_components_at_root(root, relative)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(path));
+    }
+    if !metadata.is_dir() {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup directory path is not a directory: {}",
+            path.display()
+        )));
+    }
+
     let mut entries = plist::Dictionary::new();
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        let file_type = if metadata.is_dir() {
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path)?;
+        let file_type = if metadata.file_type().is_symlink() {
+            "DLFileTypeUnknown"
+        } else if metadata.is_dir() {
             "DLFileTypeDirectory"
         } else if metadata.is_file() {
             "DLFileTypeRegular"
@@ -1119,7 +1623,7 @@ fn contents_of_directory(path: &Path) -> Result<plist::Dictionary, Mobilebackup2
             "DLFileTypeUnknown"
         };
         let modified = metadata.modified().unwrap_or_else(|err| {
-            tracing::debug!("cannot read mtime for {}: {err}", entry.path().display());
+            tracing::debug!("cannot read mtime for {}: {err}", entry_path.display());
             SystemTime::UNIX_EPOCH
         });
         entries.insert(
@@ -1142,6 +1646,30 @@ fn contents_of_directory(path: &Path) -> Result<plist::Dictionary, Mobilebackup2
     }
 
     Ok(entries)
+}
+
+/*
+ * Keep this helper adjacent to the path policy so every file operation above
+ * goes through the same root and symlink checks. The protocol permits nested
+ * relative paths, but never permits them to become an alternate root.
+ */
+fn safe_file_in_directory(
+    directory: &Path,
+    file_name: &str,
+) -> Result<PathBuf, Mobilebackup2Error> {
+    let path = directory.join(file_name);
+    reject_symlink_components(&path)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(symlink_path_error(&path));
+    }
+    if !metadata.is_file() {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "backup metadata path is not a file: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 fn device_link_modification_date(modified: SystemTime) -> plist::Date {
@@ -1339,7 +1867,17 @@ fn available_space(path: &Path) -> Result<u64, Mobilebackup2Error> {
 fn plist_number_to_u64(value: &plist::Value) -> Option<u64> {
     match value {
         plist::Value::Integer(value) => value.as_unsigned(),
-        plist::Value::Real(value) => Some(*value as u64),
+        plist::Value::Real(value) if value.is_finite() && *value >= 0.0 => {
+            // Rust's float-to-integer cast saturates, so an unchecked cast
+            // would silently turn negative, fractional, NaN, or oversized
+            // protocol values into a different error/space value.
+            let upper_bound = (u64::MAX as f64) + 1.0;
+            if *value < upper_bound && value.fract() == 0.0 {
+                Some(*value as u64)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1583,6 +2121,18 @@ mod tests {
     }
 
     #[test]
+    fn plist_u64_parser_rejects_non_integral_and_out_of_range_reals() {
+        assert_eq!(plist_number_to_u64(&plist::Value::Real(42.0)), Some(42));
+        for value in [-1.0, 42.5, f64::NAN, f64::INFINITY, u64::MAX as f64] {
+            assert_eq!(
+                plist_number_to_u64(&plist::Value::Real(value)),
+                None,
+                "real protocol value must be a finite non-negative integer: {value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn insufficient_space_message_includes_requirement_and_host_report() {
         let response = plist::Dictionary::from_iter([(
             "ErrorDescription".to_string(),
@@ -1689,20 +2239,28 @@ mod tests {
 
     #[test]
     fn resolve_relative_path_accepts_plain_and_prefixed_paths() {
+        let root =
+            std::env::temp_dir().join(format!("ios-core-backup2-resolve-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(root.join("device-id")).unwrap();
         let layout = BackupDirectoryLayout {
-            root: PathBuf::from("backup-root"),
-            device_directory: PathBuf::from("backup-root/device-id"),
+            root: root.clone(),
+            device_directory: root.join("device-id"),
             target_identifier: "device-id".into(),
         };
 
         assert_eq!(
             resolve_relative_path(&layout, "Manifest.db").unwrap(),
-            PathBuf::from("backup-root/device-id/Manifest.db")
+            root.join("device-id/Manifest.db")
         );
         assert_eq!(
             resolve_relative_path(&layout, "device-id/Manifest.db").unwrap(),
-            PathBuf::from("backup-root/device-id/Manifest.db")
+            root.join("device-id/Manifest.db")
         );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1715,6 +2273,170 @@ mod tests {
 
         let err = resolve_relative_path(&layout, "../outside").unwrap_err();
         assert!(err.to_string().contains("escapes"));
+    }
+
+    #[test]
+    fn backup_identifiers_are_single_normal_components() {
+        for identifier in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "/absolute",
+            "nested/id",
+            r"nested\id",
+            "C:backup",
+            r"C:\backup",
+        ] {
+            assert!(
+                validate_backup_identifier(identifier).is_err(),
+                "identifier should be rejected: {identifier:?}"
+            );
+        }
+        for identifier in ["device-id", "设备-✅"] {
+            assert!(
+                validate_backup_identifier(identifier).is_ok(),
+                "identifier should be accepted: {identifier:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_paths_reject_absolute_parent_and_platform_forms() {
+        for path in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "/absolute",
+            r"..\outside",
+            r"nested\file",
+            "C:relative",
+            r"C:\absolute",
+        ] {
+            assert!(
+                sanitize_relative_path(path).is_err(),
+                "relative path should be rejected: {path:?}"
+            );
+        }
+
+        assert_eq!(
+            sanitize_relative_path("nested/目录/файл").unwrap(),
+            PathBuf::from("nested/目录/файл")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_symlink_components_are_rejected_without_writing_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let base =
+            std::env::temp_dir().join(format!("ios-core-backup2-symlink-{}", std::process::id()));
+        if base.exists() {
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+        let root = base.join("root");
+        let device = root.join("device-id");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside").unwrap();
+
+        let layout = BackupDirectoryLayout {
+            root: root.clone(),
+            device_directory: device.clone(),
+            target_identifier: "device-id".into(),
+        };
+
+        symlink(&outside, device.join("middle")).unwrap();
+        let err = resolve_relative_path(&layout, "middle/created").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+
+        symlink(outside.join("sentinel"), device.join("final")).unwrap();
+        let err = resolve_relative_path(&layout, "final").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+
+        let err = open_layout_file_for_write(&layout, &device.join("final")).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
+
+        std::fs::write(device.join("source"), b"inside").unwrap();
+        let copy_target = device.join("copy");
+        symlink(outside.join("sentinel"), copy_target.clone()).unwrap();
+        let err = copy_item(&root, &device.join("source"), &copy_target).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn seed_symlink_is_rejected_before_existing_metadata_is_overwritten() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-seed-symlink-{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+        let root = base.join("root");
+        let device = root.join("device-id");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(device.join("Info.plist"), b"old-info").unwrap();
+        std::fs::write(device.join("Status.plist"), b"old-status").unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside").unwrap();
+        symlink(outside.join("sentinel"), device.join("Manifest.plist")).unwrap();
+
+        let result =
+            initialize_backup_directory(&root, "device-id", &plist::Dictionary::new(), true);
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(device.join("Info.plist")).unwrap(),
+            b"old-info"
+        );
+        assert_eq!(
+            std::fs::read(device.join("Status.plist")).unwrap(),
+            b"old-status"
+        );
+        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_root_symlink_is_rejected_before_creating_outside_directory() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-root-symlink-{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+        std::fs::create_dir_all(&base).unwrap();
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let linked_root = base.join("linked-root");
+        symlink(&outside, &linked_root).unwrap();
+
+        let result = initialize_backup_directory(
+            &linked_root.join("new-device"),
+            "device-id",
+            &plist::Dictionary::new(),
+            true,
+        );
+        assert!(result.is_err());
+        assert!(!outside.join("new-device").exists());
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

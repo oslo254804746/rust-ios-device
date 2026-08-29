@@ -1,5 +1,5 @@
 /// Attempt RSD handshake; returns None on failure (e.g. iOS <17).
-#[cfg(feature = "tunnel")]
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
 async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
     let addr = Ipv6Addr::from_str(server_addr).ok()?;
     match rsd_handshake(addr, rsd_port).await {
@@ -16,6 +16,16 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
             None
         }
     }
+}
+
+/// Direct RSD discovery is only available when Bonjour/mdns support is built.
+/// Keep the tunnel-only feature combinations usable: userspace tunnels still
+/// discover RSD through their local proxy, while kernel/tunnel-only callers can
+/// simply observe the same optional `None` result as a failed direct probe.
+#[cfg(all(feature = "tunnel", not(feature = "mdns")))]
+async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> Option<RsdHandshake> {
+    tracing::debug!("RSD direct probe skipped because ios-core feature 'mdns' is disabled");
+    None
 }
 
 /// Attempt RSD via go-ios-compatible userspace proxy.

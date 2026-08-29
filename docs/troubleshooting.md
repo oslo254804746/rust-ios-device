@@ -23,6 +23,23 @@
 - Network discovery depends on mDNS/Bonjour visibility and local firewall rules.
 - Some Wi-Fi paths require Wi-Fi connections to be enabled through lockdown and may still vary by iOS version.
 
+## Backup root safety
+
+Treat the directory passed to `ios backup create`, `info`, `list`, and `restore`
+as a private trust boundary. It must be owned by the current user and not be
+writable by, or shared with, an untrusted local process. Use a private directory
+(on Unix, mode `0700` is recommended) and keep its parent path trusted; do not
+use a shared `/tmp` directory, network share, or a path managed by another
+user/service.
+
+MobileBackup2 validates path components and rejects symlinks that already exist
+when an operation starts. Those checks prevent ordinary path traversal and
+pre-existing symlink escapes, but they do not provide an atomic dirfd/openat2
+guarantee. A process that can concurrently replace an intermediate directory
+after validation can still race a later filesystem operation. Keep the backup
+root exclusive until the operation finishes; this limitation is especially
+important when restoring or overwriting a backup.
+
 ## Developer services fail
 
 - Enable Developer Mode where the device requires it.

@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use tokio::runtime::Runtime;
@@ -145,10 +146,7 @@ fn list_devices(py: Python<'_>) -> PyResult<PyObject> {
 #[pyfunction]
 #[pyo3(signature = (udid, mode = "userspace"))]
 fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
-    let tun_mode = match mode {
-        "kernel" => ios_core::TunMode::Kernel,
-        _ => ios_core::TunMode::Userspace,
-    };
+    let tun_mode = parse_tunnel_mode(mode)?;
     let opts = ios_core::device::ConnectOptions {
         tun_mode,
         pair_record_path: None,
@@ -198,6 +196,16 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
             close_requested: false,
         })),
     })
+}
+
+fn parse_tunnel_mode(mode: &str) -> PyResult<ios_core::TunMode> {
+    match mode {
+        "userspace" => Ok(ios_core::TunMode::Userspace),
+        "kernel" => Ok(ios_core::TunMode::Kernel),
+        _ => Err(PyValueError::new_err(format!(
+            "invalid tunnel mode {mode:?}; expected \"userspace\" or \"kernel\""
+        ))),
+    }
 }
 
 /// A live iOS CDTunnel.
@@ -436,6 +444,29 @@ impl Drop for AsyncioProxyPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_mode_rejects_unknown_values_with_value_error() {
+        pyo3::prepare_freethreaded_python();
+        let error = parse_tunnel_mode("kernal").expect_err("unknown modes must be rejected");
+        Python::with_gil(|py| {
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert!(error.to_string().contains("userspace"));
+            assert!(error.to_string().contains("kernel"));
+        });
+    }
+
+    #[test]
+    fn tunnel_mode_accepts_documented_values() {
+        assert_eq!(
+            parse_tunnel_mode("userspace").unwrap(),
+            ios_core::TunMode::Userspace
+        );
+        assert_eq!(
+            parse_tunnel_mode("kernel").unwrap(),
+            ios_core::TunMode::Kernel
+        );
+    }
 
     #[test]
     fn asyncio_proxy_patch_restores_original_after_out_of_order_nested_restore() {

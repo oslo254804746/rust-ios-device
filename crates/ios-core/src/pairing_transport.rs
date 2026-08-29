@@ -30,7 +30,7 @@ use tokio::net::TcpStream;
 pub const UNTRUSTED_SERVICE_NAME: &str = "com.apple.internal.dt.coredevice.untrusted.tunnelservice";
 const CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
 const CONTROL_CHANNEL_ORIGIN: &str = "host";
-const MAX_XPC_BODY_SIZE: usize = 1024 * 1024;
+const MAX_XPC_BODY_SIZE: usize = crate::xpc::message::XPC_CONTROL_BODY_LIMIT;
 
 // TLV type codes
 const TYPE_PUBLIC_KEY: u8 = 0x03;
@@ -513,19 +513,16 @@ async fn recv_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 }
 
 fn xpc_body_len(header: &[u8]) -> Result<usize, PairingTransportError> {
-    let len = u64::from_le_bytes(
+    let declared_len = u64::from_le_bytes(
         header[8..16]
             .try_into()
             .map_err(|_| PairingTransportError::Xpc("bad header length field".into()))?,
     );
-    let len = usize::try_from(len)
-        .map_err(|_| PairingTransportError::Xpc("xpc body length exceeds usize".into()))?;
-    if len > MAX_XPC_BODY_SIZE {
-        return Err(PairingTransportError::Xpc(format!(
-            "body too large: {len} bytes exceeds {MAX_XPC_BODY_SIZE}"
-        )));
-    }
-    Ok(len)
+    crate::xpc::message::checked_xpc_body_len(declared_len, MAX_XPC_BODY_SIZE).map_err(|error| {
+        PairingTransportError::Xpc(format!(
+            "body too large: declared {declared_len} bytes ({error})"
+        ))
+    })
 }
 
 async fn recv_control_plain_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -889,6 +886,19 @@ mod tests {
         assert!(
             matches!(err, PairingTransportError::Xpc(message) if message.contains("body too large"))
         );
+    }
+
+    #[test]
+    fn xpc_body_len_rejects_u64_max_with_the_declared_value() {
+        let mut header = [0u8; 24];
+        header[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let err = xpc_body_len(&header).unwrap_err();
+        assert!(matches!(
+            err,
+            PairingTransportError::Xpc(message)
+                if message.contains(&u64::MAX.to_string())
+        ));
     }
 
     #[test]

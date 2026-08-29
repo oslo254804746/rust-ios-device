@@ -22,3 +22,13 @@ This project can handle highly sensitive material, including pair records, priva
 ## Scope
 
 Security reports may include memory safety issues in FFI boundaries, credential leakage, unsafe handling of pair records or private keys, unauthorized device operations, and network services exposed by the tunnel manager.
+
+## Backup root trust boundary
+
+MobileBackup2 backup and restore paths must be private to the current user and
+must not be writable by an untrusted local process. The implementation rejects
+path traversal and symlinks that are present when a filesystem operation starts,
+but its portable path checks are not an atomic dirfd/openat2 guarantee against a
+concurrent replacement of an intermediate directory. Reports involving a race
+against a shared backup root should include the host OS, filesystem, operation,
+and whether the root or any parent was writable by another process.

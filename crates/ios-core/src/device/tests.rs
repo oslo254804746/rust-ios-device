@@ -6,19 +6,19 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use tokio::io::duplex;
 
-    use super::*;
-    #[cfg(feature = "tunnel")]
-    use crate::credentials::{PersistedCredentials, RemotePairingRecord};
-    #[cfg(feature = "tunnel")]
-    use crate::lockdown::pairing::HostIdentity;
-    #[cfg(feature = "tunnel")]
-    use super::tunnel_activation::TunnelTransport;
     #[cfg(feature = "tunnel")]
     use super::credentials::*;
     #[cfg(feature = "tunnel")]
     use super::pairing::{GuardedTunnelStream, RemotePairingControlChannel};
     #[cfg(feature = "tunnel")]
     use super::protocol::*;
+    #[cfg(feature = "tunnel")]
+    use super::tunnel_activation::TunnelTransport;
+    use super::*;
+    #[cfg(feature = "tunnel")]
+    use crate::credentials::{PersistedCredentials, RemotePairingRecord};
+    #[cfg(feature = "tunnel")]
+    use crate::lockdown::pairing::HostIdentity;
     #[cfg(feature = "tunnel")]
     use crate::xpc::message::XpcValue;
 
@@ -505,6 +505,121 @@ mod tests {
     }
 
     #[test]
+    fn resolve_rsd_service_prefers_canonical_entry_over_shim() {
+        let rsd = RsdHandshake {
+            udid: "test-udid".into(),
+            services: HashMap::from([
+                (
+                    "com.apple.mobile.notification_proxy".into(),
+                    ServiceDescriptor::new(2345),
+                ),
+                (
+                    "com.apple.mobile.notification_proxy.shim.remote".into(),
+                    ServiceDescriptor::new(6789),
+                ),
+            ]),
+        };
+
+        assert_eq!(
+            resolve_rsd_service(&rsd, "com.apple.mobile.notification_proxy"),
+            Some(("com.apple.mobile.notification_proxy".to_string(), 2345,))
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn resolved_rsd_service_metadata_preserves_canonical_features() {
+        let mut canonical = ServiceDescriptor::new(2345);
+        canonical.features = vec!["com.apple.coredevice.feature.streamapplist".into()];
+        let mut shim = ServiceDescriptor::new(6789);
+        shim.features = vec!["shim-only-feature".into()];
+        let rsd = RsdHandshake {
+            udid: "test-udid".into(),
+            services: HashMap::from([
+                ("com.apple.coredevice.appservice".into(), canonical),
+                ("com.apple.coredevice.appservice.shim.remote".into(), shim),
+            ]),
+        };
+
+        let resolved = resolve_rsd_service_details(&rsd, "com.apple.coredevice.appservice")
+            .expect("canonical appservice should resolve");
+
+        assert_eq!(
+            resolved.resolved_service_name,
+            "com.apple.coredevice.appservice"
+        );
+        assert_eq!(resolved.port, 2345);
+        assert_eq!(
+            resolved.features,
+            ["com.apple.coredevice.feature.streamapplist"]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn resolved_rsd_service_metadata_falls_back_to_shim_features() {
+        let mut shim = ServiceDescriptor::new(6789);
+        shim.features = vec!["shim-feature".into()];
+        let rsd = RsdHandshake {
+            udid: "test-udid".into(),
+            services: HashMap::from([("com.apple.coredevice.appservice.shim.remote".into(), shim)]),
+        };
+
+        let resolved = resolve_rsd_service_details(&rsd, "com.apple.coredevice.appservice")
+            .expect("shim appservice should resolve");
+
+        assert_eq!(
+            resolved.resolved_service_name,
+            "com.apple.coredevice.appservice.shim.remote"
+        );
+        assert_eq!(resolved.port, 6789);
+        assert_eq!(resolved.features, ["shim-feature"]);
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn resolved_rsd_service_metadata_keeps_empty_features_for_fallback() {
+        let rsd = RsdHandshake {
+            udid: "test-udid".into(),
+            services: HashMap::from([(
+                "com.apple.coredevice.appservice".into(),
+                ServiceDescriptor::new(2345),
+            )]),
+        };
+
+        let resolved = resolve_rsd_service_details(&rsd, "com.apple.coredevice.appservice")
+            .expect("canonical appservice should resolve without feature metadata");
+
+        assert_eq!(
+            resolved.resolved_service_name,
+            "com.apple.coredevice.appservice"
+        );
+        assert!(resolved.features.is_empty());
+    }
+
+    #[test]
+    fn remote_xpc_route_rejects_shim_before_opening_socket() {
+        let error = ensure_remote_xpc_service(
+            "com.apple.mobile.notification_proxy",
+            "com.apple.mobile.notification_proxy.shim.remote",
+        )
+        .expect_err("lockdown shims must not enter XPC/H2 bootstrap");
+        let message = error.to_string();
+        assert!(message.contains("lockdown shim"));
+        assert!(message.contains("connect_rsd_service"));
+        assert!(message.contains("RSDCheckin"));
+    }
+
+    #[test]
+    fn remote_xpc_route_accepts_canonical_service() {
+        ensure_remote_xpc_service(
+            "com.apple.coredevice.appservice",
+            "com.apple.coredevice.appservice",
+        )
+        .expect("canonical RemoteXPC services should be accepted");
+    }
+
+    #[test]
     #[cfg(feature = "tunnel")]
     fn tunnel_endpoint_uses_userspace_proxy_when_available() {
         let endpoint = TunnelEndpoint::resolve("fd00::1", Some(60105)).expect("valid endpoint");
@@ -566,7 +681,10 @@ mod tests {
             header
         });
 
-        let _stream = endpoint.connect(62000).await.expect("connect through proxy");
+        let _stream = endpoint
+            .connect(62000)
+            .await
+            .expect("connect through proxy");
         let header = server.await.expect("join proxy task");
 
         assert_eq!(&header[..16], &remote_addr.octets());
@@ -745,5 +863,20 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains("RSD start-service response"));
         assert!(rendered.contains("ServiceProhibited"));
+    }
+
+    #[tokio::test]
+    async fn rsd_checkin_times_out_when_peer_stalls() {
+        let (mut client, _server) = duplex(4096);
+
+        let err = rsd_checkin_with_timeout(&mut client, std::time::Duration::from_millis(20))
+            .await
+            .expect_err("a peer that never answers must not block forever");
+
+        assert!(matches!(
+            err,
+            CoreError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::TimedOut
+        ));
+        assert!(err.to_string().contains("RSD check-in timed out"));
     }
 }

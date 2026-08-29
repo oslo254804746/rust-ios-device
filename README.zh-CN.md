@@ -21,7 +21,7 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
   调试、描述文件、恢复、监督和隧道。
 - **iOS 17+ 一等支持**——CoreDevice 隧道（用户态与内核 TUN）、RSD 服务发现、
   HTTP/2 RemoteXPC、appservice、fileservice、diagnosticsservice、deviceinfo、
-  Instruments 与 TestManager。
+  pasteboard、Instruments 与 TestManager。
 - **Lockdown 经典服务**——AFC、House Arrest、syslog、截图、配置/provisioning
   描述文件、崩溃报告、diagnostics relay、notification proxy、SpringBoard、
   备份等。
@@ -120,7 +120,8 @@ CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列�
 | 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                           | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
-| 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`；pmd3 `profile`/`provision`/`restore` |
+| 设备剪贴板              | `pasteboard get`、`pasteboard set TEXT`、`pasteboard set --url URL`                          | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy`                     |
+| 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`；pmd3 `profile`/`provision`/`restore` |
 | 备份、定位与屏幕        | `backup`, `location`, `screenshot`, `notify`                                                | go-ios / pmd3 `backup`/`location`/`screenshot`                              |
 
 按任务组织的示例见 [`docs/usage.md`](docs/usage.md)；与 go-ios / pmd3 命令族
@@ -179,7 +180,7 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
 
 CLI 使用 `full`；库消费者通常应选择更窄的子集。
@@ -271,12 +272,12 @@ JSON 服务映射，每个服务值包含 `port` 与 `features`。每个发布�
 - Linux 需要 OpenSSL 开发文件（`libssl-dev`、`pkg-config`）。
 - Windows 通过 vcpkg 静态链接 OpenSSL（`x64-windows-static-md`），需要设置
   `VCPKG_ROOT`、`VCPKGRS_TRIPLET`、`OPENSSL_STATIC=1`。
-- 仅在构建 `ios-py` 时需要 Python 3.9+ 和 `maturin`。
+- 在本机测试 `ios-py` 时需要 Python 3.9+ 开发文件；构建 wheel/开发版本还需要 `maturin`。
 
 ### 常用命令
 
 ```sh
-# 工作区构建（排除 ios-py，它需要 maturin）
+# 原生 crate 的工作区构建
 cargo build --workspace --exclude ios-py
 
 # 发布版 CLI 二进制
@@ -285,6 +286,8 @@ cargo build --release -p ios-cli
 # 测试
 cargo test --workspace --exclude ios-core --exclude ios-py
 cargo test -p ios-core --all-features
+# Python binding 本机测试（需要 Python 开发文件）
+PYO3_PYTHON=/path/to/python cargo test -p ios-py
 
 # Lint / 格式
 cargo fmt --all -- --check

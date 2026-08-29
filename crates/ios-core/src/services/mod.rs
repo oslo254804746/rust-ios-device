@@ -18,7 +18,7 @@
 //! | `notificationproxy` | [`notificationproxy`] | Device notification subscribe/post |
 //! | `crashreport` | [`crashreport`] | Crash log download and management (requires `afc`) |
 //! | `springboard` | [`springboard`] | Icon layout, wallpaper, orientation |
-//! | `mcinstall` | [`mcinstall`] | Configuration profile install/remove |
+//! | `mcinstall` | [`mcinstall`] | Configuration profiles and supervised MDM passcode/security operations |
 //! | `heartbeat` | [`heartbeat`] | Connection keepalive |
 //! | `file_relay` | [`file_relay`] | Diagnostic bundle archive |
 //! | `syslog` | [`syslog`] | Real-time system log streaming |
@@ -41,6 +41,7 @@
 //! | `idam` | [`idam`] | Identity and device auth |
 //! | `fetchsymbols` | [`fetchsymbols`] | Debug symbol download |
 //! | `ostrace` | [`ostrace`] | OS trace relay process listing |
+//! | `pasteboard` | [`pasteboard`] | iOS 17+ CoreDevice general pasteboard |
 //! | `prepare` | [`prepare`] | Supervised device preparation (requires `afc`+`mcinstall`) |
 //! | `restore` | [`restore`] | Recovery/restore mode operations |
 //! | `dproxy` | [`dproxy`] | DTX debug proxy recording (requires `dtx`) |
@@ -191,6 +192,9 @@ pub mod fetchsymbols;
 
 #[cfg(feature = "ostrace")]
 pub mod ostrace;
+
+#[cfg(feature = "pasteboard")]
+pub mod pasteboard;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

@@ -6,7 +6,9 @@ pub mod installation;
 pub mod zipconduit;
 
 #[cfg(feature = "tunnel")]
-pub use appservice::{AppServiceClient, AppServiceError, RunningAppProcess};
+pub use appservice::{
+    AppServiceClient, AppServiceError, CoreDeviceEnvelopeMode, RunningAppProcess,
+};
 pub use installation::{AppInfo, InstallationProxy};
 pub use zipconduit::{install_ipa, ZipConduitError};
 

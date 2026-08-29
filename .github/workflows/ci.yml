@@ -147,6 +147,57 @@ jobs:
           cargo test --workspace --exclude ios-core --exclude ios-py
           cargo test -p ios-core --all-features
 
+  python-smoke:
+    name: Python binding (host + wheel smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native and Python development headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config python3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
+
+      - name: Run host-side Rust tests
+        env:
+          PYO3_PYTHON: /usr/bin/python3
+        run: |
+          # The workspace gate excludes the packaging-only extension-module
+          # feature; test the binding separately against the host Python ABI.
+          cargo test --workspace --no-run --exclude ios-py
+          cargo test -p ios-py --no-default-features
+
+      - name: Build abi3 wheel
+        env:
+          PYO3_PYTHON: /usr/bin/python3
+        run: |
+          cd crates/ios-py
+          uvx maturin build --release --out ../../dist
+
+      - name: Import wheel and validate Python error contract
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python dist/*.whl
+          .venv/bin/python - <<'PY'
+          import ios_rs
+
+          assert callable(ios_rs.list_devices)
+          try:
+              ios_rs.start_tunnel("no-such-device", mode="invalid")
+          except ValueError as exc:
+              message = str(exc)
+              assert "userspace" in message and "kernel" in message
+          else:
+              raise AssertionError("invalid tunnel mode must raise ValueError")
+          PY
+
   release:
     name: Release (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/v')

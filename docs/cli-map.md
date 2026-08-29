@@ -41,6 +41,7 @@ schemas, service routing, and iOS-version support can differ.
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
+| Device pasteboard | `ios pasteboard get`, `ios pasteboard set TEXT`, `ios pasteboard set --url URL` | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
 | Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
@@ -65,6 +66,7 @@ schemas, service routing, and iOS-version support can differ.
 | Provisioning profiles | `ios provisioning list` | provisioning/profile workflows | `pymobiledevice3 provision ...` |
 | Supervision prep | `ios prepare ...` | `ios prepare ...` | mobile configuration and supervision workflows |
 | HTTP proxy profile | `ios httpproxy set ...`, `ios httpproxy remove` | `ios httpproxy ...` | profile/mobileconfig workflows |
+| MDM passcode/security | `ios mdm fetch-unlock-token`, `ios mdm security-info`, `ios mdm passcode-present`, `ios mdm clear-passcode`, `ios mdm clear-screen-time-password` | `ios mdm ...` | MCInstall/profile management workflows |
 | Erase | `ios erase --force` | `ios erase --force` | restore/mobile configuration workflows |
 | Preboard | `ios preboard ...` | prepare/preboard-style workflows | preboard service workflows |
 | Power assertion | `ios power-assert --timeout 10` | power assertion workflows | `pymobiledevice3 power-assertion ...` |

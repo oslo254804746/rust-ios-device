@@ -779,10 +779,14 @@ async fn connect_appservice(
     device: &ios_core::ConnectedDevice,
     udid: &str,
 ) -> Result<ios_core::apps::AppServiceClient, CoreError> {
-    let xpc = device
-        .connect_xpc_service(ios_core::apps::APPSERVICE_SERVICE)
+    let (xpc, metadata) = device
+        .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
         .await?;
-    Ok(ios_core::apps::AppServiceClient::new(xpc, udid.to_string()))
+    Ok(ios_core::apps::AppServiceClient::new_with_features(
+        xpc,
+        udid.to_string(),
+        metadata.features,
+    ))
 }
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {

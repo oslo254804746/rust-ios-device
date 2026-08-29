@@ -45,6 +45,8 @@ enum Commands {
     Listen(cmd::listen::ListenCmd),
     /// Access lockdown values directly
     Lockdown(cmd::lockdown::LockdownCmd),
+    /// Supervised MCInstall passcode and security operations
+    Mdm(cmd::mdm::MdmCmd),
     /// Establish a CDTunnel to the device (iOS 17+ required)
     Tunnel(cmd::tunnel::TunnelCmd),
     /// Pair a new (untrusted) device via SRP
@@ -105,6 +107,8 @@ enum Commands {
     Syslog(cmd::syslog::SyslogCmd),
     /// Wait for notification-proxy events
     Notify(cmd::notification::NotificationCmd),
+    /// Read or write the iOS 17+ CoreDevice pasteboard
+    Pasteboard(cmd::pasteboard::PasteboardCmd),
     /// Capture device network traffic from pcapd
     Pcap(cmd::pcap::PcapCmd),
     /// Performance instruments (CPU, memory, process control)
@@ -151,6 +155,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Info(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Listen(c) => Box::pin(async move { c.run(!no_json).await }),
         Commands::Lockdown(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Mdm(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Tunnel(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Pair(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Provisioning(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -181,6 +186,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Springboard(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Syslog(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Notify(c) => Box::pin(async move { c.run(udid).await }),
+        Commands::Pasteboard(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Pcap(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Instruments(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Location(c) => Box::pin(async move { c.run(udid).await }),

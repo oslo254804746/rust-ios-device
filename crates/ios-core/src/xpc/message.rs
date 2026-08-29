@@ -21,6 +21,31 @@ pub const WRAPPER_MAGIC: u32 = 0x29B00B92;
 pub const OBJECT_MAGIC: u32 = 0x42133742;
 pub const BODY_VERSION: u32 = 0x00000005;
 
+/// Maximum body accepted for a normal XPC control message.
+///
+/// Control messages contain dictionaries, replies, and service metadata. 8 MiB
+/// leaves room for large CoreDevice catalog/sysdiagnose metadata while keeping
+/// a malformed wire length from turning into an unbounded allocation.
+pub(crate) const XPC_CONTROL_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Maximum body accepted when the XPC flags identify an explicit file/data
+/// transfer. File contents are normally carried as DATA frames, but the
+/// transfer protocol can also put a sizeable chunk in an XPC body. This limit
+/// is intentionally separate from the control limit so a valid transfer is not
+/// rejected merely because it is larger than a control reply.
+pub(crate) const XPC_DATA_STREAM_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
+/// The incremental control-message assembler is fed frame-sized chunks. Its
+/// ceiling is the larger transfer limit plus the wrapper header, so it never
+/// needs to retain an arbitrarily large incomplete message.
+#[cfg(any(
+    feature = "dproxy",
+    feature = "fetchsymbols",
+    feature = "restore",
+    test
+))]
+pub(crate) const XPC_PENDING_BUFFER_LIMIT: usize = XPC_DATA_STREAM_BODY_LIMIT + 24;
+
 /// XPC message flags.
 pub mod flags {
     pub const ALWAYS_SET: u32 = 0x00000001;
@@ -34,6 +59,28 @@ pub mod flags {
     pub const FILE_TX_STREAM_REQUEST: u32 = FILE_OPEN;
     pub const FILE_TX_STREAM_RESPONSE: u32 = 0x00200000;
     pub const INIT_HANDSHAKE: u32 = 0x00400000;
+}
+
+/// Select the body limit from the wire flags before any body bytes are copied.
+pub(crate) fn xpc_body_limit_for_flags(message_flags: u32) -> usize {
+    if message_flags & (flags::FILE_TX_STREAM_REQUEST | flags::FILE_TX_STREAM_RESPONSE) != 0 {
+        XPC_DATA_STREAM_BODY_LIMIT
+    } else {
+        XPC_CONTROL_BODY_LIMIT
+    }
+}
+
+/// Convert a wire body length without truncation and reject it before callers
+/// use it to read or allocate. The original u64 is retained in diagnostics so
+/// malformed values such as `u64::MAX` remain actionable on 32- and 64-bit
+/// hosts alike.
+pub(crate) fn checked_xpc_body_len(declared: u64, limit: usize) -> Result<usize, String> {
+    let length = usize::try_from(declared)
+        .map_err(|_| format!("XPC body length {declared} exceeds usize::MAX"))?;
+    if length > limit {
+        return Err(format!("XPC body length {declared} exceeds limit {limit}"));
+    }
+    Ok(length)
 }
 
 /// An XPC message.
@@ -220,10 +267,6 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
     Ok(())
 }
 
-fn align4(n: usize) -> usize {
-    (n + 3) & !3
-}
-
 fn checked_collection_len(kind: &str, len: usize) -> Result<u32, XpcError> {
     u32::try_from(len)
         .map_err(|_| XpcError::Tls(format!("XPC {kind} encoded size exceeds u32::MAX: {len}")))
@@ -271,7 +314,7 @@ fn decode_dict_key(buf: &mut Bytes) -> Result<String, XpcError> {
     }
     buf.advance(1); // NUL terminator
     let total = nul_pos + 1;
-    let padded = align4(total);
+    let padded = checked_align4("dict key", total)?;
     let pad = padded - total;
     if buf.remaining() < pad {
         return Err(XpcError::Tls("XPC: dict key padding truncated".into()));
@@ -299,19 +342,15 @@ pub fn decode_message(mut buf: Bytes) -> Result<XpcMessage, XpcError> {
         return Err(XpcError::Tls("XPC: buffer too short for header".into()));
     }
     let flags = buf.get_u32_le();
-    let body_len = buf.get_u64_le();
+    let declared_body_len = buf.get_u64_le();
     let msg_id = buf.get_u64_le();
+    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
+        .map_err(XpcError::Tls)?;
 
     let body = if body_len > 0 {
-        // `usize` is narrower than the wire field on 32-bit hosts; a silent `as`
-        // truncation there would slice a short prefix of an oversized body and
-        // decode the leftovers of the next message as if they belonged to it.
-        let body_len = usize::try_from(body_len).map_err(|_| {
-            XpcError::Tls(format!("XPC: body length {body_len} exceeds usize::MAX"))
-        })?;
         if buf.remaining() < body_len {
             return Err(XpcError::Tls(format!(
-                "XPC: body truncated: header declares {body_len} bytes, {} available",
+                "XPC: body truncated: header declares {declared_body_len} bytes, {} available",
                 buf.remaining()
             )));
         }
@@ -364,8 +403,21 @@ impl XpcMessageBuffer {
         }
     }
 
-    pub(crate) fn push(&mut self, bytes: &[u8]) {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<(), XpcError> {
+        let new_len = self.pending.len().checked_add(bytes.len()).ok_or_else(|| {
+            XpcError::Tls(format!(
+                "XPC pending buffer length overflow: current {}, incoming {}",
+                self.pending.len(),
+                bytes.len()
+            ))
+        })?;
+        if new_len > XPC_PENDING_BUFFER_LIMIT {
+            return Err(XpcError::Tls(format!(
+                "XPC pending buffer length {new_len} exceeds limit {XPC_PENDING_BUFFER_LIMIT}"
+            )));
+        }
         self.pending.extend_from_slice(bytes);
+        Ok(())
     }
 
     pub(crate) fn try_next(&mut self) -> Result<Option<XpcMessage>, XpcError> {
@@ -373,11 +425,18 @@ impl XpcMessageBuffer {
             return Ok(None);
         }
 
-        let body_len = u64::from_le_bytes(
+        let declared_body_len = u64::from_le_bytes(
             self.pending[8..16]
                 .try_into()
                 .map_err(|_| XpcError::Tls("XPC: invalid wrapper header".into()))?,
-        ) as usize;
+        );
+        let flags = u32::from_le_bytes(
+            self.pending[4..8]
+                .try_into()
+                .map_err(|_| XpcError::Tls("XPC: invalid wrapper flags".into()))?,
+        );
+        let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
+            .map_err(XpcError::Tls)?;
         let total_len = 24usize
             .checked_add(body_len)
             .ok_or_else(|| XpcError::Tls("XPC: message length overflow".into()))?;
@@ -453,8 +512,13 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
             if buf.remaining() < 4 {
                 return Err(XpcError::Tls("XPC: data length truncated".into()));
             }
-            let data_len = buf.get_u32_le() as usize;
-            let padded = align4(data_len);
+            let declared_data_len = buf.get_u32_le();
+            let data_len = usize::try_from(declared_data_len).map_err(|_| {
+                XpcError::Tls(format!(
+                    "XPC data length {declared_data_len} exceeds usize::MAX"
+                ))
+            })?;
+            let padded = checked_align4("data", data_len)?;
             if buf.remaining() < padded {
                 return Err(XpcError::Tls("XPC: data truncated".into()));
             }
@@ -469,8 +533,13 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
             if buf.remaining() < 4 {
                 return Err(XpcError::Tls("XPC: string length truncated".into()));
             }
-            let data_len = buf.get_u32_le() as usize;
-            let padded = align4(data_len);
+            let declared_data_len = buf.get_u32_le();
+            let data_len = usize::try_from(declared_data_len).map_err(|_| {
+                XpcError::Tls(format!(
+                    "XPC string length {declared_data_len} exceeds usize::MAX"
+                ))
+            })?;
+            let padded = checked_align4("string", data_len)?;
             if buf.remaining() < padded {
                 return Err(XpcError::Tls("XPC: string truncated".into()));
             }
@@ -496,11 +565,16 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
             if buf.remaining() < 8 {
                 return Err(XpcError::Tls("XPC: array header truncated".into()));
             }
-            let _data_len = buf.get_u32_le() as usize;
+            let _data_len = buf.get_u32_le();
             if buf.remaining() < 4 {
                 return Err(XpcError::Tls("XPC: array count truncated".into()));
             }
-            let count = buf.get_u32_le() as usize;
+            let declared_count = buf.get_u32_le();
+            let count = usize::try_from(declared_count).map_err(|_| {
+                XpcError::Tls(format!(
+                    "XPC array count {declared_count} exceeds usize::MAX"
+                ))
+            })?;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
             }
@@ -514,11 +588,16 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
             if buf.remaining() < 8 {
                 return Err(XpcError::Tls("XPC: dict header truncated".into()));
             }
-            let _data_len = buf.get_u32_le() as usize;
+            let _data_len = buf.get_u32_le();
             if buf.remaining() < 4 {
                 return Err(XpcError::Tls("XPC: dict count truncated".into()));
             }
-            let count = buf.get_u32_le() as usize;
+            let declared_count = buf.get_u32_le();
+            let count = usize::try_from(declared_count).map_err(|_| {
+                XpcError::Tls(format!(
+                    "XPC dictionary count {declared_count} exceeds usize::MAX"
+                ))
+            })?;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
             }
@@ -646,6 +725,53 @@ mod tests {
     }
 
     #[test]
+    fn body_length_checks_cover_edges_and_u64_max_without_allocating() {
+        assert_eq!(checked_xpc_body_len(0, XPC_CONTROL_BODY_LIMIT).unwrap(), 0);
+        assert_eq!(
+            checked_xpc_body_len(XPC_CONTROL_BODY_LIMIT as u64, XPC_CONTROL_BODY_LIMIT).unwrap(),
+            XPC_CONTROL_BODY_LIMIT
+        );
+
+        let over = XPC_CONTROL_BODY_LIMIT as u64 + 1;
+        let error = checked_xpc_body_len(over, XPC_CONTROL_BODY_LIMIT).unwrap_err();
+        assert!(error.contains(&over.to_string()), "{error}");
+        assert!(error.contains("exceeds limit"), "{error}");
+
+        let error = checked_xpc_body_len(u64::MAX, XPC_CONTROL_BODY_LIMIT).unwrap_err();
+        assert!(error.contains(&u64::MAX.to_string()), "{error}");
+
+        // The decoder rejects the declared size before checking available bytes,
+        // so this test never allocates a body-sized buffer.
+        let error = decode_message(wrapper_header(u64::MAX).freeze()).unwrap_err();
+        assert!(error.to_string().contains(&u64::MAX.to_string()), "{error}");
+    }
+
+    #[test]
+    fn body_limits_are_layered_for_explicit_file_transfer_flags() {
+        assert_eq!(
+            xpc_body_limit_for_flags(flags::FILE_TX_STREAM_REQUEST),
+            XPC_DATA_STREAM_BODY_LIMIT
+        );
+        assert_eq!(
+            xpc_body_limit_for_flags(flags::FILE_TX_STREAM_RESPONSE),
+            XPC_DATA_STREAM_BODY_LIMIT
+        );
+        assert_eq!(
+            xpc_body_limit_for_flags(flags::ALWAYS_SET),
+            XPC_CONTROL_BODY_LIMIT
+        );
+    }
+
+    #[test]
+    fn message_buffer_rejects_oversized_declared_body_before_waiting_or_allocating() {
+        let mut buffer = XpcMessageBuffer::new();
+        buffer.push(&wrapper_header(u64::MAX)).unwrap();
+
+        let error = buffer.try_next().unwrap_err();
+        assert!(error.to_string().contains(&u64::MAX.to_string()), "{error}");
+    }
+
+    #[test]
     fn collection_length_rejects_values_above_u32_max() {
         let err = checked_collection_len("array", u32::MAX as usize + 1).unwrap_err();
         assert!(err
@@ -657,6 +783,12 @@ mod tests {
     fn checked_xpc_u32_len_rejects_values_above_u32_max() {
         let err = checked_u32_len("data", u32::MAX as usize + 1).unwrap_err();
         assert!(err.to_string().contains("data length exceeds u32::MAX"));
+    }
+
+    #[test]
+    fn checked_align4_rejects_usize_overflow() {
+        let err = checked_align4("data", usize::MAX).unwrap_err();
+        assert!(err.to_string().contains("padded length overflow"), "{err}");
     }
 
     #[test]
@@ -675,11 +807,11 @@ mod tests {
         let bytes2 = encode_message(&msg2).unwrap();
         let mut buffer = XpcMessageBuffer::new();
 
-        buffer.push(&bytes1[..10]);
+        buffer.push(&bytes1[..10]).unwrap();
         assert!(buffer.try_next().unwrap().is_none());
 
-        buffer.push(&bytes1[10..]);
-        buffer.push(&bytes2);
+        buffer.push(&bytes1[10..]).unwrap();
+        buffer.push(&bytes2).unwrap();
 
         assert_eq!(buffer.try_next().unwrap().unwrap().msg_id, 1);
         assert_eq!(buffer.try_next().unwrap().unwrap().msg_id, 2);

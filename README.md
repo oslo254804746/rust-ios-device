@@ -24,7 +24,7 @@ common Apple device services.
   apps, instruments, debugging, profiles, restore, supervision, and tunnels.
 - **iOS 17+ first-class support** — CoreDevice tunnel (userspace and kernel
   TUN), RSD service discovery, RemoteXPC over HTTP/2, appservice, fileservice,
-  diagnosticsservice, deviceinfo, Instruments, and TestManager.
+  diagnosticsservice, deviceinfo, pasteboard, Instruments, and TestManager.
 - **Lockdown-era services** — AFC, House Arrest, syslog, screenshots,
   configuration/provisioning profiles, crash reports, diagnostics relay,
   notification proxy, springboard, backup, and more.
@@ -127,7 +127,8 @@ orientation.
 | Diagnostics & logs          | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                               | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
-| Management & supervision    | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`erase`; pmd3 `profile`/`provision`/`restore` |
+| Device pasteboard           | `pasteboard get`, `pasteboard set TEXT`, `pasteboard set --url URL`                            | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy`                     |
+| Management & supervision    | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`; pmd3 `profile`/`provision`/`restore` |
 | Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 
 Task-focused walkthroughs: [`docs/usage.md`](docs/usage.md). Side-by-side
@@ -193,7 +194,7 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
 
 The CLI builds with `full`; libraries should usually pick a smaller subset.
@@ -290,12 +291,13 @@ Pre-built archives for the supported targets are attached to each release.
 - On Windows, OpenSSL is linked statically through vcpkg
   (`x64-windows-static-md`); set `VCPKG_ROOT`, `VCPKGRS_TRIPLET`,
   `OPENSSL_STATIC=1`.
-- Python 3.9+ and `maturin` only when building `ios-py`.
+- Python 3.9+ development headers for host-testing `ios-py`; `maturin` is also
+  needed for wheel/development builds.
 
 ### Common commands
 
 ```sh
-# Workspace build (excludes ios-py, which needs maturin)
+# Workspace build for the native crates
 cargo build --workspace --exclude ios-py
 
 # Release CLI binary
@@ -304,6 +306,8 @@ cargo build --release -p ios-cli
 # Tests
 cargo test --workspace --exclude ios-core --exclude ios-py
 cargo test -p ios-core --all-features
+# Host-side Python binding tests (requires Python development headers)
+PYO3_PYTHON=/path/to/python cargo test -p ios-py
 
 # Lint / format
 cargo fmt --all -- --check

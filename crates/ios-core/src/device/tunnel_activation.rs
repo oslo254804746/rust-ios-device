@@ -21,13 +21,13 @@ use super::{
 };
 
 #[cfg(feature = "tunnel-kernel")]
-use crate::tunnel::forward::forward_packets;
+use crate::tunnel::forward::forward_packets_inner;
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::tun::kernel::KernelTunDevice;
 #[cfg(feature = "tunnel-userspace")]
 use crate::tunnel::tun::userspace::UserspaceTunDevice;
 #[cfg(feature = "tunnel")]
-use crate::tunnel::{TunMode, TunnelHandle};
+use crate::tunnel::{TunMode, TunnelHandle, ValidatedMtu};
 
 /// An authenticated CDTunnel byte stream.
 ///
@@ -107,12 +107,13 @@ where
     )
     .await
     .map_err(CoreError::Tunnel)?;
+    let mtu = ValidatedMtu::new(tunnel_info.client_mtu).map_err(CoreError::Tunnel)?;
     tracing::info!(
         strategy = connection.strategy,
         server = %tunnel_info.server_address,
         rsd_port = tunnel_info.server_rsd_port,
         client = %tunnel_info.client_address,
-        mtu = tunnel_info.client_mtu,
+        mtu = mtu.as_u16(),
         "tunnel connect: CDTunnel parameters received"
     );
 
@@ -129,14 +130,12 @@ where
             {
                 let (handle, cancel_rx) =
                     TunnelHandle::new(connection.info.udid.clone(), tunnel_info.clone(), None);
-                let tun =
-                    KernelTunDevice::create(&tunnel_info.client_address, tunnel_info.client_mtu)
-                        .await
-                        .map_err(CoreError::Tunnel)?;
-                let mtu = tunnel_info.client_mtu;
+                let tun = KernelTunDevice::create_validated(&tunnel_info.client_address, mtu)
+                    .await
+                    .map_err(CoreError::Tunnel)?;
                 let strategy = connection.strategy;
                 tokio::spawn(async move {
-                    if let Err(err) = forward_packets(stream, tun, mtu, cancel_rx).await {
+                    if let Err(err) = forward_packets_inner(stream, tun, mtu, cancel_rx).await {
                         tracing::error!(strategy, "kernel TUN forward failed: {err}");
                     }
                 });
@@ -155,10 +154,10 @@ where
             }
             #[cfg(feature = "tunnel-userspace")]
             {
-                let userspace = UserspaceTunDevice::start(
+                let userspace = UserspaceTunDevice::start_validated(
                     &tunnel_info.client_address,
                     &tunnel_info.server_address,
-                    tunnel_info.client_mtu,
+                    mtu,
                     stream,
                 )
                 .await

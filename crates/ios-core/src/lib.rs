@@ -160,6 +160,8 @@ pub use services::mobileactivation;
 pub use services::notificationproxy;
 #[cfg(feature = "ostrace")]
 pub use services::ostrace;
+#[cfg(feature = "pasteboard")]
+pub use services::pasteboard;
 #[cfg(feature = "pcap")]
 pub use services::pcap;
 #[cfg(feature = "power_assertion")]

@@ -15,6 +15,11 @@ pub const REMOTE_SERVICE_NAME: &str = "com.apple.dt.remoteFetchSymbols";
 const CMD_LIST_FILES: u32 = 0x3030_3030;
 const CMD_GET_FILE: u32 = 1;
 const MAX_CHUNK: usize = 10 * 1024 * 1024;
+const MAX_H2_STREAM_ID: u32 = 0x7fff_ffff;
+/// A dyld shared-cache catalog is small (normally a handful of entries). Keep
+/// a generous protocol ceiling so a malformed count cannot drive an enormous
+/// receive loop while leaving ample room for future device catalogs.
+const MAX_CATALOG_FILES: usize = 65_536;
 
 service_error!(FetchSymbolsError);
 
@@ -143,7 +148,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         mut writer: W,
         max_bytes: Option<u64>,
     ) -> Result<u64, FetchSymbolsError> {
-        let stream_id = (index + 1) * 2;
+        let stream_id = file_stream_id(index)?;
         self.framer
             .write_stream(
                 stream_id,
@@ -165,7 +170,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
         let limit = max_bytes.map_or(file.size, |limit| limit.min(file.size));
         let mut remaining = limit;
         let mut written = 0u64;
-        let mut buf = vec![0u8; MAX_CHUNK.min(limit.max(1) as usize)];
+        let requested_buf_len = usize::try_from(limit.max(1)).unwrap_or(MAX_CHUNK);
+        let mut buf = vec![0u8; MAX_CHUNK.min(requested_buf_len)];
 
         while remaining > 0 {
             let chunk_len = remaining.min(buf.len() as u64) as usize;
@@ -233,7 +239,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload);
+            self.control_messages.push(&frame.payload).map_err(|err| {
+                FetchSymbolsError::Protocol(format!("control response buffer failed: {err}"))
+            })?;
         }
     }
 
@@ -274,6 +282,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
     }
 }
 
+fn file_stream_id(index: u32) -> Result<u32, FetchSymbolsError> {
+    let stream_id = index
+        .checked_add(1)
+        .and_then(|index| index.checked_mul(2))
+        .ok_or_else(|| {
+            FetchSymbolsError::Protocol(format!(
+                "symbol index {index} overflows the file-transfer stream ID"
+            ))
+        })?;
+    if stream_id == 0 || stream_id > MAX_H2_STREAM_ID {
+        return Err(FetchSymbolsError::Protocol(format!(
+            "symbol index {index} cannot be represented as an HTTP/2 stream ID"
+        )));
+    }
+    Ok(stream_id)
+}
+
 impl<S> RemoteFetchSymbolsClient<S> {
     fn try_take_pending_control_message(
         &mut self,
@@ -304,9 +329,22 @@ fn try_parse_catalog_count(
 ) -> Option<Result<usize, FetchSymbolsError>> {
     let dict = message.body.as_ref()?.as_dict()?;
     let value = dict.get("DSCFilePaths")?;
-    Some(as_u64(value).map(|count| count as usize).ok_or_else(|| {
+    Some(parse_catalog_count(value))
+}
+
+fn parse_catalog_count(value: &crate::xpc::XpcValue) -> Result<usize, FetchSymbolsError> {
+    let declared = as_u64(value).ok_or_else(|| {
         FetchSymbolsError::Protocol("catalog response missing DSCFilePaths count".into())
-    }))
+    })?;
+    let count = usize::try_from(declared).map_err(|_| {
+        FetchSymbolsError::Protocol(format!("catalog file count {declared} exceeds usize::MAX"))
+    })?;
+    if count > MAX_CATALOG_FILES {
+        return Err(FetchSymbolsError::Protocol(format!(
+            "catalog file count {declared} exceeds limit {MAX_CATALOG_FILES}"
+        )));
+    }
+    Ok(count)
 }
 
 fn try_parse_catalog_entry(
@@ -389,8 +427,7 @@ where
     framer
         .write_client_server(
             &crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
-                flags: crate::xpc::message::flags::ALWAYS_SET
-                    | crate::xpc::message::flags::DATA_PRESENT,
+                flags: crate::xpc::message::flags::ALWAYS_SET,
                 msg_id: 0,
                 body: Some(crate::xpc::XpcValue::Dictionary(IndexMap::new())),
             })
@@ -406,9 +443,16 @@ where
         })?;
 
     framer
+        .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+        .await
+        .map_err(|err| {
+            FetchSymbolsError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
+        })?;
+
+    framer
         .write_client_server(
             &crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
-                flags: crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::REPLY,
+                flags: crate::xpc::message::flags::ALWAYS_SET | 0x200,
                 msg_id: 0,
                 body: None,
             })
@@ -450,6 +494,48 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn file_stream_id_rejects_overflow_and_reserved_ids() {
+        assert_eq!(file_stream_id(0).unwrap(), 2);
+        assert_eq!(file_stream_id(0x3fff_fffe).unwrap(), 0x7fff_fffe);
+        assert!(file_stream_id(0x3fff_ffff).is_err());
+        assert!(file_stream_id(u32::MAX).is_err());
+    }
+
+    fn catalog_count_message(value: crate::xpc::XpcValue) -> crate::xpc::XpcMessage {
+        crate::xpc::XpcMessage {
+            flags: crate::xpc::message::flags::ALWAYS_SET,
+            msg_id: 1,
+            body: Some(crate::xpc::XpcValue::Dictionary(IndexMap::from([(
+                "DSCFilePaths".to_string(),
+                value,
+            )]))),
+        }
+    }
+
+    #[test]
+    fn catalog_count_is_checked_before_catalog_loop() {
+        let normal =
+            try_parse_catalog_count(&catalog_count_message(crate::xpc::XpcValue::Uint64(2)))
+                .expect("count field")
+                .expect("valid count");
+        assert_eq!(normal, 2);
+
+        let over = MAX_CATALOG_FILES as u64 + 1;
+        let error =
+            try_parse_catalog_count(&catalog_count_message(crate::xpc::XpcValue::Uint64(over)))
+                .expect("count field")
+                .expect_err("over-limit count must be rejected");
+        assert!(error.to_string().contains(&over.to_string()), "{error}");
+
+        let error = try_parse_catalog_count(&catalog_count_message(crate::xpc::XpcValue::Uint64(
+            u64::MAX,
+        )))
+        .expect("count field")
+        .expect_err("u64::MAX must be rejected");
+        assert!(error.to_string().contains("count"), "{error}");
+    }
 
     #[test]
     fn remote_symbol_output_path_trims_root_prefix_and_rejects_traversal() {

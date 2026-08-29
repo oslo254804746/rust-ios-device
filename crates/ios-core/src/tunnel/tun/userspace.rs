@@ -7,6 +7,7 @@
 //!   client sends 16-byte IPv6 addr + 4-byte LE port after connecting
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
@@ -16,23 +17,31 @@ use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv6Address};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use tokio::task::{JoinHandle, JoinSet};
 
-use crate::tunnel::TunnelError;
+use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
-const LOCAL_PROXY_CHANNEL_CAPACITY: usize = 4096;
+// The device-to-client side can carry packets up to SOCKET_RECV_CHUNK_BYTES;
+// keeping this item count small caps queued data at roughly 2 MiB per client
+// and lets TCP/mpsc backpressure reach the tunnel instead of retaining hundreds
+// of MiB for a stalled local reader.
+const LOCAL_PROXY_CHANNEL_CAPACITY: usize = 32;
 const SOCKET_BUFFER_BYTES: usize = 1_048_576;
 const SOCKET_RECV_CHUNK_BYTES: usize = 65_536;
 const EPHEMERAL_PORT_MIN: u16 = 40000;
 const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
 const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) as usize + 1;
+const LOCAL_PROXY_PREAMBLE_LEN: usize = 16 + 4;
+const LOCAL_PROXY_PREAMBLE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
 
 struct ChannelDevice {
+    mtu: ValidatedMtu,
     rx_buf: VecDeque<Vec<u8>>,
     tx_buf: VecDeque<Vec<u8>>,
 }
@@ -72,7 +81,7 @@ impl Device for ChannelDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip;
-        caps.max_transmission_unit = 1280;
+        caps.max_transmission_unit = self.mtu.as_usize();
         caps
     }
 }
@@ -119,6 +128,20 @@ impl UserspaceTunDevice {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        let mtu = ValidatedMtu::new(mtu)?;
+        Self::start_validated(client_address, _server_address, mtu, ios_stream).await
+    }
+
+    pub(crate) async fn start_validated<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+    ) -> Result<Self, TunnelError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let payload_capacity = mtu.ipv6_payload_capacity()?;
         let client_ipv6: Ipv6Address = client_address.parse().map_err(|_| {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
         })?;
@@ -132,12 +155,12 @@ impl UserspaceTunDevice {
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
 
         let reader_task = tokio::spawn(async move {
-            read_ios_packets(&mut ios_reader, ios_to_smol_tx).await;
+            read_ios_packets(&mut ios_reader, payload_capacity, ios_to_smol_tx).await;
             tracing::debug!("userspace: iOS packet reader exited");
         });
 
         let writer_task = tokio::spawn(async move {
-            write_ios_packets(&mut ios_writer, smol_to_ios_rx).await;
+            write_ios_packets(&mut ios_writer, mtu, smol_to_ios_rx).await;
             tracing::debug!("userspace: iOS packet writer exited");
         });
 
@@ -183,23 +206,47 @@ impl Drop for UserspaceTunDevice {
 
 // ── iOS packet I/O ─────────────────────────────────────────────────────────────
 
-async fn read_ios_packets<R>(reader: &mut R, tx: mpsc::Sender<Vec<u8>>)
+async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<Vec<u8>>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut hdr = vec![0u8; 40];
+    let mut hdr = vec![0u8; IPV6_HEADER_LEN];
     loop {
         if reader.read_exact(&mut hdr).await.is_err() {
             break;
         }
+        let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
         if hdr[0] >> 4 != 6 {
             tracing::warn!("userspace: non-IPv6 packet from iOS, skipping");
+            if !discard_bytes(reader, payload_len).await {
+                break;
+            }
             continue;
         }
-        let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
-        let mut pkt = hdr.clone();
-        pkt.resize(40 + payload_len, 0);
-        if reader.read_exact(&mut pkt[40..]).await.is_err() {
+        if payload_len > payload_capacity {
+            tracing::warn!(
+                "userspace: IPv6 payload {payload_len} exceeds negotiated payload capacity {payload_capacity}"
+            );
+            if !discard_bytes(reader, payload_len).await {
+                break;
+            }
+            continue;
+        }
+        let packet_len = match IPV6_HEADER_LEN.checked_add(payload_len) {
+            Some(packet_len) => packet_len,
+            None => {
+                tracing::warn!("userspace: IPv6 packet length overflow");
+                break;
+            }
+        };
+        let mut pkt = Vec::with_capacity(packet_len);
+        pkt.extend_from_slice(&hdr);
+        pkt.resize(packet_len, 0);
+        if reader
+            .read_exact(&mut pkt[IPV6_HEADER_LEN..])
+            .await
+            .is_err()
+        {
             break;
         }
         if tx.send(pkt).await.is_err() {
@@ -208,11 +255,34 @@ where
     }
 }
 
-async fn write_ios_packets<W>(writer: &mut W, mut rx: mpsc::Receiver<Vec<u8>>)
+async fn discard_bytes<R>(reader: &mut R, mut remaining: usize) -> bool
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut discard = [0u8; 4096];
+    while remaining > 0 {
+        let chunk_len = remaining.min(discard.len());
+        if reader.read_exact(&mut discard[..chunk_len]).await.is_err() {
+            return false;
+        }
+        remaining -= chunk_len;
+    }
+    true
+}
+
+async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, mut rx: mpsc::Receiver<Vec<u8>>)
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     while let Some(pkt) = rx.recv().await {
+        if pkt.len() > mtu.as_usize() {
+            tracing::warn!(
+                "userspace: generated IPv6 packet length {} exceeds negotiated MTU {}",
+                pkt.len(),
+                mtu.as_u16()
+            );
+            continue;
+        }
         if writer.write_all(&pkt).await.is_err() {
             break;
         }
@@ -284,12 +354,13 @@ fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) ->
 
 async fn run_smoltcp(
     client_ipv6: Ipv6Address,
-    _mtu: u32,
+    mtu: ValidatedMtu,
     mut ios_rx: mpsc::Receiver<Vec<u8>>,
     ios_tx: mpsc::Sender<Vec<u8>>,
     mut conn_req_rx: mpsc::Receiver<ConnRequest>,
 ) {
     let mut device = ChannelDevice {
+        mtu,
         rx_buf: VecDeque::new(),
         tx_buf: VecDeque::new(),
     };
@@ -526,52 +597,114 @@ fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut VecDeque<Vec<u8>>) 
 // ── Local TCP listener (go-ios compatible protocol) ────────────────────────────
 
 async fn run_local_listener(listener: TcpListener, conn_req_tx: mpsc::Sender<ConnRequest>) {
-    loop {
-        let Ok((mut client, peer)) = listener.accept().await else {
-            break;
-        };
-        tracing::info!("userspace: local connection from {peer}");
+    run_local_listener_with_limit(
+        listener,
+        conn_req_tx,
+        MAX_LOCAL_PROXY_CLIENTS,
+        LOCAL_PROXY_PREAMBLE_TIMEOUT,
+    )
+    .await;
+}
 
-        let mut addr_buf = [0u8; 16];
-        if client.read_exact(&mut addr_buf).await.is_err() {
-            continue;
+async fn run_local_listener_with_limit(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    max_clients: usize,
+    preamble_timeout: Duration,
+) {
+    let permits = Arc::new(Semaphore::new(max_clients));
+    let mut client_tasks = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = conn_req_tx.closed() => break,
+            joined = client_tasks.join_next(), if !client_tasks.is_empty() => {
+                if let Some(Err(error)) = joined {
+                    tracing::debug!("userspace: local proxy task exited with error: {error}");
+                }
+            }
+            accepted = listener.accept() => {
+                let Ok((client, peer)) = accepted else {
+                    break;
+                };
+                let permit = match permits.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        tracing::debug!("userspace: rejecting local connection from {peer}: proxy limit reached");
+                        // Dropping the stream sends a connection reset/FIN without
+                        // allowing an excess client to consume an unbounded task.
+                        drop(client);
+                        continue;
+                    }
+                };
+                tracing::info!("userspace: local connection from {peer}");
+                let tx = conn_req_tx.clone();
+                client_tasks.spawn(async move {
+                    handle_local_client(client, tx, permit, preamble_timeout).await;
+                });
+            }
         }
-        let mut port_buf = [0u8; 4];
-        if client.read_exact(&mut port_buf).await.is_err() {
-            continue;
-        }
-        let port_u32 = u32::from_le_bytes(port_buf);
-        let remote_port = match u16::try_from(port_u32) {
-            Ok(p) => p,
+    }
+}
+
+async fn handle_local_client(
+    mut client: tokio::net::TcpStream,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    _permit: OwnedSemaphorePermit,
+    preamble_timeout: Duration,
+) {
+    let (remote_ip, remote_port) =
+        match tokio::time::timeout(preamble_timeout, read_proxy_preamble(&mut client)).await {
+            Ok(Ok(remote)) => remote,
+            Ok(Err(error)) => {
+                tracing::debug!("userspace: local proxy preamble read failed: {error}");
+                return;
+            }
             Err(_) => {
-                tracing::warn!("userspace: invalid port {port_u32}, skipping");
-                continue;
+                tracing::debug!(
+                    "userspace: local proxy preamble timed out after {} ms",
+                    preamble_timeout.as_millis()
+                );
+                return;
             }
         };
-        let remote_ip = Ipv6Address::from_bytes(&addr_buf);
 
-        tracing::info!("userspace: tunneling to [{remote_ip}]:{remote_port}");
+    tracing::info!("userspace: tunneling to [{remote_ip}]:{remote_port}");
 
-        let (from_client_tx, from_client_rx) =
-            mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
-        let (to_client_tx, to_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
-        let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
+    let (from_client_tx, from_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
+    let (to_client_tx, to_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
+    let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let req = ConnRequest {
-            remote_ip,
-            remote_port,
-            from_client: from_client_rx,
-            to_client: to_client_tx,
-            connected: connected_tx,
-        };
-        if conn_req_tx.send(req).await.is_err() {
-            break;
-        }
-
-        tokio::spawn(async move {
-            proxy_local_client(client, from_client_tx, to_client_rx, connected_rx).await;
-        });
+    let req = ConnRequest {
+        remote_ip,
+        remote_port,
+        from_client: from_client_rx,
+        to_client: to_client_tx,
+        connected: connected_tx,
+    };
+    if conn_req_tx.send(req).await.is_err() {
+        return;
     }
+
+    proxy_local_client(client, from_client_tx, to_client_rx, connected_rx).await;
+}
+
+async fn read_proxy_preamble(
+    client: &mut tokio::net::TcpStream,
+) -> std::io::Result<(Ipv6Address, u16)> {
+    let mut preamble = [0u8; LOCAL_PROXY_PREAMBLE_LEN];
+    client.read_exact(&mut preamble).await?;
+    let remote_port = u32::from_le_bytes(preamble[16..20].try_into().expect("fixed preamble"));
+    let remote_port = u16::try_from(remote_port).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("userspace proxy port is outside u16 range: {remote_port}"),
+        )
+    })?;
+    let mut remote_addr = [0u8; 16];
+    remote_addr.copy_from_slice(&preamble[..16]);
+    Ok((Ipv6Address::from_bytes(&remote_addr), remote_port))
 }
 
 async fn proxy_local_client(
@@ -613,10 +746,12 @@ async fn proxy_local_client(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
     use tokio::io::AsyncWrite;
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -657,13 +792,62 @@ mod tests {
         drop(tx);
 
         let mut writer = CountingWriter::default();
-        write_ios_packets(&mut writer, rx).await;
+        write_ios_packets(&mut writer, ValidatedMtu::new(1280).unwrap(), rx).await;
 
         assert_eq!(writer.writes, vec![vec![1, 2, 3], vec![4, 5, 6]]);
         assert_eq!(
             writer.flushes, 0,
             "packet forwarding should rely on stream buffering instead of per-packet flushes"
         );
+    }
+
+    #[tokio::test]
+    async fn write_ios_packets_drops_generated_packets_over_negotiated_mtu() {
+        let (tx, rx) = mpsc::channel(2);
+        tx.send(vec![0u8; 1281]).await.unwrap();
+        drop(tx);
+
+        let mut writer = CountingWriter::default();
+        write_ios_packets(&mut writer, ValidatedMtu::new(1280).unwrap(), rx).await;
+
+        assert!(writer.writes.is_empty());
+    }
+
+    fn ipv6_packet(payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0u8; IPV6_HEADER_LEN + payload.len()];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+        packet[IPV6_HEADER_LEN..].copy_from_slice(payload);
+        packet
+    }
+
+    #[tokio::test]
+    async fn read_ios_packets_discards_packets_over_negotiated_mtu() {
+        let mtu = ValidatedMtu::new(1280).unwrap();
+        let payload_capacity = mtu.ipv6_payload_capacity().unwrap();
+        let oversized = ipv6_packet(&vec![0xaa; payload_capacity + 1]);
+        let expected = ipv6_packet(b"fits");
+        let mut input = oversized;
+        input.extend_from_slice(&expected);
+
+        let mut reader = tokio::io::BufReader::new(input.as_slice());
+        let (tx, mut rx) = mpsc::channel(4);
+        read_ios_packets(&mut reader, payload_capacity, tx).await;
+
+        assert_eq!(rx.recv().await.unwrap(), expected);
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn channel_device_uses_the_negotiated_mtu() {
+        let mtu = ValidatedMtu::new(9000).unwrap();
+        let device = ChannelDevice {
+            mtu,
+            rx_buf: VecDeque::new(),
+            tx_buf: VecDeque::new(),
+        };
+
+        assert_eq!(device.capabilities().max_transmission_unit, 9000);
     }
 
     #[tokio::test]
@@ -754,5 +938,148 @@ mod tests {
             smoltcp_poll_sleep_duration(None, true),
             Duration::from_millis(1)
         );
+    }
+
+    fn proxy_preamble(address: [u8; 16], port: u32) -> [u8; LOCAL_PROXY_PREAMBLE_LEN] {
+        let mut preamble = [0u8; LOCAL_PROXY_PREAMBLE_LEN];
+        preamble[..16].copy_from_slice(&address);
+        preamble[16..].copy_from_slice(&port.to_le_bytes());
+        preamble
+    }
+
+    async fn assert_proxy_client_closed(client: &mut tokio::net::TcpStream) {
+        let mut byte = [0u8; 1];
+        let result = tokio::time::timeout(Duration::from_millis(300), client.read(&mut byte))
+            .await
+            .expect("proxy client should be closed promptly");
+        assert!(
+            matches!(result, Ok(0) | Err(_)),
+            "proxy should close or reset the client, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_first_client_does_not_block_second_preamble() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = mpsc::channel(4);
+        let listener_task = tokio::spawn(run_local_listener_with_limit(
+            listener,
+            request_tx,
+            2,
+            Duration::from_secs(1),
+        ));
+
+        let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
+        stalled.write_all(&[0xaa]).await.unwrap();
+        // Let the listener accept the first connection so this test exercises
+        // a client task blocked in its preamble read, rather than a backlog
+        // that has not been serviced yet.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let mut second = tokio::net::TcpStream::connect(address).await.unwrap();
+        second
+            .write_all(&proxy_preamble(
+                [0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                62078,
+            ))
+            .await
+            .unwrap();
+
+        let request = tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+            .await
+            .expect("second preamble should be accepted while first is stalled")
+            .expect("listener request channel should remain open");
+        assert_eq!(
+            request.remote_ip,
+            Ipv6Address::from_bytes(&[0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,])
+        );
+        assert_eq!(request.remote_port, 62078);
+
+        drop(request);
+        drop(second);
+        drop(stalled);
+        listener_task.abort();
+        let _ = listener_task.await;
+    }
+
+    #[tokio::test]
+    async fn partial_preamble_is_closed_after_bounded_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = mpsc::channel(4);
+        let listener_task = tokio::spawn(run_local_listener_with_limit(
+            listener,
+            request_tx,
+            2,
+            Duration::from_millis(20),
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client.write_all(&[0xbb; 8]).await.unwrap();
+        assert_proxy_client_closed(&mut client).await;
+        assert!(request_rx.try_recv().is_err());
+
+        drop(client);
+        listener_task.abort();
+        let _ = listener_task.await;
+    }
+
+    #[tokio::test]
+    async fn proxy_limit_rejects_excess_client_without_a_task() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = mpsc::channel(4);
+        let listener_task = tokio::spawn(run_local_listener_with_limit(
+            listener,
+            request_tx,
+            1,
+            Duration::from_secs(1),
+        ));
+
+        let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
+        first
+            .write_all(&proxy_preamble([0u8; 16], 1))
+            .await
+            .unwrap();
+        let request = tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+            .await
+            .expect("first client should be accepted")
+            .expect("listener request channel should remain open");
+
+        let mut excess = tokio::net::TcpStream::connect(address).await.unwrap();
+        excess
+            .write_all(&proxy_preamble([0u8; 16], 2))
+            .await
+            .unwrap();
+        assert_proxy_client_closed(&mut excess).await;
+
+        drop(request);
+        drop(excess);
+        drop(first);
+        listener_task.abort();
+        let _ = listener_task.await;
+    }
+
+    #[tokio::test]
+    async fn listener_shutdown_aborts_stalled_client_tasks() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, _request_rx) = mpsc::channel(4);
+        let listener_task = tokio::spawn(run_local_listener_with_limit(
+            listener,
+            request_tx,
+            1,
+            Duration::from_secs(10),
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client.write_all(&[0xcc]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let mut excess = tokio::net::TcpStream::connect(address).await.unwrap();
+        excess.write_all(&[0xdd]).await.unwrap();
+        assert_proxy_client_closed(&mut excess).await;
+        listener_task.abort();
+        let _ = listener_task.await;
+        assert_proxy_client_closed(&mut client).await;
     }
 }

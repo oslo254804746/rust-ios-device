@@ -197,10 +197,15 @@ where
     let _ = read_xpc_request(stream, 1).await;
     write_empty_xpc(stream, 1).await;
 
-    let _ = read_xpc_request(stream, 1).await;
+    read_headers_frame(stream, 3).await;
+    let second = read_xpc_request(stream, 1).await;
+    assert_eq!(
+        second.flags,
+        xpc_message_flags::ALWAYS_SET | 0x200,
+        "bootstrap stream-1 terminator must use the 0x0201 flags"
+    );
     write_empty_xpc(stream, 1).await;
 
-    read_headers_frame(stream, 3).await;
     let _ = read_xpc_request(stream, 3).await;
     write_empty_xpc(stream, 3).await;
 }

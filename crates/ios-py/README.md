@@ -1,8 +1,12 @@
 # rust-ios-device-tunnel
 
-Python bindings for communicating with iOS devices — device discovery, CoreDevice tunnel management, and asyncio integration.
+Python bindings for device discovery, CoreDevice tunnel management, and asyncio
+transport bridging.
 
-Built on top of [rust-ios-device](https://github.com/oslo254804746/rust-ios-device), a Rust library for iOS device interaction through usbmuxd, lockdown, and CoreDevice/RemoteXPC protocols.
+Built on top of [rust-ios-device](https://github.com/oslo254804746/rust-ios-device).
+This package exposes device discovery plus CoreDevice tunnel metadata and a local
+userspace bridge; it does not expose the Rust lockdown or service clients as
+direct Python APIs.
 
 ## Install
 
