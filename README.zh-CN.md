@@ -152,9 +152,10 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
-RSD 服务列表默认以 JSON 输出，每项包含 `name`、`port`、`features`，并按服务名排序；
-配合 `--no-json` 使用时，`--features` 会在可读文本中显示 feature 标识符。缺少
-feature 列表时输出 `[]`，表示设备没有公布能力元数据，并不表示所有操作都不支持。
+RSD 服务列表默认以 JSON 输出，并保持旧的 `name`/`port` 项结构。传入 `--features` 后，
+JSON 或配合 `--no-json` 的可读文本才会加入设备公布的 `features`；列表仍按服务名排序。
+请求 feature 信息时，缺少列表会输出 `[]`，表示设备没有公布能力元数据，并不表示所有
+操作都不支持。`rsd check` 也遵循相同的显式开关规则。
 
 隧道/RSD/XPC 的 TCP 连接与初始协议建立现在有 15 秒上限；基于 TCP 的远程配对与
 lockdown 建立也使用相同上限。遇到失效的隧道路由时会尽快返回超时，而不会等待主机
@@ -230,7 +231,7 @@ devices = ios_rs.list_devices()
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
 print(tunnel.services)
 print(tunnel.service_ports)    # 服务名 -> 设备端口
-print(tunnel.service_features) # 有设备公布 feature 标识符的服务
+print(tunnel.service_features) # 服务名 -> 设备公布的标识符（可能为空列表）
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():

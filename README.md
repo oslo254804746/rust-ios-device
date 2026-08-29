@@ -161,11 +161,12 @@ ios rsd check com.apple.coredevice.fileservice.control
 ios file --coredevice --domain temporary ls /
 ```
 
-RSD service listings are JSON by default. Each entry contains `name`, `port`,
-and `features`, and entries are sorted by service name; `--features` adds the
-feature identifiers to human-readable output used with `--no-json`. A missing
-feature list is emitted as `[]` and means that the device did not advertise
-capability metadata, not that every operation is unsupported.
+RSD service listings are JSON by default and retain the legacy `name`/`port`
+entry shape. Pass `--features` to add advertised `features` to JSON or to the
+human-readable output used with `--no-json`; entries remain sorted by service
+name. A missing feature list is emitted as `[]` when requested and means that
+the device did not advertise capability metadata, not that every operation is
+unsupported. `rsd check` follows the same opt-in rule.
 
 TCP dials and initial tunnel/RSD/XPC setup are bounded by a 15-second timeout;
 TCP-backed remote pairing and lockdown setup use the same bound. Stale tunnel
@@ -244,7 +245,7 @@ devices = ios_rs.list_devices()
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
 print(tunnel.services)
 print(tunnel.service_ports)    # service name -> device port
-print(tunnel.service_features) # services with advertised feature identifiers
+print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
 print(tunnel.connect_info())
 
 with tunnel.asyncio_proxy():
@@ -257,8 +258,9 @@ tunnel.close()
 
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` shows how to run
 pymobiledevice3 RemoteXPC code on top of the Rust userspace tunnel.
-`service_ports` includes every discovered service; `service_features` includes
-only services whose RSD entry advertises at least one feature identifier.
+`services`, `service_ports`, and `service_features` use stable service-name
+ordering. Both mappings include every discovered service; `service_features`
+uses `[]` when the RSD entry does not advertise capability metadata.
 
 ## C FFI
 

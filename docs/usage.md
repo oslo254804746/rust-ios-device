@@ -245,13 +245,15 @@ operating system's much longer TCP retry window. The timeout is not a guarantee
 that every later service operation completes within 15 seconds; device-side
 request and stream timeouts remain service-specific.
 
-For machine-readable output, the default `rsd services` mode always emits a
-sorted JSON array of objects with `name`, `port`, and `features`; use the global
-`--no-json` flag for human-readable output, where `--features` adds feature
-lines. The default JSON mode of `rsd check` includes the same feature list for
-the resolved service. Older consumers should ignore the additive `features`
-field. A missing RSD feature list is represented by `[]` and is treated as
-unknown capability metadata rather than an explicit deny-all list.
+For machine-readable output, the default `rsd services` mode preserves the
+legacy sorted JSON array of objects with `name` and `port`. Pass the
+subcommand's explicit `--features` flag to add `features` to that JSON; use the
+global `--no-json` flag for human-readable output, where the same flag adds
+feature lines. The default JSON mode of `rsd check` likewise preserves its
+existing fields, while `rsd check --features` adds the selected service's
+feature list. A requested but missing RSD feature list is represented by `[]`
+and is treated as unknown capability metadata rather than an explicit deny-all
+list.
 
 Comparable upstream workflows:
 

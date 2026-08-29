@@ -46,18 +46,17 @@ print(tunnel.rsd_port)         # Remote Service Discovery port
 print(tunnel.userspace_port)   # local TCP proxy port
 print(tunnel.services)         # discovered RSD service names
 print(tunnel.service_ports)    # service name -> device TCP port
-print(tunnel.service_features) # services with advertised feature identifiers
+print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
 print(tunnel.connect_info())   # connection summary dict
 
 tunnel.close()
 ```
 
-The `services` list is sorted by service name. `service_ports` contains every
-discovered service, while `service_features` contains only services with a
-non-empty advertised feature list; mappings should be treated as unordered
-dictionaries. A service omitted from `service_features` did not advertise
-capability metadata, which is not an explicit deny-all result. Tunnel setup and
-initial RSD/XPC connection setup are limited to 15 seconds.
+The `services` list and both mapping attributes use stable service-name order.
+`service_ports` and `service_features` contain every discovered service;
+`service_features` uses an empty list when the device did not advertise
+capability metadata. Missing metadata is not an explicit deny-all result.
+Tunnel setup and initial RSD/XPC connection setup are limited to 15 seconds.
 
 Kernel TUN mode (`mode="kernel"`) requires root/administrator privileges. Userspace mode works without elevated permissions and is the default.
 
@@ -113,7 +112,7 @@ not capture a full sysdiagnose.
 | `Tunnel.userspace_port` | Local TCP proxy port (userspace mode only). |
 | `Tunnel.services` | List of discovered RSD service names. |
 | `Tunnel.service_ports` | Dict mapping RSD service names to device TCP ports. |
-| `Tunnel.service_features` | Dict of non-empty capability lists; services without advertised feature metadata are omitted. |
+| `Tunnel.service_features` | Dict mapping every RSD service to advertised capability identifiers; an empty list means metadata was not advertised. |
 | `Tunnel.connect_info()` | Dict summarizing connection parameters. |
 | `Tunnel.asyncio_proxy()` | Context manager that patches `asyncio.open_connection`. |
 | `Tunnel.close()` | Tears down the tunnel. |

@@ -211,7 +211,8 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
 ///   userspace_port (int|None): Local TCP port for the go-ios-compatible proxy
 ///   services (list[str]):  Discovered RSD service names
 ///   service_ports (dict[str, int]): RSD service names mapped to device ports
-///   service_features (dict[str, list[str]]): Advertised capability identifiers
+///   service_features (dict[str, list[str]]): Every RSD service's advertised
+///     capability identifiers; an empty list means metadata was not advertised
 #[pyclass]
 pub struct Tunnel {
     #[pyo3(get)]

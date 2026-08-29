@@ -28,11 +28,10 @@ No unreleased changes yet.
   device-to-host payloads through bounded buffers.
 - Decoded BSD `vis(3)` escapes in syslog relay messages and made process filters
   recognize Apple's `Process(Library)` annotation.
-- The default JSON output of `ios rsd services` now includes `name`, `port`,
-  and `features` for every service, in name order. The `--features` flag
-  controls the additional human-readable feature lines; JSON includes the
-  field regardless of that flag. `rsd check` in its default JSON mode also
-  reports the selected service's features.
+- Preserved the existing JSON schema for `ios rsd services` and `rsd check` by
+  keeping feature metadata opt-in. Passing `--features` adds `features` to
+  JSON and human-readable output; without it, services JSON remains
+  `name`/`port` and check JSON remains unchanged.
 - TCP dials and initial tunnel/RSD/XPC setup paths now fail after 15 seconds
   instead of inheriting the host operating system's long retry window.
 
@@ -46,8 +45,11 @@ No unreleased changes yet.
 - Accepted additional NSKeyedArchiver UID indirections and nullable XCTest
   fields, and encoded object-valued XCTest configuration fields as keyed
   references.
-- Added bounded MobileBackup2 Browse/file-transfer handling and clearer
-  insufficient-space diagnostics without logging pairing credentials.
+- InstallationProxy Browse now enforces separate response-chunk and app-entry
+  limits before retaining more device data.
+- MobileBackup2 file transfers use bounded buffers and 32 KiB host-to-device
+  frames; insufficient-space failures include the available-space diagnostics
+  collected around purge requests.
 
 ## [0.1.8] — 2026-07-27
 
