@@ -32,6 +32,7 @@
 //! ios_free_devices(devices, count);
 //! ```
 
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
@@ -70,6 +71,7 @@ pub struct IosTunnel {
     server_address: String,
     rsd_port: u16,
     userspace_port: u16,
+    rsd_services_json: String,
     /// Holds the ConnectedDevice (and TunnelHandle) alive.
     _device: Mutex<Option<ios_core::ConnectedDevice>>,
 }
@@ -156,6 +158,28 @@ fn plist_value_to_json(value: &plist::Value) -> serde_json::Value {
         }
         _ => serde_json::Value::Null,
     }
+}
+
+fn encode_rsd_services_json(
+    rsd: Option<&ios_core::RsdHandshake>,
+) -> Result<String, serde_json::Error> {
+    let services = rsd
+        .map(|rsd| {
+            rsd.services
+                .iter()
+                .map(|(name, descriptor)| {
+                    (
+                        name.clone(),
+                        serde_json::json!({
+                            "port": descriptor.port,
+                            "features": descriptor.features,
+                        }),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    serde_json::to_string(&services)
 }
 
 fn to_owned_c_string(value: String) -> Result<*mut c_char, c_int> {
@@ -450,7 +474,7 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
     })
 }
 
-/// Free a UTF-8 C string returned by ios_get_product_version or ios_get_lockdown_value_json.
+/// Free a UTF-8 C string returned by an ios-rs string-output function.
 ///
 /// # Safety
 ///
@@ -516,10 +540,15 @@ pub unsafe extern "C" fn ios_start_tunnel(
                 let server_address = device.server_address().unwrap_or("").to_string();
                 let rsd_port = device.rsd_port().unwrap_or(0);
                 let userspace_port = device.userspace_port().unwrap_or(0);
+                let rsd_services_json = match encode_rsd_services_json(device.rsd()) {
+                    Ok(json) => json,
+                    Err(_) => return IOS_ERR_CORE,
+                };
                 let tunnel = Box::new(IosTunnel {
                     server_address,
                     rsd_port,
                     userspace_port,
+                    rsd_services_json,
                     _device: Mutex::new(Some(device)),
                 });
                 *out = Box::into_raw(tunnel);
@@ -615,6 +644,32 @@ pub unsafe extern "C" fn ios_tunnel_userspace_port(tunnel: *const IosTunnel) -> 
             return 0;
         }
         (*tunnel).userspace_port
+    })
+}
+
+/// Get the RSD service directory as a newly allocated compact JSON object.
+///
+/// The object maps service names to `{ "port": number, "features": string[] }`.
+/// Services that do not advertise capability metadata have an empty `features`
+/// array. Free the returned string with [`ios_free_string`].
+///
+/// # Safety
+///
+/// Caller must pass a valid `IosTunnel` pointer and a non-null output pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ios_tunnel_rsd_services_json(
+    tunnel: *const IosTunnel,
+    out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(|| {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        if tunnel.is_null() {
+            return IOS_ERR_NULL;
+        }
+        write_owned_c_string(out, (*tunnel).rsd_services_json.clone())
     })
 }
 
@@ -736,12 +791,92 @@ mod tests {
             server_address: "fd00::1234".to_string(),
             rsd_port: 1234,
             userspace_port: 4321,
+            rsd_services_json: "{}".to_string(),
             _device: Mutex::new(None),
         };
 
         assert_eq!(
             unsafe { ios_tunnel_server_address(&tunnel, buffer.as_mut_ptr(), buffer.len()) },
             IOS_ERR_BUFFER_TOO_SMALL
+        );
+    }
+
+    #[test]
+    fn tunnel_rsd_services_json_returns_owned_string() {
+        let tunnel = IosTunnel {
+            server_address: "fd00::1234".to_string(),
+            rsd_port: 1234,
+            userspace_port: 4321,
+            rsd_services_json:
+                r#"{"com.apple.coredevice.appservice":{"features":["listapps"],"port":1234}}"#
+                    .to_string(),
+            _device: Mutex::new(None),
+        };
+        let mut output = std::ptr::null_mut();
+
+        assert_eq!(
+            unsafe { ios_tunnel_rsd_services_json(&tunnel, &mut output) },
+            IOS_SUCCESS
+        );
+        let value: serde_json::Value = serde_json::from_str(
+            unsafe { CStr::from_ptr(output) }
+                .to_str()
+                .expect("FFI output should be UTF-8"),
+        )
+        .expect("FFI output should be JSON");
+        assert_eq!(
+            value["com.apple.coredevice.appservice"]["port"],
+            serde_json::json!(1234)
+        );
+        assert_eq!(
+            value["com.apple.coredevice.appservice"]["features"],
+            serde_json::json!(["listapps"])
+        );
+        unsafe { ios_free_string(output) };
+    }
+
+    #[test]
+    fn encode_rsd_services_json_is_complete_and_stable() {
+        let rsd = ios_core::RsdHandshake {
+            udid: "test".into(),
+            services: std::collections::HashMap::from([
+                (
+                    "z.service".into(),
+                    ios_core::ServiceDescriptor {
+                        port: 2,
+                        features: vec!["feature.z".into()],
+                    },
+                ),
+                ("a.service".into(), ios_core::ServiceDescriptor::new(1)),
+            ]),
+        };
+
+        assert_eq!(
+            encode_rsd_services_json(Some(&rsd)).unwrap(),
+            r#"{"a.service":{"features":[],"port":1},"z.service":{"features":["feature.z"],"port":2}}"#
+        );
+        assert_eq!(encode_rsd_services_json(None).unwrap(), "{}");
+    }
+
+    #[test]
+    fn tunnel_rsd_services_json_validates_and_clears_outputs() {
+        let mut output = 1usize as *mut c_char;
+        assert_eq!(
+            unsafe { ios_tunnel_rsd_services_json(std::ptr::null(), &mut output) },
+            IOS_ERR_NULL
+        );
+        assert!(output.is_null());
+
+        let tunnel = IosTunnel {
+            server_address: "fd00::1234".to_string(),
+            rsd_port: 1234,
+            userspace_port: 4321,
+            rsd_services_json: "{}".to_string(),
+            _device: Mutex::new(None),
+        };
+        assert_eq!(
+            unsafe { ios_tunnel_rsd_services_json(&tunnel, std::ptr::null_mut()) },
+            IOS_ERR_NULL
         );
     }
 }

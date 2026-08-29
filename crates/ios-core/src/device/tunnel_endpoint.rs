@@ -2,11 +2,23 @@
 
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::str::FromStr;
+use std::{future::Future, io, time::Duration};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::error::CoreError;
+use crate::tunnel::TUNNEL_CONNECT_TIMEOUT;
+
+async fn timeout_io<T>(
+    duration: Duration,
+    operation: impl Future<Output = io::Result<T>>,
+    context: &str,
+) -> io::Result<T> {
+    tokio::time::timeout(duration, operation)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, context))?
+}
 
 /// Network path used to reach any port exposed through an RSD tunnel.
 ///
@@ -48,7 +60,12 @@ impl TunnelEndpoint {
                 proxy_port,
                 remote_addr,
             } => {
-                let mut proxy = TcpStream::connect(("127.0.0.1", proxy_port)).await?;
+                let mut proxy = timeout_io(
+                    TUNNEL_CONNECT_TIMEOUT,
+                    TcpStream::connect(("127.0.0.1", proxy_port)),
+                    "userspace tunnel proxy dial timed out",
+                )
+                .await?;
                 proxy.write_all(&remote_addr.octets()).await?;
                 proxy.write_all(&(port as u32).to_le_bytes()).await?;
                 proxy.flush().await?;
@@ -56,8 +73,32 @@ impl TunnelEndpoint {
             }
             Self::DirectIpv6 { remote_addr } => {
                 let addr = SocketAddr::V6(SocketAddrV6::new(remote_addr, port, 0, 0));
-                Ok(TcpStream::connect(addr).await?)
+                Ok(timeout_io(
+                    TUNNEL_CONNECT_TIMEOUT,
+                    TcpStream::connect(addr),
+                    "tunnel service dial timed out",
+                )
+                .await?)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn timeout_io_classifies_elapsed_dials() {
+        let err = timeout_io(
+            Duration::from_millis(1),
+            std::future::pending::<io::Result<()>>(),
+            "test dial timed out",
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(err.to_string(), "test dial timed out");
     }
 }

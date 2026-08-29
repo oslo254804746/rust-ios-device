@@ -20,6 +20,7 @@
 
 #![allow(clippy::useless_conversion)]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use pyo3::prelude::*;
@@ -162,16 +163,35 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     let rsd_port = device.rsd_port().unwrap_or(0);
     let userspace_port = device.userspace_port();
 
-    let services: Vec<String> = device
+    let (mut services, service_ports, service_features) = device
         .rsd()
-        .map(|r| r.services.keys().cloned().collect())
+        .map(|rsd| {
+            let ports = rsd
+                .services
+                .iter()
+                .map(|(name, descriptor)| (name.clone(), descriptor.port))
+                .collect::<BTreeMap<_, _>>();
+            let features = rsd
+                .services
+                .iter()
+                .map(|(name, descriptor)| (name.clone(), descriptor.features.clone()))
+                .collect::<BTreeMap<_, _>>();
+            (
+                rsd.services.keys().cloned().collect::<Vec<_>>(),
+                ports,
+                features,
+            )
+        })
         .unwrap_or_default();
+    services.sort();
 
     Ok(Tunnel {
         server_address,
         rsd_port,
         userspace_port,
         services,
+        service_ports,
+        service_features,
         _state: Arc::new(Mutex::new(TunnelState {
             device: Some(device),
             retained_patches: 0,
@@ -190,6 +210,9 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
 ///   rsd_port (int):        RSD service discovery port
 ///   userspace_port (int|None): Local TCP port for the go-ios-compatible proxy
 ///   services (list[str]):  Discovered RSD service names
+///   service_ports (dict[str, int]): RSD service names mapped to device ports
+///   service_features (dict[str, list[str]]): Every RSD service's advertised
+///     capability identifiers; an empty list means metadata was not advertised
 #[pyclass]
 pub struct Tunnel {
     #[pyo3(get)]
@@ -200,6 +223,10 @@ pub struct Tunnel {
     pub userspace_port: Option<u16>,
     #[pyo3(get)]
     pub services: Vec<String>,
+    #[pyo3(get)]
+    pub service_ports: BTreeMap<String, u16>,
+    #[pyo3(get)]
+    pub service_features: BTreeMap<String, Vec<String>>,
     _state: Arc<Mutex<TunnelState>>,
 }
 
@@ -273,6 +300,8 @@ impl Tunnel {
         let dict = PyDict::new_bound(py);
         dict.set_item("server_address", &self.server_address)?;
         dict.set_item("rsd_port", self.rsd_port)?;
+        dict.set_item("service_ports", self.service_ports.clone())?;
+        dict.set_item("service_features", self.service_features.clone())?;
         if let Some(p) = self.userspace_port {
             dict.set_item("userspace_port", p)?;
             dict.set_item(

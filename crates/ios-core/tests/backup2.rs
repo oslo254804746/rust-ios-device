@@ -794,6 +794,7 @@ async fn change_password_streams_large_requested_file_in_chunks() {
 
         let mut data_frame_count = 0usize;
         let mut total_data_bytes = 0usize;
+        let mut largest_data_frame = 0usize;
         loop {
             let mut frame_len = [0u8; 4];
             server_side
@@ -822,10 +823,15 @@ async fn change_password_streams_large_requested_file_in_chunks() {
             assert!(chunk.iter().all(|byte| *byte == 0x5A));
             data_frame_count += 1;
             total_data_bytes += chunk.len();
+            largest_data_frame = largest_data_frame.max(chunk.len());
         }
         assert!(
             data_frame_count >= 2,
             "large file should be sent in multiple transfer frames"
+        );
+        assert!(
+            largest_data_frame <= 32 * 1024,
+            "download data frames must stay within the BackupAgent2-safe chunk size"
         );
         assert_eq!(total_data_bytes, 8 * 1024 * 1024 + 123);
 

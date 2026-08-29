@@ -27,6 +27,15 @@ The manager exposes health and tunnel endpoints for local tooling. Check the exa
 ios tunnel serve --help
 ```
 
+## Connection timeout
+
+TCP dials and the initial tunnel/RSD/XPC setup are bounded by a 15-second
+timeout. The same bound applies to TCP-backed remote-pairing and lockdown
+setup. This prevents a stale tunnel route from inheriting the host operating
+system's long SYN retry window. A timeout is reported as an I/O timeout; later
+service requests and long-running streams retain their own service-specific
+behavior.
+
 ## Userspace proxy protocol
 
 The local proxy expects each new connection to begin with:

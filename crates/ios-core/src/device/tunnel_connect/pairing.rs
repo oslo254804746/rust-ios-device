@@ -66,8 +66,19 @@ pub(super) struct RemotePairingControlChannel {
 
 impl RemotePairingControlChannel {
     pub(super) async fn connect(host: &str, port: u16) -> Result<Self, CoreError> {
+        let stream = tokio::time::timeout(
+            crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            TcpStream::connect((host, port)),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("remote pairing dial to {host}:{port} timed out"),
+            )
+        })??;
         Ok(Self {
-            stream: TcpStream::connect((host, port)).await?,
+            stream,
         })
     }
 

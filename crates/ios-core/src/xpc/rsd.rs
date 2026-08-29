@@ -31,10 +31,32 @@ use crate::xpc::XpcError;
 
 pub const RSD_PORT: u16 = 58783;
 
-/// A discovered iOS 17+ service.
-#[derive(Debug, Clone)]
+/// A discovered iOS 17+ service and its advertised capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceDescriptor {
     pub port: u16,
+    /// Feature identifiers advertised under `Properties.Features`.
+    ///
+    /// An empty list means the device did not advertise capability details; it
+    /// must not be interpreted as a deny-all list.
+    pub features: Vec<String>,
+}
+
+impl ServiceDescriptor {
+    pub fn new(port: u16) -> Self {
+        Self {
+            port,
+            features: Vec::new(),
+        }
+    }
+
+    /// Whether the service can be treated as supporting `feature`.
+    ///
+    /// Missing capability metadata is permissive because older devices and
+    /// some transports omit `Properties.Features` entirely.
+    pub fn supports_feature(&self, feature: &str) -> bool {
+        self.features.is_empty() || self.features.iter().any(|item| item == feature)
+    }
 }
 
 /// Result of the RSD handshake.
@@ -53,6 +75,24 @@ impl RsdHandshake {
         let shim = format!("{service}.shim.remote");
         self.services.get(&shim).map(|s| s.port)
     }
+
+    /// Return features explicitly advertised for an exact service name.
+    pub fn get_service_features(&self, service: &str) -> Option<&[String]> {
+        self.services
+            .get(service)
+            .map(|descriptor| descriptor.features.as_slice())
+    }
+
+    /// Check a feature against an exact service entry.
+    ///
+    /// Returns `None` when the service is absent. For a present service whose
+    /// handshake entry has no feature list, returns `Some(true)` so missing
+    /// metadata is not mistaken for an explicit device-side rejection.
+    pub fn supports_feature(&self, service: &str, feature: &str) -> Option<bool> {
+        self.services
+            .get(service)
+            .map(|descriptor| descriptor.supports_feature(feature))
+    }
 }
 
 /// Perform an RSD handshake with an iOS 17+ device.
@@ -61,12 +101,30 @@ impl RsdHandshake {
 #[cfg(feature = "mdns")]
 pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcError> {
     let sock_addr = SocketAddr::new(addr.into(), port);
-    let stream = TcpStream::connect(sock_addr).await?;
-    let mut framer = H2Framer::connect(stream)
-        .await
-        .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
-
-    read_rsd_handshake(&mut framer).await
+    let stream = tokio::time::timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+        TcpStream::connect(sock_addr),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("RSD dial to {sock_addr} timed out"),
+        )
+    })??;
+    tokio::time::timeout(crate::tunnel::TUNNEL_CONNECT_TIMEOUT, async {
+        let mut framer = H2Framer::connect(stream)
+            .await
+            .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
+        read_rsd_handshake(&mut framer).await
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("RSD handshake with {sock_addr} timed out"),
+        )
+    })?
 }
 
 /// Perform an RSD handshake on an already-connected H2 framer.
@@ -316,14 +374,34 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
             );
             for (name, svc_val) in svc_map {
                 if let Some(svc_dict) = svc_val.as_dict() {
-                    // Port can be a String or Uint64
+                    // Port can be a String or Uint64. Reject out-of-range
+                    // integers rather than truncating them into a different
+                    // service port.
                     let port = svc_dict.get("Port").and_then(|p| match p {
                         XpcValue::String(s) => s.parse::<u16>().ok(),
-                        XpcValue::Uint64(n) => Some(*n as u16),
+                        XpcValue::Uint64(n) => u16::try_from(*n).ok(),
                         _ => None,
                     });
                     if let Some(port) = port {
-                        services.insert(name.clone(), ServiceDescriptor { port });
+                        let features = svc_dict
+                            .get("Properties")
+                            .and_then(XpcValue::as_dict)
+                            .and_then(|properties| properties.get("Features"))
+                            .and_then(|features| match features {
+                                XpcValue::Array(features) => Some(features),
+                                _ => None,
+                            })
+                            .map(|features| {
+                                features
+                                    .iter()
+                                    .filter_map(XpcValue::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        services.insert(name.clone(), ServiceDescriptor { port, features });
+                    } else {
+                        tracing::debug!("RSD service {name:?} has an invalid or missing Port");
                     }
                 }
             }
@@ -549,6 +627,16 @@ mod tests {
 
         let mut service = IndexMap::new();
         service.insert("Port".to_string(), XpcValue::String("12345".into()));
+        service.insert(
+            "Properties".to_string(),
+            XpcValue::Dictionary(IndexMap::from([(
+                "Features".to_string(),
+                XpcValue::Array(vec![
+                    XpcValue::String("com.apple.coredevice.feature.one".into()),
+                    XpcValue::String("com.apple.coredevice.feature.two".into()),
+                ]),
+            )])),
+        );
 
         let mut services = IndexMap::new();
         services.insert(
@@ -597,6 +685,63 @@ mod tests {
             handshake.get_port("com.apple.instruments.dtservicehub"),
             Some(12345)
         );
+        assert_eq!(
+            handshake
+                .get_service_features("com.apple.instruments.dtservicehub")
+                .unwrap(),
+            [
+                "com.apple.coredevice.feature.one",
+                "com.apple.coredevice.feature.two"
+            ]
+        );
+        assert_eq!(
+            handshake.supports_feature(
+                "com.apple.instruments.dtservicehub",
+                "com.apple.coredevice.feature.two"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            handshake.supports_feature(
+                "com.apple.instruments.dtservicehub",
+                "com.apple.coredevice.feature.missing"
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn service_descriptor_without_feature_metadata_is_permissive() {
+        let descriptor = ServiceDescriptor::new(12345);
+        assert!(descriptor.supports_feature("com.apple.coredevice.feature.future"));
+    }
+
+    #[test]
+    fn parse_handshake_message_rejects_out_of_range_service_port() {
+        let mut message = sample_handshake_xpc_message(Some("Handshake"));
+        let services = message
+            .body
+            .as_mut()
+            .and_then(|body| match body {
+                XpcValue::Dictionary(body) => body.get_mut("Services"),
+                _ => None,
+            })
+            .and_then(|services| match services {
+                XpcValue::Dictionary(services) => Some(services),
+                _ => None,
+            })
+            .unwrap();
+        let service = services
+            .get_mut("com.apple.instruments.dtservicehub")
+            .and_then(|service| match service {
+                XpcValue::Dictionary(service) => Some(service),
+                _ => None,
+            })
+            .unwrap();
+        service.insert("Port".into(), XpcValue::Uint64(u16::MAX as u64 + 1));
+
+        let handshake = parse_handshake_message(message).unwrap();
+        assert!(handshake.services.is_empty());
     }
 
     #[tokio::test]

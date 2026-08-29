@@ -20,8 +20,16 @@ const FILE_TRANSFER_CODE_LOCAL_ERROR: u8 = 0x06; // Local (host) file I/O error
 const FILE_TRANSFER_CODE_FILE_DATA: u8 = 0x0c; // Payload contains file data chunk
 const FILE_TRANSFER_CODE_REMOTE_ERROR: u8 = 0x0b; // Remote (device) reported an error
 const BULK_OPERATION_ERROR: i64 = -13;
+const PURGE_DISK_SPACE_ERROR: i64 = -1;
+const PURGE_DISK_SPACE_ERROR_STRING: &str = "DLPurgeDiskSpace failed to purge";
+// BackupAgent2 adds this amount to every purge request beyond the actual free-space threshold.
+const PURGE_REQUEST_OVERSHOOT: u64 = 0x8000_0000;
+const MB_ERROR_INSUFFICIENT_DISK_SPACE: u64 = 105;
 const EMPTY_PARAMETER_STRING: &str = "___EmptyParameterString___";
-const DOWNLOAD_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+// BackupAgent2 buffers one complete transfer frame before writing it to disk. Keep frames small
+// enough for large incremental Manifest.db files to avoid exhausting the device process.
+const DOWNLOAD_CHUNK_SIZE: usize = 32 * 1024;
+const MAX_TRANSFER_ERROR_PREVIEW_SIZE: usize = 64 * 1024;
 const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] =
     &["Manifest.plist", "Manifest.db", "Status.plist"];
 // 978_307_200 seconds = 2001-01-01T00:00:00Z Unix timestamp
@@ -92,12 +100,18 @@ service_error!(
 
 pub struct Mobilebackup2Client<S> {
     device_link: DeviceLinkClient<S>,
+    // DeviceLink reports free space before asking the host to purge. Keeping the last pair lets
+    // us turn the device's follow-up MBErrorDomain/105 into a useful diagnostic.
+    reported_free_space: Option<u64>,
+    required_free_space: Option<u64>,
 }
 
 impl<S> Mobilebackup2Client<S> {
     pub fn new(stream: S) -> Self {
         Self {
             device_link: DeviceLinkClient::new(stream),
+            reported_free_space: None,
+            required_free_space: None,
         }
     }
 }
@@ -107,6 +121,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     pub async fn version_exchange(&mut self) -> Result<VersionExchange, Mobilebackup2Error> {
+        // A client can be reused for several operations in tests or by higher-level callers;
+        // diagnostics from a previous DeviceLink session must not leak into the next one.
+        self.reported_free_space = None;
+        self.required_free_space = None;
+
         let device_link_version = self.device_link.version_exchange().await?;
         let local_versions = SUPPORTED_PROTOCOL_VERSIONS.to_vec();
 
@@ -385,6 +404,15 @@ where
                     let error_code = payload.get("ErrorCode").and_then(plist_number_to_u64);
                     if let Some(code) = error_code {
                         if code != 0 {
+                            if code == MB_ERROR_INSUFFICIENT_DISK_SPACE {
+                                return Err(Mobilebackup2Error::Protocol(
+                                    insufficient_disk_space_message(
+                                        payload,
+                                        self.reported_free_space,
+                                        self.required_free_space,
+                                    ),
+                                ));
+                            }
                             return Err(Mobilebackup2Error::Protocol(format!(
                                 "backup process returned ErrorCode={code}: {payload:?}"
                             )));
@@ -436,6 +464,12 @@ where
                     let device_directory = layout.device_directory.clone();
                     let free_bytes =
                         run_blocking(move || available_space(&device_directory)).await?;
+                    tracing::debug!(
+                        free_bytes,
+                        path = %layout.device_directory.display(),
+                        "reporting available backup disk space"
+                    );
+                    self.reported_free_space = Some(free_bytes);
                     self.send_status_response(0, "", plist::Value::Integer(free_bytes.into()))
                         .await?;
                 }
@@ -547,9 +581,38 @@ where
                     .await?;
                 }
                 "DLMessagePurgeDiskSpace" => {
-                    return Err(Mobilebackup2Error::Protocol(
-                        "backup host cannot purge disk space automatically".into(),
-                    ));
+                    let requested = parts.get(1).and_then(plist_number_to_u64);
+                    let urgency = parts.get(2).and_then(plist_number_to_u64);
+                    self.required_free_space =
+                        derive_required_free_space(self.reported_free_space, requested);
+                    if let Some(required) = self.required_free_space {
+                        let reported = self
+                            .reported_free_space
+                            .expect("derived free-space requirement has a report");
+                        let additional = required.saturating_add(1).saturating_sub(reported);
+                        tracing::warn!(
+                            required_free_space = required,
+                            reported_free_space = reported,
+                            additional_free_space = additional,
+                            requested,
+                            urgency,
+                            "device requested host disk-space purge; no purge backend is available"
+                        );
+                    } else {
+                        tracing::warn!(
+                            requested,
+                            urgency,
+                            "device requested host disk-space purge; no purge backend is available"
+                        );
+                    }
+                    // Purging is a request, not a terminal protocol error. Apple's host replies
+                    // with the purge-failed status and lets the device report its own diagnosis.
+                    self.send_status_response_value(
+                        plist::Value::Integer(PURGE_DISK_SPACE_ERROR.into()),
+                        PURGE_DISK_SPACE_ERROR_STRING,
+                        plist::Value::Integer(0u64.into()),
+                    )
+                    .await?;
                 }
                 other => {
                     return Err(Mobilebackup2Error::Protocol(format!(
@@ -586,19 +649,27 @@ where
                         "backup file transfer frame too short for {file_name}"
                     ))
                 })? as usize;
-                let mut payload = vec![0u8; payload_len];
-                self.device_link
-                    .stream_mut()
-                    .read_exact(&mut payload)
-                    .await?;
 
                 match code[0] {
                     FILE_TRANSFER_CODE_FILE_DATA => {
-                        tokio::io::AsyncWriteExt::write_all(&mut file, &payload).await?
+                        // A device can advertise a very large frame size. Stream its payload in
+                        // bounded pieces instead of allocating the complete frame up front.
+                        copy_transfer_payload(
+                            self.device_link.stream_mut(),
+                            &mut file,
+                            payload_len,
+                        )
+                        .await?;
                     }
-                    FILE_TRANSFER_CODE_SUCCESS => break,
+                    FILE_TRANSFER_CODE_SUCCESS => {
+                        discard_transfer_payload(self.device_link.stream_mut(), payload_len)
+                            .await?;
+                        break;
+                    }
                     FILE_TRANSFER_CODE_REMOTE_ERROR => {
-                        let message = String::from_utf8_lossy(&payload);
+                        let message =
+                            read_transfer_error_preview(self.device_link.stream_mut(), payload_len)
+                                .await?;
                         warn!(
                             "backup upload for device path '{}' to local file '{}' reported remote error: {}",
                             device_name,
@@ -608,6 +679,8 @@ where
                         break;
                     }
                     other => {
+                        discard_transfer_payload(self.device_link.stream_mut(), payload_len)
+                            .await?;
                         return Err(Mobilebackup2Error::Protocol(format!(
                             "unknown backup file transfer code 0x{other:02x} for {file_name}"
                         )));
@@ -626,10 +699,24 @@ where
         status_message: &str,
         status_payload: plist::Value,
     ) -> Result<(), Mobilebackup2Error> {
+        self.send_status_response_value(
+            plist::Value::Integer(status_code.into()),
+            status_message,
+            status_payload,
+        )
+        .await
+    }
+
+    async fn send_status_response_value(
+        &mut self,
+        status_code: plist::Value,
+        status_message: &str,
+        status_payload: plist::Value,
+    ) -> Result<(), Mobilebackup2Error> {
         self.device_link
             .send_message(&vec![
                 plist::Value::String("DLMessageStatusResponse".into()),
-                plist::Value::Integer(status_code.into()),
+                status_code,
                 plist::Value::String(
                     if status_message.is_empty() {
                         EMPTY_PARAMETER_STRING
@@ -1108,6 +1195,55 @@ where
     Ok(u32::from_be_bytes(buf))
 }
 
+async fn copy_transfer_payload<S, W>(
+    stream: &mut S,
+    writer: &mut W,
+    mut remaining: usize,
+) -> Result<(), Mobilebackup2Error>
+where
+    S: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = [0u8; DOWNLOAD_CHUNK_SIZE];
+    while remaining > 0 {
+        let chunk_len = remaining.min(buffer.len());
+        stream.read_exact(&mut buffer[..chunk_len]).await?;
+        writer.write_all(&buffer[..chunk_len]).await?;
+        remaining -= chunk_len;
+    }
+    Ok(())
+}
+
+async fn discard_transfer_payload<S>(
+    stream: &mut S,
+    mut remaining: usize,
+) -> Result<(), Mobilebackup2Error>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut buffer = [0u8; DOWNLOAD_CHUNK_SIZE];
+    while remaining > 0 {
+        let chunk_len = remaining.min(buffer.len());
+        stream.read_exact(&mut buffer[..chunk_len]).await?;
+        remaining -= chunk_len;
+    }
+    Ok(())
+}
+
+async fn read_transfer_error_preview<S>(
+    stream: &mut S,
+    payload_len: usize,
+) -> Result<String, Mobilebackup2Error>
+where
+    S: AsyncRead + Unpin,
+{
+    let preview_len = payload_len.min(MAX_TRANSFER_ERROR_PREVIEW_SIZE);
+    let mut preview = vec![0u8; preview_len];
+    stream.read_exact(&mut preview).await?;
+    discard_transfer_payload(stream, payload_len - preview_len).await?;
+    Ok(String::from_utf8_lossy(&preview).into_owned())
+}
+
 async fn write_prefixed_string<S>(stream: &mut S, value: &str) -> Result<(), Mobilebackup2Error>
 where
     S: AsyncWrite + Unpin,
@@ -1216,6 +1352,37 @@ fn plist_number_to_f64(value: &plist::Value) -> Option<f64> {
     }
 }
 
+fn derive_required_free_space(reported: Option<u64>, requested: Option<u64>) -> Option<u64> {
+    let reported = reported?;
+    let requested = requested?;
+    if requested < PURGE_REQUEST_OVERSHOOT {
+        return None;
+    }
+
+    requested
+        .checked_add(reported)
+        .and_then(|value| value.checked_sub(PURGE_REQUEST_OVERSHOOT))
+}
+
+fn insufficient_disk_space_message(
+    response: &plist::Dictionary,
+    reported: Option<u64>,
+    required: Option<u64>,
+) -> String {
+    let detail = "the device counts hardlink and clone references at full size because each uploaded path is stored separately";
+    match (reported, required) {
+        (Some(reported), Some(required)) => {
+            let additional = required.saturating_add(1).saturating_sub(reported);
+            format!(
+                "backup process returned ErrorCode={MB_ERROR_INSUFFICIENT_DISK_SPACE}: device needs more than {required} bytes free, host reported {reported} bytes ({additional} more needed) (MBErrorDomain/{MB_ERROR_INSUFFICIENT_DISK_SPACE}); {detail}; response: {response:?}"
+            )
+        }
+        _ => format!(
+            "backup process returned ErrorCode={MB_ERROR_INSUFFICIENT_DISK_SPACE}: {response:?}; {detail}"
+        ),
+    }
+}
+
 fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
     match value {
         plist::Value::Boolean(value) => Some(*value),
@@ -1273,7 +1440,161 @@ fn should_suppress_disconnect_error(error: &DeviceLinkError) -> bool {
 mod tests {
     use std::io::ErrorKind;
 
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+
     use super::*;
+
+    fn encode_test_frame(value: &plist::Value) -> Vec<u8> {
+        let mut payload = Vec::new();
+        plist::to_writer_xml(&mut payload, value).expect("plist serialization");
+        let mut frame = Vec::with_capacity(payload.len() + 4);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    async fn read_test_frame(stream: &mut tokio::io::DuplexStream) -> plist::Value {
+        let mut length = [0u8; 4];
+        stream.read_exact(&mut length).await.expect("frame length");
+        let length = u32::from_be_bytes(length) as usize;
+        let mut payload = vec![0u8; length];
+        stream
+            .read_exact(&mut payload)
+            .await
+            .expect("frame payload");
+        plist::from_bytes(&payload).expect("plist frame")
+    }
+
+    #[tokio::test]
+    async fn purge_disk_space_is_answered_and_the_loop_continues() {
+        let layout = BackupDirectoryLayout {
+            root: PathBuf::from("backup-root"),
+            device_directory: PathBuf::from("backup-root/device-id"),
+            target_identifier: "device-id".into(),
+        };
+        let (client_stream, mut server_stream) = duplex(4096);
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client.run_loop(&layout).await
+        });
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessagePurgeDiskSpace".into()),
+                plist::Value::Integer(42u64.into()),
+                plist::Value::Integer(4u64.into()),
+            ])))
+            .await
+            .expect("write purge request");
+
+        assert_eq!(
+            read_test_frame(&mut server_stream).await,
+            plist::Value::Array(vec![
+                plist::Value::String("DLMessageStatusResponse".into()),
+                plist::Value::Integer(PURGE_DISK_SPACE_ERROR.into()),
+                plist::Value::String(PURGE_DISK_SPACE_ERROR_STRING.into()),
+                plist::Value::Integer(0u64.into()),
+            ])
+        );
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("ErrorCode".to_string(), plist::Value::Integer(0u64.into())),
+                    (
+                        "Content".to_string(),
+                        plist::Value::String("backup finished".into()),
+                    ),
+                ])),
+            ])))
+            .await
+            .expect("write completion");
+
+        assert_eq!(
+            task.await.expect("run loop task").expect("backup loop"),
+            Some(plist::Value::String("backup finished".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn insufficient_space_process_error_uses_the_last_purge_diagnostics() {
+        let layout = BackupDirectoryLayout {
+            root: PathBuf::from("backup-root"),
+            device_directory: PathBuf::from("backup-root/device-id"),
+            target_identifier: "device-id".into(),
+        };
+        let (client_stream, mut server_stream) = duplex(4096);
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client.reported_free_space = Some(1_000_000);
+            client.run_loop(&layout).await
+        });
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessagePurgeDiskSpace".into()),
+                plist::Value::Integer(2_335_105_975u64.into()),
+                plist::Value::Integer(4u64.into()),
+            ])))
+            .await
+            .expect("write purge request");
+        let _ = read_test_frame(&mut server_stream).await;
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageProcessMessage".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    (
+                        "ErrorCode".to_string(),
+                        plist::Value::Integer(105u64.into()),
+                    ),
+                    (
+                        "ErrorDescription".to_string(),
+                        plist::Value::String("Insufficient free disk space".into()),
+                    ),
+                ])),
+            ])))
+            .await
+            .expect("write insufficient-space response");
+
+        let error = task
+            .await
+            .expect("run loop task")
+            .expect_err("insufficient space should fail the operation");
+        let message = error.to_string();
+        assert!(message.contains("needs more than 188622327 bytes free"));
+        assert!(message.contains("host reported 1000000 bytes"));
+        assert!(message.contains("MBErrorDomain/105"));
+    }
+
+    #[test]
+    fn derives_required_free_space_from_purge_request() {
+        let required = derive_required_free_space(Some(1_000_000), Some(2_335_105_975));
+        assert_eq!(required, Some(188_622_327));
+        assert_eq!(
+            derive_required_free_space(Some(1_000_000), Some(PURGE_REQUEST_OVERSHOOT - 1)),
+            None
+        );
+        assert_eq!(
+            derive_required_free_space(None, Some(PURGE_REQUEST_OVERSHOOT)),
+            None
+        );
+    }
+
+    #[test]
+    fn insufficient_space_message_includes_requirement_and_host_report() {
+        let response = plist::Dictionary::from_iter([(
+            "ErrorDescription".to_string(),
+            plist::Value::String("Insufficient free disk space".into()),
+        )]);
+        let message =
+            insufficient_disk_space_message(&response, Some(1_000_000), Some(188_622_327));
+        assert!(message.contains("needs more than 188622327 bytes free"));
+        assert!(message.contains("host reported 1000000 bytes"));
+        assert!(message.contains("187622328 more needed"));
+        assert!(message.contains("MBErrorDomain/105"));
+    }
 
     #[test]
     fn initialize_backup_directory_creates_expected_seed_files() {

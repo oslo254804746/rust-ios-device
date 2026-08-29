@@ -36,9 +36,17 @@ print(tunnel.server_address)
 print(tunnel.rsd_port)
 print(tunnel.userspace_port)
 print(tunnel.services)
+print(tunnel.service_ports)
+print(tunnel.service_features)
 print(tunnel.connect_info())
 tunnel.close()
 ```
+
+The `services` list and both mapping attributes use stable service-name order.
+`service_ports` and `service_features` contain every discovered service;
+`service_features` uses `[]` when the RSD entry did not provide capability
+metadata. The FFI JSON API uses the same explicit empty-list representation. In
+either API, missing metadata is not an explicit deny-all result.
 
 `start_tunnel(..., mode="kernel")` requests kernel TUN mode and may require elevated privileges.
 

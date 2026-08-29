@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [0.1.9] — 2026-08-29
+
+### Added
+
+- Exposed RSD-advertised service feature identifiers through `ios-core`, the
+  `ios rsd services --features` command, the C FFI, and Python tunnel objects.
+- Added detailed MobileBackup2 free-space diagnostics after device purge
+  requests.
+- Added `ServiceDescriptor::features`, `ServiceDescriptor::new`, and RSD
+  capability helpers for Rust consumers.
+- Added `ios_tunnel_rsd_services_json` to the C ABI and `service_ports` plus
+  `service_features` to the Python `Tunnel` object.
+
+### Changed
+
+- Reduced MobileBackup2 host-to-device transfer frames to 32 KiB and streamed
+  device-to-host payloads through bounded buffers.
+- Decoded BSD `vis(3)` escapes in syslog relay messages and made process filters
+  recognize Apple's `Process(Library)` annotation.
+- Preserved the existing JSON schema for `ios rsd services` and `rsd check` by
+  keeping feature metadata opt-in. Passing `--features` adds `features` to
+  JSON and human-readable output; without it, services JSON remains
+  `name`/`port` and check JSON remains unchanged.
+- TCP dials and initial tunnel/RSD/XPC setup paths now fail after 15 seconds
+  instead of inheriting the host operating system's long retry window.
+
+### Fixed
+
+- Bounded tunnel TCP connection attempts, InstallationProxy Browse responses,
+  and pending DTX state so stale or malformed device traffic cannot stall or
+  grow memory indefinitely.
+- Rejected invalid RSD ports and malformed DTX length/fragment metadata instead
+  of truncating values or accepting incomplete frames.
+- Accepted additional NSKeyedArchiver UID indirections and nullable XCTest
+  fields, and encoded object-valued XCTest configuration fields as keyed
+  references.
+- InstallationProxy Browse now enforces separate response-chunk and app-entry
+  limits before retaining more device data.
+- MobileBackup2 file transfers use bounded buffers and 32 KiB host-to-device
+  frames; insufficient-space failures include the available-space diagnostics
+  collected around purge requests.
+
 ## [0.1.8] — 2026-07-27
 
 ### Added
@@ -132,7 +176,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.7...v0.1.8
 [0.1.4]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.2...v0.1.4
 [0.1.2]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.1...v0.1.2

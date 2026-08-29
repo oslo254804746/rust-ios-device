@@ -100,8 +100,7 @@ int ios_get_product_version(const IosDeviceHandle *handle, char **version_out);
 int ios_get_lockdown_value_json(const IosDeviceHandle *handle, const char *key, char **json_out);
 
 /**
- * Free a UTF-8 string returned by ios_get_product_version() or
- * ios_get_lockdown_value_json().
+ * Free a UTF-8 string returned by an ios-rs string-output function.
  */
 void ios_free_string(char *s);
 
@@ -154,6 +153,17 @@ uint16_t ios_tunnel_rsd_port(const IosTunnel *tunnel);
  * Returns 0 in kernel mode or if unavailable.
  */
 uint16_t ios_tunnel_userspace_port(const IosTunnel *tunnel);
+
+/**
+ * Get the RSD service directory as a newly-allocated compact JSON object.
+ *
+ * The object maps service names to {"port": number, "features": string[]}.
+ * An empty feature array means the service did not advertise capability
+ * metadata; it does not mean every operation is unsupported.
+ *
+ * Free *json_out with ios_free_string().
+ */
+int ios_tunnel_rsd_services_json(const IosTunnel *tunnel, char **json_out);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -263,7 +263,17 @@ async fn connect_lockdown_port(
             Ok(Box::new(stream))
         }
         LockdownTransport::Tcp { host, .. } => {
-            let stream = TcpStream::connect((host.as_str(), port)).await?;
+            let stream = tokio::time::timeout(
+                crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+                TcpStream::connect((host.as_str(), port)),
+            )
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("lockdown dial to {host}:{port} timed out"),
+                )
+            })??;
             Ok(Box::new(stream))
         }
     }

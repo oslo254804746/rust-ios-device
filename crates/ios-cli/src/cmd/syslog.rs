@@ -44,7 +44,10 @@ impl SyslogCmd {
             return false;
         }
         if let Some(proc_filter) = &self.process {
-            if entry.process.as_deref() != Some(proc_filter.as_str()) {
+            let matches_process = entry.process.as_deref().is_some_and(|process| {
+                process == proc_filter || Self::base_process_name(process) == proc_filter
+            });
+            if !matches_process {
                 return false;
             }
         }
@@ -54,6 +57,18 @@ impl SyslogCmd {
             }
         }
         true
+    }
+
+    /// Syslog annotates os_log senders with the emitting library, for example
+    /// `SpringBoard(FrontBoard)[52]`. Keep the annotation available for exact
+    /// matches, while allowing `--process SpringBoard` to match that common form.
+    fn base_process_name(process: &str) -> &str {
+        if let Some(open) = process.find('(') {
+            if open > 0 && process.ends_with(')') {
+                return &process[..open];
+            }
+        }
+        process
     }
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
@@ -257,6 +272,48 @@ mod tests {
 
         assert!(cmd.matches_filters(&matching));
         assert!(!cmd.matches_filters(&other));
+    }
+
+    #[test]
+    fn process_filter_matches_os_log_library_annotation() {
+        let cmd = SyslogCmd {
+            filter: None,
+            regex: Vec::new(),
+            insensitive_regex: Vec::new(),
+            process: Some("SpringBoard".into()),
+            pid: None,
+            parse: false,
+            count: Some(1),
+            timeout: Some(5),
+        };
+        let annotated = ios_core::syslog::LogEntry::parse(
+            "Mar 17 12:34:56 iPhone SpringBoard(FrontBoard)[52] <Notice>: ready".into(),
+        );
+        let different = ios_core::syslog::LogEntry::parse(
+            "Mar 17 12:34:56 iPhone SpringBoardExtension(Foundation)[52] <Notice>: ready".into(),
+        );
+
+        assert!(cmd.matches_filters(&annotated));
+        assert!(!cmd.matches_filters(&different));
+    }
+
+    #[test]
+    fn process_filter_accepts_full_annotated_name() {
+        let cmd = SyslogCmd {
+            filter: None,
+            regex: Vec::new(),
+            insensitive_regex: Vec::new(),
+            process: Some("SpringBoard(FrontBoard)".into()),
+            pid: None,
+            parse: false,
+            count: Some(1),
+            timeout: Some(5),
+        };
+        let annotated = ios_core::syslog::LogEntry::parse(
+            "Mar 17 12:34:56 iPhone SpringBoard(FrontBoard)[52] <Notice>: ready".into(),
+        );
+
+        assert!(cmd.matches_filters(&annotated));
     }
 
     #[test]

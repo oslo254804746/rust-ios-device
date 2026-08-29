@@ -143,6 +143,17 @@ fn decode_value(
         return Ok(ArchiveValue::Data(Bytes::copy_from_slice(d)));
     }
 
+    // A keyed archive object table normally contains the object itself, but
+    // archives produced by some plist writers can contain an extra UID
+    // indirection. Resolve it here as well as in object fields so a valid
+    // reference cannot be silently turned into `Null`.
+    if matches!(obj, plist::Value::Uid(_)) {
+        let uid = uid_from_plist(obj).ok_or_else(|| {
+            ArchiveError::Invalid("UID does not fit in the host index type".into())
+        })?;
+        return decode_object(objects, uid, depth + 1);
+    }
+
     // Complex: keyed object dict with $class
     if let Some(dict) = obj.as_dictionary() {
         let class_uid = dict.get("$class").and_then(uid_from_plist);
@@ -291,16 +302,17 @@ fn decode_field_value(
 fn uid_from_plist(v: &plist::Value) -> Option<usize> {
     // Binary plist stores UIDs as native Uid type
     if let plist::Value::Uid(uid) = v {
-        return Some(uid.get() as usize);
+        return usize::try_from(uid.get()).ok();
     }
     // XML plist UIDs are stored as Dict {"CF$UID": integer}
     if let Some(d) = v.as_dictionary() {
         if let Some(n) = d.get("CF$UID").and_then(|u| u.as_unsigned_integer()) {
-            return Some(n as usize);
+            return usize::try_from(n).ok();
         }
     }
     // Or directly as unsigned integer (legacy)
-    v.as_unsigned_integer().map(|n| n as usize)
+    v.as_unsigned_integer()
+        .and_then(|n| usize::try_from(n).ok())
 }
 
 impl ArchiveValue {
@@ -445,5 +457,86 @@ mod tests {
 
         let decoded = decode_object(&objects, 1, 0).unwrap();
         assert!(matches!(decoded, ArchiveValue::Null));
+    }
+
+    #[test]
+    fn test_decode_uid_alias_object() {
+        let objects = vec![
+            plist::Value::String("$null".to_string()),
+            plist::Value::Uid(plist::Uid::new(2)),
+            plist::Value::String("aliased payload".to_string()),
+        ];
+
+        let decoded = decode_object(&objects, 1, 0).unwrap();
+        assert_eq!(decoded.as_str(), Some("aliased payload"));
+    }
+
+    #[test]
+    fn test_decode_uid_alias_out_of_bounds_is_an_error() {
+        let objects = vec![
+            plist::Value::String("$null".to_string()),
+            plist::Value::Uid(plist::Uid::new(u64::MAX)),
+        ];
+
+        let err = decode_object(&objects, 1, 0).unwrap_err();
+        assert!(
+            matches!(err, ArchiveError::Invalid(message) if message.contains("out of bounds") || message.contains("does not fit"))
+        );
+    }
+
+    #[test]
+    fn test_decode_xcuitest_nullable_fields_as_null() {
+        let objects = vec![
+            plist::Value::String("$null".to_string()),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$class".to_string(), plist::Value::Uid(plist::Uid::new(2))),
+                (
+                    "compact-description".to_string(),
+                    plist::Value::Uid(plist::Uid::new(3)),
+                ),
+                // iOS can encode an absent source-code context as UID(0).
+                (
+                    "source-code-context".to_string(),
+                    plist::Value::Uid(plist::Uid::new(0)),
+                ),
+                // userInfo is intentionally omitted on attachments from some
+                // OS versions; the generic decoder must tolerate that too.
+            ])),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "$classname".to_string(),
+                    plist::Value::String("XCTIssue".into()),
+                ),
+                (
+                    "$classes".to_string(),
+                    plist::Value::Array(vec![
+                        plist::Value::String("XCTIssue".into()),
+                        plist::Value::String("NSObject".into()),
+                    ]),
+                ),
+            ])),
+            plist::Value::String("no source context".into()),
+        ];
+
+        let decoded = decode_object(&objects, 1, 0).unwrap();
+        let fields = decoded.as_dict().expect("XCTIssue should decode as a dict");
+        assert!(matches!(
+            fields.get("source-code-context"),
+            Some(ArchiveValue::Null)
+        ));
+        assert!(!fields.contains_key("userInfo"));
+        assert_eq!(
+            fields
+                .get("compact-description")
+                .and_then(ArchiveValue::as_str),
+            Some("no source context")
+        );
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn test_uid_conversion_does_not_truncate_on_32_bit_hosts() {
+        let value = plist::Value::Uid(plist::Uid::new(u32::MAX as u64 + 1));
+        assert_eq!(uid_from_plist(&value), None);
     }
 }

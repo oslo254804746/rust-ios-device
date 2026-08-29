@@ -46,7 +46,7 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
             if let Some(terminator) = available.iter().position(|&b| b == 0) {
                 self.buf.extend_from_slice(&available[..terminator]);
                 self.stream.consume(terminator + 1);
-                return Ok(String::from_utf8_lossy(&self.buf).into_owned());
+                return Ok(decode_vis(&String::from_utf8_lossy(&self.buf)));
             }
 
             // No terminator in this chunk: it is all message body.
@@ -61,6 +61,80 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
             self.stream.consume(len);
         }
     }
+}
+
+/// Decode the BSD `vis(3)` escapes emitted by Apple's syslog relay.
+///
+/// The relay escapes non-ASCII bytes in a byte-oriented representation. In
+/// particular, UTF-8 bytes can arrive as `\M-x` or `\M^X`, while newer Apple
+/// libc versions octal-encode some bytes (for example the UTF-8 continuation
+/// byte `0xa0` as `\240`). Decode only the forms known to be emitted by `vis`;
+/// unknown and control-valued escapes remain text so terminal output never
+/// gains an unexpected control character.
+pub fn decode_vis(s: &str) -> String {
+    if !s.as_bytes().contains(&b'\\') {
+        return s.to_owned();
+    }
+
+    let bytes = s.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+
+        let rest = &bytes[index + 1..];
+        if rest.len() >= 3 && rest[0] == b'M' && rest[1] == b'-' && is_graph(rest[2]) {
+            decoded.push(rest[2] | 0x80);
+            index += 4;
+        } else if rest.len() >= 3 && rest[0] == b'M' && rest[1] == b'^' && is_meta_control(rest[2])
+        {
+            decoded.push((rest[2] ^ 0x40) | 0x80);
+            index += 4;
+        } else if rest.len() >= 3 && is_octal(rest[0]) && is_octal(rest[1]) && is_octal(rest[2]) {
+            let value = octal_value(rest[0], rest[1], rest[2]);
+            if is_decodable_octal(value) {
+                decoded.push(value as u8);
+                index += 4;
+                continue;
+            }
+            decoded.push(b'\\');
+            index += 1;
+        } else if rest.first() == Some(&b'\\') {
+            // Older vis implementations use `\\\\` for a literal slash.
+            decoded.push(b'\\');
+            index += 2;
+        } else {
+            // Keep a lone, truncated, or unrecognized escape unchanged.
+            decoded.push(b'\\');
+            index += 1;
+        }
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn is_graph(byte: u8) -> bool {
+    byte > b' ' && byte < 0x7f
+}
+
+fn is_meta_control(byte: u8) -> bool {
+    (b'@'..=b'_').contains(&byte) || byte == b'?'
+}
+
+fn is_octal(byte: u8) -> bool {
+    (b'0'..=b'7').contains(&byte)
+}
+
+fn octal_value(a: u8, b: u8, c: u8) -> u16 {
+    u16::from(a - b'0') << 6 | u16::from(b - b'0') << 3 | u16::from(c - b'0')
+}
+
+fn is_decodable_octal(value: u16) -> bool {
+    (0x80..=0xff).contains(&value) || (0x20..0x7f).contains(&value)
 }
 
 /// Convert a syslog stream into an async Stream<Item = Result<String, io::Error>>.
@@ -212,6 +286,35 @@ mod tests {
         let mut syslog = SyslogStream::new(&mut stream);
         assert_eq!(syslog.next_message().await.unwrap(), "message one");
         assert_eq!(syslog.next_message().await.unwrap(), "message two");
+    }
+
+    #[tokio::test]
+    async fn test_syslog_stream_decodes_vis_escapes() {
+        let data = b"message \\M-f\\M^H\\M^V\0";
+        let mut stream = std::io::Cursor::new(data);
+        let mut syslog = SyslogStream::new(&mut stream);
+
+        assert_eq!(syslog.next_message().await.unwrap(), "message 或");
+    }
+
+    #[test]
+    fn test_decode_vis_meta_and_octal_escapes() {
+        assert_eq!(decode_vis(r"\M-f\M^H\M^V"), "或");
+        assert_eq!(decode_vis(r"voil\M-C\240!"), "voilà!");
+        assert_eq!(decode_vis(r"\346\210\226"), "或");
+        assert_eq!(decode_vis(r"path C:\134Users\134M-f"), r"path C:\Users\M-f");
+    }
+
+    #[test]
+    fn test_decode_vis_preserves_control_and_invalid_escapes() {
+        assert_eq!(
+            decode_vis(r"nul \000 esc \033 del \177"),
+            r"nul \000 esc \033 del \177"
+        );
+        assert_eq!(decode_vis(r"\777"), r"\777");
+        assert_eq!(decode_vis(r"abc\24"), r"abc\24");
+        assert_eq!(decode_vis(r"\M^a \M^0"), r"\M^a \M^0");
+        assert_eq!(decode_vis("a\\M- b\\M-\tc\\M-\nd"), "a\\M- b\\M-\tc\\M-\nd");
     }
 
     #[test]

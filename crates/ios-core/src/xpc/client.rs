@@ -24,8 +24,28 @@ impl XpcClient {
     /// Connect to an XPC service at the given IPv6 address and port.
     pub async fn connect(addr: Ipv6Addr, port: u16) -> Result<Self, XpcError> {
         let sock_addr = SocketAddr::new(addr.into(), port);
-        let stream = TcpStream::connect(sock_addr).await?;
-        Self::connect_stream(stream).await
+        let stream = tokio::time::timeout(
+            crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            TcpStream::connect(sock_addr),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("XPC dial to {sock_addr} timed out"),
+            )
+        })??;
+        tokio::time::timeout(
+            crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            Self::connect_stream(stream),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("XPC initialization with {sock_addr} timed out"),
+            )
+        })?
     }
 
     /// Connect to an XPC service over an already-established stream.
