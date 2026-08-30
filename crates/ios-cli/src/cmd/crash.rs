@@ -1,14 +1,20 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
 use comfy_table::{presets::UTF8_FULL, Table};
+use futures_util::StreamExt;
 use ios_core::crashreport::{
-    prepare_reports, CrashReportClient, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
+    flush_reports_at, flush_reports_rsd_at, matches_pattern, parse_report_bytes, prepare_reports,
+    prepare_reports_rsd, sort_parsed_reports, CrashReportClient, CrashWatchOptions,
+    ParsedCrashReport, CRASHREPORT_COPY_MOBILE_SERVICE, CRASHREPORT_MOVER_SERVICE,
+    RSD_CRASHREPORT_COPY_MOBILE_SERVICE, RSD_CRASHREPORT_MOVER_SERVICE,
 };
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 #[derive(clap::Args)]
 pub struct CrashCmd {
@@ -54,27 +60,103 @@ enum CrashSub {
     Rm {
         #[arg(help = "Optional filename glob pattern", default_value = "*")]
         pattern: String,
+        #[arg(long, help = "Required confirmation for destructive removal")]
+        force: bool,
+    },
+    /// Flush pending crash products into the device crash-report directory
+    Flush {
+        #[arg(long, default_value_t = 20, help = "Handshake timeout in seconds")]
+        timeout: u64,
+        #[arg(short = 'j', long, help = "Output JSON")]
+        json: bool,
+    },
+    /// Parse a local .ips or legacy .crash report without a device
+    Parse {
+        #[arg(help = "Local report path")]
+        input: String,
+        #[arg(short = 'j', long, help = "Output JSON")]
+        json: bool,
+    },
+    /// Parse the newest local reports by event timestamp
+    ParseLatest {
+        #[arg(help = "Local report directory")]
+        directory: String,
+        #[arg(long, default_value = "*", help = "Filename glob pattern")]
+        pattern: String,
+        #[arg(long, default_value_t = 1, help = "Maximum number of reports")]
+        count: usize,
+        #[arg(short = 'j', long, help = "Output JSON")]
+        json: bool,
+    },
+    /// Remove all crash reports below a device path
+    Clear {
+        #[arg(long, default_value = ".", help = "Path in the crash-report AFC jail")]
+        path: String,
+        #[arg(long, help = "Required confirmation for destructive removal")]
+        force: bool,
+    },
+    /// Poll for new reports until Ctrl+C or the optional timeout
+    Watch {
+        #[arg(long, default_value = "*", help = "Filename glob pattern")]
+        pattern: String,
+        #[arg(long, help = "Stop after this many seconds")]
+        timeout: Option<u64>,
+        #[arg(long, default_value_t = 1, help = "Polling interval in seconds")]
+        interval: u64,
+        #[arg(short = 'j', long, help = "Output one JSON object per report")]
+        json: bool,
+    },
+    /// Sysdiagnose collection is not exposed by the pinned crash mover
+    Sysdiagnose {
+        #[arg(
+            long,
+            help = "Output archive path (reserved for a future protocol implementation)"
+        )]
+        output: Option<String>,
+        #[arg(long, help = "Required confirmation")]
+        force: bool,
+        #[arg(long, help = "Collection timeout in seconds")]
+        timeout: Option<u64>,
     },
 }
 
 impl CrashCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
+        if matches!(
+            &self.sub,
+            CrashSub::Parse { .. } | CrashSub::ParseLatest { .. }
+        ) {
+            return self.run_local().await;
+        }
+        if let CrashSub::Sysdiagnose { .. } = &self.sub {
+            return Err(anyhow::anyhow!(
+                "crash-report sysdiagnose collection is not implemented; `ios diagnostics sysdiagnose` only probes CoreDevice metadata (dry-run)"
+            ));
+        }
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for crash commands"))?;
-        let opts = ConnectOptions {
-            tun_mode: TunMode::Userspace,
-            pair_record_path: None,
-            skip_tunnel: true,
+        let flush_deadline = match &self.sub {
+            CrashSub::Flush { timeout, .. } => Some(flush_deadline(*timeout)?),
+            _ => None,
         };
-        let device = connect(&udid, opts).await?;
+        let device = connect_crash_device(&udid, flush_deadline).await?;
+        let use_rsd = device.rsd().is_some();
 
         match self.sub {
             CrashSub::Ls { pattern, json } => {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
 
-                let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                    .await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
                 let mut client = CrashReportClient::new(stream);
                 let reports = client.list_reports(Some(&pattern)).await?;
 
@@ -109,24 +191,41 @@ impl CrashCmd {
                 // Checked before the transfer so a doomed pull costs nothing.
                 crate::cmd::file::ensure_local_overwrite_allowed(Path::new(&local_path), force)?;
 
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
 
-                let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                    .await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
                 let mut client = CrashReportClient::new(stream);
                 let data = client.read_report(&report).await?;
-                fs::write(&local_path, &data).await?;
+                crate::cmd::file::write_local_bytes_atomic(Path::new(&local_path), &data, force)
+                    .await?;
                 println!("Downloaded {} bytes to {}", data.len(), local_path);
             }
             CrashSub::Show { report, head } => {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
 
-                let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                    .await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
                 let mut client = CrashReportClient::new(stream);
                 let data = client.read_report(&report).await?;
                 let text = decode_report_text(&data)?;
@@ -141,12 +240,20 @@ impl CrashCmd {
                 local_dir,
                 force,
             } => {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
 
-                let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                    .await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
                 let mut client = CrashReportClient::new(stream);
                 let reports = client.list_reports(Some(&pattern)).await?;
 
@@ -157,7 +264,7 @@ impl CrashCmd {
                         unique_local_path(Path::new(&local_dir), &report.path, &mut taken);
                     crate::cmd::file::ensure_local_overwrite_allowed(&local_path, force)?;
                     let data = client.read_report(&report.path).await?;
-                    fs::write(&local_path, &data).await?;
+                    crate::cmd::file::write_local_bytes_atomic(&local_path, &data, force).await?;
                     println!(
                         "Downloaded {} bytes to {}",
                         data.len(),
@@ -165,13 +272,26 @@ impl CrashCmd {
                     );
                 }
             }
-            CrashSub::Rm { pattern } => {
-                let mut mover = device.connect_service(CRASHREPORT_MOVER_SERVICE).await?;
-                prepare_reports(&mut mover).await?;
+            CrashSub::Rm { pattern, force } => {
+                if !force {
+                    return Err(anyhow::anyhow!(
+                        "refusing to remove crash reports without --force"
+                    ));
+                }
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
 
-                let stream = device
-                    .connect_service(CRASHREPORT_COPY_MOBILE_SERVICE)
-                    .await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
                 let mut client = CrashReportClient::new(stream);
                 let removed = client.remove_reports(Some(&pattern)).await?;
                 if removed == 0 {
@@ -180,10 +300,321 @@ impl CrashCmd {
                 }
                 println!("Removed {removed} crash report(s)");
             }
+            CrashSub::Flush { json, .. } => {
+                let mut mover = connect_crash_service_until(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                    flush_deadline,
+                )
+                .await?;
+                let deadline = flush_deadline
+                    .ok_or_else(|| anyhow::anyhow!("missing crash operation deadline"))?;
+                flush_crash_reports(&mut mover, use_rsd, deadline).await?;
+                if json {
+                    println!(r#"{{"flushed":true}}"#);
+                } else {
+                    println!("Crash reports flushed");
+                }
+            }
+            CrashSub::Clear { path, force } => {
+                if !force {
+                    return Err(anyhow::anyhow!(
+                        "refusing to clear crash reports without --force"
+                    ));
+                }
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
+                let mut client = CrashReportClient::new(stream);
+                let removed = client.clear_reports(&path).await?;
+                println!(
+                    "Removed {removed} crash report entr{}",
+                    if removed == 1 { "y" } else { "ies" }
+                );
+            }
+            CrashSub::Watch {
+                pattern,
+                timeout,
+                interval,
+                json,
+            } => {
+                let mut mover = connect_crash_service(
+                    &device,
+                    CRASHREPORT_MOVER_SERVICE,
+                    RSD_CRASHREPORT_MOVER_SERVICE,
+                )
+                .await?;
+                prepare_crash_reports(&mut mover, use_rsd).await?;
+                let stream = connect_crash_service(
+                    &device,
+                    CRASHREPORT_COPY_MOBILE_SERVICE,
+                    RSD_CRASHREPORT_COPY_MOBILE_SERVICE,
+                )
+                .await?;
+                let mut client = CrashReportClient::new(stream);
+                let options = CrashWatchOptions {
+                    poll_interval: Duration::from_secs(interval.max(1)),
+                    timeout: timeout.map(Duration::from_secs),
+                    ..CrashWatchOptions::default()
+                };
+                let mut reports = Box::pin(client.watch_reports(Some(&pattern), options));
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => break,
+                        item = reports.next() => match item {
+                            Some(Ok(report)) => print_parsed_report(&report, json)?,
+                            Some(Err(error)) => return Err(error.into()),
+                            None => break,
+                        },
+                    }
+                }
+            }
+            CrashSub::Parse { .. }
+            | CrashSub::ParseLatest { .. }
+            | CrashSub::Sysdiagnose { .. } => {
+                unreachable!("handled before device connection")
+            }
         }
 
         Ok(())
     }
+
+    async fn run_local(self) -> Result<()> {
+        match self.sub {
+            CrashSub::Parse { input, json } => {
+                let data = read_local_report(Path::new(&input)).await?;
+                let report = parse_report_bytes(&input, &data)?;
+                print_parsed_report(&report, json)?;
+            }
+            CrashSub::ParseLatest {
+                directory,
+                pattern,
+                count,
+                json,
+            } => {
+                if count == 0 {
+                    return Err(anyhow::anyhow!("--count must be greater than zero"));
+                }
+                let mut dir = fs::read_dir(&directory).await?;
+                let mut reports = Vec::new();
+                while let Some(entry) = dir.next_entry().await? {
+                    if !entry.file_type().await?.is_file() {
+                        continue;
+                    }
+                    let path = entry.path();
+                    let path_string = path.to_string_lossy().into_owned();
+                    if !matches!(
+                        path.extension()
+                            .and_then(|extension| extension.to_str())
+                            .map(|extension| extension.to_ascii_lowercase())
+                            .as_deref(),
+                        Some("ips") | Some("panic") | Some("crash")
+                    ) {
+                        continue;
+                    }
+                    if !matches_pattern(&path_string, &pattern)? {
+                        continue;
+                    }
+                    let data = read_local_report(&path).await?;
+                    reports.push(parse_report_bytes(&path_string, &data)?);
+                }
+                if reports.is_empty() {
+                    return Err(anyhow::anyhow!("no crash reports found"));
+                }
+                sort_parsed_reports(&mut reports);
+                reports.truncate(count);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&reports)?);
+                } else {
+                    for report in reports {
+                        print_parsed_report(&report, false)?;
+                    }
+                }
+            }
+            _ => unreachable!("local command guard"),
+        }
+        Ok(())
+    }
+}
+
+async fn connect_crash_device(
+    udid: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ios_core::ConnectedDevice> {
+    let classic = ConnectOptions {
+        tun_mode: TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: true,
+    };
+    let device = connect_with_deadline(udid, classic, deadline).await?;
+
+    // A classic lockdown connection is needed to identify pre-iOS 17 devices
+    // without eagerly starting a CoreDevice tunnel that they cannot support.
+    // Modern devices are then reconnected once with the normal tunnel/RSD
+    // setup, preserving the existing classic fallback.
+    let modern = match deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, device.product_version()).await {
+            Ok(Ok(version)) => version.major >= 17,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => return Err(anyhow::anyhow!("crash service connection timed out")),
+        },
+        None => device.product_version().await?.major >= 17,
+    };
+    if !modern {
+        return Ok(device);
+    }
+
+    let tunneled = ConnectOptions {
+        tun_mode: TunMode::Userspace,
+        pair_record_path: None,
+        skip_tunnel: false,
+    };
+    connect_with_deadline(udid, tunneled, deadline).await
+}
+
+async fn connect_with_deadline(
+    udid: &str,
+    options: ConnectOptions,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ios_core::ConnectedDevice> {
+    match deadline {
+        Some(deadline) => {
+            let device = tokio::time::timeout_at(deadline, connect(udid, options))
+                .await
+                .map_err(|_| anyhow::anyhow!("crash service connection timed out"))??;
+            Ok(device)
+        }
+        None => Ok(connect(udid, options).await?),
+    }
+}
+
+async fn connect_crash_service(
+    device: &ios_core::ConnectedDevice,
+    classic_service: &str,
+    rsd_service: &str,
+) -> Result<ios_core::ServiceStream> {
+    if device.rsd().is_some() {
+        Ok(device.connect_rsd_service(rsd_service).await?)
+    } else {
+        Ok(device.connect_service(classic_service).await?)
+    }
+}
+
+async fn connect_crash_service_until(
+    device: &ios_core::ConnectedDevice,
+    classic_service: &str,
+    rsd_service: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ios_core::ServiceStream> {
+    match deadline {
+        Some(deadline) => {
+            let result = if device.rsd().is_some() {
+                tokio::time::timeout_at(deadline, device.connect_rsd_service(rsd_service)).await
+            } else {
+                tokio::time::timeout_at(deadline, device.connect_service(classic_service)).await
+            };
+            Ok(result.map_err(|_| anyhow::anyhow!("crash service connection timed out"))??)
+        }
+        None => connect_crash_service(device, classic_service, rsd_service).await,
+    }
+}
+
+async fn prepare_crash_reports(stream: &mut ios_core::ServiceStream, use_rsd: bool) -> Result<()> {
+    if use_rsd {
+        prepare_reports_rsd(stream).await?;
+    } else {
+        prepare_reports(stream).await?;
+    }
+    Ok(())
+}
+
+async fn flush_crash_reports(
+    stream: &mut ios_core::ServiceStream,
+    use_rsd: bool,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    if use_rsd {
+        flush_reports_rsd_at(stream, deadline).await?;
+    } else {
+        flush_reports_at(stream, deadline).await?;
+    }
+    Ok(())
+}
+
+fn flush_deadline(timeout: u64) -> Result<tokio::time::Instant> {
+    tokio::time::Instant::now()
+        .checked_add(Duration::from_secs(timeout))
+        .ok_or_else(|| anyhow::anyhow!("flush timeout is too large"))
+}
+
+/// Read a local report without allowing a sparse or growing file to bypass the
+/// parser's 16 MiB report limit.  `take` also makes the check race-safe after
+/// the initial metadata lookup has become stale.
+async fn read_local_report(path: &Path) -> Result<Vec<u8>> {
+    let file = fs::File::open(path).await?;
+    let mut data = Vec::new();
+    file.take((ios_core::crashreport::MAX_CRASH_REPORT_BYTES as u64) + 1)
+        .read_to_end(&mut data)
+        .await?;
+    if data.len() > ios_core::crashreport::MAX_CRASH_REPORT_BYTES {
+        return Err(anyhow::anyhow!(
+            "crash report exceeds {} byte limit",
+            ios_core::crashreport::MAX_CRASH_REPORT_BYTES
+        ));
+    }
+    Ok(data)
+}
+
+fn print_parsed_report(report: &ParsedCrashReport, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(report)?);
+        return Ok(());
+    }
+    println!("{} {}", report.format, report.path);
+    if let Some(value) = &report.incident_id {
+        println!("incident_id: {value}");
+    }
+    if let Some(value) = &report.timestamp {
+        println!("timestamp: {value}");
+    }
+    if let Some(value) = &report.process {
+        println!("process: {value}");
+    }
+    if let Some(value) = &report.bundle_id {
+        println!("bundle_id: {value}");
+    }
+    if let Some(value) = &report.process_path {
+        println!("process_path: {value}");
+    }
+    if let Some(value) = report.pid {
+        println!("pid: {value}");
+    }
+    if let Some(value) = &report.exception {
+        println!("exception: {value}");
+    }
+    if let Some(value) = &report.termination {
+        println!("termination: {value}");
+    }
+    if let Some(value) = report.triggered_thread {
+        println!("triggered_thread: {value}");
+    }
+    println!(
+        "threads: {}  images: {}",
+        report.threads.len(),
+        report.images.len()
+    );
+    Ok(())
 }
 
 fn default_local_path(report: &str) -> String {
@@ -258,6 +689,8 @@ fn reports_to_json(reports: &[ios_core::crashreport::CrashReportEntry]) -> serde
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use clap::Parser;
 
     use super::CrashSub;
@@ -356,18 +789,61 @@ mod tests {
     fn parses_crash_rm_subcommand_with_default_pattern() {
         let cmd = TestCli::parse_from(["crash", "rm"]);
         match cmd.command {
-            CrashSub::Rm { pattern } => assert_eq!(pattern, "*"),
+            CrashSub::Rm { pattern, force } => {
+                assert_eq!(pattern, "*");
+                assert!(!force);
+            }
             _ => panic!("expected rm subcommand"),
         }
     }
 
     #[test]
     fn parses_crash_rm_subcommand_with_args() {
-        let cmd = TestCli::parse_from(["crash", "rm", "*.ips"]);
+        let cmd = TestCli::parse_from(["crash", "rm", "*.ips", "--force"]);
         match cmd.command {
-            CrashSub::Rm { pattern } => assert_eq!(pattern, "*.ips"),
+            CrashSub::Rm { pattern, force } => {
+                assert_eq!(pattern, "*.ips");
+                assert!(force);
+            }
             _ => panic!("expected rm subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_crash_parse_and_watch_commands() {
+        let cmd = TestCli::parse_from(["crash", "parse", "report.ips", "--json"]);
+        assert!(
+            matches!(cmd.command, CrashSub::Parse { input, json } if input == "report.ips" && json)
+        );
+        let cmd = TestCli::parse_from([
+            "crash",
+            "watch",
+            "--pattern",
+            "*.ips",
+            "--timeout",
+            "5",
+            "--interval",
+            "2",
+            "--json",
+        ]);
+        assert!(
+            matches!(cmd.command, CrashSub::Watch { pattern, timeout: Some(5), interval: 2, json } if pattern == "*.ips" && json)
+        );
+    }
+
+    #[test]
+    fn flush_deadline_rejects_duration_overflow() {
+        assert!(super::flush_deadline(u64::MAX).is_err());
+        assert!(super::flush_deadline(0).is_ok());
+        assert!(super::flush_deadline(1).is_ok());
+    }
+
+    #[test]
+    fn destructive_crash_commands_expose_force() {
+        let cmd = TestCli::parse_from(["crash", "clear", "--path", "./nested", "--force"]);
+        assert!(
+            matches!(cmd.command, CrashSub::Clear { path, force } if path == "./nested" && force)
+        );
     }
 
     #[test]
@@ -435,5 +911,27 @@ mod tests {
         assert_eq!(value["path"], "./Example.ips");
         assert_eq!(value["size"], 1234);
         assert_eq!(value["modified"], "2026-04-09 01:44:25 UTC");
+    }
+
+    #[tokio::test]
+    async fn local_report_reader_rejects_oversized_files_before_parse() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ios-crash-reader-{}-{nonce}.ips",
+            std::process::id()
+        ));
+        tokio::fs::write(
+            &path,
+            vec![b'x'; ios_core::crashreport::MAX_CRASH_REPORT_BYTES + 1],
+        )
+        .await
+        .unwrap();
+
+        let error = super::read_local_report(&path).await.unwrap_err();
+        assert!(error.to_string().contains("byte limit"));
+        tokio::fs::remove_file(path).await.unwrap();
     }
 }

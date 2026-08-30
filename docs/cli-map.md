@@ -34,28 +34,38 @@ schemas, service routing, and iOS-version support can differ.
 | Battery registry | `ios batteryregistry` | `ios batteryregistry` | diagnostics IORegistry workflows |
 | AFC file access | `ios file ls /`, `ios file pull ...`, `ios file push ...` | `ios fsync ...` | `pymobiledevice3 afc ...` |
 | App container files | `ios file --app <BUNDLE_ID> ...` | app-container fsync style workflows | AFC/house-arrest workflows |
-| Crash reports | `ios crash list`, `ios file --crash ...` | `ios crash ls`, `ios crash cp` | `pymobiledevice3 crash pull ...` |
+| Crash reports | `ios crash ls|pull|parse|parse-latest|flush|watch|clear`, `ios file --crash ...` | `ios crash ls`, `ios crash cp` | `pymobiledevice3 crash pull|parse|parse-latest|flush|watch ...` |
 | File relay | `ios file-relay <SOURCE>` | file relay service workflows | file relay service workflows |
 | List apps | `ios apps list` | `ios apps` | `pymobiledevice3 apps list` |
+| App icons | `ios apps icons BUNDLE_ID` (alias: `apps icon`) | app icon workflows | `pymobiledevice3 developer core-device icon ...` |
 | Install app | `ios apps install PATH` | `ios install --path=PATH` | `pymobiledevice3 apps install PATH` |
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
+| Install record | `ios apps install-record BUNDLE_ID [--timeout-secs N]` | LaunchServices install-coordination query | `pymobiledevice3 apps install-record ...` (iOS 17+ RSD) |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
-| Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
-| Run XCTest | `ios runtest FILE.xctestrun [--configuration NAME --test-target TARGET --wait]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows |
+| Kill/process controls | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` or `ios memlimitoff --process NAME` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
+| Device pasteboard | `ios pasteboard get|set` (verified PULL/SET policies and UTI/base64 representations); experimental `watch|resolve|export --experimental` (output redacted unless `--show-data`) | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
+| Run XCTest | `ios runtest FILE.xctestrun [...]` or `ios runxctest --test-runner-bundle-id BUNDLE --xctest-config BUNDLE.xctest [--bundle-id APP ... --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; runner must already be installed and signed |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
+| Screenshot | `ios screenshot [--output PATH]` | `ios screenshot ...` | `pymobiledevice3 developer dvt screenshot` / CoreDevice screen capture |
 | Diagnostics | `ios diagnostics ...`, `ios diagnostics sysdiagnose` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...`, CoreDevice sysdiagnose workflows |
-| Restart or restore mode | `ios diagnostics reboot`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
+| MobileBackup2 | `ios backup create|restore|info|list`, `backup list-local|unback|extract` (host-side), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including host-side manifest inspection/extraction | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
+| Restart or restore mode | `ios diagnostics reboot`, `ios diagnostics shutdown`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
 | Packet capture | `ios pcap --output device.pcap` | `ios pcap ...` | `pymobiledevice3 pcap ...` |
+| Device IP discovery | `ios ip` (packet-derived IPv4/IPv6) | `ios diagnostics` / `pcap` IP finder | `pymobiledevice3 pcap` workflows |
 | Bluetooth HCI capture | `ios btlogger capture trace.pklg`, `ios btlogger capture --format pcapng trace.pcapng` | Bluetooth packet logging workflows | `pymobiledevice3 btlogger ...` |
-| OS trace | `ios os-trace ps`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog` |
+| OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios os-trace archive`/`collect`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog`, `syslog collect` |
 | Developer Disk Image | `ios ddi status`, `ios ddi mount ...` | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount` |
 | Instruments process list | `ios instruments ps` | `ios ps`, `ios instruments ...` | `pymobiledevice3 developer dvt sysmon ...` |
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |
+| CoreDevice appearance/accessibility | `ios device-control configuration get|set ...` | `pymobiledevice3 developer core-device user-interface-style ...` and accessibility controls | iOS 17+ `com.apple.coredevice.configuration`; setters mutate device-wide UI state |
+| CoreDevice orientation | `ios device-control orientation [left|right]` | `pymobiledevice3 developer core-device rotate [left|right]` | iOS 17+ `com.apple.coredevice.devicecontrol`; rotates the active device UI |
+| CoreDevice HID input | `ios hid --confirm button ...` (Universal `tap|swipe|touch|text|key` opens an authenticated Display/RTP stream) | `pymobiledevice3 developer core-device` HID helpers | iOS 17+ Indigo/Universal HID; input injection is mutating; Universal input uses a kernel tunnel here because userspace UDP is not available |
+| CoreDevice display media | `ios device-control display status|video|audio` (bounded encoded RTP capture) | `pymobiledevice3 developer core-device display ...` | iOS 17+ `displayservice`; raw HEVC/AAC only, no built-in pixel/audio decoder or VNC |
 | Network and GPU metrics | `ios instruments network`, `ios instruments gpu` | instruments/sysmontap workflows | developer DVT metrics workflows |
 | Debugserver | `ios debugserver ...`, `ios debug ...` | `ios debug ...` | debugserver developer workflows |
 | Accessibility audit | `ios accessibility-audit ...` | `ios ax ...`, accessibility toggles | accessibilityaudit service workflows |
-| WebInspector | `ios webinspector ...` | WebInspector-related workflows | `pymobiledevice3 webinspector ...` |
+| WebInspector | `ios webinspector opened-tabs|eval|launch|js-shell|cdp|selenium` | WebInspector launch/evaluation and bridge workflows | `pymobiledevice3 webinspector ...` |
 | Symbols | `ios symbols list`, `ios symbols pull ...` | symbol fetch workflows | `dtfetchsymbols` / remote symbols workflows |
 | Tunnel start | `ios tunnel start --userspace` | `ios tunnel start` | iOS 17+ tunnel and RemoteXPC workflows |
 | Tunnel manager | `ios tunnel serve --userspace ...` | go-ios tunnel HTTP manager | tunneld/remote workflows |
@@ -65,11 +75,13 @@ schemas, service routing, and iOS-version support can differ.
 | Provisioning profiles | `ios provisioning list` | provisioning/profile workflows | `pymobiledevice3 provision ...` |
 | Supervision prep | `ios prepare ...` | `ios prepare ...` | mobile configuration and supervision workflows |
 | HTTP proxy profile | `ios httpproxy set ...`, `ios httpproxy remove` | `ios httpproxy ...` | profile/mobileconfig workflows |
+| MDM passcode/security | `ios mdm fetch-unlock-token`, `ios mdm security-info`, `ios mdm passcode-present`, `ios mdm clear-passcode`, `ios mdm clear-screen-time-password` | `ios mdm ...` | MCInstall/profile management workflows |
+| Managed Wi-Fi profile | `ios wifi install SSID --password ...`, `ios wifi remove SSID --force` | `ios wifi ...` | MCInstall/profile workflows |
 | Erase | `ios erase --force` | `ios erase --force` | restore/mobile configuration workflows |
 | Preboard | `ios preboard ...` | prepare/preboard-style workflows | preboard service workflows |
 | Power assertion | `ios power-assert --timeout 10` | power assertion workflows | `pymobiledevice3 power-assertion ...` |
-| Companion devices | `ios companion list` | companion-related workflows | `pymobiledevice3 companion_proxy ...` |
-| Activation | `ios activation state`, `ios activation session-info`, `ios activation info` | go-ios activation helpers | pymobiledevice3 activation workflows |
+| Companion devices | `ios companion list|get|listen|forward|stop ...` | companion registry, event, and port-forward workflows | `pymobiledevice3 companion_proxy ...` |
+| Activation | `ios activation state`, `ios activation session-info`, `ios activation info`, `ios activation activate [--record-input PATH] [--now]`, `ios activation deactivate --force`, `ios activation itunes-activate` | go-ios activation helpers | pymobiledevice3 activation workflows |
 | AMFI developer mode | `ios amfi enable-developer-mode`, `ios amfi reveal-developer-mode` | `ios amfi ...` | `pymobiledevice3 amfi ...` |
 | Heartbeat | `ios heartbeat` | heartbeat service workflows | lockdown heartbeat service |
 | Notifications | `ios notify wait <EVENT>` | `ios notify ...` | `pymobiledevice3 notification ...` |
@@ -92,6 +104,16 @@ schemas, service routing, and iOS-version support can differ.
 - Management commands such as `erase`, `prepare`, `httpproxy`, `profiles`,
   `restore`, and `preboard` can change persistent device state. Use a test device
   and inspect command-specific help before running them.
+- Activation separates the device-side `com.apple.mobileactivationd` plist
+  protocol from Apple's HTTPS endpoints. Online `activation activate` uses the
+  official HTTPS endpoints by default; custom endpoints require
+  `--unsafe-custom-server` and TLS verification is never disabled. Offline
+  records are read from or written to owner-only files and activation payloads
+  are redacted in diagnostic output. `deactivate` requires `--force`.
+- Online activation waits for a fresh Tunnel1 nonce/session by default. `--now`
+  skips that wait and sends one session probe, which is useful only when the
+  caller controls nonce freshness; the operation timeout covers polling,
+  network requests, and device application.
 
 ## Source orientation
 

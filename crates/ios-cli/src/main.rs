@@ -41,10 +41,14 @@ enum Commands {
     Amfi(cmd::amfi::AmfiCmd),
     /// Show device information
     Info(cmd::info::InfoCmd),
+    /// Discover the device's IPv4/IPv6 addresses from pcapd packets
+    Ip(cmd::ip::IpCmd),
     /// Listen for usbmux attach/detach events
     Listen(cmd::listen::ListenCmd),
     /// Access lockdown values directly
     Lockdown(cmd::lockdown::LockdownCmd),
+    /// Supervised MCInstall passcode and security operations
+    Mdm(cmd::mdm::MdmCmd),
     /// Establish a CDTunnel to the device (iOS 17+ required)
     Tunnel(cmd::tunnel::TunnelCmd),
     /// Pair a new (untrusted) device via SRP
@@ -93,6 +97,8 @@ enum Commands {
     Forward(cmd::forward::ForwardCmd),
     /// Exercise the lockdown heartbeat service
     Heartbeat(cmd::heartbeat::HeartbeatCmd),
+    /// Inject button, touchscreen, or keyboard input through CoreDevice HID
+    Hid(cmd::hid::HidCmd),
     /// Manage the device's supervised global HTTP proxy profile
     Httpproxy(cmd::httpproxy::HttpProxyCmd),
     /// Query or change IDAM configuration
@@ -105,6 +111,8 @@ enum Commands {
     Syslog(cmd::syslog::SyslogCmd),
     /// Wait for notification-proxy events
     Notify(cmd::notification::NotificationCmd),
+    /// Read or write the iOS 17+ CoreDevice pasteboard
+    Pasteboard(cmd::pasteboard::PasteboardCmd),
     /// Capture device network traffic from pcapd
     Pcap(cmd::pcap::PcapCmd),
     /// Performance instruments (CPU, memory, process control)
@@ -117,6 +125,8 @@ enum Commands {
     Mobilegestalt(cmd::mobilegestalt::MobileGestaltCmd),
     /// Developer Disk Image management (status, mount)
     Ddi(cmd::ddi::DdiCmd),
+    /// iOS 17+ CoreDevice configuration and orientation controls
+    DeviceControl(cmd::device_control::DeviceControlCmd),
     /// Show the os_trace_relay process list
     OsTrace(cmd::os_trace::OsTraceCmd),
     /// Create a device power assertion
@@ -129,12 +139,16 @@ enum Commands {
     Restore(cmd::restore::RestoreCmd),
     /// Start an XCTest runner from a .xctestrun file
     Runtest(cmd::runtest::RunTestCmd),
+    /// Start an installed XCTest runner directly by bundle identifier
+    Runxctest(cmd::runxctest::RunXcTestCmd),
     /// Start WebDriverAgent and forward its HTTP port locally
     Runwda(cmd::runwda::RunWdaCmd),
     /// Send HTTP commands to a running WebDriverAgent endpoint or device port
     Wda(cmd::wda::WdaCmd),
     /// Inspect Safari/WebView pages via WebInspector
     Webinspector(cmd::webinspector::WebInspectorCmd),
+    /// Install or remove a managed Wi-Fi profile
+    Wifi(cmd::wifi::WifiCmd),
     /// List and download device symbols
     Symbols(cmd::symbols::SymbolsCmd),
 }
@@ -149,8 +163,10 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Activation(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Amfi(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Info(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Ip(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Listen(c) => Box::pin(async move { c.run(!no_json).await }),
         Commands::Lockdown(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Mdm(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Tunnel(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Pair(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Provisioning(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -175,27 +191,32 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Dproxy(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Forward(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Heartbeat(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Hid(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Httpproxy(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Idam(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Screenshot(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Springboard(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Syslog(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Notify(c) => Box::pin(async move { c.run(udid).await }),
+        Commands::Pasteboard(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Pcap(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Instruments(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Location(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Memlimitoff(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Mobilegestalt(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Ddi(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::DeviceControl(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::OsTrace(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::PowerAssert(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Preboard(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Prepare(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Restore(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Runtest(c) => Box::pin(async move { c.run(udid).await }),
+        Commands::Runxctest(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Runwda(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Wda(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Webinspector(c) => Box::pin(async move { c.run(udid, !no_json).await }),
+        Commands::Wifi(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Symbols(c) => Box::pin(async move { c.run(udid, !no_json).await }),
     }
 }
@@ -207,6 +228,7 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
         Commands::Tunnel(command) => command.needs_default_udid(),
+        Commands::Backup(command) => command.needs_default_udid(),
         _ => true,
     }
 }
@@ -497,6 +519,29 @@ mod tests {
     fn parses_memlimitoff_command() {
         let parsed = Cli::try_parse_from(["ios", "memlimitoff", "123"]);
         assert!(parsed.is_ok(), "memlimitoff command should parse");
+    }
+
+    #[test]
+    fn parses_memlimitoff_process_name_command() {
+        let parsed = Cli::try_parse_from(["ios", "memlimitoff", "--process", "SpringBoard"]);
+        assert!(parsed.is_ok(), "memlimitoff --process command should parse");
+    }
+
+    #[test]
+    fn parses_wifi_and_ip_commands() {
+        assert!(Cli::try_parse_from([
+            "ios",
+            "wifi",
+            "install",
+            "Office & Guest",
+            "--password",
+            "secret",
+            "--profile-output",
+            "profile.mobileconfig",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["ios", "wifi", "remove", "Office", "--force"]).is_ok());
+        assert!(Cli::try_parse_from(["ios", "ip", "--max-packets", "10"]).is_ok());
     }
 
     #[test]

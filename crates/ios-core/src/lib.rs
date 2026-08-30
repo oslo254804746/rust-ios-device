@@ -63,6 +63,8 @@ pub mod device;
 pub mod discovery;
 /// Shared high-level error type.
 pub mod error;
+/// Atomic file replacement with the correct Windows contract.
+pub mod fs_replace;
 pub(crate) mod lockdown;
 pub(crate) mod mux;
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
@@ -122,6 +124,8 @@ pub use services::arbitration;
 pub use services::bt_packet_logger;
 #[cfg(feature = "companion")]
 pub use services::companion;
+#[cfg(feature = "configuration")]
+pub use services::configuration;
 #[cfg(feature = "crashreport")]
 pub use services::crashreport;
 #[cfg(feature = "debugserver")]
@@ -132,6 +136,8 @@ pub use services::deviceinfo;
 pub use services::diagnostics;
 #[cfg(feature = "diagnosticsservice")]
 pub use services::diagnosticsservice;
+#[cfg(feature = "display")]
+pub use services::display;
 #[cfg(feature = "dproxy")]
 pub use services::dproxy;
 #[cfg(feature = "dtx")]
@@ -144,10 +150,18 @@ pub use services::file_relay;
 pub use services::fileservice;
 #[cfg(feature = "heartbeat")]
 pub use services::heartbeat;
+#[cfg(feature = "hid")]
+pub use services::hid;
+#[cfg(feature = "iconservice")]
+pub use services::iconservice;
+#[cfg(feature = "iconservice")]
+pub use services::iconservice as icon_service;
 #[cfg(feature = "idam")]
 pub use services::idam;
 #[cfg(feature = "imagemounter")]
 pub use services::imagemounter;
+#[cfg(feature = "installcoordination")]
+pub use services::installcoordination;
 #[cfg(feature = "instruments")]
 pub use services::instruments;
 #[cfg(feature = "mcinstall")]
@@ -158,8 +172,12 @@ pub use services::misagent;
 pub use services::mobileactivation;
 #[cfg(feature = "notificationproxy")]
 pub use services::notificationproxy;
+#[cfg(feature = "orientation")]
+pub use services::orientation;
 #[cfg(feature = "ostrace")]
 pub use services::ostrace;
+#[cfg(feature = "pasteboard")]
+pub use services::pasteboard;
 #[cfg(feature = "pcap")]
 pub use services::pcap;
 #[cfg(feature = "power_assertion")]
@@ -170,6 +188,10 @@ pub use services::preboard;
 pub use services::prepare;
 #[cfg(feature = "restore")]
 pub use services::restore;
+#[cfg(feature = "screencapture")]
+pub use services::screencapture;
+#[cfg(feature = "screencapture")]
+pub use services::screencapture as screen_capture;
 #[cfg(feature = "screenshot")]
 pub use services::screenshot;
 #[cfg(feature = "springboard")]
@@ -178,6 +200,10 @@ pub use services::springboard;
 pub use services::syslog;
 #[cfg(feature = "testmanager")]
 pub use services::testmanager;
+#[cfg(feature = "testmanager")]
+pub use services::testmanager::workflow::{
+    RunXcTestPlan, RunXcTestPlanBuilder, RunXcTestPlanError,
+};
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};

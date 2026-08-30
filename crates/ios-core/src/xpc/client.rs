@@ -88,6 +88,46 @@ impl XpcClient {
             .await
     }
 
+    /// Send an XPC request and yield each subsequent message from the
+    /// server-client stream.
+    ///
+    /// CoreDevice streaming features acknowledge a single request and then
+    /// push an arbitrary number of side-channel status messages.  Unlike
+    /// [`Self::call`], the messages are therefore intentionally not matched by
+    /// the request message id.  Dropping the returned stream cancels the
+    /// receive loop without leaving a spawned task or an unbounded queue.
+    pub fn stream_invoke(
+        &mut self,
+        body: XpcValue,
+    ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
+        self.stream_invoke_with_flags(body, flags::WANTING_REPLY)
+    }
+
+    /// Send an XPC request and yield messages from the server-client stream
+    /// without imposing a reply-correlation policy.
+    ///
+    /// Most CoreDevice services ask the daemon for a reply with
+    /// [`flags::WANTING_REPLY`], which is what [`Self::stream_invoke`] does.
+    /// A few RemoteXPC services (notably InstallCoordinationProxy) send a
+    /// request without that bit and then return the next fresh message on the
+    /// connection.  Keeping the flag choice in this shared primitive avoids
+    /// making those services misuse [`Self::call`], which waits for a matching
+    /// message id and can therefore miss a valid fresh response.
+    pub fn stream_invoke_with_flags(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
+        async_stream::try_stream! {
+            self.inner
+                .send_with_flags(body, extra_flags)
+                .await?;
+            loop {
+                yield self.inner.recv().await?;
+            }
+        }
+    }
+
     /// Send without waiting for a response.
     pub async fn send(&mut self, body: XpcValue) -> Result<(), XpcError> {
         self.inner.send(body).await
@@ -102,13 +142,24 @@ impl XpcClient {
     pub async fn recv_client_server(&mut self) -> Result<XpcMessage, XpcError> {
         self.inner.recv_client_server().await
     }
+
+    /// Receive the next fresh XPC message from any stream.
+    ///
+    /// Services whose daemons answer with fresh uncorrelated messages
+    /// (InstallCoordinationProxy) must not assume the response stream.
+    /// Message reassembly stays per-stream, so fragmented or multi-message
+    /// frames from one stream are never spliced with another stream's data.
+    pub async fn recv_any(&mut self) -> Result<XpcMessage, XpcError> {
+        self.inner.recv_any_stream().await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use futures_util::StreamExt;
     use indexmap::IndexMap;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{duplex, AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::time::{timeout, Duration};
 
     use super::*;
@@ -223,25 +274,6 @@ mod tests {
             server.read_exact(&mut sc_headers).await.unwrap();
             assert_eq!(sc_headers, headers_frame(STREAM_SERVER_CLIENT).as_slice());
 
-            let mut sc_msg2_header = [0u8; 9];
-            server.read_exact(&mut sc_msg2_header).await.unwrap();
-            assert_eq!(sc_msg2_header[3], FRAME_DATA);
-            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
-                | ((sc_msg2_header[1] as usize) << 8)
-                | (sc_msg2_header[2] as usize);
-            let mut sc_msg2 = vec![0u8; sc_msg2_len];
-            server.read_exact(&mut sc_msg2).await.unwrap();
-            assert_eq!(
-                decode_message_payload(&sc_msg2),
-                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
-            );
-
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &msg2))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-
             let mut cs_msg3_header = [0u8; 9];
             server.read_exact(&mut cs_msg3_header).await.unwrap();
             assert_eq!(cs_msg3_header[3], FRAME_DATA);
@@ -257,6 +289,25 @@ mod tests {
 
             server
                 .write_all(&data_frame(STREAM_CLIENT_SERVER, &msg3))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut sc_msg2_header = [0u8; 9];
+            server.read_exact(&mut sc_msg2_header).await.unwrap();
+            assert_eq!(sc_msg2_header[3], FRAME_DATA);
+            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
+                | ((sc_msg2_header[1] as usize) << 8)
+                | (sc_msg2_header[2] as usize);
+            let mut sc_msg2 = vec![0u8; sc_msg2_len];
+            server.read_exact(&mut sc_msg2).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&sc_msg2),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &msg2))
                 .await
                 .unwrap();
             server.flush().await.unwrap();
@@ -333,24 +384,6 @@ mod tests {
             server.read_exact(&mut sc_headers).await.unwrap();
             assert_eq!(sc_headers, headers_frame(STREAM_SERVER_CLIENT).as_slice());
 
-            let mut sc_msg2_header = [0u8; 9];
-            server.read_exact(&mut sc_msg2_header).await.unwrap();
-            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
-                | ((sc_msg2_header[1] as usize) << 8)
-                | (sc_msg2_header[2] as usize);
-            let mut sc_msg2 = vec![0u8; sc_msg2_len];
-            server.read_exact(&mut sc_msg2).await.unwrap();
-            assert_eq!(
-                decode_message_payload(&sc_msg2),
-                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
-            );
-
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-
             let mut cs_msg3_header = [0u8; 9];
             server.read_exact(&mut cs_msg3_header).await.unwrap();
             let cs_msg3_len = ((cs_msg3_header[0] as usize) << 16)
@@ -368,6 +401,23 @@ mod tests {
                 .await
                 .unwrap();
             server.flush().await.unwrap();
+
+            let mut sc_msg2_header = [0u8; 9];
+            server.read_exact(&mut sc_msg2_header).await.unwrap();
+            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
+                | ((sc_msg2_header[1] as usize) << 8)
+                | (sc_msg2_header[2] as usize);
+            let mut sc_msg2 = vec![0u8; sc_msg2_len];
+            server.read_exact(&mut sc_msg2).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&sc_msg2),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
+                .await
+                .unwrap();
 
             let mut request_header = [0u8; 9];
             server.read_exact(&mut request_header).await.unwrap();
@@ -408,6 +458,160 @@ mod tests {
         );
         assert_eq!(response.msg_id, 1);
 
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_invoke_with_flags_yields_each_pushed_message() {
+        let (client, mut server) = duplex(16 * 1024);
+        let empty = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET,
+            msg_id: 0,
+            body: None,
+        })
+        .expect("message should encode");
+        let first = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 71,
+            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                "batch".into(),
+                XpcValue::Int64(1),
+            )]))),
+        })
+        .expect("message should encode");
+        let second = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 72,
+            body: Some(XpcValue::Dictionary(IndexMap::from([(
+                "batch".into(),
+                XpcValue::Int64(2),
+            )]))),
+        })
+        .expect("message should encode");
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+
+            let (frame_type, _, stream_id, _) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_SETTINGS, STREAM_INIT));
+            let (frame_type, _, stream_id, _) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_WINDOW_UPDATE, STREAM_INIT));
+
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+
+            let (frame_type, frame_flags, stream_id, _) = read_h2_frame(&mut server).await;
+            assert_eq!(
+                (frame_type, frame_flags, stream_id),
+                (FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT)
+            );
+
+            let (frame_type, _, stream_id, _) = read_h2_frame(&mut server).await;
+            assert_eq!(
+                (frame_type, stream_id),
+                (FRAME_HEADERS, STREAM_CLIENT_SERVER)
+            );
+            let (frame_type, _, stream_id, payload) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_DATA, STREAM_CLIENT_SERVER));
+            assert_eq!(decode_message_payload(&payload), (flags::ALWAYS_SET, 0));
+            server
+                .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+
+            let (frame_type, _, stream_id, _) = read_h2_frame(&mut server).await;
+            assert_eq!(
+                (frame_type, stream_id),
+                (FRAME_HEADERS, STREAM_SERVER_CLIENT)
+            );
+            let (frame_type, _, stream_id, payload) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_DATA, STREAM_CLIENT_SERVER));
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | 0x200, 0)
+            );
+            server
+                .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+
+            let (frame_type, _, stream_id, payload) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_DATA, STREAM_SERVER_CLIENT));
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
+                .await
+                .unwrap();
+
+            let (frame_type, _, stream_id, payload) = read_h2_frame(&mut server).await;
+            assert_eq!((frame_type, stream_id), (FRAME_DATA, STREAM_CLIENT_SERVER));
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA, 1)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &first))
+                .await
+                .unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &second))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut client = timeout(Duration::from_secs(1), XpcClient::connect_stream(client))
+            .await
+            .expect("connect timed out")
+            .expect("connect should succeed");
+        let mut stream = Box::pin(client.stream_invoke_with_flags(
+            XpcValue::Dictionary(IndexMap::from([("request".into(), XpcValue::Bool(true))])),
+            0,
+        ));
+
+        let first = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("first stream response timed out")
+            .expect("stream should yield first response")
+            .expect("first response should decode");
+        assert_eq!(first.msg_id, 71);
+        assert_eq!(
+            first
+                .body
+                .as_ref()
+                .and_then(XpcValue::as_dict)
+                .and_then(|dict| dict.get("batch")),
+            Some(&XpcValue::Int64(1))
+        );
+
+        let second = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("second stream response timed out")
+            .expect("stream should yield second response")
+            .expect("second response should decode");
+        assert_eq!(second.msg_id, 72);
+        assert_eq!(
+            second
+                .body
+                .as_ref()
+                .and_then(XpcValue::as_dict)
+                .and_then(|dict| dict.get("batch")),
+            Some(&XpcValue::Int64(2))
+        );
+
+        let eof = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("EOF response timed out")
+            .expect("stream should report transport EOF")
+            .expect_err("stream EOF must not look like a successful response");
+        assert!(!eof.to_string().is_empty());
+
+        drop(stream);
         server_task.await.unwrap();
     }
 
@@ -477,24 +681,6 @@ mod tests {
             server.read_exact(&mut sc_headers).await.unwrap();
             assert_eq!(sc_headers, headers_frame(STREAM_SERVER_CLIENT).as_slice());
 
-            let mut sc_msg2_header = [0u8; 9];
-            server.read_exact(&mut sc_msg2_header).await.unwrap();
-            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
-                | ((sc_msg2_header[1] as usize) << 8)
-                | (sc_msg2_header[2] as usize);
-            let mut sc_msg2 = vec![0u8; sc_msg2_len];
-            server.read_exact(&mut sc_msg2).await.unwrap();
-            assert_eq!(
-                decode_message_payload(&sc_msg2),
-                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
-            );
-
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-
             let mut cs_msg3_header = [0u8; 9];
             server.read_exact(&mut cs_msg3_header).await.unwrap();
             let cs_msg3_len = ((cs_msg3_header[0] as usize) << 16)
@@ -509,6 +695,24 @@ mod tests {
 
             server
                 .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut sc_msg2_header = [0u8; 9];
+            server.read_exact(&mut sc_msg2_header).await.unwrap();
+            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
+                | ((sc_msg2_header[1] as usize) << 8)
+                | (sc_msg2_header[2] as usize);
+            let mut sc_msg2 = vec![0u8; sc_msg2_len];
+            server.read_exact(&mut sc_msg2).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&sc_msg2),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
                 .await
                 .unwrap();
             server.flush().await.unwrap();
@@ -631,24 +835,6 @@ mod tests {
             server.read_exact(&mut sc_headers).await.unwrap();
             assert_eq!(sc_headers, headers_frame(STREAM_SERVER_CLIENT).as_slice());
 
-            let mut sc_msg2_header = [0u8; 9];
-            server.read_exact(&mut sc_msg2_header).await.unwrap();
-            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
-                | ((sc_msg2_header[1] as usize) << 8)
-                | (sc_msg2_header[2] as usize);
-            let mut sc_msg2 = vec![0u8; sc_msg2_len];
-            server.read_exact(&mut sc_msg2).await.unwrap();
-            assert_eq!(
-                decode_message_payload(&sc_msg2),
-                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
-            );
-
-            server
-                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
-                .await
-                .unwrap();
-            server.flush().await.unwrap();
-
             let mut cs_msg3_header = [0u8; 9];
             server.read_exact(&mut cs_msg3_header).await.unwrap();
             let cs_msg3_len = ((cs_msg3_header[0] as usize) << 16)
@@ -663,6 +849,24 @@ mod tests {
 
             server
                 .write_all(&data_frame(STREAM_CLIENT_SERVER, &empty))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            let mut sc_msg2_header = [0u8; 9];
+            server.read_exact(&mut sc_msg2_header).await.unwrap();
+            let sc_msg2_len = ((sc_msg2_header[0] as usize) << 16)
+                | ((sc_msg2_header[1] as usize) << 8)
+                | (sc_msg2_header[2] as usize);
+            let mut sc_msg2 = vec![0u8; sc_msg2_len];
+            server.read_exact(&mut sc_msg2).await.unwrap();
+            assert_eq!(
+                decode_message_payload(&sc_msg2),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &empty))
                 .await
                 .unwrap();
             server.flush().await.unwrap();
@@ -724,6 +928,22 @@ mod tests {
         assert_eq!(buffered_kind, Some("early"));
 
         server_task.await.unwrap();
+    }
+
+    const FRAME_WINDOW_UPDATE: u8 = 0x08;
+
+    async fn read_h2_frame<S: AsyncRead + Unpin>(server: &mut S) -> (u8, u8, u32, Vec<u8>) {
+        let mut header = [0u8; 9];
+        server.read_exact(&mut header).await.unwrap();
+        let len = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | (header[2] as usize);
+        let mut payload = vec![0u8; len];
+        server.read_exact(&mut payload).await.unwrap();
+        (
+            header[3],
+            header[4],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            payload,
+        )
     }
 
     fn decode_message_payload(bytes: &[u8]) -> (u32, u64) {

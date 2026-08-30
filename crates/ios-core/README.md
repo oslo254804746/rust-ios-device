@@ -16,7 +16,8 @@ top of it.
   pairing helpers.
 - iOS 17+ CoreDevice support: CDTunnel (userspace and kernel TUN modes),
   Remote Service Discovery (RSD), HTTP/2 RemoteXPC transport, appservice,
-  fileservice, diagnosticsservice, deviceinfo, Instruments, and TestManager.
+  iconservice, screencapture, fileservice, diagnosticsservice, deviceinfo,
+  InstallCoordinationProxy, Instruments, and TestManager.
 - 30+ feature-gated service modules covering AFC, syslog, screenshots,
   configuration/provisioning profiles, crash reports, Instruments, debugserver,
   WebInspector, ImageMounter, pcap, and more.
@@ -26,14 +27,14 @@ top of it.
 
 ```toml
 [dependencies]
-ios-core = "0.1.9"
+ios-core = "0.1.10"
 ```
 
 The crate ships **no default service features**. Pick the services you need,
 or use a grouped flag:
 
 ```toml
-ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.10", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |
@@ -41,13 +42,20 @@ ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
 | `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
 
 CoreDevice service availability is **service-surface dependent**: a device can
 expose USB, lockdown, tunnel, and RSD while still omitting a specific
 CoreDevice feature service. Inspect the RSD service list at runtime instead
 of relying on `ProductVersion` alone.
+
+The `companion` service implements the classic and RSD companion-proxy plist
+commands for registry listing/lookup, event listening, and port forwarding.
+`start_forwarding_service_port` returns the device-assigned
+`CompanionProxyServicePort`; use `start_forwarding_service_port_handle` for a
+bounded RAII lifetime and explicit idempotent stop. The protocol stops a
+forward by companion (remote) port rather than a reusable connection ID.
 
 `ios_core::RsdHandshake::services` maps names to `ServiceDescriptor` values
 with a device port and advertised capability identifiers. Missing RSD feature

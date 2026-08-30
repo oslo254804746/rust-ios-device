@@ -22,11 +22,18 @@ pub mod rsd;
 pub use client::XpcClient;
 #[cfg(any(
     all(feature = "apps", feature = "tunnel"),
+    feature = "configuration",
     feature = "deviceinfo",
     feature = "diagnosticsservice",
     feature = "dproxy",
     feature = "fetchsymbols",
     feature = "fileservice",
+    feature = "orientation",
+    feature = "iconservice",
+    feature = "screencapture",
+    feature = "hid",
+    feature = "display",
+    feature = "installcoordination",
     feature = "restore"
 ))]
 pub(crate) use message::{XpcMessage, XpcValue};

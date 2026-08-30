@@ -10,6 +10,7 @@
 //!   type 4 = Error, type 5 = Barrier
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::mem::size_of;
 
 use crate::proto::dtx::DTX_MAGIC;
 use crate::proto::nskeyedarchiver_encode;
@@ -24,6 +25,13 @@ use super::types::{DtxMessage, DtxPayload, NSObject};
 const MAX_DTX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 const MAX_DTX_FRAGMENTS: u16 = 1024;
 const MAX_DTX_HEADER_SIZE: usize = 64 * 1024;
+/// Connection-wide budget for bytes retained by fragmented messages and
+/// messages waiting for a synchronous caller. The old independent limits made
+/// the theoretical worst case roughly 8 GiB (64 fragment accumulators × 128
+/// MiB) plus another 128 GiB of queued messages (1024 × 128 MiB). 512 MiB is
+/// enough for a large Instruments transfer and a few concurrent notifications,
+/// while keeping an unresponsive peer well below those bounds.
+const DEFAULT_DTX_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 /// Bound the number of fragmented messages whose first header has arrived but
 /// whose body fragments have not all been received yet. A first fragment only
 /// costs a small amount of state, so without a connection-wide cap a peer could
@@ -33,6 +41,10 @@ const MAX_IN_FLIGHT_FRAGMENTED_MESSAGES: usize = 64;
 /// it waits for its reply. Keep that backlog finite so a peer that never sends
 /// the requested reply cannot exhaust host memory.
 const MAX_QUEUED_MESSAGES: usize = 1024;
+/// Replies for other outstanding identifiers are retained while a synchronous
+/// call waits. Empty replies have no dynamic payload bytes, so the byte budget
+/// alone cannot bound the HashMap's entry/node overhead.
+const MAX_PENDING_REPLIES: usize = 1024;
 
 const MSG_OK: u32 = 0;
 const MSG_UNKNOWN_TYPE_ONE: u32 = 1; // sysmontap data messages
@@ -52,6 +64,152 @@ pub enum DtxError {
     BadMagic(u32),
     #[error("protocol error: {0}")]
     Protocol(String),
+}
+
+/// Bytes retained by a connection's receive-side state.
+///
+/// This deliberately accounts dynamic payload/selector/object bytes rather
+/// than allocator metadata. Every reservation is checked and committed before
+/// the corresponding Vec/Bytes allocation or message insertion, so a hostile
+/// peer cannot turn the independent message/count limits into an unbounded
+/// connection-wide allocation.
+#[derive(Debug)]
+struct DtxMemoryBudget {
+    limit: usize,
+    used: usize,
+}
+
+impl DtxMemoryBudget {
+    fn new(limit: usize) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    fn try_reserve(&mut self, bytes: usize, what: &str) -> Result<(), DtxError> {
+        let new_used = self.used.checked_add(bytes).ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "DTX memory accounting overflow reserving {bytes} bytes for {what}: used={} limit={}",
+                self.used, self.limit
+            ))
+        })?;
+        if new_used > self.limit {
+            return Err(DtxError::Protocol(format!(
+                "DTX memory budget exceeded reserving {bytes} bytes for {what}: used={} limit={}",
+                self.used, self.limit
+            )));
+        }
+        self.used = new_used;
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: usize) {
+        // A release is paired with a successful reservation. Saturating here
+        // keeps malformed/error cleanup paths non-panicking even if a future
+        // caller violates that invariant.
+        self.used = self.used.saturating_sub(bytes);
+    }
+}
+
+fn checked_size_add(total: &mut usize, bytes: usize, what: &str) -> Result<(), DtxError> {
+    let current = *total;
+    *total = current.checked_add(bytes).ok_or_else(|| {
+        DtxError::Protocol(format!(
+            "DTX memory size overflow while measuring {what}: current={current} additional={bytes}"
+        ))
+    })?;
+    Ok(())
+}
+
+fn checked_size_mul(lhs: usize, rhs: usize, what: &str) -> Result<usize, DtxError> {
+    lhs.checked_mul(rhs).ok_or_else(|| {
+        DtxError::Protocol(format!(
+            "DTX memory size overflow while measuring {what}: {lhs} * {rhs}"
+        ))
+    })
+}
+
+fn ns_object_memory_size(value: &NSObject) -> Result<usize, DtxError> {
+    let mut size = 0;
+    match value {
+        NSObject::String(value) => checked_size_add(&mut size, value.capacity(), "string")?,
+        NSObject::Data(value) => checked_size_add(&mut size, value.len(), "data")?,
+        NSObject::Array(values) => {
+            checked_size_add(
+                &mut size,
+                checked_size_mul(values.capacity(), size_of::<NSObject>(), "array slots")?,
+                "array slots",
+            )?;
+            for value in values {
+                checked_size_add(&mut size, ns_object_memory_size(value)?, "array value")?;
+            }
+        }
+        NSObject::Dict(values) => {
+            checked_size_add(
+                &mut size,
+                checked_size_mul(
+                    values.capacity(),
+                    size_of::<(String, NSObject)>(),
+                    "dict slots",
+                )?,
+                "dict slots",
+            )?;
+            for (key, value) in values {
+                checked_size_add(&mut size, key.capacity(), "dict key")?;
+                checked_size_add(&mut size, ns_object_memory_size(value)?, "dict value")?;
+            }
+        }
+        NSObject::Int(_)
+        | NSObject::Uint(_)
+        | NSObject::Double(_)
+        | NSObject::Bool(_)
+        | NSObject::Null => {}
+    }
+    Ok(size)
+}
+
+fn dtx_message_memory_size(message: &DtxMessage) -> Result<usize, DtxError> {
+    let mut size = 0;
+    match &message.payload {
+        DtxPayload::MethodInvocation { selector, args } => {
+            checked_size_add(&mut size, selector.capacity(), "method selector")?;
+            checked_size_add(
+                &mut size,
+                checked_size_mul(
+                    args.capacity(),
+                    size_of::<NSObject>(),
+                    "method argument slots",
+                )?,
+                "method argument slots",
+            )?;
+            for arg in args {
+                checked_size_add(&mut size, ns_object_memory_size(arg)?, "method argument")?;
+            }
+        }
+        DtxPayload::Response(value) => {
+            checked_size_add(&mut size, ns_object_memory_size(value)?, "response")?;
+        }
+        DtxPayload::Notification { name, object } => {
+            checked_size_add(&mut size, name.capacity(), "notification name")?;
+            checked_size_add(
+                &mut size,
+                ns_object_memory_size(object)?,
+                "notification object",
+            )?;
+        }
+        DtxPayload::Raw(bytes) => checked_size_add(&mut size, bytes.len(), "raw payload")?,
+        DtxPayload::RawWithAux { payload, aux } => {
+            checked_size_add(&mut size, payload.len(), "raw payload")?;
+            checked_size_add(
+                &mut size,
+                checked_size_mul(aux.capacity(), size_of::<NSObject>(), "auxiliary slots")?,
+                "auxiliary slots",
+            )?;
+            for value in aux {
+                checked_size_add(&mut size, ns_object_memory_size(value)?, "auxiliary value")?;
+            }
+        }
+        DtxPayload::Empty => {}
+    }
+    Ok(size)
 }
 
 // ── DTX Encoder (matches go-ios encoder.go exactly) ──────────────────────────
@@ -468,6 +626,13 @@ struct FragmentAccum {
     remaining: u16,
     /// Bytes buffered so far, checked before each fragment is allocated.
     received: usize,
+    /// Dynamic bytes reserved in the connection budget for this accumulator.
+    reserved_bytes: usize,
+}
+
+struct BufferedMessage {
+    message: DtxMessage,
+    reserved_bytes: usize,
 }
 
 // ── DtxConnection ─────────────────────────────────────────────────────────────
@@ -483,17 +648,28 @@ pub struct DtxConnection<S> {
     identifier: u32,
     channel_counter: i32,
     /// Replies buffered while another request is waiting on its own response.
-    pending_replies: HashMap<u32, DtxMessage>,
+    pending_replies: HashMap<u32, BufferedMessage>,
     /// Identifiers for synchronous requests that are currently awaiting a reply.
     outstanding_reply_ids: HashSet<u32>,
     /// Non-reply messages buffered while a request is synchronously awaiting its reply.
-    queued_messages: VecDeque<DtxMessage>,
+    queued_messages: VecDeque<BufferedMessage>,
     /// In-progress multi-fragment messages keyed by DTX identifier.
     fragments: HashMap<u32, FragmentAccum>,
+    /// Unified receive-side retained-memory budget.
+    memory_budget: DtxMemoryBudget,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     pub fn new(stream: S) -> Self {
+        Self::with_memory_limit(stream, DEFAULT_DTX_MEMORY_BUDGET)
+    }
+
+    /// Construct a connection with an explicit receive-side memory limit.
+    ///
+    /// This is primarily useful to embedders that already enforce a tighter
+    /// process budget and to deterministic tests; `new` keeps the normal
+    /// Instruments-friendly 512 MiB default.
+    pub fn with_memory_limit(stream: S, memory_limit: usize) -> Self {
         // Start identifier at 5 to match go-ios global channel messageIdentifier initial value
         Self {
             stream,
@@ -503,7 +679,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
             outstanding_reply_ids: HashSet::new(),
             queued_messages: VecDeque::new(),
             fragments: HashMap::new(),
+            memory_budget: DtxMemoryBudget::new(memory_limit),
         }
+    }
+
+    /// Number of dynamically-sized receive-side bytes currently retained.
+    pub fn memory_bytes_used(&self) -> usize {
+        self.memory_budget.used
+    }
+
+    /// Configured receive-side memory limit.
+    pub fn memory_limit(&self) -> usize {
+        self.memory_budget.limit
     }
 
     fn next_id(&mut self) -> Result<u32, DtxError> {
@@ -534,28 +721,152 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         self.send_raw(&encode_ack(msg)).await
     }
 
-    fn buffer_reply(&mut self, msg: DtxMessage) {
-        if let Some(previous) = self.pending_replies.insert(msg.identifier, msg.clone()) {
+    fn buffer_reply(&mut self, msg: DtxMessage) -> Result<(), DtxError> {
+        // Take ownership instead of cloning the reply. The message's dynamic
+        // bytes are measured before it enters the map, and replacement adjusts
+        // the old/new total atomically.
+        let identifier = msg.identifier;
+        if !self.pending_replies.contains_key(&identifier)
+            && self.pending_replies.len() >= MAX_PENDING_REPLIES
+        {
+            return Err(DtxError::Protocol(format!(
+                "DTX pending reply backlog full: {} entries exceeds {}",
+                self.pending_replies.len(),
+                MAX_PENDING_REPLIES
+            )));
+        }
+        let new_conversation_idx = msg.conversation_idx;
+        let reserved_bytes = dtx_message_memory_size(&msg)?;
+        let old_bytes = self
+            .pending_replies
+            .get(&identifier)
+            .map(|previous| previous.reserved_bytes)
+            .unwrap_or(0);
+        self.adjust_replacement_budget(old_bytes, reserved_bytes, "pending reply")?;
+
+        if let Some(previous) = self.pending_replies.insert(
+            identifier,
+            BufferedMessage {
+                message: msg,
+                reserved_bytes,
+            },
+        ) {
             tracing::trace!(
                 "buffer_reply: replacing pending reply id={} old_conv={} new_conv={}",
-                previous.identifier,
-                previous.conversation_idx,
-                msg.conversation_idx
+                previous.message.identifier,
+                previous.message.conversation_idx,
+                new_conversation_idx
             );
         }
+        Ok(())
     }
 
-    fn queue_message(&mut self, msg: DtxMessage) {
+    fn queue_message(&mut self, msg: DtxMessage) -> Result<(), DtxError> {
+        // Queue ownership is moved after the byte check; this avoids the old
+        // untracked clone path and lets pop/drop release exactly this amount.
+        let reserved_bytes = dtx_message_memory_size(&msg)?;
+        let dropped_bytes = if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            self.queued_messages
+                .front()
+                .map(|oldest| oldest.reserved_bytes)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        self.ensure_budget_after_release(dropped_bytes, reserved_bytes, "queued message")?;
+
         if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
             if let Some(dropped) = self.queued_messages.pop_front() {
+                self.memory_budget.release(dropped.reserved_bytes);
                 tracing::warn!(
-                    identifier = dropped.identifier,
-                    channel_code = dropped.channel_code,
+                    identifier = dropped.message.identifier,
+                    channel_code = dropped.message.channel_code,
                     "DTX message backlog full; dropping oldest unrelated message"
                 );
             }
         }
-        self.queued_messages.push_back(msg);
+        self.memory_budget
+            .try_reserve(reserved_bytes, "queued message")?;
+        self.queued_messages.push_back(BufferedMessage {
+            message: msg,
+            reserved_bytes,
+        });
+        Ok(())
+    }
+
+    fn adjust_replacement_budget(
+        &mut self,
+        old_bytes: usize,
+        new_bytes: usize,
+        what: &str,
+    ) -> Result<(), DtxError> {
+        let current = self.memory_budget.used.checked_sub(old_bytes).ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "DTX memory accounting underflow replacing {what}: used={} old={old_bytes} new={new_bytes}",
+                self.memory_budget.used
+            ))
+        })?;
+        let projected = current.checked_add(new_bytes).ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "DTX memory accounting overflow replacing {what}: used={current} old={old_bytes} new={new_bytes} limit={}",
+                self.memory_budget.limit
+            ))
+        })?;
+        if projected > self.memory_budget.limit {
+            return Err(DtxError::Protocol(format!(
+                "DTX memory budget exceeded replacing {what}: used={current} old={old_bytes} new={new_bytes} limit={}",
+                self.memory_budget.limit
+            )));
+        }
+        self.memory_budget.used = projected;
+        Ok(())
+    }
+
+    fn ensure_budget_after_release(
+        &self,
+        released_bytes: usize,
+        added_bytes: usize,
+        what: &str,
+    ) -> Result<(), DtxError> {
+        let current = self.memory_budget.used.checked_sub(released_bytes).ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "DTX memory accounting underflow before reserving {added_bytes} bytes for {what}: used={} release={released_bytes}",
+                self.memory_budget.used
+            ))
+        })?;
+        let projected = current.checked_add(added_bytes).ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "DTX memory accounting overflow reserving {added_bytes} bytes for {what}: used={current} limit={}",
+                self.memory_budget.limit
+            ))
+        })?;
+        if projected > self.memory_budget.limit {
+            return Err(DtxError::Protocol(format!(
+                "DTX memory budget exceeded reserving {added_bytes} bytes for {what}: used={current} release={released_bytes} limit={}",
+                self.memory_budget.limit
+            )));
+        }
+        Ok(())
+    }
+
+    fn remove_pending_reply(&mut self, id: u32) -> Option<DtxMessage> {
+        self.pending_replies.remove(&id).map(|buffered| {
+            self.memory_budget.release(buffered.reserved_bytes);
+            buffered.message
+        })
+    }
+
+    fn pop_queued_message(&mut self) -> Option<DtxMessage> {
+        self.queued_messages.pop_front().map(|buffered| {
+            self.memory_budget.release(buffered.reserved_bytes);
+            buffered.message
+        })
+    }
+
+    fn clear_fragments(&mut self) {
+        for (_, accumulator) in self.fragments.drain() {
+            self.memory_budget.release(accumulator.reserved_bytes);
+        }
     }
 
     fn is_reply_message(&self, msg: &DtxMessage) -> bool {
@@ -563,6 +874,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     }
 
     async fn recv_from_stream(&mut self) -> Result<DtxMessage, DtxError> {
+        let result = self.recv_from_stream_inner().await;
+        if result.is_err() {
+            // A protocol or I/O failure makes any partially assembled frame
+            // unusable. Drop all of it before returning so a caller that
+            // reports the error cannot keep its budget pinned indefinitely.
+            self.clear_fragments();
+        }
+        result
+    }
+
+    async fn recv_from_stream_inner(&mut self) -> Result<DtxMessage, DtxError> {
         loop {
             let h = read_dtx_header(&mut self.stream).await?;
             tracing::trace!(
@@ -579,14 +901,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                     return Ok(DtxMessage {
                         identifier: h.identifier,
                         conversation_idx: h.conv_idx,
-                        channel_code: normalize_incoming_channel_code(h.channel_code, h.conv_idx),
+                        channel_code: normalize_incoming_channel_code(h.channel_code, h.conv_idx)?,
                         expects_reply: h.expects_reply,
                         payload: DtxPayload::Empty,
                     });
                 }
-                let mut msg = read_dtx_body(&mut self.stream, &h, &[]).await?;
+                // Reserve before read_dtx_body allocates its body Vec. The
+                // reservation is transient because a message returned to the
+                // caller is no longer retained by this connection.
+                self.memory_budget
+                    .try_reserve(h.msg_len, "single-fragment body")?;
+                let result = read_dtx_body(&mut self.stream, &h, &[]).await;
+                self.memory_budget.release(h.msg_len);
+                let mut msg = result?;
                 msg.channel_code =
-                    normalize_incoming_channel_code(msg.channel_code, msg.conversation_idx);
+                    normalize_incoming_channel_code(msg.channel_code, msg.conversation_idx)?;
                 return Ok(msg);
             }
 
@@ -611,6 +940,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                         fragments: vec![None; (h.frag_cnt - 1) as usize],
                         remaining: h.frag_cnt - 1,
                         received: 0,
+                        reserved_bytes: 0,
                         header: h,
                     },
                 );
@@ -673,40 +1003,110 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                 }
             }
 
+            // Reserve before allocating the fragment buffer. This is the
+            // precise amount retained by this accumulator; the first fragment
+            // only announces the eventual size and retains no body bytes.
+            self.memory_budget.try_reserve(h.msg_len, "fragment body")?;
             let mut frag_body = vec![0u8; h.msg_len];
-            self.stream.read_exact(&mut frag_body).await?;
+            if let Err(error) = self.stream.read_exact(&mut frag_body).await {
+                self.memory_budget.release(h.msg_len);
+                return Err(error.into());
+            }
 
             if let Some(accum) = self.fragments.get_mut(&id) {
-                accum.received += frag_body.len();
+                let received = match accum.received.checked_add(frag_body.len()) {
+                    Some(received) => received,
+                    None => {
+                        self.memory_budget.release(h.msg_len);
+                        return Err(DtxError::Protocol(format!(
+                            "fragmented body byte count overflow for id={id}"
+                        )));
+                    }
+                };
+                let reserved_bytes = match accum.reserved_bytes.checked_add(h.msg_len) {
+                    Some(reserved_bytes) => reserved_bytes,
+                    None => {
+                        self.memory_budget.release(h.msg_len);
+                        return Err(DtxError::Protocol(format!(
+                            "fragment memory accounting overflow for id={id}"
+                        )));
+                    }
+                };
+                accum.received = received;
+                accum.reserved_bytes = reserved_bytes;
                 accum.fragments[slot_idx] = Some(frag_body);
                 accum.remaining -= 1;
                 if accum.remaining == 0 {
-                    let accum = self.fragments.remove(&id).ok_or_else(|| {
-                        DtxError::Protocol(format!("missing fragment accumulator for id={id}"))
-                    })?;
+                    let accum = match self.fragments.remove(&id) {
+                        Some(accum) => accum,
+                        None => {
+                            // The just-read fragment was accounted before its
+                            // allocation; no accumulator remains to release
+                            // it through clear_fragments.
+                            self.memory_budget.release(h.msg_len);
+                            return Err(DtxError::Protocol(format!(
+                                "missing fragment accumulator for id={id}"
+                            )));
+                        }
+                    };
+                    if accum.received != accum.header.msg_len {
+                        self.memory_budget.release(accum.reserved_bytes);
+                        return Err(DtxError::Protocol(format!(
+                            "fragmented body size mismatch for id={id}: assembled={} expected={}",
+                            accum.received, accum.header.msg_len
+                        )));
+                    }
+
+                    // Reassembly necessarily coexists briefly with the
+                    // out-of-order fragment buffers. Account for that second
+                    // copy before allocating its Vec.
+                    if let Err(error) = self
+                        .memory_budget
+                        .try_reserve(accum.header.msg_len, "fragment reassembly body")
+                    {
+                        self.memory_budget.release(accum.reserved_bytes);
+                        return Err(error);
+                    }
                     let mut body = Vec::with_capacity(accum.header.msg_len);
                     for (index, fragment) in accum.fragments.into_iter().enumerate() {
-                        let fragment = fragment.ok_or_else(|| {
-                            DtxError::Protocol(format!(
-                                "missing fragment {} for id={id}",
-                                index + 1
-                            ))
-                        })?;
+                        let fragment = match fragment {
+                            Some(fragment) => fragment,
+                            None => {
+                                self.memory_budget.release(accum.reserved_bytes);
+                                self.memory_budget.release(accum.header.msg_len);
+                                return Err(DtxError::Protocol(format!(
+                                    "missing fragment {} for id={id}",
+                                    index + 1
+                                )));
+                            }
+                        };
                         body.extend_from_slice(&fragment);
                     }
                     if body.len() != accum.header.msg_len {
+                        self.memory_budget.release(accum.reserved_bytes);
+                        self.memory_budget.release(accum.header.msg_len);
                         return Err(DtxError::Protocol(format!(
                             "fragmented body size mismatch for id={id}: assembled={} expected={}",
                             body.len(),
                             accum.header.msg_len
                         )));
                     }
-                    let mut msg = read_dtx_body(&mut self.stream, &accum.header, &body).await?;
+                    // All fragment Vecs have been consumed into `body`; their
+                    // reservations can be released before decoding the body.
+                    self.memory_budget.release(accum.reserved_bytes);
+                    let result = read_dtx_body(&mut self.stream, &accum.header, &body).await;
+                    drop(body);
+                    self.memory_budget.release(accum.header.msg_len);
+                    let mut msg = result?;
                     msg.channel_code =
-                        normalize_incoming_channel_code(msg.channel_code, msg.conversation_idx);
+                        normalize_incoming_channel_code(msg.channel_code, msg.conversation_idx)?;
                     return Ok(msg);
                 }
             } else {
+                // The fragment buffer was allocated and accounted before this
+                // lookup. It should be impossible for the map entry to vanish
+                // while borrowed, but keep the error path leak-free.
+                self.memory_budget.release(h.msg_len);
                 return Err(DtxError::Protocol(format!(
                     "fragment id={id} frag_idx={} without first fragment",
                     h.frag_idx
@@ -716,7 +1116,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     }
 
     async fn wait_for_reply(&mut self, id: u32) -> Result<DtxMessage, DtxError> {
-        if let Some(msg) = self.pending_replies.remove(&id) {
+        if let Some(msg) = self.remove_pending_reply(id) {
             self.outstanding_reply_ids.remove(&id);
             return Ok(msg);
         }
@@ -737,27 +1137,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
                     self.outstanding_reply_ids.remove(&id);
                     return Ok(msg);
                 }
-                self.buffer_reply(msg);
+                self.buffer_reply(msg)?;
                 continue;
             }
 
             if msg.expects_reply {
                 self.send_ack(&msg).await?;
             }
-            self.queue_message(msg);
+            self.queue_message(msg)?;
         }
     }
 
     /// Receive the next fully-assembled DTX message, transparently reassembling fragments.
     pub async fn recv(&mut self) -> Result<DtxMessage, DtxError> {
-        if let Some(msg) = self.queued_messages.pop_front() {
+        if let Some(msg) = self.pop_queued_message() {
             return Ok(msg);
         }
 
         loop {
             let msg = self.recv_from_stream().await?;
             if self.is_reply_message(&msg) {
-                self.buffer_reply(msg);
+                self.buffer_reply(msg)?;
                 continue;
             }
             return Ok(msg);
@@ -785,7 +1185,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         self.outstanding_reply_ids.insert(id);
 
         // Read reply (skip unrelated notifications)
-        let msg = self.wait_for_reply(id).await?;
+        let result = self.wait_for_reply(id).await;
+        if result.is_err() {
+            self.outstanding_reply_ids.remove(&id);
+        }
+        let msg = result?;
         tracing::debug!(
             "request_channel recv: id={} conv_idx={} ch={} expects_reply={}",
             msg.identifier,
@@ -823,7 +1227,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         self.outstanding_reply_ids.insert(id);
         tracing::debug!("method_call '{selector}' id={id} ch={channel_code}");
 
-        let msg = self.wait_for_reply(id).await?;
+        let result = self.wait_for_reply(id).await;
+        if result.is_err() {
+            self.outstanding_reply_ids.remove(&id);
+        }
+        let msg = result?;
         tracing::debug!(
             "method_call recv: id={} conv_idx={} ch={}",
             msg.identifier,
@@ -860,11 +1268,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
     }
 }
 
-fn normalize_incoming_channel_code(channel_code: i32, conversation_idx: u32) -> i32 {
+impl<S> Drop for DtxConnection<S> {
+    fn drop(&mut self) {
+        // The containers would release their allocations automatically. Clear
+        // them explicitly as the final accounting checkpoint so the budget's
+        // invariant also holds while a connection is being torn down.
+        self.pending_replies.clear();
+        self.queued_messages.clear();
+        self.outstanding_reply_ids.clear();
+        self.fragments.clear();
+        self.memory_budget.used = 0;
+    }
+}
+
+fn normalize_incoming_channel_code(
+    channel_code: i32,
+    conversation_idx: u32,
+) -> Result<i32, DtxError> {
     if conversation_idx % 2 == 0 {
-        -channel_code
+        channel_code.checked_neg().ok_or_else(|| {
+            DtxError::Protocol(format!(
+                "cannot normalize incoming channel code {channel_code} for conversation {conversation_idx}"
+            ))
+        })
     } else {
-        channel_code
+        Ok(channel_code)
     }
 }
 
@@ -1030,6 +1458,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recv_rejects_min_channel_code_when_normalizing() {
+        let (client, mut server) = tokio::io::duplex(256);
+        let mut conn = DtxConnection::new(client);
+        let frame = encode_dtx(
+            43,
+            0,
+            i32::MIN,
+            false,
+            MSG_UNKNOWN_TYPE_ONE,
+            b"malformed-channel",
+            &[],
+        );
+        server.write_all(&frame).await.unwrap();
+
+        let err = conn.recv().await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("cannot normalize incoming channel code")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_wait_for_reply_returns_buffered_reply_immediately() {
         let (client, _server) = tokio::io::duplex(64);
         let mut conn = DtxConnection::new(client);
@@ -1040,7 +1490,8 @@ mod tests {
             channel_code: 3,
             expects_reply: false,
             payload: DtxPayload::Empty,
-        });
+        })
+        .unwrap();
 
         let reply = conn.wait_for_reply(9).await.unwrap();
         assert_eq!(reply.identifier, 9);
@@ -1353,18 +1804,256 @@ mod tests {
                 channel_code: 0,
                 expects_reply: false,
                 payload: DtxPayload::Empty,
-            });
+            })
+            .unwrap();
         }
 
         assert_eq!(conn.queued_messages.len(), MAX_QUEUED_MESSAGES);
         assert_eq!(
-            conn.queued_messages.front().map(|msg| msg.identifier),
+            conn.queued_messages
+                .front()
+                .map(|msg| msg.message.identifier),
             Some(1)
         );
         assert_eq!(
-            conn.queued_messages.back().map(|msg| msg.identifier),
+            conn.queued_messages
+                .back()
+                .map(|msg| msg.message.identifier),
             Some(MAX_QUEUED_MESSAGES as u32)
         );
+    }
+
+    fn raw_message(identifier: u32, payload: &'static [u8]) -> DtxMessage {
+        DtxMessage {
+            identifier,
+            conversation_idx: 0,
+            channel_code: 0,
+            expects_reply: false,
+            payload: DtxPayload::Raw(Bytes::from_static(payload)),
+        }
+    }
+
+    #[test]
+    fn test_memory_budget_accepts_exact_limit_and_rejects_overflow() {
+        let mut budget = DtxMemoryBudget::new(usize::MAX);
+        budget.used = usize::MAX - 1;
+        let err = budget.try_reserve(2, "test").unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("accounting overflow")
+        ));
+
+        let mut budget = DtxMemoryBudget::new(8);
+        budget.try_reserve(8, "test").unwrap();
+        assert_eq!(budget.used, 8);
+        let err = budget.try_reserve(1, "test").unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("budget exceeded") && message.contains("limit=8")
+        ));
+        budget.release(8);
+        assert_eq!(budget.used, 0);
+    }
+
+    #[test]
+    fn test_queued_message_budget_is_released_when_consumed() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, 4);
+
+        conn.queue_message(raw_message(1, b"1234")).unwrap();
+        assert_eq!(conn.memory_bytes_used(), 4);
+
+        let err = conn.queue_message(raw_message(2, b"5")).unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("queued message")
+        ));
+        assert_eq!(conn.memory_bytes_used(), 4);
+
+        let message = conn.pop_queued_message().unwrap();
+        assert_eq!(message.identifier, 1);
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    #[test]
+    fn test_pending_reply_replacement_and_consumption_restore_budget() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, 4);
+
+        conn.buffer_reply(raw_message(7, b"1234")).unwrap();
+        assert_eq!(conn.memory_bytes_used(), 4);
+        conn.buffer_reply(raw_message(7, b"12")).unwrap();
+        assert_eq!(conn.memory_bytes_used(), 2);
+        assert_eq!(conn.remove_pending_reply(7).unwrap().identifier, 7);
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    #[test]
+    fn test_pending_reply_flood_is_bounded_and_drains() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, 4);
+        conn.buffer_reply(raw_message(9, b"1234")).unwrap();
+
+        let err = conn.buffer_reply(raw_message(10, b"5678")).unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("pending reply")
+        ));
+        assert_eq!(conn.memory_bytes_used(), 4);
+        assert_eq!(conn.remove_pending_reply(9).unwrap().identifier, 9);
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    #[test]
+    fn test_empty_pending_reply_flood_is_count_bounded() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, usize::MAX);
+        for identifier in 0..MAX_PENDING_REPLIES as u32 {
+            conn.buffer_reply(DtxMessage {
+                identifier,
+                conversation_idx: 1,
+                channel_code: 0,
+                expects_reply: false,
+                payload: DtxPayload::Empty,
+            })
+            .unwrap();
+        }
+
+        let err = conn
+            .buffer_reply(DtxMessage {
+                identifier: MAX_PENDING_REPLIES as u32,
+                conversation_idx: 1,
+                channel_code: 0,
+                expects_reply: false,
+                payload: DtxPayload::Empty,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("pending reply backlog full")
+        ));
+        assert_eq!(conn.pending_replies.len(), MAX_PENDING_REPLIES);
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    #[test]
+    fn test_method_selector_is_included_in_queued_budget() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, 3);
+        let message = DtxMessage {
+            identifier: 8,
+            conversation_idx: 0,
+            channel_code: 0,
+            expects_reply: false,
+            payload: DtxPayload::MethodInvocation {
+                selector: "abc".to_string(),
+                args: Vec::new(),
+            },
+        };
+
+        conn.queue_message(message).unwrap();
+        assert_eq!(conn.memory_bytes_used(), 3);
+        conn.pop_queued_message().unwrap();
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    fn fragmented_test_body() -> Bytes {
+        let mut body = BytesMut::with_capacity(16);
+        body.put_u32_le(MSG_OK);
+        body.put_u32_le(0);
+        body.put_u32_le(0);
+        body.put_u32_le(0);
+        body.freeze()
+    }
+
+    #[tokio::test]
+    async fn test_fragment_reassembly_exact_budget_and_release() {
+        let body = fragmented_test_body();
+        let first = encode_fragment(81, 0, 3, 4, false, body.len(), &[]);
+        let second = encode_fragment(81, 1, 3, 4, false, 8, &body[..8]);
+        let third = encode_fragment(81, 2, 3, 4, false, 8, &body[8..]);
+        let (client, mut server) = tokio::io::duplex(512);
+        server.write_all(&first).await.unwrap();
+        server.write_all(&second).await.unwrap();
+        server.write_all(&third).await.unwrap();
+        let mut conn = DtxConnection::with_memory_limit(client, body.len() * 2);
+
+        let message = conn.recv_from_stream().await.unwrap();
+        assert!(matches!(message.payload, DtxPayload::Empty));
+        assert_eq!(conn.memory_bytes_used(), 0);
+        assert!(conn.fragments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fragment_budget_covers_concurrent_accumulators_and_cleans_on_overage() {
+        let body = fragmented_test_body();
+        let first_a = encode_fragment(82, 0, 3, 4, false, body.len(), &[]);
+        let first_b = encode_fragment(83, 0, 3, 4, false, body.len(), &[]);
+        let second_b = encode_fragment(83, 1, 3, 4, false, 4, &body[..4]);
+        let second_a = encode_fragment(82, 1, 3, 4, false, 8, &body[..8]);
+        let third_a = encode_fragment(82, 2, 3, 4, false, 8, &body[8..]);
+        let (client, mut server) = tokio::io::duplex(1024);
+        for frame in [first_a, first_b, second_b, second_a, third_a] {
+            server.write_all(&frame).await.unwrap();
+        }
+        let mut conn = DtxConnection::with_memory_limit(client, 35);
+
+        let err = conn.recv_from_stream().await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("fragment reassembly body")
+        ));
+        assert_eq!(conn.memory_bytes_used(), 0);
+        assert!(conn.fragments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fragment_read_error_releases_budget() {
+        let body = fragmented_test_body();
+        let first = encode_fragment(84, 0, 2, 4, false, body.len(), &[]);
+        let truncated = encode_fragment(84, 1, 2, 4, false, 8, &body[..4]);
+        let (client, mut server) = tokio::io::duplex(512);
+        server.write_all(&first).await.unwrap();
+        server.write_all(&truncated).await.unwrap();
+        server.shutdown().await.unwrap();
+        let mut conn = DtxConnection::with_memory_limit(client, 8);
+
+        let err = conn.recv_from_stream().await.unwrap_err();
+        assert!(matches!(err, DtxError::Io(_)));
+        assert_eq!(conn.memory_bytes_used(), 0);
+        assert!(conn.fragments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_single_body_budget_rejects_before_allocation() {
+        let frame = encode_dtx(85, 0, 4, false, MSG_UNKNOWN_TYPE_ONE, b"12345", &[]);
+        let body_len = frame.len() - 32;
+        let (client, mut server) = tokio::io::duplex(256);
+        server.write_all(&frame).await.unwrap();
+        let mut conn = DtxConnection::with_memory_limit(client, body_len - 1);
+
+        let err = conn.recv_from_stream().await.unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("single-fragment body")
+        ));
+        assert_eq!(conn.memory_bytes_used(), 0);
+    }
+
+    #[test]
+    fn test_unrelated_message_flood_returns_budget_error_and_queue_can_drain() {
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = DtxConnection::with_memory_limit(client, 4);
+        conn.queue_message(raw_message(91, b"1234")).unwrap();
+
+        let err = conn.queue_message(raw_message(92, b"5678")).unwrap_err();
+        assert!(matches!(
+            err,
+            DtxError::Protocol(message) if message.contains("queued message")
+        ));
+        assert_eq!(conn.memory_bytes_used(), 4);
+        assert_eq!(conn.pop_queued_message().unwrap().identifier, 91);
+        assert_eq!(conn.memory_bytes_used(), 0);
     }
 
     #[test]

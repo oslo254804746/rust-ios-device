@@ -24,6 +24,7 @@ pub enum ScreenshotFormat {
     Png,
     Jpeg,
     Tiff,
+    Heif,
     Unknown,
 }
 
@@ -33,6 +34,7 @@ impl ScreenshotFormat {
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
             Self::Tiff => "image/tiff",
+            Self::Heif => "image/heif",
             Self::Unknown => "application/octet-stream",
         }
     }
@@ -44,6 +46,8 @@ impl ScreenshotFormat {
             Self::Jpeg
         } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
             Self::Tiff
+        } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+            Self::Heif
         } else {
             Self::Unknown
         }
@@ -200,6 +204,14 @@ mod tests {
             ScreenshotFormat::detect(b"MM\0*rest"),
             ScreenshotFormat::Tiff
         );
+    }
+
+    #[test]
+    fn detects_heif_file_type_box() {
+        let mut bytes = [0u8; 12];
+        bytes[4..8].copy_from_slice(b"ftyp");
+        assert_eq!(ScreenshotFormat::detect(&bytes), ScreenshotFormat::Heif);
+        assert_eq!(ScreenshotFormat::Heif.mime_type(), "image/heif");
     }
 
     #[test]

@@ -140,12 +140,17 @@ where
         &mut self,
         pid: u64,
     ) -> Result<bool, DtxError> {
+        let pid = i64::try_from(pid).map_err(|_| {
+            DtxError::Protocol(format!(
+                "test runner process id exceeds DTX signed integer range: {pid}"
+            ))
+        })?;
         let (control, channel) = self.control_mut()?;
         let response = control
             .method_call(
                 channel,
                 AUTHORIZE_TEST_SESSION_SELECTOR,
-                &[PrimArg::Int64(pid as i64)],
+                &[PrimArg::Int64(pid)],
             )
             .await?;
 

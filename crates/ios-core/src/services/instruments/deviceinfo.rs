@@ -58,58 +58,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DeviceInfoClient<S> {
                             None
                         }
                     })
-                    .unwrap_or_default()
+                    .ok_or_else(|| {
+                        DtxError::Protocol(
+                            "runningProcesses: expected an array payload argument".into(),
+                        )
+                    })?
             }
-            _ => return Ok(vec![]),
+            _ => {
+                return Err(DtxError::Protocol(
+                    "runningProcesses: expected array payload".into(),
+                ));
+            }
         };
 
-        let mut result = Vec::with_capacity(arr.len());
-        for item in &arr {
-            if let NSObject::Dict(d) = item {
-                let pid = match d.get("pid") {
-                    Some(NSObject::Uint(n)) => *n,
-                    Some(NSObject::Int(n)) => *n as u64,
-                    _ => continue,
-                };
-                let name = d
-                    .get("name")
-                    .and_then(|v| {
-                        if let NSObject::String(s) = v {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                let real_app_name = d
-                    .get("realAppName")
-                    .and_then(|v| {
-                        if let NSObject::String(s) = v {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                let is_application = d
-                    .get("isApplication")
-                    .and_then(|v| {
-                        if let NSObject::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                result.push(RunningProcess {
-                    pid,
-                    name,
-                    real_app_name,
-                    is_application,
-                });
-            }
-        }
-        Ok(result)
+        parse_running_processes(&arr)
     }
 
     async fn get_attrs(&mut self, method: &str) -> Result<Vec<plist::Value>, DtxError> {
@@ -130,5 +92,139 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DeviceInfoClient<S> {
                 .collect()),
             _ => Ok(vec![]),
         }
+    }
+}
+
+/// Decode the required process dictionary fields. The go-ios DeviceInfo
+/// decoder rejects malformed entries instead of silently dropping them or
+/// treating a missing name as an empty process; doing the same prevents
+/// `memlimitoff --process` from acting on an incomplete response.
+fn parse_running_processes(items: &[NSObject]) -> Result<Vec<RunningProcess>, DtxError> {
+    let mut result = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let dictionary = match item {
+            NSObject::Dict(dictionary) => dictionary,
+            _ => {
+                return Err(DtxError::Protocol(format!(
+                    "runningProcesses: entry {index} is not a dictionary"
+                )))
+            }
+        };
+        let pid = match dictionary.get("pid") {
+            Some(NSObject::Uint(pid)) => *pid,
+            Some(NSObject::Int(pid)) if *pid >= 0 => *pid as u64,
+            Some(_) => {
+                return Err(DtxError::Protocol(format!(
+                    "runningProcesses: entry {index} has invalid pid"
+                )))
+            }
+            None => {
+                return Err(DtxError::Protocol(format!(
+                    "runningProcesses: entry {index} is missing pid"
+                )))
+            }
+        };
+        let name = required_process_string(dictionary, "name", index)?;
+        let real_app_name = required_process_string(dictionary, "realAppName", index)?;
+        let is_application = match dictionary.get("isApplication") {
+            Some(NSObject::Bool(value)) => *value,
+            Some(_) => {
+                return Err(DtxError::Protocol(format!(
+                    "runningProcesses: entry {index} has invalid isApplication"
+                )))
+            }
+            None => {
+                return Err(DtxError::Protocol(format!(
+                    "runningProcesses: entry {index} is missing isApplication"
+                )))
+            }
+        };
+        result.push(RunningProcess {
+            pid,
+            name,
+            real_app_name,
+            is_application,
+        });
+    }
+    Ok(result)
+}
+
+fn required_process_string(
+    dictionary: &indexmap::IndexMap<String, NSObject>,
+    key: &str,
+    index: usize,
+) -> Result<String, DtxError> {
+    match dictionary.get(key) {
+        Some(NSObject::String(value)) => Ok(value.clone()),
+        Some(_) => Err(DtxError::Protocol(format!(
+            "runningProcesses: entry {index} has invalid {key}"
+        ))),
+        None => Err(DtxError::Protocol(format!(
+            "runningProcesses: entry {index} is missing {key}"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(fields: impl IntoIterator<Item = (&'static str, NSObject)>) -> NSObject {
+        NSObject::Dict(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn process_decoder_preserves_required_fields() {
+        let item = process([
+            ("pid", NSObject::Uint(42)),
+            ("name", NSObject::String("Safari".into())),
+            ("realAppName", NSObject::String("MobileSafari".into())),
+            ("isApplication", NSObject::Bool(true)),
+        ]);
+        let result = parse_running_processes(&[item]).unwrap();
+        assert_eq!(result[0].pid, 42);
+        assert_eq!(result[0].name, "Safari");
+        assert_eq!(result[0].real_app_name, "MobileSafari");
+        assert!(result[0].is_application);
+    }
+
+    #[test]
+    fn process_decoder_rejects_missing_or_wrong_name_fields() {
+        let missing_name = process([
+            ("pid", NSObject::Uint(42)),
+            ("realAppName", NSObject::String("MobileSafari".into())),
+            ("isApplication", NSObject::Bool(true)),
+        ]);
+        let error = parse_running_processes(&[missing_name]).unwrap_err();
+        assert!(error.to_string().contains("missing name"));
+
+        let wrong_name = process([
+            ("pid", NSObject::Uint(42)),
+            ("name", NSObject::Uint(7)),
+            ("realAppName", NSObject::String("MobileSafari".into())),
+            ("isApplication", NSObject::Bool(true)),
+        ]);
+        let error = parse_running_processes(&[wrong_name]).unwrap_err();
+        assert!(error.to_string().contains("invalid name"));
+    }
+
+    #[test]
+    fn process_decoder_rejects_negative_pid_and_non_dictionary_entries() {
+        let error = parse_running_processes(&[process([
+            ("pid", NSObject::Int(-1)),
+            ("name", NSObject::String("bad".into())),
+            ("realAppName", NSObject::String("bad".into())),
+            ("isApplication", NSObject::Bool(false)),
+        ])])
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid pid"));
+
+        let error = parse_running_processes(&[NSObject::String("bad".into())]).unwrap_err();
+        assert!(error.to_string().contains("not a dictionary"));
     }
 }

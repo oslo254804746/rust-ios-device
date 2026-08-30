@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 authors = ["oslo254804746"]
 license = "MIT OR Apache-2.0"
@@ -19,7 +19,7 @@ keywords = ["ios", "apple", "mobile", "usbmuxd", "lockdown"]
 categories = ["development-tools", "api-bindings"]
 
 [workspace.dependencies]
-ios-core     = { version = "0.1.9", path = "crates/ios-core" }
+ios-core     = { version = "0.1.10", path = "crates/ios-core" }
 tokio        = "1"
 bytes        = "1"
 zerocopy     = { version = "0.8", features = ["derive"] }
@@ -38,12 +38,17 @@ p256         = "0.13"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek= { version = "2", features = ["rand_core"] }
 sha2         = "0.10"
+sha1         = "0.10"
+aes          = "0.8"
+aes-kw       = "0.2"
+cbc          = "0.1.2"
+pbkdf2       = "0.12"
 hkdf         = "0.12"
 chacha20poly1305 = "0.10"
 zeroize      = { version = "1", features = ["derive"] }
 subtle       = "2"
 clap         = { version = "4", features = ["derive", "env"] }
-pyo3         = { version = "0.22", features = ["extension-module"] }
+pyo3         = "0.22"
 mdns-sd      = "0.11"
 tokio-util   = { version = "0.7", features = ["codec"] }
 tokio-stream = "0.1"
@@ -55,6 +60,7 @@ rustls-pemfile = "2"
 reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 futures-util = "0.3"
 futures-core = "0.3"
+flate2       = "1"
 async-stream = "0.3"
 axum         = { version = "0.7", features = ["ws", "json"] }
 chrono       = "0.4"
@@ -69,11 +75,13 @@ num-bigint   = "0.4"
 num-traits   = "0.2"
 quick-xml    = { version = "0.38", features = ["serialize"] }
 regex        = "1"
+rusqlite     = { version = "0.31", default-features = false, features = ["bundled"] }
 serde_bytes  = "0.11"
 time         = { version = "0.3", features = ["parsing", "local-offset"] }
 tokio-openssl = "0.6"
 tracing-subscriber = "0.3"
 tun-rs       = { version = "2", features = ["async"] }
 zip          = { version = "2", default-features = false, features = ["deflate"] }
+tar          = { version = "0.4", default-features = false }
 crc32fast    = "1"
 libc         = "0.2"

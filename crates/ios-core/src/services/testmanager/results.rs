@@ -4,8 +4,17 @@
 //! selectors. This module translates the selectors into stable Rust events and
 //! accumulates those events into a serializable summary for CLI and binding users.
 
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::services::dtx::{DtxMessage, DtxPayload, NSObject};
 use serde::Serialize;
+
+const MAX_CAPTURED_LOG_MESSAGES: usize = 16_384;
+const MAX_CAPTURED_LOG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_JUNIT_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 
 /// XCTest selector emitted when a test plan begins.
 pub const DID_BEGIN_EXECUTING_TEST_PLAN_SELECTOR: &str = "_XCT_didBeginExecutingTestPlan";
@@ -299,6 +308,8 @@ pub struct TestRunRecorder {
     finished: bool,
     logs: Vec<String>,
     debug_logs: Vec<String>,
+    log_bytes: usize,
+    debug_log_bytes: usize,
     suites: Vec<TestSuiteSummary>,
 }
 
@@ -309,11 +320,7 @@ impl TestRunRecorder {
             TestExecutionEvent::BeganPlan => self.began = true,
             TestExecutionEvent::FinishedPlan => self.finished = true,
             TestExecutionEvent::Log { message, debug } => {
-                if debug {
-                    self.debug_logs.push(message);
-                } else {
-                    self.logs.push(message);
-                }
+                self.push_log(message, debug);
             }
             TestExecutionEvent::SuiteStarted { name, started_at } => {
                 self.suites.push(TestSuiteSummary {
@@ -358,7 +365,10 @@ impl TestRunRecorder {
                 class_name,
                 method_name,
             } => {
-                let suite = self.find_or_create_suite(&class_name);
+                // XCTest can report a suite name different from its test class. The Go listener
+                // attaches such cases to the currently running suite rather than creating a
+                // second class-named suite.
+                let suite = self.find_or_create_active_suite(&class_name);
                 suite.cases.push(TestCaseSummary {
                     class_name,
                     method_name,
@@ -425,7 +435,13 @@ impl TestRunRecorder {
                     suite
                         .cases
                         .iter()
-                        .filter(|case| case.status == Some(TestCaseStatus::Skipped))
+                        .filter(|case| {
+                            matches!(
+                                case.status,
+                                Some(TestCaseStatus::Skipped)
+                                    | Some(TestCaseStatus::ExpectedFailure)
+                            )
+                        })
                         .count() as u64
                 })
             })
@@ -443,8 +459,32 @@ impl TestRunRecorder {
         }
     }
 
+    fn push_log(&mut self, mut message: String, debug: bool) {
+        let (logs, used) = if debug {
+            (&mut self.debug_logs, &mut self.debug_log_bytes)
+        } else {
+            (&mut self.logs, &mut self.log_bytes)
+        };
+        if logs.len() >= MAX_CAPTURED_LOG_MESSAGES || *used >= MAX_CAPTURED_LOG_BYTES {
+            return;
+        }
+        let remaining = MAX_CAPTURED_LOG_BYTES - *used;
+        if message.len() > remaining {
+            let mut end = remaining;
+            while end > 0 && !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+        }
+        if message.is_empty() {
+            return;
+        }
+        *used = (*used).saturating_add(message.len());
+        logs.push(message);
+    }
+
     fn find_or_create_case(&mut self, class_name: &str, method_name: &str) -> &mut TestCaseSummary {
-        let suite = self.find_or_create_suite(class_name);
+        let suite = self.find_or_create_active_suite(class_name);
         if let Some(index) = suite
             .cases
             .iter()
@@ -484,6 +524,388 @@ impl TestRunRecorder {
         });
         &mut self.suites[index]
     }
+
+    fn find_or_create_active_suite(&mut self, class_name: &str) -> &mut TestSuiteSummary {
+        if let Some(index) = self
+            .suites
+            .iter()
+            .rposition(|suite| suite.test_count.is_none())
+        {
+            return &mut self.suites[index];
+        }
+        self.find_or_create_suite(class_name)
+    }
+}
+
+impl TestRunSummary {
+    /// Serialize this result summary as JUnit XML.
+    ///
+    /// Expected failures retain an explicit status property and use JUnit's standard `<skipped>`
+    /// element, matching go-ios. Stalled/unknown cases use `<error>` so consumers do not mistake
+    /// an incomplete result for a passing test.
+    pub fn to_junit_xml(&self) -> String {
+        self.to_junit_xml_with_diagnostic(None)
+    }
+
+    /// Serialize this result summary as JUnit XML and include a diagnostic
+    /// error when startup/result collection was incomplete.
+    pub fn to_junit_xml_with_diagnostic(&self, diagnostic: Option<&str>) -> String {
+        let mut suites = String::new();
+        let mut total_tests = 0u64;
+        let mut total_failures = 0u64;
+        let mut total_errors = 0u64;
+        let mut total_skipped = 0u64;
+        let mut total_time = 0.0f64;
+
+        for suite in &self.suites {
+            let report = JUnitSuiteReport::from_suite(suite);
+            total_tests = total_tests.saturating_add(report.tests);
+            total_failures = total_failures.saturating_add(report.failures);
+            total_errors = total_errors.saturating_add(report.errors);
+            total_skipped = total_skipped.saturating_add(report.skipped);
+            total_time += report.time;
+            render_junit_suite(&mut suites, suite, &report);
+        }
+
+        let diagnostic = diagnostic
+            .map(|value| truncate_utf8(value, MAX_JUNIT_DIAGNOSTIC_BYTES))
+            .or_else(|| (!self.finished).then(|| "XCTest run did not finish".to_string()));
+        if let Some(diagnostic) = diagnostic.as_deref() {
+            total_errors = total_errors.saturating_add(1);
+            suites.push_str("<testsuite");
+            xml_attr(&mut suites, "name", "xctest-diagnostic");
+            xml_attr(&mut suites, "tests", "0");
+            xml_attr(&mut suites, "failures", "0");
+            xml_attr(&mut suites, "errors", "1");
+            xml_attr(&mut suites, "skipped", "0");
+            xml_attr(&mut suites, "time", "0.000");
+            suites.push('>');
+            suites.push_str("<error");
+            xml_attr(&mut suites, "type", "xctest_diagnostic");
+            xml_attr(&mut suites, "message", diagnostic);
+            suites.push('>');
+            xml_text(&mut suites, diagnostic);
+            suites.push_str("</error></testsuite>");
+        }
+
+        if !self.logs.is_empty() || !self.debug_logs.is_empty() {
+            suites.push_str("<testsuite");
+            xml_attr(&mut suites, "name", "xctest-output");
+            xml_attr(&mut suites, "tests", "0");
+            xml_attr(&mut suites, "failures", "0");
+            xml_attr(&mut suites, "errors", "0");
+            xml_attr(&mut suites, "skipped", "0");
+            xml_attr(&mut suites, "time", "0.000");
+            suites.push('>');
+            if !self.logs.is_empty() {
+                suites.push_str("<system-out>");
+                xml_text(&mut suites, &self.logs.join("\n"));
+                suites.push_str("</system-out>");
+            }
+            if !self.debug_logs.is_empty() {
+                suites.push_str("<system-err>");
+                xml_text(&mut suites, &self.debug_logs.join("\n"));
+                suites.push_str("</system-err>");
+            }
+            suites.push_str("</testsuite>");
+        }
+
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"XCTest\" tests=\"{total_tests}\" failures=\"{total_failures}\" errors=\"{total_errors}\" skipped=\"{total_skipped}\" time=\"{:.3}\">{suites}</testsuites>\n",
+            finite_duration(total_time)
+        )
+    }
+}
+
+/// Atomically write a JUnit report next to the requested destination.
+///
+/// The temporary file is created in the destination directory, flushed, and
+/// renamed into place. On Unix, rename atomically replaces an existing file; Windows uses
+/// MoveFileEx(REPLACE_EXISTING) so overwriting an existing report has the same contract.
+pub fn write_junit_xml_atomic(summary: &TestRunSummary, path: &Path) -> io::Result<()> {
+    write_junit_xml_text_atomic(&summary.to_junit_xml(), path)
+}
+
+/// Atomically write a JUnit report with a startup/result-collection diagnostic.
+pub fn write_junit_xml_atomic_with_diagnostic(
+    summary: &TestRunSummary,
+    path: &Path,
+    diagnostic: &str,
+) -> io::Result<()> {
+    write_junit_xml_text_atomic(
+        &summary.to_junit_xml_with_diagnostic(Some(diagnostic)),
+        path,
+    )
+}
+
+fn write_junit_xml_text_atomic(xml: &str, path: &Path) -> io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JUnit output path must name a file",
+        )
+    })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    for attempt in 0..16u32 {
+        let temporary = parent.join(format!(
+            ".{}.ios-junit-{pid}-{nonce}-{attempt}.tmp",
+            file_name.to_string_lossy()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = file.write_all(xml.as_bytes()).and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        match replace_file_atomically(&temporary, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary JUnit output path",
+    ))
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
+    crate::fs_replace::move_file_replace(temporary, destination)
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(temporary, destination)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JUnitSuiteReport {
+    tests: u64,
+    failures: u64,
+    errors: u64,
+    skipped: u64,
+    time: f64,
+}
+
+impl JUnitSuiteReport {
+    fn from_suite(suite: &TestSuiteSummary) -> Self {
+        let case_failures = suite
+            .cases
+            .iter()
+            .filter(|case| case.status == Some(TestCaseStatus::Failed))
+            .count() as u64;
+        let case_errors = suite
+            .cases
+            .iter()
+            .filter(|case| {
+                matches!(
+                    case.status,
+                    None | Some(TestCaseStatus::Stalled) | Some(TestCaseStatus::Other(_))
+                )
+            })
+            .count() as u64;
+        let case_skipped = suite
+            .cases
+            .iter()
+            .filter(|case| {
+                matches!(
+                    case.status,
+                    Some(TestCaseStatus::Skipped) | Some(TestCaseStatus::ExpectedFailure)
+                )
+            })
+            .count() as u64;
+        // JUnit counts concrete testcase children. XCTest's suite counter may include cases for
+        // which no event was delivered, but emitting a larger count would violate the common
+        // `tests == number of testcase elements` contract used by go-ios consumers.
+        let tests = suite.cases.len() as u64;
+        // JUnit's suite time is execution time. XCTest's totalDuration also includes setup and
+        // teardown, so match go-ios and use testDuration, falling back to case durations when
+        // XCTest reported zero for an incomplete suite.
+        let test_duration = suite.test_duration_seconds.unwrap_or(0.0);
+        let time = if test_duration.is_finite() && test_duration > 0.0 {
+            test_duration
+        } else {
+            suite
+                .cases
+                .iter()
+                .filter_map(|case| case.duration_seconds)
+                .sum()
+        };
+        Self {
+            tests,
+            failures: case_failures,
+            errors: suite
+                .uncaught_exceptions
+                .unwrap_or(0)
+                .saturating_add(case_errors),
+            skipped: case_skipped,
+            time: finite_duration(time),
+        }
+    }
+}
+
+fn render_junit_suite(output: &mut String, suite: &TestSuiteSummary, report: &JUnitSuiteReport) {
+    output.push_str("<testsuite");
+    xml_attr(output, "name", &suite.name);
+    xml_attr(output, "tests", &report.tests.to_string());
+    xml_attr(output, "failures", &report.failures.to_string());
+    xml_attr(output, "errors", &report.errors.to_string());
+    xml_attr(output, "skipped", &report.skipped.to_string());
+    xml_attr(output, "time", &format!("{:.3}", report.time));
+    output.push('>');
+    if let Some(expected_failures) = suite.expected_failures {
+        output.push_str("<properties><property");
+        xml_attr(output, "name", "expected_failures");
+        xml_attr(output, "value", &expected_failures.to_string());
+        output.push_str("/></properties>");
+    }
+
+    for case in &suite.cases {
+        let duration = finite_duration(case.duration_seconds.unwrap_or(0.0));
+        output.push_str("<testcase");
+        xml_attr(output, "classname", &case.class_name);
+        xml_attr(output, "name", &case.method_name);
+        xml_attr(output, "time", &format!("{duration:.3}"));
+        output.push('>');
+        match case.status.as_ref() {
+            Some(TestCaseStatus::Failed) => {
+                if let Some(failure) = &case.failure {
+                    render_failure(output, failure);
+                } else {
+                    output.push_str("<failure type=\"XCTestFailure\" message=\"failed\"/>");
+                }
+            }
+            Some(TestCaseStatus::Skipped) => output.push_str("<skipped/>"),
+            Some(TestCaseStatus::ExpectedFailure) => {
+                output.push_str("<skipped");
+                xml_attr(output, "message", "expected failure");
+                output.push_str("/>");
+                render_status_property(output, "expected_failure");
+            }
+            Some(TestCaseStatus::Stalled) => {
+                render_error(output, "stalled", "XCTest case stalled");
+            }
+            Some(TestCaseStatus::Other(status)) => {
+                render_status_property(output, status);
+                render_error(output, "unknown_status", status);
+            }
+            None => {
+                render_status_property(output, "unknown");
+                render_error(
+                    output,
+                    "incomplete",
+                    "XCTest case did not report a final status",
+                );
+            }
+            Some(TestCaseStatus::Passed) => {}
+        }
+        output.push_str("</testcase>");
+    }
+    output.push_str("</testsuite>");
+}
+
+fn render_failure(output: &mut String, failure: &TestFailure) {
+    output.push_str("<failure");
+    xml_attr(output, "type", "XCTestFailure");
+    xml_attr(output, "message", &failure.message);
+    output.push('>');
+    if let Some(file) = &failure.file {
+        xml_text(output, file);
+        if let Some(line) = failure.line {
+            output.push(':');
+            output.push_str(&line.to_string());
+        }
+        output.push_str(": ");
+    }
+    xml_text(output, &failure.message);
+    output.push_str("</failure>");
+}
+
+fn render_error(output: &mut String, error_type: &str, message: &str) {
+    output.push_str("<error");
+    xml_attr(output, "type", error_type);
+    xml_attr(output, "message", message);
+    output.push_str("/>");
+}
+
+fn render_status_property(output: &mut String, status: &str) {
+    output.push_str("<properties><property");
+    xml_attr(output, "name", "status");
+    xml_attr(output, "value", status);
+    output.push_str("/></properties>");
+}
+
+fn xml_attr(output: &mut String, name: &str, value: &str) {
+    output.push(' ');
+    output.push_str(name);
+    output.push_str("=\"");
+    xml_text(output, value);
+    output.push('"');
+}
+
+fn xml_text(output: &mut String, value: &str) {
+    for character in value.chars() {
+        if !is_xml_10_character(character) {
+            output.push('\u{FFFD}');
+            continue;
+        }
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&apos;"),
+            character => output.push(character),
+        }
+    }
+}
+
+fn is_xml_10_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}'
+    )
+}
+
+fn finite_duration(value: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn truncate_utf8(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn string_arg(args: &[NSObject], index: usize) -> Option<String> {

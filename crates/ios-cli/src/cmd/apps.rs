@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use ios_core::error::CoreError;
+use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 use crate::cmd::connect::{connect_by_ios_major, userspace_options};
 
@@ -58,6 +60,13 @@ enum AppsSub {
         )]
         attrs: Vec<String>,
     },
+    /// Query an iOS 17+ InstallCoordinationProxy LaunchServices record
+    InstallRecord {
+        #[arg(help = "Bundle ID (e.g. com.apple.Preferences)")]
+        bundle_id: String,
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+    },
     /// List running app processes (iOS 17+ appservice)
     Processes {
         #[arg(long, help = "Only include processes marked as applications")]
@@ -105,7 +114,8 @@ enum AppsSub {
         #[arg(last = true, allow_hyphen_values = true, help = "Arguments after --")]
         args: Vec<String>,
     },
-    /// Fetch app icons through CoreDevice appservice (iOS 17+ appservice)
+    /// Fetch an app icon (CoreDevice iconservice on iOS 17+, SpringBoard on older devices)
+    #[command(alias = "icon")]
     Icons {
         #[arg(help = "Bundle ID (e.g. com.example.App)")]
         bundle_id: String,
@@ -115,10 +125,24 @@ enum AppsSub {
         width: f64,
         #[arg(long, default_value_t = 60.0)]
         height: f64,
-        #[arg(long, default_value_t = 3.0)]
+        // CoreDevice's FetchAppIconParams defaults to a 2x render scale.
+        // Keep the CLI default aligned with the service (and pymobiledevice3)
+        // rather than silently requesting a different image size.
+        #[arg(long, default_value_t = 2.0)]
         scale: f64,
-        #[arg(long)]
+        /// Compatibility spelling retained for callers of the first CLI
+        /// implementation.  CoreDevice itself defaults to allowing a
+        /// placeholder; `--no-placeholder` is the explicit opt-out below.
+        #[arg(long, hide = true, conflicts_with = "no_placeholder")]
         allow_placeholder: bool,
+        #[arg(
+            long = "no-placeholder",
+            conflicts_with = "allow_placeholder",
+            help = "Fail instead of returning a placeholder for apps without an icon"
+        )]
+        no_placeholder: bool,
+        #[arg(long, help = "Overwrite existing icon files")]
+        force: bool,
     },
     /// Wait for a process termination event (iOS 17+ appservice)
     Monitor {
@@ -138,15 +162,18 @@ impl AppsCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for apps commands"))?;
 
-        let device = if apps_subcommand_requires_version_probe(&self.sub) {
-            let (device, _version) = connect_by_ios_major(&udid, |major| {
+        let (device, ios_major) = if apps_subcommand_requires_version_probe(&self.sub) {
+            let (device, version) = connect_by_ios_major(&udid, |major| {
                 apps_subcommand_prefers_tunnel(&self.sub, major)
             })
             .await
             .context("failed to connect device for apps command")?;
-            device
+            (device, Some(version.major))
         } else {
-            ios_core::connect(&udid, userspace_options(true)).await?
+            (
+                ios_core::connect(&udid, userspace_options(true)).await?,
+                None,
+            )
         };
         let skip_tunnel = device.tunnel_handle().is_none();
 
@@ -484,6 +511,52 @@ impl AppsCmd {
                     print_app_details(&app_json);
                 }
             }
+            AppsSub::InstallRecord {
+                bundle_id,
+                timeout_secs,
+            } => {
+                let timeout = Duration::from_secs(timeout_secs);
+                let result = tokio::time::timeout(timeout, async {
+                    let (xpc, metadata) = device
+                        .connect_xpc_service_with_metadata(
+                            ios_core::installcoordination::SERVICE_NAME,
+                        )
+                        .await
+                        .context("InstallCoordinationProxy requires an iOS 17+ RSD service")?;
+                    if metadata.resolved_service_name != ios_core::installcoordination::SERVICE_NAME
+                    {
+                        anyhow::bail!(
+                            "InstallCoordinationProxy resolved unsupported service {}",
+                            metadata.resolved_service_name
+                        );
+                    }
+                    let mut proxy =
+                        ios_core::installcoordination::InstallCoordinationProxy::with_timeout(
+                            xpc, timeout,
+                        );
+                    Ok::<_, anyhow::Error>(proxy.query(&bundle_id).await?)
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("install-record timed out after {timeout:?}"))??;
+                let output = install_record_to_json(&result);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else {
+                    println!("DB UUID: {}", result.db_uuid);
+                    println!("DB sequence: {}", result.db_sequence);
+                    println!(
+                        "Install path: {}",
+                        result.install_path.as_deref().unwrap_or("-")
+                    );
+                    println!(
+                        "Persistent identifier: {}",
+                        hex::encode(&result.persistent_identifier)
+                    );
+                    if !result.extra.is_empty() {
+                        println!("Extra fields: {}", result.extra.len());
+                    }
+                }
+            }
             AppsSub::Processes { apps, name } => {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
@@ -679,24 +752,66 @@ impl AppsCmd {
                 height,
                 scale,
                 allow_placeholder,
+                no_placeholder,
+                force,
             } => {
-                let mut client = connect_appservice(&device, &udid).await?;
-                let icons = client
-                    .fetch_app_icons(&bundle_id, width, height, scale, allow_placeholder)
-                    .await?;
+                validate_bundle_id_for_output(&bundle_id)?;
                 let output_dir = std::path::PathBuf::from(output_dir);
                 tokio::fs::create_dir_all(&output_dir).await?;
-                let mut results = Vec::new();
-                for (index, icon) in icons.iter().enumerate() {
-                    let output_path = app_icon_output_path(&output_dir, &bundle_id, index);
-                    tokio::fs::write(&output_path, &icon.data).await?;
-                    results.push(app_icon_result_to_json(
+                // Preserve the historical --allow-placeholder spelling while
+                // matching CoreDevice's upstream default (allow=true).
+                let allow_placeholder = allow_placeholder || !no_placeholder;
+                let results = if ios_major.is_some_and(|major| major >= 17) {
+                    let (xpc, metadata) = device
+                        .connect_xpc_service_with_metadata(ios_core::iconservice::SERVICE_NAME)
+                        .await
+                        .context("CoreDevice icon service is unavailable on this device")?;
+                    let mut client = ios_core::iconservice::IconServiceClient::new_with_features(
+                        xpc,
+                        metadata.features,
+                    );
+                    let icon = client
+                        .fetch_icon(
+                            Some(&bundle_id),
+                            None,
+                            width,
+                            height,
+                            scale,
+                            allow_placeholder,
+                        )
+                        .await?;
+                    let output_path = app_icon_output_path(&output_dir, &bundle_id, 0);
+                    crate::cmd::file::write_local_bytes_atomic(&output_path, &icon.png_data, force)
+                        .await?;
+                    vec![coredevice_icon_result_to_json(
                         &bundle_id,
-                        index,
+                        0,
                         &output_path,
-                        icon,
-                    ));
-                }
+                        &icon,
+                    )]
+                } else {
+                    // Legacy SpringBoard remains the explicit pre-iOS 17
+                    // fallback. It has no size/scale controls, so the output
+                    // reports the raw PNG and the requested values are not
+                    // silently claimed as device metadata.
+                    let stream = device
+                        .connect_service(ios_core::springboard::SERVICE_NAME)
+                        .await
+                        .context("failed to connect legacy SpringBoard icon service")?;
+                    let mut springboard = ios_core::springboard::SpringboardClient::new(stream);
+                    let png = springboard.get_icon_png_data(&bundle_id).await?;
+                    let output_path = app_icon_output_path(&output_dir, &bundle_id, 0);
+                    crate::cmd::file::write_local_bytes_atomic(&output_path, &png, force).await?;
+                    vec![serde_json::json!({
+                        "bundle_id": bundle_id,
+                        "index": 0,
+                        "output": output_path.display().to_string(),
+                        "bytes": png.len(),
+                        "sha256": sha256_hex(&png),
+                        "format": "png",
+                        "transport": "springboard",
+                    })]
+                };
 
                 if json {
                     println!("{}", serde_json::to_string_pretty(&results)?);
@@ -745,6 +860,7 @@ fn apps_subcommand_requires_version_probe(sub: &AppsSub) -> bool {
             coredevice: true,
             ..
         } | AppsSub::Processes { .. }
+            | AppsSub::InstallRecord { .. }
             | AppsSub::Kill { .. }
             | AppsSub::Signal { .. }
             | AppsSub::Pkill { .. }
@@ -764,6 +880,7 @@ fn apps_subcommand_prefers_tunnel(sub: &AppsSub, ios_major: u64) -> bool {
                 coredevice: true,
                 ..
             } | AppsSub::Processes { .. }
+                | AppsSub::InstallRecord { .. }
                 | AppsSub::Kill { .. }
                 | AppsSub::Signal { .. }
                 | AppsSub::Pkill { .. }
@@ -779,10 +896,14 @@ async fn connect_appservice(
     device: &ios_core::ConnectedDevice,
     udid: &str,
 ) -> Result<ios_core::apps::AppServiceClient, CoreError> {
-    let xpc = device
-        .connect_xpc_service(ios_core::apps::APPSERVICE_SERVICE)
+    let (xpc, metadata) = device
+        .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
         .await?;
-    Ok(ios_core::apps::AppServiceClient::new(xpc, udid.to_string()))
+    Ok(ios_core::apps::AppServiceClient::new_with_features(
+        xpc,
+        udid.to_string(),
+        metadata.features,
+    ))
 }
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {
@@ -1079,6 +1200,37 @@ fn coredevice_app_to_json(
     })
 }
 
+fn install_record_to_json(
+    record: &ios_core::installcoordination::InstallRecord,
+) -> serde_json::Value {
+    let mut object = serde_json::Map::from_iter([
+        ("db_uuid".to_string(), serde_json::json!(record.db_uuid)),
+        (
+            "db_sequence".to_string(),
+            serde_json::json!(record.db_sequence),
+        ),
+        (
+            "install_path".to_string(),
+            record
+                .install_path
+                .as_deref()
+                .map_or(serde_json::Value::Null, |path| {
+                    serde_json::Value::String(path.to_string())
+                }),
+        ),
+        (
+            "persistent_identifier".to_string(),
+            serde_json::Value::String(hex::encode(&record.persistent_identifier)),
+        ),
+    ]);
+    for (key, value) in &record.extra {
+        object
+            .entry(key.clone())
+            .or_insert_with(|| xpc_value_to_json(value));
+    }
+    serde_json::Value::Object(object)
+}
+
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
     match value {
         plist::Value::Array(items) => {
@@ -1177,21 +1329,46 @@ fn app_icon_output_path(
     output_dir.join(format!("{bundle_id}-{index}.png"))
 }
 
-fn app_icon_result_to_json(
+fn validate_bundle_id_for_output(bundle_id: &str) -> Result<()> {
+    // The CLI derives the output filename from the bundle ID. Keep user input
+    // from turning that convenience into a path escape on either host OS;
+    // Unicode bundle IDs remain valid and are intentionally not normalized.
+    if bundle_id.is_empty()
+        || bundle_id == "."
+        || bundle_id == ".."
+        || bundle_id.contains(['/', '\\', ':'])
+        || bundle_id.contains('\0')
+    {
+        return Err(anyhow::anyhow!(
+            "bundle ID must be a non-empty filename component without '/', '\\', or ':'"
+        ));
+    }
+    Ok(())
+}
+
+fn coredevice_icon_result_to_json(
     bundle_id: &str,
     index: usize,
     output_path: &std::path::Path,
-    icon: &ios_core::apps::appservice::AppIcon,
+    icon: &ios_core::iconservice::AppIcon,
 ) -> serde_json::Value {
     serde_json::json!({
         "bundle_id": bundle_id,
         "index": index,
         "output": output_path.display().to_string(),
-        "bytes": icon.data.len(),
-        "width": icon.width,
-        "height": icon.height,
+        "bytes": icon.png_data.len(),
+        "sha256": sha256_hex(&icon.png_data),
+        "pixel_size": [icon.pixel_size.0, icon.pixel_size.1],
+        "size": [icon.size.0, icon.size.1],
         "scale": icon.scale,
+        "is_placeholder": icon.is_placeholder,
+        "format": "png",
+        "transport": "coredevice.iconservice",
     })
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
 }
 
 fn process_termination_to_json(
@@ -1300,6 +1477,45 @@ mod tests {
             }
             _ => panic!("expected show subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_apps_install_record_subcommand() {
+        let cmd = TestCli::parse_from([
+            "apps",
+            "install-record",
+            "com.apple.Preferences",
+            "--timeout-secs",
+            "7",
+        ]);
+        match cmd.command {
+            AppsSub::InstallRecord {
+                bundle_id,
+                timeout_secs,
+            } => {
+                assert_eq!(bundle_id, "com.apple.Preferences");
+                assert_eq!(timeout_secs, 7);
+            }
+            _ => panic!("expected install-record subcommand"),
+        }
+    }
+
+    #[test]
+    fn install_record_json_contains_known_and_unknown_fields() {
+        let record = ios_core::installcoordination::InstallRecord {
+            db_uuid: "db".into(),
+            db_sequence: 4,
+            install_path: Some("file:///Applications/Test.app/".into()),
+            persistent_identifier: vec![0, 1],
+            extra: indexmap::IndexMap::from([(
+                "FutureField".into(),
+                ios_core::XpcValue::String("kept".into()),
+            )]),
+        };
+        let json = install_record_to_json(&record);
+        assert_eq!(json["db_sequence"], 4);
+        assert_eq!(json["persistent_identifier"], "0001");
+        assert_eq!(json["FutureField"], "kept");
     }
 
     #[test]
@@ -1729,6 +1945,8 @@ mod tests {
                 height,
                 scale,
                 allow_placeholder,
+                no_placeholder,
+                force,
             } => {
                 assert_eq!(bundle_id, "com.example.App");
                 assert_eq!(output_dir, "icons");
@@ -1736,6 +1954,48 @@ mod tests {
                 assert_eq!(height, 80.0);
                 assert_eq!(scale, 2.0);
                 assert!(allow_placeholder);
+                assert!(!no_placeholder);
+                assert!(!force);
+            }
+            _ => panic!("expected icons subcommand"),
+        }
+    }
+
+    #[test]
+    fn icon_is_an_alias_for_icons() {
+        let cmd = TestCli::parse_from(["apps", "icon", "com.example.App"]);
+        assert!(matches!(cmd.command, AppsSub::Icons { force: false, .. }));
+    }
+
+    #[test]
+    fn icon_defaults_match_coredevice_and_supports_no_placeholder() {
+        let cmd = TestCli::parse_from(["apps", "icons", "com.example.App"]);
+        match cmd.command {
+            AppsSub::Icons {
+                scale,
+                allow_placeholder,
+                no_placeholder,
+                ..
+            } => {
+                assert_eq!(scale, 2.0);
+                assert!(!allow_placeholder);
+                assert!(!no_placeholder);
+                // The effective default is true; the run path computes this
+                // after parsing so the compatibility field remains hidden.
+                assert!(allow_placeholder || !no_placeholder);
+            }
+            _ => panic!("expected icons subcommand"),
+        }
+
+        let cmd = TestCli::parse_from(["apps", "icons", "com.example.App", "--no-placeholder"]);
+        match cmd.command {
+            AppsSub::Icons {
+                allow_placeholder,
+                no_placeholder,
+                ..
+            } => {
+                assert!(!allow_placeholder);
+                assert!(no_placeholder);
             }
             _ => panic!("expected icons subcommand"),
         }
@@ -1760,6 +2020,16 @@ mod tests {
             path,
             std::path::PathBuf::from("icons/com.example.App-2.png")
         );
+    }
+
+    #[test]
+    fn icon_bundle_id_validation_blocks_host_path_syntax_but_keeps_unicode() {
+        assert!(validate_bundle_id_for_output("com.example.应用").is_ok());
+        assert!(validate_bundle_id_for_output("com.example.App").is_ok());
+        assert!(validate_bundle_id_for_output("../outside").is_err());
+        assert!(validate_bundle_id_for_output(r"com.example\outside").is_err());
+        assert!(validate_bundle_id_for_output(r"C:\outside").is_err());
+        assert!(validate_bundle_id_for_output("..").is_err());
     }
 
     #[test]

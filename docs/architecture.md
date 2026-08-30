@@ -21,7 +21,9 @@ organization for contributors.
 
 `ios_core::xpc` implements Remote Service Discovery and the HTTP/2 + XPC transport used by CoreDevice-style services.
 
-`ios_core::services` contains feature-gated service clients. Higher-level commands should enable only the features they need.
+`ios_core::services` contains feature-gated service clients, including the
+CoreDevice configuration and orientation clients. Higher-level commands
+should enable only the features they need.
 
 `ios-core` combines discovery, pairing material, lockdown service access, tunnel setup, and RSD/XPC service access into a higher-level API.
 

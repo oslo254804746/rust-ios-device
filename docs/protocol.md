@@ -21,7 +21,13 @@ Note: The `proto` module is `pub(crate)` — these paths describe internal organ
 
 - `ios_core::lockdown` builds on lockdown framing for sessions, service startup, pairing, and pair records.
 - `ios_core::xpc` builds the RSD and RemoteXPC transport over HTTP/2.
-- `ios_core::services` implements higher-level service clients such as AFC, syslog, screenshot, DTX/Instruments, TestManager, ImageMounter, WebInspector, and CoreDevice file/device information/diagnostics services.
+- `ios_core::services` implements higher-level service clients such as AFC, syslog, screenshot, DTX/Instruments, TestManager, ImageMounter, WebInspector, and CoreDevice file/device information/diagnostics/configuration/orientation services.
+
+CoreDevice configuration uses the action-only `CoreDevice.*` envelope from
+`CoreDeviceService.invoke` (with `CoreDevice.actionIdentifier` and no feature
+identifier). Orientation uses the raw `OrientationRequest` dictionary on
+`com.apple.coredevice.devicecontrol`; its RSD feature is
+`com.apple.coredevice.feature.remote.devicecontrol.orientation`.
 
 Protocol compatibility should be treated as best effort. Apple can change private services and message shapes between iOS versions.
 

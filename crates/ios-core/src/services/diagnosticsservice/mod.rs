@@ -184,9 +184,13 @@ mod tests {
             dict["CoreDevice.featureIdentifier"].as_str(),
             Some(FEATURE_CAPTURE_SYSDIAGNOSE)
         );
+        let device_identifier = dict["CoreDevice.deviceIdentifier"]
+            .as_str()
+            .expect("modern device identifier should be a string");
+        assert!(uuid::Uuid::parse_str(device_identifier).is_ok());
         assert_eq!(
-            dict["CoreDevice.deviceIdentifier"].as_str(),
-            Some("DEVICE-ID")
+            dict["CoreDevice.CoreDeviceDDIProtocolVersion"],
+            XpcValue::Int64(2)
         );
     }
 

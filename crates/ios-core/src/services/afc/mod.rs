@@ -235,19 +235,53 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             )));
         }
 
-        let entire_len = hdr.entire_len.get() as usize;
-        let this_len = hdr.this_len.get() as usize;
+        let entire_len_raw = hdr.entire_len.get();
+        let this_len_raw = hdr.this_len.get();
         let opcode = hdr.operation.get();
 
-        let header_payload_len = this_len.saturating_sub(AfcHeader::SIZE);
-        let payload_len = entire_len.saturating_sub(this_len);
-
-        // Sanity check against DoS
-        const MAX_AFC_MSG: usize = 256 * 1024 * 1024; // 256 MiB
-        if header_payload_len > MAX_AFC_MSG || payload_len > MAX_AFC_MSG {
+        // Validate the wire lengths before converting them to usize or
+        // deriving allocation sizes.  In particular, saturating subtraction
+        // would turn malformed frames into apparently empty packets.
+        let header_size = AfcHeader::SIZE as u64;
+        if this_len_raw < header_size {
             return Err(AfcError::Protocol(format!(
-                "AFC frame too large: header_payload={header_payload_len} payload={payload_len}"
+                "AFC this_len is smaller than the header: {this_len_raw}"
             )));
+        }
+        if this_len_raw > entire_len_raw {
+            return Err(AfcError::Protocol(format!(
+                "AFC this_len exceeds entire_len: this_len={this_len_raw} entire_len={entire_len_raw}"
+            )));
+        }
+
+        let entire_len = usize::try_from(entire_len_raw).map_err(|_| {
+            AfcError::Protocol(format!(
+                "AFC entire_len does not fit in usize: {entire_len_raw}"
+            ))
+        })?;
+        let this_len = usize::try_from(this_len_raw).map_err(|_| {
+            AfcError::Protocol(format!(
+                "AFC this_len does not fit in usize: {this_len_raw}"
+            ))
+        })?;
+
+        // Sanity check against DoS.  Bound the complete frame body because
+        // both vectors below are allocated before the operation is decoded.
+        const MAX_AFC_MSG: usize = 256 * 1024 * 1024; // 256 MiB
+        let frame_body_len = entire_len - AfcHeader::SIZE;
+        if frame_body_len > MAX_AFC_MSG {
+            return Err(AfcError::Protocol(format!(
+                "AFC frame too large: body={frame_body_len} limit={MAX_AFC_MSG}"
+            )));
+        }
+
+        let header_payload_len = this_len - AfcHeader::SIZE;
+        let payload_len = entire_len - this_len;
+
+        if opcode == AfcOpcode::Status as u64 && header_payload_len < 8 {
+            return Err(AfcError::Protocol(
+                "AFC Status response is missing its 8-byte status code".into(),
+            ));
         }
 
         let mut header_payload = vec![0u8; header_payload_len];
@@ -262,15 +296,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
 
         // Status opcode (1): header_payload[0..8] = LE u64 error code
         if opcode == AfcOpcode::Status as u64 {
-            let code = AfcStatusCode::from_u64(if header_payload.len() >= 8 {
-                u64::from_le_bytes(
-                    header_payload[..8]
-                        .try_into()
-                        .map_err(|_| AfcError::Protocol("bad status code".into()))?,
-                )
-            } else {
-                0
-            });
+            let code = AfcStatusCode::from_u64(u64::from_le_bytes(
+                header_payload[..8]
+                    .try_into()
+                    .map_err(|_| AfcError::Protocol("bad status code".into()))?,
+            ));
             if code != AfcStatusCode::Success {
                 return Err(AfcError::Status(code));
             }
@@ -596,6 +626,18 @@ mod tests {
         frame
     }
 
+    fn afc_frame_with_lengths(
+        opcode: AfcOpcode,
+        entire_len: u64,
+        this_len: u64,
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut frame = afc_frame(opcode, &[], body);
+        frame[8..16].copy_from_slice(&entire_len.to_le_bytes());
+        frame[16..24].copy_from_slice(&this_len.to_le_bytes());
+        frame
+    }
+
     fn afc_status_success_frame() -> Vec<u8> {
         afc_frame(AfcOpcode::Status, &0u64.to_le_bytes(), &[])
     }
@@ -690,6 +732,116 @@ mod tests {
         let entries = afc.list_dir("/").await.unwrap();
         // "." and ".." are filtered out
         assert_eq!(entries, vec!["Photos", "Downloads"]);
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_this_len_smaller_than_header() {
+        // The extra byte lets the old saturating-subtraction code return Ok
+        // instead of failing while trying to read a missing payload byte.
+        let frame = afc_frame_with_lengths(AfcOpcode::ReadDir, 40, 39, &[0]);
+        let mut stream = MockStream::new(frame);
+        let mut client = AfcClient::new(&mut stream);
+
+        let err = match client.recv().await {
+            Ok(_) => panic!("malformed AFC frame was accepted"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, AfcError::Protocol(message) if message.contains("smaller than the header"))
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_this_len_larger_than_entire_len() {
+        // The extra byte lets the old saturating-subtraction code return Ok
+        // even though this_len claims bytes beyond the end of the frame.
+        let frame = afc_frame_with_lengths(AfcOpcode::ReadDir, 40, 41, &[0]);
+        let mut stream = MockStream::new(frame);
+        let mut client = AfcClient::new(&mut stream);
+
+        let err = match client.recv().await {
+            Ok(_) => panic!("malformed AFC frame was accepted"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, AfcError::Protocol(message) if message.contains("exceeds entire_len"))
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_huge_frame_without_reading_or_allocating_body() {
+        // Only the 40-byte header is present.  The frame must be rejected from
+        // its declared size, without attempting a giant allocation or waiting
+        // for a body that cannot be present in this fake transport.
+        let frame = afc_frame_with_lengths(AfcOpcode::ReadDir, u64::MAX, u64::MAX, &[]);
+        let mut stream = MockStream::new(frame);
+        let mut client = AfcClient::new(&mut stream);
+
+        let err = match client.recv().await {
+            Ok(_) => panic!("oversized AFC frame was accepted"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AfcError::Protocol(_)));
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_status_without_a_complete_code() {
+        for header_payload_len in 0..8 {
+            let header_payload = vec![0u8; header_payload_len];
+            let frame = afc_frame(AfcOpcode::Status, &header_payload, &[]);
+            let mut stream = MockStream::new(frame);
+            let mut client = AfcClient::new(&mut stream);
+
+            let err = match client.recv().await {
+                Ok(_) => panic!("short AFC Status response was treated as success"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, AfcError::Protocol(message) if message.contains("8-byte status code")),
+                "header payload length {header_payload_len}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_short_status_before_reading_declared_payload() {
+        let declared_payload_len = 1024 * 1024;
+        let frame = afc_frame_with_lengths(
+            AfcOpcode::Status,
+            (AfcHeader::SIZE + declared_payload_len) as u64,
+            AfcHeader::SIZE as u64,
+            &[0],
+        );
+        let mut stream = MockStream::new(frame);
+        let mut client = AfcClient::new(&mut stream);
+
+        let err = match client.recv().await {
+            Ok(_) => panic!("short AFC Status response was accepted"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, AfcError::Protocol(message) if message.contains("8-byte status code"))
+        );
+        assert_eq!(stream.read_pos, AfcHeader::SIZE);
+    }
+
+    #[tokio::test]
+    async fn recv_preserves_success_and_object_not_found_statuses() {
+        let mut success_stream = MockStream::new(afc_status_success_frame());
+        let mut success_client = AfcClient::new(&mut success_stream);
+        success_client.recv().await.unwrap();
+
+        let mut not_found_stream =
+            MockStream::new(afc_frame(AfcOpcode::Status, &8u64.to_le_bytes(), &[]));
+        let mut not_found_client = AfcClient::new(&mut not_found_stream);
+        let err = match not_found_client.recv().await {
+            Ok(_) => panic!("AFC status 8 was accepted as success"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            AfcError::Status(AfcStatusCode::ObjectNotFound)
+        ));
     }
 
     #[test]

@@ -7,10 +7,13 @@
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 use bytes::Bytes;
+use futures_util::StreamExt;
 use indexmap::IndexMap;
 
 const FEATURE_LIST_PROCESSES: &str = "com.apple.coredevice.feature.listprocesses";
 const FEATURE_LIST_APPS: &str = "com.apple.coredevice.feature.listapps";
+const FEATURE_STREAM_APPS: &str = "com.apple.coredevice.feature.streamapplist";
+const FEATURE_STREAM_PROCESSES: &str = "com.apple.coredevice.feature.streamprocesslist";
 const FEATURE_LIST_ROOTS: &str = "com.apple.coredevice.feature.listroots";
 const FEATURE_LAUNCH_APPLICATION: &str = "com.apple.coredevice.feature.launchapplication";
 const FEATURE_SPAWN_EXECUTABLE: &str = "com.apple.coredevice.feature.spawnexecutable";
@@ -59,6 +62,12 @@ pub struct ListAppsOptions {
     pub include_internal_apps: bool,
     /// Include default system apps.
     pub include_default_apps: bool,
+    /// Request access to application containers.
+    pub require_container_access: bool,
+    /// Include application group identifiers in each app entry.
+    pub include_app_group_identifiers: bool,
+    /// Include application container paths in each app entry.
+    pub include_container_paths: bool,
 }
 
 impl Default for ListAppsOptions {
@@ -69,6 +78,9 @@ impl Default for ListAppsOptions {
             include_hidden_apps: true,
             include_internal_apps: true,
             include_default_apps: true,
+            require_container_access: false,
+            include_app_group_identifiers: false,
+            include_container_paths: false,
         }
     }
 }
@@ -148,27 +160,111 @@ pub struct ProcessTermination {
     pub reason: Option<String>,
 }
 
+pub use crate::services::coredevice::CoreDeviceEnvelopeMode;
+
 /// Client for CoreDevice appservice feature calls.
 pub struct AppServiceClient {
     client: XpcClient,
     device_identifier: String,
+    /// RSD feature metadata confirms a modern CoreDevice service; the explicit
+    /// mode remains available for devices known to require the old envelope.
+    envelope_mode: CoreDeviceEnvelopeMode,
+    /// `None` means the RSD feature list was not available. `Some` is an
+    /// explicit feature list and is used only for capability routing.
+    service_features: Option<Vec<String>>,
 }
 
 impl AppServiceClient {
-    /// Create an appservice client from an initialized XPC client and device identifier.
+    /// Create an appservice client using the current CoreDevice envelope.
     pub fn new(client: XpcClient, device_identifier: impl Into<String>) -> Self {
+        Self::new_with_mode(client, device_identifier, CoreDeviceEnvelopeMode::Modern)
+    }
+
+    /// Create an appservice client using the pre-modern CoreDevice envelope.
+    ///
+    /// Use this only when device/version evidence outside the RSD feature list
+    /// shows that the older protocol is required. A failed modern request is
+    /// never replayed automatically because appservice operations may mutate
+    /// device state.
+    pub fn new_legacy(client: XpcClient, device_identifier: impl Into<String>) -> Self {
+        Self::new_with_mode(client, device_identifier, CoreDeviceEnvelopeMode::Legacy)
+    }
+
+    /// Create an appservice client with an explicit envelope mode.
+    pub fn new_with_mode(
+        client: XpcClient,
+        device_identifier: impl Into<String>,
+        envelope_mode: CoreDeviceEnvelopeMode,
+    ) -> Self {
         Self {
             client,
             device_identifier: device_identifier.into(),
+            envelope_mode,
+            service_features: None,
         }
+    }
+
+    /// Create an appservice client with the features advertised by RSD.
+    ///
+    /// Presence of an RSD service entry is the available modern-device
+    /// routing signal. An empty feature list remains permissive for feature
+    /// checks, but still selects the modern envelope. A device that explicitly
+    /// advertises `streamapplist` must be queried through that feature:
+    /// iOS 26-era `dtappserviced` does not answer the older `listapps` request.
+    pub fn new_with_features<I, S>(
+        client: XpcClient,
+        device_identifier: impl Into<String>,
+        service_features: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            client,
+            device_identifier: device_identifier.into(),
+            envelope_mode: CoreDeviceEnvelopeMode::Modern,
+            service_features: Some(service_features.into_iter().map(Into::into).collect()),
+        }
+    }
+
+    /// Return the envelope mode selected for ordinary feature calls.
+    pub fn envelope_mode(&self) -> CoreDeviceEnvelopeMode {
+        self.envelope_mode
+    }
+
+    fn feature_is_advertised(&self, feature: &str) -> bool {
+        feature_is_advertised(self.service_features.as_deref(), feature)
+    }
+
+    fn feature_is_known_and_missing(&self, feature: &str) -> bool {
+        feature_is_known_and_missing(self.service_features.as_deref(), feature)
+    }
+
+    fn ensure_feature(&self, feature: &str) -> Result<(), AppServiceError> {
+        if self.feature_is_known_and_missing(feature) {
+            return Err(AppServiceError::Protocol(format!(
+                "CoreDevice feature {feature} is not advertised by RSD"
+            )));
+        }
+        Ok(())
+    }
+
+    fn request(&self, feature_identifier: &str, input: XpcValue) -> XpcValue {
+        build_request_for_mode(
+            self.envelope_mode,
+            &self.device_identifier,
+            feature_identifier,
+            input,
+        )
     }
 
     /// List running processes visible to CoreDevice.
     pub async fn list_processes(&mut self) -> Result<Vec<RunningAppProcess>, AppServiceError> {
+        self.ensure_feature(FEATURE_LIST_PROCESSES)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_LIST_PROCESSES,
                 XpcValue::Dictionary(IndexMap::new()),
             ))
@@ -181,26 +277,105 @@ impl AppServiceClient {
         &mut self,
         options: ListAppsOptions,
     ) -> Result<Vec<CoreDeviceAppInfo>, AppServiceError> {
+        if self.feature_is_advertised(FEATURE_STREAM_APPS) {
+            let mut stream = Box::pin(self.stream_apps(options));
+            let mut apps = Vec::new();
+            while let Some(app) = stream.next().await {
+                apps.push(app?);
+            }
+            return Ok(apps);
+        }
+
+        self.ensure_feature(FEATURE_LIST_APPS)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
-                FEATURE_LIST_APPS,
-                build_list_apps_input(options),
-            ))
+            .call(self.request(FEATURE_LIST_APPS, build_list_apps_input(options)))
             .await?;
         parse_apps(&response)
     }
 
+    /// Stream installed apps as CoreDevice pushes them over its side channel.
+    ///
+    /// If RSD supplied a non-empty feature list and it does not contain
+    /// `streamapplist`, no request is sent. Unknown/empty feature metadata
+    /// remains permissive for older transports where RSD omitted
+    /// `Properties.Features`.
+    pub fn stream_apps(
+        &mut self,
+        options: ListAppsOptions,
+    ) -> impl futures_core::Stream<Item = Result<CoreDeviceAppInfo, AppServiceError>> + '_ {
+        let envelope_mode = self.envelope_mode;
+        let feature_missing = self.feature_is_known_and_missing(FEATURE_STREAM_APPS);
+        async_stream::try_stream! {
+            ensure_modern_stream_mode(envelope_mode, FEATURE_STREAM_APPS)?;
+            if feature_missing {
+                Err(AppServiceError::Protocol(
+                    "CoreDevice streamapplist is not advertised by RSD".to_string(),
+                ))?;
+            }
+
+            let mut stream = Box::pin(crate::services::coredevice::stream_invoke(
+                &mut self.client,
+                &self.device_identifier,
+                FEATURE_STREAM_APPS,
+                build_list_apps_input(options),
+            ));
+            while let Some(value) = stream.next().await {
+                let value = value?;
+                let app = parse_app(&value).ok_or_else(|| {
+                    AppServiceError::Protocol(
+                        "CoreDevice streamapplist yielded an invalid app element".to_string(),
+                    )
+                })?;
+                yield app;
+            }
+        }
+    }
+
+    /// Stream process tokens as CoreDevice pushes them over its side channel.
+    ///
+    /// As with the upstream client, this is an explicit streaming operation;
+    /// callers should select it only when the device advertises
+    /// `streamprocesslist`. A non-empty RSD list is checked before any request
+    /// is sent, while missing feature metadata remains permissive.
+    pub fn stream_processes(
+        &mut self,
+    ) -> impl futures_core::Stream<Item = Result<RunningAppProcess, AppServiceError>> + '_ {
+        let envelope_mode = self.envelope_mode;
+        let feature_missing = self.feature_is_known_and_missing(FEATURE_STREAM_PROCESSES);
+        async_stream::try_stream! {
+            ensure_modern_stream_mode(envelope_mode, FEATURE_STREAM_PROCESSES)?;
+            if feature_missing {
+                Err(AppServiceError::Protocol(
+                    "CoreDevice streamprocesslist is not advertised by RSD".to_string(),
+                ))?;
+            }
+
+            let mut stream = Box::pin(crate::services::coredevice::stream_invoke(
+                &mut self.client,
+                &self.device_identifier,
+                FEATURE_STREAM_PROCESSES,
+                XpcValue::Dictionary(IndexMap::new()),
+            ));
+            while let Some(value) = stream.next().await {
+                let value = value?;
+                let process = parse_process(&value).ok_or_else(|| {
+                    AppServiceError::Protocol(
+                        "CoreDevice streamprocesslist yielded an invalid process element"
+                            .to_string(),
+                    )
+                })?;
+                yield process;
+            }
+        }
+    }
+
     /// Return appservice root descriptors as the raw CoreDevice output value.
     pub async fn list_roots(&mut self) -> Result<XpcValue, AppServiceError> {
+        self.ensure_feature(FEATURE_LIST_ROOTS)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
-                FEATURE_LIST_ROOTS,
-                build_list_roots_input(),
-            ))
+            .call(self.request(FEATURE_LIST_ROOTS, build_list_roots_input()))
             .await?;
         parse_output_value(response)
     }
@@ -212,13 +387,10 @@ impl AppServiceClient {
 
     /// Send an arbitrary signal to a process identifier.
     pub async fn send_signal(&mut self, pid: u64, signal: i64) -> Result<(), AppServiceError> {
+        self.ensure_feature(FEATURE_SEND_SIGNAL)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
-                FEATURE_SEND_SIGNAL,
-                build_send_signal_input(pid, signal)?,
-            ))
+            .call(self.request(FEATURE_SEND_SIGNAL, build_send_signal_input(pid, signal)?))
             .await?;
         ensure_no_error(&response)?;
         Ok(())
@@ -229,10 +401,10 @@ impl AppServiceClient {
         &mut self,
         bundle_id: &str,
     ) -> Result<Option<u64>, AppServiceError> {
+        self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_LAUNCH_APPLICATION,
                 build_launch_application_input(bundle_id)?,
             ))
@@ -247,10 +419,10 @@ impl AppServiceClient {
         bundle_id: &str,
         options: &LaunchApplicationOptions,
     ) -> Result<Option<u64>, AppServiceError> {
+        self.ensure_feature(FEATURE_LAUNCH_APPLICATION)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_LAUNCH_APPLICATION,
                 build_launch_application_input_with_options(bundle_id, options)?,
             ))
@@ -265,10 +437,10 @@ impl AppServiceClient {
         executable: &str,
         arguments: &[String],
     ) -> Result<Option<u64>, AppServiceError> {
+        self.ensure_feature(FEATURE_SPAWN_EXECUTABLE)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_SPAWN_EXECUTABLE,
                 build_spawn_executable_input(executable, arguments)?,
             ))
@@ -278,6 +450,9 @@ impl AppServiceClient {
     }
 
     /// Fetch one or more rendered app icons for a bundle.
+    #[deprecated(
+        note = "CoreDevice icons are served by iconservice; use IconServiceClient::fetch_icon instead"
+    )]
     pub async fn fetch_app_icons(
         &mut self,
         bundle_id: &str,
@@ -286,10 +461,10 @@ impl AppServiceClient {
         scale: f64,
         allow_placeholder: bool,
     ) -> Result<Vec<AppIcon>, AppServiceError> {
+        self.ensure_feature(FEATURE_FETCH_APP_ICONS)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_FETCH_APP_ICONS,
                 build_fetch_app_icons_input(bundle_id, width, height, scale, allow_placeholder),
             ))
@@ -302,16 +477,40 @@ impl AppServiceClient {
         &mut self,
         pid: u64,
     ) -> Result<ProcessTermination, AppServiceError> {
+        self.ensure_feature(FEATURE_MONITOR_PROCESS_TERMINATION)?;
         let response = self
             .client
-            .call(build_request(
-                &self.device_identifier,
+            .call(self.request(
                 FEATURE_MONITOR_PROCESS_TERMINATION,
                 build_monitor_process_termination_input(pid)?,
             ))
             .await?;
         parse_process_termination(&response)
     }
+}
+
+fn feature_is_advertised(service_features: Option<&[String]>, feature: &str) -> bool {
+    service_features.is_some_and(|features| features.iter().any(|item| item == feature))
+}
+
+fn feature_is_known_and_missing(service_features: Option<&[String]>, feature: &str) -> bool {
+    // An empty RSD feature list means the service omitted capability metadata,
+    // not that it explicitly rejected every feature.
+    service_features.is_some_and(|features| {
+        !features.is_empty() && !features.iter().any(|item| item == feature)
+    })
+}
+
+fn ensure_modern_stream_mode(
+    envelope_mode: CoreDeviceEnvelopeMode,
+    feature: &str,
+) -> Result<(), AppServiceError> {
+    if envelope_mode == CoreDeviceEnvelopeMode::Legacy {
+        return Err(AppServiceError::Protocol(format!(
+            "CoreDevice streaming feature {feature} requires the modern DDI envelope"
+        )));
+    }
+    Ok(())
 }
 
 fn build_list_apps_input(options: ListAppsOptions) -> XpcValue {
@@ -335,6 +534,18 @@ fn build_list_apps_input(options: ListAppsOptions) -> XpcValue {
         (
             "includeDefaultApps".to_string(),
             XpcValue::Bool(options.include_default_apps),
+        ),
+        (
+            "requireContainerAccess".to_string(),
+            XpcValue::Bool(options.require_container_access),
+        ),
+        (
+            "includeAppGroupIdentifiers".to_string(),
+            XpcValue::Bool(options.include_app_group_identifiers),
+        ),
+        (
+            "includeContainerPaths".to_string(),
+            XpcValue::Bool(options.include_container_paths),
         ),
     ]))
 }
@@ -557,8 +768,27 @@ fn empty_binary_plist(field_name: &str) -> Result<Bytes, AppServiceError> {
     Ok(Bytes::from(bytes))
 }
 
+#[cfg(test)]
 fn build_request(device_identifier: &str, feature_identifier: &str, input: XpcValue) -> XpcValue {
     crate::services::coredevice::build_request(device_identifier, feature_identifier, input)
+}
+
+fn build_request_for_mode(
+    mode: CoreDeviceEnvelopeMode,
+    device_identifier: &str,
+    feature_identifier: &str,
+    input: XpcValue,
+) -> XpcValue {
+    match mode {
+        CoreDeviceEnvelopeMode::Modern => {
+            crate::services::coredevice::build_request(device_identifier, feature_identifier, input)
+        }
+        CoreDeviceEnvelopeMode::Legacy => crate::services::coredevice::build_legacy_request(
+            device_identifier,
+            feature_identifier,
+            input,
+        ),
+    }
 }
 
 fn parse_processes(response: &XpcMessage) -> Result<Vec<RunningAppProcess>, AppServiceError> {
@@ -863,14 +1093,65 @@ mod tests {
             dict["CoreDevice.featureIdentifier"].as_str(),
             Some(FEATURE_SEND_SIGNAL)
         );
+        let device_identifier = dict["CoreDevice.deviceIdentifier"]
+            .as_str()
+            .expect("modern device identifier should be a string");
+        assert!(uuid::Uuid::parse_str(device_identifier).is_ok());
         assert_eq!(
-            dict["CoreDevice.deviceIdentifier"].as_str(),
-            Some("DEVICE-ID")
+            dict["CoreDevice.CoreDeviceDDIProtocolVersion"],
+            XpcValue::Int64(2)
         );
+        let version = dict["CoreDevice.coreDeviceVersion"].as_dict().unwrap();
+        assert_eq!(version["stringValue"].as_str(), Some("629.3"));
         assert!(dict["CoreDevice.invocationIdentifier"]
             .as_str()
-            .unwrap()
-            .contains('-'));
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .is_some());
+    }
+
+    #[test]
+    fn appservice_envelope_mode_routes_every_ordinary_request() {
+        for feature in [
+            FEATURE_LIST_APPS,
+            FEATURE_LIST_PROCESSES,
+            FEATURE_LAUNCH_APPLICATION,
+        ] {
+            let modern = build_request_for_mode(
+                CoreDeviceEnvelopeMode::Modern,
+                "DEVICE-ID",
+                feature,
+                XpcValue::Null,
+            );
+            let legacy = build_request_for_mode(
+                CoreDeviceEnvelopeMode::Legacy,
+                "DEVICE-ID",
+                feature,
+                XpcValue::Null,
+            );
+            let modern = modern.as_dict().unwrap();
+            let legacy = legacy.as_dict().unwrap();
+
+            assert_eq!(
+                modern["CoreDevice.featureIdentifier"].as_str(),
+                Some(feature)
+            );
+            assert_eq!(
+                legacy["CoreDevice.featureIdentifier"].as_str(),
+                Some(feature)
+            );
+            assert_eq!(
+                modern["CoreDevice.CoreDeviceDDIProtocolVersion"],
+                XpcValue::Int64(2)
+            );
+            assert_eq!(
+                legacy["CoreDevice.CoreDeviceDDIProtocolVersion"],
+                XpcValue::Int64(0)
+            );
+            assert_ne!(
+                modern["CoreDevice.deviceIdentifier"],
+                legacy["CoreDevice.deviceIdentifier"]
+            );
+        }
     }
 
     #[test]
@@ -1043,6 +1324,74 @@ mod tests {
         assert_eq!(dict["includeHiddenApps"], XpcValue::Bool(true));
         assert_eq!(dict["includeInternalApps"], XpcValue::Bool(true));
         assert_eq!(dict["includeDefaultApps"], XpcValue::Bool(true));
+        assert_eq!(dict["requireContainerAccess"], XpcValue::Bool(false));
+        assert_eq!(dict["includeAppGroupIdentifiers"], XpcValue::Bool(false));
+        assert_eq!(dict["includeContainerPaths"], XpcValue::Bool(false));
+        assert_eq!(dict.len(), 8);
+    }
+
+    #[test]
+    fn build_list_apps_input_preserves_all_extended_filters() {
+        let input = build_list_apps_input(ListAppsOptions {
+            include_app_clips: false,
+            include_removable_apps: false,
+            include_hidden_apps: false,
+            include_internal_apps: false,
+            include_default_apps: false,
+            require_container_access: true,
+            include_app_group_identifiers: true,
+            include_container_paths: true,
+        });
+        let dict = input.as_dict().unwrap();
+
+        for key in [
+            "includeAppClips",
+            "includeRemovableApps",
+            "includeHiddenApps",
+            "includeInternalApps",
+            "includeDefaultApps",
+        ] {
+            assert_eq!(dict[key], XpcValue::Bool(false));
+        }
+        assert_eq!(dict["requireContainerAccess"], XpcValue::Bool(true));
+        assert_eq!(dict["includeAppGroupIdentifiers"], XpcValue::Bool(true));
+        assert_eq!(dict["includeContainerPaths"], XpcValue::Bool(true));
+    }
+
+    #[test]
+    fn stream_app_route_requires_explicit_rsd_advertisement() {
+        let stream_feature = FEATURE_STREAM_APPS.to_string();
+        let old_feature = FEATURE_LIST_APPS.to_string();
+
+        assert!(!feature_is_advertised(None, FEATURE_STREAM_APPS));
+        assert!(feature_is_advertised(
+            Some(std::slice::from_ref(&stream_feature)),
+            FEATURE_STREAM_APPS
+        ));
+        assert!(!feature_is_advertised(
+            Some(std::slice::from_ref(&old_feature)),
+            FEATURE_STREAM_APPS
+        ));
+        assert!(!feature_is_known_and_missing(None, FEATURE_STREAM_APPS));
+        assert!(!feature_is_known_and_missing(
+            Some(&[]),
+            FEATURE_STREAM_APPS
+        ));
+        assert!(feature_is_known_and_missing(
+            Some(std::slice::from_ref(&old_feature)),
+            FEATURE_STREAM_APPS
+        ));
+    }
+
+    #[test]
+    fn legacy_envelope_rejects_modern_stream_features() {
+        let error = ensure_modern_stream_mode(CoreDeviceEnvelopeMode::Legacy, FEATURE_STREAM_APPS)
+            .expect_err("legacy CoreDevice clients must not silently send modern streams");
+
+        assert!(matches!(
+            error,
+            AppServiceError::Protocol(message) if message.contains("requires the modern DDI envelope")
+        ));
     }
 
     #[test]

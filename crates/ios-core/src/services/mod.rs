@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ios-core = { version = "0.1.9", features = ["afc", "syslog", "screenshot"] }
+//! ios-core = { version = "0.1.10", features = ["afc", "syslog", "screenshot"] }
 //! ```
 //!
 //! ## Available features
@@ -14,11 +14,11 @@
 //! | `afc` | [`afc`] | Apple File Conduit — device filesystem access |
 //! | `apps` | [`apps`] | App install/uninstall/launch/kill (InstallationProxy + appservice) |
 //! | `arbitration` | [`arbitration`] | Exclusive device access claim/release |
-//! | `companion` | [`companion`] | Paired accessory discovery (Apple Watch) |
+//! | `companion` | [`companion`] | Paired accessory registry, events, and port forwarding |
 //! | `notificationproxy` | [`notificationproxy`] | Device notification subscribe/post |
 //! | `crashreport` | [`crashreport`] | Crash log download and management (requires `afc`) |
 //! | `springboard` | [`springboard`] | Icon layout, wallpaper, orientation |
-//! | `mcinstall` | [`mcinstall`] | Configuration profile install/remove |
+//! | `mcinstall` | [`mcinstall`] | Configuration profiles and supervised MDM passcode/security operations |
 //! | `heartbeat` | [`heartbeat`] | Connection keepalive |
 //! | `file_relay` | [`file_relay`] | Diagnostic bundle archive |
 //! | `syslog` | [`syslog`] | Real-time system log streaming |
@@ -34,13 +34,21 @@
 //! | `fileservice` | [`fileservice`] | iOS 17+ XPC file service |
 //! | `deviceinfo` | [`deviceinfo`] | iOS 17+ XPC device info |
 //! | `diagnosticsservice` | [`diagnosticsservice`] | iOS 17+ XPC diagnostics service |
+//! | `configuration` | [`configuration`] | iOS 17+ CoreDevice appearance/accessibility actions |
+//! | `orientation` | [`orientation`] | iOS 17+ CoreDevice device rotation |
+//! | `iconservice` | [`iconservice`] | iOS 17+ CoreDevice application icons |
+//! | `screencapture` | [`screencapture`] | iOS 17+ CoreDevice screenshot capture |
+//! | `hid` | [`hid`] | iOS 17+ CoreDevice button, touch, and keyboard input |
+//! | `display` | [`display`] | iOS 17+ CoreDevice media negotiation and bounded RTP access units |
+//! | `installcoordination` | [`installcoordination`] | iOS 17+ InstallCoordinationProxy query |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
 //! | `preboard` | [`preboard`] | Stashbag commit/rollback |
 //! | `idam` | [`idam`] | Identity and device auth |
 //! | `fetchsymbols` | [`fetchsymbols`] | Debug symbol download |
-//! | `ostrace` | [`ostrace`] | OS trace relay process listing |
+//! | `ostrace` | [`ostrace`] | OS trace process listing, structured live logs, and raw PAX archive/collect |
+//! | `pasteboard` | [`pasteboard`] | iOS 17+ CoreDevice general pasteboard |
 //! | `prepare` | [`prepare`] | Supervised device preparation (requires `afc`+`mcinstall`) |
 //! | `restore` | [`restore`] | Recovery/restore mode operations |
 //! | `dproxy` | [`dproxy`] | DTX debug proxy recording (requires `dtx`) |
@@ -94,9 +102,15 @@ macro_rules! service_error {
 pub mod backup2;
 #[cfg(any(
     all(feature = "apps", feature = "tunnel"),
+    feature = "configuration",
     feature = "deviceinfo",
     feature = "diagnosticsservice",
-    feature = "fileservice"
+    feature = "fileservice",
+    feature = "orientation",
+    feature = "iconservice",
+    feature = "screencapture",
+    feature = "hid",
+    feature = "display"
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
@@ -191,6 +205,30 @@ pub mod fetchsymbols;
 
 #[cfg(feature = "ostrace")]
 pub mod ostrace;
+
+#[cfg(feature = "pasteboard")]
+pub mod pasteboard;
+
+#[cfg(feature = "configuration")]
+pub mod configuration;
+
+#[cfg(feature = "orientation")]
+pub mod orientation;
+
+#[cfg(feature = "iconservice")]
+pub mod iconservice;
+
+#[cfg(feature = "screencapture")]
+pub mod screencapture;
+
+#[cfg(feature = "hid")]
+pub mod hid;
+
+#[cfg(feature = "display")]
+pub mod display;
+
+#[cfg(feature = "installcoordination")]
+pub mod installcoordination;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

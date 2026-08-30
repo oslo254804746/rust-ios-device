@@ -202,6 +202,48 @@ where
     }
 }
 
+/// Shut down the device.
+pub async fn shutdown<S>(stream: &mut S) -> Result<(), DiagnosticsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Request {
+        request: &'static str,
+        wait_for_disconnect: bool,
+        display_fail: bool,
+        display_pass: bool,
+    }
+    send_plist(
+        stream,
+        &Request {
+            request: "Shutdown",
+            wait_for_disconnect: true,
+            display_fail: true,
+            display_pass: true,
+        },
+    )
+    .await?;
+    // Match diagnostics_relay's contract: a successful shutdown is proven by
+    // the Success plist response. EOF is not an acknowledgement; accepting it
+    // would report success for a dropped request or a transport failure.
+    let response = recv_plist_raw(stream).await?;
+    let response: plist::Value = plist::from_bytes(&response)?;
+    let status = response
+        .as_dictionary()
+        .and_then(|dict| dict.get("Status"))
+        .and_then(plist::Value::as_string);
+    if status == Some("Success") {
+        Ok(())
+    } else {
+        Err(DiagnosticsError::Protocol(format!(
+            "could not shutdown, response: {}",
+            render_plist_value(&response)
+        )))
+    }
+}
+
 // ── plist framing ──────────────────────────────────────────────────────────────
 
 async fn send_plist<S, T>(stream: &mut S, value: &T) -> Result<(), DiagnosticsError>
@@ -494,6 +536,48 @@ mod tests {
         assert_eq!(battery.current_capacity, Some(82));
         assert_eq!(battery.is_charging, Some(true));
         assert_eq!(battery.cycle_count, Some(315));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sends_shutdown_request_and_accepts_success() {
+        let mut stream =
+            MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Status".to_string(),
+                plist::Value::String("Success".into()),
+            )])));
+
+        shutdown(&mut stream).await.unwrap();
+
+        let len = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
+        let payload = &stream.written[4..4 + len];
+        let dict: plist::Dictionary = plist::from_bytes(payload).unwrap();
+        assert_eq!(dict["Request"].as_string(), Some("Shutdown"));
+        assert_eq!(dict["WaitForDisconnect"].as_boolean(), Some(true));
+        assert_eq!(dict["DisplayFail"].as_boolean(), Some(true));
+        assert_eq!(dict["DisplayPass"].as_boolean(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejects_non_success_status() {
+        let mut stream =
+            MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Status".to_string(),
+                plist::Value::String("Failure".into()),
+            )])));
+
+        let error = shutdown(&mut stream).await.unwrap_err();
+        assert!(
+            matches!(error, DiagnosticsError::Protocol(message) if message.contains("could not shutdown"))
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejects_eof_without_success_ack() {
+        let mut stream = MockStream::eof();
+        let error = shutdown(&mut stream).await.unwrap_err();
+        assert!(
+            matches!(error, DiagnosticsError::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof)
+        );
     }
 
     #[tokio::test]

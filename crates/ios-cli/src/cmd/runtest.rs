@@ -4,14 +4,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ios_core::apps::{AppInfo, InstallationProxy};
+use ios_core::afc::house_arrest::HouseArrestClient;
+use ios_core::apps::{AppInfo, AppServiceClient, InstallationProxy, LaunchApplicationOptions};
+use ios_core::archive_xctest_configuration;
 use ios_core::device::{ConnectedDevice, ServiceStream};
 use ios_core::instruments::process_control::ProcessControl;
-use ios_core::testmanager::results::{TestRunRecorder, TestRunSummary};
+use ios_core::testmanager::results::{
+    write_junit_xml_atomic, write_junit_xml_atomic_with_diagnostic, TestRunRecorder, TestRunSummary,
+};
 use ios_core::testmanager::workflow::{InstalledAppInfo, TestLaunchPlan};
 use ios_core::testmanager::xctestrun::{parse_xctestrun_file, TestConfiguration};
 use ios_core::testmanager::TestmanagerClient;
 use ios_core::MuxClient;
+use ios_core::XctCapabilities;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::cmd::connect::{connect_lockdown_only, connect_userspace_tunnel};
@@ -36,39 +42,121 @@ pub struct RunTestCmd {
     pub wait: bool,
     #[arg(long, default_value_t = 300, help = "Result wait timeout in seconds")]
     pub result_timeout_secs: u64,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write the completed XCTest result as atomically-written JUnit XML (requires --wait)"
+    )]
+    pub junit_output: Option<PathBuf>,
 }
 
 impl RunTestCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runtest"))?;
+        if self.junit_output.is_some() && !self.wait {
+            return Err(anyhow::anyhow!(
+                "--junit-output requires --wait because an early XCTest startup result is not a complete test report"
+            ));
+        }
         eprintln!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet.");
 
-        let device = connect_testmanager_device(&udid).await?;
-        let configs = parse_xctestrun_file(&self.xctestrun)
-            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))?;
-        let (configuration_name, plan) = build_plan_from_xctestrun(
+        let device = match connect_testmanager_device(&udid).await {
+            Ok(device) => device,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
+        let configs = match parse_xctestrun_file(&self.xctestrun)
+            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))
+        {
+            Ok(configs) => configs,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
+        let (configuration_name, plan) = match build_plan_from_xctestrun(
             &device,
             &self.xctestrun,
             &configs,
             self.configuration.as_deref(),
             self.test_target.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                )?;
+                return Err(error);
+            }
+        };
 
         if self.wait {
-            let mut session = tokio::time::timeout(
+            let startup = tokio::time::timeout(
                 std::time::Duration::from_secs(self.startup_timeout_secs),
                 start_test_plan_session(&udid, plan),
             )
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest startup"))??;
+            .await;
+            let mut session = match startup {
+                Err(_) => {
+                    let error = anyhow::anyhow!("timed out waiting for XCTest startup");
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Err(error)) => {
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Ok(session)) => session,
+            };
             let result = session.startup_result().clone();
-            let summary = tokio::time::timeout(
+            let result_wait = tokio::time::timeout(
                 std::time::Duration::from_secs(self.result_timeout_secs),
                 session.wait_for_results(),
             )
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest results"))??;
+            .await;
+            let summary = match result_wait {
+                Err(_) => {
+                    let error = anyhow::anyhow!("timed out waiting for XCTest results");
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(true),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Err(error)) => {
+                    write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(true),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+                Ok(Ok(summary)) => summary,
+            };
+            write_junit_summary(self.junit_output.as_deref(), &summary)?;
 
             println!(
                 "{}",
@@ -114,6 +202,40 @@ impl RunTestCmd {
     }
 }
 
+pub(crate) fn incomplete_summary(began: bool) -> TestRunSummary {
+    TestRunSummary {
+        began,
+        finished: false,
+        total_tests: 0,
+        failed_tests: 0,
+        skipped_tests: 0,
+        logs: Vec::new(),
+        debug_logs: Vec::new(),
+        suites: Vec::new(),
+    }
+}
+
+pub(crate) fn write_junit_summary(path: Option<&Path>, summary: &TestRunSummary) -> Result<()> {
+    if let Some(path) = path {
+        write_junit_xml_atomic(summary, path)
+            .with_context(|| format!("failed writing JUnit XML to {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_junit_diagnostic(
+    path: Option<&Path>,
+    summary: &TestRunSummary,
+    error: &anyhow::Error,
+) -> Result<()> {
+    if let Some(path) = path {
+        write_junit_xml_atomic_with_diagnostic(summary, path, &error.to_string()).with_context(
+            || format!("failed writing diagnostic JUnit XML to {}", path.display()),
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct TestStartupResult {
     pub runner_bundle_id: String,
@@ -127,8 +249,13 @@ pub struct ActiveTestPlan {
     startup_result: TestStartupResult,
     testmanager_device: ConnectedDevice,
     _testmanager: TestmanagerClient<ServiceStream>,
-    _instruments_device: ConnectedDevice,
-    _process_control: ProcessControl<ServiceStream>,
+    _instruments_device: Option<ConnectedDevice>,
+    _runner_controller: RunnerController,
+}
+
+enum RunnerController {
+    Instruments(Box<ProcessControl<ServiceStream>>),
+    CoreDevice(Box<AppServiceClient>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +327,12 @@ impl ActiveTestPlan {
             }
         }
     }
+
+    /// Best-effort bounded cleanup used when a direct-runner deadline or
+    /// cancellation interrupts result collection.
+    pub async fn terminate(&mut self) {
+        terminate_process(&mut self._runner_controller, self.startup_result.pid).await;
+    }
 }
 
 pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestStartupResult> {
@@ -210,65 +343,248 @@ pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestSta
 }
 
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
-    let device = connect_testmanager_device(udid).await?;
-    let product_version = device.product_version().await?;
+    start_test_plan_session_inner(udid, plan, None, false).await
+}
+
+/// Start a test plan with one absolute deadline covering discovery, both
+/// testmanager connections, runner launch, and the startup handshake.
+pub async fn start_test_plan_session_until(
+    udid: &str,
+    plan: TestLaunchPlan,
+    deadline: Instant,
+) -> Result<ActiveTestPlan> {
+    start_test_plan_session_inner(udid, plan, Some(deadline), true).await
+}
+
+async fn start_test_plan_session_inner(
+    udid: &str,
+    plan: TestLaunchPlan,
+    deadline: Option<Instant>,
+    prefer_coredevice_runner: bool,
+) -> Result<ActiveTestPlan> {
+    let device = run_stage(
+        deadline,
+        "connecting to testmanagerd device",
+        connect_testmanager_device(udid),
+    )
+    .await?;
+    let product_version = run_stage(deadline, "reading the device product version", async {
+        device.product_version().await.map_err(anyhow::Error::from)
+    })
+    .await?;
     let connect_plan = testmanager_connect_plan(product_version.major);
 
-    let session_stream = connect_testmanager_stream(&device, connect_plan)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to connect testmanager session stream via {}",
-                connect_plan.service_name
-            )
-        })?;
-    let control_stream = connect_testmanager_stream(&device, connect_plan)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to connect testmanager control stream via {}",
-                connect_plan.service_name
-            )
-        })?;
-    let mut testmanager = TestmanagerClient::connect(session_stream, control_stream)
-        .await
-        .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+    let session_stream = run_stage(
+        deadline,
+        "connecting the testmanager session stream",
+        async {
+            connect_testmanager_stream(&device, connect_plan)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect testmanager session stream via {}",
+                        connect_plan.service_name
+                    )
+                })
+        },
+    )
+    .await?;
+    let control_stream = run_stage(
+        deadline,
+        "connecting the testmanager control stream",
+        async {
+            connect_testmanager_stream(&device, connect_plan)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect testmanager control stream via {}",
+                        connect_plan.service_name
+                    )
+                })
+        },
+    )
+    .await?;
+    let mut testmanager = run_stage(deadline, "requesting testmanager DTX channels", async {
+        TestmanagerClient::connect(session_stream, control_stream)
+            .await
+            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))
+    })
+    .await?;
 
     let session_id = Uuid::new_v4();
     let configuration = plan.xctest_configuration(product_version.major, session_id);
     let capabilities = configuration.ide_capabilities.clone();
-    testmanager
-        .initiate_control_session_with_capabilities(capabilities.clone())
-        .await
-        .map_err(|err| anyhow::anyhow!("control session error: {err}"))?;
-    testmanager
-        .initiate_session_with_capabilities(session_id, capabilities)
-        .await
-        .map_err(|err| anyhow::anyhow!("session init error: {err}"))?;
-
-    let (instruments_device, instruments_stream) =
-        crate::cmd::instruments::connect_instruments(udid).await?;
-    let mut process_control = ProcessControl::connect(instruments_stream)
-        .await
-        .map_err(|err| anyhow::anyhow!("process control error: {err}"))?;
-    let launch_args = plan.launch_arguments();
-    let launch_arg_refs: Vec<&str> = launch_args.iter().map(String::as_str).collect();
-    let launch_env = plan.launch_environment(product_version.major, session_id);
-    let launch_options = plan.launch_options(product_version.major);
-    let pid = process_control
-        .launch_with_options(
-            &plan.runner.bundle_id,
-            &launch_arg_refs,
-            &launch_env,
-            &launch_options,
+    let modern_direct = prefer_coredevice_runner && product_version.major >= 17;
+    if product_version.major < 14 {
+        if plan.runner.container.is_none() {
+            return Err(anyhow::anyhow!(
+                "XCTest runner has no data-container path; iOS {} requires a device-side xctest configuration file",
+                product_version.major
+            ));
+        }
+        let configuration_for_device = configuration.clone();
+        run_stage(
+            deadline,
+            "uploading the legacy XCTest configuration",
+            upload_legacy_xctest_configuration(
+                &device,
+                &plan.runner.bundle_id,
+                session_id,
+                &configuration_for_device,
+            ),
         )
-        .await
-        .map_err(|err| anyhow::anyhow!("launch error: {err}"))?;
+        .await?;
+    }
+    if !modern_direct {
+        run_stage(
+            deadline,
+            "initiating the testmanager control session",
+            async {
+                testmanager
+                    .initiate_control_session_with_capabilities(capabilities.clone())
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| anyhow::anyhow!("control session error: {err}"))
+            },
+        )
+        .await?;
+    }
+    run_stage(deadline, "initiating the testmanager session", async {
+        testmanager
+            .initiate_session_with_capabilities(session_id, capabilities)
+            .await
+            .map(|_| ())
+            .map_err(|err| anyhow::anyhow!("session init error: {err}"))
+    })
+    .await?;
 
-    let summary = testmanager
-        .authorize_and_start_test_plan_with_configuration(pid, configuration)
+    let launch_env = plan.launch_environment(product_version.major, session_id);
+    let (instruments_device, mut runner_controller, pid) = if modern_direct {
+        let (appservice, pid) = run_stage(
+            deadline,
+            "launching the XCTest runner through CoreDevice appservice",
+            async {
+                let (xpc, metadata) = device
+                    .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
+                    .await
+                    .map_err(anyhow::Error::from)?;
+                let mut appservice =
+                    AppServiceClient::new_with_features(xpc, udid.to_string(), metadata.features);
+                let options = LaunchApplicationOptions {
+                    arguments: plan.args.clone(),
+                    environment_variables: launch_env.clone().into_iter().collect(),
+                    standard_io_uses_pseudoterminals: true,
+                    start_stopped: false,
+                    terminate_existing: true,
+                    standard_io_identifiers: Default::default(),
+                };
+                let pid = appservice
+                    .launch_application_with_options(&plan.runner.bundle_id, &options)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("CoreDevice launch error: {error}"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner")
+                    })?;
+                Ok::<_, anyhow::Error>((appservice, pid))
+            },
+        )
+        .await?;
+        (
+            None,
+            RunnerController::CoreDevice(Box::new(appservice)),
+            pid,
+        )
+    } else {
+        let (instruments_device, instruments_stream) = run_stage(
+            deadline,
+            "connecting the runner launch service",
+            crate::cmd::instruments::connect_instruments(udid),
+        )
+        .await?;
+        let mut process_control = run_stage(
+            deadline,
+            "requesting the runner process-control channel",
+            async {
+                ProcessControl::connect(instruments_stream)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("process control error: {err}"))
+            },
+        )
+        .await?;
+        let launch_args = plan.launch_arguments();
+        let launch_arg_refs: Vec<&str> = launch_args.iter().map(String::as_str).collect();
+        let launch_options = plan.launch_options(product_version.major);
+        let pid = match run_stage(deadline, "launching the XCTest runner", async {
+            process_control
+                .launch_with_options(
+                    &plan.runner.bundle_id,
+                    &launch_arg_refs,
+                    &launch_env,
+                    &launch_options,
+                )
+                .await
+                .map_err(|err| anyhow::anyhow!("launch error: {err}"))
+        })
         .await
-        .map_err(|err| anyhow::anyhow!("startup handshake error: {err}"))?;
+        {
+            Ok(pid) => pid,
+            Err(error) => {
+                // A launch request that times out has no reliable PID to
+                // kill. The DTX connection is dropped here; once a PID is
+                // known, later startup failures use bounded cleanup.
+                return Err(error);
+            }
+        };
+        (
+            Some(instruments_device),
+            RunnerController::Instruments(Box::new(process_control)),
+            pid,
+        )
+    };
+
+    if modern_direct {
+        // The iOS 17+ workflow initializes the control connection after the
+        // runner launch and uses an empty capability dictionary, matching the
+        // CoreDevice/testmanagerd handshake used by go-ios. Keeping this
+        // after launch is important: testmanagerd may otherwise authorize a
+        // stale runner instance before the DDI launch has completed.
+        let control_result = run_stage(
+            deadline,
+            "initiating the testmanager control session",
+            async {
+                testmanager
+                    .initiate_control_session_with_capabilities(XctCapabilities {
+                        capabilities: Vec::new(),
+                    })
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| anyhow::anyhow!("control session error: {err}"))
+            },
+        )
+        .await;
+        if let Err(error) = control_result {
+            // The CoreDevice launch has already returned a PID at this point;
+            // do not leave a runner orphaned when the second testmanager
+            // handshake fails or reaches the shared deadline.
+            terminate_process(&mut runner_controller, pid).await;
+            return Err(error);
+        }
+    }
+
+    let summary = match run_stage(deadline, "completing the XCTest startup handshake", async {
+        testmanager
+            .authorize_and_start_test_plan_with_configuration(pid, configuration)
+            .await
+            .map_err(|err| anyhow::anyhow!("startup handshake error: {err}"))
+    })
+    .await
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            terminate_process(&mut runner_controller, pid).await;
+            return Err(error);
+        }
+    };
 
     Ok(ActiveTestPlan {
         startup_result: TestStartupResult {
@@ -281,8 +597,33 @@ pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result
         testmanager_device: device,
         _testmanager: testmanager,
         _instruments_device: instruments_device,
-        _process_control: process_control,
+        _runner_controller: runner_controller,
     })
+}
+
+async fn terminate_process(controller: &mut RunnerController, pid: u64) {
+    match controller {
+        RunnerController::Instruments(process_control) => {
+            let _ = tokio::time::timeout(Duration::from_secs(2), process_control.kill(pid)).await;
+        }
+        RunnerController::CoreDevice(appservice) => {
+            let _ =
+                tokio::time::timeout(Duration::from_secs(2), appservice.kill_process(pid)).await;
+        }
+    }
+}
+
+async fn run_stage<T, F>(deadline: Option<Instant>, operation: &str, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let result = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|_| anyhow::anyhow!("XCTest deadline expired while {operation}"))?,
+        None => future.await,
+    };
+    result.with_context(|| format!("XCTest {operation} failed"))
 }
 
 pub async fn connect_testmanager_device(udid: &str) -> Result<ConnectedDevice> {
@@ -341,6 +682,30 @@ pub async fn lookup_installed_app(
             .ok_or_else(|| anyhow::anyhow!("missing CFBundleExecutable for {bundle_id}"))?,
         container: plist_string(&app.extra, "Container"),
     })
+}
+
+async fn upload_legacy_xctest_configuration(
+    device: &ConnectedDevice,
+    runner_bundle_id: &str,
+    session_identifier: Uuid,
+    configuration: &ios_core::XcTestConfiguration,
+) -> Result<()> {
+    let stream = device
+        .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
+        .await
+        .context("failed to connect legacy House Arrest for XCTest configuration")?;
+    let house_arrest = HouseArrestClient::new(stream);
+    let mut container = house_arrest
+        .vend_container(runner_bundle_id)
+        .await
+        .context("failed to vend XCTest runner container")?;
+    let relative_path = format!("tmp/{}.xctestconfiguration", session_identifier);
+    let bytes = archive_xctest_configuration(configuration.clone());
+    container
+        .write_file(&relative_path, &bytes)
+        .await
+        .with_context(|| format!("failed to write {relative_path} in XCTest runner container"))?;
+    Ok(())
 }
 
 async fn build_plan_from_xctestrun(
@@ -507,6 +872,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -552,12 +918,15 @@ mod tests {
             "--wait",
             "--result-timeout-secs",
             "120",
+            "--junit-output",
+            "results.xml",
         ]);
 
         assert_eq!(cmd.command.configuration.as_deref(), Some("UITests"));
         assert_eq!(cmd.command.test_target.as_deref(), Some("LoginTarget"));
         assert!(cmd.command.wait);
         assert_eq!(cmd.command.result_timeout_secs, 120);
+        assert_eq!(cmd.command.junit_output, Some(PathBuf::from("results.xml")));
     }
 
     #[test]

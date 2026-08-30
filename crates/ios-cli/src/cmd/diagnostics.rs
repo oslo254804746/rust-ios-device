@@ -17,6 +17,11 @@ enum DiagnosticsSub {
         #[arg(long, help = "Required confirmation for the reboot")]
         force: bool,
     },
+    /// Shut down the device via diagnostics_relay
+    Shutdown {
+        #[arg(long, help = "Required confirmation for the shutdown")]
+        force: bool,
+    },
     /// Read battery diagnostics from diagnostics_relay
     Battery,
     /// Monitor battery diagnostics from diagnostics_relay
@@ -71,6 +76,17 @@ impl DiagnosticsCmd {
             return run_coredevice_sysdiagnose_dry_run(&udid, json).await;
         }
 
+        // Validate the destructive confirmation before opening a device
+        // connection. This keeps a missing --force a pure local CLI error and
+        // avoids touching diagnostics_relay for a request that cannot run.
+        if let DiagnosticsSub::Shutdown { force: false } = &sub {
+            crate::output::require_force(
+                false,
+                "shut down the device",
+                "the device powers off immediately and any running session is lost",
+            )?;
+        }
+
         let opts = ConnectOptions {
             tun_mode: TunMode::Userspace,
             pair_record_path: None,
@@ -98,6 +114,22 @@ impl DiagnosticsCmd {
                     );
                 } else {
                     println!("Reboot request sent.");
+                }
+            }
+            DiagnosticsSub::Shutdown { .. } => {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                tokio::time::timeout_at(deadline, ios_core::diagnostics::shutdown(&mut *stream))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("shutdown timed out after 30 seconds"))??;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "shutdown_requested",
+                        }))?
+                    );
+                } else {
+                    println!("Shutdown request sent.");
                 }
             }
             DiagnosticsSub::Battery => {
@@ -379,6 +411,15 @@ mod tests {
     fn parses_reboot_subcommand() {
         let cmd = TestCli::parse_from(["diagnostics", "reboot"]);
         assert!(matches!(cmd.command, DiagnosticsSub::Reboot { .. }));
+    }
+
+    #[test]
+    fn parses_shutdown_subcommand_and_force_flag() {
+        let cmd = TestCli::parse_from(["diagnostics", "shutdown", "--force"]);
+        assert!(matches!(
+            cmd.command,
+            DiagnosticsSub::Shutdown { force: true }
+        ));
     }
 
     #[test]

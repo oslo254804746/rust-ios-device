@@ -56,11 +56,19 @@ management = [
 ]
 ios17 = [
     "apps",
+    "configuration",
     "deviceinfo",
     "diagnosticsservice",
     "dproxy",
     "fileservice",
     "instruments",
+    "orientation",
+    "iconservice",
+    "screencapture",
+    "hid",
+    "display",
+    "installcoordination",
+    "pasteboard",
     "testmanager",
     "mdns",
     "tunnel-userspace",
@@ -82,8 +90,8 @@ crashreport = ["afc"]
 diagnostics = []
 diagnosticsservice = ["tunnel", "mdns"]
 springboard = []
-mcinstall = []
-mobileactivation = []
+mcinstall = ["dep:sha1"]
+mobileactivation = ["dep:reqwest"]
 profiles = ["mcinstall", "misagent"]
 heartbeat = []
 file_relay = []
@@ -107,7 +115,19 @@ power_assertion = []
 preboard = []
 idam = []
 fetchsymbols = []
-ostrace = []
+ostrace = ["dep:tar"]
+pasteboard = ["tunnel", "mdns"]
+configuration = ["tunnel"]
+orientation = ["tunnel"]
+iconservice = ["tunnel"]
+screencapture = ["tunnel"]
+hid = ["tunnel", "display"]
+display = ["tunnel"]
+installcoordination = ["tunnel"]
+# Naming aliases for downstream callers that follow the upstream Python file
+# names or Rust's snake_case convention.
+icon_service = ["iconservice"]
+screen_capture = ["screencapture"]
 prepare = ["afc", "mcinstall", "supervised-pair"]
 restore = []
 dproxy = ["dtx"]
@@ -120,6 +140,15 @@ full = [
     "ostrace",
     "supervised-pair",
     "tunnel-kernel",
+    "backup2-manifest",
+]
+backup2-manifest = [
+    "dep:rusqlite",
+    "dep:aes",
+    "dep:aes-kw",
+    "dep:cbc",
+    "dep:pbkdf2",
+    "dep:sha1",
 ]
 
 [dependencies]
@@ -135,6 +164,7 @@ semver       = { workspace = true }
 mdns-sd      = { workspace = true, optional = true }
 plist        = { workspace = true }
 futures-core = { workspace = true }
+flate2       = { workspace = true }
 futures-util = { workspace = true }
 rustls       = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -160,6 +190,11 @@ smoltcp      = { workspace = true, optional = true }
 tun-rs       = { workspace = true, optional = true }
 p256         = { workspace = true }
 sha2         = { workspace = true }
+sha1         = { workspace = true, optional = true }
+aes          = { workspace = true, optional = true }
+aes-kw       = { workspace = true, optional = true }
+cbc          = { workspace = true, optional = true }
+pbkdf2       = { workspace = true, optional = true, features = ["hmac", "sha1", "sha2"] }
 hkdf         = { workspace = true }
 zeroize      = { workspace = true }
 subtle       = { workspace = true }
@@ -167,11 +202,14 @@ num-bigint   = { workspace = true }
 num-traits   = { workspace = true }
 uuid         = { workspace = true }
 quick-xml    = { workspace = true }
+regex        = { workspace = true }
 time         = { workspace = true }
 lz4_flex     = { workspace = true, optional = true }
 reqwest      = { workspace = true, optional = true }
 zip          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
+rusqlite     = { workspace = true, optional = true }
+tar          = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc         = { workspace = true }

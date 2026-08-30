@@ -66,7 +66,13 @@ pub enum DproxyError {
     Serde(#[from] serde_json::Error),
     #[error("DTX decode error: {0}")]
     Dtx(#[from] crate::services::dtx::DtxError),
+    #[error("protocol resource limit: {0}")]
+    Protocol(String),
 }
+
+const MAX_DECODER_BUFFER: usize = crate::xpc::message::XPC_PENDING_BUFFER_LIMIT;
+const MAX_XPC_STREAM_BUFFER: usize = crate::xpc::message::XPC_PENDING_BUFFER_LIMIT;
+const MAX_XPC_TOTAL_BUFFER: usize = MAX_XPC_STREAM_BUFFER * 2;
 
 pub struct ProxyRecorder {
     output_dir: PathBuf,
@@ -205,6 +211,7 @@ pub struct StreamDecoder {
     protocol: ProxyProtocol,
     buffer: BytesMut,
     xpc_streams: HashMap<u32, BytesMut>,
+    xpc_buffered_bytes: usize,
     xpc_preface_handled: bool,
     dtx_broken: bool,
 }
@@ -215,6 +222,7 @@ impl StreamDecoder {
             protocol,
             buffer: BytesMut::new(),
             xpc_streams: HashMap::new(),
+            xpc_buffered_bytes: 0,
             xpc_preface_handled: false,
             dtx_broken: false,
         }
@@ -229,11 +237,23 @@ impl StreamDecoder {
             return Ok(Vec::new());
         }
 
+        let new_len = self.buffer.len().checked_add(chunk.len()).ok_or_else(|| {
+            DproxyError::Protocol(format!(
+                "decoder buffer length overflow: current {}, incoming {}",
+                self.buffer.len(),
+                chunk.len()
+            ))
+        })?;
+        if new_len > MAX_DECODER_BUFFER {
+            return Err(DproxyError::Protocol(format!(
+                "decoder buffer length {new_len} exceeds limit {MAX_DECODER_BUFFER}"
+            )));
+        }
         self.buffer.extend_from_slice(chunk);
         match self.protocol {
             ProxyProtocol::Lockdown => Ok(self.decode_lockdown(direction)),
             ProxyProtocol::Dtx => Ok(self.decode_dtx(direction)),
-            ProxyProtocol::Xpc => Ok(self.decode_xpc(direction)),
+            ProxyProtocol::Xpc => self.decode_xpc(direction),
             ProxyProtocol::Binary => Ok(Vec::new()),
         }
     }
@@ -247,7 +267,21 @@ impl StreamDecoder {
             // Safety: self.buffer.len() >= 4 is checked above, so [..4] is exactly 4 bytes
             // and try_into::<[u8; 4]>() is infallible.
             let len = u32::from_be_bytes(self.buffer[..4].try_into().unwrap()) as usize;
-            if self.buffer.len() < 4 + len {
+            let frame_len = match 4usize.checked_add(len) {
+                Some(frame_len) if frame_len <= MAX_DECODER_BUFFER => frame_len,
+                _ => {
+                    events.push(decoder_error_event(
+                        direction,
+                        self.protocol,
+                        format!(
+                            "lockdown frame length {len} exceeds decoder limit {MAX_DECODER_BUFFER}"
+                        ),
+                    ));
+                    self.buffer.clear();
+                    break;
+                }
+            };
+            if self.buffer.len() < frame_len {
                 break;
             }
 
@@ -298,14 +332,15 @@ impl StreamDecoder {
         events
     }
 
-    fn decode_xpc(&mut self, direction: Direction) -> Vec<ProxyEvent> {
+    fn decode_xpc(&mut self, direction: Direction) -> Result<Vec<ProxyEvent>, DproxyError> {
         let mut events = Vec::new();
         loop {
             if self.consume_xpc_preface() {
                 break;
             }
 
-            let Some((stream_id, frame_type, payload, consumed)) = try_take_h2_frame(&self.buffer)
+            let Some((stream_id, frame_type, frame_flags, payload, consumed)) =
+                try_take_h2_frame(&self.buffer).map_err(DproxyError::Protocol)?
             else {
                 break;
             };
@@ -314,11 +349,21 @@ impl StreamDecoder {
                 continue;
             }
 
-            let stream_buffer = self.xpc_streams.entry(stream_id).or_default();
-            stream_buffer.extend_from_slice(&payload);
+            self.append_xpc_stream_data(stream_id, &payload)?;
 
             loop {
-                match try_take_xpc_message(stream_buffer) {
+                let (message_result, consumed) = {
+                    let Some(stream_buffer) = self.xpc_streams.get_mut(&stream_id) else {
+                        return Err(DproxyError::Protocol(format!(
+                            "XPC stream {stream_id} buffer disappeared while decoding"
+                        )));
+                    };
+                    let before = stream_buffer.len();
+                    let result = try_take_xpc_message(stream_buffer);
+                    (result, before.saturating_sub(stream_buffer.len()))
+                };
+                self.xpc_buffered_bytes = self.xpc_buffered_bytes.saturating_sub(consumed);
+                match message_result {
                     Ok(Some(message)) => {
                         let decoded = message
                             .body
@@ -336,13 +381,107 @@ impl StreamDecoder {
                     Ok(None) => break,
                     Err(err) => {
                         events.push(decoder_error_event(direction, self.protocol, err));
-                        stream_buffer.clear();
+                        self.clear_xpc_stream(stream_id);
                         break;
                     }
                 }
             }
+            if self
+                .xpc_streams
+                .get(&stream_id)
+                .is_some_and(BytesMut::is_empty)
+            {
+                self.xpc_streams.remove(&stream_id);
+            }
+            if frame_flags & FLAG_END_STREAM != 0 && self.xpc_streams.contains_key(&stream_id) {
+                events.push(decoder_error_event(
+                    direction,
+                    self.protocol,
+                    format!("XPC stream {stream_id} ended with an incomplete message"),
+                ));
+                self.clear_xpc_stream(stream_id);
+            }
         }
-        events
+        Ok(events)
+    }
+
+    fn unknown_xpc_stream_count(&self) -> usize {
+        self.xpc_streams
+            .keys()
+            .filter(|stream_id| {
+                **stream_id != crate::xpc::h2_raw::STREAM_CLIENT_SERVER
+                    && **stream_id != crate::xpc::h2_raw::STREAM_SERVER_CLIENT
+            })
+            .count()
+    }
+
+    fn clear_xpc_stream(&mut self, stream_id: u32) {
+        if let Some(buffer) = self.xpc_streams.remove(&stream_id) {
+            self.xpc_buffered_bytes = self.xpc_buffered_bytes.saturating_sub(buffer.len());
+        }
+    }
+
+    fn append_xpc_stream_data(
+        &mut self,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<(), DproxyError> {
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let is_primary = matches!(
+            stream_id,
+            crate::xpc::h2_raw::STREAM_CLIENT_SERVER | crate::xpc::h2_raw::STREAM_SERVER_CLIENT
+        );
+        if !is_primary
+            && !self.xpc_streams.contains_key(&stream_id)
+            && self.unknown_xpc_stream_count() >= crate::xpc::h2_raw::MAX_UNKNOWN_BUFFERED_STREAMS
+        {
+            return Err(DproxyError::Protocol(format!(
+                "too many unknown XPC streams with buffered data: limit {}",
+                crate::xpc::h2_raw::MAX_UNKNOWN_BUFFERED_STREAMS
+            )));
+        }
+
+        let current = self.xpc_streams.get(&stream_id).map_or(0, BytesMut::len);
+        let requested = current.checked_add(payload.len()).ok_or_else(|| {
+            self.clear_xpc_stream(stream_id);
+            DproxyError::Protocol(format!(
+                "XPC stream {stream_id} buffer length overflow: current {current}, incoming {}",
+                payload.len()
+            ))
+        })?;
+        if requested > MAX_XPC_STREAM_BUFFER {
+            self.clear_xpc_stream(stream_id);
+            return Err(DproxyError::Protocol(format!(
+                "XPC stream {stream_id} buffer {requested} exceeds limit {MAX_XPC_STREAM_BUFFER}"
+            )));
+        }
+
+        let total = self
+            .xpc_buffered_bytes
+            .checked_add(payload.len())
+            .ok_or_else(|| {
+                self.clear_xpc_stream(stream_id);
+                DproxyError::Protocol(format!(
+                    "XPC buffered byte count overflow: current {}, incoming {}",
+                    self.xpc_buffered_bytes,
+                    payload.len()
+                ))
+            })?;
+        if total > MAX_XPC_TOTAL_BUFFER {
+            self.clear_xpc_stream(stream_id);
+            return Err(DproxyError::Protocol(format!(
+                "XPC buffered bytes {total} exceed connection limit {MAX_XPC_TOTAL_BUFFER}"
+            )));
+        }
+
+        self.xpc_streams
+            .entry(stream_id)
+            .or_default()
+            .extend_from_slice(payload);
+        self.xpc_buffered_bytes = total;
+        Ok(())
     }
 
     fn consume_xpc_preface(&mut self) -> bool {
@@ -381,18 +520,35 @@ fn decoder_error_event(
     }
 }
 
-fn try_take_h2_frame(buffer: &[u8]) -> Option<(u32, u8, Vec<u8>, usize)> {
+const FLAG_END_STREAM: u8 = 0x01;
+
+type DecodedH2Frame = (u32, u8, u8, Vec<u8>, usize);
+
+fn try_take_h2_frame(buffer: &[u8]) -> Result<Option<DecodedH2Frame>, String> {
     if buffer.len() < 9 {
-        return None;
+        return Ok(None);
     }
     let len = ((buffer[0] as usize) << 16) | ((buffer[1] as usize) << 8) | buffer[2] as usize;
+    if len > crate::xpc::h2_raw::MAX_FRAME_PAYLOAD {
+        return Err(format!(
+            "H2 frame payload {len} exceeds max frame size {}",
+            crate::xpc::h2_raw::MAX_FRAME_PAYLOAD
+        ));
+    }
     let total = 9 + len;
     if buffer.len() < total {
-        return None;
+        return Ok(None);
     }
     let frame_type = buffer[3];
+    let frame_flags = buffer[4];
     let stream_id = u32::from_be_bytes([buffer[5] & 0x7f, buffer[6], buffer[7], buffer[8]]);
-    Some((stream_id, frame_type, buffer[9..total].to_vec(), total))
+    Ok(Some((
+        stream_id,
+        frame_type,
+        frame_flags,
+        buffer[9..total].to_vec(),
+        total,
+    )))
 }
 
 fn try_take_xpc_message(buffer: &mut BytesMut) -> Result<Option<crate::xpc::XpcMessage>, String> {
@@ -400,11 +556,20 @@ fn try_take_xpc_message(buffer: &mut BytesMut) -> Result<Option<crate::xpc::XpcM
         return Ok(None);
     }
 
-    let body_len = u64::from_le_bytes(
+    let declared_body_len = u64::from_le_bytes(
         buffer[8..16]
             .try_into()
             .map_err(|_| "invalid XPC header".to_string())?,
-    ) as usize;
+    );
+    let message_flags = u32::from_le_bytes(
+        buffer[4..8]
+            .try_into()
+            .map_err(|_| "invalid XPC flags".to_string())?,
+    );
+    let body_len = crate::xpc::message::checked_xpc_body_len(
+        declared_body_len,
+        crate::xpc::message::xpc_body_limit_for_flags(message_flags),
+    )?;
     let total = 24usize
         .checked_add(body_len)
         .ok_or_else(|| "XPC message length overflow".to_string())?;
@@ -657,6 +822,18 @@ mod tests {
     }
 
     #[test]
+    fn lockdown_decoder_rejects_length_overflow_without_waiting() {
+        let mut decoder = StreamDecoder::new(ProxyProtocol::Lockdown);
+        let events = decoder
+            .push(Direction::HostToDevice, &u32::MAX.to_be_bytes())
+            .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].summary.contains("lockdown frame length"));
+        assert!(decoder.buffer.is_empty());
+    }
+
+    #[test]
     fn dtx_decoder_reassembles_fragmented_messages() {
         let selector =
             crate::proto::nskeyedarchiver_encode::archive_string("_notifyOfPublishedCapabilities:");
@@ -723,6 +900,82 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].protocol, "xpc");
         assert_eq!(events[0].decoded["result"], "success");
+        assert_eq!(decoder.xpc_buffered_bytes, 0);
+        assert!(decoder.xpc_streams.is_empty());
+    }
+
+    #[test]
+    fn xpc_decoder_clears_partial_message_at_end_stream() {
+        let payload = crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
+            flags: crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::DATA,
+            msg_id: 7,
+            body: Some(XpcValue::Dictionary(IndexMap::new())),
+        })
+        .unwrap();
+        let mut frame = build_h2_frame(3, 0x00, &payload[..payload.len() - 1]);
+        frame[4] = FLAG_END_STREAM;
+
+        let mut decoder = StreamDecoder::new(ProxyProtocol::Xpc);
+        let events = decoder.push(Direction::DeviceToHost, &frame).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].summary.contains("incomplete message"));
+        assert_eq!(decoder.xpc_buffered_bytes, 0);
+        assert!(decoder.xpc_streams.is_empty());
+    }
+
+    #[test]
+    fn xpc_decoder_rejects_u64_max_body_before_allocating() {
+        let mut message = Vec::with_capacity(24);
+        message.extend_from_slice(&crate::xpc::message::WRAPPER_MAGIC.to_le_bytes());
+        message.extend_from_slice(&crate::xpc::message::flags::ALWAYS_SET.to_le_bytes());
+        message.extend_from_slice(&u64::MAX.to_le_bytes());
+        message.extend_from_slice(&1u64.to_le_bytes());
+
+        let mut decoder = StreamDecoder::new(ProxyProtocol::Xpc);
+        let events = decoder
+            .push(Direction::DeviceToHost, &build_h2_data_frame(3, &message))
+            .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].summary.contains(&u64::MAX.to_string()));
+        assert_eq!(decoder.xpc_buffered_bytes, 0);
+        assert!(decoder.xpc_streams.is_empty());
+    }
+
+    #[test]
+    fn xpc_decoder_rejects_unknown_stream_flood_with_bounded_error() {
+        let mut bytes = Vec::new();
+        for stream_id in 100..100 + crate::xpc::h2_raw::MAX_UNKNOWN_BUFFERED_STREAMS as u32 + 1 {
+            bytes.extend_from_slice(&build_h2_data_frame(stream_id, &[stream_id as u8]));
+        }
+
+        let mut decoder = StreamDecoder::new(ProxyProtocol::Xpc);
+        let error = decoder.push(Direction::DeviceToHost, &bytes).unwrap_err();
+
+        assert!(error.to_string().contains("too many unknown XPC streams"));
+        assert_eq!(
+            decoder.xpc_streams.len(),
+            crate::xpc::h2_raw::MAX_UNKNOWN_BUFFERED_STREAMS
+        );
+        assert_eq!(
+            decoder.xpc_buffered_bytes,
+            crate::xpc::h2_raw::MAX_UNKNOWN_BUFFERED_STREAMS
+        );
+    }
+
+    #[test]
+    fn xpc_decoder_rejects_oversized_h2_frame_before_copying_payload() {
+        let length = crate::xpc::h2_raw::MAX_FRAME_PAYLOAD + 1;
+        let mut frame = vec![0u8; 9];
+        frame[0] = ((length >> 16) & 0xff) as u8;
+        frame[1] = ((length >> 8) & 0xff) as u8;
+        frame[2] = (length & 0xff) as u8;
+        frame[3] = 0;
+        frame[5..9].copy_from_slice(&3u32.to_be_bytes());
+
+        let error = try_take_h2_frame(&frame).unwrap_err();
+        assert!(error.contains("exceeds max frame size"));
     }
 
     #[test]

@@ -1,6 +1,10 @@
 # Python binding
 
-The `ios-py` crate publishes the `rust-ios-device-tunnel` Python distribution and builds a PyO3 extension module imported as `ios_rs`. It currently exposes device listing and CoreDevice tunnel helpers for compatible devices.
+The `ios-py` crate publishes the `rust-ios-device-tunnel` Python distribution and
+builds a PyO3 extension module imported as `ios_rs`. It exposes device listing,
+CoreDevice tunnel metadata, and a local userspace transport bridge for compatible
+devices. It does not provide direct Python bindings for the Rust lockdown or
+individual service clients.
 
 ## Build locally
 
@@ -14,6 +18,10 @@ From a source checkout:
 cd crates/ios-py
 uvx maturin develop
 ```
+
+`maturin` enables the package's `extension-module` feature automatically. A
+normal host-side `cargo test` intentionally leaves that feature disabled and
+links the tests to the selected Python runtime instead.
 
 If needed, set `PYO3_PYTHON` in the shell:
 

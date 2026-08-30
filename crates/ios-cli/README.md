@@ -14,8 +14,15 @@ workspace.
   CoreDevice tunneling.
 - Default JSON output for scripting; pass `--no-json` for human-readable
   tables where supported.
+- CoreDevice pasteboard `get` and `set` support verified bounded data policies
+  and binary UTI representations. `watch`, `resolve`, and `export` are
+  experimental and require `--experimental`; output is redacted to size/hash
+  by default, with `--show-data` for intentional byte output.
 - iOS 17+ CoreDevice tunnel manager (`ios tunnel serve`) with go-ios-compatible
   fields (`tunnel-address`, `tunnel-port`, `userspace-port`).
+- `apps install-record` queries the iOS 17+ RSD InstallCoordinationProxy;
+  install/uninstall/stash mutations are intentionally not exposed because the
+  pinned upstream client does not implement their file-transfer protocol.
 - Built on `ios-core` with the `full` feature set.
 
 ## Install
@@ -58,14 +65,23 @@ Commands that target a device default to the first device returned by
 | Area                     | Examples                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`                                          |
-| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation`, `amfi`                |
+| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` |
 | Files & containers       | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                      |
-| Apps & UI tests          | `apps`, `runtest`, `runwda`, `wda`, `springboard`                                         |
-| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`                                     |
+| Apps & UI tests          | `apps` (including `install-record`), `runtest`, `runxctest`, `runwda`, `wda`, `springboard` |
+| Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace` (including archive/collect), `notify`, `pcap`          |
 | Developer services       | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` |
 | iOS 17+ transport        | `tunnel`, `rsd`, `forward`, `dproxy`                                                      |
 | Management & supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
 | Backup, location, screen | `backup`, `location`, `screenshot`                                                        |
+
+Companion proxy commands select the classic lockdown service on older devices
+and the RSD `com.apple.companion_proxy.shim.remote` service on iOS 17+.
+`companion listen` prints one event per JSON line; `companion forward
+REMOTE_PORT` reports the device-side `CompanionProxyServicePort` and keeps the
+forward alive until Ctrl+C; `companion stop REMOTE_PORT` uses that same
+companion-side port because the protocol has no persistent host-side forwarding
+ID. These commands do not create a host TCP listener or print pairing
+credentials.
 
 For each command, `ios <command> --help` lists the exact subcommands and
 flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
@@ -83,4 +99,3 @@ flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
 ## License
 
 Licensed under either of Apache-2.0 or MIT at your option.
-

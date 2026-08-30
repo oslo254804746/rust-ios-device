@@ -5,13 +5,18 @@
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --no-run --exclude ios-py
+cargo test -p ios-py --no-default-features
 cargo test --workspace --all-features --exclude ios-py
 cargo build --release --workspace --exclude ios-py
 ```
 
-`ios-py` is a Python extension module and may need a configured Python interpreter. Its
-PyO3 extension-module build is exercised by `uvx maturin`; the CI excludes it from normal Rust
-build/test jobs and builds wheels separately.
+The core workspace test intentionally excludes `ios-py`. Test the binding
+separately with Python 3.9+ development headers and a runtime selected by
+`PYO3_PYTHON` when necessary. Its `extension-module` feature is packaging-only:
+`cargo test --workspace --all-features` must therefore use
+`--exclude ios-py`, while `uvx maturin` enables the feature automatically for
+wheel builds.
 
 ## Windows dependencies
 

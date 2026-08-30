@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::tunnel::TunnelError;
+use crate::tunnel::{TunnelError, ValidatedMtu};
 
 /// CDTunnel packet magic.
 ///
@@ -52,25 +52,26 @@ fn parse_nonzero_u16(raw: &serde_json::Value, field: &str) -> Result<u16, Tunnel
         })
 }
 
-fn parse_nonzero_u32(raw: &serde_json::Value, field: &str) -> Result<u32, TunnelError> {
-    let value = raw
+fn parse_supported_mtu(raw: &serde_json::Value, field: &str) -> Result<u32, TunnelError> {
+    let raw_value = raw
         .as_u64()
-        .ok_or_else(|| TunnelError::Protocol(format!("missing {field}")))?;
-    u32::try_from(value)
-        .ok()
-        .filter(|value| *value != 0)
-        .ok_or_else(|| {
-            TunnelError::Protocol(format!(
-                "invalid {field}: expected integer in 1..={}",
-                u32::MAX
-            ))
-        })
+        .ok_or_else(|| TunnelError::Protocol(format!("missing or invalid {field}")))?;
+    let value = u32::try_from(raw_value).map_err(|_| {
+        TunnelError::Protocol(format!(
+            "invalid {field}: value {raw_value} exceeds {}",
+            u32::MAX
+        ))
+    })?;
+    ValidatedMtu::new(value)
+        .map_err(|error| TunnelError::Protocol(format!("invalid {field}: {error}")))?;
+    Ok(value)
 }
 
 pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
+    let mtu = ValidatedMtu::new(mtu)?;
     let json = serde_json::json!({
         "type": "clientHandshakeRequest",
-        "mtu": mtu,
+        "mtu": mtu.as_u16(),
     });
     let json_bytes = serde_json::to_vec(&json)
         .map_err(|e| TunnelError::Protocol(format!("failed to serialize handshake: {e}")))?;
@@ -81,7 +82,13 @@ pub fn encode_handshake_request(mtu: u32) -> Result<Vec<u8>, TunnelError> {
     }
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
-    buf.extend_from_slice(&(json_bytes.len() as u16).to_be_bytes());
+    let body_len = u16::try_from(json_bytes.len()).map_err(|_| {
+        TunnelError::Protocol(format!(
+            "handshake JSON length {} exceeds u16::MAX",
+            json_bytes.len()
+        ))
+    })?;
+    buf.extend_from_slice(&body_len.to_be_bytes());
     buf.extend_from_slice(&json_bytes);
     Ok(buf)
 }
@@ -140,7 +147,7 @@ where
             .as_str()
             .ok_or_else(|| TunnelError::Protocol("missing clientParameters.address".into()))?
             .to_string(),
-        client_mtu: parse_nonzero_u32(&raw["clientParameters"]["mtu"], "clientParameters.mtu")?,
+        client_mtu: parse_supported_mtu(&raw["clientParameters"]["mtu"], "clientParameters.mtu")?,
     })
 }
 
@@ -191,6 +198,49 @@ mod tests {
         expected.extend_from_slice(body);
 
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn test_encode_handshake_request_validates_mtu_before_writing() {
+        assert!(encode_handshake_request(0).is_err());
+        assert!(encode_handshake_request(1279).is_err());
+        assert!(encode_handshake_request(u16::MAX as u32 + 1).is_err());
+        assert!(encode_handshake_request(u32::MAX).is_err());
+
+        let bytes = encode_handshake_request(9000).unwrap();
+        let body_len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[10..10 + body_len]).unwrap();
+        assert_eq!(json["mtu"], 9000);
+    }
+
+    #[test]
+    fn test_validate_mtu_boundaries() {
+        assert!(matches!(
+            ValidatedMtu::new(0),
+            Err(TunnelError::Protocol(message))
+                if message.contains("IPv6 requires at least 1280 bytes")
+        ));
+        assert!(matches!(
+            ValidatedMtu::new(1279),
+            Err(TunnelError::Protocol(message))
+                if message.contains("IPv6 requires at least 1280 bytes")
+        ));
+
+        assert_eq!(ValidatedMtu::new(1280).unwrap().as_u16(), 1280);
+        assert_eq!(ValidatedMtu::new(1500).unwrap().as_u16(), 1500);
+        assert_eq!(ValidatedMtu::new(9000).unwrap().as_u16(), 9000);
+        assert_eq!(
+            ValidatedMtu::new(u16::MAX as u32).unwrap().as_u16(),
+            u16::MAX
+        );
+
+        for value in [u16::MAX as u32 + 1, u32::MAX] {
+            assert!(matches!(
+                ValidatedMtu::new(value),
+                Err(TunnelError::Protocol(message))
+                    if message.contains("exceeds the supported maximum 65535 bytes")
+            ));
+        }
     }
 
     /// Reads stay on the permissive pymobiledevice3 model (`Int16ub`), so a body
@@ -295,7 +345,7 @@ mod tests {
             "serverRSDPort": 58783,
             "clientParameters": {
                 "address": "fd59:2381:6956::2",
-                "mtu": 4294967296u64,
+                "mtu": 65536u32,
             }
         }))
         .await
@@ -305,6 +355,30 @@ mod tests {
             TunnelError::Protocol(message) => {
                 assert!(
                     message.contains("invalid clientParameters.mtu"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exchange_tunnel_parameters_rejects_u32_max_client_mtu() {
+        let err = exchange_with_response_json(serde_json::json!({
+            "serverAddress": "fd59:2381:6956::1",
+            "serverRSDPort": 58783,
+            "clientParameters": {
+                "address": "fd59:2381:6956::2",
+                "mtu": u32::MAX,
+            }
+        }))
+        .await
+        .unwrap_err();
+
+        match err {
+            TunnelError::Protocol(message) => {
+                assert!(
+                    message.contains("exceeds the supported maximum 65535 bytes"),
                     "unexpected error: {message}"
                 );
             }

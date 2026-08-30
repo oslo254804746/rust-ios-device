@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use ios_core::crashreport::{
@@ -10,6 +11,7 @@ use ios_core::crashreport::{
 use serde::Serialize;
 use serde_json::json;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 #[derive(clap::Args)]
 pub struct FileCmd {
@@ -378,14 +380,138 @@ impl FileCmd {
 /// pull`, `screenshot`, `provisioning export` and `crash pull` all fail with
 /// the same sentence instead of quietly destroying the previous download.
 pub(crate) fn ensure_local_overwrite_allowed(path: &Path, force: bool) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+    // `Path::exists()` follows symlinks and reports false for a dangling
+    // symlink. Inspect the directory entry itself so an output path cannot
+    // silently replace a pre-existing (possibly attacker-created) link unless
+    // the caller explicitly opts into replacement with `--force`.
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if local_path_entry_missing(&error) => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
     crate::output::require_force(
         force,
         &format!("overwrite {}", path.display()),
         "the existing local file would be replaced",
     )
+}
+
+// `ErrorKind::NotADirectory` is not available on the repository's MSRV yet.
+// Keep the equivalent errno fallback local and platform-specific so a path
+// below a regular file is treated like a fresh destination without requiring a
+// newer compiler or an extra libc dependency.
+fn local_path_entry_missing(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(20) // ENOTDIR
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(267) // ERROR_DIRECTORY
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Write device bytes with a private temporary file and atomic replacement.
+///
+/// This is used by CoreDevice image commands. The temporary is always 0600;
+/// the destination is replaced only after the complete payload is flushed.
+pub(crate) async fn write_local_bytes_atomic(path: &Path, data: &[u8], force: bool) -> Result<()> {
+    ensure_local_overwrite_allowed(path, force)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    for attempt in 0..16u32 {
+        let temporary = parent.join(format!(
+            ".{}.ios-image-{pid}-{nonce}-{attempt}.tmp",
+            file_name.to_string_lossy()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary).await {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let result = async {
+            file.write_all(data).await?;
+            file.sync_all().await
+        }
+        .await;
+        drop(file);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(error.into());
+        }
+        let result = replace_local_file(&temporary, path).await;
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary).await;
+        }
+        return result;
+    }
+
+    Err(anyhow::anyhow!(
+        "could not allocate a unique temporary image output path"
+    ))
+}
+
+#[cfg(not(windows))]
+async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).await?;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+    // Refuse symlinks and non-files before replacing.  The replacement itself
+    // is MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) via the shared helper:
+    // ReplaceFileW was evaluated and removed because its
+    // ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176/1177) states delete the old
+    // destination while the replacement remains at the temporary path when no
+    // backup file is supplied, which would have turned a failed write into a
+    // lost file.  MoveFileExW leaves the destination untouched on failure, so
+    // the caller's temporary cleanup is always safe.
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        // MoveFileExW(REPLACE_EXISTING) also creates a missing destination;
+        // only inspect the existing entry when there is one.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ios_core::fs_replace::move_file_replace(temporary, destination)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "refusing to replace symlink output: {}",
+            destination.display()
+        );
+    }
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "output path is not a regular file: {}",
+            destination.display()
+        );
+    }
+    ios_core::fs_replace::move_file_replace(temporary, destination)?;
+    Ok(())
 }
 
 fn connect_coredevice_file_device(
@@ -728,6 +854,7 @@ fn render_tree_label(entry: &FileTreeEntry) -> String {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -757,6 +884,180 @@ mod tests {
             }
             _ => panic!("expected ls subcommand"),
         }
+    }
+
+    #[tokio::test]
+    async fn atomic_image_write_replaces_only_with_force_and_keeps_private_mode() {
+        let path = std::env::temp_dir().join(format!(
+            "ios-image-write-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"old").unwrap();
+        assert!(write_local_bytes_atomic(&path, b"new", false)
+            .await
+            .is_err());
+        write_local_bytes_atomic(&path, b"new", true).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn unique_output_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "ios-image-write-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[tokio::test]
+    async fn atomic_image_write_failure_keeps_old_destination_and_cleans_temporaries() {
+        let directory = unique_output_directory("failure");
+        let destination = directory.join("out.bin");
+        std::fs::write(&destination, b"original contents").unwrap();
+
+        // A directory at the output path makes the final replacement fail
+        // deterministically after the temporary payload has been written.
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+
+        let result = write_local_bytes_atomic(&destination, b"new contents", true).await;
+        assert!(result.is_err(), "replacing a directory must fail");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().contains(".ios-image-")
+                    && entry.file_name().to_string_lossy().ends_with(".tmp")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files must be cleaned up after a failed replacement: {leftovers:?}"
+        );
+
+        // Restore a regular file destination and verify a real replacement
+        // failure path: the original content stays, the temporary is removed.
+        std::fs::remove_dir(&destination).unwrap();
+        std::fs::write(&destination, b"original contents").unwrap();
+        #[cfg(windows)]
+        {
+            // A read-only destination makes MoveFileExW(REPLACE_EXISTING)
+            // fail with ERROR_ACCESS_DENIED without any lock scaffolding.
+            let mut permissions = std::fs::metadata(&destination).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&destination, permissions).unwrap();
+            let result = write_local_bytes_atomic(&destination, b"new contents", true).await;
+            assert!(result.is_err(), "read-only destination must fail");
+            let mut permissions = std::fs::metadata(&destination).unwrap().permissions();
+            // Windows-only test block; the Unix world-writable concern the
+            // lint targets does not apply here.
+            #[allow(clippy::permissions_set_readonly_false)]
+            {
+                permissions.set_readonly(false);
+            }
+            std::fs::set_permissions(&destination, permissions).unwrap();
+            assert_eq!(
+                std::fs::read(&destination).unwrap(),
+                b"original contents",
+                "a failed replacement must leave the old destination contents intact"
+            );
+            let leftovers: Vec<_> = std::fs::read_dir(&directory)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    name.contains(".ios-image-") && name.ends_with(".tmp")
+                })
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "temporary files must be cleaned up after a failed replacement: {leftovers:?}"
+            );
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_image_write_creates_missing_parent_only_when_requested_target_exists() {
+        let directory = unique_output_directory("missing-parent");
+        let nested = directory.join("nested");
+        let destination = nested.join("out.bin");
+        assert!(write_local_bytes_atomic(&destination, b"data", true)
+            .await
+            .is_err());
+        assert!(
+            !nested.exists(),
+            "a missing parent directory must not be created implicitly"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn atomic_image_write_creates_missing_destination_in_existing_parent() {
+        let directory = unique_output_directory("missing-destination");
+        let destination = directory.join("out.bin");
+
+        write_local_bytes_atomic(&destination, b"data", true)
+            .await
+            .expect("a missing destination in an existing parent is writable");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"data");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".ios-image-") && name.ends_with(".tmp")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "successful replacement must consume its temporary: {leftovers:?}"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_image_write_rejects_directory_target_without_creating_temporaries() {
+        let directory = unique_output_directory("dir-target");
+        let destination = directory.join("out.bin");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(write_local_bytes_atomic(&destination, b"data", true)
+            .await
+            .is_err());
+        assert!(destination.is_dir(), "the directory target must survive");
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".ios-image-") && name.ends_with(".tmp")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "failed writes must not leave temporary files: {leftovers:?}"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -871,6 +1172,28 @@ mod tests {
             ensure_local_overwrite_allowed(&existing.join("missing-child"), false).is_ok(),
             "a fresh destination should not need --force"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_overwrite_guard_detects_dangling_symlink() {
+        let directory = std::env::temp_dir().join(format!(
+            "ios-output-symlink-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("output");
+        std::os::unix::fs::symlink(directory.join("missing-target"), &output).unwrap();
+
+        assert!(ensure_local_overwrite_allowed(&output, false).is_err());
+        assert!(ensure_local_overwrite_allowed(&output, true).is_ok());
+
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
