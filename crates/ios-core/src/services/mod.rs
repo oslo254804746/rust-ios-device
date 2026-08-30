@@ -39,6 +39,7 @@
 //! | `iconservice` | [`iconservice`] | iOS 17+ CoreDevice application icons |
 //! | `screencapture` | [`screencapture`] | iOS 17+ CoreDevice screenshot capture |
 //! | `hid` | [`hid`] | iOS 17+ CoreDevice button, touch, and keyboard input |
+//! | `display` | [`display`] | iOS 17+ CoreDevice media negotiation and bounded RTP access units |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
@@ -107,7 +108,8 @@ pub mod backup2;
     feature = "orientation",
     feature = "iconservice",
     feature = "screencapture",
-    feature = "hid"
+    feature = "hid",
+    feature = "display"
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
@@ -220,6 +222,9 @@ pub mod screencapture;
 
 #[cfg(feature = "hid")]
 pub mod hid;
+
+#[cfg(feature = "display")]
+pub mod display;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

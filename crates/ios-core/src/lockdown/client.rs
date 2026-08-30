@@ -105,6 +105,89 @@ impl LockdownClient {
         Ok(())
     }
 
+    /// Apply a legacy activation record through lockdown.
+    ///
+    /// iOS versions predating the session-based mobileactivationd flow expect
+    /// the server's `activation-record` value under an `Activate` request.
+    /// This remains separate from `HandleActivationInfoWithSessionRequest` so
+    /// callers cannot accidentally send one protocol's envelope to the other.
+    pub async fn activate(&mut self, activation_record: plist::Value) -> Result<(), LockdownError> {
+        self.simple_request("Activate", Some(("ActivationRecord", activation_record)))
+            .await
+    }
+
+    /// Deactivate through the legacy lockdown protocol.
+    pub async fn deactivate(&mut self) -> Result<(), LockdownError> {
+        self.simple_request("Deactivate", None).await
+    }
+
+    async fn simple_request(
+        &mut self,
+        request_name: &str,
+        field: Option<(&str, plist::Value)>,
+    ) -> Result<(), LockdownError> {
+        let mut request = plist::Dictionary::from_iter([
+            ("Label".to_string(), plist::Value::String("ios-rs".into())),
+            (
+                "Request".to_string(),
+                plist::Value::String(request_name.to_owned()),
+            ),
+        ]);
+        if let Some((key, value)) = field {
+            request.insert(key.to_owned(), value);
+        }
+        send_lockdown(&mut self.writer, &plist::Value::Dictionary(request)).await?;
+        let response: plist::Value = recv_lockdown(&mut self.reader).await?;
+        let response = response.as_dictionary().ok_or_else(|| {
+            LockdownError::Protocol(format!("{request_name} returned a non-dictionary response"))
+        })?;
+        match response.get("Request").and_then(plist::Value::as_string) {
+            Some(request) if request == request_name => {}
+            _ => {
+                return Err(LockdownError::Protocol(format!(
+                    "{request_name} returned an unexpected response request"
+                )))
+            }
+        }
+        if let Some(error) = response.get("Error") {
+            return Err(LockdownError::Protocol(format!(
+                "{request_name} failed: {}",
+                redact_request_error(error)
+            )));
+        }
+        if let Some(status) = response.get("Status").and_then(plist::Value::as_string) {
+            if matches!(
+                status.to_ascii_lowercase().as_str(),
+                "error" | "failed" | "failure" | "rejected"
+            ) {
+                return Err(LockdownError::Protocol(format!(
+                    "{request_name} failed with Status={status}"
+                )));
+            }
+        }
+        if let Some(chain) = response.get("ErrorChain") {
+            let count = chain.as_array().map_or(1, std::vec::Vec::len);
+            if count > 0 {
+                return Err(LockdownError::Protocol(format!(
+                    "{request_name} failed with ErrorChain entries={count}"
+                )));
+            }
+        }
+        // Older lockdown versions report failure under `Result` rather than
+        // `Error`; accepting that response would falsely acknowledge Activate
+        // or Deactivate and then persist a misleading local state marker.
+        if response
+            .get("Result")
+            .and_then(plist::Value::as_string)
+            .is_some_and(|result| result == "Failure")
+        {
+            return Err(LockdownError::Protocol(format!(
+                "{request_name} failed with Result=Failure"
+            )));
+        }
+        Ok(())
+    }
+
     /// Start a service and return its port information.
     pub async fn start_service(&mut self, service: &str) -> Result<ServiceInfo, LockdownError> {
         send_lockdown(
@@ -164,6 +247,17 @@ impl LockdownClient {
     }
 }
 
+fn redact_request_error(value: &plist::Value) -> String {
+    match value {
+        plist::Value::String(text) => format!("<redacted error: {} chars>", text.chars().count()),
+        plist::Value::Data(data) => format!("<redacted data: {} bytes>", data.len()),
+        plist::Value::Integer(_) | plist::Value::Real(_) | plist::Value::Boolean(_) => {
+            format!("{value:?}")
+        }
+        _ => "<redacted structured error>".into(),
+    }
+}
+
 fn extract_get_value(
     response: plist::Value,
     domain: Option<&str>,
@@ -193,6 +287,8 @@ fn extract_get_value(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::MockStream;
+
     use super::*;
 
     #[test]
@@ -213,5 +309,50 @@ mod tests {
         assert!(rendered.contains("EnableWifiConnections"));
         assert!(rendered.contains("com.apple.mobile.wireless_lockdown"));
         assert!(rendered.contains("Status"));
+    }
+
+    #[tokio::test]
+    async fn legacy_activation_rejects_result_failure() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "Request".to_string(),
+                plist::Value::String("Activate".into()),
+            ),
+            ("Result".to_string(), plist::Value::String("Failure".into())),
+        ]));
+        let reader = MockStream::with_response(response);
+        let writer = MockStream::eof();
+        let mut client = LockdownClient {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+            session_id: None,
+        };
+
+        let error = client
+            .activate(plist::Value::Dictionary(plist::Dictionary::new()))
+            .await
+            .expect_err("Result=Failure must not be treated as success");
+        assert!(error.to_string().contains("Result=Failure"));
+    }
+
+    #[tokio::test]
+    async fn legacy_activation_rejects_unrelated_response_request() {
+        let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Request".to_string(),
+            plist::Value::String("GetValue".into()),
+        )]));
+        let reader = MockStream::with_response(response);
+        let writer = MockStream::eof();
+        let mut client = LockdownClient {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+            session_id: None,
+        };
+
+        let error = client
+            .deactivate()
+            .await
+            .expect_err("a response for another request must be rejected");
+        assert!(error.to_string().contains("unexpected response request"));
     }
 }

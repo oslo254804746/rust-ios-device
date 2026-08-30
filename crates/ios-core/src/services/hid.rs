@@ -15,6 +15,7 @@ use bytes::Bytes;
 use indexmap::IndexMap;
 
 use crate::device::ResolvedServiceMetadata;
+use crate::services::display::MediaStreamSession;
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 
 pub use crate::services::coredevice::CoreDeviceEnvelopeMode;
@@ -66,6 +67,19 @@ pub enum HidError {
     ShimUnsupported(String),
     #[error("CoreDevice HID feature is not advertised by RSD: {0}")]
     FeatureMissing(&'static str),
+}
+
+/// An already-negotiated DisplayService media stream used to authorize
+/// Universal HID input on current CoreDevice daemons. The provider is owned by
+/// the authorized session so its stop operation can never precede HID release.
+pub trait HidMediaProvider {
+    fn media_session(&mut self) -> &mut MediaStreamSession;
+}
+
+impl HidMediaProvider for MediaStreamSession {
+    fn media_session(&mut self) -> &mut MediaStreamSession {
+        self
+    }
 }
 
 /// Button transition encoded by `IndigoButtonEvent.payload.state`.
@@ -598,11 +612,16 @@ impl UniversalHidServiceClient {
             .call(build_create_keyboard_request(service))
             .await?;
         let output = parse_direct_response(response)?;
-        let value = output
-            .as_dict()
-            .and_then(|items| items.get("serviceID"))
-            .and_then(XpcValue::as_uint64);
-        Ok(value.unwrap_or(service_id))
+        let Some(value) = output.as_dict().and_then(|items| items.get("serviceID")) else {
+            return Ok(service_id);
+        };
+        match value {
+            XpcValue::Uint64(value) => Ok(*value),
+            XpcValue::Int64(value) if *value >= 0 => Ok(*value as u64),
+            _ => Err(HidError::Protocol(
+                "HID createService response has an invalid serviceID".into(),
+            )),
+        }
     }
 
     pub async fn send_keyboard(
@@ -632,6 +651,34 @@ impl UniversalHidServiceClient {
             last_coordinate: None,
             report_count: 0,
             closed: false,
+        }
+    }
+
+    /// Start a touch session with a DisplayService stream that has already
+    /// completed media negotiation. The media stream is retained by the
+    /// returned session and is stopped only after the HID release report.
+    pub fn touch_session_with_media<P: HidMediaProvider>(
+        &mut self,
+        service_id: u64,
+        media: P,
+    ) -> AuthorizedTouchSession<'_, P> {
+        AuthorizedTouchSession {
+            session: self.touch_session(service_id),
+            media,
+        }
+    }
+
+    /// Start a keyboard session with an authenticated media provider. This is
+    /// additive to [`Self::keyboard_session`] for callers targeting daemons
+    /// that do not require the display authorization side channel.
+    pub fn keyboard_session_with_media<P: HidMediaProvider>(
+        &mut self,
+        service_id: u64,
+        media: P,
+    ) -> AuthorizedKeyboardSession<'_, P> {
+        AuthorizedKeyboardSession {
+            session: self.keyboard_session(service_id),
+            media,
         }
     }
 }
@@ -889,6 +936,79 @@ impl Drop for TouchSession<'_> {
     }
 }
 
+/// A touch session that owns its media authorization provider.
+pub struct AuthorizedTouchSession<'a, P: HidMediaProvider> {
+    session: TouchSession<'a>,
+    media: P,
+}
+
+impl<P: HidMediaProvider> AuthorizedTouchSession<'_, P> {
+    /// Send one raw touch transition while the media authorization is alive.
+    /// This is intentionally stateless so callers that persist a contact in a
+    /// longer-lived device-side session can issue `down`, `move`, and `up` from
+    /// separate commands. Use [`Self::touch`] for a checked in-process
+    /// contact lifecycle such as a tap or swipe.
+    pub async fn send_transition(
+        &mut self,
+        phase: TouchPhase,
+        coordinate: TouchCoordinate,
+    ) -> Result<(), HidError> {
+        if self.session.closed {
+            return Err(HidError::Protocol("touch session is closed".into()));
+        }
+        if self.session.report_count >= MAX_TOUCH_REPORTS {
+            return Err(HidError::Protocol(format!(
+                "touch report limit {MAX_TOUCH_REPORTS} exceeded"
+            )));
+        }
+        self.session
+            .service
+            .send_touchscreen(phase, coordinate, self.session.service_id, None)
+            .await?;
+        self.session.report_count += 1;
+        self.session.last_coordinate = Some(coordinate);
+        Ok(())
+    }
+
+    pub async fn touch(
+        &mut self,
+        contact_id: u32,
+        phase: TouchPhase,
+        coordinate: TouchCoordinate,
+    ) -> Result<(), HidError> {
+        self.session.touch(contact_id, phase, coordinate).await
+    }
+
+    /// Release HID first, then stop the display stream under the same
+    /// caller-supplied deadline. If release fails, the media gate remains
+    /// alive so the caller can retry instead of leaving an active contact
+    /// unauthenticated.
+    pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        let hid_result = self.session.close(timeout).await;
+        // Keep the media authorization alive when release failed. Stopping
+        // it here could leave a contact active while removing the gate
+        // that allows a retry; callers can report the error and retry
+        // `close` under a fresh deadline.
+        hid_result?;
+        let media_result = self
+            .media
+            .media_session()
+            .stop(timeout)
+            .await
+            .map_err(|error| {
+                HidError::Protocol(format!("media authorization stop failed: {error}"))
+            });
+        media_result
+    }
+}
+
+impl<P: HidMediaProvider> Drop for AuthorizedTouchSession<'_, P> {
+    fn drop(&mut self) {
+        // Neither HID release nor media stop may block from Drop. Explicit
+        // close is required when a release report is safety-critical.
+    }
+}
+
 /// Borrowed keyboard session.  Its destructor never sends a report; explicit
 /// `close` releases held keys under the caller's deadline.
 pub struct KeyboardSession<'a> {
@@ -965,6 +1085,46 @@ impl KeyboardSession<'_> {
 impl Drop for KeyboardSession<'_> {
     fn drop(&mut self) {
         self.closed = true;
+    }
+}
+
+/// A keyboard session that owns its media authorization provider.
+pub struct AuthorizedKeyboardSession<'a, P: HidMediaProvider> {
+    session: KeyboardSession<'a>,
+    media: P,
+}
+
+impl<P: HidMediaProvider> AuthorizedKeyboardSession<'_, P> {
+    pub async fn send_key(
+        &mut self,
+        usage: KeyboardUsage,
+        modifiers: &[KeyboardModifier],
+    ) -> Result<(), HidError> {
+        self.session.send_key(usage, modifiers).await
+    }
+
+    pub async fn type_text(&mut self, text: &str) -> Result<usize, HidError> {
+        self.session.type_text(text).await
+    }
+
+    pub async fn close(&mut self, timeout: Duration) -> Result<(), HidError> {
+        let hid_result = self.session.close(timeout).await;
+        hid_result?;
+        let media_result = self
+            .media
+            .media_session()
+            .stop(timeout)
+            .await
+            .map_err(|error| {
+                HidError::Protocol(format!("media authorization stop failed: {error}"))
+            });
+        media_result
+    }
+}
+
+impl<P: HidMediaProvider> Drop for AuthorizedKeyboardSession<'_, P> {
+    fn drop(&mut self) {
+        // See AuthorizedTouchSession::drop: Drop is deliberately non-blocking.
     }
 }
 

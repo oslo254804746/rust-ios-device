@@ -42,7 +42,7 @@ schemas, service routing, and iOS-version support can differ.
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill/process controls | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` or `ios memlimitoff --process NAME` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
-| Device pasteboard | `ios pasteboard get`, `ios pasteboard set TEXT`, `ios pasteboard set --url URL` | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
+| Device pasteboard | `ios pasteboard get|set` (verified PULL/SET policies and UTI/base64 representations); experimental `watch|resolve|export --experimental` (output redacted unless `--show-data`) | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
 | Run XCTest | `ios runtest FILE.xctestrun [...]` or `ios runxctest --test-runner-bundle-id BUNDLE --xctest-config BUNDLE.xctest [--bundle-id APP ... --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; runner must already be installed and signed |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
@@ -59,7 +59,8 @@ schemas, service routing, and iOS-version support can differ.
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |
 | CoreDevice appearance/accessibility | `ios device-control configuration get|set ...` | `pymobiledevice3 developer core-device user-interface-style ...` and accessibility controls | iOS 17+ `com.apple.coredevice.configuration`; setters mutate device-wide UI state |
 | CoreDevice orientation | `ios device-control orientation [left|right]` | `pymobiledevice3 developer core-device rotate [left|right]` | iOS 17+ `com.apple.coredevice.devicecontrol`; rotates the active device UI |
-| CoreDevice HID input | `ios hid --confirm button ...` (Universal `tap|swipe|touch|text|key` requires an authenticated Display/RTP provider) | `pymobiledevice3 developer core-device` HID helpers | iOS 17+ Indigo/Universal HID; input injection is mutating |
+| CoreDevice HID input | `ios hid --confirm button ...` (Universal `tap|swipe|touch|text|key` opens an authenticated Display/RTP stream) | `pymobiledevice3 developer core-device` HID helpers | iOS 17+ Indigo/Universal HID; input injection is mutating; Universal input uses a kernel tunnel here because userspace UDP is not available |
+| CoreDevice display media | `ios device-control display status|video|audio` (bounded encoded RTP capture) | `pymobiledevice3 developer core-device display ...` | iOS 17+ `displayservice`; raw HEVC/AAC only, no built-in pixel/audio decoder or VNC |
 | Network and GPU metrics | `ios instruments network`, `ios instruments gpu` | instruments/sysmontap workflows | developer DVT metrics workflows |
 | Debugserver | `ios debugserver ...`, `ios debug ...` | `ios debug ...` | debugserver developer workflows |
 | Accessibility audit | `ios accessibility-audit ...` | `ios ax ...`, accessibility toggles | accessibilityaudit service workflows |
@@ -79,7 +80,7 @@ schemas, service routing, and iOS-version support can differ.
 | Preboard | `ios preboard ...` | prepare/preboard-style workflows | preboard service workflows |
 | Power assertion | `ios power-assert --timeout 10` | power assertion workflows | `pymobiledevice3 power-assertion ...` |
 | Companion devices | `ios companion list|get|listen|forward|stop ...` | companion registry, event, and port-forward workflows | `pymobiledevice3 companion_proxy ...` |
-| Activation | `ios activation state`, `ios activation session-info`, `ios activation info` | go-ios activation helpers | pymobiledevice3 activation workflows |
+| Activation | `ios activation state`, `ios activation session-info`, `ios activation info`, `ios activation activate [--record-input PATH] [--now]`, `ios activation deactivate --force`, `ios activation itunes-activate` | go-ios activation helpers | pymobiledevice3 activation workflows |
 | AMFI developer mode | `ios amfi enable-developer-mode`, `ios amfi reveal-developer-mode` | `ios amfi ...` | `pymobiledevice3 amfi ...` |
 | Heartbeat | `ios heartbeat` | heartbeat service workflows | lockdown heartbeat service |
 | Notifications | `ios notify wait <EVENT>` | `ios notify ...` | `pymobiledevice3 notification ...` |
@@ -102,6 +103,16 @@ schemas, service routing, and iOS-version support can differ.
 - Management commands such as `erase`, `prepare`, `httpproxy`, `profiles`,
   `restore`, and `preboard` can change persistent device state. Use a test device
   and inspect command-specific help before running them.
+- Activation separates the device-side `com.apple.mobileactivationd` plist
+  protocol from Apple's HTTPS endpoints. Online `activation activate` uses the
+  official HTTPS endpoints by default; custom endpoints require
+  `--unsafe-custom-server` and TLS verification is never disabled. Offline
+  records are read from or written to owner-only files and activation payloads
+  are redacted in diagnostic output. `deactivate` requires `--force`.
+- Online activation waits for a fresh Tunnel1 nonce/session by default. `--now`
+  skips that wait and sends one session probe, which is useful only when the
+  caller controls nonce freshness; the operation timeout covers polling,
+  network requests, and device application.
 
 ## Source orientation
 

@@ -1516,6 +1516,7 @@ dependencies = [
  "crc32fast",
  "dirs-next",
  "ed25519-dalek",
+ "flate2",
  "futures-core",
  "futures-util",
  "h2",

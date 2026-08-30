@@ -18,6 +18,15 @@ impl ConnectedDevice {
         self.tunnel.as_ref().map(|t| t.info.server_address.as_str())
     }
 
+    /// The host-side IPv6 address assigned by the CDTunnel handshake.
+    ///
+    /// Device-initiated datagrams (for example CoreDevice media RTP) must be
+    /// advertised with this address when a kernel tunnel is active. Loopback
+    /// (`::1`) is local to the host and is not a routable device endpoint.
+    pub fn client_address(&self) -> Option<&str> {
+        self.tunnel.as_ref().map(|t| t.info.client_address.as_str())
+    }
+
     pub fn userspace_port(&self) -> Option<u16> {
         self.tunnel.as_ref().and_then(|t| t.userspace_port)
     }
@@ -140,6 +149,90 @@ impl ConnectedDevice {
             .remove_value(domain, key)
             .await
             .map_err(CoreError::from)
+    }
+
+    /// Apply an activation record using the protocol selected by its shape.
+    ///
+    /// Wrapped `iphone-activation`/`device-activation` records use legacy
+    /// lockdown `Activate`; modern records use the session-bound
+    /// `HandleActivationInfoWithSessionRequest` mobileactivationd command.
+    /// The distinction is made before opening the service so a legacy record
+    /// is never sent in a modern envelope.
+    #[cfg(feature = "mobileactivation")]
+    pub async fn activate(
+        &self,
+        activation_record: &[u8],
+        response_headers: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), CoreError> {
+        let has_legacy_wrapper =
+            crate::services::mobileactivation::has_legacy_activation_wrapper(activation_record);
+        if has_legacy_wrapper {
+            let legacy_record = crate::services::mobileactivation::extract_legacy_activation_record(
+                activation_record,
+            )
+            .ok_or_else(|| {
+                CoreError::Protocol(
+                    "legacy activation response is missing activation-record".into(),
+                )
+            })?;
+            let mut lockdown = self.lockdown_client().await?;
+            lockdown
+                .activate(legacy_record)
+                .await
+                .map_err(CoreError::from)?;
+        } else {
+            let stream = self
+                .connect_service(crate::services::mobileactivation::SERVICE_NAME)
+                .await?;
+            let mut client = crate::services::mobileactivation::MobileActivationClient::new(stream);
+            client
+                .activate(activation_record, response_headers)
+                .await
+                .map_err(|error| CoreError::Other(format!("mobile activation: {error}")))?;
+        }
+        self.lockdown_set_value(
+            Some(crate::services::mobileactivation::ACTIVATION_STATE_ACKNOWLEDGED_KEY),
+            plist::Value::Boolean(true),
+        )
+        .await
+    }
+
+    /// Deactivate through mobileactivationd, falling back to legacy lockdown.
+    #[cfg(feature = "mobileactivation")]
+    pub async fn deactivate(&self) -> Result<(), CoreError> {
+        let service_result = async {
+            let stream = self
+                .connect_service(crate::services::mobileactivation::SERVICE_NAME)
+                .await?;
+            let mut client = crate::services::mobileactivation::MobileActivationClient::new(stream);
+            client
+                .deactivate()
+                .await
+                .map(|_| ())
+                .map_err(|error| CoreError::Other(format!("mobile activation: {error}")))
+        }
+        .await;
+        if service_result.is_ok() {
+            return service_result;
+        }
+
+        let service_error = service_result.expect_err("checked above");
+        let mut lockdown = self.lockdown_client().await?;
+        lockdown.deactivate().await.map_err(|fallback_error| {
+            CoreError::Other(format!(
+                "mobileactivationd deactivation failed ({service_error}); lockdown fallback failed ({fallback_error})"
+            ))
+        })
+    }
+
+    /// Record the legacy iTunes activation marker in lockdown.
+    #[cfg(feature = "mobileactivation")]
+    pub async fn itunes_activate(&self) -> Result<(), CoreError> {
+        self.lockdown_set_value(
+            Some(crate::services::mobileactivation::ITUNES_HAS_CONNECTED_KEY),
+            plist::Value::Boolean(true),
+        )
+        .await
     }
 
     /// Read language and locale metadata from `com.apple.international`.

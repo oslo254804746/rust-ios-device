@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ios_core::display::{DisplayServiceClient, MediaStreamOptions, MediaStreamSession};
 use ios_core::hid::{
     ButtonState, IndigoHidServiceClient, KeyboardUsage, TouchCoordinate, TouchPhase,
     UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID, DEFAULT_TOUCHSCREEN_SERVICE_ID,
@@ -109,16 +110,6 @@ impl HidCmd {
     }
 
     async fn run_operation(self, udid: String, json_output: bool) -> Result<()> {
-        if matches!(
-            &self.sub,
-            HidSub::Tap { .. }
-                | HidSub::Swipe { .. }
-                | HidSub::Touch { .. }
-                | HidSub::Text { .. }
-                | HidSub::Key { .. }
-        ) {
-            return Err(universal_input_requires_media_stream());
-        }
         match self.sub {
             HidSub::Button {
                 usage_page,
@@ -136,16 +127,17 @@ impl HidCmd {
             }
             HidSub::Tap { x, y, service_id } => {
                 let coordinate = TouchCoordinate::new(x, y)?;
-                let device = connect_device(&udid).await?;
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
-                    .await
-                    .context("Universal HID service is unavailable on this device")?;
-                let mut client = UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
-                let mut session = client.touch_session(service_id);
-                session.touch(0, TouchPhase::Down, coordinate).await?;
-                session.touch(0, TouchPhase::Up, coordinate).await?;
-                session.close(Duration::from_secs(5)).await?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
+                let mut session = client.touch_session_with_media(service_id, media);
+                let operation = async {
+                    session.touch(0, TouchPhase::Down, coordinate).await?;
+                    session.touch(0, TouchPhase::Up, coordinate).await?;
+                    Ok::<(), ios_core::hid::HidError>(())
+                }
+                .await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                operation?;
+                close_result?;
                 print_result(json_output, "tap", 2, false);
             }
             HidSub::Swipe {
@@ -161,25 +153,26 @@ impl HidCmd {
                 }
                 let start = TouchCoordinate::new(from_x, from_y)?;
                 let end = TouchCoordinate::new(to_x, to_y)?;
-                let device = connect_device(&udid).await?;
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
-                    .await
-                    .context("Universal HID service is unavailable on this device")?;
-                let mut client = UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
-                let mut session = client.touch_session(service_id);
-                session.touch(0, TouchPhase::Down, start).await?;
-                for step in 1..steps {
-                    let fraction = step as f64 / steps as f64;
-                    let coordinate = TouchCoordinate::new(
-                        start.x + (end.x - start.x) * fraction,
-                        start.y + (end.y - start.y) * fraction,
-                    )?;
-                    session.touch(0, TouchPhase::Move, coordinate).await?;
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
+                let mut session = client.touch_session_with_media(service_id, media);
+                let operation = async {
+                    session.touch(0, TouchPhase::Down, start).await?;
+                    for step in 1..steps {
+                        let fraction = step as f64 / steps as f64;
+                        let coordinate = TouchCoordinate::new(
+                            start.x + (end.x - start.x) * fraction,
+                            start.y + (end.y - start.y) * fraction,
+                        )?;
+                        session.touch(0, TouchPhase::Move, coordinate).await?;
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    session.touch(0, TouchPhase::Up, end).await?;
+                    Ok::<(), ios_core::hid::HidError>(())
                 }
-                session.touch(0, TouchPhase::Up, end).await?;
-                session.close(Duration::from_secs(5)).await?;
+                .await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                operation?;
+                close_result?;
                 print_result(json_output, "swipe", steps + 1, false);
             }
             HidSub::Touch {
@@ -191,25 +184,17 @@ impl HidCmd {
             } => {
                 let coordinate = TouchCoordinate::new(x, y)?;
                 validate_contact_id(contact_id)?;
-                let device = connect_device(&udid).await?;
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
-                    .await
-                    .context("Universal HID service is unavailable on this device")?;
-                let mut client = UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
-                client
-                    .send_touchscreen(phase, coordinate, service_id, None)
-                    .await?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
+                let mut session = client.touch_session_with_media(service_id, media);
+                let operation = session.send_transition(phase, coordinate).await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                operation?;
+                close_result?;
                 print_result(json_output, "touch", 1, false);
             }
             HidSub::Text { text, service_id } => {
                 let length = text.chars().count();
-                let device = connect_device(&udid).await?;
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
-                    .await
-                    .context("Universal HID service is unavailable on this device")?;
-                let mut client = UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
                 let keyboard = client
                     .create_keyboard_service(
                         service_id,
@@ -219,9 +204,11 @@ impl HidCmd {
                         DEFAULT_PRODUCT_ID,
                     )
                     .await?;
-                let mut session = client.keyboard_session(keyboard);
-                session.type_text(&text).await?;
-                session.close(Duration::from_secs(5)).await?;
+                let mut session = client.keyboard_session_with_media(keyboard, media);
+                let operation = session.type_text(&text).await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                operation?;
+                close_result?;
                 print_result(json_output, "text", length, true);
             }
             HidSub::Key {
@@ -229,12 +216,7 @@ impl HidCmd {
                 shift,
                 service_id,
             } => {
-                let device = connect_device(&udid).await?;
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
-                    .await
-                    .context("Universal HID service is unavailable on this device")?;
-                let mut client = UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
+                let (mut client, media, _device) = connect_universal_with_media(&udid).await?;
                 let keyboard = client
                     .create_keyboard_service(
                         service_id,
@@ -244,25 +226,21 @@ impl HidCmd {
                         DEFAULT_PRODUCT_ID,
                     )
                     .await?;
-                let mut session = client.keyboard_session(keyboard);
+                let mut session = client.keyboard_session_with_media(keyboard, media);
                 let modifiers = if shift {
                     &[ios_core::hid::KeyboardModifier::LeftShift][..]
                 } else {
                     &[]
                 };
-                session.send_key(usage, modifiers).await?;
-                session.close(Duration::from_secs(5)).await?;
+                let operation = session.send_key(usage, modifiers).await;
+                let close_result = session.close(Duration::from_secs(5)).await;
+                operation?;
+                close_result?;
                 print_result(json_output, "key", 1, false);
             }
         }
         Ok(())
     }
-}
-
-fn universal_input_requires_media_stream() -> anyhow::Error {
-    anyhow::anyhow!(
-        "refusing Universal HID input: CoreDevice requires an active authenticated Display/RTP media stream; this build has no media-stream provider"
-    )
 }
 
 fn validate_contact_id(contact_id: u32) -> Result<()> {
@@ -274,11 +252,82 @@ fn validate_contact_id(contact_id: u32) -> Result<()> {
     Ok(())
 }
 
+/// CoreDevice Universal HID drops unauthenticated reports. Open the display
+/// stream first and retain it alongside the HID client; the authorized session
+/// closes HID before stopping this stream.
+async fn connect_universal_with_media(
+    udid: &str,
+) -> Result<(
+    UniversalHidServiceClient,
+    MediaStreamSession,
+    ios_core::ConnectedDevice,
+)> {
+    // Universal HID's authorization side channel is RTP/UDP. The userspace
+    // tunnel only exposes a TCP proxy, so use the kernel tunnel where the
+    // advertised CDTunnel client address is an actual host interface.
+    let device = connect_device_with_mode(udid, TunMode::Kernel).await?;
+    let sender_ip = device
+        .server_address()
+        .ok_or_else(|| anyhow::anyhow!("tunnel did not provide a device server address"))?
+        .to_owned();
+    let receiver_ip = device
+        .client_address()
+        .ok_or_else(|| anyhow::anyhow!("tunnel did not provide a host client address"))?
+        .to_owned();
+    let (display_xpc, display_metadata) = device
+        .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
+        .await
+        .context("CoreDevice display media service is unavailable")?;
+    let display = DisplayServiceClient::from_resolved_metadata(display_xpc, &display_metadata)
+        .context("CoreDevice display media service is not a canonical RemoteXPC service")?;
+    let mut media = MediaStreamSession::start_video(
+        display,
+        MediaStreamOptions {
+            sender_ip,
+            receiver_ip,
+            ..MediaStreamOptions::default()
+        },
+    )
+    .await
+    .context("failed to authenticate Universal HID with a display media stream")?;
+    media.spawn_drain();
+    // Match pmd3's touch_session: backboardd needs a short interval to
+    // re-match the HID surfaces as authenticated before the first report.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (xpc, metadata) = match device
+        .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = media.stop(Duration::from_secs(5)).await;
+            return Err(anyhow::Error::from(error)
+                .context("Universal HID service is unavailable on this device"));
+        }
+    };
+    let client = match UniversalHidServiceClient::from_resolved_metadata(xpc, &metadata) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = media.stop(Duration::from_secs(5)).await;
+            return Err(anyhow::Error::from(error)
+                .context("Universal HID service is not a canonical RemoteXPC service"));
+        }
+    };
+    Ok((client, media, device))
+}
+
 async fn connect_device(udid: &str) -> Result<ios_core::ConnectedDevice> {
+    connect_device_with_mode(udid, TunMode::Userspace).await
+}
+
+async fn connect_device_with_mode(
+    udid: &str,
+    tun_mode: TunMode,
+) -> Result<ios_core::ConnectedDevice> {
     connect(
         udid,
         ConnectOptions {
-            tun_mode: TunMode::Userspace,
+            tun_mode,
             pair_record_path: None,
             skip_tunnel: false,
         },
@@ -361,13 +410,6 @@ mod tests {
             "operation": "text", "status": "sent", "reports": 4, "sensitive": true
         });
         assert!(value.get("text").is_none());
-    }
-
-    #[test]
-    fn universal_input_fails_closed_without_media_authorization() {
-        let error = universal_input_requires_media_stream();
-        assert!(error.to_string().contains("active authenticated"));
-        assert!(error.to_string().contains("no media-stream provider"));
     }
 
     #[test]

@@ -81,7 +81,21 @@ ios -u <UDID> mobilegestalt ProductType ProductVersion
 ios -u <UDID> batterycheck
 ios -u <UDID> batteryregistry
 ios -u <UDID> activation state
+ios -u <UDID> activation session-info
+ios -u <UDID> activation activate
+ios -u <UDID> activation activate --now
+ios -u <UDID> activation activate --record-input activation-record.plist
+ios -u <UDID> activation deactivate --force
+ios -u <UDID> activation itunes-activate
 ```
+
+Online `activation activate` waits for mobileactivationd to publish a fresh
+Tunnel1 nonce/session before contacting Apple's endpoints. `--now` performs a
+single session probe and skips that wait; use it only when the caller knows the
+daemon session is fresh, because reusing a consumed nonce can make activation
+fail. The timeout covers device connection, session polling, HTTPS requests,
+and applying the record. `itunes-activate` is a separate legacy marker command
+and does not accept `--now`.
 
 Use `lockdown get` when you know the lockdown domain or key, and use the
 higher-level commands when you want a narrower, typed view of common data.
@@ -221,14 +235,36 @@ ios -u <UDID> pasteboard set "こんにちは 👋"
 printf 'text from stdin' | ios -u <UDID> pasteboard set
 ios -u <UDID> pasteboard set --url https://example.test/path
 ios -u <UDID> pasteboard get --raw
+ios -u <UDID> pasteboard get --policy promised
+ios -u <UDID> pasteboard set --data public.data=AP8= --data public.url=aHR0cHM6Ly9leGFtcGxlLnRlc3Q=
+ios -u <UDID> pasteboard resolve 0 public.data --out ./payload.bin --experimental
+ios -u <UDID> pasteboard watch --policy promisesecondary --experimental
 ```
 
 `set` with no text argument reads UTF-8 from stdin; an explicit empty argument
-(`set ""`) writes an empty text item. The default output is structured JSON;
-use `--no-json` for text output. `get --raw` retains the complete snapshot and
-renders XPC binary values as base64 in JSON. The service skips empty control
-frames and enforces a 10-second request timeout; a timed-out connection is
-closed and must be recreated for another operation.
+(`set ""`) writes an empty text item. Repeat `--uti` to add text/URL
+representations, or repeat `--data UTI=BASE64` for binary representations.
+The default output is structured JSON; use `--no-json` for text output.
+
+Pasteboard PULL/SET and the CoreDevice data policies `resolved`, `promised`,
+`matchsource`, `promisesecondary`, and `threshold:N` match the pinned go-ios
+and pymobiledevice3 wire evidence. Output redacts content by default and
+reports only UTI, byte count, and SHA-256. Add `--show-data` to emit
+inline/resolved bytes as base64. `get --raw --show-data` retains the complete
+direct XPC dictionary; `--raw` without `--show-data` is still redacted.
+
+`resolve`, `export`, and `watch` use the additional RESOLVE/DATA and
+AUTONOTIFY/PUSH verbs. Those verbs are only enumerated or scaffolded by the
+pinned upstream clients and are therefore experimental; each command must be
+passed `--experimental` and requires real-device validation. `watch` stops
+with Ctrl-C; the library's explicit `close`/`unsubscribe` (and a dropped
+session) performs a bounded best-effort unsubscribe. The client enforces
+bounded item, representation, metadata, event, and data budgets. It skips empty
+control frames, closes a timed-out connection rather than reusing a partial
+frame, and rejects unknown events. Pasteboard service availability is device
+and OS dependent: this command requires an iOS 17+ CoreDevice tunnel and an
+RSD-advertised `com.apple.coredevice.pasteboardservice`; it does not provide a
+lockdown-era fallback.
 
 ## Supervised MDM passcode operations
 
@@ -285,6 +321,26 @@ The daemon does not expose getters for `increase-contrast` or
 clear local error. Devices that only expose a legacy or `.shim.remote` route
 are rejected before the XPC request because these operations require the
 modern CoreDevice envelope.
+
+Display media and Universal HID authorization
+---------------------------------------------
+
+```sh
+ios -u <UDID> device-control display status
+ios -u <UDID> device-control display video --max-units 10 --timeout 10 --output screen.hevc
+ios -u <UDID> device-control display audio --max-units 10 --timeout 10 --output audio.aac
+ios -u <UDID> hid --confirm tap --x 0.5 --y 0.5
+ios -u <UDID> hid --confirm text 'hello'
+```
+
+`video` and `audio` return bounded metadata JSON lines (or a human summary)
+and optionally save concatenated encoded access units through an atomic 0600
+staging file. The output is raw encoded Annex-B HEVC or AAC-ELD payload data,
+not decoded pixels/PCM; a VNC/viewer pipeline is not included. Capture and
+Universal HID use the kernel tunnel so device-initiated RTP can reach the host
+UDP socket. If kernel TUN support or a concrete CDTunnel client address is not
+available, the command fails with a diagnostic instead of advertising `::1` or
+claiming that input/capture succeeded.
 
 ## Logs, diagnostics, and packet capture
 

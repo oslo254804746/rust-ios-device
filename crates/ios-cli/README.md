@@ -14,6 +14,10 @@ workspace.
   CoreDevice tunneling.
 - Default JSON output for scripting; pass `--no-json` for human-readable
   tables where supported.
+- CoreDevice pasteboard `get` and `set` support verified bounded data policies
+  and binary UTI representations. `watch`, `resolve`, and `export` are
+  experimental and require `--experimental`; output is redacted to size/hash
+  by default, with `--show-data` for intentional byte output.
 - iOS 17+ CoreDevice tunnel manager (`ios tunnel serve`) with go-ios-compatible
   fields (`tunnel-address`, `tunnel-port`, `userspace-port`).
 - Built on `ios-core` with the `full` feature set.
@@ -58,7 +62,7 @@ Commands that target a device default to the first device returned by
 | Area                     | Examples                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | Discovery & pairing      | `list`, `listen`, `discover`, `pair`, `lockdown`                                          |
-| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation`, `amfi`                |
+| Device info & settings   | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` |
 | Files & containers       | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                      |
 | Apps & UI tests          | `apps`, `runtest`, `runxctest`, `runwda`, `wda`, `springboard`                            |
 | Diagnostics & logs       | `syslog`, `diagnostics`, `os-trace` (including archive/collect), `notify`, `pcap`          |

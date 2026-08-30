@@ -122,21 +122,31 @@ orientation.
 | Area                        | `ios` commands                                                                                  | Comparable go-ios / pymobiledevice3                                       |
 | --------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Discovery & pairing         | `list`, `listen`, `discover`, `pair`, `lockdown`                                                | go-ios `list`/`listen`/`pair`; pmd3 `usbmux`/`lockdown`/`bonjour`         |
-| Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation`, `amfi`   | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
+| Device info & settings      | `info`, `mobilegestalt`, `diskspace`, `batterycheck`, `batteryregistry`, `activation` (state, session-info, info, activate, deactivate, itunes-activate), `amfi` | go-ios `info`/`mobilegestalt`; pmd3 `lockdown`/`amfi`/`activation`        |
 | Files & containers          | `file` (AFC, app, CoreDevice), `crash`, `file-relay`                                            | go-ios `fsync`/`crash`; pmd3 `afc`/`crash`                                |
 | Apps & UI tests             | `apps`, `runtest`, `runxctest`, `runwda`, `wda`, `springboard`                                  | go-ios `apps`/`install`/`launch`/`runtest`/`runwda`; pmd3 `apps`/dvt      |
 | Diagnostics & logs          | `syslog`, `diagnostics` (reboot/shutdown), `os-trace` (including raw archive/collect), `notify`, `pcap`, `ip`, `btlogger` | go-ios `syslog`/`diagnostics`/`pcap`; pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | Developer services          | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`; pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ transport           | `tunnel`, `rsd`, `forward`, `dproxy`                                                            | go-ios `tunnel`/`rsd`/`forward`; pmd3 RemoteXPC/tunnel                    |
-| Device pasteboard           | `pasteboard get`, `pasteboard set TEXT`, `pasteboard set --url URL`                            | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy`                     |
+| Device pasteboard           | `pasteboard get|set` (verified PULL/SET policies and binary UTI data); experimental `watch|resolve|export --experimental` | go-ios `pasteboard`; pmd3 CoreDevice `paste`/`copy`                     |
 | CoreDevice configuration    | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
 | CoreDevice orientation      | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
-| CoreDevice HID input        | `hid --confirm button ...` (Universal touch/keyboard requires Display/RTP authorization)        | pmd3 CoreDevice HID button/touch/keyboard helpers                          |
+| CoreDevice HID input        | `hid --confirm button ...` (Universal touch/keyboard opens authenticated Display/RTP authorization) | pmd3 CoreDevice HID button/touch/keyboard helpers                          |
+| CoreDevice display media    | `device-control display status|video|audio` (bounded encoded RTP capture; no decoder/VNC) | pmd3 CoreDevice display/screen-stream helpers |
 | Management & supervision    | `profiles`, `wifi`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`wifi`/`prepare`/`httpproxy`/`mdm`/`erase`; pmd3 `profile`/`provision`/`restore` |
 | Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 
 Task-focused walkthroughs: [`docs/usage.md`](docs/usage.md). Side-by-side
 command map: [`docs/cli-map.md`](docs/cli-map.md).
+
+Activation has separate device and network stages. `activation activate` uses
+Apple's official HTTPS endpoints unless an explicit unsafe custom HTTPS endpoint
+opt-in is supplied; TLS verification remains enabled. Offline records use
+owner-only files, and activation records/identifiers are redacted from JSON and
+human diagnostic output. Online activation waits for a fresh Tunnel1
+nonce/session; `activation activate --now` skips that wait and performs one
+session probe, so it should only be used when the daemon session is known to be
+fresh. Destructive `activation deactivate` requires `--force`.
 
 ## CoreDevice / iOS 17+ tunnel
 

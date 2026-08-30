@@ -30,7 +30,7 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `mobileactivation` (state, session handshake, online/offline activation, deactivation, and the iTunes lockdown marker), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
 
 `iconservice` and `screencapture` are modern CoreDevice/RSD services. The
 `apps icons` and `screenshot` CLI commands select them automatically on iOS
@@ -46,13 +46,29 @@ the resolved endpoint is a legacy or `.shim.remote` service. Configuration
 setters change device-wide appearance/accessibility state; orientation rotates
 the active UI, so callers should treat both as mutating operations.
 
+Pasteboard PULL/SET, multi-item UTI data, and the documented data-policy
+encodings are verified against go-ios `ced7e53d` and pymobiledevice3
+`38fbd227`. The listed RESOLVE/DATA/AUTONOTIFY/PUSH verbs are experimental:
+those pinned reference clients only scaffold or enumerate them. The CLI gates
+`pasteboard watch`, `resolve`, and `export` behind `--experimental`; library
+APIs for those verbs carry the same warning and require real-device validation.
+
 `hid` exposes pmd3-compatible Indigo button and Universal HID report services.
 The `ios hid` command requires `--confirm`, bounds input, and never prints
 keyboard text in JSON or human output. Touch reports use normalized coordinates
 and the single-contact report format supported by CoreDevice. Indigo button
-events are available directly; Universal touch/keyboard commands fail closed
-until an authenticated Display/RTP media-stream provider is available, because
-backboardd silently drops those reports without that authorization.
+events are available directly; Universal touch/keyboard commands first open an
+authenticated Display/RTP media stream and keep it alive until HID release.
+They use the kernel tunnel because the current userspace tunnel has no UDP
+bridge; a missing kernel-TUN capability or tunnel endpoint is reported as an
+error rather than claiming that input was delivered.
+
+`display` provides `device-control display status` and bounded `video`/`audio`
+capture of encoded RTP access units. Capture binds the CDTunnel client address,
+uses the negotiated `streamConfig` RTCP port/SSRC values, and writes optional
+output atomically with owner-only permissions. It does not decode HEVC/AAC or
+provide a VNC/pixel viewer; consumers must decode the raw Annex-B HEVC or
+AAC-ELD payloads separately.
 
 MobileBackup2's DeviceLink client is part of the core service surface and
 includes the device-side `Unback` and `Extract` operations. The optional

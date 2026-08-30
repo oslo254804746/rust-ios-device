@@ -66,6 +66,7 @@ ios17 = [
     "iconservice",
     "screencapture",
     "hid",
+    "display",
     "pasteboard",
     "testmanager",
     "mdns",
@@ -89,7 +90,7 @@ diagnostics = []
 diagnosticsservice = ["tunnel", "mdns"]
 springboard = []
 mcinstall = ["dep:sha1"]
-mobileactivation = []
+mobileactivation = ["dep:reqwest"]
 profiles = ["mcinstall", "misagent"]
 heartbeat = []
 file_relay = []
@@ -119,7 +120,8 @@ configuration = ["tunnel"]
 orientation = ["tunnel"]
 iconservice = ["tunnel"]
 screencapture = ["tunnel"]
-hid = ["tunnel"]
+hid = ["tunnel", "display"]
+display = ["tunnel"]
 # Naming aliases for downstream callers that follow the upstream Python file
 # names or Rust's snake_case convention.
 icon_service = ["iconservice"]
@@ -160,6 +162,7 @@ semver       = { workspace = true }
 mdns-sd      = { workspace = true, optional = true }
 plist        = { workspace = true }
 futures-core = { workspace = true }
+flate2       = { workspace = true }
 futures-util = { workspace = true }
 rustls       = { workspace = true }
 tokio-rustls = { workspace = true }
