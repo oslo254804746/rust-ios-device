@@ -115,8 +115,7 @@ impl ActivationCmd {
                     "session-info request",
                 )
                 .await?;
-                let value = expand_embedded_plists(plist::Value::Dictionary(session_info));
-                print_value(redact_sensitive(value), json)?;
+                print_value(redact_activation_diagnostic(session_info), json)?;
             }
             ActivationSub::Info { timeout_secs } => {
                 let deadline = absolute_deadline(timeout_secs)?;
@@ -171,10 +170,7 @@ impl ActivationCmd {
                     "activation-info request",
                 )
                 .await?;
-                print_value(
-                    redact_sensitive(expand_embedded_plists(plist::Value::Dictionary(value))),
-                    json,
-                )?;
+                print_value(redact_activation_diagnostic(value), json)?;
             }
             ActivationSub::Activate {
                 record_input,
@@ -581,27 +577,27 @@ fn print_value(value: plist::Value, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn redact_sensitive(value: plist::Value) -> plist::Value {
-    match value {
-        plist::Value::Array(items) => {
-            plist::Value::Array(items.into_iter().map(redact_sensitive).collect())
-        }
-        plist::Value::Dictionary(dict) => plist::Value::Dictionary(
-            dict.into_iter()
-                .map(|(key, value)| {
-                    if sensitive_key(&key) {
-                        (key, redacted_value(value))
+/// Keep diagnostic activation output within a strict credential boundary.
+///
+/// Session and activation-info responses carry opaque attestation material
+/// whose field names and nesting change across iOS releases.  Showing an
+/// unknown field is therefore unsafe even after recursively hiding known
+/// identifiers.  Preserve only the protocol status and redact every payload.
+fn redact_activation_diagnostic(response: plist::Dictionary) -> plist::Value {
+    plist::Value::Dictionary(
+        response
+            .into_iter()
+            .map(|(key, value)| {
+                let value =
+                    if key == "Status" && matches!(value.as_string(), Some("Success" | "Error")) {
+                        value
                     } else {
-                        (key, redact_sensitive(value))
-                    }
-                })
-                .collect(),
-        ),
-        plist::Value::Data(bytes) => {
-            plist::Value::String(format!("<redacted data: {} bytes>", bytes.len()))
-        }
-        other => other,
-    }
+                        redacted_value(value)
+                    };
+                (key, value)
+            })
+            .collect(),
+    )
 }
 
 fn redacted_value(value: plist::Value) -> plist::Value {
@@ -616,130 +612,6 @@ fn redacted_value(value: plist::Value) -> plist::Value {
                 .collect(),
         ),
         _ => plist::Value::String("<redacted>".into()),
-    }
-}
-
-fn sensitive_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    [
-        "activation",
-        "certificate",
-        "identifier",
-        "unique",
-        "deviceid",
-        "ecid",
-        "serial",
-        "imei",
-        "meid",
-        "imsi",
-        "iccid",
-        "udid",
-        "pair",
-        "private",
-        "handshake",
-        "token",
-        "nonce",
-        "identity",
-        "password",
-        "credential",
-        "secret",
-        "account",
-        "appleid",
-    ]
-    .iter()
-    .any(|part| key.contains(part))
-}
-
-fn expand_embedded_plists(value: plist::Value) -> plist::Value {
-    match value {
-        plist::Value::Array(items) => {
-            plist::Value::Array(items.into_iter().map(expand_embedded_plists).collect())
-        }
-        plist::Value::Dictionary(dict) => plist::Value::Dictionary(
-            dict.into_iter()
-                .map(|(key, value)| (key, expand_embedded_plists(value)))
-                .collect(),
-        ),
-        plist::Value::Data(bytes) => try_decode_embedded_data(&bytes)
-            .map(expand_embedded_plists)
-            .unwrap_or(plist::Value::Data(bytes)),
-        other => other,
-    }
-}
-
-fn try_decode_embedded_data(bytes: &[u8]) -> Option<plist::Value> {
-    try_decode_embedded_plist(bytes)
-        .or_else(|| try_decode_embedded_json(bytes))
-        .or_else(|| try_decode_embedded_text(bytes))
-}
-
-fn try_decode_embedded_plist(bytes: &[u8]) -> Option<plist::Value> {
-    let start = find_bytes(bytes, b"<?xml").or_else(|| find_bytes(bytes, b"<plist"))?;
-    let end = find_bytes(bytes, b"</plist>")?;
-    if end < start {
-        return None;
-    }
-    let slice = &bytes[start..end + b"</plist>".len()];
-    plist::from_bytes(slice).ok()
-}
-
-fn try_decode_embedded_json(bytes: &[u8]) -> Option<plist::Value> {
-    let trimmed = std::str::from_utf8(bytes).ok()?.trim();
-    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
-        return None;
-    }
-    let json = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
-    Some(json_to_plist(json))
-}
-
-fn try_decode_embedded_text(bytes: &[u8]) -> Option<plist::Value> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    // Arbitrary ASCII data can be a nonce, certificate, or server token.  Do
-    // not turn it into a printable String before redaction; only decode the
-    // PEM form that the diagnostic view intentionally supports.
-    if !(text.contains("-----BEGIN ") && text.contains("-----END ")) {
-        return None;
-    }
-    if !text
-        .chars()
-        .all(|ch| ch.is_ascii_graphic() || ch.is_ascii_whitespace())
-    {
-        return None;
-    }
-    Some(plist::Value::String(text.to_string()))
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn json_to_plist(value: serde_json::Value) -> plist::Value {
-    match value {
-        serde_json::Value::Null => plist::Value::String("null".to_string()),
-        serde_json::Value::Bool(value) => plist::Value::Boolean(value),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                plist::Value::Integer(value.into())
-            } else if let Some(value) = value.as_u64() {
-                plist::Value::Integer(value.into())
-            } else if let Some(value) = value.as_f64() {
-                plist::Value::Real(value)
-            } else {
-                plist::Value::String(value.to_string())
-            }
-        }
-        serde_json::Value::String(value) => plist::Value::String(value),
-        serde_json::Value::Array(values) => {
-            plist::Value::Array(values.into_iter().map(json_to_plist).collect())
-        }
-        serde_json::Value::Object(values) => plist::Value::Dictionary(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, json_to_plist(value)))
-                .collect(),
-        ),
     }
 }
 
@@ -864,100 +736,31 @@ mod tests {
     }
 
     #[test]
-    fn expands_embedded_plist_data_to_nested_value() {
-        let raw = br#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Hello</key><string>World</string></dict></plist>"#;
-        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([(
-            "Value".to_string(),
-            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+    fn activation_diagnostic_redaction_hides_unknown_and_embedded_payloads() {
+        let value = plist::Dictionary::from_iter([
+            ("Status".to_string(), plist::Value::String("Success".into())),
+            (
                 "ActivationInfoXML".to_string(),
-                plist::Value::Data(raw.to_vec()),
-            )])),
-        )]));
-
-        let expanded = expand_embedded_plists(value);
-        let dict = expanded.into_dictionary().unwrap();
-        let inner = dict["Value"].as_dictionary().unwrap();
-        let nested = inner["ActivationInfoXML"].as_dictionary().unwrap();
-        assert_eq!(nested["Hello"].as_string(), Some("World"));
-    }
-
-    #[test]
-    fn expands_embedded_json_data_to_nested_value() {
-        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([(
-            "Value".to_string(),
-            plist::Value::Dictionary(plist::Dictionary::from_iter([(
-                "CollectionBlob".to_string(),
-                plist::Value::Dictionary(plist::Dictionary::from_iter([(
-                    "IngestBody".to_string(),
-                    plist::Value::Data(br#"{"serial-number":"ABC123","flag":true}"#.to_vec()),
-                )])),
-            )])),
-        )]));
-
-        let expanded = expand_embedded_plists(value);
-        let dict = expanded.into_dictionary().unwrap();
-        let ingest = dict["Value"].as_dictionary().unwrap()["CollectionBlob"]
-            .as_dictionary()
-            .unwrap()["IngestBody"]
-            .as_dictionary()
-            .unwrap();
-        assert_eq!(ingest["serial-number"].as_string(), Some("ABC123"));
-        assert_eq!(ingest["flag"].as_boolean(), Some(true));
-    }
-
-    #[test]
-    fn expands_embedded_utf8_text_data_to_string() {
-        let value = plist::Value::Data(
-            b"-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----".to_vec(),
-        );
-        let expanded = expand_embedded_plists(value);
-        assert_eq!(
-            expanded.as_string(),
-            Some("-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----")
-        );
-    }
-
-    #[test]
-    fn leaves_unclassified_ascii_data_redacted() {
-        let value = plist::Value::Data(b"private activation token".to_vec());
-        let expanded = expand_embedded_plists(value);
-        let redacted = redact_sensitive(expanded);
-        let rendered = format!("{redacted:?}");
-        assert!(!rendered.contains("private activation token"));
-        assert!(rendered.contains("redacted data"));
-    }
-
-    #[test]
-    fn recursive_redaction_hides_activation_identifiers_and_data() {
-        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
-            (
-                "SerialNumber".to_string(),
-                plist::Value::String("SERIAL-SECRET".into()),
+                plist::Value::Data(b"PRIVATE-ATTESTATION".to_vec()),
             ),
             (
-                "UniqueDeviceID".to_string(),
-                plist::Value::String("UDID-SECRET".into()),
-            ),
-            (
-                "Nested".to_string(),
+                "Value".to_string(),
                 plist::Value::Dictionary(plist::Dictionary::from_iter([(
-                    "HandshakeRequestMessage".to_string(),
-                    plist::Value::Data(vec![1, 2, 3]),
+                    "UnknownCertificateField".to_string(),
+                    plist::Value::String("-----BEGIN CERTIFICATE-----secret".into()),
                 )])),
             ),
             (
-                "PublicLabel".to_string(),
-                plist::Value::String("visible".into()),
+                "UnknownString".to_string(),
+                plist::Value::String("opaque activation token".into()),
             ),
-        ]));
-        let redacted = redact_sensitive(value);
+        ]);
+        let redacted = redact_activation_diagnostic(value);
         let rendered = format!("{redacted:?}");
-        assert!(!rendered.contains("SERIAL-SECRET"));
-        assert!(!rendered.contains("UDID-SECRET"));
-        assert!(!rendered.contains("[1, 2, 3]"));
-        assert!(rendered.contains("visible"));
+        assert!(rendered.contains("Success"));
+        assert!(!rendered.contains("PRIVATE-ATTESTATION"));
+        assert!(!rendered.contains("CERTIFICATE"));
+        assert!(!rendered.contains("opaque activation token"));
     }
 
     #[test]

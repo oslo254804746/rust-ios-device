@@ -8,7 +8,6 @@
 
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use indexmap::IndexMap;
 
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
@@ -161,12 +160,12 @@ impl InstallCoordinationProxyClient {
     ) -> Result<InstallRecord, InstallCoordinationError> {
         validate_bundle_identifier(bundle_identifier)?;
         let request = build_query_request(bundle_identifier);
-        // The reference service sends the reply as the next fresh message
-        // rather than correlating it with the request id.  `call` deliberately
-        // waits for a matching id, so use the shared stream primitive with the
-        // same no-WANTING_REPLY flags as pymobiledevice3.
-        let responses = self.client.stream_invoke_with_flags(request, 0);
-        tokio::pin!(responses);
+        // The daemon sends an uncorrelated fresh reply on the root
+        // client-server stream.  Do not use `call` here: it adds
+        // WANTING_REPLY and waits on stream 3 for a matching message id.
+        // pymobiledevice3 similarly sends this request without WANTING_REPLY
+        // and consumes the next response directly.
+        self.client.send(request).await?;
         let deadline = tokio::time::Instant::now()
             .checked_add(self.timeout)
             .ok_or_else(|| {
@@ -180,14 +179,10 @@ impl InstallCoordinationProxyClient {
             if remaining.is_zero() {
                 return Err(InstallCoordinationError::Timeout(self.timeout));
             }
-            let response = tokio::time::timeout(remaining, responses.next())
+            let response = tokio::time::timeout(remaining, self.client.recv_client_server())
                 .await
                 .map_err(|_| InstallCoordinationError::Timeout(self.timeout))?;
-            let response = response.ok_or_else(|| {
-                InstallCoordinationError::Protocol(
-                    "InstallCoordinationProxy response stream ended before a response".into(),
-                )
-            })??;
+            let response = response?;
             // RemoteXPC peers may emit a zero-length data frame after the
             // request. pmd3's receive_response skips those frames; do the
             // same before parsing the first actual dictionary.

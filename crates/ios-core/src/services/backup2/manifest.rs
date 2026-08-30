@@ -1859,6 +1859,22 @@ fn is_modern_storage(version: &str) -> Result<bool, Mobilebackup2Error> {
     Ok(major > 10 || (major == 10 && (minor > 2 || (minor == 2 && patch > 0))))
 }
 
+#[cfg(not(unix))]
+fn extract_symlink(
+    _source_directory: &Path,
+    _output_directory: &Path,
+    _entry: &ManifestEntry,
+    _destination: &Path,
+    _crypto: Option<&BackupCrypto>,
+    _modern: bool,
+    _result: &mut ExtractionResult,
+) -> Result<(), Mobilebackup2Error> {
+    Err(Mobilebackup2Error::Protocol(
+        "symlink extraction is unsupported on this platform".into(),
+    ))
+}
+
+#[cfg(unix)]
 fn extract_symlink(
     source_directory: &Path,
     output_directory: &Path,
@@ -1967,17 +1983,7 @@ fn extract_symlink(
     {
         create_dir_all_no_symlink(output_directory, parent_relative)?;
     }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&clean_target, destination)?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (clean_target, destination);
-        return Err(Mobilebackup2Error::Protocol(
-            "symlink extraction is unsupported on this platform".into(),
-        ));
-    }
+    std::os::unix::fs::symlink(&clean_target, destination)?;
     account_extracted_bytes(result, accounted_size)?;
     result.files_extracted = result.files_extracted.saturating_add(1);
     Ok(())

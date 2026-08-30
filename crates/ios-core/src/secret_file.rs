@@ -93,7 +93,8 @@ fn replace_secret_file(tmp: &Path, path: &Path) -> io::Result<()> {
         .is_some_and(|metadata| metadata.file_type().is_dir())
     {
         return Err(io::Error::new(
-            io::ErrorKind::IsADirectory,
+            // `IsADirectory` is newer than this crate's Rust 1.80 MSRV.
+            io::ErrorKind::InvalidInput,
             format!("secret file path is a directory: {}", path.display()),
         ));
     }

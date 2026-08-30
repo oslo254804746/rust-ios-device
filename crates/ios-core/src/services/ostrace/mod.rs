@@ -977,7 +977,10 @@ fn create_secure_temp_dir(
 ) -> Result<PathBuf, OsTraceError> {
     for _ in 0..4 {
         let path = parent.join(temp_stem(name, "staging"));
+        #[cfg(unix)]
         let mut builder = fs::DirBuilder::new();
+        #[cfg(not(unix))]
+        let builder = fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         match builder.create(&path) {
@@ -1078,10 +1081,12 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), OsTraceError>
             )
         };
         if result == 0 {
-            return Err(std::io::Error::last_os_error().into());
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            Ok(())
         }
-        return Ok(());
     }
+    #[cfg(not(windows))]
     fs::rename(source, destination).map_err(OsTraceError::from)
 }
 

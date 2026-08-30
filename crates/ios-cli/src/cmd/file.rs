@@ -482,11 +482,12 @@ async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> 
 async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
 
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x2;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(once(0)).collect();
-    let destination: Vec<u16> = destination
+    const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
+    let temporary_wide: Vec<u16> = temporary.as_os_str().encode_wide().chain(once(0)).collect();
+    let destination_wide: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
         .chain(once(0))
@@ -494,13 +495,50 @@ async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> 
     #[link(name = "kernel32")]
     extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
     }
-    let result = unsafe {
-        MoveFileExW(
-            temporary.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
+
+    let result = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!(
+                "refusing to replace symlink output: {}",
+                destination.display()
+            );
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            anyhow::bail!(
+                "output path is not a regular file: {}",
+                destination.display()
+            );
+        }
+        Ok(_) => unsafe {
+            // MoveFileExW reports ERROR_ALREADY_EXISTS for this path on
+            // Windows despite MOVEFILE_REPLACE_EXISTING. ReplaceFileW is the
+            // documented atomic file-replacement primitive.
+            ReplaceFileW(
+                destination_wide.as_ptr(),
+                temporary_wide.as_ptr(),
+                null(),
+                REPLACEFILE_WRITE_THROUGH,
+                null_mut(),
+                null_mut(),
+            )
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => unsafe {
+            MoveFileExW(
+                temporary_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        },
+        Err(error) => return Err(error.into()),
     };
     if result == 0 {
         return Err(std::io::Error::last_os_error().into());
