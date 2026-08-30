@@ -40,6 +40,7 @@
 //! | `screencapture` | [`screencapture`] | iOS 17+ CoreDevice screenshot capture |
 //! | `hid` | [`hid`] | iOS 17+ CoreDevice button, touch, and keyboard input |
 //! | `display` | [`display`] | iOS 17+ CoreDevice media negotiation and bounded RTP access units |
+//! | `installcoordination` | [`installcoordination`] | iOS 17+ InstallCoordinationProxy query |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
@@ -225,6 +226,9 @@ pub mod hid;
 
 #[cfg(feature = "display")]
 pub mod display;
+
+#[cfg(feature = "installcoordination")]
+pub mod installcoordination;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

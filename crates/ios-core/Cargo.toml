@@ -67,6 +67,7 @@ ios17 = [
     "screencapture",
     "hid",
     "display",
+    "installcoordination",
     "pasteboard",
     "testmanager",
     "mdns",
@@ -122,6 +123,7 @@ iconservice = ["tunnel"]
 screencapture = ["tunnel"]
 hid = ["tunnel", "display"]
 display = ["tunnel"]
+installcoordination = ["tunnel"]
 # Naming aliases for downstream callers that follow the upstream Python file
 # names or Rust's snake_case convention.
 icon_service = ["iconservice"]

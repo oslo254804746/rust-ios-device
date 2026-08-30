@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use ios_core::error::CoreError;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 use crate::cmd::connect::{connect_by_ios_major, userspace_options};
 
@@ -58,6 +59,13 @@ enum AppsSub {
             help = "Comma-separated return attributes to request from installation_proxy"
         )]
         attrs: Vec<String>,
+    },
+    /// Query an iOS 17+ InstallCoordinationProxy LaunchServices record
+    InstallRecord {
+        #[arg(help = "Bundle ID (e.g. com.apple.Preferences)")]
+        bundle_id: String,
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
     },
     /// List running app processes (iOS 17+ appservice)
     Processes {
@@ -503,6 +511,52 @@ impl AppsCmd {
                     print_app_details(&app_json);
                 }
             }
+            AppsSub::InstallRecord {
+                bundle_id,
+                timeout_secs,
+            } => {
+                let timeout = Duration::from_secs(timeout_secs);
+                let result = tokio::time::timeout(timeout, async {
+                    let (xpc, metadata) = device
+                        .connect_xpc_service_with_metadata(
+                            ios_core::installcoordination::SERVICE_NAME,
+                        )
+                        .await
+                        .context("InstallCoordinationProxy requires an iOS 17+ RSD service")?;
+                    if metadata.resolved_service_name != ios_core::installcoordination::SERVICE_NAME
+                    {
+                        anyhow::bail!(
+                            "InstallCoordinationProxy resolved unsupported service {}",
+                            metadata.resolved_service_name
+                        );
+                    }
+                    let mut proxy =
+                        ios_core::installcoordination::InstallCoordinationProxy::with_timeout(
+                            xpc, timeout,
+                        );
+                    Ok::<_, anyhow::Error>(proxy.query(&bundle_id).await?)
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("install-record timed out after {timeout:?}"))??;
+                let output = install_record_to_json(&result);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else {
+                    println!("DB UUID: {}", result.db_uuid);
+                    println!("DB sequence: {}", result.db_sequence);
+                    println!(
+                        "Install path: {}",
+                        result.install_path.as_deref().unwrap_or("-")
+                    );
+                    println!(
+                        "Persistent identifier: {}",
+                        hex::encode(&result.persistent_identifier)
+                    );
+                    if !result.extra.is_empty() {
+                        println!("Extra fields: {}", result.extra.len());
+                    }
+                }
+            }
             AppsSub::Processes { apps, name } => {
                 let processes = match connect_appservice(&device, &udid).await {
                     Ok(mut client) => client.list_processes().await?,
@@ -806,6 +860,7 @@ fn apps_subcommand_requires_version_probe(sub: &AppsSub) -> bool {
             coredevice: true,
             ..
         } | AppsSub::Processes { .. }
+            | AppsSub::InstallRecord { .. }
             | AppsSub::Kill { .. }
             | AppsSub::Signal { .. }
             | AppsSub::Pkill { .. }
@@ -825,6 +880,7 @@ fn apps_subcommand_prefers_tunnel(sub: &AppsSub, ios_major: u64) -> bool {
                 coredevice: true,
                 ..
             } | AppsSub::Processes { .. }
+                | AppsSub::InstallRecord { .. }
                 | AppsSub::Kill { .. }
                 | AppsSub::Signal { .. }
                 | AppsSub::Pkill { .. }
@@ -1144,6 +1200,37 @@ fn coredevice_app_to_json(
     })
 }
 
+fn install_record_to_json(
+    record: &ios_core::installcoordination::InstallRecord,
+) -> serde_json::Value {
+    let mut object = serde_json::Map::from_iter([
+        ("db_uuid".to_string(), serde_json::json!(record.db_uuid)),
+        (
+            "db_sequence".to_string(),
+            serde_json::json!(record.db_sequence),
+        ),
+        (
+            "install_path".to_string(),
+            record
+                .install_path
+                .as_deref()
+                .map_or(serde_json::Value::Null, |path| {
+                    serde_json::Value::String(path.to_string())
+                }),
+        ),
+        (
+            "persistent_identifier".to_string(),
+            serde_json::Value::String(hex::encode(&record.persistent_identifier)),
+        ),
+    ]);
+    for (key, value) in &record.extra {
+        object
+            .entry(key.clone())
+            .or_insert_with(|| xpc_value_to_json(value));
+    }
+    serde_json::Value::Object(object)
+}
+
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
     match value {
         plist::Value::Array(items) => {
@@ -1390,6 +1477,45 @@ mod tests {
             }
             _ => panic!("expected show subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_apps_install_record_subcommand() {
+        let cmd = TestCli::parse_from([
+            "apps",
+            "install-record",
+            "com.apple.Preferences",
+            "--timeout-secs",
+            "7",
+        ]);
+        match cmd.command {
+            AppsSub::InstallRecord {
+                bundle_id,
+                timeout_secs,
+            } => {
+                assert_eq!(bundle_id, "com.apple.Preferences");
+                assert_eq!(timeout_secs, 7);
+            }
+            _ => panic!("expected install-record subcommand"),
+        }
+    }
+
+    #[test]
+    fn install_record_json_contains_known_and_unknown_fields() {
+        let record = ios_core::installcoordination::InstallRecord {
+            db_uuid: "db".into(),
+            db_sequence: 4,
+            install_path: Some("file:///Applications/Test.app/".into()),
+            persistent_identifier: vec![0, 1],
+            extra: indexmap::IndexMap::from([(
+                "FutureField".into(),
+                ios_core::XpcValue::String("kept".into()),
+            )]),
+        };
+        let json = install_record_to_json(&record);
+        assert_eq!(json["db_sequence"], 4);
+        assert_eq!(json["persistent_identifier"], "0001");
+        assert_eq!(json["FutureField"], "kept");
     }
 
     #[test]

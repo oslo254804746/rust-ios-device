@@ -48,7 +48,9 @@ impl BackupCmd {
     pub fn needs_default_udid(&self) -> bool {
         !matches!(
             &self.sub,
-            BackupSubcommand::Unback { .. } | BackupSubcommand::Extract { .. }
+            BackupSubcommand::Unback { .. }
+                | BackupSubcommand::Extract { .. }
+                | BackupSubcommand::ListLocal { .. }
         )
     }
 }
@@ -73,13 +75,13 @@ enum BackupSubcommand {
         /// Keep files whose device/manifest path matches a regular expression (repeatable)
         #[arg(long = "only-regex", action = clap::ArgAction::Append, value_name = "REGEX")]
         only_regex: Vec<String>,
-        /// Prune Manifest.db and stored payloads after applying a host-side selection
+        /// Prune Manifest.db/Manifest.mbdb and stored payloads after applying a host-side selection
         #[arg(long)]
         patch_manifest: bool,
         /// Password used by device-side backup and local post-processing
         #[arg(long)]
         password: Option<String>,
-        /// Expand the completed backup into a local domain/path tree
+        /// Expand the completed backup (Manifest.db or legacy Manifest.mbdb) into a local domain/path tree
         #[arg(long)]
         unback: bool,
     },
@@ -94,6 +96,14 @@ enum BackupSubcommand {
         backup_directory: String,
         #[arg(long)]
         source: Option<String>,
+    },
+    /// List entries from a completed backup locally (does not contact a device)
+    ListLocal {
+        backup_directory: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
     },
     /// Restore a MobileBackup2 backup to the connected device
     Restore {
@@ -126,7 +136,7 @@ enum BackupSubcommand {
         #[arg(long, default_value = ".")]
         backup_directory: String,
     },
-    /// Expand a completed backup locally using Manifest.db (does not contact a device)
+    /// Expand a completed backup locally using Manifest.db or legacy Manifest.mbdb (does not contact a device)
     #[command(visible_alias = "unback-local")]
     Unback {
         backup_directory: String,
@@ -137,7 +147,7 @@ enum BackupSubcommand {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Extract one Manifest.db domain/path entry locally (does not contact a device)
+    /// Extract one Manifest.db/Manifest.mbdb domain/path entry locally (does not contact a device)
     #[command(visible_alias = "extract-local")]
     Extract {
         backup_directory: String,
@@ -309,6 +319,19 @@ impl BackupCmd {
             } => {
                 let udid = required_udid(udid)?;
                 run_list(&udid, &backup_directory, source.as_deref(), json).await
+            }
+            BackupSubcommand::ListLocal {
+                backup_directory,
+                source,
+                password,
+            } => {
+                let password = password.map(Zeroizing::new);
+                run_list_local(
+                    &backup_directory,
+                    source.as_deref().or(udid.as_deref()),
+                    password.as_deref().map(String::as_str),
+                    json,
+                )
             }
             BackupSubcommand::Restore {
                 backup_directory,
@@ -566,7 +589,7 @@ async fn run_create(
     }
     if unback && filter.is_some() && !patch_manifest {
         return Err(anyhow::anyhow!(
-            "filtered --unback requires --patch-manifest so the local Manifest.db matches the payloads"
+            "filtered --unback requires --patch-manifest so the local manifest index matches the payloads"
         ));
     }
 
@@ -580,7 +603,7 @@ async fn run_create(
     )
     .await?;
 
-    // A patch of an encrypted backup must be able to decrypt/re-encrypt Manifest.db. Query the
+    // A patch of an encrypted backup must be able to decrypt/re-encrypt its manifest index. Query the
     // device before taking the sync lock or sending MobileBackup2::Backup, so a missing password
     // cannot trigger a large transfer that is guaranteed to fail at the end.
     if patch_manifest && password.is_none() {
@@ -915,6 +938,32 @@ async fn run_list(
         .list(Path::new(backup_directory), udid, source)
         .await?;
     print_process_message_content(result, json)?;
+    Ok(())
+}
+
+fn run_list_local(
+    backup_directory: &str,
+    source: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let source = source.ok_or_else(|| {
+        anyhow::anyhow!(
+            "backup list-local requires --source (or --udid as the backup directory identifier)"
+        )
+    })?;
+    let entries =
+        ios_core::backup2::list_backup_entries(Path::new(backup_directory), source, password)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else {
+        for entry in entries {
+            println!(
+                "{}\t{}\t{} bytes\tmode=0x{:04x}",
+                entry.domain, entry.relative_path, entry.size, entry.mode
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1538,6 +1587,20 @@ mod tests {
             "device-id",
         ])
         .is_ok());
+        let local_list = BackupTestCli::try_parse_from([
+            "backup",
+            "list-local",
+            "/tmp/backups",
+            "--source",
+            "device-id",
+            "--password",
+            "secret",
+        ])
+        .expect("local list command should parse");
+        assert!(matches!(
+            local_list.backup.sub,
+            BackupSubcommand::ListLocal { .. }
+        ));
     }
 
     #[test]
@@ -1586,6 +1649,10 @@ mod tests {
         let local = BackupTestCli::try_parse_from(["backup", "unback", "/tmp/backups"])
             .expect("local compatibility command should parse");
         assert!(!local.backup.needs_default_udid());
+
+        let local_list = BackupTestCli::try_parse_from(["backup", "list-local", "/tmp/backups"])
+            .expect("local list command should parse");
+        assert!(!local_list.backup.needs_default_udid());
 
         let device = BackupTestCli::try_parse_from(["backup", "unback-device", "/tmp/backups"])
             .expect("device command should parse");

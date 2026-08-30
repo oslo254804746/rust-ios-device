@@ -1,9 +1,11 @@
-//! Apple Backup2 encryption primitives used by the host-side Manifest.db helpers.
+//! Apple Backup2 encryption primitives used by the host-side Manifest.db/Manifest.mbdb helpers.
 //!
-//! The format implemented here is the modern (iOS 10.3 and newer) format used by
-//! `pyiosbackup`: the password derives a 32-byte key, class keys are wrapped with
-//! RFC 3394 AES-KW, Manifest.db is AES-256-CBC with a zero IV and no padding, and
-//! file payloads use the same CBC primitive with PKCS#7 padding.
+//! Modern (iOS 10.3 and newer) backups use a two-stage password derivation and an
+//! encrypted Manifest.db.  Legacy (iOS 10.2 and older) backups use the same class
+//! key wrapping and payload cipher but retain an unencrypted Manifest.mbdb and a
+//! single PBKDF2-HMAC-SHA1 password stage.  Both forms are implemented by the
+//! narrow primitives below; format selection remains a policy decision in
+//! `manifest.rs`.
 //!
 //! This module deliberately has no plist or SQLite policy in it.  Callers provide
 //! already validated manifest values and paths, which keeps format parsing and
@@ -66,7 +68,11 @@ pub(crate) struct BackupCrypto {
 }
 
 impl BackupCrypto {
-    /// Build a modern-backup crypto context from Manifest.plist values.
+    /// Build a crypto context from a keybag and the encrypted Manifest.plist key.
+    ///
+    /// `modern` selects the two-stage (modern) or one-stage (legacy) password
+    /// derivation.  The legacy format has no encrypted manifest key; callers
+    /// should use [`Self::from_keybag`] for that form.
     pub(crate) fn from_manifest(
         keybag_bytes: &[u8],
         manifest_key_bytes: &[u8],
@@ -80,6 +86,25 @@ impl BackupCrypto {
         Ok(Self {
             class_keys,
             manifest_key,
+        })
+    }
+
+    /// Build a legacy payload crypto context from `BackupKeyBag` alone.
+    ///
+    /// Legacy `Manifest.mbdb` files are plaintext and the upstream format does
+    /// not provide a `ManifestKey`.  Keep the unused manifest slot zeroized so
+    /// the type cannot accidentally expose class material through a debug path.
+    pub(crate) fn from_keybag(
+        keybag_bytes: &[u8],
+        password: &str,
+        modern: bool,
+    ) -> Result<Self, CryptoError> {
+        let keybag = ParsedKeybag::parse(keybag_bytes, modern)?;
+        let password_key = keybag.derive_password_key(password, modern)?;
+        let class_keys = keybag.unwrap_class_keys(&password_key)?;
+        Ok(Self {
+            class_keys,
+            manifest_key: Zeroizing::new([0u8; AES_KEY_BYTES]),
         })
     }
 
@@ -312,9 +337,8 @@ impl ParsedKeybag {
                 first_stage.as_mut(),
             );
         } else {
-            // The legacy one-stage form is retained in this primitive for format
-            // tests and interoperability, although local Manifest.mbdb operations
-            // reject <=10.2 backups at the policy layer.
+            // Legacy backups derive the class-wrapping key directly with
+            // PBKDF2-HMAC-SHA1; unlike modern backups there is no SHA-256 stage.
             first_stage.copy_from_slice(&[0u8; AES_KEY_BYTES]);
             pbkdf2_hmac::<Sha1>(password.as_bytes(), salt, iterations, first_stage.as_mut());
             return Ok(first_stage);

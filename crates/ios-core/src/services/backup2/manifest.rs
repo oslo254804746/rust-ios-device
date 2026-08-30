@@ -1,8 +1,11 @@
-//! Local MobileBackup2 Manifest.db operations.
+//! Local MobileBackup2 Manifest.db/Manifest.mbdb operations.
 //!
 //! The device protocol does not have a separate "extract" or "patch" message.  These helpers
 //! operate on a completed backup on the host.  Modern encrypted backups (iOS 10.3 and newer)
-//! are handled with the audited BackupKeyBag/AES implementation in [`super::crypto`].
+//! and legacy encrypted payloads (iOS 10.2 and older) are handled with the audited
+//! BackupKeyBag/AES implementation in [`super::crypto`].  Legacy Manifest.mbdb itself is
+//! plaintext and is rewritten directly; the unsupported MBDX sidecar is not needed by the
+//! upstream pyiosbackup layout.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -18,6 +21,9 @@ use zeroize::Zeroizing;
 use crate::proto::nskeyedarchiver::{unarchive, ArchiveValue};
 
 use super::crypto::{expected_payload_ciphertext_len, BackupCrypto, CryptoError};
+#[cfg(test)]
+use super::mbdb::MbdbRecord;
+use super::mbdb::{MbdbError, MbdbManifest};
 use super::{
     canonical_backup_root, create_dir_all_no_symlink, ensure_backup_directory,
     ensure_no_symlink_components_at_root, open_file_for_read, open_file_for_write,
@@ -54,6 +60,20 @@ pub struct ExtractionResult {
     pub bytes_extracted: u64,
 }
 
+/// A redacted, host-side view of one entry in a completed backup manifest.
+///
+/// Encryption keys are intentionally not exposed. `link_target` is present only for legacy
+/// MBDB records because modern manifests carry symlink contents in the payload blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackupManifestEntry {
+    pub file_id: String,
+    pub domain: String,
+    pub relative_path: String,
+    pub mode: u32,
+    pub size: u64,
+    pub link_target: Option<String>,
+}
+
 struct ManifestEntry {
     file_id: String,
     domain: String,
@@ -61,12 +81,15 @@ struct ManifestEntry {
     mode: u32,
     size: u64,
     encryption_key: Option<Zeroizing<Vec<u8>>>,
+    link_target: Option<String>,
 }
 
 struct ManifestWorkspace {
     source_path: PathBuf,
     original_path: PathBuf,
     crypto: Option<BackupCrypto>,
+    modern: bool,
+    mbdb: Option<MbdbManifest>,
     _temporary: Option<TemporaryFile>,
 }
 
@@ -107,6 +130,9 @@ pub fn patch_backup_directory(
     let root = canonical_backup_root(backup_root)?;
     let device_directory = safe_device_directory(&root, target_identifier)?;
     let manifest = open_manifest_workspace(&device_directory, password)?;
+    if manifest.mbdb.is_some() {
+        return patch_mbdb_backup_directory(&device_directory, &manifest, filter);
+    }
     let (rows, row_ids, allowed_ids) = collect_manifest_rows(&manifest.source_path, filter)?;
     let entries_seen = u64::try_from(rows.len()).map_err(|_| {
         Mobilebackup2Error::Protocol("Manifest.db row count does not fit in u64".into())
@@ -154,6 +180,65 @@ pub fn patch_backup_directory(
     })
 }
 
+fn patch_mbdb_backup_directory(
+    device_directory: &Path,
+    manifest: &ManifestWorkspace,
+    filter: &BackupFilter,
+) -> Result<ManifestPatchResult, Mobilebackup2Error> {
+    let mbdb = manifest.mbdb.as_ref().ok_or_else(|| {
+        Mobilebackup2Error::Protocol("legacy manifest workspace has no parsed Manifest.mbdb".into())
+    })?;
+    let entries = load_mbdb_entries(mbdb, manifest.crypto.is_some())?;
+    let entries_seen = u64::try_from(entries.len()).map_err(|_| {
+        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
+    })?;
+    let allowed_ids: HashSet<String> = entries
+        .iter()
+        .filter(|entry| filter.matches_manifest_entry(&entry.domain, &entry.relative_path))
+        .map(|entry| entry.file_id.clone())
+        .collect();
+    let entries_kept = u64::try_from(allowed_ids.len()).map_err(|_| {
+        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
+    })?;
+    let entries_removed = entries_seen.saturating_sub(entries_kept);
+
+    validate_payload_tree(device_directory)?;
+    let temporary = write_mbdb_to_temporary(mbdb, &allowed_ids, device_directory)?;
+    let mut staged = stage_payloads(device_directory, &allowed_ids)?;
+    if let Err(error) = replace_file_atomically(&temporary.path, &manifest.original_path) {
+        staged.rollback();
+        return Err(error);
+    }
+    let payloads_removed = staged.finish();
+    Ok(ManifestPatchResult {
+        entries_seen,
+        entries_kept,
+        entries_removed,
+        payloads_removed,
+    })
+}
+
+fn write_mbdb_to_temporary(
+    manifest: &MbdbManifest,
+    allowed_ids: &HashSet<String>,
+    directory: &Path,
+) -> Result<TemporaryFile, Mobilebackup2Error> {
+    let bytes = manifest.serialize(Some(allowed_ids)).map_err(mbdb_error)?;
+    let temporary = create_temporary_file(directory, "manifest-patch")?;
+    let result = (|| {
+        let mut file = open_file_for_write(&temporary.path)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok::<(), Mobilebackup2Error>(())
+    })();
+    if let Err(error) = result {
+        drop(temporary);
+        return Err(error);
+    }
+    Ok(temporary)
+}
+
 /// Expand all regular files (and safe relative symlinks on Unix) from a completed backup into a
 /// domain/relative-path directory tree. The source backup itself is never modified.
 pub fn unback_backup(
@@ -180,6 +265,7 @@ pub fn unback_backup(
         &output_directory,
         &entries,
         manifest.crypto.as_ref(),
+        manifest.modern,
     )
 }
 
@@ -266,9 +352,40 @@ pub fn extract_backup_file(
         &entry,
         Some(&destination),
         manifest.crypto.as_ref(),
+        manifest.modern,
         &mut result,
     )?;
     Ok(result)
+}
+
+/// List the entries in a completed host-side backup without contacting a device.
+///
+/// The manifest format is selected from `Manifest.plist`'s ProductVersion: modern backups use
+/// SQLite `Manifest.db`, while iOS 10.2 and older backups use the flat `Manifest.mbdb` index.
+/// Encrypted backups still require a password so the keybag is validated before entries are
+/// returned, even though the legacy index itself is plaintext.
+pub fn list_backup_entries(
+    backup_root: &Path,
+    target_identifier: &str,
+    password: Option<&str>,
+) -> Result<Vec<BackupManifestEntry>, Mobilebackup2Error> {
+    validate_backup_identifier(target_identifier)?;
+    ensure_backup_directory(backup_root, target_identifier)?;
+    let root = canonical_backup_root(backup_root)?;
+    let device_directory = safe_device_directory(&root, target_identifier)?;
+    let manifest = open_manifest_workspace(&device_directory, password)?;
+    let entries = load_manifest_entries(&manifest)?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| BackupManifestEntry {
+            file_id: entry.file_id,
+            domain: entry.domain,
+            relative_path: entry.relative_path,
+            mode: entry.mode,
+            size: entry.size,
+            link_target: entry.link_target,
+        })
+        .collect())
 }
 
 fn open_manifest_workspace(
@@ -297,19 +414,15 @@ fn open_manifest_workspace(
             }
         };
         let manifest_key = match manifest_plist.remove("ManifestKey") {
-            Some(plist::Value::Data(value)) => Zeroizing::new(value),
+            Some(plist::Value::Data(value)) => Some(Zeroizing::new(value)),
             Some(_) => {
                 return Err(Mobilebackup2Error::Protocol(
                     "encrypted Manifest.plist ManifestKey is not data".into(),
                 ))
             }
-            None => {
-                return Err(Mobilebackup2Error::Protocol(
-                    "encrypted Manifest.plist is missing ManifestKey".into(),
-                ))
-            }
+            None => None,
         };
-        (Some(keybag), Some(manifest_key))
+        (Some(keybag), manifest_key)
     } else {
         (None, None)
     };
@@ -327,37 +440,63 @@ fn open_manifest_workspace(
                 }
                     .into(),
             )
+    })?;
+    let modern = is_modern_storage(product_version)?;
+    let manifest_db = optional_safe_file(device_directory, "Manifest.db")?;
+    let manifest_mbdb = optional_safe_file(device_directory, "Manifest.mbdb")?;
+    let (original_path, mbdb) = if modern {
+        let path = manifest_db.ok_or_else(|| {
+            Mobilebackup2Error::Protocol(format!(
+                "ProductVersion {product_version:?} requires Manifest.db; Manifest.mbdb is a legacy index"
+            ))
         })?;
-    if !is_modern_storage(product_version) {
-        return Err(Mobilebackup2Error::Protocol(format!(
-            "local backup extraction/patching for ProductVersion {product_version:?} uses legacy Manifest.mbdb and is unsupported"
-        )));
-    }
-
-    let original_path = safe_file(device_directory, "Manifest.db")?;
-    validate_manifest_sidecars(&original_path)?;
+        validate_manifest_sidecars(&path)?;
+        (path, None)
+    } else {
+        let path = manifest_mbdb.ok_or_else(|| {
+            Mobilebackup2Error::Protocol(format!(
+                "ProductVersion {product_version:?} requires legacy Manifest.mbdb; Manifest.db is a modern index"
+            ))
+        })?;
+        let bytes = read_bounded_file(&path, MAX_MANIFEST_DB_BYTES, "Manifest.mbdb")?;
+        let parsed = MbdbManifest::parse(&bytes).map_err(mbdb_error)?;
+        (path, Some(parsed))
+    };
     if !encrypted {
         return Ok(ManifestWorkspace {
             source_path: original_path.clone(),
             original_path,
             crypto: None,
+            modern,
+            mbdb,
             _temporary: None,
         });
     }
 
     let password = password.ok_or_else(|| {
         Mobilebackup2Error::Protocol(
-            "encrypted modern backup requires a password for local Manifest.db operations".into(),
+            "encrypted backup requires a password for local manifest operations".into(),
         )
     })?;
-    let (keybag, manifest_key) = match (keybag, manifest_key) {
-        (Some(keybag), Some(manifest_key)) => (keybag, manifest_key),
-        _ => {
-            return Err(Mobilebackup2Error::Protocol(
-                "encrypted Manifest.plist key material was not extracted".into(),
-            ))
-        }
-    };
+    let keybag = keybag.ok_or_else(|| {
+        Mobilebackup2Error::Protocol("encrypted Manifest.plist is missing BackupKeyBag".into())
+    })?;
+    if !modern {
+        let crypto = BackupCrypto::from_keybag(&keybag, password, false).map_err(crypto_error)?;
+        return Ok(ManifestWorkspace {
+            source_path: original_path.clone(),
+            original_path,
+            crypto: Some(crypto),
+            modern,
+            mbdb,
+            _temporary: None,
+        });
+    }
+    let manifest_key = manifest_key.ok_or_else(|| {
+        Mobilebackup2Error::Protocol(
+            "encrypted modern Manifest.plist is missing ManifestKey".into(),
+        )
+    })?;
     let crypto = BackupCrypto::from_manifest(&keybag, &manifest_key, password, true)
         .map_err(crypto_error)?;
     let temporary = create_temporary_file(device_directory, "manifest-plain")?;
@@ -368,6 +507,8 @@ fn open_manifest_workspace(
         source_path: temporary.path.clone(),
         original_path,
         crypto: Some(crypto),
+        modern,
+        mbdb,
         _temporary: Some(temporary),
     })
 }
@@ -388,6 +529,10 @@ fn manifest_is_encrypted(manifest: &plist::Dictionary) -> bool {
 
 fn crypto_error(error: CryptoError) -> Mobilebackup2Error {
     Mobilebackup2Error::Protocol(error.to_string())
+}
+
+fn mbdb_error(error: MbdbError) -> Mobilebackup2Error {
+    Mobilebackup2Error::Protocol(format!("Manifest.mbdb is malformed: {error}"))
 }
 
 fn safe_device_directory(
@@ -424,6 +569,42 @@ fn safe_file(directory: &Path, name: &str) -> Result<PathBuf, Mobilebackup2Error
         )));
     }
     Ok(path)
+}
+
+fn optional_safe_file(directory: &Path, name: &str) -> Result<Option<PathBuf>, Mobilebackup2Error> {
+    match safe_file(directory, name) {
+        Ok(path) => Ok(Some(path)),
+        Err(Mobilebackup2Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn read_bounded_file(
+    path: &Path,
+    maximum: u64,
+    description: &str,
+) -> Result<Vec<u8>, Mobilebackup2Error> {
+    let mut file = open_file_for_read(path)?;
+    let length = file.metadata()?.len();
+    if length > maximum {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "{description} is too large ({} bytes; max {maximum})",
+            length
+        )));
+    }
+    let capacity = usize::try_from(length).map_err(|_| {
+        Mobilebackup2Error::Protocol(format!("{description} length does not fit in host memory"))
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "{description} changed while being read"
+        )));
+    }
+    Ok(bytes)
 }
 
 fn create_temporary_file(
@@ -647,6 +828,9 @@ fn collect_manifest_rows(
 fn load_manifest_entries(
     manifest: &ManifestWorkspace,
 ) -> Result<Vec<ManifestEntry>, Mobilebackup2Error> {
+    if let Some(mbdb) = manifest.mbdb.as_ref() {
+        return load_mbdb_entries(mbdb, manifest.crypto.is_some());
+    }
     let connection = open_manifest(&manifest.source_path, true)?;
     let mut statement = connection
         // Read the blob length first. Calling row.get::<_, Vec<u8>>() before checking it would
@@ -788,6 +972,116 @@ fn load_manifest_entries(
             mode,
             size,
             encryption_key,
+            link_target: None,
+        });
+    }
+    Ok(entries)
+}
+
+fn load_mbdb_entries(
+    manifest: &MbdbManifest,
+    encrypted: bool,
+) -> Result<Vec<ManifestEntry>, Mobilebackup2Error> {
+    if manifest.records.len() > MAX_MANIFEST_ROWS {
+        return Err(Mobilebackup2Error::Protocol(format!(
+            "Manifest.mbdb exceeds the {MAX_MANIFEST_ROWS} record safety limit"
+        )));
+    }
+    let mut entries = Vec::with_capacity(manifest.records.len());
+    let mut seen_ids = HashSet::new();
+    let mut seen_paths = HashSet::new();
+    let mut total_size = 0u64;
+    for record in &manifest.records {
+        let file_id = record.file_id().map_err(mbdb_error)?;
+        validate_file_id(&file_id)?;
+        let domain = record.domain.as_deref().ok_or_else(|| {
+            Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb record {file_id} is missing domain"
+            ))
+        })?;
+        let domain = validate_domain(domain)?;
+        let relative_path = record.relative_path.as_deref().ok_or_else(|| {
+            Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb record {file_id} is missing relative path"
+            ))
+        })?;
+        let relative_path = sanitize_relative_path(relative_path)?
+            .to_string_lossy()
+            .into_owned();
+        if !seen_ids.insert(file_id.clone()) {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb contains duplicate file id {file_id:?}"
+            )));
+        }
+        if !seen_paths.insert((domain.clone(), relative_path.clone())) {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb contains duplicate entry {domain}/{relative_path}"
+            )));
+        }
+        let mode = u32::from(record.mode);
+        let file_type = mode & MODE_TYPE_MASK;
+        if !matches!(
+            file_type,
+            MODE_TYPE_FILE | MODE_TYPE_DIRECTORY | MODE_TYPE_SYMLINK
+        ) {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb record {file_id} has unsupported mode type 0x{file_type:04x}"
+            )));
+        }
+        if file_type == MODE_TYPE_SYMLINK {
+            if let Some(target) = record.link_target.as_deref() {
+                if target.len() > MAX_SYMLINK_TARGET_BYTES {
+                    return Err(Mobilebackup2Error::Protocol(format!(
+                        "Manifest.mbdb symlink target for {file_id} is too large"
+                    )));
+                }
+                normalize_symlink_target(target)?;
+            }
+        }
+        if record.size > MAX_SINGLE_ENTRY_BYTES {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb entry {file_id} is too large ({} bytes; max {MAX_SINGLE_ENTRY_BYTES})",
+                record.size
+            )));
+        }
+        total_size = total_size.checked_add(record.size).ok_or_else(|| {
+            Mobilebackup2Error::Protocol("Manifest.mbdb entry size total overflow".into())
+        })?;
+        if total_size > MAX_TOTAL_EXTRACT_BYTES {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "Manifest.mbdb total extraction size exceeds {MAX_TOTAL_EXTRACT_BYTES} bytes"
+            )));
+        }
+        let encryption_key = record
+            .encryption_key
+            .as_ref()
+            .map(|key| {
+                if key.len() == 44 {
+                    Ok(Zeroizing::new(key.to_vec()))
+                } else {
+                    Err(Mobilebackup2Error::Protocol(format!(
+                        "Manifest.mbdb EncryptionKey for {file_id} has invalid length {}",
+                        key.len()
+                    )))
+                }
+            })
+            .transpose()?;
+        if encrypted
+            && matches!(file_type, MODE_TYPE_FILE | MODE_TYPE_SYMLINK)
+            && encryption_key.is_none()
+        {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "encrypted Manifest.mbdb entry {file_id} is missing EncryptionKey"
+            )));
+        }
+        entries.push(ManifestEntry {
+            file_id,
+            domain,
+            relative_path,
+            mode,
+            size: record.size,
+            encryption_key,
+            link_target: record.link_target.clone(),
         });
     }
     Ok(entries)
@@ -1115,6 +1409,7 @@ fn stage_payloads(
                     "Info.plist"
                         | "Manifest.plist"
                         | "Manifest.db"
+                        | "Manifest.mbdx"
                         | "Manifest.db-shm"
                         | "Manifest.db-wal"
                         | "Status.plist"
@@ -1294,6 +1589,7 @@ fn extract_entries(
     output_directory: &Path,
     entries: &[ManifestEntry],
     crypto: Option<&BackupCrypto>,
+    modern: bool,
 ) -> Result<ExtractionResult, Mobilebackup2Error> {
     let mut result = ExtractionResult {
         output_directory: output_directory.to_path_buf(),
@@ -1313,6 +1609,7 @@ fn extract_entries(
             entry,
             Some(&destination),
             crypto,
+            modern,
             &mut result,
         )?;
         if is_directory {
@@ -1340,6 +1637,7 @@ fn extract_entry_to(
     entry: &ManifestEntry,
     explicit_destination: Option<&Path>,
     crypto: Option<&BackupCrypto>,
+    modern: bool,
     result: &mut ExtractionResult,
 ) -> Result<(), Mobilebackup2Error> {
     let destination = match explicit_destination {
@@ -1369,7 +1667,7 @@ fn extract_entry_to(
                 ))
             })?;
             create_dir_all_no_symlink(output_directory, parent)?;
-            let stored = stored_payload_path(source_directory, &entry.file_id, true)?;
+            let stored = stored_payload_path(source_directory, &entry.file_id, modern)?;
             let mut source = open_file_for_read(&stored)?;
             let stored_size = source.metadata()?.len();
             let temporary = create_temporary_file(
@@ -1433,6 +1731,7 @@ fn extract_entry_to(
             entry,
             &destination,
             crypto,
+            modern,
             result,
         )?,
         other => {
@@ -1520,24 +1819,44 @@ fn stored_payload_path(
     Ok(path)
 }
 
-fn is_modern_storage(version: &str) -> bool {
+fn is_modern_storage(version: &str) -> Result<bool, Mobilebackup2Error> {
     // ProductVersion may carry an Apple prerelease suffix (for example 10.3rc1). Parse the
     // leading decimal portion of every component instead of treating that suffix as a parse
     // failure and accidentally selecting the legacy Manifest.mbdb layout.
-    let numeric_component = |component: &str| {
+    let numeric_component = |component: &str| -> Result<u64, Mobilebackup2Error> {
         let digits: String = component
             .chars()
             .take_while(|character| character.is_ascii_digit())
             .collect();
-        digits.parse::<u64>().ok().unwrap_or(0)
+        if digits.is_empty() {
+            return Err(Mobilebackup2Error::Protocol(format!(
+                "invalid ProductVersion component {component:?}"
+            )));
+        }
+        digits.parse::<u64>().map_err(|_| {
+            Mobilebackup2Error::Protocol(format!(
+                "ProductVersion component {component:?} is too large"
+            ))
+        })
     };
     let mut components = version.split('.');
-    let major = components.next().map(numeric_component).unwrap_or(0);
-    let minor = components.next().map(numeric_component).unwrap_or(0);
-    let patch = components.next().map(numeric_component).unwrap_or(0);
+    let major = components
+        .next()
+        .ok_or_else(|| Mobilebackup2Error::Protocol("ProductVersion is empty".into()))
+        .and_then(numeric_component)?;
+    let minor = components
+        .next()
+        .map(numeric_component)
+        .transpose()?
+        .unwrap_or(0);
+    let patch = components
+        .next()
+        .map(numeric_component)
+        .transpose()?
+        .unwrap_or(0);
     // pyiosbackup uses Version("10.2") as the cutoff, so 10.2.1 is modern too. Comparing only
     // major/minor would incorrectly look up a 10.2.x payload using the legacy flat layout.
-    major > 10 || (major == 10 && (minor > 2 || (minor == 2 && patch > 0)))
+    Ok(major > 10 || (major == 10 && (minor > 2 || (minor == 2 && patch > 0))))
 }
 
 fn extract_symlink(
@@ -1546,6 +1865,7 @@ fn extract_symlink(
     entry: &ManifestEntry,
     destination: &Path,
     crypto: Option<&BackupCrypto>,
+    modern: bool,
     result: &mut ExtractionResult,
 ) -> Result<(), Mobilebackup2Error> {
     if entry.size > MAX_SYMLINK_TARGET_BYTES as u64 {
@@ -1554,53 +1874,67 @@ fn extract_symlink(
             entry.file_id
         )));
     }
-    let stored = stored_payload_path(source_directory, &entry.file_id, true)?;
-    let mut target = Vec::new();
-    if let Some(crypto) = crypto {
-        let encryption_key = entry.encryption_key.as_ref().ok_or_else(|| {
-            Mobilebackup2Error::Protocol(format!(
-                "encrypted Manifest.db symlink {} is missing EncryptionKey",
-                entry.file_id
-            ))
-        })?;
-        let expected_ciphertext =
-            expected_payload_ciphertext_len(entry.size).map_err(crypto_error)?;
-        let stored_size = fs::symlink_metadata(&stored)?.len();
-        if stored_size != expected_ciphertext {
-            return Err(Mobilebackup2Error::Protocol(format!(
-                "encrypted symlink payload size mismatch for {}: expected {}, stored {}",
-                entry.file_id, expected_ciphertext, stored_size
-            )));
-        }
-        let temporary = create_temporary_file(
-            destination
-                .parent()
-                .ok_or_else(|| Mobilebackup2Error::Protocol("symlink has no parent".into()))?,
-            "symlink",
-        )?;
-        crypto
-            .decrypt_payload_file(
-                &stored,
-                &temporary.path,
-                encryption_key.as_ref(),
-                entry.size,
-            )
-            .map_err(crypto_error)?;
-        let metadata = fs::metadata(&temporary.path)?;
-        if metadata.len() > MAX_SYMLINK_TARGET_BYTES as u64 {
+    let (target, accounted_size) = if let Some(link_target) = entry.link_target.as_deref() {
+        let target = link_target.as_bytes().to_vec();
+        if target.len() > MAX_SYMLINK_TARGET_BYTES {
             return Err(Mobilebackup2Error::Protocol(
                 "symlink target exceeds safety limit".into(),
             ));
         }
-        File::open(&temporary.path)?
-            .take(MAX_SYMLINK_TARGET_BYTES as u64 + 1)
-            .read_to_end(&mut target)?;
+        let size = u64::try_from(target.len()).map_err(|_| {
+            Mobilebackup2Error::Protocol("symlink target length does not fit u64".into())
+        })?;
+        (target, size)
     } else {
-        let source = open_file_for_read(&stored)?;
-        source
-            .take(MAX_SYMLINK_TARGET_BYTES as u64 + 1)
-            .read_to_end(&mut target)?;
-    }
+        let stored = stored_payload_path(source_directory, &entry.file_id, modern)?;
+        let mut target = Vec::new();
+        if let Some(crypto) = crypto {
+            let encryption_key = entry.encryption_key.as_ref().ok_or_else(|| {
+                Mobilebackup2Error::Protocol(format!(
+                    "encrypted backup symlink {} is missing EncryptionKey",
+                    entry.file_id
+                ))
+            })?;
+            let expected_ciphertext =
+                expected_payload_ciphertext_len(entry.size).map_err(crypto_error)?;
+            let stored_size = fs::symlink_metadata(&stored)?.len();
+            if stored_size != expected_ciphertext {
+                return Err(Mobilebackup2Error::Protocol(format!(
+                    "encrypted symlink payload size mismatch for {}: expected {}, stored {}",
+                    entry.file_id, expected_ciphertext, stored_size
+                )));
+            }
+            let temporary = create_temporary_file(
+                destination
+                    .parent()
+                    .ok_or_else(|| Mobilebackup2Error::Protocol("symlink has no parent".into()))?,
+                "symlink",
+            )?;
+            crypto
+                .decrypt_payload_file(
+                    &stored,
+                    &temporary.path,
+                    encryption_key.as_ref(),
+                    entry.size,
+                )
+                .map_err(crypto_error)?;
+            let metadata = fs::metadata(&temporary.path)?;
+            if metadata.len() > MAX_SYMLINK_TARGET_BYTES as u64 {
+                return Err(Mobilebackup2Error::Protocol(
+                    "symlink target exceeds safety limit".into(),
+                ));
+            }
+            File::open(&temporary.path)?
+                .take(MAX_SYMLINK_TARGET_BYTES as u64 + 1)
+                .read_to_end(&mut target)?;
+        } else {
+            let source = open_file_for_read(&stored)?;
+            source
+                .take(MAX_SYMLINK_TARGET_BYTES as u64 + 1)
+                .read_to_end(&mut target)?;
+        }
+        (target, entry.size)
+    };
     if target.len() > MAX_SYMLINK_TARGET_BYTES {
         return Err(Mobilebackup2Error::Protocol(
             "symlink target exceeds safety limit".into(),
@@ -1644,7 +1978,7 @@ fn extract_symlink(
             "symlink extraction is unsupported on this platform".into(),
         ));
     }
-    account_extracted_bytes(result, entry.size)?;
+    account_extracted_bytes(result, accounted_size)?;
     result.files_extracted = result.files_extracted.saturating_add(1);
     Ok(())
 }
@@ -1869,6 +2203,123 @@ mod tests {
         let mut encryption_key = vec![2, 0, 0, 0];
         encryption_key.extend_from_slice(&wrapped_data_key);
         (keybag, encryption_key.clone(), encryption_key)
+    }
+
+    fn legacy_encrypted_material(password: &str) -> (Vec<u8>, Vec<u8>) {
+        use aes_kw::KekAes256;
+        use pbkdf2::pbkdf2_hmac;
+        use sha1::Sha1;
+
+        let salt = [0u8; 20];
+        let mut password_key = [0u8; 32];
+        pbkdf2_hmac::<Sha1>(password.as_bytes(), &salt, 1, &mut password_key);
+        let password_kek = KekAes256::try_from(&password_key[..]).expect("legacy password KEK");
+        password_key.zeroize();
+        let mut wrapped_class_key = [0u8; 40];
+        password_kek
+            .wrap(&[0u8; 32], &mut wrapped_class_key)
+            .expect("legacy class key wrap");
+        let class_kek = KekAes256::from([0u8; 32]);
+        let mut wrapped_data_key = [0u8; 40];
+        class_kek
+            .wrap(&[0u8; 32], &mut wrapped_data_key)
+            .expect("legacy data key wrap");
+
+        let mut keybag = Vec::new();
+        append_tlv_integer(&mut keybag, b"VERS", 5);
+        append_tlv_integer(&mut keybag, b"TYPE", 1);
+        append_tlv(&mut keybag, b"UUID", &[0u8; 16]);
+        append_tlv_integer(&mut keybag, b"WRAP", 0);
+        append_tlv(&mut keybag, b"SALT", &salt);
+        append_tlv_integer(&mut keybag, b"ITER", 1);
+        append_tlv(&mut keybag, b"UUID", &[0u8; 16]);
+        append_tlv_integer(&mut keybag, b"CLAS", 2);
+        append_tlv_integer(&mut keybag, b"WRAP", 3);
+        append_tlv_integer(&mut keybag, b"KTYP", 0);
+        append_tlv(&mut keybag, b"WPKY", &wrapped_class_key);
+
+        let mut encryption_key = vec![2, 0, 0, 0];
+        encryption_key.extend_from_slice(&wrapped_data_key);
+        (keybag, encryption_key)
+    }
+
+    fn legacy_record(relative_path: &str, size: u64, encryption_key: Option<&[u8]>) -> MbdbRecord {
+        MbdbRecord {
+            domain: Some("MyTestDomain".into()),
+            relative_path: Some(relative_path.into()),
+            link_target: None,
+            data_hash: None,
+            encryption_key: encryption_key.map(|key| Zeroizing::new(key.to_vec())),
+            mode: 0x81ed,
+            unknown2: 0,
+            unknown3: 0x12d8,
+            user_id: 501,
+            group_id: 501,
+            mtime: 1_626_082_591,
+            atime: 1_626_082_637,
+            ctime: 1_626_011_940,
+            size,
+            flags: 4,
+            properties: vec![(Some("Unknown".into()), Some("preserve".into()))],
+        }
+    }
+
+    fn write_legacy_fixture(label: &str, encrypted: bool) -> (PathBuf, PathBuf, String, String) {
+        let root = fixture_root(label);
+        let device = root.join("device-id");
+        fs::create_dir_all(&device).expect("create legacy fixture");
+        fs::write(device.join("Info.plist"), b"info").expect("info");
+        fs::write(device.join("Status.plist"), b"status").expect("status");
+
+        let password = "0000";
+        let (keybag, encryption_key) = if encrypted {
+            let (keybag, key) = legacy_encrypted_material(password);
+            (Some(keybag), Some(key))
+        } else {
+            (None, None)
+        };
+        let size = if encrypted { 9 } else { 4 };
+        let keep_record = legacy_record("Media/Test.txt", size, encryption_key.as_deref());
+        let drop_record = legacy_record("Media/Drop.txt", size, encryption_key.as_deref());
+        let keep_id = keep_record.file_id().expect("keep id");
+        let drop_id = drop_record.file_id().expect("drop id");
+        let manifest = MbdbManifest {
+            records: vec![keep_record, drop_record],
+        };
+        fs::write(
+            device.join("Manifest.mbdb"),
+            manifest.serialize(None).expect("legacy manifest"),
+        )
+        .expect("write legacy manifest");
+        let mut manifest_values = vec![
+            ("IsEncrypted".to_string(), plist::Value::Boolean(encrypted)),
+            (
+                "Lockdown".to_string(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ProductVersion".to_string(),
+                    plist::Value::String("9.0.1".into()),
+                )])),
+            ),
+        ];
+        if let Some(keybag) = keybag {
+            manifest_values.push(("BackupKeyBag".to_string(), plist::Value::Data(keybag)));
+        }
+        plist::to_file_xml(
+            device.join("Manifest.plist"),
+            &plist::Value::Dictionary(plist::Dictionary::from_iter(manifest_values)),
+        )
+        .expect("legacy manifest plist");
+
+        let payload = if encrypted {
+            hex::decode("78b51ca5374c3ad575174288688cda49").expect("legacy payload vector")
+        } else {
+            b"keep".to_vec()
+        };
+        fs::write(device.join(&keep_id), &payload).expect("keep payload");
+        let drop_payload = if encrypted { payload } else { b"drop".to_vec() };
+        fs::write(device.join(&drop_id), drop_payload).expect("drop payload");
+        fs::create_dir(device.join("unrelated-empty")).expect("unrelated directory");
+        (root, device, keep_id, drop_id)
     }
 
     fn write_encrypted_fixture(label: &str) -> (PathBuf, PathBuf, String, String) {
@@ -2116,12 +2567,16 @@ mod tests {
 
     #[test]
     fn modern_payload_layout_matches_ios_version_cutoff() {
-        assert!(!is_modern_storage("10.2"));
-        assert!(is_modern_storage("10.2.1"));
-        assert!(is_modern_storage("10.3rc1"));
-        assert!(!is_modern_storage("10.2rc1"));
-        assert!(is_modern_storage("17.0"));
-        assert!(!is_modern_storage("10.1.9"));
+        assert!(!is_modern_storage("10.2").unwrap());
+        assert!(is_modern_storage("10.2.1").unwrap());
+        assert!(is_modern_storage("10.3rc1").unwrap());
+        assert!(!is_modern_storage("10.2rc1").unwrap());
+        assert!(is_modern_storage("17.0").unwrap());
+        assert!(!is_modern_storage("10.1.9").unwrap());
+        assert!(is_modern_storage("10").is_ok());
+        assert!(is_modern_storage("10..3").is_err());
+        assert!(is_modern_storage("not-a-version").is_err());
+        assert!(is_modern_storage("999999999999999999999999.0").is_err());
     }
 
     #[cfg(unix)]
@@ -2214,26 +2669,86 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_manifest_mbdb_explicitly() {
-        let (root, device, _, _) = write_fixture("legacy");
-        plist::to_file_xml(
-            device.join("Manifest.plist"),
-            &plist::Value::Dictionary(plist::Dictionary::from_iter([
-                ("IsEncrypted".to_string(), plist::Value::Boolean(false)),
-                (
-                    "Lockdown".to_string(),
-                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
-                        "ProductVersion".to_string(),
-                        plist::Value::String("10.2".into()),
-                    )])),
-                ),
-            ])),
+    fn supports_legacy_mbdb_flat_payload_patch_and_extract() {
+        let (root, device, keep_id, drop_id) = write_legacy_fixture("legacy", false);
+        let listed = list_backup_entries(&root, "device-id", None).expect("list legacy manifest");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].file_id, keep_id);
+        assert_eq!(listed[0].relative_path, "Media/Test.txt");
+        assert_eq!(listed[0].link_target, None);
+        let filter = super::super::build_backup_filter(&[], &["Media/Test\\.txt".into()])
+            .expect("selection")
+            .expect("filter");
+        // The fixture is deliberately on the legacy side of the ProductVersion
+        // cutoff and stores payloads as flat file-id names.
+        let result = patch_backup_directory(&root, "device-id", &filter, None).expect("patch");
+        assert_eq!(result.entries_seen, 2);
+        assert_eq!(result.entries_kept, 1);
+        assert_eq!(result.entries_removed, 1);
+        assert!(device.join(&keep_id).is_file());
+        assert!(!device.join(&drop_id).exists());
+        let encoded = fs::read(device.join("Manifest.mbdb")).expect("manifest bytes");
+        let parsed = MbdbManifest::parse(&encoded).expect("patched MBDB");
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].properties.len(), 1);
+
+        let output = root.join("expanded");
+        let extracted = unback_backup(&root, "device-id", Some(&output), None).expect("unback");
+        assert_eq!(extracted.files_extracted, 1);
+        assert_eq!(
+            fs::read(output.join("MyTestDomain/Media/Test.txt")).expect("payload"),
+            b"keep"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn rejects_legacy_manifest_path_escape_before_creating_output() {
+        let (root, device, _, _) = write_legacy_fixture("legacy-path-escape", false);
+        let manifest_path = device.join("Manifest.mbdb");
+        let mut manifest = MbdbManifest::parse(&fs::read(&manifest_path).expect("manifest"))
+            .expect("parse manifest");
+        manifest.records[0].relative_path = Some("../outside".into());
+        fs::write(
+            &manifest_path,
+            manifest
+                .serialize(None)
+                .expect("serialize malicious manifest"),
         )
-        .expect("legacy manifest plist");
+        .expect("write malicious manifest");
+
         let error = unback_backup(&root, "device-id", None, None)
-            .expect_err("legacy Manifest.mbdb must be explicit unsupported");
-        assert!(error.to_string().contains("Manifest.mbdb"));
+            .expect_err("legacy traversal must be rejected");
+        assert!(error.to_string().contains("escapes backup root"));
+        assert!(!root.join("outside").exists());
         assert!(!root.join("device-id.unback").exists());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn supports_pyiosbackup_legacy_encrypted_payload_without_manifest_key() {
+        let (root, device, keep_id, drop_id) = write_legacy_fixture("legacy-encrypted", true);
+        let output = root.join("expanded");
+        let extracted = unback_backup(&root, "device-id", Some(&output), Some("0000"))
+            .expect("encrypted legacy unback");
+        assert_eq!(extracted.files_extracted, 2);
+        assert_eq!(
+            fs::read(output.join("MyTestDomain/Media/Test.txt")).expect("payload"),
+            b"Test data"
+        );
+        let wrong_output = root.join("wrong-password");
+        assert!(unback_backup(&root, "device-id", Some(&wrong_output), Some("wrong")).is_err());
+        assert!(!wrong_output.join("MyTestDomain/Media/Test.txt").exists());
+
+        let filter = super::super::build_backup_filter(&[], &["Media/Test\\.txt".into()])
+            .expect("selection")
+            .expect("filter");
+        let result = patch_backup_directory(&root, "device-id", &filter, Some("0000"))
+            .expect("encrypted legacy patch");
+        assert_eq!(result.entries_kept, 1);
+        assert!(device.join(&keep_id).is_file());
+        assert!(!device.join(&drop_id).exists());
+        assert!(device.join("Manifest.mbdb").is_file());
         fs::remove_dir_all(root).expect("cleanup");
     }
 

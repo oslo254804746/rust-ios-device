@@ -124,9 +124,27 @@ Crash and file relay helpers:
 
 ```sh
 ios -u <UDID> crash ls
+ios crash parse ./report.ips --json
+ios crash parse-latest ./reports --pattern '*.ips' --count 3 --json
+ios -u <UDID> crash flush
+ios -u <UDID> crash watch --pattern '*.ips' --timeout 60 --json
+ios -u <UDID> crash rm '*.ips' --force
+ios -u <UDID> crash clear --force
 ios -u <UDID> file --crash ls /
 ios -u <UDID> file-relay Network --output network-relay.zip
 ```
+
+`crash parse` accepts Apple's two-line JSON `.ips` format and legacy `.crash`
+text without a device. Parsing is bounded and retains unknown JSON fields under
+`raw`; malformed reports are reported rather than silently returned as complete
+records. `parse-latest` orders by the report event timestamp, not the filename.
+`crash watch` uses a bounded AFC directory poll because neither the classic
+nor RSD crash-report mover exposes a report event stream. The command selects
+classic lockdown on older devices and the RSD `.shim.remote` services on iOS
+17+. `crash rm` and `crash clear` require `--force`. The crash mover does not
+implement sysdiagnose collection. `ios diagnostics sysdiagnose` is a separate
+iOS 17+ CoreDevice metadata probe in this release (dry-run only); it does not
+download the archive.
 
 CoreDevice fileservice (iOS 17+ devices that expose the service):
 
@@ -156,6 +174,7 @@ Comparable upstream workflows:
 ios -u <UDID> apps list
 ios -u <UDID> apps list --coredevice
 ios -u <UDID> apps show com.example.app
+ios -u <UDID> apps install-record com.example.app
 ios -u <UDID> apps install ./Example.ipa
 ios -u <UDID> apps uninstall com.example.app
 ios -u <UDID> apps launch com.example.app
@@ -437,6 +456,7 @@ ios -u <UDID> backup create ./backup --only sms --patch-manifest
 # Host-only operations; --source is the backup directory identifier, not a device connection.
 ios backup unback ./backup --source <UDID> --output ./expanded
 ios backup extract ./backup HomeDomain Library/SMS/sms.db --source <UDID> --output ./sms.db
+ios backup list-local ./backup --source <UDID>
 # Device-side MobileBackup2 operations (the connected UDID is required).
 ios -u <UDID> backup unback-device ./backup
 ios -u <UDID> backup extract-device ./backup HomeDomain Library/SMS/sms.db
@@ -447,22 +467,26 @@ ios -u <UDID> backup encryption off --password '<current-password>'
 
 `--only` accepts the `bookmarks`, `call_history`, `contacts`, `messages`, `sms`,
 and `whatsapp` presets; `--only-regex` is matched against the device and
-Manifest.db domain/path forms. Selection is host-side and uses the normal
+Manifest.db/Manifest.mbdb domain/path forms. Selection is host-side and uses the normal
 `Backup` DeviceLink request. `--patch-manifest` prunes rejected Manifest.db
-rows and stored payloads after the transfer and requires a selection. The
+rows (or legacy Manifest.mbdb records) and stored payloads after the transfer and requires a selection. The
 optional `backup2-manifest` feature (included by the CLI's `full` feature)
-provides local SQLite manifest filtering and extraction. Modern encrypted
+provides local SQLite/MBDB manifest filtering and extraction. Modern encrypted
 backups (ProductVersion greater than 10.2) are supported when `--password` is
 provided: the host verifies the BackupKeyBag, decrypts/re-encrypts Manifest.db,
 and decrypts file payloads. Passwords and key material are never included in
-operation output. Legacy backups using Manifest.mbdb (10.2 and older) and
-encrypted backups without a password are rejected explicitly. Non-empty
+operation output. Legacy backups using Manifest.mbdb (10.2 and older) use the
+single PBKDF2-HMAC-SHA1 keybag path, flat file-ID payload names, and are rewritten
+without inventing an encrypted manifest; encrypted legacy operations require
+`--password`. Non-empty
 Manifest.db WAL/SHM/journal sidecars are also rejected because they cannot be
 decrypted safely as an isolated completed backup.
 
 `unback` and `extract` are retained compatibility names for local operations
 over a completed backup. They preserve regular-file bytes, basic Unix
-permission bits, and safe relative symlinks. The explicit
+permission bits, and safe relative symlinks. The `list-local` command lists
+redacted manifest entries without contacting a device; `list` remains the
+device-side MobileBackup2 operation. The explicit
 `unback-device` and `extract-device` commands send the real MobileBackup2
 `Unback` and `Extract` messages over the connected device's DeviceLink session;
 the device performs any encrypted-backup handling. Their backup directory is

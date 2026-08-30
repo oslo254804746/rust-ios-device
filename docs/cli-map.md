@@ -34,12 +34,13 @@ schemas, service routing, and iOS-version support can differ.
 | Battery registry | `ios batteryregistry` | `ios batteryregistry` | diagnostics IORegistry workflows |
 | AFC file access | `ios file ls /`, `ios file pull ...`, `ios file push ...` | `ios fsync ...` | `pymobiledevice3 afc ...` |
 | App container files | `ios file --app <BUNDLE_ID> ...` | app-container fsync style workflows | AFC/house-arrest workflows |
-| Crash reports | `ios crash list`, `ios file --crash ...` | `ios crash ls`, `ios crash cp` | `pymobiledevice3 crash pull ...` |
+| Crash reports | `ios crash ls|pull|parse|parse-latest|flush|watch|clear`, `ios file --crash ...` | `ios crash ls`, `ios crash cp` | `pymobiledevice3 crash pull|parse|parse-latest|flush|watch ...` |
 | File relay | `ios file-relay <SOURCE>` | file relay service workflows | file relay service workflows |
 | List apps | `ios apps list` | `ios apps` | `pymobiledevice3 apps list` |
 | App icons | `ios apps icons BUNDLE_ID` (alias: `apps icon`) | app icon workflows | `pymobiledevice3 developer core-device icon ...` |
 | Install app | `ios apps install PATH` | `ios install --path=PATH` | `pymobiledevice3 apps install PATH` |
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
+| Install record | `ios apps install-record BUNDLE_ID [--timeout-secs N]` | LaunchServices install-coordination query | `pymobiledevice3 apps install-record ...` (iOS 17+ RSD) |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
 | Kill/process controls | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` or `ios memlimitoff --process NAME` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
 | Device pasteboard | `ios pasteboard get|set` (verified PULL/SET policies and UTI/base64 representations); experimental `watch|resolve|export --experimental` (output redacted unless `--show-data`) | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
@@ -48,7 +49,7 @@ schemas, service routing, and iOS-version support can differ.
 | Syslog | `ios syslog` | `ios syslog` | `pymobiledevice3 syslog live` |
 | Screenshot | `ios screenshot [--output PATH]` | `ios screenshot ...` | `pymobiledevice3 developer dvt screenshot` / CoreDevice screen capture |
 | Diagnostics | `ios diagnostics ...`, `ios diagnostics sysdiagnose` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...`, CoreDevice sysdiagnose workflows |
-| MobileBackup2 | `ios backup create|restore|info|list`, `backup unback|extract` (local compatibility), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including `unback`/`extract` | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
+| MobileBackup2 | `ios backup create|restore|info|list`, `backup list-local|unback|extract` (host-side), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including host-side manifest inspection/extraction | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
 | Restart or restore mode | `ios diagnostics reboot`, `ios diagnostics shutdown`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
 | Packet capture | `ios pcap --output device.pcap` | `ios pcap ...` | `pymobiledevice3 pcap ...` |
 | Device IP discovery | `ios ip` (packet-derived IPv4/IPv6) | `ios diagnostics` / `pcap` IP finder | `pymobiledevice3 pcap` workflows |

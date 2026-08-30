@@ -33,6 +33,7 @@ pub use client::XpcClient;
     feature = "screencapture",
     feature = "hid",
     feature = "display",
+    feature = "installcoordination",
     feature = "restore"
 ))]
 pub(crate) use message::{XpcMessage, XpcValue};

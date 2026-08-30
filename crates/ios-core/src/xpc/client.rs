@@ -100,9 +100,27 @@ impl XpcClient {
         &mut self,
         body: XpcValue,
     ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
+        self.stream_invoke_with_flags(body, flags::WANTING_REPLY)
+    }
+
+    /// Send an XPC request and yield messages from the server-client stream
+    /// without imposing a reply-correlation policy.
+    ///
+    /// Most CoreDevice services ask the daemon for a reply with
+    /// [`flags::WANTING_REPLY`], which is what [`Self::stream_invoke`] does.
+    /// A few RemoteXPC services (notably InstallCoordinationProxy) send a
+    /// request without that bit and then return the next fresh message on the
+    /// connection.  Keeping the flag choice in this shared primitive avoids
+    /// making those services misuse [`Self::call`], which waits for a matching
+    /// message id and can therefore miss a valid fresh response.
+    pub fn stream_invoke_with_flags(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
         async_stream::try_stream! {
             self.inner
-                .send_with_flags(body, flags::WANTING_REPLY)
+                .send_with_flags(body, extra_flags)
                 .await?;
             loop {
                 yield self.inner.recv().await?;
@@ -434,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_invoke_yields_each_pushed_message() {
+    async fn stream_invoke_with_flags_yields_each_pushed_message() {
         let (client, mut server) = duplex(16 * 1024);
         let empty = encode_message(&XpcMessage {
             flags: flags::ALWAYS_SET,
@@ -524,7 +542,7 @@ mod tests {
             assert_eq!((frame_type, stream_id), (FRAME_DATA, STREAM_CLIENT_SERVER));
             assert_eq!(
                 decode_message_payload(&payload),
-                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 1)
+                (flags::ALWAYS_SET | flags::DATA, 1)
             );
             server
                 .write_all(&data_frame(STREAM_SERVER_CLIENT, &first))
@@ -541,10 +559,10 @@ mod tests {
             .await
             .expect("connect timed out")
             .expect("connect should succeed");
-        let mut stream = Box::pin(client.stream_invoke(XpcValue::Dictionary(IndexMap::from([(
-            "request".into(),
-            XpcValue::Bool(true),
-        )]))));
+        let mut stream = Box::pin(client.stream_invoke_with_flags(
+            XpcValue::Dictionary(IndexMap::from([("request".into(), XpcValue::Bool(true))])),
+            0,
+        ));
 
         let first = timeout(Duration::from_secs(1), stream.next())
             .await

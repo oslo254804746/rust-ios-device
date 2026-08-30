@@ -30,13 +30,26 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `mobileactivation` (state, session handshake, online/offline activation, deactivation, and the iTunes lockdown marker), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `crashreport`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `installcoordination` (the iOS 17+ InstallCoordinationProxy query), `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `mobileactivation` (state, session handshake, online/offline activation, deactivation, and the iTunes lockdown marker), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+
+The `crashreport` feature selects the classic go-ios mover `ping` handshake or
+the iOS 17+ RSD crash-report shims with their `ping\0` handshake. It provides
+bounded AFC list/read/delete, `.ips` and legacy `.crash` structured parsing,
+local latest-by-event-time selection, and a bounded directory-poll stream for
+new files. Apple-specific sysdiagnose notification/archive collection is not
+claimed here. The separate diagnostics service currently exposes only a
+dry-run metadata probe; it does not download the archive.
 
 `iconservice` and `screencapture` are modern CoreDevice/RSD services. The
 `apps icons` and `screenshot` CLI commands select them automatically on iOS
 17+ when the resolved RSD service is present, and use the legacy SpringBoard /
 lockdown paths on older devices. `icon_service` and `screen_capture` are
 feature aliases for downstream naming conventions.
+
+`installcoordination` is an RSD-only service. It currently implements the
+upstream `Query` request as `apps install-record`; Install, Uninstall, and
+RevertStash are not exposed because the upstream client leaves their
+out-of-band file-transfer protocol unimplemented.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 
@@ -72,9 +85,11 @@ AAC-ELD payloads separately.
 
 MobileBackup2's DeviceLink client is part of the core service surface and
 includes the device-side `Unback` and `Extract` operations. The optional
-`backup2-manifest` feature is only for host-side Manifest.db filtering and
-local expansion (including modern encrypted backups); it does not gate or
-provide the device protocol.
+`backup2-manifest` feature is only for host-side Manifest.db/Manifest.mbdb
+filtering and local expansion (including modern and legacy encrypted payloads);
+it does not gate or provide the device protocol. Legacy `Manifest.mbdb` is
+plaintext, uses the flat file-ID payload layout, and does not require an MBDX
+sidecar.
 
 Some features add heavier optional dependencies only when enabled:
 
@@ -88,6 +103,6 @@ Some features add heavier optional dependencies only when enabled:
 | `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
 | `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |
 | `supervised-pair` | Supervised pairing/P12 signing helpers via `openssl`; implied by `prepare`. |
-| `backup2-manifest` | Host-side Backup2 Manifest.db filtering and local extraction, including modern (iOS 10.3+) BackupKeyBag/AES encrypted backups, via bundled SQLite. |
+| `backup2-manifest` | Host-side Backup2 Manifest.db/Manifest.mbdb filtering and local extraction, including modern and legacy BackupKeyBag/AES encrypted payloads; modern manifests use bundled SQLite. |
 
 The `ios-cli` crate enables `ios-core/full` because the binary exposes many commands. Library users should prefer a narrower feature list.

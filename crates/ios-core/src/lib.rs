@@ -158,6 +158,8 @@ pub use services::iconservice as icon_service;
 pub use services::idam;
 #[cfg(feature = "imagemounter")]
 pub use services::imagemounter;
+#[cfg(feature = "installcoordination")]
+pub use services::installcoordination;
 #[cfg(feature = "instruments")]
 pub use services::instruments;
 #[cfg(feature = "mcinstall")]

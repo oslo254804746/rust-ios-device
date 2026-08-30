@@ -19,11 +19,13 @@ use crate::services::device_link::{DeviceLinkClient, DeviceLinkError};
 mod crypto;
 #[cfg(feature = "backup2-manifest")]
 mod manifest;
+#[cfg(feature = "backup2-manifest")]
+mod mbdb;
 
 #[cfg(feature = "backup2-manifest")]
 pub use manifest::{
-    extract_backup_file, patch_backup_directory, unback_backup, ExtractionResult,
-    ManifestPatchResult,
+    extract_backup_file, list_backup_entries, patch_backup_directory, unback_backup,
+    BackupManifestEntry, ExtractionResult, ManifestPatchResult,
 };
 
 pub const SERVICE_NAME: &str = "com.apple.mobilebackup2";
@@ -315,8 +317,7 @@ const MAX_DEVICE_TRANSFER_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 // bounded lifetime for the complete exchange, including version negotiation,
 // so a peer that stops sending cannot leave a caller waiting forever.
 const DEVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] =
-    &["Manifest.plist", "Manifest.db", "Status.plist"];
+const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] = &["Manifest.plist", "Status.plist"];
 // 978_307_200 seconds = 2001-01-01T00:00:00Z Unix timestamp
 // This is the Apple Core Data / NSDate epoch offset (seconds between Unix epoch and Apple epoch)
 const APPLE_EPOCH_OFFSET: Duration = Duration::from_secs(978_307_200);
@@ -1513,6 +1514,8 @@ fn should_preserve_backup_file(file_name: &str, device_name: &str, filter: &Back
         "Info.plist"
             | "Manifest.plist"
             | "Manifest.db"
+            | "Manifest.mbdb"
+            | "Manifest.mbdx"
             | "Manifest.db-shm"
             | "Manifest.db-wal"
             | "Status.plist"
@@ -1686,7 +1689,25 @@ pub fn has_incremental_backup_metadata(
             return Ok(false);
         }
     }
-    Ok(true)
+    // iOS 10.2 and older backups use the flat Manifest.mbdb index.  A backup is
+    // incrementally usable when exactly either manifest form is present; do not
+    // require the modern SQLite name and accidentally turn every legacy backup
+    // into a full backup.
+    let mut manifest_found = false;
+    for filename in ["Manifest.db", "Manifest.mbdb"] {
+        let path = device_directory.join(filename);
+        reject_symlink_components(&path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(symlink_path_error(&path));
+            }
+            Ok(metadata) if metadata.is_file() && metadata.len() > 0 => manifest_found = true,
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(manifest_found)
 }
 
 pub fn backup_status_is_full(device_directory: &Path) -> Result<bool, Mobilebackup2Error> {
@@ -3849,6 +3870,8 @@ mod tests {
             "Info.plist",
             "Manifest.plist",
             "Manifest.db",
+            "Manifest.mbdb",
+            "Manifest.mbdx",
             "Manifest.db-shm",
             "Manifest.db-wal",
             "Status.plist",
