@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.1.13] — 2026-08-30
+
+### Fixed
+
+- Made backup integration expectations compare canonical layout paths, so
+  macOS's `/var` alias does not turn a successful backup into a false failure.
+
 ## [0.1.12] — 2026-08-30
 
 ### Fixed
@@ -221,7 +228,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.9...v0.1.10

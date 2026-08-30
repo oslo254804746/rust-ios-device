@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ios-core = { version = "0.1.12", features = ["afc", "syslog", "screenshot"] }
+//! ios-core = { version = "0.1.13", features = ["afc", "syslog", "screenshot"] }
 //! ```
 //!
 //! ## Available features
