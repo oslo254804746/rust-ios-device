@@ -365,7 +365,11 @@ async fn backup_creates_layout_and_writes_uploaded_files() {
 
     assert_eq!(result.device_link_version, 300);
     assert_eq!(result.protocol_version, 2.1);
-    assert_eq!(result.layout.device_directory, backup_root.join(device_id));
+    assert_eq!(
+        result.layout.device_directory,
+        result.layout.root.join(device_id),
+        "layout paths must use one canonical root spelling"
+    );
     assert!(result.layout.device_directory.join("Info.plist").exists());
     assert!(result.layout.device_directory.join("Status.plist").exists());
     assert!(result
@@ -1601,7 +1605,11 @@ async fn restore_sends_requested_fields_and_options() {
 
     assert_eq!(result.device_link_version, 300);
     assert_eq!(result.protocol_version, 2.1);
-    assert_eq!(result.layout.device_directory, backup_root.join(source_id));
+    assert_eq!(
+        result.layout.device_directory,
+        result.layout.root.join(source_id),
+        "layout paths must use one canonical root spelling"
+    );
     server.await.expect("server task should finish");
     std::fs::remove_dir_all(&backup_root).expect("cleanup temp backup root");
 }
