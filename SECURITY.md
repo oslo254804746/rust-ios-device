@@ -32,3 +32,8 @@ but its portable path checks are not an atomic dirfd/openat2 guarantee against a
 concurrent replacement of an intermediate directory. Reports involving a race
 against a shared backup root should include the host OS, filesystem, operation,
 and whether the root or any parent was writable by another process.
+
+On macOS, the root-owned `/var`, `/tmp`, and `/etc` aliases into `/private` are
+accepted when their targets are the exact system paths; backup roots are then
+canonicalized before any child is created. Other symlinked components, including
+user-created links below those aliases, remain rejected.

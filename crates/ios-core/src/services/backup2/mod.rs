@@ -2114,6 +2114,33 @@ fn symlink_path_error(path: &Path) -> Mobilebackup2Error {
     ))
 }
 
+/// macOS keeps a few historical top-level paths as root-owned aliases into
+/// `/private`.  They are part of the host's normal spelling for temporary and
+/// system directories (including the value returned by `temp_dir`), rather
+/// than user-controlled redirects.  Accept only the exact aliases and exact
+/// relative targets; all other symlink components remain rejected.
+fn is_approved_system_alias(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let target = match fs::read_link(path) {
+            Ok(target) => target,
+            Err(_) => return false,
+        };
+        return [
+            (Path::new("/var"), Path::new("private/var")),
+            (Path::new("/tmp"), Path::new("private/tmp")),
+            (Path::new("/etc"), Path::new("private/etc")),
+        ]
+        .into_iter()
+        .any(|(alias, expected)| path == alias && target == expected);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 fn ensure_no_symlink_components_at_root(
     root: &Path,
     relative: &Path,
@@ -2247,7 +2274,9 @@ fn reject_symlink_components(path: &Path) -> Result<(), Mobilebackup2Error> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(symlink_path_error(&current));
+                if !is_approved_system_alias(&current) {
+                    return Err(symlink_path_error(&current));
+                }
             }
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => break,
@@ -2922,8 +2951,62 @@ mod tests {
         plist::from_bytes(&payload).expect("plist frame")
     }
 
-    fn test_backup_root(label: &str, identifier: &str) -> PathBuf {
+    // The path policy rejects symlink components deliberately.  macOS exposes
+    // its temporary directory through `/var`, which is a system symlink, and
+    // Windows may return a verbatim or short-name spelling.  Use the same
+    // canonical spelling as production code for fixtures so these tests cover
+    // the path policy itself rather than host-specific aliases.
+    fn test_temp_dir() -> PathBuf {
+        super::canonicalize_simplified(&std::env::temp_dir()).expect("canonical temp directory")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_aliases_are_accepted() {
+        assert!(is_approved_system_alias(Path::new("/var")));
+        reject_symlink_components(&std::env::temp_dir()).expect("macOS temp alias");
+
         let root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-macos-alias-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let layout =
+            initialize_backup_directory(&root, "device-id", &plist::Dictionary::new(), true)
+                .expect("backup root below the macOS temp alias");
+        assert!(layout.device_directory.join("Info.plist").is_file());
+        std::fs::remove_dir_all(root).expect("remove macOS alias fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_temp_directory_spelling_is_normalized_in_layout() {
+        let raw_root = std::env::temp_dir().join(format!(
+            "ios-core-backup2-windows-temp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&raw_root).unwrap();
+
+        let layout =
+            initialize_backup_directory(&raw_root, "device-id", &plist::Dictionary::new(), true)
+                .unwrap();
+        assert_eq!(
+            layout.root,
+            canonicalize_simplified(&raw_root).unwrap(),
+            "returned layout must use the production canonical spelling"
+        );
+        assert_eq!(
+            layout.device_directory,
+            layout.root.join("device-id"),
+            "device directory must share the canonical root spelling"
+        );
+
+        std::fs::remove_dir_all(&raw_root).unwrap();
+    }
+
+    fn test_backup_root(label: &str, identifier: &str) -> PathBuf {
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-device-{label}-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
@@ -3438,8 +3521,7 @@ mod tests {
 
     #[test]
     fn initialize_backup_directory_creates_expected_seed_files() {
-        let root =
-            std::env::temp_dir().join(format!("ios-core-backup2-layout-{}", std::process::id()));
+        let root = test_temp_dir().join(format!("ios-core-backup2-layout-{}", std::process::id()));
         if root.exists() {
             std::fs::remove_dir_all(&root).unwrap();
         }
@@ -3461,7 +3543,7 @@ mod tests {
 
     #[test]
     fn initial_backup_becomes_full_when_incremental_metadata_is_missing() {
-        let root = std::env::temp_dir().join(format!(
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-initial-full-{}",
             std::process::id()
         ));
@@ -3486,7 +3568,7 @@ mod tests {
 
     #[test]
     fn incremental_backup_is_preserved_when_required_metadata_exists() {
-        let root = std::env::temp_dir().join(format!(
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-incremental-{}",
             std::process::id()
         ));
@@ -3530,7 +3612,7 @@ mod tests {
 
     #[test]
     fn empty_incremental_metadata_forces_full_backup() {
-        let root = std::env::temp_dir().join(format!(
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-empty-metadata-{}",
             std::process::id()
         ));
@@ -3550,8 +3632,7 @@ mod tests {
 
     #[test]
     fn resolve_relative_path_accepts_plain_and_prefixed_paths() {
-        let root =
-            std::env::temp_dir().join(format!("ios-core-backup2-resolve-{}", std::process::id()));
+        let root = test_temp_dir().join(format!("ios-core-backup2-resolve-{}", std::process::id()));
         if root.exists() {
             std::fs::remove_dir_all(&root).unwrap();
         }
@@ -3592,7 +3673,7 @@ mod tests {
     /// ERROR_INVALID_FUNCTION until the root separator is appended.
     #[test]
     fn reject_symlink_components_accepts_verbatim_relative_and_unicode_paths() {
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-r3-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
@@ -3627,7 +3708,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn canonicalize_simplified_does_not_alias_distinct_verbatim_tail_directory() {
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-canonical-alias-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
@@ -3662,7 +3743,7 @@ mod tests {
         use std::ffi::OsString;
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-canonical-wtf16-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
@@ -3713,7 +3794,7 @@ mod tests {
     fn reject_symlink_components_rejects_windows_directory_symlinks() {
         use std::os::windows::fs::symlink_dir;
 
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-r3-symlink-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4().simple()
@@ -3803,8 +3884,7 @@ mod tests {
     fn existing_symlink_components_are_rejected_without_writing_outside_root() {
         use std::os::unix::fs::symlink;
 
-        let base =
-            std::env::temp_dir().join(format!("ios-core-backup2-symlink-{}", std::process::id()));
+        let base = test_temp_dir().join(format!("ios-core-backup2-symlink-{}", std::process::id()));
         if base.exists() {
             std::fs::remove_dir_all(&base).unwrap();
         }
@@ -3848,7 +3928,7 @@ mod tests {
     fn seed_symlink_is_rejected_before_existing_metadata_is_overwritten() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-seed-symlink-{}",
             std::process::id()
         ));
@@ -3886,7 +3966,7 @@ mod tests {
     fn backup_root_symlink_is_rejected_before_creating_outside_directory() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!(
+        let base = test_temp_dir().join(format!(
             "ios-core-backup2-root-symlink-{}",
             std::process::id()
         ));
@@ -3940,7 +4020,7 @@ mod tests {
 
     #[test]
     fn backup_is_encrypted_reads_manifest_flag() {
-        let root = std::env::temp_dir().join(format!(
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-encryption-{}",
             std::process::id()
         ));
@@ -3967,7 +4047,7 @@ mod tests {
 
     #[test]
     fn metadata_plist_size_is_checked_before_decoding() {
-        let root = std::env::temp_dir().join(format!(
+        let root = test_temp_dir().join(format!(
             "ios-core-backup2-metadata-limit-{}",
             std::process::id()
         ));

@@ -25,7 +25,7 @@ you need:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.10", features = ["classic"] }
+ios-core = { version = "0.1.11", features = ["classic"] }
 ```
 
 The Python binding is published as `rust-ios-device-tunnel` (imported as

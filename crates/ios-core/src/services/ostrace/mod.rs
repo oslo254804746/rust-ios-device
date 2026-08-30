@@ -934,7 +934,7 @@ fn safe_output_parent(output: &Path) -> Result<&Path, OsTraceError> {
             }
         }
         let metadata = fs::symlink_metadata(&current)?;
-        if metadata.file_type().is_symlink() {
+        if metadata.file_type().is_symlink() && !is_approved_system_alias(&current) {
             return Err(OsTraceError::Protocol(format!(
                 "OS trace output parent contains a symlink: {}",
                 current.display()
@@ -948,6 +948,31 @@ fn safe_output_parent(output: &Path) -> Result<&Path, OsTraceError> {
         }
     }
     Ok(parent)
+}
+
+/// macOS exposes common system directories through root-owned aliases into
+/// `/private`.  Accept only those exact aliases; user-controlled symlinked
+/// output parents remain rejected by `safe_output_parent`.
+fn is_approved_system_alias(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let target = match fs::read_link(path) {
+            Ok(target) => target,
+            Err(_) => return false,
+        };
+        return [
+            (Path::new("/var"), Path::new("private/var")),
+            (Path::new("/tmp"), Path::new("private/tmp")),
+            (Path::new("/etc"), Path::new("private/etc")),
+        ]
+        .into_iter()
+        .any(|(alias, expected)| path == alias && target == expected);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 fn temp_stem(name: Option<&std::ffi::OsStr>, suffix: &str) -> String {
@@ -1444,6 +1469,25 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
+
+    // macOS exposes its temporary directory through the `/var` system
+    // symlink.  The output policy intentionally rejects symlinked parents, so
+    // fixtures use the canonical spelling while still exercising the same
+    // checks as callers on every host.
+    fn test_temp_dir() -> PathBuf {
+        std::fs::canonicalize(std::env::temp_dir()).expect("canonical temp directory")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn safe_output_parent_accepts_macos_temp_alias() {
+        let output = std::env::temp_dir().join(format!(
+            "ios-trace-macos-alias-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        safe_output_parent(&output).expect("macOS temp alias");
+    }
 
     fn build_entry(level: LogLevel, message: &str) -> Vec<u8> {
         let filename = "/usr/lib/Test(Helper)\0";
@@ -1983,7 +2027,7 @@ mod tests {
 
     #[tokio::test]
     async fn archive_to_path_validates_tar_and_collect_is_staged() {
-        let output = std::env::temp_dir().join(format!("ios-trace-{}.tar", uuid::Uuid::new_v4()));
+        let output = test_temp_dir().join(format!("ios-trace-{}.tar", uuid::Uuid::new_v4()));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let archive = archive_tar();
         let server_task = tokio::spawn(archive_server(
@@ -2010,7 +2054,7 @@ mod tests {
         fs::remove_file(&output).unwrap();
 
         let collect_output =
-            std::env::temp_dir().join(format!("ios-trace-{}.logarchive", uuid::Uuid::new_v4()));
+            test_temp_dir().join(format!("ios-trace-{}.logarchive", uuid::Uuid::new_v4()));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let archive = archive_tar();
         let server_task = tokio::spawn(archive_server(
@@ -2054,7 +2098,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_refuses_existing_destination_before_request() {
-        let output = std::env::temp_dir().join(format!("ios-trace-{}", uuid::Uuid::new_v4()));
+        let output = test_temp_dir().join(format!("ios-trace-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&output).unwrap();
         let (client, _server) = tokio::io::duplex(4096);
         let error = OsTraceClient::new(client)
@@ -2070,7 +2114,7 @@ mod tests {
     /// MOVEFILE_COPY_ALLOWED, which fails with ERROR_ALREADY_EXISTS).
     #[test]
     fn atomic_replace_overwrites_an_existing_regular_file() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = test_temp_dir().join(format!(
             "ios-trace-replace-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
@@ -2092,7 +2136,7 @@ mod tests {
     /// the parent walk: the bare prefix is never queried for metadata.
     #[test]
     fn safe_output_parent_accepts_canonical_verbatim_directories() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = test_temp_dir().join(format!(
             "ios-trace-parent-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
