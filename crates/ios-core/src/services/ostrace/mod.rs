@@ -934,12 +934,19 @@ fn safe_output_parent(output: &Path) -> Result<&Path, OsTraceError> {
             }
         }
         let metadata = fs::symlink_metadata(&current)?;
-        if metadata.file_type().is_symlink() && !is_approved_system_alias(&current) {
-            return Err(OsTraceError::Protocol(format!(
-                "OS trace output parent contains a symlink: {}",
-                current.display()
-            )));
-        }
+        let metadata = if metadata.file_type().is_symlink() {
+            if !is_approved_system_alias(&current) {
+                return Err(OsTraceError::Protocol(format!(
+                    "OS trace output parent contains a symlink: {}",
+                    current.display()
+                )));
+            }
+            // `symlink_metadata` describes the alias itself, not its target.
+            // Validate the target before continuing the parent walk.
+            fs::metadata(&current)?
+        } else {
+            metadata
+        };
         if !metadata.is_dir() {
             return Err(OsTraceError::Protocol(format!(
                 "OS trace output parent is not a directory: {}",
@@ -1487,6 +1494,27 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         safe_output_parent(&output).expect("macOS temp alias");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_output_parent_rejects_user_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let base = test_temp_dir().join(format!(
+            "ios-trace-symlink-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let outside = base.join("outside");
+        let linked = base.join("linked");
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &linked).unwrap();
+
+        let error = safe_output_parent(&linked.join("output.log")).unwrap_err();
+        assert!(error.to_string().contains("contains a symlink"));
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     fn build_entry(level: LogLevel, message: &str) -> Vec<u8> {
