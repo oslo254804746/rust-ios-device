@@ -50,6 +50,13 @@ expose USB, lockdown, tunnel, and RSD while still omitting a specific
 CoreDevice feature service. Inspect the RSD service list at runtime instead
 of relying on `ProductVersion` alone.
 
+The `companion` service implements the classic and RSD companion-proxy plist
+commands for registry listing/lookup, event listening, and port forwarding.
+`start_forwarding_service_port` returns the device-assigned
+`CompanionProxyServicePort`; use `start_forwarding_service_port_handle` for a
+bounded RAII lifetime and explicit idempotent stop. The protocol stops a
+forward by companion (remote) port rather than a reusable connection ID.
+
 `ios_core::RsdHandshake::services` maps names to `ServiceDescriptor` values
 with a device port and advertised capability identifiers. Missing RSD feature
 metadata is represented by an empty list and remains permissive through

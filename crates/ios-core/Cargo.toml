@@ -65,6 +65,7 @@ ios17 = [
     "orientation",
     "iconservice",
     "screencapture",
+    "hid",
     "pasteboard",
     "testmanager",
     "mdns",
@@ -87,7 +88,7 @@ crashreport = ["afc"]
 diagnostics = []
 diagnosticsservice = ["tunnel", "mdns"]
 springboard = []
-mcinstall = []
+mcinstall = ["dep:sha1"]
 mobileactivation = []
 profiles = ["mcinstall", "misagent"]
 heartbeat = []
@@ -118,6 +119,7 @@ configuration = ["tunnel"]
 orientation = ["tunnel"]
 iconservice = ["tunnel"]
 screencapture = ["tunnel"]
+hid = ["tunnel"]
 # Naming aliases for downstream callers that follow the upstream Python file
 # names or Rust's snake_case convention.
 icon_service = ["iconservice"]

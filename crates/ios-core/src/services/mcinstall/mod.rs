@@ -9,6 +9,7 @@ use openssl::pkcs7::{Pkcs7, Pkcs7Flags};
 #[cfg(feature = "supervised-pair")]
 use openssl::stack::Stack;
 use serde::Serialize;
+use sha1::{Digest, Sha1};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -96,6 +97,17 @@ pub struct ProfileInfo {
     pub status: Option<String>,
     pub uuid: Option<String>,
     pub version: Option<u64>,
+}
+
+/// Result of preparing the standard go-ios Wi-Fi configuration profile.
+///
+/// The password is deliberately not retained in this result. The profile is
+/// sent to MCInstall directly and callers may separately obtain the protected
+/// XML from [`build_wifi_profile`] when a file is explicitly requested.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WifiProfileResult {
+    pub profile_identifier: String,
+    pub supervised: bool,
 }
 
 #[derive(Debug)]
@@ -235,6 +247,77 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
                 plist::Value::String("RemoveProfile".into()),
             ),
             ("ProfileIdentifier".to_string(), profile_identifier),
+        ]);
+        send_request(&mut self.stream, request).await
+    }
+
+    /// Install the deterministic Wi-Fi profile used by go-ios.
+    ///
+    /// MCInstall requires a flush before the operation. Supervision is
+    /// discovered from `GetCloudConfiguration`; the unsupervised escalation
+    /// is best effort, matching Apple's service behaviour and the upstream
+    /// implementation. No password is included in the returned metadata.
+    pub async fn prepare_wifi(
+        &mut self,
+        ssid: &str,
+        password: &str,
+        encryption_type: &str,
+    ) -> Result<WifiProfileResult, McInstallError> {
+        let profile = build_wifi_profile(ssid, password, encryption_type)?;
+        let profile_identifier = wifi_profile_identifier(ssid)?;
+        self.flush().await?;
+        let supervised = self
+            .get_cloud_configuration()
+            .await
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("IsSupervised")
+                    .and_then(plist::Value::as_boolean)
+            })
+            .unwrap_or(false);
+        let _ = self.escalate_unsupervised().await;
+        self.install_profile(profile.as_ref()).await?;
+        Ok(WifiProfileResult {
+            profile_identifier,
+            supervised,
+        })
+    }
+
+    /// Remove a Wi-Fi profile by the same deterministic identifier used by
+    /// [`Self::prepare_wifi`]. Unlike the generic profile removal API this
+    /// intentionally sends the bare identifier, as go-ios does.
+    pub async fn remove_wifi(&mut self, ssid: &str) -> Result<WifiProfileResult, McInstallError> {
+        let profile_identifier = wifi_profile_identifier(ssid)?;
+        self.flush().await?;
+        let supervised = self
+            .get_cloud_configuration()
+            .await
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("IsSupervised")
+                    .and_then(plist::Value::as_boolean)
+            })
+            .unwrap_or(false);
+        let _ = self.escalate_unsupervised().await;
+        self.remove_profile_direct(&profile_identifier).await?;
+        Ok(WifiProfileResult {
+            profile_identifier,
+            supervised,
+        })
+    }
+
+    async fn remove_profile_direct(&mut self, identifier: &str) -> Result<(), McInstallError> {
+        let request = plist::Dictionary::from_iter([
+            (
+                "RequestType".to_string(),
+                plist::Value::String("RemoveProfile".into()),
+            ),
+            (
+                "ProfileIdentifier".to_string(),
+                plist::Value::String(identifier.to_string()),
+            ),
         ]);
         send_request(&mut self.stream, request).await
     }
@@ -581,6 +664,128 @@ fn request_dictionary(request_type: &'static str) -> plist::Dictionary {
         "RequestType".to_string(),
         plist::Value::String(request_type.to_string()),
     )])
+}
+
+const WIFI_PROFILE_PREFIX: &str = "com.apple.wifi.managed.";
+
+/// Build the exact XML payload sent by go-ios's `PrepareWifi` operation.
+///
+/// This remains in memory by default. The returned buffer is zeroized on
+/// drop because it contains the network password. Callers that persist it
+/// must use a protected 0600 writer.
+pub fn build_wifi_profile(
+    ssid: &str,
+    password: &str,
+    encryption_type: &str,
+) -> Result<Zeroizing<Vec<u8>>, McInstallError> {
+    if ssid.is_empty() || password.is_empty() {
+        return Err(McInstallError::Protocol(
+            "Wi-Fi SSID and password must not be empty".into(),
+        ));
+    }
+    for (label, value) in [
+        ("SSID", ssid),
+        ("password", password),
+        ("encryption type", encryption_type),
+    ] {
+        if value
+            .chars()
+            .any(|ch| (ch as u32) < 0x20 && ch != '\t' && ch != '\n' && ch != '\r')
+        {
+            return Err(McInstallError::Protocol(format!(
+                "Wi-Fi {label} contains an XML control character"
+            )));
+        }
+    }
+    let identifier = wifi_profile_identifier(ssid)?;
+    let payload_identifier = format!("{identifier}.payload");
+    let payload_uuid = wifi_profile_uuid(&format!("{ssid}.payload"));
+    let uuid = wifi_profile_uuid(ssid);
+    let escaped_ssid = xml_escape(ssid);
+    // Escaping necessarily creates a second password-bearing buffer. Keep it
+    // in zeroizing storage for the same reason the final XML buffer is
+    // zeroizing; otherwise a password containing XML metacharacters would
+    // survive in a normal heap allocation after this function returns.
+    let escaped_password = Zeroizing::new(xml_escape(password));
+    let escaped_password_ref = escaped_password.as_str();
+    let escaped_encryption = xml_escape(encryption_type);
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>AutoJoin</key><true/>
+			<key>EncryptionType</key><string>{escaped_encryption}</string>
+			<key>HIDDEN_NETWORK</key><false/>
+			<key>SSID_STR</key><string>{escaped_ssid}</string>
+			<key>Password</key><string>{escaped_password_ref}</string>
+			<key>PayloadDisplayName</key><string>Wi-Fi</string>
+			<key>PayloadIdentifier</key><string>{payload_identifier}</string>
+			<key>PayloadType</key><string>com.apple.wifi.managed</string>
+			<key>PayloadUUID</key><string>{payload_uuid}</string>
+			<key>PayloadVersion</key><integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadIdentifier</key><string>{identifier}</string>
+	<key>PayloadType</key><string>Configuration</string>
+	<key>PayloadUUID</key><string>{uuid}</string>
+	<key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>
+"#
+    );
+    Ok(Zeroizing::new(xml.into_bytes()))
+}
+
+fn wifi_profile_identifier(ssid: &str) -> Result<String, McInstallError> {
+    if ssid.is_empty() {
+        return Err(McInstallError::Protocol(
+            "Wi-Fi SSID must not be empty".into(),
+        ));
+    }
+    let mut safe = String::with_capacity(ssid.len());
+    let mut separator = false;
+    for ch in ssid.chars() {
+        if ch.is_ascii_alphanumeric() {
+            safe.push(ch);
+            separator = false;
+        } else if !separator && !safe.is_empty() {
+            safe.push('-');
+            separator = true;
+        }
+    }
+    while safe.ends_with('-') {
+        safe.pop();
+    }
+    Ok(format!("{WIFI_PROFILE_PREFIX}{safe}"))
+}
+
+/// Return the deterministic identifier used for an SSID's managed profile.
+pub fn wifi_profile_identifier_for_ssid(ssid: &str) -> Result<String, McInstallError> {
+    wifi_profile_identifier(ssid)
+}
+
+fn wifi_profile_uuid(seed: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(b"go-ios.wifi.");
+    hasher.update(seed.as_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7], digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn parse_profile_list(value: plist::Value) -> Result<Vec<ProfileInfo>, McInstallError> {
@@ -942,7 +1147,8 @@ fn plist_integer_to_i64(value: &plist::Value) -> Option<i64> {
 
 fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    key.contains("unlocktoken")
+    key == "payload"
+        || key.contains("unlocktoken")
         || key.contains("token")
         || key.contains("passcode")
         || key.contains("password")
@@ -1142,6 +1348,130 @@ mod tests {
         assert_eq!(
             dict.get("Payload").and_then(plist::Value::as_data),
             Some(&b"<plist/>"[..])
+        );
+    }
+
+    #[test]
+    fn wifi_profile_is_deterministic_and_xml_safe() {
+        let profile = build_wifi_profile("Cafe & 网络", "p<ä>\"'", "WPA2").unwrap();
+        let value: plist::Value = plist::from_bytes(profile.as_ref()).unwrap();
+        let root = value.as_dictionary().unwrap();
+        assert_eq!(
+            root.get("PayloadIdentifier")
+                .and_then(plist::Value::as_string),
+            Some("com.apple.wifi.managed.Cafe")
+        );
+        assert_eq!(
+            root.get("PayloadUUID").and_then(plist::Value::as_string),
+            Some("7574C811-D709-B091-3DD8-95E1FFFE3B02")
+        );
+        let payload = root
+            .get("PayloadContent")
+            .and_then(plist::Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(plist::Value::as_dictionary)
+            .unwrap();
+        assert_eq!(
+            payload.get("SSID_STR").and_then(plist::Value::as_string),
+            Some("Cafe & 网络")
+        );
+        assert_eq!(
+            payload.get("Password").and_then(plist::Value::as_string),
+            Some("p<ä>\"'")
+        );
+        assert_eq!(
+            payload
+                .get("HIDDEN_NETWORK")
+                .and_then(plist::Value::as_boolean),
+            Some(false)
+        );
+        assert_eq!(
+            payload.get("PayloadUUID").and_then(plist::Value::as_string),
+            Some("01443B15-63CE-A3AB-2257-483D5E699DCE")
+        );
+        assert_eq!(
+            wifi_profile_identifier_for_ssid("Cafe & 网络").unwrap(),
+            "com.apple.wifi.managed.Cafe"
+        );
+    }
+
+    #[test]
+    fn profile_payload_is_treated_as_sensitive_request_data() {
+        assert!(is_sensitive_key("Payload"));
+    }
+
+    #[tokio::test]
+    async fn prepare_wifi_flushes_escalates_and_installs_profile() {
+        let ack = acknowledged_response();
+        let cloud = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "IsSupervised".to_string(),
+            plist::Value::Boolean(true),
+        )]));
+        let mut stream = MockStream::with_responses(vec![ack.clone(), cloud, ack.clone(), ack]);
+        let mut client = McInstallClient::new(&mut stream);
+        let result = client
+            .prepare_wifi("Test SSID", "secret", "WPA")
+            .await
+            .unwrap();
+        assert!(result.supervised);
+        assert_eq!(
+            result.profile_identifier,
+            "com.apple.wifi.managed.Test-SSID"
+        );
+        let mut offset = 0;
+        let mut requests = Vec::new();
+        while offset < stream.written.len() {
+            let len =
+                u32::from_be_bytes(stream.written[offset..offset + 4].try_into().unwrap()) as usize;
+            requests.push(
+                plist::from_bytes::<plist::Dictionary>(
+                    &stream.written[offset + 4..offset + 4 + len],
+                )
+                .unwrap(),
+            );
+            offset += 4 + len;
+        }
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0]["RequestType"].as_string(), Some("Flush"));
+        assert_eq!(
+            requests[1]["RequestType"].as_string(),
+            Some("GetCloudConfiguration")
+        );
+        assert_eq!(requests[2]["RequestType"].as_string(), Some("Escalate"));
+        assert_eq!(
+            requests[3]["RequestType"].as_string(),
+            Some("InstallProfile")
+        );
+        assert!(requests[3]["Payload"]
+            .as_data()
+            .unwrap()
+            .windows(6)
+            .any(|w| w == b"secret"));
+    }
+
+    #[tokio::test]
+    async fn remove_wifi_sends_bare_deterministic_identifier() {
+        let ack = acknowledged_response();
+        let cloud = plist::Value::Dictionary(plist::Dictionary::new());
+        let mut stream = MockStream::with_responses(vec![ack.clone(), cloud, ack.clone(), ack]);
+        let mut client = McInstallClient::new(&mut stream);
+        client.remove_wifi("Test SSID").await.unwrap();
+        let mut offset = 0;
+        let mut requests = Vec::new();
+        while offset < stream.written.len() {
+            let len =
+                u32::from_be_bytes(stream.written[offset..offset + 4].try_into().unwrap()) as usize;
+            requests.push(
+                plist::from_bytes::<plist::Dictionary>(
+                    &stream.written[offset + 4..offset + 4 + len],
+                )
+                .unwrap(),
+            );
+            offset += 4 + len;
+        }
+        assert_eq!(
+            requests[3]["ProfileIdentifier"].as_string(),
+            Some("com.apple.wifi.managed.Test-SSID")
         );
     }
 

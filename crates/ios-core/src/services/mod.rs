@@ -14,7 +14,7 @@
 //! | `afc` | [`afc`] | Apple File Conduit — device filesystem access |
 //! | `apps` | [`apps`] | App install/uninstall/launch/kill (InstallationProxy + appservice) |
 //! | `arbitration` | [`arbitration`] | Exclusive device access claim/release |
-//! | `companion` | [`companion`] | Paired accessory discovery (Apple Watch) |
+//! | `companion` | [`companion`] | Paired accessory registry, events, and port forwarding |
 //! | `notificationproxy` | [`notificationproxy`] | Device notification subscribe/post |
 //! | `crashreport` | [`crashreport`] | Crash log download and management (requires `afc`) |
 //! | `springboard` | [`springboard`] | Icon layout, wallpaper, orientation |
@@ -38,6 +38,7 @@
 //! | `orientation` | [`orientation`] | iOS 17+ CoreDevice device rotation |
 //! | `iconservice` | [`iconservice`] | iOS 17+ CoreDevice application icons |
 //! | `screencapture` | [`screencapture`] | iOS 17+ CoreDevice screenshot capture |
+//! | `hid` | [`hid`] | iOS 17+ CoreDevice button, touch, and keyboard input |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
@@ -105,7 +106,8 @@ pub mod backup2;
     feature = "fileservice",
     feature = "orientation",
     feature = "iconservice",
-    feature = "screencapture"
+    feature = "screencapture",
+    feature = "hid"
 ))]
 pub(crate) mod coredevice;
 pub mod device_link;
@@ -215,6 +217,9 @@ pub mod iconservice;
 
 #[cfg(feature = "screencapture")]
 pub mod screencapture;
+
+#[cfg(feature = "hid")]
+pub mod hid;
 
 #[cfg(feature = "prepare")]
 pub mod prepare;

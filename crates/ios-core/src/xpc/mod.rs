@@ -31,6 +31,7 @@ pub use client::XpcClient;
     feature = "orientation",
     feature = "iconservice",
     feature = "screencapture",
+    feature = "hid",
     feature = "restore"
 ))]
 pub(crate) use message::{XpcMessage, XpcValue};

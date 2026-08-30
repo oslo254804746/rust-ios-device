@@ -4,7 +4,9 @@
 //! an iOS-specific packet header followed by the captured packet bytes.
 
 use plist::Value;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::time::{timeout_at, Instant};
 
 pub const SERVICE_NAME: &str = "com.apple.pcapd";
 const DEFAULT_HEADER_SIZE: usize = 95;
@@ -24,6 +26,40 @@ pub struct CapturedPacket {
     pub proc_name: String,
     pub proc_name2: String,
     pub payload: Vec<u8>,
+}
+
+/// IP addresses observed in packets sourced by the device's Wi-Fi MAC.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct NetworkInfo {
+    pub mac: String,
+    pub ipv4: String,
+    pub ipv6: String,
+}
+
+impl NetworkInfo {
+    pub fn complete(&self) -> bool {
+        !self.mac.is_empty() && !self.ipv4.is_empty() && !self.ipv6.is_empty()
+    }
+}
+
+/// Bounds for [`PcapClient::find_ip`]. A finite deadline and packet/byte caps
+/// are mandatory so a device that emits only unrelated traffic cannot keep a
+/// caller blocked forever or consume unbounded memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindIpLimits {
+    pub timeout: Duration,
+    pub max_packets: usize,
+    pub max_bytes: usize,
+}
+
+impl Default for FindIpLimits {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(10),
+            max_packets: 512,
+            max_bytes: 16 * 1024 * 1024,
+        }
+    }
 }
 
 pub struct PcapClient<S> {
@@ -53,6 +89,116 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PcapClient<S> {
             .ok_or_else(|| PcapError::Protocol("pcap plist payload was not data".into()))?;
 
         decode_packet(&payload)
+    }
+
+    /// Read pcap frames until both IPv4 and IPv6 source addresses are found
+    /// for `mac`, using the same packet-source matching algorithm as go-ios.
+    pub async fn find_ip(
+        &mut self,
+        mac: &str,
+        limits: FindIpLimits,
+    ) -> Result<NetworkInfo, PcapError> {
+        let mac_bytes = parse_mac(mac)
+            .ok_or_else(|| PcapError::Protocol(format!("invalid Wi-Fi MAC address: {mac:?}")))?;
+        if limits.timeout.is_zero() {
+            return Err(PcapError::Protocol(
+                "IP finder timeout must be non-zero".into(),
+            ));
+        }
+        if limits.max_packets == 0 || limits.max_bytes == 0 {
+            return Err(PcapError::Protocol(
+                "IP finder packet and byte limits must be non-zero".into(),
+            ));
+        }
+        let deadline = Instant::now()
+            .checked_add(limits.timeout)
+            .ok_or_else(|| PcapError::Protocol("IP finder timeout is too large".into()))?;
+        let mut info = NetworkInfo {
+            mac: format_mac(mac_bytes),
+            ..NetworkInfo::default()
+        };
+        let mut packets = 0usize;
+        let mut bytes = 0usize;
+        while packets < limits.max_packets && bytes < limits.max_bytes {
+            let packet = timeout_at(deadline, self.next_packet())
+                .await
+                .map_err(|_| PcapError::Protocol("IP finder timed out".into()))??;
+            packets += 1;
+            bytes = bytes.saturating_add(packet.payload.len());
+            if bytes > limits.max_bytes {
+                break;
+            }
+            find_ips_in_packet(&packet.payload, mac_bytes, &mut info);
+            if info.complete() {
+                return Ok(info);
+            }
+        }
+        if packets >= limits.max_packets {
+            return Err(PcapError::Protocol(format!(
+                "IP finder packet limit reached ({})",
+                limits.max_packets
+            )));
+        }
+        Err(PcapError::Protocol(format!(
+            "IP finder byte limit reached ({})",
+            limits.max_bytes
+        )))
+    }
+}
+
+fn parse_mac(mac: &str) -> Option<[u8; 6]> {
+    let mut bytes = [0u8; 6];
+    let mut parts = mac.split(':');
+    for byte in &mut bytes {
+        let part = parts.next()?;
+        if part.len() != 2 {
+            return None;
+        }
+        *byte = u8::from_str_radix(part, 16).ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn format_mac(mac: [u8; 6]) -> String {
+    mac.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn find_ips_in_packet(packet: &[u8], mac: [u8; 6], info: &mut NetworkInfo) {
+    if packet.len() < 14 || packet[6..12] != mac {
+        return;
+    }
+    let mut network_offset = 14usize;
+    let mut ether_type = u16::from_be_bytes([packet[12], packet[13]]);
+    while matches!(ether_type, 0x8100 | 0x88a8 | 0x9100) {
+        if packet.len() < network_offset + 4 {
+            return;
+        }
+        ether_type = u16::from_be_bytes([packet[network_offset + 2], packet[network_offset + 3]]);
+        network_offset += 4;
+    }
+    match ether_type {
+        0x0800 if packet.len() >= network_offset + 20 => {
+            let ip = &packet[network_offset..];
+            let ihl = usize::from(ip[0] & 0x0f) * 4;
+            if ip[0] >> 4 == 4 && ihl >= 20 && ip.len() >= ihl {
+                info.ipv4 = std::net::Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]).to_string();
+            }
+        }
+        0x86dd if packet.len() >= network_offset + 40 => {
+            let ip = &packet[network_offset..];
+            if ip[0] >> 4 == 6 {
+                let mut address = [0u8; 16];
+                address.copy_from_slice(&ip[8..24]);
+                info.ipv6 = std::net::Ipv6Addr::from(address).to_string();
+            }
+        }
+        _ => {}
     }
 }
 
@@ -312,5 +458,52 @@ mod tests {
             process_prefix: Some("SpringBoard".into())
         }
         .matches(&packet));
+    }
+
+    fn ethernet(mac: [u8; 6], ether_type: u16, payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0u8; 14];
+        packet[..6].copy_from_slice(&[0, 1, 2, 3, 4, 5]);
+        packet[6..12].copy_from_slice(&mac);
+        packet[12..14].copy_from_slice(&ether_type.to_be_bytes());
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    #[test]
+    fn find_ips_matches_source_mac_and_extracts_both_families() {
+        let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+        let mut ipv4 = vec![0u8; 20];
+        ipv4[0] = 0x45;
+        ipv4[12..16].copy_from_slice(&[192, 0, 2, 7]);
+        let mut ipv6 = vec![0u8; 40];
+        ipv6[0] = 0x60;
+        ipv6[8..24].copy_from_slice(&[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
+        let mut info = NetworkInfo {
+            mac: format_mac(mac),
+            ..NetworkInfo::default()
+        };
+        find_ips_in_packet(&ethernet(mac, 0x0800, &ipv4), mac, &mut info);
+        find_ips_in_packet(&ethernet(mac, 0x86dd, &ipv6), mac, &mut info);
+        assert_eq!(info.ipv4, "192.0.2.7");
+        assert_eq!(info.ipv6, "2001:db8::7");
+        assert!(info.complete());
+    }
+
+    #[test]
+    fn find_ips_ignores_wrong_mac_and_truncated_headers() {
+        let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+        let mut info = NetworkInfo {
+            mac: format_mac(mac),
+            ..NetworkInfo::default()
+        };
+        find_ips_in_packet(&[0; 14], mac, &mut info);
+        find_ips_in_packet(
+            &ethernet([1, 2, 3, 4, 5, 6], 0x0800, &[0x45]),
+            mac,
+            &mut info,
+        );
+        assert_eq!(info.ipv4, "");
+        assert_eq!(parse_mac("AA:bb:CC:dd:EE:ff"), Some(mac));
+        assert!(parse_mac("not-a-mac").is_none());
     }
 }

@@ -67,6 +67,15 @@ Commands that target a device default to the first device returned by
 | Management & supervision | `profiles`, `provisioning`, `prepare`, `httpproxy`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` |
 | Backup, location, screen | `backup`, `location`, `screenshot`                                                        |
 
+Companion proxy commands select the classic lockdown service on older devices
+and the RSD `com.apple.companion_proxy.shim.remote` service on iOS 17+.
+`companion listen` prints one event per JSON line; `companion forward
+REMOTE_PORT` reports the device-side `CompanionProxyServicePort` and keeps the
+forward alive until Ctrl+C; `companion stop REMOTE_PORT` uses that same
+companion-side port because the protocol has no persistent host-side forwarding
+ID. These commands do not create a host TCP listener or print pairing
+credentials.
+
 For each command, `ios <command> --help` lists the exact subcommands and
 flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
 [docs/cli-map.md](https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md).

@@ -146,6 +146,8 @@ pub use services::file_relay;
 pub use services::fileservice;
 #[cfg(feature = "heartbeat")]
 pub use services::heartbeat;
+#[cfg(feature = "hid")]
+pub use services::hid;
 #[cfg(feature = "iconservice")]
 pub use services::iconservice;
 #[cfg(feature = "iconservice")]

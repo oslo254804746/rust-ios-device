@@ -51,6 +51,27 @@ Comparable upstream workflows:
 Pair records are credentials for device access. Do not commit them or include
 them in logs.
 
+## Companion proxy
+
+The companion commands use `com.apple.companion_proxy` through lockdown on
+older devices and the RSD `com.apple.companion_proxy.shim.remote` service on
+iOS 17+ to inspect paired accessories and request a companion port forward:
+
+```sh
+ios -u <UDID> companion list
+ios -u <UDID> companion get <COMPANION_UDID> <KEY>
+ios -u <UDID> companion listen --timeout 60
+ios -u <UDID> companion forward 8100 --service-name com.example.watch
+ios -u <UDID> companion stop 8100
+```
+
+`listen` emits one JSON event per line by default and preserves unknown event
+fields for forward compatibility. `forward` reports the device-side
+`CompanionProxyServicePort`; it does not create a host TCP listener. The
+protocol identifies a forwarding by its companion (remote) port, so `stop`
+takes that same port. Ctrl+C performs a bounded best-effort stop. Pairing
+credentials are never printed by these commands.
+
 ## Device information and lockdown values
 
 ```sh
@@ -272,14 +293,36 @@ ios -u <UDID> syslog
 ios -u <UDID> diagnostics list
 ios -u <UDID> diagnostics sysdiagnose
 ios -u <UDID> diagnostics reboot
+ios -u <UDID> diagnostics shutdown --force
 ios -u <UDID> os-trace ps
 ios -u <UDID> os-trace stream --process SpringBoard --level error,info
 ios -u <UDID> os-trace live --pid 42 --subsystem com.example --match timeout
 ios -u <UDID> os-trace archive ./diagnostics.tar --size-limit 1073741824
 ios -u <UDID> os-trace collect ./diagnostics.logarchive --age-limit 7
 ios -u <UDID> pcap --output device.pcap
+ios -u <UDID> ip --json
 ios -u <UDID> notify wait com.apple.mobile.lockdown.host_attached
 ```
+
+`ios ip` reads `WiFiAddress` only as the packet-source selector, then
+discovers IPv4 and IPv6 addresses from matching `pcapd` Ethernet frames. It
+does not guess addresses from lockdown alone and has finite time, packet, and
+byte budgets. The device must expose a stable Wi-Fi MAC: iOS's
+automatic/private Wi-Fi address rotation can make the source-MAC match fail,
+in which case the command times out rather than returning an address from an
+unrelated interface.
+
+Managed Wi-Fi profiles can be installed or removed through MCInstall:
+
+```sh
+ios -u <UDID> wifi install "Office Wi-Fi" --password "$WIFI_PASSWORD" \
+  --profile-output office.mobileconfig
+ios -u <UDID> wifi remove "Office Wi-Fi" --force
+```
+
+Passwords are never included in command output or JSON. An explicitly saved
+profile is created with owner-only (0600) permissions; profile removal and
+shutdown require `--force`.
 
 `diagnostics sysdiagnose` uses the iOS 17+ CoreDevice diagnostics service when
 that service is exposed in RSD. It runs in dry-run mode and prints the preferred

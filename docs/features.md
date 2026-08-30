@@ -21,7 +21,7 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 | --- | --- |
 | `classic` | Common lockdown/usbmux services used across many iOS versions. |
 | `developer` | DTX, Instruments, debugserver, WebInspector, image mounting, Bluetooth packet logging, and related developer workflows. |
-| `management` | Device management, supervision/preparation, supervised MCInstall passcode/security operations, restore, power assertion, and companion-device helpers. |
+| `management` | Device management, supervision/preparation, supervised MCInstall passcode/security operations, restore, power assertion, and companion registry/event/forwarding helpers. |
 | `ios17` | CoreDevice/RSD-oriented services and tunnel workflows used primarily by iOS 17+ devices. |
 | `coredevice-base` | Minimal CoreDevice transport support: userspace tunnel plus mDNS discovery. |
 | `coredevice-files` | CoreDevice fileservice plus the base CoreDevice transport support. |
@@ -30,7 +30,7 @@ ios-core = { version = "0.1.9", features = ["classic", "developer"] }
 
 ## Service features
 
-Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice`, `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
+Most service modules are available as one feature per module, including `afc`, `apps`, `syslog`, `screenshot`, `iconservice`, `screencapture`, `mcinstall` (profiles, deterministic Wi-Fi profiles, and supervised MDM passcode/security), `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `btlogger`, `debugserver`, `imagemounter`, `pcap` (capture and packet-derived IP discovery), `webinspector`, `fileservice`, `deviceinfo`, `diagnosticsservice` (including reboot/shutdown), `configuration`, `orientation`, `ostrace` (process listing, structured live log stream, and raw PAX archive/collect), `pasteboard`, `restore`, `dproxy`, and `fetchsymbols`.
 
 `iconservice` and `screencapture` are modern CoreDevice/RSD services. The
 `apps icons` and `screenshot` CLI commands select them automatically on iOS
@@ -40,11 +40,19 @@ feature aliases for downstream naming conventions.
 
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 
-`configuration` and `orientation` are iOS 17+ CoreDevice services. They use
+`configuration`, `orientation`, and `hid` are iOS 17+ CoreDevice services. They use
 the modern RemoteXPC/RSD tunnel and return an explicit unsupported error when
 the resolved endpoint is a legacy or `.shim.remote` service. Configuration
 setters change device-wide appearance/accessibility state; orientation rotates
 the active UI, so callers should treat both as mutating operations.
+
+`hid` exposes pmd3-compatible Indigo button and Universal HID report services.
+The `ios hid` command requires `--confirm`, bounds input, and never prints
+keyboard text in JSON or human output. Touch reports use normalized coordinates
+and the single-contact report format supported by CoreDevice. Indigo button
+events are available directly; Universal touch/keyboard commands fail closed
+until an authenticated Display/RTP media-stream provider is available, because
+backboardd silently drops those reports without that authorization.
 
 MobileBackup2's DeviceLink client is part of the core service surface and
 includes the device-side `Unback` and `Extract` operations. The optional

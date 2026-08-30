@@ -41,7 +41,7 @@ schemas, service routing, and iOS-version support can differ.
 | Install app | `ios apps install PATH` | `ios install --path=PATH` | `pymobiledevice3 apps install PATH` |
 | Uninstall app | `ios apps uninstall BUNDLE_ID` | app uninstall workflows | `pymobiledevice3 apps uninstall ...` |
 | Launch app | `ios apps launch BUNDLE_ID` or `ios instruments launch BUNDLE_ID` | `ios launch BUNDLE_ID` | `pymobiledevice3 developer dvt launch ...` |
-| Kill process | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
+| Kill/process controls | `ios apps kill PID`, `ios instruments kill PID`, `ios memlimitoff PID` or `ios memlimitoff --process NAME` | `ios kill ...`, `ios memlimitoff ...` | `pymobiledevice3 developer dvt kill ...` |
 | Device pasteboard | `ios pasteboard get`, `ios pasteboard set TEXT`, `ios pasteboard set --url URL` | `ios pasteboard get`, `ios pasteboard set [TEXT]` | `pymobiledevice3 developer core-device paste`, `copy [TEXT]` |
 | Run XCTest | `ios runtest FILE.xctestrun [...]` or `ios runxctest --test-runner-bundle-id BUNDLE --xctest-config BUNDLE.xctest [--bundle-id APP ... --wait --junit-output PATH]` | `ios runtest ...`, `ios runxctest ...` | developer DVT/XCTest workflows; runner must already be installed and signed |
 | Run WebDriverAgent | `ios runwda ...`, `ios wda status/source/session/...` | `ios runwda ...` | WDA/developer workflows |
@@ -49,8 +49,9 @@ schemas, service routing, and iOS-version support can differ.
 | Screenshot | `ios screenshot [--output PATH]` | `ios screenshot ...` | `pymobiledevice3 developer dvt screenshot` / CoreDevice screen capture |
 | Diagnostics | `ios diagnostics ...`, `ios diagnostics sysdiagnose` | `ios diagnostics ...` | `pymobiledevice3 diagnostics ...`, CoreDevice sysdiagnose workflows |
 | MobileBackup2 | `ios backup create|restore|info|list`, `backup unback|extract` (local compatibility), `backup unback-device|extract-device`, `backup encryption` | backup/device-link workflows, including `unback`/`extract` | `pymobiledevice3 backup ...`, local pyiosbackup extraction |
-| Restart or restore mode | `ios diagnostics reboot`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
+| Restart or restore mode | `ios diagnostics reboot`, `ios diagnostics shutdown`, `ios restore enter-recovery` | `ios reboot`, restore helpers | `pymobiledevice3 diagnostics restart`, `pymobiledevice3 restore ...` |
 | Packet capture | `ios pcap --output device.pcap` | `ios pcap ...` | `pymobiledevice3 pcap ...` |
+| Device IP discovery | `ios ip` (packet-derived IPv4/IPv6) | `ios diagnostics` / `pcap` IP finder | `pymobiledevice3 pcap` workflows |
 | Bluetooth HCI capture | `ios btlogger capture trace.pklg`, `ios btlogger capture --format pcapng trace.pcapng` | Bluetooth packet logging workflows | `pymobiledevice3 btlogger ...` |
 | OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios os-trace archive`/`collect`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog`, `syslog collect` |
 | Developer Disk Image | `ios ddi status`, `ios ddi mount ...` | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount` |
@@ -58,6 +59,7 @@ schemas, service routing, and iOS-version support can differ.
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |
 | CoreDevice appearance/accessibility | `ios device-control configuration get|set ...` | `pymobiledevice3 developer core-device user-interface-style ...` and accessibility controls | iOS 17+ `com.apple.coredevice.configuration`; setters mutate device-wide UI state |
 | CoreDevice orientation | `ios device-control orientation [left|right]` | `pymobiledevice3 developer core-device rotate [left|right]` | iOS 17+ `com.apple.coredevice.devicecontrol`; rotates the active device UI |
+| CoreDevice HID input | `ios hid --confirm button ...` (Universal `tap|swipe|touch|text|key` requires an authenticated Display/RTP provider) | `pymobiledevice3 developer core-device` HID helpers | iOS 17+ Indigo/Universal HID; input injection is mutating |
 | Network and GPU metrics | `ios instruments network`, `ios instruments gpu` | instruments/sysmontap workflows | developer DVT metrics workflows |
 | Debugserver | `ios debugserver ...`, `ios debug ...` | `ios debug ...` | debugserver developer workflows |
 | Accessibility audit | `ios accessibility-audit ...` | `ios ax ...`, accessibility toggles | accessibilityaudit service workflows |
@@ -72,10 +74,11 @@ schemas, service routing, and iOS-version support can differ.
 | Supervision prep | `ios prepare ...` | `ios prepare ...` | mobile configuration and supervision workflows |
 | HTTP proxy profile | `ios httpproxy set ...`, `ios httpproxy remove` | `ios httpproxy ...` | profile/mobileconfig workflows |
 | MDM passcode/security | `ios mdm fetch-unlock-token`, `ios mdm security-info`, `ios mdm passcode-present`, `ios mdm clear-passcode`, `ios mdm clear-screen-time-password` | `ios mdm ...` | MCInstall/profile management workflows |
+| Managed Wi-Fi profile | `ios wifi install SSID --password ...`, `ios wifi remove SSID --force` | `ios wifi ...` | MCInstall/profile workflows |
 | Erase | `ios erase --force` | `ios erase --force` | restore/mobile configuration workflows |
 | Preboard | `ios preboard ...` | prepare/preboard-style workflows | preboard service workflows |
 | Power assertion | `ios power-assert --timeout 10` | power assertion workflows | `pymobiledevice3 power-assertion ...` |
-| Companion devices | `ios companion list` | companion-related workflows | `pymobiledevice3 companion_proxy ...` |
+| Companion devices | `ios companion list|get|listen|forward|stop ...` | companion registry, event, and port-forward workflows | `pymobiledevice3 companion_proxy ...` |
 | Activation | `ios activation state`, `ios activation session-info`, `ios activation info` | go-ios activation helpers | pymobiledevice3 activation workflows |
 | AMFI developer mode | `ios amfi enable-developer-mode`, `ios amfi reveal-developer-mode` | `ios amfi ...` | `pymobiledevice3 amfi ...` |
 | Heartbeat | `ios heartbeat` | heartbeat service workflows | lockdown heartbeat service |
