@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.1.11] — 2026-08-30
+
+### Fixed
+
+- Accepted macOS's root-owned `/var`, `/tmp`, and `/etc` aliases into
+  `/private` while continuing to reject user-controlled symlink components.
+- Made backup and OS-trace path fixtures use the same canonical spelling as
+  production so macOS system aliases and Windows short/long path forms do not
+  cause false failures or premature mock-stream EOFs.
+
 ## [0.1.10] — 2026-08-30
 
 ### Added
@@ -203,7 +213,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.7...v0.1.8

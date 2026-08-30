@@ -2019,10 +2019,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "ios-core-backup2-manifest-{}-{label}-{nonce}",
-            std::process::id()
-        ))
+        super::super::canonicalize_simplified(&std::env::temp_dir())
+            .expect("canonical temp directory")
+            .join(format!(
+                "ios-core-backup2-manifest-{}-{label}-{nonce}",
+                std::process::id()
+            ))
     }
 
     fn metadata_archive(mode: i64, size: i64) -> Vec<u8> {
