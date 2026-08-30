@@ -142,6 +142,16 @@ impl XpcClient {
     pub async fn recv_client_server(&mut self) -> Result<XpcMessage, XpcError> {
         self.inner.recv_client_server().await
     }
+
+    /// Receive the next fresh XPC message from any stream.
+    ///
+    /// Services whose daemons answer with fresh uncorrelated messages
+    /// (InstallCoordinationProxy) must not assume the response stream.
+    /// Message reassembly stays per-stream, so fragmented or multi-message
+    /// frames from one stream are never spliced with another stream's data.
+    pub async fn recv_any(&mut self) -> Result<XpcMessage, XpcError> {
+        self.inner.recv_any_stream().await
+    }
 }
 
 #[cfg(test)]

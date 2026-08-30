@@ -692,33 +692,7 @@ fn write_junit_xml_text_atomic(xml: &str, path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
-    use std::iter::once;
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x2;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(once(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect();
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-    let result = unsafe {
-        MoveFileExW(
-            temporary.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::fs_replace::move_file_replace(temporary, destination)
 }
 
 #[cfg(not(windows))]

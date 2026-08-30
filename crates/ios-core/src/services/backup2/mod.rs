@@ -886,9 +886,7 @@ where
         // and platform-separator checks as DeviceLink file transfers.
         validate_backup_identifier(domain_name)?;
         let relative_path = sanitize_relative_path(relative_path)?;
-        let relative_path = relative_path.to_str().ok_or_else(|| {
-            Mobilebackup2Error::Protocol("backup relative path was not valid UTF-8".into())
-        })?;
+        let relative_path = manifest_relative_path_string(&relative_path);
         let source_identifier = non_empty_protocol_string(source_identifier);
         if let Some(source_identifier) = source_identifier {
             validate_backup_identifier(source_identifier)?;
@@ -910,7 +908,7 @@ where
                 message_name: "Extract",
                 target_identifier,
                 domain_name,
-                relative_path,
+                relative_path: &relative_path,
                 source_identifier,
                 password: non_empty_protocol_string(password),
             })
@@ -2019,6 +2017,24 @@ fn sanitize_relative_path(path: &str) -> Result<PathBuf, Mobilebackup2Error> {
     Ok(clean)
 }
 
+/// Render a sanitized relative path with the device's `/` separators.
+///
+/// `PathBuf` displays with `\` on Windows, which would corrupt comparisons
+/// against manifest paths, backup filters, and DeviceLink transfer names:
+/// those always use `/` on the wire.
+pub(crate) fn manifest_relative_path_string(path: &Path) -> String {
+    let mut rendered = String::new();
+    for component in path.components() {
+        if let Component::Normal(part) = component {
+            if !rendered.is_empty() {
+                rendered.push('/');
+            }
+            rendered.push_str(&part.to_string_lossy());
+        }
+    }
+    rendered
+}
+
 fn resolve_relative_path(
     layout: &BackupDirectoryLayout,
     rel: &str,
@@ -2048,7 +2064,47 @@ fn resolve_relative_path(
 
 fn canonical_backup_root(root: &Path) -> Result<PathBuf, Mobilebackup2Error> {
     reject_symlink_components(root)?;
-    fs::canonicalize(root).map_err(Mobilebackup2Error::Io)
+    canonicalize_simplified(root).map_err(Mobilebackup2Error::Io)
+}
+
+/// Canonicalize a path and drop Windows' verbatim prefix when the plain form
+/// still resolves.
+///
+/// `fs::canonicalize` returns a verbatim `\\?\C:\...` path on Windows.  The
+/// extended-length form is functionally equivalent, but leaking it into
+/// user-visible output (unback directories, resolved entries) and textual
+/// comparisons is surprising, so the prefix is stripped only when the plain
+/// path canonicalizes to exactly the same object. Paths that only exist in
+/// extended-length form (very long paths) keep the prefix and keep working.
+pub(crate) fn canonicalize_simplified(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let canonical_wide: Vec<u16> = canonical.as_os_str().encode_wide().collect();
+        let verbatim_unc_prefix: Vec<u16> = "\\\\?\\UNC\\".encode_utf16().collect();
+        let verbatim_prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
+        let simplified_wide = if canonical_wide.starts_with(&verbatim_unc_prefix) {
+            let mut value = vec![b'\\' as u16, b'\\' as u16];
+            value.extend_from_slice(&canonical_wide[verbatim_unc_prefix.len()..]);
+            Some(value)
+        } else if canonical_wide.starts_with(&verbatim_prefix) {
+            Some(canonical_wide[verbatim_prefix.len()..].to_vec())
+        } else {
+            None
+        };
+        if let Some(simplified_wide) = simplified_wide {
+            let simplified = PathBuf::from(OsString::from_wide(&simplified_wide));
+            if let Ok(simplified_canonical) = fs::canonicalize(&simplified) {
+                if simplified_canonical == canonical {
+                    return Ok(simplified);
+                }
+            }
+        }
+    }
+    Ok(canonical)
 }
 
 fn symlink_path_error(path: &Path) -> Mobilebackup2Error {
@@ -2150,7 +2206,7 @@ fn create_dir_all_no_symlink(root: &Path, relative: &Path) -> Result<PathBuf, Mo
             Err(error) => return Err(error.into()),
         }
 
-        let canonical = fs::canonicalize(&current)?;
+        let canonical = canonicalize_simplified(&current)?;
         if !canonical.starts_with(&root) {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "backup directory path escapes backup root: {}",
@@ -2167,10 +2223,19 @@ fn reject_symlink_components(path: &Path) -> Result<(), Mobilebackup2Error> {
     } else {
         std::env::current_dir()?
     };
+    // A Windows prefix alone (for example `\\?\C:` from a canonicalized
+    // verbatim path or `C:` from a drive-relative path) is not a complete root:
+    // Win32 rejects metadata queries on it with ERROR_INVALID_FUNCTION.  The
+    // prefix can never be a symlink, so it is accumulated without a metadata
+    // check and the walk resumes once the full root or a real component has
+    // been appended.
     for component in path.components() {
         match component {
             Component::Normal(part) => current.push(part),
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::Prefix(_) => {
+                current.push(component.as_os_str());
+                continue;
+            }
             Component::RootDir => current.push(component.as_os_str()),
             Component::CurDir => continue,
             Component::ParentDir => {
@@ -3519,6 +3584,167 @@ mod tests {
 
         let err = resolve_relative_path(&layout, "../outside").unwrap_err();
         assert!(err.to_string().contains("escapes"));
+    }
+
+    /// R3 regression matrix: the component walk must defer metadata queries
+    /// until a complete root exists.  Canonicalized Windows paths start with a
+    /// verbatim prefix (`\\?\C:`) that rejects `symlink_metadata` with
+    /// ERROR_INVALID_FUNCTION until the root separator is appended.
+    #[test]
+    fn reject_symlink_components_accepts_verbatim_relative_and_unicode_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-r3-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let unicode_leaf = base.join("备份-テスト-ümlaut");
+        std::fs::create_dir_all(&unicode_leaf).unwrap();
+        std::fs::write(unicode_leaf.join("present.txt"), b"data").unwrap();
+
+        // Plain absolute path with existing and missing leaves.
+        reject_symlink_components(&unicode_leaf).unwrap();
+        let missing = unicode_leaf.join("missing-file.bin");
+        reject_symlink_components(&missing).unwrap();
+
+        // Canonical verbatim form (`\\?\C:\...`): the exact R3 failure shape.
+        let canonical = unicode_leaf.canonicalize().unwrap();
+        reject_symlink_components(&canonical).unwrap();
+        reject_symlink_components(&canonical.join("missing-file.bin")).unwrap();
+
+        // The bare drive prefixes that must not be queried at all.
+        reject_symlink_components(Path::new("C:")).unwrap();
+        reject_symlink_components(Path::new(r"\\?\C:")).unwrap();
+
+        // A complete verbatim drive root is queryable.
+        reject_symlink_components(Path::new(r"\\?\C:\")).unwrap();
+
+        // Relative paths resolve against the current directory.
+        reject_symlink_components(Path::new("relative/probe/missing.bin")).unwrap();
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonicalize_simplified_does_not_alias_distinct_verbatim_tail_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-canonical-alias-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let ordinary = base.join("backup");
+        let verbatim = PathBuf::from(format!(r"\\?\{}\backup.", base.display()));
+        std::fs::create_dir_all(&ordinary).unwrap();
+        std::fs::create_dir_all(&verbatim).unwrap();
+        std::fs::write(ordinary.join("marker.txt"), b"ordinary-directory").unwrap();
+        std::fs::write(verbatim.join("marker.txt"), b"verbatim-directory").unwrap();
+
+        let canonical = std::fs::canonicalize(&verbatim).unwrap();
+        let simplified = canonicalize_simplified(&verbatim).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&simplified).unwrap(),
+            canonical,
+            "simplifying a verbatim path must preserve its resolved directory"
+        );
+        assert_eq!(
+            std::fs::read(simplified.join("marker.txt")).unwrap(),
+            b"verbatim-directory",
+            "the candidate must not alias the ordinary directory"
+        );
+
+        std::fs::remove_dir_all(&verbatim).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonicalize_simplified_preserves_invalid_wtf16_components() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-canonical-wtf16-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut invalid = PathBuf::from(format!(r"\\?\{}", base.display()));
+        let invalid_component = OsString::from_wide(&[0xD800]);
+        invalid.push(&invalid_component);
+        let mut replacement = PathBuf::from(format!(r"\\?\{}", base.display()));
+        let replacement_component = OsString::from_wide(&[0xFFFD]);
+        replacement.push(&replacement_component);
+        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::write(invalid.join("marker.txt"), b"invalid-wtf16").unwrap();
+        std::fs::write(replacement.join("marker.txt"), b"replacement").unwrap();
+
+        let canonical = std::fs::canonicalize(&invalid).unwrap();
+        let simplified = canonicalize_simplified(&invalid).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&simplified).unwrap(),
+            canonical,
+            "simplifying an invalid WTF-16 path must preserve its resolved directory"
+        );
+        assert_eq!(
+            std::fs::read(simplified.join("marker.txt")).unwrap(),
+            b"invalid-wtf16",
+            "the invalid component must not be replaced with U+FFFD"
+        );
+        assert!(
+            canonical
+                .as_os_str()
+                .encode_wide()
+                .any(|unit| unit == 0xD800),
+            "the canonical path should retain the isolated surrogate"
+        );
+
+        std::fs::remove_dir_all(&invalid).unwrap();
+        std::fs::remove_dir_all(&replacement).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Symlink rejection still applies on Windows when the test environment
+    /// is allowed to create symlinks (Developer Mode or admin privilege).
+    /// Without that privilege the test reports the exact blocker and stops:
+    /// the ordinary-path assertions above must not be mistaken for symlink
+    /// coverage.
+    #[cfg(windows)]
+    #[test]
+    fn reject_symlink_components_rejects_windows_directory_symlinks() {
+        use std::os::windows::fs::symlink_dir;
+
+        let base = std::env::temp_dir().join(format!(
+            "ios-core-backup2-r3-symlink-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let link = root.join("escape");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            assert_eq!(
+                error.raw_os_error(),
+                Some(1314),
+                "unexpected symlink creation failure: {error}"
+            );
+            eprintln!(
+                "SKIP symlink assertion: creating a directory symlink requires \
+                 Developer Mode or administrator privilege (os error 1314)"
+            );
+            std::fs::remove_dir_all(&base).unwrap();
+            return;
+        }
+
+        let error = reject_symlink_components(&link).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+        // A missing leaf beyond the symlink stays guarded by the same walk.
+        let error = reject_symlink_components(&link.join("deeper")).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

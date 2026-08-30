@@ -908,9 +908,17 @@ fn safe_output_parent(output: &Path) -> Result<&Path, OsTraceError> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut current = PathBuf::new();
+    // A Windows prefix alone (`\\?\C:` from a canonicalized verbatim path)
+    // is not a complete root and rejects metadata queries with
+    // ERROR_INVALID_FUNCTION; it can never be a symlink, so the prefix is
+    // accumulated without a metadata check and the walk resumes once the
+    // root separator or a real component is appended.
     for component in parent.components() {
         match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                continue;
+            }
             Component::RootDir => current.push(component.as_os_str()),
             Component::CurDir => {
                 if current.as_os_str().is_empty() {
@@ -1056,38 +1064,7 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), OsTraceError>
             )));
         }
     }
-    #[cfg(windows)]
-    {
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-
-        const MOVEFILE_REPLACE_EXISTING: u32 = 0x2;
-        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-        let source: Vec<u16> = source.as_os_str().encode_wide().chain(once(0)).collect();
-        let destination: Vec<u16> = destination
-            .as_os_str()
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-        }
-        let result = unsafe {
-            MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if result == 0 {
-            Err(std::io::Error::last_os_error().into())
-        } else {
-            Ok(())
-        }
-    }
-    #[cfg(not(windows))]
-    fs::rename(source, destination).map_err(OsTraceError::from)
+    crate::fs_replace::move_file_replace(source, destination).map_err(OsTraceError::from)
 }
 
 fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTraceError> {
@@ -2086,6 +2063,46 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("already exists"));
         fs::remove_dir(output).unwrap();
+    }
+
+    /// R5: the archive replacement itself must overwrite an existing regular
+    /// file (the previous local constant turned REPLACE_EXISTING into
+    /// MOVEFILE_COPY_ALLOWED, which fails with ERROR_ALREADY_EXISTS).
+    #[test]
+    fn atomic_replace_overwrites_an_existing_regular_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "ios-trace-replace-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("archive.tar.gz");
+        fs::write(&destination, b"old archive bytes").unwrap();
+        let source = directory.join(".staging.tar.gz");
+        fs::write(&source, b"new archive bytes").unwrap();
+
+        atomic_replace(&source, &destination).expect("replacement");
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new archive bytes");
+        assert!(!source.exists(), "the source must be consumed");
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Canonical verbatim output parents (for example `\\?\C:\...`) must pass
+    /// the parent walk: the bare prefix is never queried for metadata.
+    #[test]
+    fn safe_output_parent_accepts_canonical_verbatim_directories() {
+        let directory = std::env::temp_dir().join(format!(
+            "ios-trace-parent-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let canonical = directory.canonicalize().unwrap();
+
+        safe_output_parent(&canonical.join("output.log")).expect("verbatim parent");
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[tokio::test]

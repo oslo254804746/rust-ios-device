@@ -63,6 +63,8 @@ pub mod device;
 pub mod discovery;
 /// Shared high-level error type.
 pub mod error;
+/// Atomic file replacement with the correct Windows contract.
+pub mod fs_replace;
 pub(crate) mod lockdown;
 pub(crate) mod mux;
 #[cfg(all(feature = "tunnel", feature = "mdns"))]

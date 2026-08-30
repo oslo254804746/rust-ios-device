@@ -437,6 +437,28 @@ fn redact_error_value(value: &plist::Value) -> String {
     }
 }
 
+/// Ceiling on the length of a daemon-supplied error domain echoed into error
+/// text.
+const MAX_ERROR_DOMAIN_CHARS: usize = 128;
+
+/// Error text reaches stderr before any diagnostic redactor runs.  Real
+/// activation error domains are short reverse-DNS or identifier-shaped
+/// strings; anything longer, or containing separators, whitespace, or
+/// non-ASCII bytes, is treated as untrusted payload and masked to a shape
+/// summary instead of being echoed.
+fn error_domain_token(domain: &str) -> String {
+    if !domain.is_empty()
+        && domain.len() <= MAX_ERROR_DOMAIN_CHARS
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'))
+    {
+        domain.to_string()
+    } else {
+        format!("<redacted domain: {} chars>", domain.chars().count())
+    }
+}
+
 fn summarize_error_chain(value: &plist::Value) -> Option<String> {
     let single_entry;
     let entries = if let Some(entries) = value.as_array() {
@@ -455,7 +477,7 @@ fn summarize_error_chain(value: &plist::Value) -> Option<String> {
         if let Some(dict) = entry.as_dictionary() {
             if let Some(domain) = dict.get("ErrorDomain").and_then(plist::Value::as_string) {
                 summary.push_str(" domain=");
-                summary.push_str(domain);
+                summary.push_str(&error_domain_token(domain));
             }
             if let Some(code) = dict.get("ErrorCode") {
                 summary.push_str(" code=");
@@ -1089,6 +1111,93 @@ mod tests {
         assert!(!error.contains("private activation token"));
         assert!(error.contains("MobileActivation"));
         assert!(error.contains("42"));
+    }
+
+    #[test]
+    fn error_chain_domains_pass_identifier_shaped_values_and_mask_the_rest() {
+        let identifier =
+            summarize_error_chain(&plist::Value::Array(vec![plist::Value::Dictionary(
+                plist::Dictionary::from_iter([
+                    (
+                        "ErrorDomain".to_string(),
+                        plist::Value::String("AKAuthenticationError".into()),
+                    ),
+                    (
+                        "ErrorCode".to_string(),
+                        plist::Value::Integer((-44101).into()),
+                    ),
+                ]),
+            )]))
+            .unwrap();
+        assert!(
+            identifier.contains("domain=AKAuthenticationError"),
+            "{identifier}"
+        );
+        assert!(identifier.contains("-44101"), "{identifier}");
+
+        let blob = "-----BEGIN CERTIFICATE-----SECRET-MARKER-BLOB-----END CERTIFICATE-----";
+        let masked = summarize_error_chain(&plist::Value::Array(vec![plist::Value::Dictionary(
+            plist::Dictionary::from_iter([
+                ("ErrorDomain".to_string(), plist::Value::String(blob.into())),
+                (
+                    "ErrorCode".to_string(),
+                    plist::Value::String("SECRET-MARKER-CODE".into()),
+                ),
+            ]),
+        )]))
+        .unwrap();
+        assert!(!masked.contains("SECRET-MARKER-BLOB"), "{masked}");
+        assert!(!masked.contains("SECRET-MARKER-CODE"), "{masked}");
+        assert!(masked.contains("redacted domain"), "{masked}");
+        assert!(masked.contains("redacted error"), "{masked}");
+
+        let oversized = "A".repeat(500) + "SECRETMARKERTAIL";
+        let masked = summarize_error_chain(&plist::Value::Array(vec![plist::Value::Dictionary(
+            plist::Dictionary::from_iter([(
+                "ErrorDomain".to_string(),
+                plist::Value::String(oversized.clone()),
+            )]),
+        )]))
+        .unwrap();
+        assert!(!masked.contains("SECRETMARKERTAIL"), "{masked}");
+
+        let with_spaces =
+            summarize_error_chain(&plist::Value::Array(vec![plist::Value::Dictionary(
+                plist::Dictionary::from_iter([(
+                    "ErrorDomain".to_string(),
+                    plist::Value::String("SECRET MARKER WITH SPACES".into()),
+                )]),
+            )]))
+            .unwrap();
+        assert!(!with_spaces.contains("SECRET MARKER"), "{with_spaces}");
+
+        // Empty and non-string domains simply contribute nothing readable.
+        assert!(
+            summarize_error_chain(&plist::Value::Array(vec![plist::Value::Dictionary(
+                plist::Dictionary::from_iter([(
+                    "ErrorDomain".to_string(),
+                    plist::Value::String(String::new()),
+                )]),
+            )]))
+            .unwrap()
+            .contains("domain=<redacted domain: 0 chars>")
+        );
+    }
+
+    #[test]
+    fn error_strings_are_never_echoed_verbatim() {
+        let summary =
+            summarize_error_chain(&plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "ErrorDomain".to_string(),
+                    plist::Value::String("AKAuthenticationError".into()),
+                ),
+                (
+                    "ErrorCode".to_string(),
+                    plist::Value::String("opaque secret token".into()),
+                ),
+            ])));
+        assert!(!summary.unwrap().contains("opaque secret token"));
     }
 
     #[test]

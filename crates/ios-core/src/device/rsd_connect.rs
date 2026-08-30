@@ -5,9 +5,8 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
     match rsd_handshake(addr, rsd_port).await {
         Ok(h) => {
             tracing::info!(
-                "RSD: {} services discovered for {}",
-                h.services.len(),
-                h.udid
+                "RSD: {} services discovered",
+                h.services.len()
             );
             Some(h)
         }
@@ -58,9 +57,8 @@ async fn attempt_rsd_via_proxy(
         {
             Ok(Ok(handshake)) => {
                 tracing::info!(
-                    "RSD via proxy: queued bootstrap succeeded with {} services for {}",
-                    handshake.services.len(),
-                    handshake.udid
+                    "RSD via proxy: queued bootstrap succeeded with {} services",
+                    handshake.services.len()
                 );
                 return Some(handshake);
             }
@@ -102,9 +100,8 @@ async fn attempt_rsd_via_proxy(
         {
             Ok(Ok(h)) => {
                 tracing::info!(
-                    "RSD via proxy: legacy bootstrap succeeded with {} services for {}",
-                    h.services.len(),
-                    h.udid
+                    "RSD via proxy: legacy bootstrap succeeded with {} services",
+                    h.services.len()
                 );
                 Some(h)
             }
@@ -120,9 +117,8 @@ async fn attempt_rsd_via_proxy(
                 {
                     Ok(Ok(h)) => {
                         tracing::info!(
-                            "RSD via proxy (passive fallback): {} services for {}",
-                            h.services.len(),
-                            h.udid
+                            "RSD via proxy (passive fallback): {} services",
+                            h.services.len()
                         );
                         Some(h)
                     }
@@ -151,9 +147,8 @@ async fn attempt_rsd_via_proxy(
             {
                 Ok(Ok(h)) => {
                     tracing::info!(
-                        "RSD via proxy (passive fallback): {} services for {}",
-                        h.services.len(),
-                        h.udid
+                        "RSD via proxy (passive fallback): {} services",
+                        h.services.len()
                     );
                     Some(h)
                 }
@@ -177,9 +172,8 @@ async fn attempt_rsd_via_proxy(
             {
                 Ok(Ok(h)) => {
                     tracing::info!(
-                        "RSD via proxy (passive fallback): {} services for {}",
-                        h.services.len(),
-                        h.udid
+                        "RSD via proxy (passive fallback): {} services",
+                        h.services.len()
                     );
                     Some(h)
                 }

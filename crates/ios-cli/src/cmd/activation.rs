@@ -764,6 +764,67 @@ mod tests {
     }
 
     #[test]
+    fn activation_diagnostic_only_allows_the_exact_status_strings() {
+        const MARKER: &str = "SECRET-ACTIVATION-MARKER";
+
+        let cases: Vec<plist::Value> = vec![
+            // Non-string and structured Status values are masked.
+            plist::Value::Data(b"blob".to_vec()),
+            plist::Value::Integer(1.into()),
+            plist::Value::Boolean(true),
+            plist::Value::Array(vec![plist::Value::String("Success".into())]),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "nested".to_string(),
+                plist::Value::String(MARKER.into()),
+            )])),
+            // Abnormal string spellings never pass.
+            plist::Value::String("SUCCESS".into()),
+            plist::Value::String("success".into()),
+            plist::Value::String("Success ".into()),
+            plist::Value::String(" Error".into()),
+            // Blob-shaped strings never pass.
+            plist::Value::String(format!("{MARKER}-----BEGIN CERTIFICATE-----")),
+        ];
+        for status in cases {
+            let redacted = redact_activation_diagnostic(plist::Dictionary::from_iter([(
+                "Status".to_string(),
+                status,
+            )]));
+            let rendered = format!("{redacted:?}");
+            assert!(
+                !rendered.contains("Success") && !rendered.contains("Error\""),
+                "Status value leaked: {rendered}"
+            );
+            assert!(!rendered.contains(MARKER), "marker leaked: {rendered}");
+        }
+
+        // A missing Status key produces no status output at all.
+        let redacted = redact_activation_diagnostic(plist::Dictionary::new());
+        assert!(!format!("{redacted:?}").contains("Status"));
+
+        // Deeply nested structures only ever render as redacted leaves.
+        let deep = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "Value".to_string(),
+            plist::Value::Array(vec![plist::Value::Dictionary(
+                plist::Dictionary::from_iter([(
+                    "Leaf".to_string(),
+                    plist::Value::String(MARKER.into()),
+                )]),
+            )]),
+        )]));
+        let redacted = redact_activation_diagnostic(plist::Dictionary::from_iter([
+            ("Status".to_string(), plist::Value::String("Success".into())),
+            ("Deep".to_string(), deep),
+        ]));
+        let rendered = format!("{redacted:?}");
+        assert!(rendered.contains("Success"));
+        assert!(
+            !rendered.contains(MARKER),
+            "nested marker leaked: {rendered}"
+        );
+    }
+
+    #[test]
     fn activation_record_size_and_missing_file_are_rejected() {
         assert!(read_secret_record(std::path::Path::new("/definitely/missing/record")).is_err());
     }

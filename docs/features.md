@@ -51,6 +51,21 @@ upstream `Query` request as `apps install-record`; Install, Uninstall, and
 RevertStash are not exposed because the upstream client leaves their
 out-of-band file-transfer protocol unimplemented.
 
+Query deadline semantics: the configured timeout is one shared budget that
+covers sending the request (including HTTP/2 flow-control waits) and
+receiving the reply, matching the pymobiledevice3 client. The daemon answers
+with an uncorrelated fresh message and the response stream is not part of the
+request contract, so the reply is accepted from whichever stream it arrives
+on while message reassembly stays per-stream; empty wrapper frames and empty
+dictionaries are skipped. Once those input and deadline prechecks pass, a
+query marks the connection unusable before its first I/O await, so a timeout,
+transport failure, or caller cancellation at any later await requires
+reconnecting; a later query returns an error immediately instead of consuming
+a late uncorrelated response. A complete non-empty response restores
+reusability before business parsing, so a consumed protocol-error response
+keeps the existing reusable-connection behavior. Invalid input and a zero
+timeout return before I/O and leave the connection reusable.
+
 Features not included in any group except `full`: `ostrace`, `supervised-pair`, `tunnel-kernel`.
 
 `configuration`, `orientation`, and `hid` are iOS 17+ CoreDevice services. They use

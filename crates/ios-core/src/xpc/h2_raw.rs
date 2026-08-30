@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPER_MAGIC};
+
 // ── Stream IDs ──────────────────────────────────────────────────────────────
 // Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
 // Stream 0 is the HTTP/2 connection control stream (per RFC 9113).
@@ -829,6 +831,140 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
     }
 
+    /// Dispatch raw frames until one stream has a complete XPC message in its
+    /// per-stream buffer, then return that stream's id.
+    ///
+    /// Unlike [`Self::read_next_data_frame`], the returned frame's payload
+    /// stays in the per-stream buffer, so a caller can reassemble an XPC
+    /// message from that stream with [`Self::read_stream`] while data on
+    /// other streams remains buffered in place.  Non-DATA frames (settings,
+    /// headers, acks, window updates) are dispatched normally.  DATA frames
+    /// queued while waiting for outbound capacity are flushed into their
+    /// stream buffers first.
+    ///
+    /// Bytes already buffered for a stream are inspected before new wire
+    /// frames. A partial message on one stream does not block a complete
+    /// message on another stream; each stream is accumulated independently.
+    /// A FILE_TX message larger than the H2 per-stream retention limit is
+    /// returned once its 24-byte wrapper is buffered so the XPC layer can
+    /// consume the body in bounded chunks.
+    pub async fn buffer_next_data_stream(&mut self) -> Result<u32, H2Error> {
+        self.ensure_connection_open()?;
+        if !self.pending_data_frames.is_empty() {
+            self.drain_pending_data_frames();
+        }
+        if let Some(stream_id) = self.first_ready_xpc_stream()? {
+            return Ok(stream_id);
+        }
+        if let Some(stream_id) = self.first_unfinished_closed_stream()? {
+            return Ok(stream_id);
+        }
+        loop {
+            let frame = self.read_raw_frame().await?;
+            self.dispatch_frame(frame).await?;
+            if let Some(stream_id) = self.first_ready_xpc_stream()? {
+                return Ok(stream_id);
+            }
+            if let Some(stream_id) = self.first_unfinished_closed_stream()? {
+                return Ok(stream_id);
+            }
+        }
+    }
+
+    fn buffered_stream_ids(&self) -> Vec<u32> {
+        let mut stream_ids = Vec::new();
+        if !self.client_server_buf.is_empty() {
+            stream_ids.push(STREAM_CLIENT_SERVER);
+        }
+        if !self.server_client_buf.is_empty() {
+            stream_ids.push(STREAM_SERVER_CLIENT);
+        }
+        stream_ids.extend(
+            self.stream_bufs
+                .iter()
+                .filter(|(_, buffer)| !buffer.is_empty())
+                .map(|(stream_id, _)| *stream_id),
+        );
+        stream_ids.sort_unstable();
+        stream_ids
+    }
+
+    /// Return whether the stream has enough buffered bytes for one XPC
+    /// message. Large FILE_TX bodies are intentionally considered ready once
+    /// their wrapper is buffered; the XPC reader then consumes their body in
+    /// bounded H2-sized chunks instead of retaining it all here.
+    fn stream_has_ready_xpc_message(&self, stream_id: u32) -> Result<bool, H2Error> {
+        let Some(buffer) = self.stream_buffer(stream_id) else {
+            return Ok(false);
+        };
+        if buffer.len() < 24 {
+            return Ok(false);
+        }
+
+        let magic = u32::from_le_bytes(buffer[..4].try_into().unwrap());
+        // Let the XPC decoder report malformed magic as soon as a complete
+        // wrapper header is available instead of waiting for an arbitrary
+        // body length from untrusted bytes.
+        if magic != WRAPPER_MAGIC {
+            return Ok(true);
+        }
+        let flags = u32::from_le_bytes(buffer[4..8].try_into().unwrap());
+        let declared_body_len = u64::from_le_bytes(buffer[8..16].try_into().unwrap());
+        let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
+            .map_err(H2Error::Protocol)?;
+        let total_len = 24usize.checked_add(body_len).ok_or_else(|| {
+            H2Error::Protocol("XPC message length overflow while selecting a stream".into())
+        })?;
+        // Leave one maximum DATA frame of headroom for bytes belonging to the
+        // next message. Without this margin a message exactly at the H2
+        // retention limit can arrive in the same final frame as a following
+        // wrapper and trip reserve_stream_buffer before the message is read.
+        let buffered_message_limit = MAX_BUFFERED_BYTES_PER_STREAM - MAX_FRAME_PAYLOAD;
+        Ok(buffer.len() >= total_len || total_len > buffered_message_limit)
+    }
+
+    fn stream_buffer(&self, stream_id: u32) -> Option<&BytesMut> {
+        match stream_id {
+            STREAM_CLIENT_SERVER => Some(&self.client_server_buf),
+            STREAM_SERVER_CLIENT => Some(&self.server_client_buf),
+            other => self.stream_bufs.get(&other),
+        }
+    }
+
+    fn first_ready_xpc_stream(&self) -> Result<Option<u32>, H2Error> {
+        for stream_id in self.buffered_stream_ids() {
+            if self.stream_has_ready_xpc_message(stream_id)? {
+                return Ok(Some(stream_id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Return a stream that ended before a complete XPC message arrived. A
+    /// complete message always wins, so an empty END_STREAM marker on one
+    /// stream cannot hide a response already buffered on another stream.
+    fn first_unfinished_closed_stream(&self) -> Result<Option<u32>, H2Error> {
+        let mut stream_ids: Vec<u32> = self.closed_streams.iter().copied().collect();
+        stream_ids.sort_unstable();
+        for stream_id in stream_ids {
+            // An empty END_STREAM marker is a harmless closed-stream
+            // tombstone. It carries no partial XPC message and must not
+            // prevent a later response on another stream from being chosen.
+            // Only retained bytes prove that a message was started and then
+            // cut short.
+            if self
+                .stream_buffer(stream_id)
+                .map_or(true, BytesMut::is_empty)
+            {
+                continue;
+            }
+            if !self.stream_has_ready_xpc_message(stream_id)? {
+                return Ok(Some(stream_id));
+            }
+        }
+        Ok(None)
+    }
+
     /// Write data to the clientServer stream (client → device).
     pub async fn write_client_server(&mut self, data: &[u8]) -> Result<(), H2Error> {
         self.write_stream(STREAM_CLIENT_SERVER, data).await
@@ -1555,6 +1691,80 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("ended before 24 bytes"));
+    }
+
+    #[tokio::test]
+    async fn large_file_transfer_header_is_selected_before_h2_buffer_limit() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let mut framer = H2Framer::new(client);
+        let body_len = MAX_BUFFERED_BYTES_PER_STREAM - 24;
+        let mut header = [0u8; 24];
+        header[..4].copy_from_slice(&crate::xpc::message::WRAPPER_MAGIC.to_le_bytes());
+        header[4..8]
+            .copy_from_slice(&crate::xpc::message::flags::FILE_TX_STREAM_RESPONSE.to_le_bytes());
+        header[8..16].copy_from_slice(&(body_len as u64).to_le_bytes());
+        header[16..24].copy_from_slice(&17u64.to_le_bytes());
+
+        let mut next = [0u8; 24];
+        next[..4].copy_from_slice(&crate::xpc::message::WRAPPER_MAGIC.to_le_bytes());
+        next[4..8].copy_from_slice(&crate::xpc::message::flags::ALWAYS_SET.to_le_bytes());
+        next[16..24].copy_from_slice(&18u64.to_le_bytes());
+
+        // The final DATA frame contains the tail of the large body and the
+        // complete next wrapper. A reader that waits for the first message to
+        // reach the 16 MiB H2 limit would reject this frame before consuming
+        // either message; the FILE_TX path must select the header and drain
+        // the body in bounded chunks instead.
+        let mut payload = vec![0u8; body_len + next.len()];
+        payload[body_len..].copy_from_slice(&next);
+        // Keep the wrapper header in its own DATA frame. The body and next
+        // wrapper then total exactly 16 MiB, making their final frame contain
+        // 16,360 body bytes followed by the next 24-byte wrapper.
+        let mut wire = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &header);
+        for chunk in payload.chunks(MAX_FRAME_PAYLOAD) {
+            wire.extend_from_slice(&build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, chunk));
+        }
+        let (hold_tx, hold_rx) = tokio::sync::oneshot::channel();
+        let sender = tokio::spawn(async move {
+            server.write_all(&wire).await.unwrap();
+            server.flush().await.unwrap();
+            let _ = hold_rx.await;
+        });
+
+        let stream_id = timeout(Duration::from_secs(5), framer.buffer_next_data_stream())
+            .await
+            .expect("large FILE_TX header selection timed out")
+            .unwrap();
+        assert_eq!(stream_id, STREAM_SERVER_CLIENT);
+        assert_eq!(
+            framer.read_stream(STREAM_SERVER_CLIENT, 24).await.unwrap(),
+            &header[..]
+        );
+
+        let first_chunk = MAX_BUFFERED_BYTES_PER_STREAM - MAX_FRAME_PAYLOAD;
+        let first = framer
+            .read_stream(STREAM_SERVER_CLIENT, first_chunk)
+            .await
+            .unwrap();
+        assert!(first.iter().all(|byte| *byte == 0));
+        let second_len = body_len - first_chunk;
+        let second = framer
+            .read_stream(STREAM_SERVER_CLIENT, second_len)
+            .await
+            .unwrap();
+        assert!(second.iter().all(|byte| *byte == 0));
+
+        let next_stream = timeout(Duration::from_secs(5), framer.buffer_next_data_stream())
+            .await
+            .expect("next wrapper selection timed out")
+            .unwrap();
+        assert_eq!(next_stream, STREAM_SERVER_CLIENT);
+        assert_eq!(
+            framer.read_stream(STREAM_SERVER_CLIENT, 24).await.unwrap(),
+            &next[..]
+        );
+        let _ = hold_tx.send(());
+        sender.await.unwrap();
     }
 
     #[tokio::test]

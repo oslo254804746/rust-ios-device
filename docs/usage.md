@@ -89,6 +89,14 @@ ios -u <UDID> activation deactivate --force
 ios -u <UDID> activation itunes-activate
 ```
 
+Error text that reaches stderr before any diagnostic redaction never echoes
+daemon-supplied strings verbatim: error domains are passed through only when
+they are short identifier-shaped tokens (`AKAuthenticationError` style), and
+everything else — descriptions, blobs, structured values — is masked to a
+shape summary. The redacted `session-info`/`info` output only admits the exact
+strings `Success`/`Error` for the top-level `Status` key; every other value is
+shown as a redaction placeholder.
+
 Online `activation activate` waits for mobileactivationd to publish a fresh
 Tunnel1 nonce/session before contacting Apple's endpoints. `--now` performs a
 single session probe and skips that wait; use it only when the caller knows the

@@ -8,7 +8,9 @@
 //! upstream pyiosbackup layout.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -26,9 +28,9 @@ use super::mbdb::MbdbRecord;
 use super::mbdb::{MbdbError, MbdbManifest};
 use super::{
     canonical_backup_root, create_dir_all_no_symlink, ensure_backup_directory,
-    ensure_no_symlink_components_at_root, open_file_for_read, open_file_for_write,
-    read_backup_dictionary, sanitize_relative_path, symlink_path_error, validate_backup_identifier,
-    BackupFilter, Mobilebackup2Error,
+    ensure_no_symlink_components_at_root, manifest_relative_path_string, open_file_for_read,
+    open_file_for_write, read_backup_dictionary, sanitize_relative_path, symlink_path_error,
+    validate_backup_identifier, BackupFilter, Mobilebackup2Error,
 };
 
 const MAX_MANIFEST_ROWS: usize = 1_000_000;
@@ -286,9 +288,7 @@ pub fn extract_backup_file(
     let manifest = open_manifest_workspace(&device_directory, password)?;
     let entries = load_manifest_entries(&manifest)?;
     let domain = validate_domain(domain)?;
-    let relative_path = sanitize_relative_path(relative_path)?
-        .to_string_lossy()
-        .into_owned();
+    let relative_path = manifest_relative_path_string(&sanitize_relative_path(relative_path)?);
     let entry = entries
         .into_iter()
         .find(|entry| entry.domain == domain && entry.relative_path == relative_path)
@@ -651,14 +651,10 @@ fn create_temporary_file(
 
 fn replace_file_atomically(temporary: &Path, destination: &Path) -> Result<(), Mobilebackup2Error> {
     // The temporary file is created in the destination directory and has already been synced by
-    // the crypto writer. Unix rename atomically replaces the old file. Windows' std::fs::rename
-    // does not replace an existing destination, so use MoveFileEx(REPLACE_EXISTING) there rather
-    // than deleting the original first.
+    // the crypto writer. Unix rename atomically replaces the old file; Windows needs
+    // MoveFileEx(REPLACE_EXISTING), provided by the shared helper with the official constants.
     super::reject_symlink_components(destination)?;
-    #[cfg(windows)]
-    replace_existing_windows(temporary, destination)?;
-    #[cfg(not(windows))]
-    fs::rename(temporary, destination)?;
+    crate::fs_replace::move_file_replace(temporary, destination)?;
     // A directory fsync failure occurs after the atomic replacement and must not be reported as
     // a failed transaction: callers cannot safely roll the replacement back at that point.
     if let Err(error) = sync_directory(destination.parent()) {
@@ -667,43 +663,11 @@ fn replace_file_atomically(temporary: &Path, destination: &Path) -> Result<(), M
     Ok(())
 }
 
-#[cfg(windows)]
-fn replace_existing_windows(
-    temporary: &Path,
-    destination: &Path,
-) -> Result<(), Mobilebackup2Error> {
-    use std::iter::once;
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x2;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(once(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect();
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-    let result = unsafe {
-        MoveFileExW(
-            temporary.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(())
-}
-
 fn sync_directory(directory: Option<&Path>) -> Result<(), Mobilebackup2Error> {
     #[cfg(unix)]
     if let Some(directory) = directory {
-        File::open(directory)?.sync_all()?;
+        let handle = File::open(directory)?;
+        handle.sync_all()?;
     }
     #[cfg(not(unix))]
     let _ = directory;
@@ -806,9 +770,7 @@ fn collect_manifest_rows(
         check_manifest_text_bytes(&relative_path, "relativePath")?;
         validate_file_id(&file_id)?;
         let domain = validate_domain(&domain)?;
-        let relative_path = sanitize_relative_path(&relative_path)?
-            .to_string_lossy()
-            .into_owned();
+        let relative_path = manifest_relative_path_string(&sanitize_relative_path(&relative_path)?);
         if !seen_ids.insert(file_id.clone()) {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db contains duplicate fileID {file_id:?}"
@@ -876,9 +838,7 @@ fn load_manifest_entries(
         }
         validate_file_id(&file_id)?;
         let domain = validate_domain(&domain)?;
-        let relative_path = sanitize_relative_path(&relative_path)?
-            .to_string_lossy()
-            .into_owned();
+        let relative_path = manifest_relative_path_string(&sanitize_relative_path(&relative_path)?);
         if !seen_ids.insert(file_id.clone()) {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db contains duplicate fileID {file_id:?}"
@@ -1005,9 +965,7 @@ fn load_mbdb_entries(
                 "Manifest.mbdb record {file_id} is missing relative path"
             ))
         })?;
-        let relative_path = sanitize_relative_path(relative_path)?
-            .to_string_lossy()
-            .into_owned();
+        let relative_path = manifest_relative_path_string(&sanitize_relative_path(relative_path)?);
         if !seen_ids.insert(file_id.clone()) {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.mbdb contains duplicate file id {file_id:?}"
@@ -1216,7 +1174,11 @@ fn patch_manifest_file(path: &Path, row_ids: &[i64]) -> Result<(), Mobilebackup2
             .map_err(sqlite_error)?;
     }
     transaction.commit().map_err(sqlite_error)?;
-    File::open(path)?.sync_all()?;
+    // FlushFileBuffers requires GENERIC_WRITE, so a read-only handle cannot
+    // persist the committed SQLite transaction on Windows.  Open a writable
+    // handle and propagate any failure instead of silently dropping the sync.
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -1530,7 +1492,7 @@ fn prepare_output_directory(
     } else {
         fs::create_dir_all(&path)?;
         super::reject_symlink_components(&path)?;
-        let path = fs::canonicalize(&path)?;
+        let path = super::canonicalize_simplified(&path)?;
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.is_dir() {
             return Err(Mobilebackup2Error::Protocol(format!(
@@ -1550,7 +1512,7 @@ fn prepare_explicit_parent(
     reject_output_path(path)?;
     fs::create_dir_all(path)?;
     super::reject_symlink_components(path)?;
-    let canonical = fs::canonicalize(path)?;
+    let canonical = super::canonicalize_simplified(path)?;
     if !canonical.is_dir() {
         return Err(Mobilebackup2Error::Protocol(format!(
             "output parent is not a directory: {}",
@@ -2488,6 +2450,9 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("collect rows");
         assert_eq!(rows, vec![keep_id]);
+        // Windows keeps the database file locked while the handle is open,
+        // which would make the directory cleanup below fail.
+        drop(connection);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -2606,6 +2571,34 @@ mod tests {
         fs::remove_dir_all(directory).expect("cleanup");
     }
 
+    /// R5: replacing an existing Manifest.db destination must actually
+    /// overwrite it (the previous local constant turned REPLACE_EXISTING
+    /// into MOVEFILE_COPY_ALLOWED, which fails with ERROR_ALREADY_EXISTS).
+    #[test]
+    fn manifest_replacement_overwrites_an_existing_destination() {
+        let root = fixture_root("overwrite");
+        let device = root.join("device-id");
+        fs::create_dir_all(&device).expect("device directory");
+        let destination = device.join("Manifest.db");
+        fs::write(&destination, b"old manifest bytes").expect("old destination");
+
+        let temporary = create_temporary_file(&device, "manifest-overwrite").expect("temporary");
+        fs::write(&temporary.path, b"new manifest bytes").expect("new manifest bytes");
+
+        replace_file_atomically(&temporary.path, &destination).expect("replacement");
+
+        assert_eq!(
+            fs::read(&destination).expect("destination contents"),
+            b"new manifest bytes",
+            "the destination must hold the replacement contents"
+        );
+        assert!(
+            !temporary.path.exists(),
+            "the temporary must be consumed by the replacement"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
     #[test]
     fn failed_manifest_replacement_rolls_payloads_back() {
         let (root, device, keep_id, drop_id) = write_fixture("rollback");
@@ -2622,7 +2615,19 @@ mod tests {
         let error =
             replace_file_atomically(&temporary.path, &device.join("Manifest.db-destination"))
                 .expect_err("a file cannot replace a directory");
-        assert!(error.to_string().contains("directory") || error.to_string().contains("Is a"));
+        let rejected_directory = match &error {
+            // Unix reports a directory destination as EISDIR ("Is a
+            // directory"); Windows MoveFileExW fails with ERROR_ACCESS_DENIED.
+            Mobilebackup2Error::Io(io) => matches!(
+                io.kind(),
+                std::io::ErrorKind::IsADirectory | std::io::ErrorKind::PermissionDenied
+            ),
+            _ => false,
+        };
+        assert!(
+            rejected_directory,
+            "expected the directory destination to be rejected, got: {error}"
+        );
         staged.rollback();
         drop(temporary);
         assert!(device.join(&keep_id[..2]).join(&keep_id).is_file());

@@ -422,9 +422,9 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| XpcError::Tls("RSD: missing Handshake MessageType".into()))?;
     if message_type != "Handshake" {
-        return Err(XpcError::Tls(format!(
-            "RSD: unexpected MessageType {message_type:?}"
-        )));
+        return Err(XpcError::Tls(
+            "RSD: unexpected MessageType; expected Handshake".into(),
+        ));
     }
     // UDID
     let udid = dict
@@ -439,11 +439,7 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
     let mut services = HashMap::new();
     match dict.get("Services") {
         Some(XpcValue::Dictionary(svc_map)) => {
-            tracing::debug!(
-                "RSD handshake for {} exposed {} services",
-                udid,
-                svc_map.len()
-            );
+            tracing::debug!("RSD handshake exposed {} service entries", svc_map.len());
             for (name, svc_val) in svc_map {
                 if let Some(svc_dict) = svc_val.as_dict() {
                     // Port can be a String or Uint64. Reject out-of-range
@@ -473,13 +469,16 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
                             .unwrap_or_default();
                         services.insert(name.clone(), ServiceDescriptor { port, features });
                     } else {
-                        tracing::debug!("RSD service {name:?} has an invalid or missing Port");
+                        tracing::debug!("RSD service has an invalid or missing Port");
                     }
                 }
             }
         }
         Some(other) => {
-            tracing::debug!("RSD Services has unexpected type: {:?}", other);
+            tracing::debug!(
+                "RSD handshake Services has unexpected XPC type: {}",
+                xpc_value_kind(other)
+            );
         }
         None => {
             tracing::debug!("RSD handshake missing Services key");
@@ -487,6 +486,24 @@ fn parse_handshake_message(msg: XpcMessage) -> Result<RsdHandshake, XpcError> {
     }
 
     Ok(RsdHandshake { udid, services })
+}
+
+#[cfg(feature = "tunnel")]
+fn xpc_value_kind(value: &XpcValue) -> &'static str {
+    match value {
+        XpcValue::Null => "null",
+        XpcValue::Bool(_) => "bool",
+        XpcValue::Int64(_) => "int64",
+        XpcValue::Uint64(_) => "uint64",
+        XpcValue::Double(_) => "double",
+        XpcValue::Date(_) => "date",
+        XpcValue::Data(_) => "data",
+        XpcValue::String(_) => "string",
+        XpcValue::Uuid(_) => "uuid",
+        XpcValue::Array(_) => "array",
+        XpcValue::Dictionary(_) => "dictionary",
+        XpcValue::FileTransfer { .. } => "file-transfer",
+    }
 }
 
 /// Ceiling on unmatched messages parked per stream while awaiting a reply id.
@@ -829,6 +846,25 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .await
     }
 
+    /// Receive one fresh XPC message from whichever stream the peer sends it
+    /// on.
+    ///
+    /// RemoteXPC services such as InstallCoordinationProxy answer with
+    /// fresh, uncorrelated messages whose stream is not part of the request
+    /// contract; pymobiledevice3 consumes the next DATA frame regardless of
+    /// its stream id.  Frames are dispatched into per-stream buffers, so a
+    /// message is always reassembled strictly from its own stream, data
+    /// already buffered on other streams is preserved, and the framer's
+    /// per-stream and connection memory limits keep applying.
+    pub async fn recv_any_stream(&mut self) -> Result<XpcMessage, XpcError> {
+        let stream_id = self
+            .framer
+            .buffer_next_data_stream()
+            .await
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        self.recv_fresh_on_stream(stream_id).await
+    }
+
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         if let Some(message) = self.pop_next_pending_message(stream_id) {
             return Ok(message);
@@ -1019,7 +1055,9 @@ impl<S> Drop for XpcConnection<S> {
 #[cfg(test)]
 #[cfg(feature = "tunnel")]
 mod tests {
+    use std::fmt;
     use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
 
     use bytes::Bytes;
@@ -1038,6 +1076,62 @@ mod tests {
     const STREAM_INIT: u32 = 0;
     const STREAM_CLIENT_SERVER: u32 = 1;
     const STREAM_SERVER_CLIENT: u32 = 3;
+
+    struct CapturingSubscriber {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = EventVisitor::default();
+            event.record(&mut visitor);
+            self.events.lock().unwrap().push(visitor.output);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    }
+
+    #[derive(Default)]
+    struct EventVisitor {
+        output: String,
+    }
+
+    impl tracing::field::Visit for EventVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+            use fmt::Write;
+
+            let _ = write!(self.output, "{}={value:?};", field.name());
+        }
+    }
+
+    fn handshake_body_mut(message: &mut XpcMessage) -> &mut IndexMap<String, XpcValue> {
+        match message.body.as_mut() {
+            Some(XpcValue::Dictionary(body)) => body,
+            _ => panic!("synthetic RSD message should have a dictionary body"),
+        }
+    }
+
+    fn event_log() -> (tracing::Dispatch, Arc<Mutex<Vec<String>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = CapturingSubscriber {
+            events: Arc::clone(&events),
+        };
+        (tracing::Dispatch::new(subscriber), events)
+    }
 
     fn build_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
         let len = payload.len();
@@ -1233,6 +1327,98 @@ mod tests {
 
         let wrong = parse_handshake_message(sample_handshake_xpc_message(Some("NotHandshake")));
         assert!(wrong.is_err());
+    }
+
+    #[test]
+    fn parse_handshake_diagnostics_do_not_expose_device_identity_or_payload() {
+        const MARKER: &str = "RSD-SYNTHETIC-SECRET-MARKER";
+
+        let mut valid = sample_handshake_xpc_message(Some("Handshake"));
+        let mut properties = handshake_body_mut(&mut valid)
+            .get_mut("Properties")
+            .and_then(|value| value.as_dict())
+            .cloned()
+            .expect("synthetic properties should be a dictionary");
+        properties.insert("UniqueDeviceID".into(), XpcValue::String(MARKER.into()));
+        handshake_body_mut(&mut valid)
+            .insert("Properties".into(), XpcValue::Dictionary(properties));
+        let services = match handshake_body_mut(&mut valid).get_mut("Services") {
+            Some(XpcValue::Dictionary(services)) => services,
+            _ => panic!("synthetic services should be a dictionary"),
+        };
+        services.insert(
+            MARKER.into(),
+            XpcValue::Dictionary(IndexMap::from([(
+                "Port".into(),
+                XpcValue::String("not-a-port".into()),
+            )])),
+        );
+
+        let mut unexpected_services = sample_handshake_xpc_message(Some("Handshake"));
+        handshake_body_mut(&mut unexpected_services)
+            .insert("Services".into(), XpcValue::String(MARKER.into()));
+
+        let wrong_type = sample_handshake_xpc_message(Some(MARKER));
+        let (dispatch, events) = event_log();
+        let result = tracing::dispatcher::with_default(&dispatch, || {
+            let valid_handshake = parse_handshake_message(valid).unwrap();
+            let unexpected = parse_handshake_message(unexpected_services).unwrap();
+            let wrong_error = parse_handshake_message(wrong_type).unwrap_err();
+            (valid_handshake, unexpected, wrong_error)
+        });
+
+        assert_eq!(result.0.udid, MARKER);
+        assert_eq!(result.0.services.len(), 1);
+        assert!(result.1.services.is_empty());
+        assert!(!result.2.to_string().contains(MARKER));
+
+        let output = events.lock().unwrap().join("\n");
+        assert!(
+            !output.contains(MARKER),
+            "sensitive marker was logged: {output}"
+        );
+        assert!(output.contains("exposed 2 service entries"), "{output}");
+        assert!(output.contains("unexpected XPC type: string"), "{output}");
+        assert!(
+            output.contains("RSD service has an invalid or missing Port"),
+            "{output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_handshake_diagnostics_do_not_propagate_untrusted_message_type() {
+        const MARKER: &str = "RSD-SYNTHETIC-MESSAGE-TYPE-MARKER";
+
+        let wrong = encode_message(&sample_handshake_xpc_message(Some(MARKER)))
+            .expect("synthetic wrong-type message should encode");
+        let valid = sample_handshake_message();
+        let mut wire = settings_frame();
+        wire.extend_from_slice(&data_frame(STREAM_CLIENT_SERVER, &wrong));
+        wire.extend_from_slice(&data_frame(STREAM_CLIENT_SERVER, &valid));
+
+        let mut framer = H2Framer::connect(ScriptedIo {
+            input: Bytes::from(wire),
+            offset: 0,
+            output: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let (dispatch, events) = event_log();
+        let guard = tracing::dispatcher::set_default(&dispatch);
+        let handshake = read_rsd_handshake(&mut framer).await.unwrap();
+        drop(guard);
+
+        assert_eq!(handshake.udid, "00008150-00013DD00104401C");
+        let output = events.lock().unwrap().join("\n");
+        assert!(
+            !output.contains(MARKER),
+            "sensitive marker was logged: {output}"
+        );
+        assert!(
+            output.contains("skipping non-handshake stream-1 message"),
+            "{output}"
+        );
     }
 
     #[test]
