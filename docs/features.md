@@ -6,13 +6,13 @@ Enable only the services your application needs:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.10", features = ["afc", "syslog"] }
 ```
 
 For tools that intentionally expose a broad surface, use grouped features:
 
 ```toml
-ios-core = { version = "0.1.9", features = ["classic", "developer"] }
+ios-core = { version = "0.1.10", features = ["classic", "developer"] }
 ```
 
 ## Groups

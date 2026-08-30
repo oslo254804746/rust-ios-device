@@ -77,7 +77,7 @@ cargo install ios-cli            # installs the `ios` binary
 ```toml
 # Cargo.toml — pull in the library
 [dependencies]
-ios-core = { version = "0.1.9", features = ["classic"] }
+ios-core = { version = "0.1.10", features = ["classic"] }
 ```
 
 ### Python
@@ -200,7 +200,7 @@ a grouped flag:
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.9", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.10", features = ["afc", "syslog"] }
 ```
 
 | Group        | Includes                                                                                              |

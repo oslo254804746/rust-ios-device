@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.1.10] — 2026-08-30
+
+### Added
+
+- Added legacy MobileBackup2 backup helpers, crash-report workflows, and
+  read-only InstallCoordination install-record queries.
+- Added CoreDevice app, file, diagnostics, media, pasteboard, companion, HID,
+  configuration, orientation, XCTest, WebInspector, and trace workflows.
+- Added matching Rust, C FFI, Python, CLI, protocol, and feature documentation
+  for the expanded service surface.
+
+### Changed
+
+- Extended tunnel and RemoteXPC service handling for CoreDevice paths while
+  keeping service-dependent behavior explicit when a device omits an endpoint.
+- Added bounded deadlines, transfers, streams, and device-input parsing across
+  the new service clients, with atomic host-file output where applicable.
+- Documented Git Bash/MSYS device-path conversion and the RSD default filter,
+  full-directory, prefix, and feature-metadata contracts.
+
+### Fixed
+
+- Hardened AFC framing/status validation, file replacement and Windows long-path
+  handling, XPC/HTTP2 response routing, cancellation, and cleanup paths.
+- Corrected activation diagnostics to redact daemon-supplied payloads and fixed
+  backup manifest persistence and InstallCoordination request/response handling.
+
 ## [0.1.9] — 2026-08-29
 
 ### Added
@@ -176,7 +203,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.7...v0.1.8
 [0.1.4]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.2...v0.1.4
