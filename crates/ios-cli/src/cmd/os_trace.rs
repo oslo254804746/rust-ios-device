@@ -246,7 +246,10 @@ async fn connect_trace_client(
     deadline: Option<tokio::time::Instant>,
 ) -> Result<
     std::result::Result<
-        ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+        (
+            ios_core::ConnectedDevice,
+            ios_core::ostrace::OsTraceClient<ios_core::device::ServiceStream>,
+        ),
         RunTermination,
     >,
 > {
@@ -283,7 +286,11 @@ async fn connect_trace_client(
             Err(termination) => return Ok(Err(termination)),
         }
     };
-    Ok(Ok(ios_core::ostrace::OsTraceClient::new(stream)))
+    // `ConnectedDevice` owns the userspace tunnel handle. Keep it alive for
+    // as long as the service stream is in use; dropping it here aborts the
+    // tunnel tasks and Windows reports the resulting local socket teardown as
+    // WSAECONNABORTED (10053).
+    Ok(Ok((device, ios_core::ostrace::OsTraceClient::new(stream))))
 }
 
 async fn run_archive(
@@ -298,8 +305,8 @@ async fn run_archive(
     let options = archive_options(size_limit, age_limit, start_time);
     let deadline = trace_deadline(timeout)?;
     let mut stop = stop_signal();
-    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
-        Ok(client) => client,
+    let (_device_guard, mut client) = match connect_trace_client(udid, &mut stop, deadline).await? {
+        Ok(connection) => connection,
         Err(termination) => return finish_termination(termination, timeout),
     };
     let stats = match wait_for_trace_stage(
@@ -346,8 +353,8 @@ async fn run_collect(
     let options = archive_options(size_limit, age_limit, start_time);
     let deadline = trace_deadline(timeout)?;
     let mut stop = stop_signal();
-    let mut client = match connect_trace_client(udid, &mut stop, deadline).await? {
-        Ok(client) => client,
+    let (_device_guard, mut client) = match connect_trace_client(udid, &mut stop, deadline).await? {
+        Ok(connection) => connection,
         Err(termination) => return finish_termination(termination, timeout),
     };
     let stats =

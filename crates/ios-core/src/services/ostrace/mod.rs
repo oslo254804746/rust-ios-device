@@ -4,6 +4,7 @@
 //! References: go-ios `ios/ostrace/ostrace.go` and pymobiledevice3
 //! `services/os_trace.py`.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -545,6 +546,81 @@ pub struct CollectStats {
     pub extracted_bytes: u64,
 }
 
+/// Minimal streaming proof that the bytes received from CreateArchive form a
+/// complete tar stream. The full entry/path/type/size validation still runs
+/// on the staged file before an output is installed; this tracker only keeps
+/// the bounded prefix and trailer needed to decide whether a transport close
+/// happened at a valid archive boundary.
+#[derive(Default)]
+struct ArchiveWireState {
+    bytes: u64,
+    prefix: Vec<u8>,
+    tail: VecDeque<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveEnd {
+    CleanEof,
+    WindowsConnectionAbort,
+}
+
+struct ArchiveTransfer {
+    stats: ArchiveStats,
+    end: ArchiveEnd,
+}
+
+impl ArchiveWireState {
+    fn push(&mut self, data: &[u8]) -> Result<(), OsTraceError> {
+        self.bytes = self
+            .bytes
+            .checked_add(u64::try_from(data.len()).map_err(|_| {
+                OsTraceError::Protocol("OS trace archive byte count overflow".into())
+            })?)
+            .ok_or_else(|| OsTraceError::Protocol("OS trace archive byte count overflow".into()))?;
+
+        const HEADER_BYTES: usize = 512;
+        if self.prefix.len() < HEADER_BYTES {
+            let needed = HEADER_BYTES - self.prefix.len();
+            self.prefix
+                .extend_from_slice(&data[..data.len().min(needed)]);
+        }
+        const TRAILER_BYTES: usize = 1024;
+        for byte in data {
+            if self.tail.len() == TRAILER_BYTES {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(*byte);
+        }
+        Ok(())
+    }
+
+    fn validate_complete(&self) -> Result<(), OsTraceError> {
+        if self.bytes < 1024 || self.bytes % 512 != 0 {
+            return Err(OsTraceError::Protocol(format!(
+                "OS trace archive ended before two complete tar terminator blocks ({} bytes)",
+                self.bytes
+            )));
+        }
+        if self.prefix.len() < 263 {
+            return Err(OsTraceError::Protocol(
+                "OS trace archive is shorter than a PAX/ustar header".into(),
+            ));
+        }
+        let magic = &self.prefix[257..263];
+        if magic != b"ustar\0" && magic != b"ustar " {
+            return Err(OsTraceError::Protocol(
+                "OS trace archive does not have a PAX/ustar header".into(),
+            ));
+        }
+        if self.tail.len() != 1024 || self.tail.iter().any(|byte| *byte != 0) {
+            return Err(OsTraceError::Protocol(
+                "OS trace archive is missing its two zero tar terminator blocks".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Raw stream after the StartActivity handshake.
 pub struct TraceStream<S> {
     stream: S,
@@ -656,12 +732,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
 
     /// Request the device's stored diagnostics and stream the raw PAX tar
     /// bytes to `writer`. The relay terminates the service connection after
-    /// the final chunk; a clean EOF at a frame boundary is success.
+    /// the final chunk; a clean EOF at a frame boundary is success. A Windows
+    /// connection-aborted close is deliberately not accepted by this generic
+    /// writer API because it cannot validate the complete archive structure.
     pub async fn create_archive<W: AsyncWrite + Unpin>(
         &mut self,
         writer: &mut W,
         options: ArchiveOptions,
     ) -> Result<ArchiveStats, OsTraceError> {
+        let transfer = self.create_archive_transfer(writer, options).await?;
+        match transfer.end {
+            ArchiveEnd::CleanEof => Ok(transfer.stats),
+            ArchiveEnd::WindowsConnectionAbort => Err(OsTraceError::Protocol(
+                "OS trace archive transport aborted after data; a seekable archive validation is required".into(),
+            )),
+        }
+    }
+
+    async fn create_archive_transfer<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+        options: ArchiveOptions,
+    ) -> Result<ArchiveTransfer, OsTraceError> {
         let mut request = plist::Dictionary::from_iter([(
             "Request".to_string(),
             plist::Value::String(CREATE_ARCHIVE.into()),
@@ -711,9 +803,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
             bytes: 0,
             chunks: 0,
         };
+        let mut wire_state = ArchiveWireState::default();
         loop {
             let mut magic = [0u8; 1];
-            let read = self.stream.read(&mut magic).await?;
+            let read = match self.stream.read(&mut magic).await {
+                Ok(read) => read,
+                Err(error) if is_connection_abort_eof(&error) => {
+                    // WSAECONNABORTED is how the Windows userspace TCP path
+                    // can report the peer's normal close. It is only an EOF
+                    // equivalent after a complete, structurally valid tar
+                    // stream has already been received at this frame boundary.
+                    wire_state.validate_complete()?;
+                    writer.flush().await?;
+                    return Ok(ArchiveTransfer {
+                        stats,
+                        end: ArchiveEnd::WindowsConnectionAbort,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
             if read == 0 {
                 break;
             }
@@ -737,8 +845,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
             })?;
             if new_total > options.max_total_bytes {
                 return Err(OsTraceError::Protocol(format!(
-                    "OS trace archive exceeds max size {} bytes",
-                    options.max_total_bytes
+                    "OS trace archive exceeds max size {} bytes (received {} bytes in {} chunks; next chunk is {} bytes)",
+                    options.max_total_bytes, stats.bytes, stats.chunks, length
                 )));
             }
             let mut remaining = length;
@@ -746,14 +854,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
             while remaining != 0 {
                 let read_len = remaining.min(buffer.len());
                 self.stream.read_exact(&mut buffer[..read_len]).await?;
+                wire_state.push(&buffer[..read_len])?;
                 writer.write_all(&buffer[..read_len]).await?;
                 remaining -= read_len;
             }
             stats.bytes = new_total;
             stats.chunks = stats.chunks.saturating_add(1);
         }
+        wire_state.validate_complete()?;
         writer.flush().await?;
-        Ok(stats)
+        Ok(ArchiveTransfer {
+            stats,
+            end: ArchiveEnd::CleanEof,
+        })
     }
 
     /// Stream and atomically save a raw PAX archive to `output`.
@@ -766,7 +879,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
         let (temp_path, std_file) = create_secure_temp_file(parent, output.file_name())?;
         let mut guard = TempFileGuard::new(temp_path.clone());
         let mut file = tokio::fs::File::from_std(std_file);
-        let result = self.create_archive(&mut file, options).await?;
+        let transfer = self.create_archive_transfer(&mut file, options).await?;
+        let result = transfer.stats;
         file.sync_all().await?;
         drop(file);
         validate_pax_archive(&temp_path, options)?;
@@ -796,7 +910,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
             create_secure_temp_file(parent, Some(std::ffi::OsStr::new("os-trace.tar")))?;
         let mut tar_guard = TempFileGuard::new(tar_path.clone());
         let mut file = tokio::fs::File::from_std(tar_file);
-        let archive = self.create_archive(&mut file, options).await?;
+        let archive = self.create_archive_transfer(&mut file, options).await?;
         file.sync_all().await?;
         drop(file);
         validate_pax_archive(&tar_path, options)?;
@@ -809,8 +923,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
         staging.disarm();
         tar_guard.remove_now();
         Ok(CollectStats {
-            bytes: archive.bytes,
-            chunks: archive.chunks,
+            bytes: archive.stats.bytes,
+            chunks: archive.stats.chunks,
             entries: extraction.entries,
             extracted_bytes: extraction.bytes,
         })
@@ -900,6 +1014,18 @@ async fn recv_prefixed_plist<S: AsyncRead + Unpin>(
     value
         .into_dictionary()
         .ok_or_else(|| OsTraceError::Protocol("OS trace response was not a dictionary".into()))
+}
+
+fn is_connection_abort_eof(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(10053)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn safe_output_parent(output: &Path) -> Result<&Path, OsTraceError> {
@@ -1101,18 +1227,7 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), OsTraceError>
 
 fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTraceError> {
     let mut file = File::open(path)?;
-    let mut header = [0u8; 512];
-    file.read_exact(&mut header).map_err(|error| {
-        OsTraceError::Protocol(format!(
-            "OS trace archive is shorter than one tar header: {error}"
-        ))
-    })?;
-    let magic = &header[257..263];
-    if magic != b"ustar\0" && magic != b"ustar " {
-        return Err(OsTraceError::Protocol(
-            "OS trace archive does not have a PAX/ustar header".into(),
-        ));
-    }
+    validate_tar_structure(&mut file)?;
     file.seek(SeekFrom::Start(0))?;
     let mut archive = tar::Archive::new(file);
     let mut entries = 0usize;
@@ -1147,6 +1262,46 @@ fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTr
         }
         std::io::copy(&mut entry, &mut std::io::sink())?;
     }
+    Ok(())
+}
+
+/// Check the framing that `tar::Archive` intentionally treats leniently:
+/// PAX/ustar must have a complete first header, a 512-byte alignment, and two
+/// all-zero termination blocks. Keep this explicit so a truncated device close
+/// cannot be installed as a successful archive merely because the tar parser
+/// reached EOF without returning an entry error.
+fn validate_tar_structure(file: &mut File) -> Result<(), OsTraceError> {
+    let length = file.metadata()?.len();
+    if length < 512 {
+        return Err(OsTraceError::Protocol(format!(
+            "OS trace archive is shorter than one tar header ({length} bytes)"
+        )));
+    }
+    if length < 1024 || length % 512 != 0 {
+        return Err(OsTraceError::Protocol(format!(
+            "OS trace archive is missing complete tar terminator blocks ({length} bytes)"
+        )));
+    }
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut header = [0u8; 512];
+    file.read_exact(&mut header)?;
+    let magic = &header[257..263];
+    if magic != b"ustar\0" && magic != b"ustar " {
+        return Err(OsTraceError::Protocol(
+            "OS trace archive does not have a PAX/ustar header".into(),
+        ));
+    }
+
+    file.seek(SeekFrom::End(-1024))?;
+    let mut trailer = [0u8; 1024];
+    file.read_exact(&mut trailer)?;
+    if trailer.iter().any(|byte| *byte != 0) {
+        return Err(OsTraceError::Protocol(
+            "OS trace archive is missing its two zero tar terminator blocks".into(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))?;
     Ok(())
 }
 
@@ -1472,7 +1627,11 @@ fn read_string_field(
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
     use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio_stream::StreamExt;
 
     use super::*;
@@ -2009,12 +2168,61 @@ mod tests {
         }
     }
 
+    /// Simulate the Windows userspace proxy's connection-aborted indication
+    /// exactly at the next archive-frame read, after the peer has sent all
+    /// bytes and closed its end.
+    struct AbortOnEof {
+        inner: tokio::io::DuplexStream,
+        aborted: bool,
+    }
+
+    impl AsyncRead for AbortOnEof {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if matches!(result, Poll::Ready(Ok(())))
+                && buf.filled().len() == before
+                && !self.aborted
+            {
+                self.aborted = true;
+                return Poll::Ready(Err(std::io::Error::from_raw_os_error(10053)));
+            }
+            result
+        }
+    }
+
+    impl AsyncWrite for AbortOnEof {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
     #[tokio::test]
     async fn create_archive_accepts_empty_chunk_and_rejects_errors() {
         let (client, server) = tokio::io::duplex(4096);
+        let archive = archive_tar();
         let server_task = tokio::spawn(archive_server(
             server,
-            vec![Vec::new()],
+            vec![Vec::new(), archive.clone()],
             "RequestSuccessful",
             None,
         ));
@@ -2023,13 +2231,8 @@ mod tests {
             .create_archive(&mut TokioVecWriter(&mut output), ArchiveOptions::default())
             .await
             .unwrap();
-        assert_eq!(
-            stats,
-            ArchiveStats {
-                bytes: 0,
-                chunks: 1
-            }
-        );
+        assert_eq!(stats.bytes, archive.len() as u64);
+        assert_eq!(stats.chunks, 2);
         server_task.await.unwrap();
 
         let (client, mut server) = tokio::io::duplex(4096);
@@ -2060,7 +2263,7 @@ mod tests {
         let archive = archive_tar();
         let server_task = tokio::spawn(archive_server(
             server,
-            vec![archive],
+            vec![archive.clone()],
             "RequestSuccessful",
             None,
         ));
@@ -2122,6 +2325,172 @@ mod tests {
         }
         server_task.await.unwrap();
         fs::remove_dir_all(collect_output).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn archive_to_path_accepts_abort_only_after_complete_tar_validation() {
+        let output = test_temp_dir().join(format!("ios-trace-abort-{}.tar", uuid::Uuid::new_v4()));
+        let archive = archive_tar();
+        let (inner, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![archive.clone()],
+            "RequestSuccessful",
+            None,
+        ));
+
+        let stats = OsTraceClient::new(AbortOnEof {
+            inner,
+            aborted: false,
+        })
+        .archive_to_path(&output, ArchiveOptions::default())
+        .await
+        .expect("complete archive may finish after WSAECONNABORTED");
+        assert_eq!(stats.bytes, archive.len() as u64);
+        assert_eq!(fs::metadata(&output).unwrap().len(), archive.len() as u64);
+        server_task.await.unwrap();
+        fs::remove_file(output).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn raw_create_archive_does_not_accept_abort_without_seekable_validation() {
+        let archive = archive_tar();
+        let (inner, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![archive.clone()],
+            "RequestSuccessful",
+            None,
+        ));
+        let mut output = Vec::new();
+        let error = OsTraceClient::new(AbortOnEof {
+            inner,
+            aborted: false,
+        })
+        .create_archive(&mut TokioVecWriter(&mut output), ArchiveOptions::default())
+        .await
+        .expect_err("raw writer cannot prove complete tar entries after abort");
+        assert!(error.to_string().contains("seekable archive validation"));
+        assert_eq!(output, archive);
+        server_task.await.unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn archive_abort_before_first_chunk_fails_and_leaves_no_output() {
+        let output = test_temp_dir().join(format!(
+            "ios-trace-abort-empty-{}.tar",
+            uuid::Uuid::new_v4()
+        ));
+        let (inner, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut length = [0u8; 4];
+            server.read_exact(&mut length).await.unwrap();
+            let mut request = vec![0u8; u32::from_be_bytes(length) as usize];
+            server.read_exact(&mut request).await.unwrap();
+            server
+                .write_all(&archive_status("RequestSuccessful"))
+                .await
+                .unwrap();
+        });
+
+        let error = OsTraceClient::new(AbortOnEof {
+            inner,
+            aborted: false,
+        })
+        .archive_to_path(&output, ArchiveOptions::default())
+        .await
+        .expect_err("abort before archive bytes must fail");
+        assert!(
+            error.to_string().contains("tar terminator") || error.to_string().contains("archive")
+        );
+        assert!(!output.exists());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn truncated_archive_does_not_install_archive_or_collect_directory() {
+        let archive = archive_tar();
+        let truncated = archive[..archive.len() - 512].to_vec();
+        let output =
+            test_temp_dir().join(format!("ios-trace-truncated-{}.tar", uuid::Uuid::new_v4()));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![truncated.clone()],
+            "RequestSuccessful",
+            None,
+        ));
+        let error = OsTraceClient::new(client)
+            .archive_to_path(&output, ArchiveOptions::default())
+            .await
+            .expect_err("truncated archive must fail");
+        assert!(error.to_string().contains("terminator"));
+        assert!(!output.exists());
+        server_task.await.unwrap();
+
+        let output_dir = test_temp_dir().join(format!(
+            "ios-trace-truncated-{}.logarchive",
+            uuid::Uuid::new_v4()
+        ));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![truncated],
+            "RequestSuccessful",
+            None,
+        ));
+        let error = OsTraceClient::new(client)
+            .collect(&output_dir, ArchiveOptions::default())
+            .await
+            .expect_err("truncated archive collect must fail");
+        assert!(error.to_string().contains("terminator"));
+        assert!(!output_dir.exists());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn corrupted_tar_header_does_not_install_archive_or_collect_directory() {
+        let mut corrupted = archive_tar();
+        corrupted[0] ^= 0xff;
+
+        let output =
+            test_temp_dir().join(format!("ios-trace-corrupt-{}.tar", uuid::Uuid::new_v4()));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![corrupted.clone()],
+            "RequestSuccessful",
+            None,
+        ));
+        let error = OsTraceClient::new(client)
+            .archive_to_path(&output, ArchiveOptions::default())
+            .await
+            .expect_err("corrupted tar header must fail validation");
+        assert!(error.to_string().contains("tar entry") || error.to_string().contains("archive"));
+        assert!(!output.exists());
+        server_task.await.unwrap();
+
+        let output_dir = test_temp_dir().join(format!(
+            "ios-trace-corrupt-{}.logarchive",
+            uuid::Uuid::new_v4()
+        ));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![corrupted],
+            "RequestSuccessful",
+            None,
+        ));
+        let error = OsTraceClient::new(client)
+            .collect(&output_dir, ArchiveOptions::default())
+            .await
+            .expect_err("corrupted tar collect must fail validation");
+        assert!(error.to_string().contains("tar entry") || error.to_string().contains("archive"));
+        assert!(!output_dir.exists());
+        server_task.await.unwrap();
     }
 
     #[tokio::test]
@@ -2249,6 +2618,9 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("exceeds max size"));
+        assert_eq!(
+            error.to_string(),
+            "protocol error: OS trace archive exceeds max size 10 bytes (received 0 bytes in 0 chunks; next chunk is 100 bytes)"
+        );
     }
 }

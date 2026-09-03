@@ -493,6 +493,8 @@ where
 mod tests {
     use std::path::Path;
 
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     use super::*;
 
     #[test]
@@ -553,5 +555,158 @@ mod tests {
             remote_symbol_output_path(root, "../private/var"),
             root.join("private").join("var")
         );
+    }
+
+    fn h2_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+        let length = payload.len();
+        let mut frame = Vec::with_capacity(9 + length);
+        frame.extend_from_slice(&[
+            (length >> 16) as u8,
+            (length >> 8) as u8,
+            length as u8,
+            frame_type,
+            flags,
+        ]);
+        frame.extend_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    async fn read_h2_frame(stream: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
+        let mut header = [0u8; 9];
+        stream.read_exact(&mut header).await.unwrap();
+        let length =
+            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+        let mut payload = vec![0u8; length];
+        stream.read_exact(&mut payload).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes([header[5] & 0x7f, header[6], header[7], header[8]]),
+            payload,
+        )
+    }
+
+    fn catalog_message(body: crate::xpc::XpcValue, msg_id: u64) -> Vec<u8> {
+        crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
+            flags: crate::xpc::message::flags::ALWAYS_SET,
+            msg_id,
+            body: Some(body),
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    fn catalog_entry(path: &str, size: u64) -> crate::xpc::XpcValue {
+        crate::xpc::XpcValue::Dictionary(IndexMap::from([(
+            "DSCFilePaths".into(),
+            crate::xpc::XpcValue::Dictionary(IndexMap::from([
+                ("filePath".into(), crate::xpc::XpcValue::String(path.into())),
+                (
+                    "fileTransfer".into(),
+                    crate::xpc::XpcValue::Dictionary(IndexMap::from([(
+                        "expectedLength".into(),
+                        crate::xpc::XpcValue::Uint64(size),
+                    )])),
+                ),
+            ])),
+        )]))
+    }
+
+    fn side_channel_preamble(msg_id: u64) -> Vec<u8> {
+        crate::xpc::message::encode_message(&crate::xpc::XpcMessage {
+            flags: crate::xpc::message::flags::ALWAYS_SET
+                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST,
+            msg_id,
+            body: None,
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    #[tokio::test]
+    async fn remote_list_reads_multiple_catalog_entries_while_side_channels_are_open() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let mut preface = vec![0u8; crate::xpc::h2_raw::H2_PREFACE.len()];
+            server.read_exact(&mut preface).await.unwrap();
+            assert_eq!(preface, crate::xpc::h2_raw::H2_PREFACE);
+            let _ = read_h2_frame(&mut server).await; // client SETTINGS
+            let _ = read_h2_frame(&mut server).await; // connection WINDOW_UPDATE
+            server.write_all(&h2_frame(0x04, 0, 0, &[])).await.unwrap();
+
+            // SETTINGS ACK, then bootstrap: HEADERS#1, DATA#1, HEADERS#3,
+            // DATA#1, DATA#3.
+            for _ in 0..6 {
+                let _ = read_h2_frame(&mut server).await;
+            }
+
+            let count = catalog_message(
+                crate::xpc::XpcValue::Dictionary(IndexMap::from([(
+                    "DSCFilePaths".into(),
+                    crate::xpc::XpcValue::Uint64(3),
+                )])),
+                1,
+            );
+            server
+                .write_all(&h2_frame(0x01, 0x04, 2, &[]))
+                .await
+                .unwrap();
+            server
+                .write_all(&h2_frame(0x00, 0, 1, &count))
+                .await
+                .unwrap();
+
+            for (index, (path, size)) in [
+                ("/System/Library/Cache0", 10),
+                ("/System/Library/Cache1", 11),
+                ("/System/Library/Cache2", 12),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let stream_id = 2 * (index as u32 + 1);
+                let entry = catalog_message(catalog_entry(path, size), index as u64 + 2);
+                server
+                    .write_all(&h2_frame(
+                        0x00,
+                        0,
+                        stream_id,
+                        &side_channel_preamble(index as u64 + 1),
+                    ))
+                    .await
+                    .unwrap();
+                if index + 1 < 3 {
+                    server
+                        .write_all(&h2_frame(0x01, 0x04, stream_id + 2, &[]))
+                        .await
+                        .unwrap();
+                }
+                server
+                    .write_all(&h2_frame(0x00, 0, 1, &entry))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let mut client = RemoteFetchSymbolsClient::connect(client).await.unwrap();
+        let files = client.list_files().await.unwrap();
+        assert_eq!(
+            files,
+            vec![
+                RemoteSymbolFile {
+                    path: "/System/Library/Cache0".into(),
+                    size: 10,
+                },
+                RemoteSymbolFile {
+                    path: "/System/Library/Cache1".into(),
+                    size: 11,
+                },
+                RemoteSymbolFile {
+                    path: "/System/Library/Cache2".into(),
+                    size: 12,
+                },
+            ]
+        );
+        server_task.await.unwrap();
     }
 }

@@ -94,6 +94,15 @@ pub(crate) const MAX_TOTAL_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
 /// this unknown-stream flood limit.
 pub(crate) const MAX_UNKNOWN_BUFFERED_STREAMS: usize = 32;
 
+/// RemoteXPC uses even-numbered peer streams for file-transfer side channels.
+/// Their first DATA frame is a body-less XPC FILE_TX_STREAM_REQUEST wrapper;
+/// remoted intentionally leaves those streams open while the corresponding
+/// control response is consumed on stream 1 or 3. Once that preamble has been
+/// validated, keep the stream in a bounded protocol registry instead of
+/// charging it as an unrecognised active stream forever.
+const MAX_ANNOUNCED_FILE_STREAMS: usize = 4096;
+const FILE_STREAM_PREAMBLE_LEN: usize = 24;
+
 /// DATA frames observed while a writer is waiting for flow-control credit are
 /// retained until the single framer owner asks for them. This count bounds
 /// zero-length frames, which do not consume the byte budget.
@@ -146,6 +155,17 @@ pub struct H2Framer<S> {
     // independently of `stream_bufs` because `read_next_data_frame` returns
     // DATA directly and therefore does not need a per-stream buffer.
     peer_open_streams: HashSet<u32>,
+    // Even peer streams whose first DATA frame was validated as the
+    // RemoteXPC file-transfer preamble. These streams are deliberately not
+    // required to send H2 END_STREAM; their registry is still bounded.
+    announced_file_streams: HashSet<u32>,
+    // HEADERS on an even peer stream arrive before its XPC preamble. Keep a
+    // small bounded candidate set so idle/malformed peers cannot bypass the
+    // unknown-stream limit by sending headers without data.
+    file_stream_candidates: HashSet<u32>,
+    // A peer is allowed to split the 24-byte side-channel preamble across
+    // DATA frames. Keep only the bounded prefix needed to validate it.
+    file_stream_candidate_data: HashMap<u32, BytesMut>,
     // Flow-control state for DATA frames sent by this client. The connection
     // starts at HTTP/2's default 65535-byte window; peer SETTINGS and
     // WINDOW_UPDATE frames change these values.
@@ -210,6 +230,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             pending_window_updates: HashMap::new(),
             buffered_bytes: 0,
             peer_open_streams: HashSet::new(),
+            announced_file_streams: HashSet::new(),
+            file_stream_candidates: HashSet::new(),
+            file_stream_candidate_data: HashMap::new(),
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
             outbound_stream_windows: HashMap::new(),
@@ -354,7 +377,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         .connection_protocol_error("DATA frame is not valid on stream 0".into()));
                 }
                 self.ensure_incoming_stream_available(frame.stream_id)?;
-                self.track_peer_stream(frame.stream_id)?;
+                self.observe_peer_data_stream(frame.stream_id, &frame.payload)?;
                 self.append_stream_data(frame.stream_id, &frame.payload)?;
                 self.replenish_receive_window(frame.stream_id, frame.payload.len())
                     .await?;
@@ -367,7 +390,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     ));
                 }
                 self.ensure_incoming_stream_available(frame.stream_id)?;
-                self.track_peer_stream(frame.stream_id)?;
+                self.observe_peer_headers(frame.stream_id)?;
                 self.mark_end_stream(frame.stream_id, frame.flags);
             }
             FRAME_SETTINGS => {
@@ -395,6 +418,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 }
                 if !self.is_known_stream(frame.stream_id)
                     && !self.peer_open_streams.contains(&frame.stream_id)
+                    && !self.file_stream_candidates.contains(&frame.stream_id)
                     && !self.closed_streams.contains(&frame.stream_id)
                     && !self.reset_streams.contains_key(&frame.stream_id)
                 {
@@ -461,6 +485,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     fn ensure_peer_stream_not_reused(&self, stream_id: u32) -> Result<(), H2Error> {
         if !self.is_known_stream(stream_id)
             && !self.peer_open_streams.contains(&stream_id)
+            && !self.announced_file_streams.contains(&stream_id)
+            && !self.file_stream_candidates.contains(&stream_id)
             && !self.closed_streams.contains(&stream_id)
             && stream_id <= self.highest_peer_stream_id
         {
@@ -621,7 +647,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     "WINDOW_UPDATE received for closed stream {stream_id}"
                 )));
             }
-            if self.peer_open_streams.contains(&stream_id) {
+            if self.peer_open_streams.contains(&stream_id)
+                || self.announced_file_streams.contains(&stream_id)
+                || self.file_stream_candidates.contains(&stream_id)
+            {
                 // This framer never sends DATA on a peer-created stream, so
                 // there is no outbound counter to update. It is nevertheless
                 // an open stream, and RFC 9113 permits WINDOW_UPDATE in this
@@ -793,7 +822,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         ));
                     }
                     self.ensure_incoming_stream_available(frame.stream_id)?;
-                    self.track_peer_stream(frame.stream_id)?;
+                    self.observe_peer_data_stream(frame.stream_id, &frame.payload)?;
                     self.replenish_receive_window(frame.stream_id, frame.payload.len())
                         .await?;
                     self.mark_end_stream(frame.stream_id, frame.flags);
@@ -1018,6 +1047,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             );
         }
         self.ensure_stream_available(stream_id)?;
+        if self.closed_streams.contains(&stream_id) {
+            return Err(H2Error::Protocol(format!(
+                "cannot open stream {stream_id} after peer END_STREAM"
+            )));
+        }
         let already_open = match stream_id {
             STREAM_CLIENT_SERVER => self.client_server_open,
             STREAM_SERVER_CLIENT => self.server_client_open,
@@ -1041,6 +1075,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 _ => {
                     self.locally_open_streams.insert(stream_id);
                     self.peer_open_streams.remove(&stream_id);
+                    self.announced_file_streams.remove(&stream_id);
+                    self.file_stream_candidates.remove(&stream_id);
+                    self.file_stream_candidate_data.remove(&stream_id);
                     self.stream_bufs.entry(stream_id).or_default();
                 }
             }
@@ -1119,10 +1156,110 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             stream_id,
             STREAM_INIT | STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT
         ) || self.locally_open_streams.contains(&stream_id)
+            || self.announced_file_streams.contains(&stream_id)
+    }
+
+    /// Observe a peer HEADERS frame. The only peer-created streams used by
+    /// RemoteXPC are even file-transfer side channels; defer admitting those
+    /// streams to the protocol registry until their first DATA preamble is
+    /// validated. Other streams remain subject to the ordinary unknown-stream
+    /// flood limit immediately.
+    fn observe_peer_headers(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        if self.is_known_stream(stream_id)
+            || self.peer_open_streams.contains(&stream_id)
+            || self.file_stream_candidates.contains(&stream_id)
+        {
+            return Ok(());
+        }
+        if stream_id.is_multiple_of(2) {
+            self.register_file_stream_candidate(stream_id)
+        } else {
+            self.track_peer_stream(stream_id)
+        }
+    }
+
+    /// Observe the first DATA frame for a peer-created stream. A valid
+    /// body-less FILE_TX_STREAM_REQUEST preamble identifies a RemoteXPC
+    /// side-channel; it is moved out of the unknown active set and retained in
+    /// a bounded registry because iOS leaves it open without END_STREAM.
+    fn observe_peer_data_stream(&mut self, stream_id: u32, payload: &[u8]) -> Result<(), H2Error> {
+        if self.is_known_stream(stream_id) || self.peer_open_streams.contains(&stream_id) {
+            return Ok(());
+        }
+
+        if self.file_stream_candidates.contains(&stream_id) {
+            let valid = {
+                let candidate = self
+                    .file_stream_candidate_data
+                    .entry(stream_id)
+                    .or_default();
+                let prefix_len = FILE_STREAM_PREAMBLE_LEN.saturating_sub(candidate.len());
+                if prefix_len != 0 {
+                    candidate.extend_from_slice(&payload[..payload.len().min(prefix_len)]);
+                }
+                if candidate.len() < FILE_STREAM_PREAMBLE_LEN {
+                    return Ok(());
+                }
+                is_file_stream_preamble_prefix(stream_id, candidate)
+            };
+            if !valid {
+                // The first fragment may already be retained in the generic
+                // stream buffer. Clear it before returning the protocol error
+                // so a malformed candidate cannot retain byte-budget state.
+                self.clear_stream_buffer(stream_id);
+                return Err(H2Error::Protocol(format!(
+                    "invalid RemoteXPC file-stream preamble on stream {stream_id}"
+                )));
+            }
+            self.file_stream_candidates.remove(&stream_id);
+            self.file_stream_candidate_data.remove(&stream_id);
+            return self.adopt_file_stream(stream_id);
+        }
+
+        if is_file_stream_preamble(stream_id, payload) {
+            return self.adopt_file_stream(stream_id);
+        }
+
+        self.track_peer_stream(stream_id)
+    }
+
+    fn register_file_stream_candidate(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        if stream_id <= self.highest_peer_stream_id {
+            return Err(H2Error::Protocol(format!(
+                "peer stream {stream_id} was already opened and cannot be reused"
+            )));
+        }
+        if self.unknown_active_stream_count() >= MAX_UNKNOWN_BUFFERED_STREAMS {
+            return Err(H2Error::Protocol(format!(
+                "too many pending RemoteXPC file streams: limit {MAX_UNKNOWN_BUFFERED_STREAMS}"
+            )));
+        }
+        self.highest_peer_stream_id = stream_id;
+        self.file_stream_candidates.insert(stream_id);
+        self.file_stream_candidate_data
+            .insert(stream_id, BytesMut::new());
+        Ok(())
+    }
+
+    fn adopt_file_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        if self.announced_file_streams.contains(&stream_id) {
+            return Ok(());
+        }
+        if self.announced_file_streams.len() >= MAX_ANNOUNCED_FILE_STREAMS {
+            return Err(H2Error::Protocol(format!(
+                "too many announced RemoteXPC file streams: limit {MAX_ANNOUNCED_FILE_STREAMS}"
+            )));
+        }
+        self.highest_peer_stream_id = self.highest_peer_stream_id.max(stream_id);
+        self.announced_file_streams.insert(stream_id);
+        Ok(())
     }
 
     fn track_peer_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        if self.is_known_stream(stream_id) || self.peer_open_streams.contains(&stream_id) {
+        if self.is_known_stream(stream_id)
+            || self.peer_open_streams.contains(&stream_id)
+            || self.file_stream_candidates.contains(&stream_id)
+        {
             return Ok(());
         }
         if stream_id <= self.highest_peer_stream_id {
@@ -1130,7 +1267,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 "peer stream {stream_id} was already opened and cannot be reused"
             )));
         }
-        if self.peer_open_streams.len() >= MAX_UNKNOWN_BUFFERED_STREAMS {
+        if self.unknown_active_stream_count() >= MAX_UNKNOWN_BUFFERED_STREAMS {
             return Err(H2Error::Protocol(format!(
                 "too many unknown H2 streams: limit {MAX_UNKNOWN_BUFFERED_STREAMS}"
             )));
@@ -1138,6 +1275,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.highest_peer_stream_id = stream_id;
         self.peer_open_streams.insert(stream_id);
         Ok(())
+    }
+
+    fn unknown_active_stream_count(&self) -> usize {
+        self.peer_open_streams.len() + self.file_stream_candidates.len()
     }
 
     fn clear_stream_buffer(&mut self, stream_id: u32) {
@@ -1160,6 +1301,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.buffered_bytes = self.buffered_bytes.saturating_sub(removed);
         self.remove_closed_stream_tombstone(stream_id);
         self.peer_open_streams.remove(&stream_id);
+        self.announced_file_streams.remove(&stream_id);
+        self.file_stream_candidates.remove(&stream_id);
+        self.file_stream_candidate_data.remove(&stream_id);
         self.pending_window_updates.remove(&stream_id);
     }
 
@@ -1261,7 +1405,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             );
         }
         self.ensure_incoming_stream_available(frame.stream_id)?;
-        self.track_peer_stream(frame.stream_id)?;
+        self.observe_peer_data_stream(frame.stream_id, &frame.payload)?;
         if self.pending_data_frames.len() >= MAX_PENDING_DATA_FRAMES {
             return Err(self.connection_protocol_error(format!(
                 "too many pending DATA frames while waiting for outbound capacity: limit {MAX_PENDING_DATA_FRAMES}"
@@ -1303,6 +1447,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         if flags & FLAG_END_STREAM == 0 {
             return;
         }
+        // A side-channel preamble is the protocol-level opening marker, but
+        // an actual END_STREAM still closes it and releases the live registry
+        // entry. Retain the normal bounded tombstone so a later frame cannot
+        // reopen the stream ID.
+        self.announced_file_streams.remove(&stream_id);
+        self.file_stream_candidates.remove(&stream_id);
+        self.file_stream_candidate_data.remove(&stream_id);
         // Retain EOF for every stream, including an empty unknown stream, so a
         // reader cannot wait forever after a clean END_STREAM. Keep this set
         // bounded because an attacker can otherwise send unlimited empty
@@ -1368,6 +1519,33 @@ fn frame_type_name(frame_type: u8) -> &'static str {
         FRAME_WINDOW_UPDATE => "WINDOW_UPDATE",
         _ => "OTHER",
     }
+}
+
+/// Recognise the one wire shape used by remoted for a device-created file
+/// side-channel. This intentionally validates the complete XPC wrapper rather
+/// than treating every even stream (or every 24-byte payload) as trusted.
+fn is_file_stream_preamble(stream_id: u32, payload: &[u8]) -> bool {
+    if payload.len() != FILE_STREAM_PREAMBLE_LEN {
+        return false;
+    }
+    is_file_stream_preamble_prefix(stream_id, payload)
+}
+
+fn is_file_stream_preamble_prefix(stream_id: u32, payload: &[u8]) -> bool {
+    if stream_id == STREAM_INIT
+        || !stream_id.is_multiple_of(2)
+        || payload.len() < FILE_STREAM_PREAMBLE_LEN
+    {
+        return false;
+    }
+    let magic = u32::from_le_bytes(payload[..4].try_into().unwrap());
+    let flags = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+    let body_len = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+    magic == WRAPPER_MAGIC
+        && flags
+            == (crate::xpc::message::flags::ALWAYS_SET
+                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST)
+        && body_len == 0
 }
 
 // ── RawFrame ─────────────────────────────────────────────────────────────────
@@ -1562,6 +1740,18 @@ mod tests {
 
     fn rst_stream_frame(stream_id: u32, error_code: u32) -> Vec<u8> {
         build_frame(FRAME_RST_STREAM, 0, stream_id, &error_code.to_be_bytes())
+    }
+
+    fn file_stream_preamble(msg_id: u64) -> Vec<u8> {
+        let mut payload = vec![0u8; FILE_STREAM_PREAMBLE_LEN];
+        payload[..4].copy_from_slice(&WRAPPER_MAGIC.to_le_bytes());
+        payload[4..8].copy_from_slice(
+            &(crate::xpc::message::flags::ALWAYS_SET
+                | crate::xpc::message::flags::FILE_TX_STREAM_REQUEST)
+                .to_le_bytes(),
+        );
+        payload[16..24].copy_from_slice(&msg_id.to_le_bytes());
+        payload
     }
 
     fn goaway_payload(last_stream_id: u32, error_code: u32) -> Vec<u8> {
@@ -2443,6 +2633,280 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("too many unknown H2 streams"));
         assert_eq!(framer.stream_bufs.len(), MAX_UNKNOWN_BUFFERED_STREAMS);
+    }
+
+    #[tokio::test]
+    async fn validated_file_side_channels_may_exceed_unknown_stream_limit() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+
+        // iOS sends these peer-created even streams without END_STREAM/RST;
+        // each is nevertheless a complete, body-less FILE_TX preamble.
+        for index in 0..(MAX_UNKNOWN_BUFFERED_STREAMS * 2) {
+            let stream_id = 2 * (index as u32 + 1);
+            framer
+                .dispatch_frame(RawFrame {
+                    frame_type: FRAME_HEADERS,
+                    flags: FLAG_END_HEADERS,
+                    stream_id,
+                    payload: Vec::new(),
+                })
+                .await
+                .unwrap();
+            framer
+                .dispatch_frame(RawFrame {
+                    frame_type: FRAME_DATA,
+                    flags: 0,
+                    stream_id,
+                    payload: file_stream_preamble(index as u64 + 1),
+                })
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            framer.announced_file_streams.len(),
+            MAX_UNKNOWN_BUFFERED_STREAMS * 2
+        );
+        assert!(framer.peer_open_streams.is_empty());
+        assert!(framer.file_stream_candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_active_stream_budget_is_shared_with_file_candidates() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+
+        for index in 0..(MAX_UNKNOWN_BUFFERED_STREAMS / 2) {
+            let candidate_id = 2 + (index as u32) * 4;
+            framer
+                .dispatch_frame(RawFrame {
+                    frame_type: FRAME_HEADERS,
+                    flags: FLAG_END_HEADERS,
+                    stream_id: candidate_id,
+                    payload: Vec::new(),
+                })
+                .await
+                .unwrap();
+            // Stream 3 is the fixed serverClient XPC stream, so use the next
+            // odd ID outside the primary pair for the genuinely unknown
+            // peer-created stream.
+            let unknown_id = candidate_id + 3;
+            framer
+                .dispatch_frame(RawFrame {
+                    frame_type: FRAME_DATA,
+                    flags: 0,
+                    stream_id: unknown_id,
+                    payload: vec![0xAA],
+                })
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            framer.unknown_active_stream_count(),
+            MAX_UNKNOWN_BUFFERED_STREAMS
+        );
+        let error = framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_HEADERS,
+                stream_id: 66,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("too many pending RemoteXPC file streams"));
+    }
+
+    #[tokio::test]
+    async fn file_side_channel_preamble_can_be_fragmented_and_is_validated() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+        let preamble = file_stream_preamble(7);
+
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_HEADERS,
+                stream_id: 2,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 2,
+                payload: preamble[..10].to_vec(),
+            })
+            .await
+            .unwrap();
+        assert!(framer.file_stream_candidates.contains(&2));
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 2,
+                payload: preamble[10..].to_vec(),
+            })
+            .await
+            .unwrap();
+        assert!(framer.announced_file_streams.contains(&2));
+        assert!(framer.file_stream_candidate_data.get(&2).is_none());
+    }
+
+    #[tokio::test]
+    async fn end_and_reset_release_file_side_channel_state() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+
+        // END_STREAM on a candidate closes it before it is ever adopted.
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_HEADERS,
+                stream_id: 2,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_STREAM,
+                stream_id: 2,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(!framer.file_stream_candidates.contains(&2));
+        assert!(framer.closed_streams.contains(&2));
+
+        // A validated stream is removed from the live registry on END_STREAM.
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 4,
+                payload: file_stream_preamble(8),
+            })
+            .await
+            .unwrap();
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: FLAG_END_STREAM,
+                stream_id: 4,
+                payload: b"tail".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert!(!framer.announced_file_streams.contains(&4));
+        assert!(framer.closed_streams.contains(&4));
+        // END_STREAM makes the bytes eligible for a final read; consuming
+        // them releases the per-stream and connection byte accounting.
+        assert_eq!(
+            framer
+                .take_stream_bytes(4, FILE_STREAM_PREAMBLE_LEN + 4)
+                .unwrap()
+                .len(),
+            28
+        );
+
+        // RST_STREAM clears buffered bytes and the adopted registry entry.
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 6,
+                payload: file_stream_preamble(9),
+            })
+            .await
+            .unwrap();
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_RST_STREAM,
+                flags: 0,
+                stream_id: 6,
+                payload: 5u32.to_be_bytes().to_vec(),
+            })
+            .await
+            .unwrap();
+        assert!(!framer.announced_file_streams.contains(&6));
+        assert!(!framer.stream_bufs.contains_key(&6));
+        assert_eq!(framer.buffered_bytes, 0);
+        assert_eq!(framer.reset_streams.get(&6), Some(&5));
+    }
+
+    #[tokio::test]
+    async fn invalid_file_side_channel_preamble_is_a_protocol_error() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_HEADERS,
+                stream_id: 2,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let error = framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 2,
+                payload: vec![0u8; FILE_STREAM_PREAMBLE_LEN],
+            })
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid RemoteXPC file-stream preamble"));
+        assert!(!framer.file_stream_candidates.contains(&2));
+        assert!(!framer.file_stream_candidate_data.contains_key(&2));
+
+        // A malformed fragmented candidate must also release the first
+        // fragment retained before the decoder can reject the full preamble.
+        let (client, _server) = tokio::io::duplex(1024);
+        let mut framer = test_framer(client);
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_HEADERS,
+                flags: FLAG_END_HEADERS,
+                stream_id: 4,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 4,
+                payload: vec![0u8; 10],
+            })
+            .await
+            .unwrap();
+        let error = framer
+            .dispatch_frame(RawFrame {
+                frame_type: FRAME_DATA,
+                flags: 0,
+                stream_id: 4,
+                payload: vec![0u8; 14],
+            })
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid RemoteXPC file-stream preamble"));
+        assert_eq!(framer.buffered_bytes, 0);
+        assert!(!framer.stream_bufs.contains_key(&4));
+        assert!(!framer.file_stream_candidates.contains(&4));
     }
 
     #[tokio::test]
