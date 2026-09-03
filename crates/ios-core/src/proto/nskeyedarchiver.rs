@@ -5,7 +5,7 @@
 //!
 //! This is a simplified implementation that handles the common cases:
 //! - NSString → String
-//! - NSNumber → i64 / f64 / bool
+//! - NSNumber → signed/unsigned integer, f64, or bool
 //! - NSArray → Vec
 //! - NSDictionary → HashMap
 //! - nil / NSNull → null
@@ -19,6 +19,13 @@ pub enum ArchiveValue {
     Null,
     Bool(bool),
     Int(i64),
+    /// An unsigned integer that does not fit in `i64`.
+    ///
+    /// NSKeyedArchiver can carry the full `u64` range in an NSNumber/plist
+    /// integer. Keep values above `i64::MAX` distinct instead of truncating
+    /// or rejecting the containing archive; Instruments sysmontap uses this
+    /// representation for sentinel values such as `u64::MAX`.
+    Uint(u64),
     Float(f64),
     String(String),
     Data(Bytes),
@@ -116,16 +123,13 @@ fn decode_value(
     if let Some(s) = obj.as_string() {
         return Ok(ArchiveValue::String(s.to_string()));
     }
-    // Primitive: integer.
-    // `ArchiveValue::Int` is signed, so anything above `i64::MAX` has no faithful
-    // representation. Truncating it would hand the caller a plausible-looking
-    // negative number instead of an error, which is worse than refusing the
-    // archive — real NSNumber payloads never reach that range.
+    // Primitive: integer. Preserve unsigned NSNumber values above i64::MAX;
+    // those are valid values (and are used as sentinels by sysmontap).
     if let Some(n) = obj.as_unsigned_integer() {
-        let value = i64::try_from(n).map_err(|_| {
-            ArchiveError::Invalid(format!("unsigned integer {n} does not fit in i64"))
-        })?;
-        return Ok(ArchiveValue::Int(value));
+        return Ok(match i64::try_from(n) {
+            Ok(value) => ArchiveValue::Int(value),
+            Err(_) => ArchiveValue::Uint(n),
+        });
     }
     if let Some(n) = obj.as_signed_integer() {
         return Ok(ArchiveValue::Int(n));
@@ -180,6 +184,12 @@ fn decode_value(
                     if let Some(n) = v.as_signed_integer() {
                         return Ok(ArchiveValue::Int(n));
                     }
+                    if let Some(n) = v.as_unsigned_integer() {
+                        return Ok(match i64::try_from(n) {
+                            Ok(value) => ArchiveValue::Int(value),
+                            Err(_) => ArchiveValue::Uint(n),
+                        });
+                    }
                 }
                 if let Some(v) = dict.get("NS.dblval") {
                     if let Some(f) = v.as_real() {
@@ -221,6 +231,7 @@ fn decode_value(
                     let key_str = match decode_object(objects, k_uid, depth + 1) {
                         Ok(ArchiveValue::String(k)) => k,
                         Ok(ArchiveValue::Int(n)) => n.to_string(),
+                        Ok(ArchiveValue::Uint(n)) => n.to_string(),
                         Ok(ArchiveValue::Float(f)) => f.to_string(),
                         Ok(ArchiveValue::Bool(b)) => b.to_string(),
                         _ => continue,
@@ -327,7 +338,19 @@ impl ArchiveValue {
     pub fn as_int(&self) -> Option<i64> {
         match self {
             ArchiveValue::Int(n) => Some(*n),
+            ArchiveValue::Uint(n) => i64::try_from(*n).ok(),
             ArchiveValue::Bool(b) => Some(*b as i64),
+            _ => None,
+        }
+    }
+
+    /// Return this value as an unsigned integer when it is one, or when a
+    /// non-negative signed integer can be represented without loss.
+    pub fn as_uint(&self) -> Option<u64> {
+        match self {
+            ArchiveValue::Uint(n) => Some(*n),
+            ArchiveValue::Int(n) if *n >= 0 => Some(*n as u64),
+            ArchiveValue::Bool(b) => Some(*b as u64),
             _ => None,
         }
     }
@@ -374,6 +397,7 @@ mod tests {
         let objects = vec![
             plist::Value::Integer(plist::Integer::from(i64::MAX as u64)),
             plist::Value::Integer(plist::Integer::from(i64::MAX as u64 + 1)),
+            plist::Value::Integer(plist::Integer::from(u64::MAX)),
         ];
 
         assert_eq!(
@@ -381,13 +405,51 @@ mod tests {
             Some(i64::MAX)
         );
 
-        let err = decode_object(&objects, 1, 0).unwrap_err();
-        match err {
-            ArchiveError::Invalid(message) => {
-                assert!(message.contains("does not fit in i64"), "{message}");
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert!(matches!(
+            decode_object(&objects, 1, 0).unwrap(),
+            ArchiveValue::Uint(value) if value == i64::MAX as u64 + 1
+        ));
+        assert!(matches!(
+            decode_object(&objects, 2, 0).unwrap(),
+            ArchiveValue::Uint(value) if value == u64::MAX
+        ));
+        assert_eq!(
+            decode_object(&objects, 2, 0).unwrap().as_uint(),
+            Some(u64::MAX)
+        );
+        assert_eq!(decode_object(&objects, 2, 0).unwrap().as_int(), None);
+    }
+
+    #[test]
+    fn test_decode_unsigned_nsnumber_preserves_u64_max() {
+        let objects = vec![
+            plist::Value::String("$null".to_string()),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$class".to_string(), plist::Value::Uid(plist::Uid::new(2))),
+                (
+                    "NS.intval".to_string(),
+                    plist::Value::Integer(plist::Integer::from(u64::MAX)),
+                ),
+            ])),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "$classname".to_string(),
+                    plist::Value::String("NSNumber".to_string()),
+                ),
+                (
+                    "$classes".to_string(),
+                    plist::Value::Array(vec![
+                        plist::Value::String("NSNumber".to_string()),
+                        plist::Value::String("NSObject".to_string()),
+                    ]),
+                ),
+            ])),
+        ];
+
+        assert!(matches!(
+            decode_object(&objects, 1, 0).unwrap(),
+            ArchiveValue::Uint(value) if value == u64::MAX
+        ));
     }
 
     #[test]

@@ -453,6 +453,7 @@ pub(crate) fn archive_value_to_nsobject(
         ArchiveValue::Null => NSObject::Null,
         ArchiveValue::Bool(value) => NSObject::Bool(value),
         ArchiveValue::Int(value) => NSObject::Int(value),
+        ArchiveValue::Uint(value) => NSObject::Uint(value),
         ArchiveValue::Float(value) => NSObject::Double(value),
         ArchiveValue::String(value) => NSObject::String(value),
         ArchiveValue::Data(value) => NSObject::Data(value),
@@ -498,5 +499,47 @@ pub(crate) fn nsobject_to_json(value: &NSObject) -> serde_json::Value {
                 .collect::<Map<_, _>>(),
         ),
         NSObject::Null => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dict(fields: impl IntoIterator<Item = (&'static str, NSObject)>) -> NSObject {
+        NSObject::Dict(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn archive_unsigned_integer_is_preserved_as_nsobject_uint() {
+        let value =
+            archive_value_to_nsobject(crate::proto::nskeyedarchiver::ArchiveValue::Uint(u64::MAX));
+        assert_eq!(value, NSObject::Uint(u64::MAX));
+    }
+
+    #[test]
+    fn process_snapshot_keeps_unsigned_sentinel_values() {
+        let process_values = NSObject::Array(vec![NSObject::Uint(u64::MAX)]);
+        let processes = dict([("1", process_values)]);
+        let message = DtxMessage {
+            identifier: 1,
+            conversation_idx: 0,
+            channel_code: 1,
+            expects_reply: false,
+            payload: DtxPayload::Response(NSObject::Array(vec![dict([("Processes", processes)])])),
+        };
+
+        let attrs = vec!["threadsSystem".to_string()];
+        let sample = parse_process_snapshot(&message, &attrs).expect("process sample");
+        assert_eq!(sample.processes.len(), 1);
+        assert_eq!(
+            sample.processes[0].get("threadsSystem"),
+            Some(&serde_json::json!(u64::MAX))
+        );
     }
 }

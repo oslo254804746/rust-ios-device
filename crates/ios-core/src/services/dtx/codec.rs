@@ -267,6 +267,19 @@ pub fn encode_dtx(
 /// Encode a DTX ack message (48 bytes total).
 pub fn encode_ack(msg: &DtxMessage) -> Bytes {
     let mut out = BytesMut::with_capacity(48);
+    let conversation_idx = msg.conversation_idx.saturating_add(1);
+    // Incoming even-conversation messages are exposed to callers with their
+    // logical channel code (the reader negates the wire code).  ACKs are odd
+    // conversation messages, so put that channel back on the wire with the
+    // same parity rule used by the reference sender.  For an incoming odd
+    // conversation message the ACK conversation is even and the logical code
+    // is already the wire code.  `saturating_neg` keeps malformed i32::MIN
+    // input from panicking while preserving all valid channel codes exactly.
+    let wire_channel_code = if conversation_idx % 2 == 0 {
+        msg.channel_code
+    } else {
+        msg.channel_code.saturating_neg()
+    };
     out.put_u32(DTX_MAGIC);
     out.put_u32_le(32);
     out.put_u16_le(0);
@@ -277,8 +290,8 @@ pub fn encode_ack(msg: &DtxMessage) -> Bytes {
     // not let the host panic in debug builds when it happens to be u32::MAX;
     // the saturated value is still preferable to terminating the process while
     // attempting to acknowledge the frame.
-    out.put_u32_le(msg.conversation_idx.saturating_add(1));
-    out.put_u32_le(msg.channel_code as u32);
+    out.put_u32_le(conversation_idx);
+    out.put_i32_le(wire_channel_code);
     out.put_u32_le(0); // expects_reply = false
                        // Payload header: type=0 (OK/Ack)
     out.put_u32_le(MSG_OK);
@@ -603,6 +616,7 @@ fn archive_to_ns(v: crate::proto::nskeyedarchiver::ArchiveValue) -> NSObject {
         ArchiveValue::Null => NSObject::Null,
         ArchiveValue::Bool(b) => NSObject::Bool(b),
         ArchiveValue::Int(n) => NSObject::Int(n),
+        ArchiveValue::Uint(n) => NSObject::Uint(n),
         ArchiveValue::Float(f) => NSObject::Double(f),
         ArchiveValue::String(s) => NSObject::String(s),
         ArchiveValue::Data(d) => NSObject::Data(d),
@@ -2069,6 +2083,73 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(ack[20..24].try_into().unwrap()),
             u32::MAX
+        );
+    }
+
+    #[test]
+    fn test_ack_reverses_even_conversation_channel_normalization() {
+        // A device DATA/dispatch frame on conv=0 may carry wire channel -2.
+        // recv_from_stream exposes the logical channel +2, so the conv=1 ACK
+        // must put -2 back on the wire.
+        let wire_channel = -2;
+        let logical_channel = normalize_incoming_channel_code(wire_channel, 0).unwrap();
+        assert_eq!(logical_channel, 2);
+
+        let ack = encode_ack(&DtxMessage {
+            identifier: 17,
+            conversation_idx: 0,
+            channel_code: logical_channel,
+            expects_reply: true,
+            payload: DtxPayload::Empty,
+        });
+
+        assert_eq!(
+            u32::from_le_bytes(ack[20..24].try_into().unwrap()),
+            1,
+            "ACK must advance the conversation index"
+        );
+        assert_eq!(
+            i32::from_le_bytes(ack[24..28].try_into().unwrap()),
+            wire_channel,
+            "ACK must preserve the original wire channel sign"
+        );
+    }
+
+    #[test]
+    fn test_ack_keeps_odd_conversation_channel_unchanged() {
+        // For an incoming odd-conversation frame the reader leaves the wire
+        // channel untouched; its conv=2 ACK therefore does not negate it.
+        let ack = encode_ack(&DtxMessage {
+            identifier: 18,
+            conversation_idx: 1,
+            channel_code: -2,
+            expects_reply: true,
+            payload: DtxPayload::Empty,
+        });
+
+        assert_eq!(
+            u32::from_le_bytes(ack[20..24].try_into().unwrap()),
+            2,
+            "ACK must advance the conversation index"
+        );
+        assert_eq!(i32::from_le_bytes(ack[24..28].try_into().unwrap()), -2);
+    }
+
+    #[test]
+    fn test_ack_saturates_min_channel_when_negating() {
+        // i32::MIN has no positive counterpart.  The malformed edge must not
+        // panic in a debug build while all valid channel codes remain exact.
+        let ack = encode_ack(&DtxMessage {
+            identifier: 19,
+            conversation_idx: 0,
+            channel_code: i32::MIN,
+            expects_reply: true,
+            payload: DtxPayload::Empty,
+        });
+
+        assert_eq!(
+            i32::from_le_bytes(ack[24..28].try_into().unwrap()),
+            i32::MAX
         );
     }
 
