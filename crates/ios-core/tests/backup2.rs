@@ -1035,7 +1035,10 @@ async fn change_password_reports_multi_status_when_requested_file_is_missing() {
             status_array[0],
             plist::Value::String("DLMessageStatusResponse".into())
         );
-        assert_eq!(status_array[1], plist::Value::Integer((-13).into()));
+        assert_eq!(
+            status_array[1],
+            plist::Value::Integer(18446744073709551603u64.into())
+        );
         assert_eq!(status_array[2], plist::Value::String("Multi status".into()));
         let failures = status_array[3]
             .as_dictionary()

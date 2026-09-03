@@ -322,6 +322,12 @@ const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] = &["Manifest.plist", "Status.p
 // This is the Apple Core Data / NSDate epoch offset (seconds between Unix epoch and Apple epoch)
 const APPLE_EPOCH_OFFSET: Duration = Duration::from_secs(978_307_200);
 
+/// DeviceLink's plist status integers use the unsigned 64-bit representation used by
+/// pymobiledevice3's `ctypes.c_uint64` conversion, including for negative protocol codes.
+fn protocol_status_value(status_code: i64) -> plist::Value {
+    plist::Value::Integer((status_code as u64).into())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct VersionExchange {
     pub device_link_version: u64,
@@ -1215,7 +1221,7 @@ where
                     // Purging is a request, not a terminal protocol error. Apple's host replies
                     // with the purge-failed status and lets the device report its own diagnosis.
                     self.send_status_response_value(
-                        plist::Value::Integer(PURGE_DISK_SPACE_ERROR.into()),
+                        protocol_status_value(PURGE_DISK_SPACE_ERROR),
                         PURGE_DISK_SPACE_ERROR_STRING,
                         plist::Value::Integer(0u64.into()),
                     )
@@ -1386,7 +1392,7 @@ where
         status_payload: plist::Value,
     ) -> Result<(), Mobilebackup2Error> {
         self.send_status_response_value(
-            plist::Value::Integer(status_code.into()),
+            protocol_status_value(status_code),
             status_message,
             status_payload,
         )
@@ -2585,12 +2591,30 @@ fn safe_file_in_directory(
 
 fn device_link_modification_date(modified: SystemTime) -> plist::Date {
     // pymobiledevice3 encodes directory mtimes as local wall-clock time relative to Apple's
-    // 2001 epoch, then serializes that wall-clock timestamp as if it were UTC.
+    // 2001 epoch, then serializes that wall-clock timestamp as if it were UTC.  plistlib's XML
+    // serializer drops subsecond precision, so truncate before constructing the Date to keep
+    // the DeviceLink wire representation identical (iOS 15 rejects fractional listing dates).
     let modified = device_link_local_wall_clock(modified);
     let shifted = modified
         .checked_sub(APPLE_EPOCH_OFFSET)
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    let shifted = truncate_system_time_to_seconds(shifted);
     plist::Date::from(shifted)
+}
+
+fn truncate_system_time_to_seconds(time: SystemTime) -> SystemTime {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => SystemTime::UNIX_EPOCH + Duration::from_secs(duration.as_secs()),
+        Err(error) => {
+            let duration = error.duration();
+            let seconds = duration
+                .as_secs()
+                .saturating_add(if duration.subsec_nanos() == 0 { 0 } else { 1 });
+            SystemTime::UNIX_EPOCH
+                .checked_sub(Duration::from_secs(seconds))
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+        }
+    }
 }
 
 fn device_link_local_wall_clock(modified: SystemTime) -> SystemTime {
@@ -2886,10 +2910,7 @@ fn insert_file_failure(failures: &mut plist::Dictionary, rel: &str, err: &std::i
         plist::Value::String(err.to_string()),
     )]);
     if let Some(code) = file_error_code_from_os_error(err) {
-        failure.insert(
-            "DLFileErrorCode".to_string(),
-            plist::Value::Integer(code.into()),
-        );
+        failure.insert("DLFileErrorCode".to_string(), protocol_status_value(code));
     }
     failures.insert(rel.to_string(), plist::Value::Dictionary(failure));
 }
@@ -2939,7 +2960,7 @@ mod tests {
         frame
     }
 
-    async fn read_test_frame(stream: &mut tokio::io::DuplexStream) -> plist::Value {
+    async fn read_test_frame_bytes(stream: &mut tokio::io::DuplexStream) -> Vec<u8> {
         let mut length = [0u8; 4];
         stream.read_exact(&mut length).await.expect("frame length");
         let length = u32::from_be_bytes(length) as usize;
@@ -2948,7 +2969,48 @@ mod tests {
             .read_exact(&mut payload)
             .await
             .expect("frame payload");
-        plist::from_bytes(&payload).expect("plist frame")
+        payload
+    }
+
+    async fn read_test_frame(stream: &mut tokio::io::DuplexStream) -> plist::Value {
+        plist::from_bytes(&read_test_frame_bytes(stream).await).expect("plist frame")
+    }
+
+    async fn assert_status_response_ok(stream: &mut tokio::io::DuplexStream) {
+        let response = read_test_frame(stream).await;
+        let parts = response.as_array().expect("status response array");
+        assert_eq!(parts[0].as_string(), Some("DLMessageStatusResponse"));
+        assert_eq!(parts[1], plist::Value::Integer(0u64.into()));
+    }
+
+    #[test]
+    fn negative_status_and_transfer_codes_use_exact_unsigned_plist_wire() {
+        for status_code in [BULK_OPERATION_ERROR, -6, PURGE_DISK_SPACE_ERROR] {
+            let frame = encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageStatusResponse".into()),
+                protocol_status_value(status_code),
+                plist::Value::String(EMPTY_PARAMETER_STRING.into()),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+            ]));
+            let payload_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
+            assert_eq!(payload_len, frame.len() - 4);
+            let payload = String::from_utf8(frame[4..].to_vec()).unwrap();
+            let expected = status_code as u64;
+            assert!(payload.contains(&format!("<integer>{expected}</integer>")));
+            assert!(!payload.contains(&format!("<integer>{status_code}</integer>")));
+            let decoded: plist::Value = plist::from_bytes(&frame[4..]).unwrap();
+            assert_eq!(
+                decoded.as_array().and_then(|values| values.get(1)),
+                Some(&plist::Value::Integer(expected.into()))
+            );
+        }
+
+        let mut failure = plist::Dictionary::new();
+        failure.insert("DLFileErrorCode".into(), protocol_status_value(-6));
+        let mut payload = Vec::new();
+        plist::to_writer_xml(&mut payload, &plist::Value::Dictionary(failure)).unwrap();
+        let payload = String::from_utf8(payload).unwrap();
+        assert!(payload.contains("<integer>18446744073709551610</integer>"));
     }
 
     // The path policy rejects symlink components deliberately.  macOS exposes
@@ -3366,6 +3428,144 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove backup fixture");
     }
 
+    #[tokio::test]
+    async fn filtered_placeholder_replay_drains_moves_copies_and_finishes_after_listing() {
+        let root = test_backup_root("placeholder-replay", "device-id");
+        let layout = BackupDirectoryLayout {
+            root: root.clone(),
+            device_directory: root.join("device-id"),
+            target_identifier: "device-id".into(),
+        };
+        let (client_stream, mut server_stream) = duplex(64 * 1024);
+        let client_layout = layout.clone();
+        let task = tokio::spawn(async move {
+            let mut client = Mobilebackup2Client::new(client_stream);
+            client.backup_filter =
+                Some(build_backup_filter(&["sms".into()], &[]).unwrap().unwrap());
+            let result = client.run_loop(&client_layout).await;
+            (result, client.discarded_files.len())
+        });
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageUploadFiles".into()),
+            ])))
+            .await
+            .unwrap();
+        write_prefixed_string(&mut server_stream, "HomeDomain/Library/Notes/rejected.bin")
+            .await
+            .unwrap();
+        write_prefixed_string(&mut server_stream, "device-id/aa/rejected.bin")
+            .await
+            .unwrap();
+        write_transfer_frame(
+            &mut server_stream,
+            FILE_TRANSFER_CODE_FILE_DATA,
+            b"discarded payload",
+        )
+        .await
+        .unwrap();
+        write_transfer_frame(&mut server_stream, FILE_TRANSFER_CODE_SUCCESS, &[])
+            .await
+            .unwrap();
+        write_prefixed_string(&mut server_stream, "").await.unwrap();
+        assert_status_response_ok(&mut server_stream).await;
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageMoveItems".into()),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "device-id/aa/rejected.bin".to_string(),
+                    plist::Value::String("device-id/bb/rejected.bin".into()),
+                )])),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+                plist::Value::Real(0.0),
+            ])))
+            .await
+            .unwrap();
+        assert_status_response_ok(&mut server_stream).await;
+
+        server_stream
+            .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                plist::Value::String("DLMessageCopyItem".into()),
+                plist::Value::String("device-id/bb/rejected.bin".into()),
+                plist::Value::String("device-id/cc/rejected.bin".into()),
+                plist::Value::Dictionary(plist::Dictionary::new()),
+                plist::Value::Real(0.0),
+            ])))
+            .await
+            .unwrap();
+        assert_status_response_ok(&mut server_stream).await;
+
+        for directory in ["device-id", "device-id/bb", "device-id/cc"] {
+            server_stream
+                .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                    plist::Value::String("DLContentsOfDirectory".into()),
+                    plist::Value::String(directory.into()),
+                    plist::Value::Dictionary(plist::Dictionary::new()),
+                    plist::Value::Real(0.0),
+                ])))
+                .await
+                .unwrap();
+            let raw_response = read_test_frame_bytes(&mut server_stream).await;
+            let raw_response_text = String::from_utf8(raw_response.clone()).unwrap();
+            assert!(
+                !raw_response_text
+                    .split("<date>")
+                    .skip(1)
+                    .filter_map(|part| part.split("</date>").next())
+                    .any(|date| date.contains('.')),
+                "directory listing XML dates must use second precision"
+            );
+            let response: plist::Value = plist::from_bytes(&raw_response).unwrap();
+            let parts = response.as_array().expect("directory status response");
+            assert_eq!(parts[0].as_string(), Some("DLMessageStatusResponse"));
+            assert_eq!(parts[1], plist::Value::Integer(0u64.into()));
+            let listing = parts[3]
+                .as_dictionary()
+                .expect("directory listing dictionary");
+            assert!(!listing.is_empty());
+            for value in listing.values() {
+                let entry = value.as_dictionary().expect("directory entry dictionary");
+                let date = entry
+                    .get("DLFileModificationDate")
+                    .and_then(plist::Value::as_date)
+                    .expect("directory entry date");
+                assert!(
+                    !date.to_xml_format().contains('.'),
+                    "directory listing dates must use pmd3's second precision"
+                );
+            }
+        }
+
+        complete_process_message(
+            &mut server_stream,
+            0,
+            Some(plist::Value::String("finished".into())),
+        )
+        .await;
+        let (result, placeholder_count) = task.await.unwrap();
+        assert_eq!(
+            result.unwrap(),
+            Some(plist::Value::String("finished".into()))
+        );
+        assert_eq!(
+            placeholder_count, 2,
+            "move and copy must retain both placeholders"
+        );
+        for path in [
+            root.join("device-id/bb/rejected.bin"),
+            root.join("device-id/cc/rejected.bin"),
+        ] {
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                0,
+                "discarded upload payload must be drained; placeholders remain zero-byte"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn transfer_budgets_reject_excess_files_and_bytes() {
         let (stream, _) = duplex(16);
@@ -3402,7 +3602,7 @@ mod tests {
             read_test_frame(&mut server_stream).await,
             plist::Value::Array(vec![
                 plist::Value::String("DLMessageStatusResponse".into()),
-                plist::Value::Integer(PURGE_DISK_SPACE_ERROR.into()),
+                protocol_status_value(PURGE_DISK_SPACE_ERROR),
                 plist::Value::String(PURGE_DISK_SPACE_ERROR_STRING.into()),
                 plist::Value::Integer(0u64.into()),
             ])
@@ -4065,7 +4265,7 @@ mod tests {
     }
 
     #[test]
-    fn device_link_modification_date_preserves_subsecond_apple_epoch_timestamp() {
+    fn device_link_modification_date_matches_pmd3_second_precision_wire() {
         let modified = SystemTime::UNIX_EPOCH
             + APPLE_EPOCH_OFFSET
             + Duration::from_secs(123)
@@ -4075,8 +4275,20 @@ mod tests {
         let expected = device_link_local_wall_clock(modified)
             .checked_sub(APPLE_EPOCH_OFFSET)
             .unwrap_or(SystemTime::UNIX_EPOCH);
+        let expected = truncate_system_time_to_seconds(expected);
 
         assert_eq!(shifted, expected);
+        assert_eq!(
+            shifted
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("fixture date is after the Unix epoch")
+                .subsec_nanos(),
+            0
+        );
+        assert!(
+            !encoded.to_xml_format().contains('.'),
+            "pmd3 plistlib wire dates do not contain fractional seconds"
+        );
     }
 
     #[test]
