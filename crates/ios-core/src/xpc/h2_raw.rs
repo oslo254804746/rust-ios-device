@@ -1171,7 +1171,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         {
             return Ok(());
         }
-        if stream_id.is_multiple_of(2) {
+        if stream_id % 2 == 0 {
             self.register_file_stream_candidate(stream_id)
         } else {
             self.track_peer_stream(stream_id)
@@ -1532,10 +1532,7 @@ fn is_file_stream_preamble(stream_id: u32, payload: &[u8]) -> bool {
 }
 
 fn is_file_stream_preamble_prefix(stream_id: u32, payload: &[u8]) -> bool {
-    if stream_id == STREAM_INIT
-        || !stream_id.is_multiple_of(2)
-        || payload.len() < FILE_STREAM_PREAMBLE_LEN
-    {
+    if stream_id == STREAM_INIT || stream_id % 2 != 0 || payload.len() < FILE_STREAM_PREAMBLE_LEN {
         return false;
     }
     let magic = u32::from_le_bytes(payload[..4].try_into().unwrap());
@@ -2756,7 +2753,7 @@ mod tests {
             .await
             .unwrap();
         assert!(framer.announced_file_streams.contains(&2));
-        assert!(framer.file_stream_candidate_data.get(&2).is_none());
+        assert!(!framer.file_stream_candidate_data.contains_key(&2));
     }
 
     #[tokio::test]

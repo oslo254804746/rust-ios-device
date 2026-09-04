@@ -1627,10 +1627,13 @@ fn read_string_field(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use std::pin::Pin;
+    #[cfg(windows)]
     use std::task::{Context, Poll};
 
     use tokio::io::AsyncWriteExt;
+    #[cfg(windows)]
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio_stream::StreamExt;
 
@@ -2171,11 +2174,13 @@ mod tests {
     /// Simulate the Windows userspace proxy's connection-aborted indication
     /// exactly at the next archive-frame read, after the peer has sent all
     /// bytes and closed its end.
+    #[cfg(windows)]
     struct AbortOnEof {
         inner: tokio::io::DuplexStream,
         aborted: bool,
     }
 
+    #[cfg(windows)]
     impl AsyncRead for AbortOnEof {
         fn poll_read(
             mut self: Pin<&mut Self>,
@@ -2195,6 +2200,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     impl AsyncWrite for AbortOnEof {
         fn poll_write(
             mut self: Pin<&mut Self>,
