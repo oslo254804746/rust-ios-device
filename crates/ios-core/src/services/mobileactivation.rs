@@ -914,16 +914,15 @@ mod tests {
 
     #[tokio::test]
     async fn activation_session_wait_times_out_and_cancellation_is_observable() {
-        let mut stream = MockStream::with_responses(vec![
-            response_with_handshake(b"old"),
-            response_with_handshake(b"old"),
-            response_with_handshake(b"old"),
-            response_with_handshake(b"old"),
-        ]);
+        let mut stream = MockStream::with_responses(vec![response_with_handshake(b"old"); 32]);
         let mut client = MobileActivationClient::new(&mut stream);
         let error = client
             .wait_for_activation_session_until(
-                tokio::time::Instant::now() + Duration::from_millis(25),
+                // Windows timer scheduling can overshoot a 10 ms sleep by a
+                // full timer tick.  Leave enough room for the test to
+                // observe a second probe while still exercising the
+                // absolute-deadline timeout path.
+                tokio::time::Instant::now() + Duration::from_millis(100),
                 Duration::from_millis(10),
             )
             .await
