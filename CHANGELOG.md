@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.1.14] — 2026-09-04
+
+### Added
+
+- Added bounded RemoteXPC file-transfer side-channel handling and remote
+  symbol listing/download support for current iOS releases.
+
+### Fixed
+
+- Preserved unsigned sysmontap and DTX integer values instead of narrowing
+  device-provided 64-bit attributes.
+- Aligned filtered Backup2 status codes and modification-date encoding with
+  the iOS 15 DeviceLink wire format.
+- Hardened iOS 26 symbol side-channel and OS trace archive handling, including
+  bounded stream state and complete archive validation.
+- Kept the workspace checks compatible with the documented Rust 1.80 MSRV.
+
 ## [0.1.13] — 2026-08-30
 
 ### Fixed
@@ -228,7 +245,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.10...v0.1.11

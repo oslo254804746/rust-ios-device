@@ -71,7 +71,7 @@ cargo install ios-cli            # 安装 `ios` 二进制
 ```toml
 # Cargo.toml — 引用库
 [dependencies]
-ios-core = { version = "0.1.13", features = ["classic"] }
+ios-core = { version = "0.1.14", features = ["classic"] }
 ```
 
 ### Python
@@ -174,7 +174,7 @@ lockdown 建立也使用相同上限。遇到失效的隧道路由时会尽快�
 
 ```toml
 [dependencies]
-ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
+ios-core = { version = "0.1.14", features = ["afc", "syslog"] }
 ```
 
 | 分组         | 包含内容                                                                                              |
