@@ -201,7 +201,7 @@ jobs:
   release:
     name: Release (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, validate-tag]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -264,53 +264,164 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
+          set -euo pipefail
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+          [ -s "$RELEASE_DIR/ios" ] || { echo "::error::CLI binary missing or empty: target=${{ matrix.target }} path=$RELEASE_DIR/ios"; exit 1; }
           ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
-          tar czf "$ASSET_NAME" -C "target/${{ matrix.target }}/release" ios
-          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+          tar czf "$ASSET_NAME" -C "$RELEASE_DIR" ios
           echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
 
       - name: Package CLI (Windows)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
+          set -euo pipefail
+          RELEASE_DIR="target/${{ matrix.target }}/release"
+          [ -s "$RELEASE_DIR/ios.exe" ] || { echo "::error::CLI binary missing or empty: target=${{ matrix.target }} path=$RELEASE_DIR/ios.exe"; exit 1; }
           ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
-          cd "target/${{ matrix.target }}/release"
+          cd "$RELEASE_DIR"
           7z a "../../../$ASSET_NAME" ios.exe
           cd ../../..
-          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
           echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
 
-      - name: Package FFI library (Unix)
+      - name: Unpack-verify CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY_DIR="$(mktemp -d)"
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar xzf "$CLI_ASSET" -C "$VERIFY_DIR"
+            BIN="$VERIFY_DIR/ios"
+          else
+            7z x "-o$VERIFY_DIR" "$CLI_ASSET" -y > /dev/null
+            BIN="$VERIFY_DIR/ios.exe"
+          fi
+          [ -s "$BIN" ] || { echo "::error::CLI binary missing after unpack: $BIN"; exit 1; }
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+          rm -rf "$VERIFY_DIR"
+          sha256sum "$CLI_ASSET" > "$CLI_ASSET.sha256"
+
+      - name: Package and smoke FFI library (Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
+          set -euo pipefail
           RELEASE_DIR="target/${{ matrix.target }}/release"
-          # Collect shared lib + static lib + header
+          LIB_SHARED="libios_ffi.${{ matrix.lib_ext }}"
+          LIB_STATIC="libios_ffi.a"
+          HEADER="crates/ios-ffi/include/ios_rs.h"
+          for f in "$RELEASE_DIR/$LIB_SHARED" "$RELEASE_DIR/$LIB_STATIC" "$HEADER"; do
+            [ -s "$f" ] || { echo "::error::FFI file missing or empty: target=${{ matrix.target }} expected=$f"; exit 1; }
+          done
+          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
           mkdir -p _ffi_pkg
-          cp "$RELEASE_DIR/libios_ffi.${{ matrix.lib_ext }}" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/libios_ffi.a" _ffi_pkg/ 2>/dev/null || true
-          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
+          cp "$RELEASE_DIR/$LIB_SHARED" "$RELEASE_DIR/$LIB_STATIC" "$HEADER" _ffi_pkg/
+          # Static archive integrity: must be a real archive with members.
+          ar t _ffi_pkg/libios_ffi.a > /dev/null
           tar czf "$FFI_ASSET" -C _ffi_pkg .
           sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
           echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
 
-      - name: Package FFI library (Windows)
+          # Device-free C smoke against the unpacked package: header, symbol
+          # resolution, dynamic linking, and the safe null-parameter contract.
+          SMOKE_DIR="$(mktemp -d)"
+          tar xzf "$FFI_ASSET" -C "$SMOKE_DIR"
+          cat > "$SMOKE_DIR/smoke.c" <<'EOF'
+          #include <stdio.h>
+          #include "ios_rs.h"
+
+          int main(void) {
+              /* Freeing NULL must be a no-op. */
+              ios_free_string(NULL);
+              /* Null out-params must be rejected without touching the device. */
+              if (ios_list_devices(NULL, NULL) == 0) {
+                  fprintf(stderr, "ios_list_devices(NULL, NULL) must return non-zero\n");
+                  return 1;
+              }
+              /* Closing NULL handles must be a no-op, not a crash. */
+              ios_device_close(NULL);
+              ios_tunnel_close(NULL);
+              return 0;
+          }
+          EOF
+          CC_BIN="${CC:-}"
+          if [ -z "$CC_BIN" ]; then
+            if command -v cc > /dev/null 2>&1; then CC_BIN=cc
+            elif command -v gcc > /dev/null 2>&1; then CC_BIN=gcc
+            elif command -v clang > /dev/null 2>&1; then CC_BIN=clang
+            else echo "::error::no C compiler found on runner"; exit 1
+            fi
+          fi
+          echo "FFI C smoke compiler: $CC_BIN (${{ matrix.target }})"
+          # Dynamic loading must resolve ONLY through the unpacked directory:
+          # Linux via $ORIGIN rpath, macOS via a rewritten @loader_path id.
+          if [ "${{ matrix.lib_ext }}" = "dylib" ]; then
+            install_name_tool -id "@loader_path/libios_ffi.dylib" "$SMOKE_DIR/libios_ffi.dylib"
+            RPATH_FLAGS=""
+          else
+            RPATH_FLAGS="-Wl,-rpath,\$ORIGIN"
+          fi
+          "$CC_BIN" -I"$SMOKE_DIR" "$SMOKE_DIR/smoke.c" $RPATH_FLAGS \
+            -L"$SMOKE_DIR" -lios_ffi -o "$SMOKE_DIR/smoke"
+          "$SMOKE_DIR/smoke"
+          echo "FFI C smoke (dynamic link + run) OK: ${{ matrix.target }}"
+
+      - name: Package and smoke FFI library (Windows)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
+          set -euo pipefail
           RELEASE_DIR="target/${{ matrix.target }}/release"
+          # MSVC outputs: import lib (ios_ffi.dll.lib) vs static lib (ios_ffi.lib).
+          for f in "$RELEASE_DIR/ios_ffi.dll" "$RELEASE_DIR/ios_ffi.dll.lib" "$RELEASE_DIR/ios_ffi.lib" "crates/ios-ffi/include/ios_rs.h"; do
+            [ -s "$f" ] || { echo "::error::FFI file missing or empty: target=${{ matrix.target }} expected=$f"; exit 1; }
+          done
+          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
           mkdir -p _ffi_pkg
-          cp "$RELEASE_DIR/ios_ffi.dll" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/ios_ffi.dll.lib" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/ios_ffi.lib" _ffi_pkg/ 2>/dev/null || true
-          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
+          cp "$RELEASE_DIR/ios_ffi.dll" "$RELEASE_DIR/ios_ffi.dll.lib" "$RELEASE_DIR/ios_ffi.lib" "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
           cd _ffi_pkg
           7z a "../$FFI_ASSET" .
           cd ..
           sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
           echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
+
+          SMOKE_DIR="$(mktemp -d)"
+          SMOKE_DIR_WIN="$(cygpath -w "$SMOKE_DIR")"
+          7z x "-o$SMOKE_DIR" "$FFI_ASSET" -y > /dev/null
+          cat > "$SMOKE_DIR/smoke.c" <<'EOF'
+          #include <stdio.h>
+          #include "ios_rs.h"
+
+          int main(void) {
+              ios_free_string(NULL);
+              if (ios_list_devices(NULL, NULL) == 0) {
+                  fprintf(stderr, "ios_list_devices(NULL, NULL) must return non-zero\n");
+                  return 1;
+              }
+              ios_device_close(NULL);
+              ios_tunnel_close(NULL);
+              return 0;
+          }
+          EOF
+          VSWHERE="C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          VSDIR="$("$VSWHERE" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | head -1)"
+          if [ -n "$VSDIR" ] && [ -f "$VSDIR/VC/Auxiliary/Build/vcvars64.bat" ]; then
+            echo "FFI C smoke compiler: MSVC cl.exe via vcvars64 (${{ matrix.target }})"
+            cat > "$SMOKE_DIR/build_smoke.bat" <<EOF
+          @echo off
+          call "$(cygpath -w "$VSDIR")\\VC\\Auxiliary\\Build\\vcvars64.bat" -arch=amd64 >nul
+          cl /nologo /I"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\smoke.c" /link /LIBPATH:"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\ios_ffi.dll.lib" /OUT:"$SMOKE_DIR_WIN\\smoke.exe"
+          if errorlevel 1 exit /b 1
+          "$SMOKE_DIR_WIN\\smoke.exe"
+          EOF
+            cmd //c "$(cygpath -w "$SMOKE_DIR")\\build_smoke.bat"
+          else
+            echo "FFI C smoke compiler: clang (MSVC not found; using compatible ABI)"
+            clang -I"$SMOKE_DIR" "$SMOKE_DIR/smoke.c" -L"$SMOKE_DIR" -lios_ffi -o "$SMOKE_DIR/smoke.exe"
+            "$SMOKE_DIR/smoke.exe"
+          fi
+          echo "FFI C smoke (dynamic link + run) OK: ${{ matrix.target }}"
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
@@ -326,7 +437,7 @@ jobs:
   python-wheels:
     name: Python wheels (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, python-smoke, validate-tag]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -379,8 +490,84 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
+          set -euo pipefail
+          rm -f dist/*.whl
           cd crates/ios-py
           uvx maturin build --release --target ${{ matrix.target }} --out ../../dist
+          cd ../..
+          WHEEL_FILE="$(ls dist/*.whl)"
+          [ -s "$WHEEL_FILE" ] || { echo "::error::wheel missing or empty: $WHEEL_FILE"; exit 1; }
+          echo "Built wheel: $WHEEL_FILE ($(stat -c %s "$WHEEL_FILE" 2>/dev/null || wc -c < "$WHEEL_FILE") bytes)"
+          echo "WHEEL_FILE=$WHEEL_FILE" >> "$GITHUB_ENV"
+
+      - name: Smoke wheel in clean venv (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv .smoke-venv
+          uv pip install --python .smoke-venv/bin/python "$WHEEL_FILE"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.smoke-venv/bin/python" - <<'PY'
+          import ios_rs
+
+          assert callable(ios_rs.list_devices)
+          try:
+              ios_rs.start_tunnel("no-such-device", mode="invalid")
+          except ValueError as exc:
+              message = str(exc)
+              assert "userspace" in message and "kernel" in message, message
+          else:
+              raise AssertionError("invalid tunnel mode must raise ValueError")
+          print("wheel smoke OK: import, callable, invalid-mode ValueError")
+          PY
+
+      - name: Smoke wheel in clean venv (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv .smoke-venv
+          uv pip install --python .smoke-venv/bin/python "$WHEEL_FILE"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.smoke-venv/bin/python" - <<'PY'
+          import ios_rs
+
+          assert callable(ios_rs.list_devices)
+          try:
+              ios_rs.start_tunnel("no-such-device", mode="invalid")
+          except ValueError as exc:
+              message = str(exc)
+              assert "userspace" in message and "kernel" in message, message
+          else:
+              raise AssertionError("invalid tunnel mode must raise ValueError")
+          print("wheel smoke OK: import, callable, invalid-mode ValueError")
+          PY
+
+      - name: Smoke wheel in clean venv (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv .smoke-venv
+          uv pip install --python .smoke-venv/Scripts/python.exe "$WHEEL_FILE"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          "$GITHUB_WORKSPACE/.smoke-venv/Scripts/python.exe" - <<'PY'
+          import ios_rs
+
+          assert callable(ios_rs.list_devices)
+          try:
+              ios_rs.start_tunnel("no-such-device", mode="invalid")
+          except ValueError as exc:
+              message = str(exc)
+              assert "userspace" in message and "kernel" in message, message
+          else:
+              raise AssertionError("invalid tunnel mode must raise ValueError")
+          print("wheel smoke OK: import, callable, invalid-mode ValueError")
+          PY
 
       - name: Upload wheels as artifacts
         uses: actions/upload-artifact@v4
@@ -391,7 +578,7 @@ jobs:
   python-sdist:
     name: Python sdist
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, validate-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -404,9 +591,30 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Build sdist
+        shell: bash
         run: |
+          set -euo pipefail
+          rm -f dist/*.tar.gz
           cd crates/ios-py
           uvx maturin sdist --out ../../dist
+          cd ../..
+          SDIST_FILE="$(ls dist/*.tar.gz)"
+          [ -s "$SDIST_FILE" ] || { echo "::error::sdist missing or empty: $SDIST_FILE"; exit 1; }
+          echo "Built sdist: $SDIST_FILE ($(wc -c < "$SDIST_FILE") bytes)"
+          echo "SDIST_FILE=$SDIST_FILE" >> "$GITHUB_ENV"
+
+      - name: Inspect sdist archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pattern in 'pyproject\.toml$' 'Cargo\.toml$' 'Cargo\.lock$' 'src/lib\.rs$'; do
+            tar -tzf "$SDIST_FILE" | grep -E "$pattern" | head -1 > /dev/null \
+              || { echo "::error::sdist missing required file matching $pattern"; exit 1; }
+          done
+          echo "sdist contents (first 20 entries):"
+          tar -tzf "$SDIST_FILE" | head -20
+          # Note: standalone sdist installation (with build isolation) is not
+          # exercised here; wheel artifact smoke covers binding installability.
 
       - name: Upload sdist as artifact
         uses: actions/upload-artifact@v4
@@ -444,7 +652,7 @@ jobs:
   publish-crates:
     name: Publish to Crates.io
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, validate-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

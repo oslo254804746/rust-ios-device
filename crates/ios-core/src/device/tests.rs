@@ -7,6 +7,21 @@ mod tests {
     use tokio::io::duplex;
 
     #[cfg(feature = "tunnel")]
+    use indexmap::IndexMap;
+    #[cfg(feature = "tunnel")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "tunnel")]
+    use std::sync::Arc;
+    #[cfg(feature = "tunnel")]
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[cfg(feature = "tunnel")]
+    use tokio::net::TcpListener;
+    #[cfg(feature = "tunnel")]
+    use tokio::time::{timeout, Duration};
+    #[cfg(feature = "tunnel")]
+    use crate::xpc::message::{encode_message, flags, XpcMessage};
+
+    #[cfg(feature = "tunnel")]
     use super::credentials::*;
     #[cfg(feature = "tunnel")]
     use super::pairing::{GuardedTunnelStream, RemotePairingControlChannel};
@@ -878,5 +893,383 @@ mod tests {
             CoreError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::TimedOut
         ));
         assert!(err.to_string().contains("RSD check-in timed out"));
+    }
+
+    // ── RSD proxy framer budgets and fallback reachability (T1) ─────────────
+
+    #[cfg(feature = "tunnel")]
+    const RSD_FRAME_DATA: u8 = 0x00;
+    #[cfg(feature = "tunnel")]
+    const RSD_FRAME_HEADERS: u8 = 0x01;
+    #[cfg(feature = "tunnel")]
+    const RSD_FRAME_SETTINGS: u8 = 0x04;
+    #[cfg(feature = "tunnel")]
+    const RSD_STREAM_CLIENT_SERVER: u32 = 1;
+    #[cfg(feature = "tunnel")]
+    const RSD_STREAM_SERVER_CLIENT: u32 = 3;
+
+    #[cfg(feature = "tunnel")]
+    fn rsd_frame(frame_type: u8, frame_flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+        let len = payload.len();
+        let mut out = Vec::with_capacity(9 + len);
+        out.push(((len >> 16) & 0xFF) as u8);
+        out.push(((len >> 8) & 0xFF) as u8);
+        out.push((len & 0xFF) as u8);
+        out.push(frame_type);
+        out.push(frame_flags);
+        out.extend_from_slice(&(stream_id & 0x7FFF_FFFF).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[cfg(feature = "tunnel")]
+    async fn rsd_read_frame<S>(sock: &mut S) -> (u8, u32, Vec<u8>)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut header = [0u8; 9];
+        sock.read_exact(&mut header).await.unwrap();
+        let len =
+            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | (header[2] as usize);
+        let mut payload = vec![0u8; len];
+        sock.read_exact(&mut payload).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes([
+                header[5] & 0x7F,
+                header[6],
+                header[7],
+                header[8],
+            ]),
+            payload,
+        )
+    }
+
+    /// Consume the proxy prelude and script the H2 SETTINGS exchange exactly
+    /// like a device peer behind the userspace proxy would.
+    #[cfg(feature = "tunnel")]
+    async fn rsd_proxy_h2_handshake<S>(sock: &mut S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut prelude = [0u8; 20];
+        sock.read_exact(&mut prelude).await.unwrap();
+        let mut preface = [0u8; 24];
+        sock.read_exact(&mut preface).await.unwrap();
+        let mut settings = [0u8; 21];
+        sock.read_exact(&mut settings).await.unwrap();
+        let mut window_update = [0u8; 13];
+        sock.read_exact(&mut window_update).await.unwrap();
+        sock.write_all(&rsd_frame(RSD_FRAME_SETTINGS, 0, 0, &[]))
+            .await
+            .unwrap();
+        sock.flush().await.unwrap();
+        let mut ack = [0u8; 9];
+        sock.read_exact(&mut ack).await.unwrap();
+    }
+
+    #[cfg(feature = "tunnel")]
+    fn rsd_empty_message() -> Vec<u8> {
+        encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET,
+            msg_id: 0,
+            body: None,
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    #[cfg(feature = "tunnel")]
+    fn rsd_handshake_message() -> Vec<u8> {
+        let body = IndexMap::from([
+            (
+                "MessageType".to_string(),
+                XpcValue::String("Handshake".into()),
+            ),
+            (
+                "Properties".to_string(),
+                XpcValue::Dictionary(IndexMap::from([(
+                    "UniqueDeviceID".to_string(),
+                    XpcValue::String("RSDPROXYTESTUDID".into()),
+                )])),
+            ),
+            (
+                "Services".to_string(),
+                XpcValue::Dictionary(IndexMap::from([(
+                    "com.apple.instruments.dtservicehub".to_string(),
+                    XpcValue::Dictionary(IndexMap::from([(
+                        "Port".to_string(),
+                        XpcValue::String("12345".into()),
+                    )])),
+                )])),
+            ),
+        ]);
+        encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 0,
+            body: Some(XpcValue::Dictionary(body)),
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    /// Script one legacy XPC bootstrap exchange (msg1, stream-3 HEADERS, msg3,
+    /// msg2) and answer each discard with an empty message on the matching
+    /// stream.
+    #[cfg(feature = "tunnel")]
+    async fn rsd_serve_legacy_bootstrap<S>(sock: &mut S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (ftype, sid, _) = rsd_read_frame(sock).await;
+        assert_eq!(
+            (ftype, sid),
+            (RSD_FRAME_HEADERS, RSD_STREAM_CLIENT_SERVER),
+            "legacy: HEADERS for stream 1"
+        );
+        let (ftype, sid, _) = rsd_read_frame(sock).await;
+        assert_eq!(
+            (ftype, sid),
+            (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+            "legacy: msg1 on stream 1"
+        );
+        sock.write_all(&rsd_frame(
+            RSD_FRAME_DATA,
+            0,
+            RSD_STREAM_CLIENT_SERVER,
+            &rsd_empty_message(),
+        ))
+        .await
+        .unwrap();
+
+        let (ftype, sid, _) = rsd_read_frame(sock).await;
+        assert_eq!(
+            (ftype, sid),
+            (RSD_FRAME_HEADERS, RSD_STREAM_SERVER_CLIENT),
+            "legacy: HEADERS for stream 3"
+        );
+        let (ftype, sid, _) = rsd_read_frame(sock).await;
+        assert_eq!(
+            (ftype, sid),
+            (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+            "legacy: msg3 on stream 1"
+        );
+        sock.write_all(&rsd_frame(
+            RSD_FRAME_DATA,
+            0,
+            RSD_STREAM_CLIENT_SERVER,
+            &rsd_empty_message(),
+        ))
+        .await
+        .unwrap();
+
+        let (ftype, sid, _) = rsd_read_frame(sock).await;
+        assert_eq!(
+            (ftype, sid),
+            (RSD_FRAME_DATA, RSD_STREAM_SERVER_CLIENT),
+            "legacy: msg2 on stream 3"
+        );
+        sock.write_all(&rsd_frame(
+            RSD_FRAME_DATA,
+            0,
+            RSD_STREAM_SERVER_CLIENT,
+            &rsd_empty_message(),
+        ))
+        .await
+        .unwrap();
+        sock.flush().await.unwrap();
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn rsd_proxy_queued_failure_falls_back_to_legacy_with_new_framer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accept_count = accepts.clone();
+        let server_task = tokio::spawn(async move {
+            // Connection 1: queued bootstrap, then a handshake that never
+            // succeeds. Six non-handshake stream-1 messages exhaust the
+            // handshake retry budget and fail it without waiting for the 4s
+            // stage timeout.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            accept_count.fetch_add(1, Ordering::SeqCst);
+            rsd_proxy_h2_handshake(&mut sock).await;
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!(
+                (ftype, sid),
+                (RSD_FRAME_HEADERS, RSD_STREAM_CLIENT_SERVER),
+                "queued: HEADERS for stream 1"
+            );
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!(
+                (ftype, sid),
+                (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+                "queued: msg1 on stream 1"
+            );
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!(
+                (ftype, sid),
+                (RSD_FRAME_HEADERS, RSD_STREAM_SERVER_CLIENT),
+                "queued: HEADERS for stream 3"
+            );
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!(
+                (ftype, sid),
+                (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+                "queued: msg2 on stream 1"
+            );
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!(
+                (ftype, sid),
+                (RSD_FRAME_DATA, RSD_STREAM_SERVER_CLIENT),
+                "queued: msg3 on stream 3"
+            );
+            for _ in 0..6 {
+                sock.write_all(&rsd_frame(
+                    RSD_FRAME_DATA,
+                    0,
+                    RSD_STREAM_CLIENT_SERVER,
+                    &rsd_empty_message(),
+                ))
+                .await
+                .unwrap();
+            }
+            sock.flush().await.unwrap();
+            drop(sock);
+
+            // Connection 2: the legacy bootstrap must run on a fresh framer.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            accept_count.fetch_add(1, Ordering::SeqCst);
+            rsd_proxy_h2_handshake(&mut sock).await;
+            rsd_serve_legacy_bootstrap(&mut sock).await;
+            sock.write_all(&rsd_frame(
+                RSD_FRAME_DATA,
+                0,
+                RSD_STREAM_CLIENT_SERVER,
+                &rsd_handshake_message(),
+            ))
+            .await
+            .unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let handshake = timeout(
+            Duration::from_secs(10),
+            attempt_rsd_via_proxy(proxy_port, "::1", 58783),
+        )
+        .await
+        .expect("RSD proxy fallback must not hang")
+        .expect("legacy fallback must succeed after the queued failure");
+        assert_eq!(handshake.udid, "RSDPROXYTESTUDID");
+        assert!(handshake
+            .services
+            .contains_key("com.apple.instruments.dtservicehub"));
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "the legacy fallback must open a fresh framer instead of reusing the failed queued one"
+        );
+
+        server_task.await.unwrap();
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn rsd_proxy_passive_fallback_reuses_framer_after_legacy_handshake_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accept_count = accepts.clone();
+        let server_task = tokio::spawn(async move {
+            // Connection 1: the queued bootstrap is write-only, so serve its
+            // five frames (HEADERS#1, DATA#1, HEADERS#3, DATA#1, DATA#3) and
+            // fail the queued handshake with six non-handshake messages.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            accept_count.fetch_add(1, Ordering::SeqCst);
+            rsd_proxy_h2_handshake(&mut sock).await;
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!((ftype, sid), (RSD_FRAME_HEADERS, RSD_STREAM_CLIENT_SERVER));
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!((ftype, sid), (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER));
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!((ftype, sid), (RSD_FRAME_HEADERS, RSD_STREAM_SERVER_CLIENT));
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!((ftype, sid), (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER));
+            let (ftype, sid, _) = rsd_read_frame(&mut sock).await;
+            assert_eq!((ftype, sid), (RSD_FRAME_DATA, RSD_STREAM_SERVER_CLIENT));
+            for _ in 0..6 {
+                sock.write_all(&rsd_frame(
+                    RSD_FRAME_DATA,
+                    0,
+                    RSD_STREAM_CLIENT_SERVER,
+                    &rsd_empty_message(),
+                ))
+                .await
+                .unwrap();
+            }
+            sock.flush().await.unwrap();
+            drop(sock);
+
+            // Connection 2: the legacy bootstrap gets its discard answers, the
+            // legacy handshake fails with six non-handshake messages, and the
+            // passive fallback then reads the SAME framer's stream 1 again.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            accept_count.fetch_add(1, Ordering::SeqCst);
+            rsd_proxy_h2_handshake(&mut sock).await;
+            rsd_serve_legacy_bootstrap(&mut sock).await;
+            for _ in 0..6 {
+                sock.write_all(&rsd_frame(
+                    RSD_FRAME_DATA,
+                    0,
+                    RSD_STREAM_CLIENT_SERVER,
+                    &rsd_empty_message(),
+                ))
+                .await
+                .unwrap();
+            }
+            sock.flush().await.unwrap();
+            sock.write_all(&rsd_frame(
+                RSD_FRAME_DATA,
+                0,
+                RSD_STREAM_CLIENT_SERVER,
+                &rsd_handshake_message(),
+            ))
+            .await
+            .unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let handshake = timeout(
+            Duration::from_secs(10),
+            attempt_rsd_via_proxy(proxy_port, "::1", 58783),
+        )
+        .await
+        .expect("passive fallback must not hang")
+        .expect("passive fallback must recover the handshake on the same framer");
+        assert_eq!(handshake.udid, "RSDPROXYTESTUDID");
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "the passive fallback must keep using the legacy framer, not open a third connection"
+        );
+
+        server_task.await.unwrap();
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn rsd_proxy_returns_none_when_proxy_port_is_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let result = timeout(
+            Duration::from_secs(5),
+            attempt_rsd_via_proxy(proxy_port, "::1", 58783),
+        )
+        .await
+        .expect("a closed proxy port must fail fast instead of hanging");
+        assert!(result.is_none(), "a closed proxy port must yield None");
     }
 }

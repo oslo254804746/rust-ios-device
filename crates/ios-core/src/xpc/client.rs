@@ -49,15 +49,42 @@ impl XpcClient {
     }
 
     /// Connect to an XPC service over an already-established stream.
+    ///
+    /// The H2 handshake and the XPC bootstrap share one initialization budget
+    /// ([`crate::tunnel::TUNNEL_CONNECT_TIMEOUT`]); the XPC stage only gets the
+    /// time the H2 handshake did not consume. On timeout the stream attempt is
+    /// discarded — a partially-read H2/XPC exchange is never handed to service
+    /// calls.
     pub async fn connect_stream<S>(stream: S) -> Result<Self, XpcError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        Self::connect_stream_with_budget(stream, crate::tunnel::TUNNEL_CONNECT_TIMEOUT).await
+    }
+
+    /// Same initialization as [`Self::connect_stream`] with an injectable
+    /// shared budget for the H2 handshake plus XPC bootstrap.
+    pub(crate) async fn connect_stream_with_budget<S>(
+        stream: S,
+        budget: std::time::Duration,
+    ) -> Result<Self, XpcError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let stream: DynStream = Box::new(stream);
-        let mut framer = H2Framer::connect(stream)
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut framer = H2Framer::connect_with_deadline(stream, deadline)
             .await
             .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
-        initialize_xpc_connection_on_framer(&mut framer).await?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout(remaining, initialize_xpc_connection_on_framer(&mut framer))
+            .await
+            .map_err(|_| {
+                XpcError::Tls(
+                    "XPC initialization timed out; budget shared with H2 handshake exhausted"
+                        .to_string(),
+                )
+            })??;
         Ok(Self {
             inner: XpcConnection::new(framer),
         })
@@ -926,6 +953,560 @@ mod tests {
             .and_then(|dict| dict.get("kind"))
             .and_then(XpcValue::as_str);
         assert_eq!(buffered_kind, Some("early"));
+
+        server_task.await.unwrap();
+    }
+
+    // ── Initialization deadline contract (T1) ────────────────────────────────
+
+    #[tokio::test]
+    async fn connect_stream_with_budget_times_out_when_server_withholds_settings() {
+        let (client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            // Consume the client handshake but never send server SETTINGS.
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let _ = rx.await;
+            drop(tx);
+        });
+
+        let started = tokio::time::Instant::now();
+        let err = timeout(
+            Duration::from_secs(5),
+            XpcClient::connect_stream_with_budget(client, Duration::from_millis(150)),
+        )
+        .await
+        .expect("initialization must return at the injected budget instead of hanging")
+        .err()
+        .expect("a server that withholds SETTINGS must produce a timeout error");
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "must not fail before the budget elapses; elapsed {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the budget must bound the whole attempt; elapsed {elapsed:?}"
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "error should identify the timeout stage: {err}"
+        );
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn connect_stream_with_budget_times_out_on_partial_h2_header() {
+        let (client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            // Send 4 of the 9 frame-header bytes; the oneshot decides whether
+            // the rest ever arrives (here: never).
+            server.write_all(&[0x00, 0x00, 0x00, 0x04]).await.unwrap();
+            server.flush().await.unwrap();
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let _ = rx.await;
+            drop(tx);
+        });
+
+        let started = tokio::time::Instant::now();
+        let result = timeout(
+            Duration::from_secs(5),
+            XpcClient::connect_stream_with_budget(client, Duration::from_millis(150)),
+        )
+        .await
+        .expect("partial H2 header must hit the injected budget instead of hanging");
+        assert!(result.is_err(), "incomplete header must not complete init");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(150) && elapsed < Duration::from_secs(2),
+            "one budget from initialization start; elapsed {elapsed:?}"
+        );
+
+        server_task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_stream_with_budget_shares_one_deadline_across_h2_and_xpc_stages() {
+        let (client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            // The H2 handshake completes, but only after half of the shared
+            // budget is spent.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+            assert_eq!(ack, settings_ack_frame().as_slice());
+
+            let mut cs_headers = [0u8; 9];
+            server.read_exact(&mut cs_headers).await.unwrap();
+
+            let mut cs_msg1_header = [0u8; 9];
+            server.read_exact(&mut cs_msg1_header).await.unwrap();
+            let cs_msg1_len = ((cs_msg1_header[0] as usize) << 16)
+                | ((cs_msg1_header[1] as usize) << 8)
+                | (cs_msg1_header[2] as usize);
+            let mut cs_msg1 = vec![0u8; cs_msg1_len];
+            server.read_exact(&mut cs_msg1).await.unwrap();
+
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // The first XPC discard is answered; the second one stalls, so the
+            // XPC stage must only get the remaining budget, never a fresh one.
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let _ = rx.await;
+            drop(tx);
+        });
+
+        let budget = Duration::from_millis(500);
+        let started = tokio::time::Instant::now();
+        let result = timeout(
+            budget * 4,
+            XpcClient::connect_stream_with_budget(client, budget),
+        )
+        .await
+        .expect("the shared deadline must return the initialization attempt");
+        assert!(result.is_err(), "stalled XPC stage must time out");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= budget,
+            "the full shared budget must be consumed; elapsed {elapsed:?}"
+        );
+        assert!(
+            elapsed < budget + budget / 4,
+            "H2 already consumed 250ms, so the XPC stage must not restart a full budget; \
+             elapsed {elapsed:?}"
+        );
+
+        server_task.abort();
+    }
+
+    /// Documents the pre-existing behavior the deadline variant protects
+    /// against: [`H2Framer::connect`] itself carries no budget, so a stalling
+    /// peer only "returns" when this test's external watchdog fires.
+    #[tokio::test]
+    async fn unbudgeted_h2_connect_does_not_return_when_server_stalls() {
+        let (client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            // Never answer with server SETTINGS.
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let _ = rx.await;
+            drop(tx);
+        });
+
+        let result = timeout(Duration::from_millis(300), H2Framer::connect(client)).await;
+        assert!(
+            result.is_err(),
+            "the unbudgeted H2Framer::connect path must still be observable as non-returning"
+        );
+
+        server_task.abort();
+    }
+
+    // ── Cancel-safety contract (T4) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cancelled_call_is_not_replayed_and_connection_stays_usable() {
+        let (client, mut server) = duplex(64 * 1024);
+        let reply = |msg_id: u64| {
+            encode_message(&XpcMessage {
+                flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+                msg_id,
+                body: Some(XpcValue::Dictionary(IndexMap::new())),
+            })
+            .expect("message should encode")
+        };
+        let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_reply_tx, release_reply_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+            let mut cs_headers = [0u8; 9];
+            server.read_exact(&mut cs_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(decode_message_payload(&payload), (flags::ALWAYS_SET, 0));
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let mut sc_headers = [0u8; 9];
+            server.read_exact(&mut sc_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | 0x200, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_SERVER_CLIENT,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // Request 1 arrives exactly once, before its reply is released.
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 1)
+            );
+            request_seen_tx.send(()).unwrap();
+            release_reply_rx.await.unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &reply(1)))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // The follow-up call sends request 2 — and nothing else: a
+            // replay of request 1 would desync this exact sequence.
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 2)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &reply(2)))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // No replayed request may arrive afterwards.
+            let mut probe = [0u8; 1];
+            assert!(
+                timeout(Duration::from_millis(300), server.read_exact(&mut probe))
+                    .await
+                    .is_err(),
+                "no bytes may reach the wire after the cancelled call"
+            );
+        });
+
+        let mut client = timeout(Duration::from_secs(5), XpcClient::connect_stream(client))
+            .await
+            .expect("connect watchdog")
+            .expect("connect should succeed");
+
+        {
+            let call_fut = client.call(XpcValue::Dictionary(IndexMap::new()));
+            tokio::pin!(call_fut);
+            // The server has seen request 1; no reply bytes exist yet, so the
+            // cancel lands at a clean wait point.
+            request_seen_rx.await.unwrap();
+            // call_fut dropped here: cancelled after the request was sent.
+        }
+        release_reply_tx.send(()).unwrap();
+
+        let response = timeout(
+            Duration::from_secs(5),
+            client.call(XpcValue::Dictionary(IndexMap::new())),
+        )
+        .await
+        .expect("second call watchdog")
+        .expect("the connection must stay usable after a cancelled call");
+        assert_eq!(response.msg_id, 2);
+
+        // The late reply for the cancelled call must be buffered, not lost.
+        let late = client.recv().await.expect("late reply should be parked");
+        assert_eq!(late.msg_id, 1);
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn never_polled_stream_invoke_drop_is_inert() {
+        let (client, mut server) = duplex(64 * 1024);
+        let reply = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 1,
+            body: Some(XpcValue::Dictionary(IndexMap::new())),
+        })
+        .expect("message should encode");
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+            let mut cs_headers = [0u8; 9];
+            server.read_exact(&mut cs_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(decode_message_payload(&payload), (flags::ALWAYS_SET, 0));
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let mut sc_headers = [0u8; 9];
+            server.read_exact(&mut sc_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | 0x200, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_SERVER_CLIENT,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // The FIRST frame after the bootstrap must be the call's request:
+            // a dropped, never-polled stream_invoke must have sent nothing.
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 1)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &reply))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut client = timeout(Duration::from_secs(5), XpcClient::connect_stream(client))
+            .await
+            .expect("connect watchdog")
+            .expect("connect should succeed");
+
+        let stream = client.stream_invoke(XpcValue::Dictionary(IndexMap::new()));
+        drop(stream); // never polled: must not touch the connection state
+
+        let response = timeout(
+            Duration::from_secs(5),
+            client.call(XpcValue::Dictionary(IndexMap::new())),
+        )
+        .await
+        .expect("call watchdog")
+        .expect("the connection must be unaffected by the dropped stream");
+        assert_eq!(response.msg_id, 1);
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_invoke_drop_between_messages_keeps_connection_usable() {
+        let (client, mut server) = duplex(64 * 1024);
+        let first_push = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 71,
+            body: Some(XpcValue::Dictionary(IndexMap::new())),
+        })
+        .expect("message should encode");
+        let reply = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::REPLY | flags::DATA,
+            msg_id: 2,
+            body: Some(XpcValue::Dictionary(IndexMap::new())),
+        })
+        .expect("message should encode");
+
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+            let mut cs_headers = [0u8; 9];
+            server.read_exact(&mut cs_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(decode_message_payload(&payload), (flags::ALWAYS_SET, 0));
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let mut sc_headers = [0u8; 9];
+            server.read_exact(&mut sc_headers).await.unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | 0x200, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_CLIENT_SERVER,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::INIT_HANDSHAKE | flags::ALWAYS_SET, 0)
+            );
+            server
+                .write_all(&data_frame(
+                    STREAM_SERVER_CLIENT,
+                    &empty_message(flags::ALWAYS_SET),
+                ))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // The stream_invoke request, then one pushed message.
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 1)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &first_push))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+
+            // After the stream is dropped between messages, the next frame
+            // must be the follow-up call's request — nothing else.
+            let (frame_type, _, _, payload) = read_h2_frame(&mut server).await;
+            assert_eq!(frame_type, FRAME_DATA);
+            assert_eq!(
+                decode_message_payload(&payload),
+                (flags::ALWAYS_SET | flags::DATA | flags::WANTING_REPLY, 2)
+            );
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &reply))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut client = timeout(Duration::from_secs(5), XpcClient::connect_stream(client))
+            .await
+            .expect("connect watchdog")
+            .expect("connect should succeed");
+
+        let mut stream = Box::pin(client.stream_invoke(XpcValue::Dictionary(IndexMap::new())));
+        let pushed = timeout(Duration::from_secs(5), stream.as_mut().next())
+            .await
+            .expect("stream invoke watchdog")
+            .expect("stream should yield the pushed message")
+            .expect("pushed message should decode");
+        assert_eq!(pushed.msg_id, 71);
+        drop(stream); // dropped between complete messages: a clean point
+
+        let response = timeout(
+            Duration::from_secs(5),
+            client.call(XpcValue::Dictionary(IndexMap::new())),
+        )
+        .await
+        .expect("call watchdog")
+        .expect("the connection must stay usable after dropping the stream");
+        assert_eq!(response.msg_id, 2);
 
         server_task.await.unwrap();
     }

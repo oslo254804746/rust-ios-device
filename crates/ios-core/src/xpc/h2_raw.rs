@@ -187,6 +187,25 @@ pub struct H2Framer<S> {
     highest_peer_stream_id: u32,
     goaway: Option<GoAwayState>,
     connection_error: Option<String>,
+    // ── Cancel-safety state ──────────────────────────────────────────────────
+    // A reader/writer future can be cancelled between polls. Progress that
+    // has already consumed socket bytes is persisted here so the next
+    // operation resumes the interrupted frame instead of losing bytes and
+    // desyncing the parser.
+    partial_header: [u8; 9],
+    header_filled: usize,
+    // Parsed once the 9-byte header is complete; kept until the payload is.
+    pending_frame_meta: Option<(u8, u8, u32, usize)>,
+    payload_buf: Option<Vec<u8>>,
+    payload_filled: usize,
+    // Unwritten remainder of a frame whose write was cancelled mid-frame; the
+    // next write (or read) finishes it before touching the socket again.
+    pending_write: Option<Vec<u8>>,
+    // Set by the XPC message layer once a message header was consumed from
+    // the stream buffers and before its body finished arriving. A cancelled
+    // body read cannot be realigned, so the marker makes later operations
+    // refuse instead of silently splicing body bytes into the next header.
+    message_read_in_progress: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -243,6 +262,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             highest_peer_stream_id: 0,
             goaway: None,
             connection_error: None,
+            partial_header: [0u8; 9],
+            header_filled: 0,
+            pending_frame_meta: None,
+            payload_buf: None,
+            payload_filled: 0,
+            pending_write: None,
+            message_read_in_progress: false,
         }
     }
 
@@ -271,6 +297,57 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(framer)
     }
 
+    /// Perform the HTTP/2 handshake bounded by `deadline`.
+    ///
+    /// Every stage (client preface/SETTINGS/WINDOW_UPDATE writes and the wait
+    /// for the server SETTINGS frame) shares the one deadline: each stage only
+    /// gets the remaining time and never restarts a fresh budget. A deadline in
+    /// the past fails immediately.
+    pub async fn connect_with_deadline(
+        mut stream: S,
+        deadline: tokio::time::Instant,
+    ) -> Result<Self, H2Error> {
+        let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout(remaining(), async {
+            // 1. Send HTTP/2 connection preface
+            stream.write_all(H2_PREFACE).await?;
+
+            // 2. Send SETTINGS
+            let settings = build_settings_frame(&[
+                (SETTINGS_MAX_CONCURRENT_STREAMS, 100),
+                (SETTINGS_INITIAL_WINDOW_SIZE, INITIAL_WINDOW_SIZE),
+            ]);
+            stream.write_all(&settings).await?;
+
+            // 3. Bring the connection-level window up to match the stream-level setting.
+            let wupdate = build_window_update_frame(STREAM_INIT, INITIAL_WINDOW_INCREMENT);
+            stream.write_all(&wupdate).await?;
+            stream.flush().await?;
+            Ok::<(), H2Error>(())
+        })
+        .await
+        .map_err(|_| {
+            H2Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "H2 handshake timed out writing client preface/SETTINGS/WINDOW_UPDATE",
+            ))
+        })??;
+
+        let mut framer = Self::new(stream);
+
+        // 4. Read server SETTINGS, send ACK
+        tokio::time::timeout(remaining(), framer.read_until_settings_ack_needed())
+            .await
+            .map_err(|_| {
+                H2Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "H2 handshake timed out waiting for server SETTINGS",
+                ))
+            })??;
+
+        Ok(framer)
+    }
+
     async fn read_until_settings_ack_needed(&mut self) -> Result<(), H2Error> {
         loop {
             let frame = self.read_raw_frame().await?;
@@ -291,31 +368,75 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     /// Read one raw HTTP/2 frame from the stream.
+    ///
+    /// Cancellation-safe: header and payload progress (including the bytes
+    /// already consumed) is persisted on the framer, so a dropped reader
+    /// never loses consumed bytes — the next read resumes the interrupted
+    /// frame instead of desyncing the parser.
     async fn read_raw_frame(&mut self) -> Result<RawFrame, H2Error> {
         self.ensure_connection_open()?;
-        let mut header = [0u8; 9];
-        self.stream.read_exact(&mut header).await?;
+        // Finish a frame whose write was cancelled part-way before reading,
+        // so the peer's reply can be interpreted against a complete request.
+        self.finish_pending_write().await?;
 
-        let length =
-            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | (header[2] as usize);
-        let frame_type = header[3];
-        let flags = header[4];
-        let raw_stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
-        // The R bit is reserved and MUST be zero when sending, but RFC 9113
-        // requires receivers to ignore it. Do not turn a peer's non-zero R
-        // bit into a connection error while decoding the 31-bit identifier.
-        let stream_id = raw_stream_id & 0x7FFF_FFFF;
-
-        if length > MAX_FRAME_PAYLOAD {
-            return Err(self.connection_protocol_error(format!(
-                "frame payload {length} exceeds max frame size {MAX_FRAME_PAYLOAD}"
-            )));
+        while self.header_filled < 9 {
+            let n = self
+                .stream
+                .read(&mut self.partial_header[self.header_filled..])
+                .await?;
+            if n == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            }
+            self.header_filled += n;
         }
 
-        let mut payload = vec![0u8; length];
-        if length > 0 {
-            self.stream.read_exact(&mut payload).await?;
-        }
+        let (frame_type, flags, stream_id, length) = match self.pending_frame_meta {
+            Some(meta) => meta,
+            None => {
+                let header = &self.partial_header;
+                let length = ((header[0] as usize) << 16)
+                    | ((header[1] as usize) << 8)
+                    | (header[2] as usize);
+                let frame_type = header[3];
+                let flags = header[4];
+                let raw_stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
+                // The R bit is reserved and MUST be zero when sending, but RFC 9113
+                // requires receivers to ignore it. Do not turn a peer's non-zero R
+                // bit into a connection error while decoding the 31-bit identifier.
+                let stream_id = raw_stream_id & 0x7FFF_FFFF;
+
+                if length > MAX_FRAME_PAYLOAD {
+                    return Err(self.connection_protocol_error(format!(
+                        "frame payload {length} exceeds max frame size {MAX_FRAME_PAYLOAD}"
+                    )));
+                }
+                let meta = (frame_type, flags, stream_id, length);
+                self.pending_frame_meta = Some(meta);
+                meta
+            }
+        };
+
+        let payload = if length > 0 {
+            if self.payload_buf.is_none() {
+                self.payload_buf = Some(vec![0u8; length]);
+            }
+            let buf = self.payload_buf.as_mut().expect("payload buffer exists");
+            while self.payload_filled < length {
+                let n = self.stream.read(&mut buf[self.payload_filled..]).await?;
+                if n == 0 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+                }
+                self.payload_filled += n;
+            }
+            self.payload_buf.take().expect("payload buffer exists")
+        } else {
+            Vec::new()
+        };
+
+        // The frame is complete: clear the resume state.
+        self.header_filled = 0;
+        self.pending_frame_meta = None;
+        self.payload_filled = 0;
 
         Ok(RawFrame {
             frame_type,
@@ -325,9 +446,77 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         })
     }
 
+    /// Marks that the XPC message layer consumed a message header and is
+    /// still waiting for its body. If that body read is cancelled, the
+    /// consumed header cannot be recovered and every later operation must
+    /// refuse instead of splicing body bytes into the next header.
+    pub(crate) fn begin_message_body(&mut self) {
+        self.message_read_in_progress = true;
+    }
+
+    pub(crate) fn end_message_body(&mut self) {
+        self.message_read_in_progress = false;
+    }
+
+    pub(crate) fn is_message_read_in_progress(&self) -> bool {
+        self.message_read_in_progress
+    }
+
+    /// Write one frame fragment, resumable across cancellation.
+    ///
+    /// If the writer is dropped between polls, the unwritten remainder is
+    /// captured on the framer and flushed by the next write or read, so a
+    /// partial frame is never silently left on the wire.
+    async fn write_all_tracked(&mut self, bytes: &[u8]) -> Result<(), H2Error> {
+        self.finish_pending_write().await?;
+        self.write_frame_bytes(bytes).await
+    }
+
+    async fn finish_pending_write(&mut self) -> Result<(), H2Error> {
+        if let Some(pending) = self.pending_write.take() {
+            self.write_frame_bytes(&pending).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_frame_bytes(&mut self, bytes: &[u8]) -> Result<(), H2Error> {
+        struct PendingWriteGuard<'a> {
+            buf: &'a [u8],
+            written: usize,
+            sink: &'a mut Option<Vec<u8>>,
+            clean: bool,
+        }
+        impl Drop for PendingWriteGuard<'_> {
+            fn drop(&mut self) {
+                if !self.clean && self.written > 0 && self.written < self.buf.len() {
+                    *self.sink = Some(self.buf[self.written..].to_vec());
+                }
+            }
+        }
+
+        let mut guard = PendingWriteGuard {
+            buf: bytes,
+            written: 0,
+            sink: &mut self.pending_write,
+            clean: false,
+        };
+        while guard.written < bytes.len() {
+            let n = self.stream.write(&bytes[guard.written..]).await?;
+            if n == 0 {
+                guard.clean = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            guard.written += n;
+        }
+        guard.clean = true;
+        Ok(())
+    }
+
     /// Read data from the serverClient stream (device → client).
     /// Blocks until `n` bytes are available.
+    // Kept as a public helper; the XPC layer reads through read_stream now.
     #[cfg(feature = "tunnel")]
+    #[allow(dead_code)]
     pub async fn read_server_client(&mut self, n: usize) -> Result<Bytes, H2Error> {
         self.read_stream(STREAM_SERVER_CLIENT, n).await
     }
@@ -588,7 +777,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         // validated and applied. This also makes a waiting writer observe the
         // new window/frame limits before it resumes.
         let ack = build_settings_ack();
-        self.stream.write_all(&ack).await?;
+        self.write_all_tracked(&ack).await?;
         self.stream.flush().await?;
         Ok(())
     }
@@ -790,7 +979,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             return Ok(());
         }
         for frame in &frames {
-            self.stream.write_all(frame).await?;
+            self.write_all_tracked(frame).await?;
         }
         self.stream.flush().await?;
         Ok(())
@@ -1009,8 +1198,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.open_stream(stream_id).await?;
         self.ensure_stream_available(stream_id)?;
         if data.is_empty() {
-            self.stream
-                .write_all(&build_data_frame(stream_id, data))
+            self.write_all_tracked(&build_data_frame(stream_id, data))
                 .await?;
         } else {
             let mut offset = 0;
@@ -1027,8 +1215,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         self.connection_protocol_error("outbound DATA offset overflow".to_string())
                     })?;
                 let chunk = &data[offset..end];
-                self.stream
-                    .write_all(&build_data_frame(stream_id, chunk))
+                self.write_all_tracked(&build_data_frame(stream_id, chunk))
                     .await?;
                 self.consume_outbound_window(stream_id, chunk.len())?;
                 offset = end;
@@ -1065,7 +1252,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 )));
             }
             let headers = build_headers_frame(stream_id);
-            self.stream.write_all(&headers).await?;
+            self.write_all_tracked(&headers).await?;
             self.stream.flush().await?;
             self.outbound_stream_windows
                 .insert(stream_id, self.peer_initial_window_size);
@@ -2974,5 +3161,367 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(framer.buffered_bytes, 0);
+    }
+
+    // ── Cancel-safety contract (T4) ─────────────────────────────────────────
+    //
+    // These tests observe how many bytes a cancelled reader/writer actually
+    // consumed, then verify the connection's behavior on the wire afterwards.
+
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::ReadBuf;
+    use tokio::sync::oneshot;
+
+    /// Wraps a stream and signals once the observed byte count crosses a
+    /// threshold, so a test can cancel a future at an exact consumption point.
+    struct CountingStream<S> {
+        inner: S,
+        read_bytes: usize,
+        written_bytes: usize,
+        read_tx: Option<oneshot::Sender<usize>>,
+        read_threshold: usize,
+        write_tx: Option<oneshot::Sender<usize>>,
+        write_threshold: usize,
+    }
+
+    impl<S> CountingStream<S> {
+        fn new(inner: S) -> Self {
+            Self {
+                inner,
+                read_bytes: 0,
+                written_bytes: 0,
+                read_tx: None,
+                read_threshold: usize::MAX,
+                write_tx: None,
+                write_threshold: usize::MAX,
+            }
+        }
+
+        fn probe_reads(self, threshold: usize) -> (Self, oneshot::Receiver<usize>) {
+            let (tx, rx) = oneshot::channel();
+            (
+                Self {
+                    read_tx: Some(tx),
+                    read_threshold: threshold,
+                    ..self
+                },
+                rx,
+            )
+        }
+
+        fn probe_writes(self, threshold: usize) -> (Self, oneshot::Receiver<usize>) {
+            let (tx, rx) = oneshot::channel();
+            (
+                Self {
+                    write_tx: Some(tx),
+                    write_threshold: threshold,
+                    ..self
+                },
+                rx,
+            )
+        }
+    }
+
+    impl<S: AsyncRead + Unpin> AsyncRead for CountingStream<S> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if let Poll::Ready(Ok(())) = &result {
+                self.read_bytes += buf.filled().len() - before;
+                if self.read_bytes >= self.read_threshold {
+                    if let Some(tx) = self.read_tx.take() {
+                        let _ = tx.send(self.read_bytes);
+                    }
+                }
+            }
+            result
+        }
+    }
+
+    impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+            if let Poll::Ready(Ok(n)) = &result {
+                self.written_bytes += n;
+                if self.written_bytes >= self.write_threshold {
+                    if let Some(tx) = self.write_tx.take() {
+                        let _ = tx.send(self.written_bytes);
+                    }
+                }
+            }
+            result
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_mid_frame_header_resumes_without_desync() {
+        for partial in [1usize, 4, 8] {
+            let (client, mut server) = tokio::io::duplex(64 * 1024);
+            let (stream, mut read_rx) = CountingStream::new(client).probe_reads(9 + partial);
+            let (continue_tx, continue_rx) = oneshot::channel::<()>();
+
+            let frame1_payload = vec![0xA5u8; 24];
+            let frame2_payload = vec![0x5Au8; 20];
+            let frame1_payload_clone = frame1_payload.clone();
+            let frame2_payload_clone = frame2_payload.clone();
+            let server_task = tokio::spawn(async move {
+                let mut preface = [0u8; 24];
+                server.read_exact(&mut preface).await.unwrap();
+                let mut settings = [0u8; 21];
+                server.read_exact(&mut settings).await.unwrap();
+                let mut window_update = [0u8; 13];
+                server.read_exact(&mut window_update).await.unwrap();
+                server
+                    .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
+                    .await
+                    .unwrap();
+                server.flush().await.unwrap();
+                let mut ack = [0u8; 9];
+                server.read_exact(&mut ack).await.unwrap();
+
+                // Leak only `partial` bytes of frame 1's header; the header
+                // declares the 24-byte payload that follows it.
+                let frame1 = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
+                server.write_all(&frame1[..partial]).await.unwrap();
+                server.flush().await.unwrap();
+                continue_rx.await.unwrap();
+
+                server.write_all(&frame1[partial..]).await.unwrap();
+                server
+                    .write_all(&build_frame(
+                        FRAME_DATA,
+                        0,
+                        STREAM_SERVER_CLIENT,
+                        &frame2_payload_clone,
+                    ))
+                    .await
+                    .unwrap();
+                server.flush().await.unwrap();
+            });
+
+            let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
+                .await
+                .expect("handshake watchdog")
+                .unwrap();
+
+            let consumed = {
+                let read_fut = framer.read_stream(STREAM_SERVER_CLIENT, 24);
+                tokio::pin!(read_fut);
+                tokio::select! {
+                    biased;
+                    result = &mut read_fut => panic!(
+                        "read completed before the partial header arrived: {result:?}"
+                    ),
+                    consumed = &mut read_rx => consumed.unwrap(),
+                }
+            }; // read_fut is dropped here: the reader is cancelled mid-header.
+            assert_eq!(
+                consumed,
+                9 + partial,
+                "the cancelled reader must have consumed exactly the leaked bytes"
+            );
+            continue_tx.send(()).unwrap();
+
+            let first = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 24))
+                .await
+                .expect("resume watchdog")
+                .expect("the framer must resume the interrupted frame instead of desyncing");
+            assert_eq!(first.as_ref(), frame1_payload.as_slice());
+            let second = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 20))
+                .await
+                .expect("second frame watchdog")
+                .expect("the next frame must parse intact after the resume");
+            assert_eq!(second.as_ref(), frame2_payload.as_slice());
+
+            server_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_mid_frame_payload_resumes_without_desync() {
+        let partial_payload = 5usize;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        // settings(9) + full header(9) + partial payload(5)
+        let (stream, mut read_rx) =
+            CountingStream::new(client).probe_reads(9 + 9 + partial_payload);
+        let (continue_tx, continue_rx) = oneshot::channel::<()>();
+
+        let frame1_payload = vec![0x11u8; 24];
+        let frame2_payload = vec![0x22u8; 20];
+        let frame1_payload_clone = frame1_payload.clone();
+        let frame2_payload_clone = frame2_payload.clone();
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server
+                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+
+            // The header (length = 24) arrives whole; only `partial_payload`
+            // body bytes leak before the client is cancelled.
+            let frame1 = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
+            server.write_all(&frame1[..9]).await.unwrap();
+            server.write_all(&frame1_payload_clone[..partial_payload]).await.unwrap();
+            server.flush().await.unwrap();
+            continue_rx.await.unwrap();
+
+            server.write_all(&frame1_payload_clone[partial_payload..]).await.unwrap();
+            server
+                .write_all(&build_frame(
+                    FRAME_DATA,
+                    0,
+                    STREAM_SERVER_CLIENT,
+                    &frame2_payload_clone,
+                ))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
+            .await
+            .expect("handshake watchdog")
+            .unwrap();
+
+        let consumed = {
+            let read_fut = framer.read_stream(STREAM_SERVER_CLIENT, 24);
+            tokio::pin!(read_fut);
+            tokio::select! {
+                biased;
+                result = &mut read_fut => panic!(
+                    "read completed before the partial payload arrived: {result:?}"
+                ),
+                consumed = &mut read_rx => consumed.unwrap(),
+            }
+        }; // cancelled mid-payload.
+        assert_eq!(consumed, 9 + 9 + partial_payload);
+        continue_tx.send(()).unwrap();
+
+        let first = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 24))
+            .await
+            .expect("resume watchdog")
+            .expect("payload progress must survive the cancelled read");
+        assert_eq!(first.as_ref(), frame1_payload.as_slice());
+        let second = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 20))
+            .await
+            .expect("second frame watchdog")
+            .expect("the next frame must not splice with the resumed payload");
+        assert_eq!(second.as_ref(), frame2_payload.as_slice());
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_write_mid_frame_is_completed_by_the_next_write() {
+        let (client, mut server) = tokio::io::duplex(32);
+        // Handshake writes 58 bytes, HEADERS 9, and the first DATA poll_write
+        // fills the remaining 32-byte duplex capacity exactly.
+        let (stream, mut write_rx) = CountingStream::new(client).probe_writes(58 + 9 + 23);
+        let big_payload = vec![0x77u8; 60];
+        let small_payload = vec![0x33u8; 12];
+        let big_payload_clone = big_payload.clone();
+        let small_payload_clone = small_payload.clone();
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server
+                .write_all(&build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[]))
+                .await
+                .unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+
+            // HEADERS for stream 1, then the DATA frame of the big message.
+            let mut headers = [0u8; 9];
+            server.read_exact(&mut headers).await.unwrap();
+            let mut data_header = [0u8; 9];
+            server.read_exact(&mut data_header).await.unwrap();
+            let len = ((data_header[0] as usize) << 16)
+                | ((data_header[1] as usize) << 8)
+                | (data_header[2] as usize);
+            assert_eq!(len, big_payload_clone.len(), "big frame length must be intact");
+            let mut received = vec![0u8; len];
+            server.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, big_payload_clone, "big frame payload must not lose bytes");
+            let mut small_header = [0u8; 9];
+            server.read_exact(&mut small_header).await.unwrap();
+            let small_len = ((small_header[0] as usize) << 16)
+                | ((small_header[1] as usize) << 8)
+                | (small_header[2] as usize);
+            assert_eq!(small_len, small_payload_clone.len());
+            let mut small_received = vec![0u8; small_len];
+            server.read_exact(&mut small_received).await.unwrap();
+            assert_eq!(small_received, small_payload_clone);
+        });
+
+        let mut framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
+            .await
+            .expect("handshake watchdog")
+            .unwrap();
+
+        let consumed = {
+            let write_fut = framer.write_client_server(&big_payload);
+            tokio::pin!(write_fut);
+            tokio::select! {
+                biased;
+                result = &mut write_fut => panic!(
+                    "write completed despite the tiny duplex capacity: {result:?}"
+                ),
+                consumed = &mut write_rx => consumed.unwrap(),
+            }
+        }; // cancelled mid-frame: part of the DATA frame is on the wire.
+        assert_eq!(
+            consumed,
+            58 + 9 + 23,
+            "cancel must land mid-DATA-frame with the capacity exactly full"
+        );
+
+        // The next write must first finish the interrupted frame, then send
+        // its own — the server must see both frames intact.
+        timeout(
+            Duration::from_secs(5),
+            framer.write_client_server(&small_payload),
+        )
+        .await
+        .expect("resumed write watchdog")
+        .expect("the next write must complete the interrupted frame first");
+
+        timeout(Duration::from_secs(10), server_task)
+            .await
+            .expect(
+                "server watchdog: the peer must observe both frames intact; \
+                 a hang here means the interrupted frame lost its unwritten bytes",
+            )
+            .unwrap();
     }
 }

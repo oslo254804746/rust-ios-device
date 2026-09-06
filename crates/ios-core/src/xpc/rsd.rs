@@ -344,6 +344,61 @@ where
     Ok(body.freeze())
 }
 
+/// Read one raw XPC message (24-byte header plus body) from `stream_id`.
+///
+/// Cancellation contract: the header is read through the framer's
+/// cancellation-safe byte reads, so a cancelled header read loses nothing.
+/// Once the header has been consumed, the body phase is marked on the
+/// framer; a body read that gets cancelled leaves that marker set, and every
+/// later operation refuses with a reconnect hint instead of splicing the
+/// remaining body bytes into the next message header.
+#[cfg(feature = "tunnel")]
+async fn read_raw_xpc_message<S>(
+    framer: &mut H2Framer<S>,
+    stream_id: u32,
+) -> Result<(Bytes, Bytes), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if framer.is_message_read_in_progress() {
+        return Err(XpcError::Tls(
+            "a previous XPC read was cancelled mid-message; the connection is no longer \
+             frame-aligned and must be re-established"
+                .into(),
+        ));
+    }
+    let header = framer
+        .read_stream(stream_id, 24)
+        .await
+        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
+    let declared_body_len = u64::from_le_bytes(
+        header[8..16]
+            .try_into()
+            .map_err(|_| XpcError::Tls("invalid header bytes".into()))?,
+    );
+    let message_flags = u32::from_le_bytes(
+        header[4..8]
+            .try_into()
+            .map_err(|_| XpcError::Tls("invalid header flags".into()))?,
+    );
+    let body_len =
+        checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
+            .map_err(XpcError::Tls)?;
+    if body_len == 0 {
+        return Ok((header, Bytes::new()));
+    }
+    framer.begin_message_body();
+    let body = match read_xpc_body_in_chunks(framer, stream_id, body_len).await {
+        Ok(body) => body,
+        Err(e) => {
+            framer.end_message_body();
+            return Err(XpcError::Tls(format!("read body: {e}")));
+        }
+    };
+    framer.end_message_body();
+    Ok((header, body))
+}
+
 #[cfg(feature = "tunnel")]
 async fn read_raw_xpc_on_client_server<S>(
     framer: &mut H2Framer<S>,
@@ -351,30 +406,7 @@ async fn read_raw_xpc_on_client_server<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let header = framer
-        .read_client_server(24)
-        .await
-        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
-    let declared_body_len = u64::from_le_bytes(
-        header[8..16]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header".into()))?,
-    );
-    let message_flags = u32::from_le_bytes(
-        header[4..8]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header flags".into()))?,
-    );
-    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-        .map_err(XpcError::Tls)?;
-    let body = if body_len > 0 {
-        read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, body_len)
-            .await
-            .map_err(|e| XpcError::Tls(format!("read body: {e}")))?
-    } else {
-        Bytes::new()
-    };
-    Ok((header, body))
+    read_raw_xpc_message(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER).await
 }
 
 #[cfg(feature = "tunnel")]
@@ -384,30 +416,7 @@ async fn read_raw_xpc_on_server_client<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let header = framer
-        .read_server_client(24)
-        .await
-        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
-    let declared_body_len = u64::from_le_bytes(
-        header[8..16]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header".into()))?,
-    );
-    let message_flags = u32::from_le_bytes(
-        header[4..8]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header flags".into()))?,
-    );
-    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-        .map_err(XpcError::Tls)?;
-    let body = if body_len > 0 {
-        read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, body_len)
-            .await
-            .map_err(|e| XpcError::Tls(format!("read body: {e}")))?
-    } else {
-        Bytes::new()
-    };
-    Ok((header, body))
+    read_raw_xpc_message(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT).await
 }
 
 #[cfg(feature = "tunnel")]
@@ -808,6 +817,21 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         id
     }
 
+    /// Refuse every operation once a message read was cancelled after its
+    /// header was consumed: the connection can no longer be realigned, so
+    /// callers must reconnect instead of risking spliced messages. Cached
+    /// pending messages are deliberately not served through this state.
+    fn ensure_reusable(&self) -> Result<(), XpcError> {
+        if self.framer.is_message_read_in_progress() {
+            return Err(XpcError::Tls(
+                "a previous XPC read was cancelled mid-message; the connection is no longer \
+                 frame-aligned and must be re-established"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Send a dictionary as an XPC message on the clientServer stream.
     pub async fn send(&mut self, body: XpcValue) -> Result<(), XpcError> {
         self.send_with_flags(body, 0).await.map(|_| ())
@@ -820,6 +844,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         body: XpcValue,
         extra_flags: u32,
     ) -> Result<u64, XpcError> {
+        self.ensure_reusable()?;
         let id = self.next_id();
         let msg = XpcMessage {
             flags: flags::ALWAYS_SET | flags::DATA | extra_flags,
@@ -857,6 +882,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     /// already buffered on other streams is preserved, and the framer's
     /// per-stream and connection memory limits keep applying.
     pub async fn recv_any_stream(&mut self) -> Result<XpcMessage, XpcError> {
+        self.ensure_reusable()?;
         let stream_id = self
             .framer
             .buffer_next_data_stream()
@@ -866,6 +892,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
+        self.ensure_reusable()?;
         if let Some(message) = self.pop_next_pending_message(stream_id) {
             return Ok(message);
         }
@@ -878,6 +905,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         stream_id: u32,
         msg_id: u64,
     ) -> Result<XpcMessage, XpcError> {
+        self.ensure_reusable()?;
         if let Some(message) = self.take_pending_message(stream_id, msg_id) {
             return Ok(message);
         }
@@ -903,31 +931,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     async fn recv_fresh_on_stream_inner(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
-        let header = self
-            .framer
-            .read_stream(stream_id, 24)
-            .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
-        let declared_body_len = u64::from_le_bytes(
-            header[8..16]
-                .try_into()
-                .map_err(|_| XpcError::Tls("invalid header bytes".into()))?,
-        );
-        let message_flags = u32::from_le_bytes(
-            header[4..8]
-                .try_into()
-                .map_err(|_| XpcError::Tls("invalid header flags".into()))?,
-        );
-        let body_len =
-            checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-                .map_err(XpcError::Tls)?;
-        let body = if body_len > 0 {
-            read_xpc_body_in_chunks(&mut self.framer, stream_id, body_len)
-                .await
-                .map_err(|e| XpcError::Tls(e.to_string()))?
-        } else {
-            Bytes::new()
-        };
+        let (header, body) = read_raw_xpc_message(&mut self.framer, stream_id).await?;
         let mut full = bytes::BytesMut::new();
         full.extend_from_slice(&header);
         full.extend_from_slice(&body);
@@ -1927,6 +1931,260 @@ mod tests {
         .await
         .expect("queued bootstrap timed out")
         .unwrap();
+
+        server_task.await.unwrap();
+    }
+
+    // ── Cancel-safety contract (T4) ─────────────────────────────────────────
+
+    /// Signals once the observed byte count crosses a threshold, so a test
+    /// can cancel a reader at an exact consumption point.
+    struct ReadProbeStream<S> {
+        inner: S,
+        read_bytes: usize,
+        tx: Option<tokio::sync::oneshot::Sender<usize>>,
+        threshold: usize,
+    }
+
+    impl<S> ReadProbeStream<S> {
+        fn probe_reads(self, threshold: usize) -> (Self, tokio::sync::oneshot::Receiver<usize>) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (
+                Self {
+                    tx: Some(tx),
+                    threshold,
+                    ..self
+                },
+                rx,
+            )
+        }
+    }
+
+    impl<S: AsyncRead + Unpin> AsyncRead for ReadProbeStream<S> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if let Poll::Ready(Ok(())) = &result {
+                self.read_bytes += buf.filled().len() - before;
+                if self.read_bytes >= self.threshold {
+                    if let Some(tx) = self.tx.take() {
+                        let _ = tx.send(self.read_bytes);
+                    }
+                }
+            }
+            result
+        }
+    }
+
+    impl<S: AsyncWrite + Unpin> AsyncWrite for ReadProbeStream<S> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_xpc_body_read_poisons_connection_until_reconnect() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let message = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 7,
+            body: Some(XpcValue::String("b".repeat(40))),
+        })
+        .unwrap();
+        assert!(message.len() > 24 + 5, "test message needs a body > 5 bytes");
+        let body = &message[24..];
+
+        // The server sends settings(9) + HEADERS(9) + header frame(9+24) +
+        // partial body frame(9+5) and then pauses; the cancel lands once all
+        // of that is consumed and the body read is pending for more.
+        let (stream, mut read_rx) = ReadProbeStream {
+            inner: client,
+            read_bytes: 0,
+            tx: None,
+            threshold: usize::MAX,
+        }
+        .probe_reads(9 + 9 + (9 + 24) + (9 + 5));
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let header_chunk = message[..24].to_vec();
+        let body_head = body[..5].to_vec();
+        let body_tail = body[5..].to_vec();
+        let (probe_tx, probe_rx) = tokio::sync::oneshot::channel::<bool>();
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+
+            server
+                .write_all(&headers_frame(STREAM_SERVER_CLIENT))
+                .await
+                .unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk)).await.unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body_head)).await.unwrap();
+            server.flush().await.unwrap();
+            continue_rx.await.unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body_tail)).await.unwrap();
+            server.flush().await.unwrap();
+
+            // No second business request may reach the wire after the
+            // poisoned cancel: a short read must time out.
+            let mut probe = [0u8; 1];
+            let saw_client_bytes =
+                tokio::time::timeout(Duration::from_millis(300), server.read_exact(&mut probe))
+                    .await
+                    .is_ok();
+            probe_tx.send(saw_client_bytes).unwrap();
+        });
+
+        let mut connection = {
+            let framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
+                .await
+                .expect("handshake watchdog")
+                .unwrap();
+            XpcConnection::new(framer)
+        };
+
+        let consumed = {
+            let recv_fut = connection.recv();
+            tokio::pin!(recv_fut);
+            tokio::select! {
+                biased;
+                result = &mut recv_fut => panic!(
+                    "recv completed before the partial body arrived: {result:?}"
+                ),
+                consumed = &mut read_rx => consumed.unwrap(),
+            }
+        }; // cancelled mid-body: the 24-byte header was consumed, 5 body bytes are gone.
+        assert_eq!(consumed, 9 + 9 + (9 + 24) + (9 + 5));
+        continue_tx.send(()).unwrap();
+
+        // The next operation must refuse instead of splicing body bytes into
+        // the next message header.
+        let err = timeout(Duration::from_secs(5), connection.recv())
+            .await
+            .expect("poison check watchdog")
+            .expect_err("a connection cancelled mid-body must refuse further reads");
+        assert!(err.to_string().contains("frame-aligned"), "{err}");
+
+        // Sends refuse too, so no second business request can reach the wire.
+        let send_err = connection
+            .send(XpcValue::Dictionary(IndexMap::new()))
+            .await
+            .expect_err("a poisoned connection must refuse sends");
+        assert!(send_err.to_string().contains("frame-aligned"), "{send_err}");
+
+        // The peer must not have received any new request after the cancel.
+        assert!(
+            !probe_rx.await.unwrap(),
+            "no bytes may be written to the wire after the poisoned cancel"
+        );
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_xpc_header_read_recovers_from_stream_buffer() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let message = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 7,
+            body: Some(XpcValue::String("h".repeat(12))),
+        })
+        .unwrap();
+        assert!(message.len() > 24 + 10);
+
+        // The server sends settings(9) + HEADERS(9) + a DATA frame carrying
+        // 10 of the 24 XPC header bytes and then pauses; the cancel lands
+        // once all of that is consumed.
+        let (stream, mut read_rx) = ReadProbeStream {
+            inner: client,
+            read_bytes: 0,
+            tx: None,
+            threshold: usize::MAX,
+        }
+        .probe_reads(9 + 9 + (9 + 10));
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let header_chunk = message[..24].to_vec();
+        let header_tail = message[10..24].to_vec();
+        let body = message[24..].to_vec();
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+            server.write_all(&settings_frame()).await.unwrap();
+            server.flush().await.unwrap();
+            let mut ack = [0u8; 9];
+            server.read_exact(&mut ack).await.unwrap();
+
+            server
+                .write_all(&headers_frame(STREAM_SERVER_CLIENT))
+                .await
+                .unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk[..10])).await.unwrap();
+            server.flush().await.unwrap();
+            continue_rx.await.unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_tail)).await.unwrap();
+            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body)).await.unwrap();
+            server.flush().await.unwrap();
+        });
+
+        let mut connection = {
+            let framer = timeout(Duration::from_secs(5), H2Framer::connect(stream))
+                .await
+                .expect("handshake watchdog")
+                .unwrap();
+            XpcConnection::new(framer)
+        };
+
+        let consumed = {
+            let recv_fut = connection.recv();
+            tokio::pin!(recv_fut);
+            tokio::select! {
+                biased;
+                result = &mut recv_fut => panic!(
+                    "recv completed before the partial header arrived: {result:?}"
+                ),
+                consumed = &mut read_rx => consumed.unwrap(),
+            }
+        }; // cancelled while the XPC header was only partially buffered.
+        assert_eq!(consumed, 9 + 9 + (9 + 10));
+        continue_tx.send(()).unwrap();
+
+        // The buffered 10 header bytes must survive the cancel; the next
+        // recv completes the same message instead of misparsing.
+        let message_received = timeout(Duration::from_secs(5), connection.recv())
+            .await
+            .expect("recovery watchdog")
+            .expect("buffered partial-header bytes must survive a cancelled read");
+        assert_eq!(message_received.msg_id, 7);
 
         server_task.await.unwrap();
     }

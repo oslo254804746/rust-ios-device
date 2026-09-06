@@ -16,7 +16,7 @@ categories = ["api-bindings", "development-tools::ffi"]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-ios-core  = { workspace = true, features = ["mdns", "tunnel-userspace"] }
+ios-core  = { workspace = true, features = ["mdns", "tunnel-kernel", "tunnel-userspace"] }
 tokio     = { workspace = true, features = ["rt-multi-thread"] }
 plist     = { workspace = true }
 serde_json = { workspace = true }
