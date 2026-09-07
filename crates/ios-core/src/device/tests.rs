@@ -1259,6 +1259,99 @@ mod tests {
 
     #[cfg(feature = "tunnel")]
     #[tokio::test]
+    async fn rsd_proxy_queued_success_does_not_open_a_fallback_connection() {
+        timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_port = listener.local_addr().unwrap().port();
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                rsd_proxy_h2_handshake(&mut socket).await;
+                for expected in [
+                    (RSD_FRAME_HEADERS, RSD_STREAM_CLIENT_SERVER),
+                    (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+                    (RSD_FRAME_HEADERS, RSD_STREAM_SERVER_CLIENT),
+                    (RSD_FRAME_DATA, RSD_STREAM_CLIENT_SERVER),
+                    (RSD_FRAME_DATA, RSD_STREAM_SERVER_CLIENT),
+                ] {
+                    let (kind, stream, _) = rsd_read_frame(&mut socket).await;
+                    assert_eq!((kind, stream), expected);
+                }
+                socket
+                    .write_all(&rsd_frame(
+                        RSD_FRAME_DATA,
+                        0,
+                        RSD_STREAM_CLIENT_SERVER,
+                        &rsd_handshake_message(),
+                    ))
+                    .await
+                    .unwrap();
+                // Keep the listener alive until the client has accepted the
+                // queued response. Any unintended fallback would time out at
+                // the outer watchdog instead of finding a second scripted peer.
+                let mut extra = [0u8; 1];
+                assert_eq!(socket.read(&mut extra).await.unwrap(), 0);
+            });
+            let handshake = attempt_rsd_via_proxy(proxy_port, "::1", 58783)
+                .await
+                .expect("queued initialization must return the first service directory");
+            assert_eq!(handshake.udid, "RSDPROXYTESTUDID");
+            assert!(handshake
+                .services
+                .contains_key("com.apple.instruments.dtservicehub"));
+            peer.await.unwrap();
+        })
+        .await
+        .expect("queued RSD success must not enter fallback");
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn rsd_proxy_framer_times_out_on_missing_or_partial_settings() {
+        // Each peer completes the proxy prelude and receives the entire H2
+        // opening before withholding some of its SETTINGS frame. EOF from the
+        // client proves the timed-out, partially initialized socket was dropped.
+        let settings = rsd_frame(RSD_FRAME_SETTINGS, 0, 0, &[0, 3, 0, 0, 0, 100]);
+        for sent_bytes in [0, 4, 11] {
+            timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_port = listener.local_addr().unwrap().port();
+                let partial_settings = settings[..sent_bytes].to_vec();
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                let peer = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut opening = [0u8; 20 + 24 + 21 + 13];
+                    socket.read_exact(&mut opening).await.unwrap();
+                    socket.write_all(&partial_settings).await.unwrap();
+                    ready_tx.send(()).unwrap();
+                    let mut extra = [0u8; 1];
+                    assert_eq!(socket.read(&mut extra).await.unwrap(), 0);
+                });
+                let connect = open_rsd_proxy_framer_with_budget(
+                    proxy_port,
+                    "::1",
+                    58783,
+                    Duration::from_millis(200),
+                );
+                tokio::pin!(connect);
+                tokio::select! {
+                    result = &mut connect => {
+                        panic!("initialization ended before peer reached SETTINGS: {}", result.is_some());
+                    }
+                    ready = ready_rx => ready.unwrap(),
+                }
+                assert!(
+                    connect.await.is_none(),
+                    "{sent_bytes} SETTINGS bytes must time out"
+                );
+                peer.await.unwrap();
+            })
+            .await
+            .expect("RSD framer initialization must finish within the watchdog");
+        }
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
     async fn rsd_proxy_returns_none_when_proxy_port_is_closed() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_port = listener.local_addr().unwrap().port();

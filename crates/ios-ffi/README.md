@@ -13,8 +13,10 @@ workspace. Builds a `cdylib` and a `staticlib` plus a public C header
   JSON through `ios_tunnel_rsd_services_json`.
 - Both shared (`libios_ffi.so` / `.dylib` / `ios_ffi.dll`) and static
   (`libios_ffi.a` / `ios_ffi.lib`) artifacts.
-- Built with `ios-core` features `mdns` and `tunnel-userspace`, so userspace
-  CoreDevice tunnels work without elevated privileges.
+- Built with `ios-core` features `mdns`, `tunnel-userspace`, and
+  `tunnel-kernel`. Userspace CoreDevice tunnels work without elevated
+  privileges; kernel TUN mode remains available when the caller has the
+  required root/administrator permissions.
 - Released as binary archives rather than a crates.io package.
 
 `ios_tunnel_rsd_services_json` returns a compact object of the form

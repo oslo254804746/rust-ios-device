@@ -1046,6 +1046,56 @@ mod tests {
         server_task.abort();
     }
 
+    #[tokio::test]
+    async fn connect_stream_with_budget_times_out_on_partial_h2_settings_payload() {
+        let (client, mut server) = duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut preface = [0u8; 24];
+            server.read_exact(&mut preface).await.unwrap();
+
+            let mut settings = [0u8; 21];
+            server.read_exact(&mut settings).await.unwrap();
+
+            let mut window_update = [0u8; 13];
+            server.read_exact(&mut window_update).await.unwrap();
+
+            // A six-byte SETTINGS entry with only its first two payload bytes
+            // available. The remaining payload never arrives, so the H2
+            // payload read must be bounded by the same initialization budget.
+            let mut partial = build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &[0, 3]);
+            partial[2] = 6;
+            server.write_all(&partial).await.unwrap();
+            server.flush().await.unwrap();
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let _ = rx.await;
+            drop(tx);
+        });
+
+        let started = tokio::time::Instant::now();
+        let result = timeout(
+            Duration::from_secs(5),
+            XpcClient::connect_stream_with_budget(client, Duration::from_millis(150)),
+        )
+        .await
+        .expect("partial SETTINGS payload must hit the injected budget instead of hanging");
+        let err = match result {
+            Ok(_) => panic!("incomplete SETTINGS payload must fail initialization"),
+            Err(err) => err,
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(150) && elapsed < Duration::from_secs(2),
+            "one budget must bound the partial payload read; elapsed {elapsed:?}"
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "error should identify the H2 timeout stage: {err}"
+        );
+
+        server_task.abort();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn connect_stream_with_budget_shares_one_deadline_across_h2_and_xpc_stages() {
         let (client, mut server) = duplex(4096);
@@ -1270,13 +1320,17 @@ mod tests {
             // Drive call_fut until the server has observed request 1 on the wire.
             // At that point request 1 is fully sent and client is waiting for reply,
             // so dropping call_fut cancels at a clean wait point.
-            tokio::select! {
-                biased;
-                _ = request_seen_rx => {}
-                res = &mut call_fut => {
-                    panic!("call_fut completed unexpectedly before server replied: {res:?}");
+            timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    biased;
+                    seen = request_seen_rx => seen.expect("peer must observe request 1"),
+                    res = &mut call_fut => {
+                        panic!("call_fut completed unexpectedly before server replied: {res:?}");
+                    }
                 }
-            }
+            })
+            .await
+            .expect("request observation watchdog: the call must actually be polled");
             // call_fut dropped here: cancelled after the request was sent.
         }
         release_reply_tx.send(()).unwrap();
@@ -1291,10 +1345,16 @@ mod tests {
         assert_eq!(response.msg_id, 2);
 
         // The late reply for the cancelled call must be buffered, not lost.
-        let late = client.recv().await.expect("late reply should be parked");
+        let late = timeout(Duration::from_secs(5), client.recv())
+            .await
+            .expect("late reply watchdog")
+            .expect("late reply should be parked");
         assert_eq!(late.msg_id, 1);
 
-        server_task.await.unwrap();
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("peer completion watchdog")
+            .unwrap();
     }
 
     #[tokio::test]

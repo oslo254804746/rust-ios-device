@@ -371,6 +371,12 @@ where
         .read_stream(stream_id, 24)
         .await
         .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
+    // The wrapper header has been consumed from the stream buffer. Keep the
+    // connection marked as mid-message until the body has been completely
+    // consumed; an invalid length or any body I/O error leaves the stream at
+    // an unknown message boundary and must therefore poison reuse just like a
+    // cancelled body future.
+    framer.begin_message_body();
     let declared_body_len = u64::from_le_bytes(
         header[8..16]
             .try_into()
@@ -384,16 +390,15 @@ where
     let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
         .map_err(XpcError::Tls)?;
     if body_len == 0 {
+        framer.end_message_body();
         return Ok((header, Bytes::new()));
     }
-    framer.begin_message_body();
-    let body = match read_xpc_body_in_chunks(framer, stream_id, body_len).await {
-        Ok(body) => body,
-        Err(e) => {
-            framer.end_message_body();
-            return Err(XpcError::Tls(format!("read body: {e}")));
-        }
-    };
+    // Deliberately leave the marker set on every body error. The error may
+    // have arrived after some DATA bytes were consumed, and clearing it would
+    // let a later call splice those bytes into the next XPC header.
+    let body = read_xpc_body_in_chunks(framer, stream_id, body_len)
+        .await
+        .map_err(|e| XpcError::Tls(format!("read body: {e}")))?;
     framer.end_message_body();
     Ok((header, body))
 }
@@ -774,6 +779,11 @@ pub struct XpcConnection<S> {
     msg_id: u64,
     pending_messages: HashMap<u32, VecDeque<PendingMessage>>,
     pending_budget: PendingMessageBudget,
+    // An XPC message may span multiple H2 DATA frames. If its send future is
+    // cancelled after any frame has started, the caller's remaining slice is
+    // no longer available to resume and the next request would be appended to
+    // a partial XPC message. Keep the connection unusable until reconnect.
+    sending_message_in_progress: bool,
 }
 
 #[cfg(feature = "tunnel")]
@@ -801,6 +811,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             msg_id: 1,
             pending_messages: HashMap::new(),
             pending_budget: PendingMessageBudget::new(per_stream_limit, connection_limit),
+            sending_message_in_progress: false,
         }
     }
 
@@ -821,9 +832,19 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     /// callers must reconnect instead of risking spliced messages. Cached
     /// pending messages are deliberately not served through this state.
     fn ensure_reusable(&self) -> Result<(), XpcError> {
+        self.framer
+            .ensure_reusable()
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
         if self.framer.is_message_read_in_progress() {
             return Err(XpcError::Tls(
                 "a previous XPC read was cancelled mid-message; the connection is no longer \
+                 frame-aligned and must be re-established"
+                    .into(),
+            ));
+        }
+        if self.sending_message_in_progress {
+            return Err(XpcError::Tls(
+                "a previous XPC send was cancelled mid-message; the connection is no longer \
                  frame-aligned and must be re-established"
                     .into(),
             ));
@@ -851,10 +872,12 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             body: Some(body),
         };
         let bytes = crate::xpc::message::encode_message(&msg)?;
-        self.framer
-            .write_client_server(&bytes)
-            .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        self.sending_message_in_progress = true;
+        let result = self.framer.write_client_server(&bytes).await;
+        if result.is_ok() {
+            self.sending_message_in_progress = false;
+        }
+        result.map_err(|e| XpcError::Tls(e.to_string()))?;
         Ok(id)
     }
 
@@ -892,6 +915,10 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
 
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         self.ensure_reusable()?;
+        self.framer
+            .finish_pending_write_for_read()
+            .await
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
         if let Some(message) = self.pop_next_pending_message(stream_id) {
             return Ok(message);
         }
@@ -905,6 +932,10 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         msg_id: u64,
     ) -> Result<XpcMessage, XpcError> {
         self.ensure_reusable()?;
+        self.framer
+            .finish_pending_write_for_read()
+            .await
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
         if let Some(message) = self.take_pending_message(stream_id, msg_id) {
             return Ok(message);
         }
@@ -2093,6 +2124,20 @@ mod tests {
         assert_eq!(consumed, 9 + 9 + (9 + 24) + (9 + 5));
         continue_tx.send(()).unwrap();
 
+        // A cached reply must not bypass the framer poison check. Otherwise a
+        // caller could observe a pending message and then reuse the same
+        // connection for a new request after the body boundary was lost.
+        connection
+            .push_pending_message(
+                STREAM_SERVER_CLIENT,
+                XpcMessage {
+                    flags: flags::ALWAYS_SET,
+                    msg_id: 99,
+                    body: None,
+                },
+            )
+            .unwrap();
+
         // The next operation must refuse instead of splicing body bytes into
         // the next message header.
         let err = timeout(Duration::from_secs(5), connection.recv())
@@ -2115,6 +2160,71 @@ mod tests {
         );
 
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn xpc_body_error_and_invalid_length_poison_after_header_consumption() {
+        let message = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA,
+            msg_id: 7,
+            body: Some(XpcValue::String("body".into())),
+        })
+        .unwrap();
+
+        // A truncated body read leaves the stream at an unknown XPC message
+        // boundary. The marker must survive the I/O error, just as it does a
+        // cancellation, so a later call cannot reinterpret arbitrary bytes as
+        // another header.
+        let mut truncated_wire = settings_frame();
+        truncated_wire.extend_from_slice(&data_frame(STREAM_SERVER_CLIENT, &message[..24]));
+        let mut framer = H2Framer::connect(ScriptedIo {
+            input: Bytes::from(truncated_wire),
+            offset: 0,
+            output: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let err = read_raw_xpc_on_server_client(&mut framer)
+            .await
+            .expect_err("truncated body must fail");
+        assert!(err.to_string().contains("read body"), "{err}");
+        assert!(framer.is_message_read_in_progress());
+        let reuse_err = read_raw_xpc_on_server_client(&mut framer)
+            .await
+            .expect_err("body I/O error must poison reuse");
+        assert!(
+            reuse_err.to_string().contains("frame-aligned"),
+            "{reuse_err}"
+        );
+
+        // An over-limit declared body is also unsafe after the 24-byte header
+        // has been consumed: bytes belonging to that body may already be in
+        // the H2 buffer. It must take the same poison path before returning the
+        // validation error.
+        let mut invalid_header = message[..24].to_vec();
+        let over_limit = (crate::xpc::message::XPC_CONTROL_BODY_LIMIT as u64) + 1;
+        invalid_header[8..16].copy_from_slice(&over_limit.to_le_bytes());
+        let mut invalid_wire = settings_frame();
+        invalid_wire.extend_from_slice(&data_frame(STREAM_SERVER_CLIENT, &invalid_header));
+        let mut framer = H2Framer::connect(ScriptedIo {
+            input: Bytes::from(invalid_wire),
+            offset: 0,
+            output: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let err = read_raw_xpc_on_server_client(&mut framer)
+            .await
+            .expect_err("over-limit body must fail validation");
+        assert!(err.to_string().contains("exceeds limit"), "{err}");
+        assert!(framer.is_message_read_in_progress());
+        let reuse_err = read_raw_xpc_on_server_client(&mut framer)
+            .await
+            .expect_err("invalid body length must poison reuse");
+        assert!(
+            reuse_err.to_string().contains("frame-aligned"),
+            "{reuse_err}"
+        );
     }
 
     #[tokio::test]
