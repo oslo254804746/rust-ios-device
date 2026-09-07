@@ -399,7 +399,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     | (header[2] as usize);
                 let frame_type = header[3];
                 let flags = header[4];
-                let raw_stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
+                let raw_stream_id =
+                    u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
                 // The R bit is reserved and MUST be zero when sending, but RFC 9113
                 // requires receivers to ignore it. Do not turn a peer's non-zero R
                 // bit into a connection error while decoding the 31-bit identifier.
@@ -3298,7 +3299,8 @@ mod tests {
 
                 // Leak only `partial` bytes of frame 1's header; the header
                 // declares the 24-byte payload that follows it.
-                let frame1 = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
+                let frame1 =
+                    build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
                 server.write_all(&frame1[..partial]).await.unwrap();
                 server.flush().await.unwrap();
                 continue_rx.await.unwrap();
@@ -3339,15 +3341,21 @@ mod tests {
             );
             continue_tx.send(()).unwrap();
 
-            let first = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 24))
-                .await
-                .expect("resume watchdog")
-                .expect("the framer must resume the interrupted frame instead of desyncing");
+            let first = timeout(
+                Duration::from_secs(5),
+                framer.read_stream(STREAM_SERVER_CLIENT, 24),
+            )
+            .await
+            .expect("resume watchdog")
+            .expect("the framer must resume the interrupted frame instead of desyncing");
             assert_eq!(first.as_ref(), frame1_payload.as_slice());
-            let second = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 20))
-                .await
-                .expect("second frame watchdog")
-                .expect("the next frame must parse intact after the resume");
+            let second = timeout(
+                Duration::from_secs(5),
+                framer.read_stream(STREAM_SERVER_CLIENT, 20),
+            )
+            .await
+            .expect("second frame watchdog")
+            .expect("the next frame must parse intact after the resume");
             assert_eq!(second.as_ref(), frame2_payload.as_slice());
 
             server_task.await.unwrap();
@@ -3386,11 +3394,17 @@ mod tests {
             // body bytes leak before the client is cancelled.
             let frame1 = build_frame(FRAME_DATA, 0, STREAM_SERVER_CLIENT, &frame1_payload_clone);
             server.write_all(&frame1[..9]).await.unwrap();
-            server.write_all(&frame1_payload_clone[..partial_payload]).await.unwrap();
+            server
+                .write_all(&frame1_payload_clone[..partial_payload])
+                .await
+                .unwrap();
             server.flush().await.unwrap();
             continue_rx.await.unwrap();
 
-            server.write_all(&frame1_payload_clone[partial_payload..]).await.unwrap();
+            server
+                .write_all(&frame1_payload_clone[partial_payload..])
+                .await
+                .unwrap();
             server
                 .write_all(&build_frame(
                     FRAME_DATA,
@@ -3422,15 +3436,21 @@ mod tests {
         assert_eq!(consumed, 9 + 9 + partial_payload);
         continue_tx.send(()).unwrap();
 
-        let first = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 24))
-            .await
-            .expect("resume watchdog")
-            .expect("payload progress must survive the cancelled read");
+        let first = timeout(
+            Duration::from_secs(5),
+            framer.read_stream(STREAM_SERVER_CLIENT, 24),
+        )
+        .await
+        .expect("resume watchdog")
+        .expect("payload progress must survive the cancelled read");
         assert_eq!(first.as_ref(), frame1_payload.as_slice());
-        let second = timeout(Duration::from_secs(5), framer.read_stream(STREAM_SERVER_CLIENT, 20))
-            .await
-            .expect("second frame watchdog")
-            .expect("the next frame must not splice with the resumed payload");
+        let second = timeout(
+            Duration::from_secs(5),
+            framer.read_stream(STREAM_SERVER_CLIENT, 20),
+        )
+        .await
+        .expect("second frame watchdog")
+        .expect("the next frame must not splice with the resumed payload");
         assert_eq!(second.as_ref(), frame2_payload.as_slice());
 
         server_task.await.unwrap();
@@ -3469,10 +3489,17 @@ mod tests {
             let len = ((data_header[0] as usize) << 16)
                 | ((data_header[1] as usize) << 8)
                 | (data_header[2] as usize);
-            assert_eq!(len, big_payload_clone.len(), "big frame length must be intact");
+            assert_eq!(
+                len,
+                big_payload_clone.len(),
+                "big frame length must be intact"
+            );
             let mut received = vec![0u8; len];
             server.read_exact(&mut received).await.unwrap();
-            assert_eq!(received, big_payload_clone, "big frame payload must not lose bytes");
+            assert_eq!(
+                received, big_payload_clone,
+                "big frame payload must not lose bytes"
+            );
             let mut small_header = [0u8; 9];
             server.read_exact(&mut small_header).await.unwrap();
             let small_len = ((small_header[0] as usize) << 16)

@@ -381,9 +381,8 @@ where
             .try_into()
             .map_err(|_| XpcError::Tls("invalid header flags".into()))?,
     );
-    let body_len =
-        checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-            .map_err(XpcError::Tls)?;
+    let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
+        .map_err(XpcError::Tls)?;
     if body_len == 0 {
         return Ok((header, Bytes::new()));
     }
@@ -2008,7 +2007,10 @@ mod tests {
             body: Some(XpcValue::String("b".repeat(40))),
         })
         .unwrap();
-        assert!(message.len() > 24 + 5, "test message needs a body > 5 bytes");
+        assert!(
+            message.len() > 24 + 5,
+            "test message needs a body > 5 bytes"
+        );
         let body = &message[24..];
 
         // The server sends settings(9) + HEADERS(9) + header frame(9+24) +
@@ -2043,11 +2045,20 @@ mod tests {
                 .write_all(&headers_frame(STREAM_SERVER_CLIENT))
                 .await
                 .unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk)).await.unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body_head)).await.unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk))
+                .await
+                .unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body_head))
+                .await
+                .unwrap();
             server.flush().await.unwrap();
             continue_rx.await.unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body_tail)).await.unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body_tail))
+                .await
+                .unwrap();
             server.flush().await.unwrap();
 
             // No second business request may reach the wire after the
@@ -2148,11 +2159,20 @@ mod tests {
                 .write_all(&headers_frame(STREAM_SERVER_CLIENT))
                 .await
                 .unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk[..10])).await.unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_chunk[..10]))
+                .await
+                .unwrap();
             server.flush().await.unwrap();
             continue_rx.await.unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &header_tail)).await.unwrap();
-            server.write_all(&data_frame(STREAM_SERVER_CLIENT, &body)).await.unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &header_tail))
+                .await
+                .unwrap();
+            server
+                .write_all(&data_frame(STREAM_SERVER_CLIENT, &body))
+                .await
+                .unwrap();
             server.flush().await.unwrap();
         });
 

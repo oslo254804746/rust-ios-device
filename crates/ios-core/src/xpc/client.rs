@@ -1267,9 +1267,16 @@ mod tests {
         {
             let call_fut = client.call(XpcValue::Dictionary(IndexMap::new()));
             tokio::pin!(call_fut);
-            // The server has seen request 1; no reply bytes exist yet, so the
-            // cancel lands at a clean wait point.
-            request_seen_rx.await.unwrap();
+            // Drive call_fut until the server has observed request 1 on the wire.
+            // At that point request 1 is fully sent and client is waiting for reply,
+            // so dropping call_fut cancels at a clean wait point.
+            tokio::select! {
+                biased;
+                _ = request_seen_rx => {}
+                res = &mut call_fut => {
+                    panic!("call_fut completed unexpectedly before server replied: {res:?}");
+                }
+            }
             // call_fut dropped here: cancelled after the request was sent.
         }
         release_reply_tx.send(()).unwrap();

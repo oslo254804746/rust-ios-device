@@ -19,7 +19,8 @@
 | T3 kernel feature | DONE | ios-py/ios-ffi 独立解析到 tunnel-kernel;wheel 构建并冒烟通过 |
 | T2A 发布门禁图 | DONE | 4 个发布节点接入 5 项核心门禁;静态检查器含负向证据 |
 | T2B 产物 smoke | DONE(CI 侧) | workflow 打包校验 + C/Python smoke 就绪;本机验证 Windows 腿 |
-| T4 取消复用诊断 | PARTIAL | 失步已复现并修复(H2 半帧恢复 + XPC body 中毒);client 级 1 个测试挂起待查 |
+| T4 取消复用诊断 | DONE | 失步已复现并修复(H2 半帧恢复 + XPC body 中毒);单测挂起根因为测试中未 poll 且相互死锁,修复后 8 项测试全过 |
+| V 整体收尾验证 | DONE(宿主侧) | ios-core(962 passed)、workspace 其余 crate(523 passed)、ios-py(6 passed)、ios-ffi(13 passed)、clippy 0 warnings、fmt check 通过、MSRV 1.80 check 通过、门禁图校验通过 |
 
 ## T0:预检(只读)
 
@@ -117,33 +118,57 @@
 - `rsd.rs` XPC 层:新增统一 `read_raw_xpc_message(framer, stream_id)`;header 消费后、body 读完前置 `message_read_in_progress` 标记(framer 字段),body 完成后清除;若 body 读取被取消,标记残留 → **所有后续入口拒绝**:`recv*`(含 pending-message 快路径之前)、`recv_any_stream`、`send_with_flags`,错误信息明确"连接已失帧对齐,必须重连"。未 poll 的 future、消息边界取消、零消费取消均不触发 poison。
 - 修复后(通过):framer 级 3 项(半 header 1/4/8、半 payload、半写恢复)✓;XPC 级 2 项(body 取消 → 后续 recv/send 全部拒绝且 wire 上无第二请求、header 部分缓冲恢复)✓;`never_polled_stream_invoke_drop_is_inert` ✓;`stream_invoke_drop_between_messages_keeps_connection_usable` ✓。
 
-**未解决问题(挂起测试)**
+**挂起测试排查与修复(接力完成:DONE)**
 
-- `cancelled_call_is_not_replayed_and_connection_stays_usable`(`crates/ios-core/src/xpc/client.rs`)单独运行即挂起。设计流程:call #1 在 server 读到请求、尚未回复时取消 → server 补发迟到回复 → call #2 正常并断言 wire 上无重放。挂起位置未定位(主流程的 oneshot 等待点均无超时保护,server 脚本或某次 recv 可能未按预期推进)。已尝试:单测隔离运行确认可复现挂起;尚未加探针/超时定位根因。
-- 影响评估:该测试是"改后回归验证"的一部分;**修复本身的核心断言**(半帧恢复、poison 拒绝、无第二请求)已由其他 7 项测试覆盖并通过。挂起根因可能是测试脚本自身(如 server 脚本与 cancel 时序的竞态)而非产品代码,但未证实。
-- 全量回归与 clippy/fmt 在 T4 改动后**尚未重跑**;T4 相关文件未经过最终格式化检查。
+- `cancelled_call_is_not_replayed_and_connection_stays_usable`(`crates/ios-core/src/xpc/client.rs`):
+  - **排查与根因定位**:此前单测直接写 `let call_fut = client.call(...); tokio::pin!(call_fut); request_seen_rx.await.unwrap();`。在 Rust/Tokio 中未 poll 的 async future 不会执行任何代码,因此请求 1 从未在 wire 上发出;而 server 任务正在 `read_h2_frame` 等待请求 1 到达才发送 `request_seen_tx`,两端在同一个测试上下文中发生相互等待死锁。
+  - **最小修复**:在测试中使用 `tokio::select!` 驱动 `call_fut` 直至 `request_seen_rx` 收到 server 观测到请求 1 的通知。此时请求 1 已经完整发出、进入 `recv_reply_on_stream` 的等待回复阶段,退出 select 作用域即 drop `call_fut`,精确模拟"请求已发出、等待回复时取消"的干净边界。
+  - **验证结果**:测试在 0.31s 内正常通过;请求 2 发出后正确获得回复 2,且迟到的回复 1 被客户端 pending message 机制完整缓存并由随后的 `client.recv()` 读出,wire 上无任何重放。
+- T4 取消复用测试矩阵(8/8 全部通过):
+  - `cancelled_read_mid_frame_header_resumes_without_desync` ✓
+  - `cancelled_read_mid_frame_payload_resumes_without_desync` ✓
+  - `cancelled_write_mid_frame_is_completed_by_the_next_write` ✓
+  - `cancelled_xpc_header_read_recovers_from_stream_buffer` ✓
+  - `cancelled_xpc_body_read_poisons_connection_until_reconnect` ✓
+  - `never_polled_stream_invoke_drop_is_inert` ✓
+  - `stream_invoke_drop_between_messages_keeps_connection_usable` ✓
+  - `cancelled_call_is_not_replayed_and_connection_stays_usable` ✓
 
-## 全局验证状态(V 部分完成)
+## 全局验证状态(V 收尾验证完成)
 
-- T4 改动前全量:`cargo test -p ios-core --all-features` 954 passed / 1 ignored;`cargo fmt --all -- --check` ✓;`cargo clippy --workspace --all-targets --all-features -- -D warnings` ✓(exit 0)。
-- T4 改动后:仅运行了取消相关测试子集;**全量测试/fmt/clippy 待重跑**。
-- 未运行:MSRV(`cargo +1.80 check --workspace --exclude ios-py --locked`)、`cargo test --workspace --exclude ios-core --exclude ios-py`(T4 后)、真实 tag 下的 release/publish 链路、aarch64-linux/macOS runner 产物、PyPI/crates 发布——全部 NOT_RUN。
+- **代码格式检查**:
+  - `cargo fmt --all -- --check` ✓(已对 T4 新增代码与测试执行 `cargo fmt --all`,格式化无差异)。
+- **单元与集成测试套件**:
+  - `cargo test -p ios-core --all-features`: **962 passed, 0 failed, 1 ignored**(889 lib unit tests + 6 accessibility_audit + 11 backup2 + 7 debugserver + 8 fetchsymbols + 5 ostrace + 2 prepare + 2 sysmon + 18 testmanager + 8 webinspector + 6 doc-tests)。
+  - `cargo test --workspace --exclude ios-core --exclude ios-py`: **523 passed, 0 failed, 0 ignored**(510 ios-cli + 13 ios-ffi)。
+  - `cargo test -p ios-py --no-default-features`: **6 passed, 0 failed, 0 ignored**。
+  - `cargo test -p ios-ffi`: **13 passed, 0 failed, 0 ignored**。
+- **静态代码检查(Clippy)**:
+  - `$env:PYO3_PYTHON = ...; cargo clippy --workspace --all-targets --all-features -- -D warnings`: **0 warnings, exit 0**。
+- **Feature 子集检查**:
+  - `cargo check -p ios-core --no-default-features` ✓
+  - `cargo check -p ios-core --features classic` ✓
+  - `cargo check -p ios-core --features developer` ✓
+  - `cargo check -p ios-core --features ios17` ✓
+  - `cargo check -p ios-core --features management` ✓
+- **MSRV (Rust 1.80) 真实工具链验证**:
+  - 本机已安装 Rust 1.80.1 工具链(`cargo 1.80.1`)。
+  - `cargo +1.80 check --workspace --exclude ios-py --locked`: **exit 0**,证明整个工作区在 Rust 1.80 下可正常编译。
+- **发布质量门禁拓扑检查**:
+  - `uv run --with pyyaml python scripts/check-release-gates.py`: **PASS**,输出正向依赖与全部 5 项门禁分别失败时的负向阻断证据。
 
 ## 环境注意(本机复现要点)
 
-- Python:uv venv `.venv`(CPython 3.11.10,已加入 .gitignore);PyO3 宿主构建需 `PYO3_PYTHON=<repo>/.venv/Scripts/python.exe`,运行 ios-py 测试二进制还需把 `%APPDATA%\uv\python\cpython-3.11.10-windows-x86_64-none` 加入 PATH(否则 STATUS_DLL_NOT_FOUND)。
+- Python:uv 管理 Python 3.13(`.venv`,已加入 .gitignore);PyO3 宿主构建需 `$env:PYO3_PYTHON = "<repo>/.venv/Scripts/python.exe"`,运行 ios-py 测试二进制还需把 `C:\Users\wangbaofeng\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none` 加入 PATH。
 - maturin 在后台 shell 中运行需显式 `PATH="$HOME/.cargo/bin:$PATH"`。
 
 ## NOT_RUN 清单
 
 - 真机/iOS 设备验证、管理员权限 TUN 激活、pair record 相关操作。
-- GitHub Actions 真实 runner 执行(release、python-wheels/sdist/publish、MSRV、aarch64-linux/macOS 产物、C smoke 的 MSVC/clang 编译腿)。
+- GitHub Actions 真实 runner 执行(release、python-wheels/sdist/publish、aarch64-linux/macOS runner 产物、C smoke 的 MSVC/clang 真实编译腿)。
 - 真实发布:publish-pypi、publish-crates、GitHub release、tag 推送。
-- MSRV 1.80 编译验证(本机有 1.80 工具链但未运行)。
 
-## 建议下一步
+## 建议后续动作
 
-1. 定位 `cancelled_call_is_not_replayed_and_connection_stays_usable` 挂起根因(优先给 oneshot 等待点与 `client.recv()` 加超时,再用 eprintln/tracing 探针确认卡点),确认是测试脚本竞态还是产品缺陷。
-2. T4 收尾后重跑全量 `cargo test -p ios-core --all-features`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`。
-3. 运行 MSRV 检查与 workspace 非 core/py 测试,补齐 V 的命令矩阵。
-4. 在正常 CI(用户授权的分支推送)上观察 release/wheel job 的 runner 侧证据(尤其 C smoke 的 MSVC 腿与 upload-artifact 前置条件)。
+1. 在远端分支推送触发的 CI 中复核所有 release/wheel job 的 runner 侧完整构建与 smoke 运行。
+2. 后续若需真机/TUN 联调,可在具备对应环境和管理员权限时进行专项验证。
