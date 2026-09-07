@@ -10,7 +10,11 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(clap::Parser)]
-#[command(name = "ios", about = "iOS device management CLI (supports iOS 17+)")]
+#[command(
+    name = "ios",
+    version,
+    about = "iOS device management CLI (supports iOS 17+)"
+)]
 struct Cli {
     #[arg(
         short = 'u',

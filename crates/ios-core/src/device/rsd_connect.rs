@@ -196,6 +196,26 @@ async fn open_rsd_proxy_framer(
     server_addr: &str,
     rsd_port: u16,
 ) -> Option<crate::xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
+    open_rsd_proxy_framer_with_budget(
+        proxy_port,
+        server_addr,
+        rsd_port,
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+    )
+    .await
+}
+
+/// Open the RSD proxy framer with one initialization budget for the H2
+/// handshake. Each framer attempt gets a fresh budget; the queued → legacy →
+/// passive fallback stages keep their own existing per-stage timeouts. On
+/// timeout the half-initialized framer is dropped instead of being reused.
+#[cfg(feature = "tunnel")]
+async fn open_rsd_proxy_framer_with_budget(
+    proxy_port: u16,
+    server_addr: &str,
+    rsd_port: u16,
+    budget: std::time::Duration,
+) -> Option<crate::xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
     tracing::info!("RSD via proxy: connecting to 127.0.0.1:{proxy_port}");
     let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
         Ok(endpoint) => endpoint,
@@ -219,7 +239,8 @@ async fn open_rsd_proxy_framer(
         "RSD via proxy: connecting to [{server_addr}]:{rsd_port} through proxy port {proxy_port}"
     );
     tracing::info!("RSD via proxy: starting H2 framer connect");
-    match crate::xpc::h2_raw::H2Framer::connect(proxy).await {
+    let deadline = tokio::time::Instant::now() + budget;
+    match crate::xpc::h2_raw::H2Framer::connect_with_deadline(proxy, deadline).await {
         Ok(framer) => {
             tracing::info!("RSD via proxy: H2 framer connected");
             Some(framer)

@@ -24,6 +24,6 @@ name = "ios_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ios-core  = { workspace = true, features = ["mdns", "tunnel-userspace"] }
+ios-core  = { workspace = true, features = ["mdns", "tunnel-kernel", "tunnel-userspace"] }
 pyo3      = { workspace = true, features = ["abi3-py39"] }
 tokio     = { workspace = true, features = ["rt-multi-thread"] }

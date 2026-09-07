@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes yet.
 
+## [0.1.15] — 2026-09-07
+
+### Added
+
+- Added kernel tunnel support to the Python and C FFI bindings alongside the
+  existing userspace tunnel backend.
+- Added deterministic coverage for XPC/RSD initialization deadlines,
+  cancellation recovery, fallback handshakes, and release artifact gates.
+
+### Changed
+
+- Bounded HTTP/2, RemoteXPC, and RSD proxy initialization with shared
+  deadlines, dropping partial sessions before fallback attempts.
+- Made interrupted RemoteXPC writes, reads, stream opens, and window updates
+  preserve framing state safely and reject poisoned connections.
+- Added `ios --version` output and expanded release CI artifact smoke checks.
+
 ## [0.1.14] — 2026-09-04
 
 ### Added
@@ -245,7 +262,8 @@ No unreleased changes yet.
 - Cross-platform CLI binary (`ios`)
 - Protocol documentation for AFC, DTX, lockdown, OPACK, XPC
 
-[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/oslo254804746/rust-ios-device/compare/v0.1.11...v0.1.12
