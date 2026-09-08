@@ -442,7 +442,10 @@ jobs:
             echo "FFI C smoke compiler: MSVC cl.exe via vcvars64 (${{ matrix.target }})"
             cat > "$SMOKE_DIR/build_smoke.bat" <<EOF
           @echo off
-          call "$(cygpath -w "$VSDIR")\\VC\\Auxiliary\\Build\\vcvars64.bat" -arch=amd64 >nul
+          call "$(cygpath -w "$VSDIR")\\VC\\Auxiliary\\Build\\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          where cl
+          if errorlevel 1 exit /b 1
           cl /nologo /utf-8 /I"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\smoke.c" /link /LIBPATH:"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\ios_ffi.dll.lib" /OUT:"$SMOKE_DIR_WIN\\smoke.exe"
           if errorlevel 1 exit /b 1
           "$SMOKE_DIR_WIN\\smoke.exe"

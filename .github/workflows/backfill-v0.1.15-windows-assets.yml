@@ -1,0 +1,172 @@
+name: Backfill v0.1.15 Windows Release Assets
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: v0.1.15
+  RELEASE_SHA: 39ba548c26678596fec3e1de3b1df2dead4079fa
+  TARGET: x86_64-pc-windows-msvc
+
+concurrency:
+  group: backfill-v0.1.15-windows-assets
+  cancel-in-progress: false
+
+jobs:
+  backfill-windows-assets:
+    name: Backfill Windows CLI and FFI assets
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.1.15
+
+      - name: Verify immutable release source and existing release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ] \
+            || { echo "::error::${RELEASE_TAG} must resolve to ${RELEASE_SHA}"; exit 1; }
+          TAG_VERSION="${RELEASE_TAG#v}"
+          CARGO_VERSION="$(sed -nE 's/^version *= *"([^"]+)"/\1/p' Cargo.toml | head -1)"
+          [ "$TAG_VERSION" = "$CARGO_VERSION" ] \
+            || { echo "::error::tag version ${TAG_VERSION} does not match Cargo.toml ${CARGO_VERSION}"; exit 1; }
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null \
+            || { echo "::error::expected existing GitHub Release $RELEASE_TAG"; exit 1; }
+
+      - name: Install OpenSSL
+        shell: powershell
+        run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          vcpkg install openssl:x64-windows-static-md
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: backfill-v0.1.15-x86_64-pc-windows-msvc
+          cache-bin: false
+
+      - name: Build release binary and FFI library
+        shell: bash
+        run: cargo build --release --package ios-cli --package ios-ffi --target "$TARGET"
+
+      - name: Package and smoke CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="target/${TARGET}/release"
+          [ -s "$RELEASE_DIR/ios.exe" ] \
+            || { echo "::error::CLI binary missing or empty: $RELEASE_DIR/ios.exe"; exit 1; }
+          TAG_VERSION="${RELEASE_TAG#v}"
+          CLI_ASSET="ios-${TAG_VERSION}-${TARGET}.zip"
+          cd "$RELEASE_DIR"
+          7z a "../../../$CLI_ASSET" ios.exe
+          cd ../../..
+          VERIFY_DIR="$(mktemp -d)"
+          7z x "-o$VERIFY_DIR" "$CLI_ASSET" -y > /dev/null
+          BIN="$VERIFY_DIR/ios.exe"
+          [ -s "$BIN" ] || { echo "::error::CLI missing after unpack: $BIN"; exit 1; }
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+          rm -rf "$VERIFY_DIR"
+          bash scripts/write-sha256.sh "$CLI_ASSET" "$CLI_ASSET.sha256"
+          echo "CLI_ASSET=$CLI_ASSET" >> "$GITHUB_ENV"
+
+      - name: Package and smoke FFI library
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="target/${TARGET}/release"
+          for f in "$RELEASE_DIR/ios_ffi.dll" "$RELEASE_DIR/ios_ffi.dll.lib" "$RELEASE_DIR/ios_ffi.lib" "crates/ios-ffi/include/ios_rs.h"; do
+            [ -s "$f" ] || { echo "::error::FFI file missing or empty: $f"; exit 1; }
+          done
+          TAG_VERSION="${RELEASE_TAG#v}"
+          FFI_ASSET="ios-ffi-${TAG_VERSION}-${TARGET}.zip"
+          mkdir -p _ffi_pkg
+          cp "$RELEASE_DIR/ios_ffi.dll" "$RELEASE_DIR/ios_ffi.dll.lib" "$RELEASE_DIR/ios_ffi.lib" "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
+          cd _ffi_pkg
+          7z a "../$FFI_ASSET" .
+          cd ..
+          SMOKE_DIR="$(mktemp -d)"
+          SMOKE_DIR_WIN="$(cygpath -w "$SMOKE_DIR")"
+          7z x "-o$SMOKE_DIR" "$FFI_ASSET" -y > /dev/null
+          for f in "$SMOKE_DIR/ios_ffi.dll" "$SMOKE_DIR/ios_ffi.dll.lib" "$SMOKE_DIR/ios_ffi.lib" "$SMOKE_DIR/ios_rs.h"; do
+            [ -s "$f" ] || { echo "::error::FFI archive missing or empty after unpack: $f"; exit 1; }
+          done
+          cat > "$SMOKE_DIR/smoke.c" <<'EOF'
+          #include <stdio.h>
+          #include "ios_rs.h"
+
+          int main(void) {
+              ios_free_string(NULL);
+              if (ios_list_devices(NULL, NULL) == 0) {
+                  fprintf(stderr, "ios_list_devices(NULL, NULL) must return non-zero\n");
+                  return 1;
+              }
+              ios_device_close(NULL);
+              ios_tunnel_close(NULL);
+              return 0;
+          }
+          EOF
+          VSWHERE="C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          [ -f "$VSWHERE" ] || { echo "::error::vswhere.exe is required for the MSVC FFI smoke"; exit 1; }
+          VSDIR="$("$VSWHERE" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | head -1 | tr -d '\r')"
+          [ -n "$VSDIR" ] && [ -f "$VSDIR/VC/Auxiliary/Build/vcvars64.bat" ] \
+            || { echo "::error::MSVC x64 tools were not found"; exit 1; }
+          cat > "$SMOKE_DIR/build_smoke.bat" <<EOF
+          @echo off
+          call "$(cygpath -w "$VSDIR")\\VC\\Auxiliary\\Build\\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          where cl
+          if errorlevel 1 exit /b 1
+          cl /nologo /utf-8 /I"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\smoke.c" /link /LIBPATH:"$SMOKE_DIR_WIN" "$SMOKE_DIR_WIN\\ios_ffi.dll.lib" /OUT:"$SMOKE_DIR_WIN\\smoke.exe"
+          if errorlevel 1 exit /b 1
+          "$SMOKE_DIR_WIN\\smoke.exe"
+          EOF
+          cmd //c "$(cygpath -w "$SMOKE_DIR")\\build_smoke.bat"
+          bash scripts/write-sha256.sh "$FFI_ASSET" "$FFI_ASSET.sha256"
+          echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
+
+      - name: Upload only missing or verified Windows assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSETS=(
+            "$CLI_ASSET"
+            "$CLI_ASSET.sha256"
+            "$FFI_ASSET"
+            "$FFI_ASSET.sha256"
+          )
+          MISSING_ASSETS=()
+          for asset in "${ASSETS[@]}"; do
+            LOCAL_DIGEST="sha256:$(sha256sum "$asset" | awk '{print $1}')"
+            REMOTE_DIGEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+              --jq ".assets[] | select(.name == \"${asset}\") | .digest")"
+            if [ -z "$REMOTE_DIGEST" ]; then
+              MISSING_ASSETS+=("$asset")
+            elif [ "$REMOTE_DIGEST" = "$LOCAL_DIGEST" ]; then
+              echo "Release asset already present with matching digest: $asset"
+            else
+              echo "::error::refusing to overwrite $asset: remote $REMOTE_DIGEST != local $LOCAL_DIGEST"
+              exit 1
+            fi
+          done
+          if [ "${#MISSING_ASSETS[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${MISSING_ASSETS[@]}" --repo "$GITHUB_REPOSITORY"
+          else
+            echo "All Windows release assets are already present and match the local build."
+          fi
