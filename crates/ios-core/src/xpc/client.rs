@@ -1,6 +1,7 @@
 //! XPC client: high-level wrapper around XpcConnection for service calls.
 
 use std::net::{Ipv6Addr, SocketAddr};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -14,10 +15,13 @@ trait XpcStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> XpcStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 type DynStream = Box<dyn XpcStream>;
+type ReconnectFuture = Pin<Box<dyn Future<Output = Result<XpcClient, XpcError>> + Send>>;
+type Reconnector = Arc<dyn Fn() -> ReconnectFuture + Send + Sync>;
 
 /// High-level XPC client for iOS 17+ services.
 pub struct XpcClient {
     inner: XpcConnection<DynStream>,
+    reconnector: Option<Reconnector>,
 }
 
 impl XpcClient {
@@ -35,7 +39,7 @@ impl XpcClient {
                 format!("XPC dial to {sock_addr} timed out"),
             )
         })??;
-        tokio::time::timeout(
+        let client = tokio::time::timeout(
             crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
             Self::connect_stream(stream),
         )
@@ -45,7 +49,11 @@ impl XpcClient {
                 std::io::ErrorKind::TimedOut,
                 format!("XPC initialization with {sock_addr} timed out"),
             )
-        })?
+        })??;
+        Ok(client.with_reconnector(move || async move {
+            let stream = TcpStream::connect(sock_addr).await?;
+            Self::connect_stream(stream).await
+        }))
     }
 
     /// Connect to an XPC service over an already-established stream.
@@ -60,7 +68,41 @@ impl XpcClient {
         initialize_xpc_connection_on_framer(&mut framer).await?;
         Ok(Self {
             inner: XpcConnection::new(framer),
+            reconnector: None,
         })
+    }
+
+    /// Supply a factory for a fresh, initialized connection to the same service.
+    /// Custom stream transports should use this when a service requires one
+    /// request per connection. The factory must preserve the tunnel route.
+    pub fn with_reconnector<F, Fut>(mut self, connect: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Self, XpcError>> + Send + 'static,
+    {
+        self.reconnector = Some(Arc::new(move || Box::pin(connect())));
+        self
+    }
+
+    /// Open a new connection without reusing this connection's reply channel.
+    /// Direct TCP and ConnectedDevice clients retain their original route;
+    /// custom streams require [`Self::with_reconnector`].
+    pub fn reconnect(&self) -> impl Future<Output = Result<Self, XpcError>> + Send + 'static {
+        // Copy only the factory so the future does not borrow an active,
+        // potentially non-Sync byte stream across an await.
+        let connect = self.reconnector.clone();
+        async move {
+            let connect = connect.ok_or_else(|| {
+                XpcError::Tls("this XPC transport has no reconnection factory".into())
+            })?;
+            let mut client = tokio::time::timeout(crate::tunnel::TUNNEL_CONNECT_TIMEOUT, connect())
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::TimedOut, "XPC reconnect timed out")
+                })??;
+            client.reconnector = Some(connect);
+            Ok(client)
+        }
     }
 
     /// Send an XPC dictionary and receive the response.

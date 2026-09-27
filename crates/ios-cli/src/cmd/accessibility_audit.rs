@@ -154,46 +154,50 @@ async fn run_list_items(udid: &str, limit: usize, timeout: u64, json: bool) -> R
     } else {
         AccessibilityAuditClient::new(stream, version)
     };
-    let timeout = Duration::from_secs(timeout.max(1));
-    let mut traversal = FocusTraversal::default();
-    prepare_focus_inspector(&mut client, timeout, &mut traversal, limit).await?;
+    let result = inspection_or_cancel(async {
+        let timeout = Duration::from_secs(timeout.max(1));
+        let mut traversal = FocusTraversal::default();
+        prepare_focus_inspector(&mut client, timeout, &mut traversal, limit).await?;
 
-    if limit > 0 {
-        client.move_focus(MoveDirection::Next).await?;
-    }
+        if limit > 0 {
+            client.move_focus(MoveDirection::Next).await?;
+        }
 
-    while traversal.should_continue(limit) {
-        match client.next_focus_change_with_idle_timeout(timeout).await? {
-            Some(focus) => {
-                if !traversal.record_focus(focus) {
-                    break;
+        while traversal.should_continue(limit) {
+            match client.next_focus_change_with_idle_timeout(timeout).await? {
+                Some(focus) => {
+                    if !traversal.record_focus(focus) {
+                        break;
+                    }
+                    if traversal.should_continue(limit) {
+                        client.move_focus(MoveDirection::Next).await?;
+                    }
                 }
-                if traversal.should_continue(limit) {
+                None => {
+                    if !traversal.record_timeout() {
+                        if !traversal.is_empty() {
+                            break;
+                        }
+                        return Err(anyhow::anyhow!("timed out waiting for focus change"));
+                    }
                     client.move_focus(MoveDirection::Next).await?;
                 }
             }
-            None => {
-                if !traversal.record_timeout() {
-                    if !traversal.is_empty() {
-                        break;
-                    }
-                    return Err(anyhow::anyhow!("timed out waiting for focus change"));
-                }
-                client.move_focus(MoveDirection::Next).await?;
+        }
+        let items = traversal.into_items();
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&items)?);
+        } else {
+            for (index, item) in items.iter().enumerate() {
+                print_focus(index + 1, item);
             }
         }
-    }
-    let items = traversal.into_items();
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&items)?);
-    } else {
-        for (index, item) in items.iter().enumerate() {
-            print_focus(index + 1, item);
-        }
-    }
-
-    Ok(())
+        Ok(())
+    })
+    .await;
+    finish_inspection(&mut client, result).await
 }
 
 async fn prepare_focus_inspector(
@@ -287,24 +291,28 @@ async fn run_navigate(udid: &str, direction: &str, timeout: u64, json: bool) -> 
         AccessibilityAuditClient::new(stream, version)
     };
 
-    let timeout = Duration::from_secs(timeout.max(1));
-    client.set_app_monitoring_enabled(true).await?;
-    client.set_monitored_event_type(2).await?;
-    client.set_show_visuals(true).await?;
+    let result = inspection_or_cancel(async {
+        let timeout = Duration::from_secs(timeout.max(1));
+        client.set_app_monitoring_enabled(true).await?;
+        client.set_monitored_event_type(2).await?;
+        client.set_show_visuals(true).await?;
 
-    match client.navigate(direction, timeout).await? {
-        Some(focus) => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&focus)?);
-            } else {
-                print_focus(1, &focus);
+        match client.navigate(direction, timeout).await? {
+            Some(focus) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&focus)?);
+                } else {
+                    print_focus(1, &focus);
+                }
+            }
+            None => {
+                eprintln!("No focus change received within timeout");
             }
         }
-        None => {
-            eprintln!("No focus change received within timeout");
-        }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await;
+    finish_inspection(&mut client, result).await
 }
 
 async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
@@ -315,36 +323,40 @@ async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
         AccessibilityAuditClient::new(stream, version)
     };
 
-    let timeout = Duration::from_secs(timeout.max(1));
-    client.set_app_monitoring_enabled(true).await?;
-    client.set_monitored_event_type(2).await?;
-    client.set_show_visuals(true).await?;
+    let result = inspection_or_cancel(async {
+        let timeout = Duration::from_secs(timeout.max(1));
+        client.set_app_monitoring_enabled(true).await?;
+        client.set_monitored_event_type(2).await?;
+        client.set_show_visuals(true).await?;
 
-    // Get current element first
-    client.move_focus(MoveDirection::First).await?;
-    let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
-    match focus {
-        Some(focus) => {
-            let element_bytes = hex::decode(&focus.platform_identifier)
-                .map_err(|e| anyhow::anyhow!("invalid platform identifier: {e}"))?;
-            client.perform_action_activate(&element_bytes).await?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"action": "activate", "element": focus})
-                );
-            } else {
-                println!(
-                    "Activated: {}",
-                    focus.caption.as_deref().unwrap_or("<no caption>")
-                );
+        // Get current element first
+        client.move_focus(MoveDirection::First).await?;
+        let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
+        match focus {
+            Some(focus) => {
+                let element_bytes = hex::decode(&focus.platform_identifier)
+                    .map_err(|e| anyhow::anyhow!("invalid platform identifier: {e}"))?;
+                client.perform_action_activate(&element_bytes).await?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"action": "activate", "element": focus})
+                    );
+                } else {
+                    println!(
+                        "Activated: {}",
+                        focus.caption.as_deref().unwrap_or("<no caption>")
+                    );
+                }
+            }
+            None => {
+                return Err(anyhow::anyhow!("no focused element to tap"));
             }
         }
-        None => {
-            return Err(anyhow::anyhow!("no focused element to tap"));
-        }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await;
+    finish_inspection(&mut client, result).await
 }
 
 async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
@@ -355,29 +367,64 @@ async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
         AccessibilityAuditClient::new(stream, version)
     };
 
-    let timeout = Duration::from_secs(timeout.max(1));
-    client.set_app_monitoring_enabled(true).await?;
-    client.set_monitored_event_type(2).await?;
-    client.set_show_visuals(true).await?;
+    let result = inspection_or_cancel(async {
+        let timeout = Duration::from_secs(timeout.max(1));
+        client.set_app_monitoring_enabled(true).await?;
+        client.set_monitored_event_type(2).await?;
+        client.set_show_visuals(true).await?;
 
-    client.move_focus(MoveDirection::First).await?;
-    let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
-    match focus {
-        Some(focus) => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&focus)?);
-            } else {
-                print_focus(1, &focus);
-                if let Some(ref desc) = focus.spoken_description {
-                    println!("  voice: {desc}");
+        client.move_focus(MoveDirection::First).await?;
+        let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
+        match focus {
+            Some(focus) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&focus)?);
+                } else {
+                    print_focus(1, &focus);
+                    if let Some(ref desc) = focus.spoken_description {
+                        println!("  voice: {desc}");
+                    }
                 }
             }
+            None => {
+                eprintln!("No focused element found within timeout");
+            }
         }
-        None => {
-            eprintln!("No focused element found within timeout");
+        Ok(())
+    })
+    .await;
+    finish_inspection(&mut client, result).await
+}
+
+async fn inspection_or_cancel(
+    operation: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    tokio::select! {
+        result = operation => result,
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            anyhow::bail!("accessibility inspection cancelled");
         }
     }
-    Ok(())
+}
+
+async fn finish_inspection(
+    client: &mut AccessibilityAuditClient<ServiceStream>,
+    result: Result<()>,
+) -> Result<()> {
+    let cleanup = tokio::time::timeout(Duration::from_secs(3), client.disable_inspector())
+        .await
+        .map_err(|_| anyhow::anyhow!("accessibility inspector cleanup timed out"))
+        .and_then(|result| result.map_err(Into::into));
+    match result {
+        Ok(()) => cleanup,
+        Err(error) => {
+            if cleanup.is_err() {
+                eprintln!("Accessibility inspector cleanup also failed");
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn connect_accessibility_audit(
@@ -460,6 +507,34 @@ mod tests {
 
     use super::{parse_direction, AccessibilityAuditSub, FocusElement, FocusTraversal};
     use ios_core::accessibility_audit::MoveDirection;
+
+    #[tokio::test]
+    async fn failed_inspection_still_disables_monitoring_and_preserves_original_error() {
+        use ios_core::dtx::{read_dtx_frame, DtxPayload, NSObject};
+        let (stream, mut peer) = tokio::io::duplex(8192);
+        let stream: ios_core::device::ServiceStream = Box::new(stream);
+        let task = tokio::spawn(async move {
+            let mut client =
+                ios_core::accessibility_audit::AccessibilityAuditClient::new(stream, 17);
+            super::finish_inspection(
+                &mut client,
+                Err(anyhow::anyhow!("inspection fixture error")),
+            )
+            .await
+            .unwrap_err()
+        });
+        for _ in 0..6 {
+            let message = read_dtx_frame(&mut peer).await.unwrap();
+            if let DtxPayload::MethodInvocation { selector, args } = message.payload {
+                if selector == "deviceSetAppMonitoringEnabled:" {
+                    assert_eq!(args, vec![NSObject::Bool(false)]);
+                    assert_eq!(task.await.unwrap().to_string(), "inspection fixture error");
+                    return;
+                }
+            }
+        }
+        panic!("cleanup never disabled app monitoring");
+    }
 
     #[derive(Parser)]
     struct TestCli {

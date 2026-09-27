@@ -33,7 +33,7 @@ enum PasteboardSub {
         raw: bool,
         #[arg(
             long,
-            default_value = "resolved",
+            default_value = "promisesecondary",
             value_name = "POLICY",
             help = "Data policy: resolved, promised, matchsource, promisesecondary, threshold:N"
         )]
@@ -116,7 +116,7 @@ enum PasteboardSub {
         )]
         experimental: bool,
     },
-    /// Subscribe to AUTONOTIFY/PUSH pasteboard changes
+    /// Watch pasteboard changes through Darwin notifications and fresh PULLs
     Watch {
         #[arg(
             long,
@@ -126,18 +126,21 @@ enum PasteboardSub {
         pasteboard: String,
         #[arg(
             long,
-            default_value = "resolved",
+            default_value = "promisesecondary",
             value_name = "POLICY",
-            help = "Push data policy: resolved, promised, matchsource, promisesecondary, threshold:N"
+            help = "Read policy: resolved, promised, matchsource, promisesecondary, threshold:N"
         )]
         policy: String,
         #[arg(long, help = "Include inline bytes as base64 in JSON/human output")]
         show_data: bool,
+        #[arg(long, help = "Allow the experimental --autonotify transport")]
+        experimental: bool,
         #[arg(
             long,
-            help = "Enable experimental AUTONOTIFY/PUSH support (not implemented by go-ios/pymobiledevice3)"
+            requires = "experimental",
+            help = "Use experimental AUTONOTIFY/PUSH instead of Darwin notifications"
         )]
-        experimental: bool,
+        autonotify: bool,
     },
     /// Resolve and export one item (an explicit alias for `resolve --out`)
     Export {
@@ -181,6 +184,17 @@ impl PasteboardCmd {
             },
         )
         .await?;
+        if let PasteboardSub::Watch {
+            pasteboard,
+            policy,
+            show_data,
+            autonotify: false,
+            ..
+        } = &self.sub
+        {
+            let policy = parse_policy(policy)?;
+            return watch_notifications(&device, pasteboard, policy, *show_data, json_output).await;
+        }
         let xpc = device.connect_xpc_service(pasteboard::SERVICE_NAME).await?;
         let mut client = PasteboardClient::new(xpc);
 
@@ -290,6 +304,7 @@ impl PasteboardCmd {
                 policy,
                 show_data,
                 experimental: _,
+                autonotify: _,
             } => {
                 let policy = parse_policy(&policy)?;
                 let mut subscription = client.subscribe(&pasteboard, Some(policy)).await?;
@@ -322,16 +337,62 @@ impl PasteboardSub {
     fn validate_experimental(&self) -> Result<()> {
         let (name, experimental) = match self {
             Self::Resolve { experimental, .. } => ("resolve", *experimental),
-            Self::Watch { experimental, .. } => ("watch", *experimental),
+            Self::Watch {
+                experimental,
+                autonotify: true,
+                ..
+            } => ("watch --autonotify", *experimental),
             Self::Export { experimental, .. } => ("export", *experimental),
-            Self::Get { .. } | Self::Set { .. } => return Ok(()),
+            Self::Get { .. }
+            | Self::Set { .. }
+            | Self::Watch {
+                autonotify: false, ..
+            } => return Ok(()),
         };
         if !experimental {
             bail!(
-                "pasteboard {name} is experimental: upstream go-ios/pymobiledevice3 do not implement this verb; pass --experimental to continue"
+                "pasteboard {name} uses an experimental protocol; pass --experimental to continue"
             );
         }
         Ok(())
+    }
+}
+
+async fn watch_notifications(
+    device: &ios_core::ConnectedDevice,
+    name: &str,
+    policy: DataInclusionPolicy,
+    show_data: bool,
+    json_output: bool,
+) -> Result<()> {
+    let watch = async {
+        let stream = device
+            .connect_rsd_service(ios_core::notificationproxy::RSD_SERVICE_NAME)
+            .await?;
+        let mut monitor = pasteboard::PasteboardMonitor::start(
+            stream,
+            |policy| async move {
+                let xpc = device
+                    .connect_xpc_service(pasteboard::SERVICE_NAME)
+                    .await
+                    .map_err(|error| pasteboard::PasteboardError::Protocol(error.to_string()))?;
+                PasteboardClient::new(xpc).get_snapshot(name, policy).await
+            },
+            policy,
+        )
+        .await?;
+        loop {
+            let snapshot = monitor.next_change().await?;
+            render_event(
+                &PasteboardEvent::Push(pasteboard::PasteboardPush { snapshot }),
+                show_data,
+                json_output,
+            )?;
+        }
+    };
+    tokio::select! {
+        result = watch => result,
+        signal = tokio::signal::ctrl_c() => signal.context("waiting for Ctrl-C"),
     }
 }
 
@@ -947,6 +1008,18 @@ mod tests {
         ));
         assert!(watch.validate_experimental().is_ok());
 
+        let watch = TestCli::parse_from(["pasteboard", "watch"]).command;
+        assert!(watch.validate_experimental().is_ok());
+        assert!(
+            matches!(watch, PasteboardSub::Watch { policy, autonotify: false, .. }
+            if policy == "promisesecondary")
+        );
+        assert!(TestCli::try_parse_from(["pasteboard", "watch", "--autonotify"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["pasteboard", "watch", "--autonotify", "--experimental"])
+                .is_ok()
+        );
+
         let resolve =
             TestCli::parse_from(["pasteboard", "resolve", "2", "public.png", "--show-data"])
                 .command;
@@ -981,13 +1054,13 @@ mod tests {
 
     #[tokio::test]
     async fn experimental_commands_are_rejected_before_connection() {
-        let command = TestCli::parse_from(["pasteboard", "watch"]).command;
+        let command = TestCli::parse_from(["pasteboard", "resolve", "0", "public.png"]).command;
         let error = PasteboardCmd { sub: command }
             .run(None, true)
             .await
-            .expect_err("watch without opt-in must stop before device access");
+            .expect_err("resolve without opt-in must stop before device access");
         assert!(error.to_string().contains("--experimental"));
-        assert!(error.to_string().contains("watch"));
+        assert!(error.to_string().contains("resolve"));
     }
 
     #[test]

@@ -325,6 +325,15 @@ impl ConnectedDevice {
         let client = XpcClient::connect_stream(stream)
             .await
             .map_err(CoreError::from)?;
+        let endpoint = self.tunnel_endpoint()?;
+        let port = resolved.port;
+        let client = client.with_reconnector(move || async move {
+            let stream = endpoint
+                .connect(port)
+                .await
+                .map_err(|error| crate::xpc::XpcError::Tls(error.to_string()))?;
+            XpcClient::connect_stream(stream).await
+        });
 
         Ok((
             client,

@@ -8,6 +8,42 @@ use serde_json::json;
 use tokio::io::{duplex, AsyncWriteExt};
 
 #[tokio::test]
+async fn disabling_inspector_hides_visuals_and_turns_off_app_monitoring() {
+    let (client, mut server) = duplex(8192);
+    let task = tokio::spawn(async move {
+        AccessibilityAuditClient::new(client, 17)
+            .disable_inspector()
+            .await
+            .unwrap();
+    });
+    for expected in [
+        "deviceInspectorSetMonitoredEventType:",
+        "deviceInspectorFocusOnElement:",
+        "deviceInspectorPreviewOnElement:",
+        "deviceHighlightIssue:",
+        "deviceInspectorShowVisuals:",
+        "deviceSetAppMonitoringEnabled:",
+    ] {
+        let request = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_dtx_frame(&mut server),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let DtxPayload::MethodInvocation { selector, args } = request.payload else {
+            panic!("expected inspector teardown invocation");
+        };
+        assert_eq!(selector, expected);
+        if expected == "deviceSetAppMonitoringEnabled:" || expected == "deviceInspectorShowVisuals:"
+        {
+            assert_eq!(args, vec![NSObject::Bool(false)]);
+        }
+    }
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn lockdown_capabilities_requests_device_capabilities_without_publishing_capabilities() {
     let (client, mut server) = duplex(4096);
     let task = tokio::spawn(async move {

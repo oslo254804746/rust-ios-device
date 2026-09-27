@@ -45,6 +45,7 @@ pub const DEFAULT_SKIP_SETUP_KEYS: &[&str] = &[
     "Keyboard",
     "Language",
     "LanguageAndLocale",
+    "LiquidGlass",
     "Location",
     "LockdownMode",
     "MessagingActivationUsingPhoneNumber",

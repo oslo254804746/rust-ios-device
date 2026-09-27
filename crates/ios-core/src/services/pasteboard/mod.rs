@@ -22,6 +22,12 @@ use uuid::Uuid;
 use crate::xpc::{XpcClient, XpcError};
 use crate::{XpcMessage, XpcValue};
 
+mod monitor;
+pub use monitor::PasteboardMonitor;
+
+/// Darwin notification emitted when the device pasteboard changes.
+pub const PASTEBOARD_CHANGED_NOTIFICATION: &str = "com.apple.pasteboard.notify.changed";
+
 /// RSD service name for the iOS 17+ pasteboard service.
 pub const SERVICE_NAME: &str = "com.apple.coredevice.pasteboardservice";
 
@@ -79,6 +85,8 @@ const TEXT_UTIS: [&str; 3] = [UTI_UTF8_PLAIN_TEXT, UTI_PLAIN_TEXT, UTI_TEXT];
 /// Errors returned by the pasteboard service.
 #[derive(Debug, thiserror::Error)]
 pub enum PasteboardError {
+    #[error("pasteboard notification error: {0}")]
+    Notification(#[from] crate::notificationproxy::NotificationProxyError),
     /// Underlying RemoteXPC/XPC transport failure.
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),
@@ -296,6 +304,16 @@ pub fn data_item(uti: impl Into<String>, data: impl AsRef<[u8]>) -> PasteboardIt
 }
 
 impl PasteboardSnapshot {
+    /// Device pasteboard generation and counter. Both are needed: a daemon
+    /// restart can reuse the counter with a different nonce.
+    pub fn change_id(&self) -> Option<(&XpcValue, i64)> {
+        let nonce = self.metadata.as_ref()?.as_dict()?.get("nonce")?;
+        if matches!(nonce, XpcValue::Null) {
+            return None;
+        }
+        Some((nonce, self.change_count?))
+    }
+
     /// Decode a PULL_REPLY or PUSH body with the default resource budgets.
     pub fn from_xpc(reply: &XpcValue) -> Result<Self, PasteboardError> {
         Self::from_xpc_with_limits(reply, PasteboardLimits::default())

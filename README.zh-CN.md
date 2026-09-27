@@ -120,7 +120,7 @@ CLI 的命令组与 `ios-core` 的服务模块基本一一对应。下表也列�
 | 诊断与日志              | `syslog`, `diagnostics`, `os-trace`, `notify`, `pcap`, `btlogger`                           | go-ios `syslog`/`diagnostics`/`pcap`；pmd3 `syslog`/`diagnostics`/`pcap`/`btlogger` |
 | 开发者服务              | `instruments`, `debugserver`, `debug`, `ddi`, `symbols`, `accessibility-audit`, `webinspector`, `devicestate`, `memlimitoff` | go-ios `instruments`/`debug`/`image`/`ax`；pmd3 `developer dvt`/`mounter`/`webinspector` |
 | iOS 17+ 传输            | `tunnel`, `rsd`, `forward`, `dproxy`                                                        | go-ios `tunnel`/`rsd`/`forward`；pmd3 RemoteXPC/tunnel                     |
-| 设备剪贴板              | `pasteboard get`、`pasteboard set TEXT`、`pasteboard set --url URL`                          | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy`                     |
+| 设备剪贴板              | `pasteboard get`、`set TEXT`、`set --url URL`、`watch`（Darwin 通知监听）                       | go-ios `pasteboard`；pmd3 CoreDevice `paste`/`copy` 和剪贴板监听          |
 | CoreDevice 配置         | `device-control configuration get|set ...`                                                      | pmd3 CoreDevice configuration actions                                     |
 | CoreDevice 旋转         | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
 | 管理与监督              | `profiles`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`prepare`/`httpproxy`/`mdm`/`erase`；pmd3 `profile`/`provision`/`restore` |

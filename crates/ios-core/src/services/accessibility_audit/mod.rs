@@ -244,6 +244,20 @@ where
         Ok(())
     }
 
+    /// End focus inspection, hide its overlays and disable app monitoring.
+    /// All teardown messages are attempted even when an earlier one fails.
+    pub async fn disable_inspector(&mut self) -> Result<(), AccessibilityAuditError> {
+        let results = [
+            self.set_monitored_event_type(0).await,
+            self.focus_on_element().await,
+            self.preview_on_element().await,
+            self.highlight_issue().await,
+            self.set_show_visuals(false).await,
+            self.set_app_monitoring_enabled(false).await,
+        ];
+        results.into_iter().collect()
+    }
+
     pub async fn set_monitored_event_type(
         &mut self,
         event_type: u64,

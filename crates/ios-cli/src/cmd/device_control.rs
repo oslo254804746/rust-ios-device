@@ -241,17 +241,18 @@ async fn capture_display(
         sender_ip,
         ..MediaStreamOptions::default()
     };
-    let mut session = match kind {
-        MediaKind::Video => MediaStreamSession::start_video(client, options).await?,
-        MediaKind::Audio => MediaStreamSession::start_audio(client, options).await?,
-    };
     let deadline = tokio::time::Instant::now()
         .checked_add(Duration::from_secs(capture.timeout))
         .ok_or_else(|| anyhow::anyhow!("--timeout is too large for a capture deadline"))?;
     let mut output = capture.output.map(AtomicOutput::new).transpose()?;
+    let mut session = match kind {
+        MediaKind::Video => MediaStreamSession::start_video(client, options).await?,
+        MediaKind::Audio => MediaStreamSession::start_audio(client, options).await?,
+    };
     let mut units = 0usize;
     let mut bytes = 0usize;
-    let capture_result: Result<()> = async {
+    let capture_result: Result<()> = tokio::select! {
+        result = async {
         while units < capture.max_units {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -286,8 +287,11 @@ async fn capture_display(
             file.commit()?;
         }
         Ok(())
-    }
-    .await;
+        } => result,
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(anyhow::Error::from).and_then(|()| Err(anyhow::anyhow!("display capture cancelled")))
+        }
+    };
     let stop_result: Result<(), anyhow::Error> = session
         .stop(Duration::from_secs(5))
         .await

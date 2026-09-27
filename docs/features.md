@@ -74,12 +74,21 @@ the resolved endpoint is a legacy or `.shim.remote` service. Configuration
 setters change device-wide appearance/accessibility state; orientation rotates
 the active UI, so callers should treat both as mutating operations.
 
-Pasteboard PULL/SET, multi-item UTI data, and the documented data-policy
-encodings are verified against go-ios `ced7e53d` and pymobiledevice3
-`38fbd227`. The listed RESOLVE/DATA/AUTONOTIFY/PUSH verbs are experimental:
-those pinned reference clients only scaffold or enumerate them. The CLI gates
-`pasteboard watch`, `resolve`, and `export` behind `--experimental`; library
-APIs for those verbs carry the same warning and require real-device validation.
+Pasteboard PULL/SET supports multi-item UTI data and CoreDevice data policies.
+`PasteboardMonitor` observes `com.apple.pasteboard.notify.changed` through the
+notification proxy and reads each snapshot on a fresh connection. The CLI's
+`pasteboard watch` uses this path without experimental opt-in, suppresses its
+initial baseline and deduplicates `(nonce, changeCount)`. An idle monitor keeps
+waiting; a transport/read failure exits so the caller can reconnect. CLI `get`
+and `watch` default to `promisesecondary`; `--policy resolved` explicitly requests
+all representations and may stall the device daemon on rich copies. Existing
+Rust `get` helpers retain their `AllResolved` policy for compatibility.
+
+RESOLVE/DATA and the low-level AUTONOTIFY/PUSH APIs remain experimental. Use
+`resolve|export --experimental` or `watch --autonotify --experimental` for them.
+AUTONOTIFY may eagerly resolve secondary representations despite its policy;
+the Darwin monitor avoids that subscription. Protocol tests cover the monitor;
+real-device validation and a bidirectional host clipboard bridge remain separate.
 
 `hid` exposes pmd3-compatible Indigo button and Universal HID report services.
 The `ios hid` command requires `--confirm`, bounds input, and never prints
@@ -97,6 +106,15 @@ uses the negotiated `streamConfig` RTCP port/SSRC values, and writes optional
 output atomically with owner-only permissions. It does not decode HEVC/AAC or
 provide a VNC/pixel viewer; consumers must decode the raw Annex-B HEVC or
 AAC-ELD payloads separately.
+
+Display connections issue at most one reply-bearing request. Later calls open
+a fresh connection over the original direct or userspace route; custom streams
+must supply `XpcClient::with_reconnector`. Stop uses CoreDevice's
+`stopAll`/`identifiers` request. `stop_media_stream(uuid)` and session cleanup stop
+all streams for compatibility; callers needing selective teardown can pass
+device-issued UInt32 tokens to `stop_media_streams(false, identifiers)`. A client
+session UUID is not a stream token. Camera/microphone conflicts surface as
+`DisplayError::MediaInUse` (9022). Raw capture still requires kernel UDP routing.
 
 MobileBackup2's DeviceLink client is part of the core service surface and
 includes the device-side `Unback` and `Extract` operations. The optional

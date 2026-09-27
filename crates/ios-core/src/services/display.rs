@@ -70,6 +70,10 @@ pub enum DisplayError {
     FeatureMissing(&'static str),
     #[error("display operation timed out")]
     Timeout,
+    #[error("could not open a fresh display connection: {0}")]
+    Reconnect(XpcError),
+    #[error("the device camera or microphone is in use (CoreDevice 9022); close the app using it and retry")]
+    MediaInUse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +163,7 @@ pub struct RawAccessUnit {
 
 pub struct DisplayServiceClient {
     client: XpcClient,
+    request_sent: bool,
     envelope_mode: CoreDeviceEnvelopeMode,
     service_features: Option<Vec<String>>,
 }
@@ -172,6 +177,7 @@ impl DisplayServiceClient {
     pub fn new_with_mode(client: XpcClient, mode: CoreDeviceEnvelopeMode) -> Self {
         Self {
             client,
+            request_sent: false,
             envelope_mode: mode,
             service_features: None,
         }
@@ -183,6 +189,7 @@ impl DisplayServiceClient {
     {
         Self {
             client,
+            request_sent: false,
             envelope_mode: CoreDeviceEnvelopeMode::Modern,
             service_features: Some(features.into_iter().map(Into::into).collect()),
         }
@@ -315,13 +322,30 @@ impl DisplayServiceClient {
             remote_ssrc,
         })
     }
-    pub async fn stop_media_stream(&mut self, id: uuid::Uuid) -> Result<XpcValue, DisplayError> {
+    /// Stop all media streams. CoreDevice's stop request takes stream tokens,
+    /// not the client session UUID; this compatibility method stops all streams.
+    pub async fn stop_media_stream(&mut self, _id: uuid::Uuid) -> Result<XpcValue, DisplayError> {
+        self.stop_media_streams(true, &[]).await
+    }
+
+    /// Stop every stream, or the specified device-issued UInt32 stream tokens.
+    /// A previous request on this client causes a fresh connection to be opened.
+    pub async fn stop_media_streams(
+        &mut self,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
         self.ensure(STOP_MEDIA_FEATURE)?;
+        if !stop_all && identifiers.is_empty() {
+            return Err(DisplayError::Protocol(
+                "select stream identifiers or stop_all".into(),
+            ));
+        }
         let result = self
             .invoke(
                 STOP_MEDIA_FEATURE,
                 STOP_MEDIA_ACTION,
-                dict([("avcMediaStreamOptionClientSessionID", uuid_value(id))]),
+                build_stop_input(stop_all, identifiers),
             )
             .await;
         match result {
@@ -332,7 +356,6 @@ impl DisplayServiceClient {
                     std::io::ErrorKind::UnexpectedEof
                         | std::io::ErrorKind::ConnectionReset
                         | std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::NotConnected
                 ) =>
             {
                 Ok(dict([("stopped", XpcValue::Bool(true))]))
@@ -357,15 +380,59 @@ impl DisplayServiceClient {
         input: XpcValue,
         deadline: Duration,
     ) -> Result<XpcValue, DisplayError> {
-        let response = tokio::time::timeout(
-            deadline,
+        let response = tokio::time::timeout(deadline, async {
+            // dtremotedisplayd can abort on a second reply-bearing request on
+            // one connection, leaving camera/microphone access blocked. Mark
+            // the channel used before I/O, including cancellation and timeout.
+            if self.request_sent {
+                self.client = self
+                    .client
+                    .reconnect()
+                    .await
+                    .map_err(DisplayError::Reconnect)?;
+            }
+            self.request_sent = true;
             self.client
-                .call(build_request_with_action("", feature, action, input)),
-        )
+                .call(build_request_with_action("", feature, action, input))
+                .await
+                .map_err(DisplayError::Xpc)
+        })
         .await
         .map_err(|_| DisplayError::Timeout)??;
+        if feature == START_MEDIA_FEATURE && media_in_use(&response) {
+            return Err(DisplayError::MediaInUse);
+        }
         parse_output(response).map_err(DisplayError::Protocol)
     }
+}
+
+fn build_stop_input(stop_all: bool, identifiers: &[u32]) -> XpcValue {
+    let mut input = IndexMap::from([("stopAll".into(), XpcValue::Bool(stop_all))]);
+    if !identifiers.is_empty() {
+        input.insert(
+            "identifiers".into(),
+            XpcValue::Array(
+                identifiers
+                    .iter()
+                    .map(|id| XpcValue::Uint64(u64::from(*id)))
+                    .collect(),
+            ),
+        );
+    }
+    XpcValue::Dictionary(input)
+}
+
+fn media_in_use(response: &crate::XpcMessage) -> bool {
+    matches!(
+        response
+            .body
+            .as_ref()
+            .and_then(XpcValue::as_dict)
+            .and_then(|body| body.get("CoreDevice.error"))
+            .and_then(XpcValue::as_dict)
+            .and_then(|error| error.get("code")),
+        Some(XpcValue::Int64(9022) | XpcValue::Uint64(9022))
+    )
 }
 
 pub struct MediaStreamSession {
@@ -1173,7 +1240,7 @@ fn build_media_blob(
         pb_field(&mut settings, 2, u64::from(o.allow_rtcp_feedback));
         for (pt, features, count, f4) in [
             (123u64, b"FLS;SW:1;" as &[u8], 4, 1u64),
-            (100, b"FLS;VRAE:0;SW:1;" as &[u8], 2, 14),
+            (100, b"FLS;SW:1;" as &[u8], 2, 14),
         ] {
             let mut bank = Vec::new();
             pb_field(&mut bank, 1, pt);
@@ -1463,6 +1530,7 @@ mod tests {
     }
     #[test]
     fn offer_has_expected_modes_and_compression() {
+        use std::io::Read;
         let o = MediaStreamOptions::default();
         let v = build_negotiator_offer(MediaKind::Video, "ABC", 1, &o).unwrap();
         let p = plist::Value::from_reader(std::io::Cursor::new(v)).unwrap();
@@ -1470,6 +1538,18 @@ mod tests {
         assert_eq!(
             d["avcMediaStreamNegotiatorMode"].as_signed_integer(),
             Some(5)
+        );
+        let compressed = d["avcMediaStreamNegotiatorMediaBlob"].as_data().unwrap();
+        let mut blob = Vec::new();
+        flate2::read::ZlibDecoder::new(compressed)
+            .read_to_end(&mut blob)
+            .unwrap();
+        assert!(!blob.windows(4).any(|window| window == b"VRAE"));
+        assert_eq!(
+            blob.windows(9)
+                .filter(|window| *window == b"FLS;SW:1;")
+                .count(),
+            2
         );
         let a = build_negotiator_offer(MediaKind::Audio, "ABC", 1, &o).unwrap();
         let p = plist::Value::from_reader(std::io::Cursor::new(a)).unwrap();

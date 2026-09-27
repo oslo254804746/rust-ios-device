@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.notification_proxy";
+pub const RSD_SERVICE_NAME: &str = "com.apple.mobile.notification_proxy.shim.remote";
 pub const SPRINGBOARD_FINISHED_STARTUP: &str = "com.apple.springboard.finishedstartup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

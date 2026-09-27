@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- Added Darwin-notification pasteboard monitoring with fresh PULL connections,
+  baseline suppression and `(nonce, changeCount)` deduplication. `pasteboard watch`
+  now works without experimental opt-in; `--autonotify --experimental` retains the
+  low-level subscription path.
+- Added device-issued stream-token stopping and a typed `DisplayError::MediaInUse`
+  for CoreDevice camera/microphone conflicts (9022).
+
+### Fixed
+
+- Open a fresh RemoteXPC connection for each subsequent Display request and use
+  the `stopAll`/`identifiers` stop payload. Direct and userspace routes are retained.
+- Omit `VRAE:0` from video negotiation so the device can adapt its encoder.
+- Default CLI pasteboard reads to `promisesecondary` to avoid eagerly resolving
+  rich secondary representations; explicit `--policy resolved` remains available.
+- Disable accessibility app monitoring and inspector visuals when focus commands
+  finish, fail or receive Ctrl-C; stop display capture on Ctrl-C as well.
+- Include `LiquidGlass` in the default supervised setup skip list.
 
 ## [0.1.13] — 2026-08-30
 

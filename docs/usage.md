@@ -265,7 +265,9 @@ ios -u <UDID> pasteboard get --raw
 ios -u <UDID> pasteboard get --policy promised
 ios -u <UDID> pasteboard set --data public.data=AP8= --data public.url=aHR0cHM6Ly9leGFtcGxlLnRlc3Q=
 ios -u <UDID> pasteboard resolve 0 public.data --out ./payload.bin --experimental
-ios -u <UDID> pasteboard watch --policy promisesecondary --experimental
+ios -u <UDID> pasteboard watch
+# Explicitly request all secondary representations (may stall on rich copies):
+ios -u <UDID> pasteboard get --policy resolved
 ```
 
 `set` with no text argument reads UTF-8 from stdin; an explicit empty argument
@@ -280,12 +282,18 @@ reports only UTI, byte count, and SHA-256. Add `--show-data` to emit
 inline/resolved bytes as base64. `get --raw --show-data` retains the complete
 direct XPC dictionary; `--raw` without `--show-data` is still redacted.
 
-`resolve`, `export`, and `watch` use the additional RESOLVE/DATA and
-AUTONOTIFY/PUSH verbs. Those verbs are only enumerated or scaffolded by the
-pinned upstream clients and are therefore experimental; each command must be
-passed `--experimental` and requires real-device validation. `watch` stops
-with Ctrl-C; the library's explicit `close`/`unsubscribe` (and a dropped
-session) performs a bounded best-effort unsubscribe. The client enforces
+`get` and `watch` default to `promisesecondary`. `watch` observes Darwin pasteboard
+notifications through the RSD notification-proxy shim, then reads each snapshot
+on a fresh XPC connection. It suppresses the initial contents and duplicate
+`(nonce, changeCount)` values, waits indefinitely while idle, and stops with
+Ctrl-C. Transport/read errors exit; rerun to reconnect. It reports device changes
+only and does not synchronize the host clipboard.
+
+`resolve` and `export` still require `--experimental`. The old AUTONOTIFY/PUSH
+path remains available as `watch --autonotify --experimental`; it can stall the
+daemon on rich copies and has a bounded per-event wait. Its explicit
+`close`/`unsubscribe` and dropped sessions perform a best-effort unsubscribe.
+The client enforces
 bounded item, representation, metadata, event, and data budgets. It skips empty
 control frames, closes a timed-out connection rather than reusing a partial
 frame, and rejects unknown events. Pasteboard service availability is device
