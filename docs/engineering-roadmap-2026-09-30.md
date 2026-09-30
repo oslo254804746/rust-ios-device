@@ -97,7 +97,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：私密凭据文件接口已交付；管理面接入仍待 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：私密文件、scoped policy 和 host create/check 已交付；管理面接入仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
@@ -968,3 +968,46 @@ doctest 各 7、三个下游示例、C ABI/19-byte 原始捕获、wheel/sdist、
 真实设备/平台观察及 S01–S03 的访问控制保持未完成。实现提交只含五个相关文件，
 提交后主工作区干净，仅随后新增本记录/证据/质量更新。继续 S01 策略及管理面
 接入，不进入第三类、不结束目标；未推送、发布、改写历史或操作实际设备/参考。
+
+### 大类 2 进度：S01 私密配置与权限准备工具（2026-09-30，仍进行中）
+
+实现提交：`b7837cbdeade2b8812b0d85ffb2aad2104cedf33`。
+新增 `ios tunnel auth create|check`，准备/检查 scoped policy；不会启动服务器、
+配对设备或把策略部署到 manager。用法、schema 与部分发布合同见
+[管理访问配置](management-access.md)，受测代码/命令见
+[host policy 证据](validation/management-policy-2026-09-30.md)。
+
+- 使用 OsRng 生成 256-bit token，client 文件存 64 字符 lowercase hex，配置仅存
+  该 ASCII token 的 SHA-256；token、读 buffer 与编码 buffer 采用 Zeroizing，
+  Policy/ClientToken Debug 不输出材料/标识。digest 用已有 subtle 比较。
+- 权限显式区分 list/connect/manage_tunnels/manage_server/debug，无角色继承；
+  设备和 TCP port 默认精确匹配。all_devices/all_ports 必须显式，且不隐式添加权限；
+  port 0 始终拒绝。expiry equality 为过期；期限最大 365 天。
+- 配置限制 64 KiB/64 grants/每 grant 128 个 selector（各 256 bytes）及 256 ports；
+  拒绝未知版本/字段、重复凭据/权限、模糊 broad/list 与缺少所需 scope。空 grants
+  合法且拒绝全部。create 只发布新文件；第二文件失败时返回错误并明确部分发布，
+  保留第一文件和所有旧目标供检查，不按可能已被替换的路径自动删除。
+- check 验证实际私有文件及精确权限，允许才输出 data:true；非法/过期凭据与
+  越权返回非零。host 命令不需要 default UDID，使用 blocking worker 保持 async
+  入口。CLI 新增 rand/subtle 直接依赖均已在 lock 中存在，无版本升级；MSRV PASS。
+- diagnostics 实际调用 create、合法 check、越权 port check 和新增帮助，清除
+  default UDID 且使 usbmux 不可用；只在本轮 TemporaryDirectory 创建私有配置，
+  有界读取随机生成 token 后检查原始/独立副本，不打印/归档 token 或原始输出。
+
+相关检查：`cargo test -p ios-cli --bin ios --locked access::tests` 5 PASS；
+CLI 全目标严格 Clippy、tooling-tests 17 PASS；15 例实际 CLI 捕获全部 PASS。
+随后完整入口 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` 全部 PASS，日志
+`/tmp/ios-s01-auth-policy-full.log`。Linux x86_64 / Rust 1.97.1、MSRV 1.80.1、
+CPython 3.12.13：Rust 1599 PASS、0 FAIL、1 既有 PBKDF2 ignored，Python 8 PASS；
+66 feature/四组、默认/full doctest 各 7、三个下游示例、C ABI/19-byte raw capture、
+wheel/sdist、17 tools、118 capability/实际帮助和 15 CLI 原始/副本捕获均 PASS。
+actionlint、diff/staged diff --check PASS；CLI SHA-256
+`cc9c48a8f806cedd66e34436cd53a64a57fab823775f10c50b65112cdda8ee5a`。
+
+真实剩余：manager 请求认证、按 scope 过滤列表/拒绝目标和 port、配置 reload/
+撤销、CLI HTTP token header 与可用访问模式、CDP/Selenium 等桥接接入、已有 TCP
+转发/userspace 本地信任边界及跨平台私密文件执行。当前 manager 仍未认证，不能
+用离线 policy check 当 HTTP/WS 成功或拒绝证据。先接入 manager，再落实相关桥，
+随后按依赖 S02/S03；本类和目标持续进行，不因准备工具完成而结束。
+实现提交仅 11 个相关文件，提交后工作区干净；无设备、推送、发布、历史或参考操作。
