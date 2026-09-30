@@ -29,14 +29,15 @@ nonzero exit status and names the failed check.
 The full set is format, locked all-target/all-feature check and Clippy, split
 Rust/Python host tests, MSRV, every Cargo-reported core feature individually,
 representative feature-group tests, default/full doctests, downstream README
-examples, linked C ABI smoke, and wheel/sdist metadata plus wheel installation.
+examples, linked C ABI smoke, wheel/sdist metadata plus wheel installation,
+validation-tool tests, capability inventory and raw host diagnostic capture.
 Feature warnings and test output are retained in `target/validation/features/`;
 feature cuts can expose unused imports/dead code from shared transports. These
 are recorded warnings; full-feature Clippy still rejects warnings.
 
 Each step also has a focused scope: `fmt`, `check`, `lint`, `rust-tests`,
 `python-host`, `msrv`, `features`, `docs`, `ffi`, `python-package`, `tooling-tests`,
-`capabilities`. CI calls
+`capabilities`, `diagnostics`. CI calls
 these same scopes. Linux results do not establish macOS/Windows support;
 CI is configured for native/C checks on three systems and Python host/wheel checks on 3.9
 and 3.13. No test in this entry point pairs, installs to or modifies a device.

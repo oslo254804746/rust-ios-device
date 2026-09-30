@@ -141,11 +141,26 @@ impl ProxyRecorder {
         for event in events {
             serde_json::to_writer(&mut self.events, &event)?;
             self.events.write_all(b"\n")?;
-            eprintln!("[{}] {} {}", event.protocol, event.direction, event.summary);
+            eprintln!("{}", diagnostic_event_summary(&event));
         }
         self.events.flush()?;
         Ok(())
     }
+}
+
+fn diagnostic_event_summary(event: &ProxyEvent) -> String {
+    let protocol = match event.protocol.as_str() {
+        "lockdown" => "lockdown",
+        "dtx" => "dtx",
+        "xpc" => "xpc",
+        "binary" => "binary",
+        _ => "custom",
+    };
+    format!(
+        "[{protocol}] {} summary={}",
+        event.direction,
+        crate::redaction::diagnostic_id(&event.summary)
+    )
 }
 
 pub async fn proxy_bidirectional<L, R>(
@@ -799,6 +814,22 @@ mod tests {
     use indexmap::IndexMap;
 
     use super::*;
+
+    #[test]
+    fn recorder_diagnostics_hide_payload_while_explicit_record_keeps_it() {
+        let secret = "synthetic-private-key-UDID-token-device-data";
+        let event = ProxyEvent {
+            timestamp_ms: 0,
+            direction: Direction::HostToDevice.as_str().into(),
+            protocol: secret.into(),
+            summary: secret.into(),
+            decoded: serde_json::json!({"PrivateKey": secret}),
+        };
+        assert!(serde_json::to_string(&event).unwrap().contains(secret));
+        let diagnostic = diagnostic_event_summary(&event);
+        assert!(!diagnostic.contains(secret));
+        assert!(diagnostic.starts_with("[custom] host->device summary=id:"));
+    }
 
     #[test]
     fn lockdown_decoder_extracts_complete_frames() {

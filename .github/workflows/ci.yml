@@ -40,6 +40,7 @@ jobs:
       - run: python scripts/validate.py lint
       - run: python scripts/validate.py tooling-tests
       - run: python scripts/validate.py capabilities
+      - run: python scripts/validate.py diagnostics
 
   feature-check:
     runs-on: ubuntu-latest

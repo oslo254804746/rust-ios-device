@@ -469,7 +469,7 @@ impl TunnelAgentState {
         {
             Ok(client) => client,
             Err(err) => {
-                tracing::warn!("tunnel agent: cannot create federation client: {err}");
+                tracing::warn!(error = %ios_core::redaction::diagnostic_error(&err), "tunnel agent: cannot create federation client");
                 return grouped;
             }
         };
@@ -491,7 +491,9 @@ impl TunnelAgentState {
                         }
                     }
                 }
-                Err(err) => tracing::debug!("tunnel agent: upstream {upstream} unavailable: {err}"),
+                Err(err) => {
+                    tracing::debug!(upstream = %ios_core::redaction::diagnostic_id(&upstream), error = %crate::output::error_message(&err), "tunnel agent: upstream unavailable")
+                }
             }
         }
         grouped
@@ -534,7 +536,7 @@ impl TunnelAgentState {
             let listing = match result {
                 Ok(listing) => listing,
                 Err(err) => {
-                    tracing::debug!("tunnel agent: upstream {upstream} unavailable: {err}");
+                    tracing::debug!(upstream = %ios_core::redaction::diagnostic_id(&upstream), error = %crate::output::error_message(&err), "tunnel agent: upstream unavailable");
                     continue;
                 }
             };
@@ -821,8 +823,9 @@ impl TunnelAgentState {
                 }
                 Ok(Err(err)) => {
                     tracing::warn!(
-                        "tunnel agent: failed to establish tunnel for {}: {err}",
-                        ios_core::redaction::diagnostic_id(&device.serial_number)
+                        device = %ios_core::redaction::diagnostic_id(&device.serial_number),
+                        error = %ios_core::redaction::diagnostic_error(&err),
+                        "tunnel agent: failed to establish tunnel"
                     );
                     self.record_failed_attempt(&device.serial_number).await;
                 }
@@ -873,9 +876,10 @@ impl TunnelAgentState {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "tunnel agent: failed to establish mobdev2 tunnel for {} via {}: {err}",
-                        ios_core::redaction::diagnostic_id(&target.udid),
-                        ios_core::redaction::diagnostic_id(&target.host)
+                        device = %ios_core::redaction::diagnostic_id(&target.udid),
+                        host = %ios_core::redaction::diagnostic_id(&target.host),
+                        error = %crate::output::error_message(&err),
+                        "tunnel agent: failed to establish mobdev2 tunnel"
                     );
                     self.record_failed_attempt(&target.udid).await;
                 }
@@ -1212,7 +1216,7 @@ pub async fn run_tunnel_agent(
                 _ = monitor_state.inner.shutdown.notified() => break,
                 _ = interval.tick() => {
                     if let Err(err) = monitor_state.refresh_once().await {
-                        tracing::warn!("tunnel agent refresh failed: {err}");
+                        tracing::warn!(error = %crate::output::error_message(&err), "tunnel agent refresh failed");
                     }
                 }
             }
@@ -1267,8 +1271,25 @@ async fn agent_list_tunneld(
     Ok(Json(state.list_federated(query.hop).await))
 }
 
-fn manager_error(status: StatusCode, message: &str) -> (StatusCode, Json<serde_json::Value>) {
+fn manager_error(
+    status: StatusCode,
+    message: &'static str,
+) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(json!({ "message": message })))
+}
+
+fn manager_operation_error(
+    status: StatusCode,
+    phase: &'static str,
+    error: &(dyn std::error::Error + 'static),
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(json!({
+            "message": phase,
+            "error": ios_core::redaction::diagnostic_error(error).to_string(),
+        })),
+    )
 }
 
 fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
@@ -1284,8 +1305,13 @@ async fn agent_add_upstream(
     State(state): State<TunnelAgentState>,
     Json(body): Json<UpstreamBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let url = normalize_upstream_url(&body.url)
-        .map_err(|err| manager_error(StatusCode::BAD_REQUEST, &err.to_string()))?;
+    let url = normalize_upstream_url(&body.url).map_err(|err| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid upstream URL",
+            err.as_ref(),
+        )
+    })?;
     let mut upstreams = state.inner.upstreams.write().await;
     if !upstreams.contains(&url) && upstreams.len() >= MAX_UPSTREAMS {
         return Err(manager_error(
@@ -1303,8 +1329,13 @@ async fn agent_remove_upstream(
     State(state): State<TunnelAgentState>,
     Json(body): Json<UpstreamBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let url = normalize_upstream_url(&body.url)
-        .map_err(|err| manager_error(StatusCode::BAD_REQUEST, &err.to_string()))?;
+    let url = normalize_upstream_url(&body.url).map_err(|err| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid upstream URL",
+            err.as_ref(),
+        )
+    })?;
     let removed = state.inner.upstreams.write().await.remove(&url);
     Ok(Json(
         json!({ "operation": "remove_upstream", "url": url, "data": removed }),
@@ -1345,11 +1376,17 @@ async fn agent_connect(
         )
         .await
         .map_err(|_| manager_error(StatusCode::GATEWAY_TIMEOUT, "tunnel TCP dial timed out"))?
-        .map_err(|err| manager_error(StatusCode::BAD_GATEWAY, &err.to_string()))?;
+        .map_err(|err| {
+            manager_operation_error(
+                StatusCode::BAD_GATEWAY,
+                "tunnel TCP dial failed",
+                err.as_ref(),
+            )
+        })?;
         return Ok(bounded_websocket_upgrade(ws)
             .on_upgrade(move |socket| async move {
                 if let Err(err) = bridge_tcp_websocket(socket, stream).await {
-                    tracing::debug!("tunnel agent: local WebSocket bridge ended: {err}");
+                    tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket bridge ended");
                 }
             })
             .into_response());
@@ -1363,10 +1400,21 @@ async fn agent_connect(
     let target = state
         .remote_target(&query)
         .await
-        .map_err(|err| manager_error(StatusCode::BAD_REQUEST, &err.to_string()))?
+        .map_err(|err| {
+            manager_operation_error(
+                StatusCode::BAD_REQUEST,
+                "target selection failed",
+                err.as_ref(),
+            )
+        })?
         .ok_or_else(|| manager_error(StatusCode::NOT_FOUND, "tunnel target not found"))?;
-    let url = remote_connect_url(&target, &query)
-        .map_err(|err| manager_error(StatusCode::BAD_REQUEST, &err.to_string()))?;
+    let url = remote_connect_url(&target, &query).map_err(|err| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "upstream WebSocket URL failed",
+            err.as_ref(),
+        )
+    })?;
     let (remote, _) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
         tokio_tungstenite::connect_async_with_config(
@@ -1386,11 +1434,17 @@ async fn agent_connect(
             "upstream WebSocket dial timed out",
         )
     })?
-    .map_err(|err| manager_error(StatusCode::BAD_GATEWAY, &err.to_string()))?;
+    .map_err(|err| {
+        manager_operation_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream WebSocket dial failed",
+            &err,
+        )
+    })?;
     Ok(bounded_websocket_upgrade(ws)
         .on_upgrade(move |socket| async move {
             if let Err(err) = bridge_websockets(socket, remote).await {
-                tracing::debug!("tunnel agent: remote WebSocket bridge ended: {err}");
+                tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: remote WebSocket bridge ended");
             }
         })
         .into_response())
@@ -1407,7 +1461,7 @@ async fn agent_get_tunnel(
     state.get_record(&udid).await.map(Json).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
-            Json(json!({ "message": "tunnel not found", "udid": udid })),
+            Json(json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() })),
         )
     })
 }
@@ -1423,7 +1477,9 @@ async fn agent_delete_tunnel(
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            Json(json!({ "message": "tunnel not found", "udid": udid })),
+            Json(
+                json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() }),
+            ),
         ))
     }
 }
@@ -1437,9 +1493,8 @@ async fn agent_start_tunnel(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "message": message,
-                "udid": query.udid,
+                "device": ios_core::redaction::diagnostic_id(&query.udid).to_string(),
                 "connection_type": query.requested_connection_type(),
-                "ip": query.ip,
             })),
         ));
     }
@@ -1450,13 +1505,10 @@ async fn agent_start_tunnel(
         .map(StartTunnelResponse::from_record)
         .map(Json)
         .map_err(|err| {
-            (
+            manager_operation_error(
                 StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "message": "failed to create tunnel",
-                    "udid": query.udid,
-                    "error": err.to_string(),
-                })),
+                "failed to create tunnel",
+                err.as_ref(),
             )
         })
 }
@@ -1511,6 +1563,65 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (port, task)
+    }
+
+    #[tokio::test]
+    async fn manager_http_errors_hide_raw_inputs_and_source_chains() {
+        const SECRET: &str = "synthetic-private-key-UDID-token-device-data";
+        let state = TunnelAgentState::new(TunMode::Userspace);
+        let router = agent_router(state).route(
+            "/synthetic-failure",
+            get(|| async {
+                let error = anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    SECRET,
+                ))
+                .context(format!("https://user:{SECRET}@example.invalid/{SECRET}"));
+                assert!(format!("{error:#}").contains(SECRET));
+                manager_operation_error(
+                    StatusCode::BAD_GATEWAY,
+                    "synthetic dial failed",
+                    error.as_ref(),
+                )
+            }),
+        );
+        let (port, server) = spawn_test_router(router).await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let base = format!("http://127.0.0.1:{port}");
+        for path in [format!("/tunnel/{SECRET}"), "/synthetic-failure".into()] {
+            let response = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert!(response.status().is_client_error() || response.status().is_server_error());
+            let raw = response.text().await.unwrap();
+            assert!(!raw.contains(SECRET));
+            assert!(!raw.contains("https://"));
+            let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert!(json["message"].is_string());
+            if path == "/synthetic-failure" {
+                assert!(json["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("io/PermissionDenied error:"));
+            } else {
+                assert!(json["device"].as_str().unwrap().starts_with("id:"));
+            }
+        }
+        let response = client
+            .post(format!("{base}/upstream"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&json!({"url": format!("http://user:{SECRET}@127.0.0.1/")}))
+                    .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.text().await.unwrap().contains(SECRET));
+        server.abort();
+        let _ = server.await;
     }
 
     async fn spawn_fake_proxy() -> (u16, tokio::task::JoinHandle<()>) {

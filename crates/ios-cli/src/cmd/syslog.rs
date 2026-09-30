@@ -132,7 +132,10 @@ impl SyslogCmd {
                     }
                 }
                 Err(e) => {
-                    eprintln!("syslog error: {e}");
+                    eprintln!(
+                        "syslog error: {}",
+                        ios_core::redaction::diagnostic_error(&e)
+                    );
                     break;
                 }
             }

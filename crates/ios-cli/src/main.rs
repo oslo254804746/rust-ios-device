@@ -5,9 +5,10 @@ mod output;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 #[derive(clap::Parser)]
 #[command(
@@ -20,6 +21,7 @@ struct Cli {
         short = 'u',
         long,
         env = "IOS_UDID",
+        hide_env_values = true,
         help = "Device UDID; defaults to the first connected device when omitted"
     )]
     udid: Option<String>,
@@ -260,8 +262,28 @@ async fn resolve_cli_udid(udid: Option<String>, command: &Commands) -> Result<Op
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => match error.kind() {
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+                error.exit()
+            }
+            _ => {
+                eprintln!("{}", output::argument_error_message(&error));
+                return ExitCode::from(2);
+            }
+        },
+    };
+    // Only the parser's canonical command name becomes diagnostic context.
+    let phase = matches.subcommand_name().unwrap_or("dispatch").to_owned();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => {
+            eprintln!("{}", output::argument_error_message(&error));
+            return ExitCode::from(2);
+        }
+    };
 
     let level = match cli.verbose {
         0 => tracing::Level::WARN,
@@ -274,12 +296,23 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let udid = resolve_cli_udid(cli.udid, &cli.command).await?;
-    dispatch_command(cli.command, udid, cli.no_json).await
+    let result = async {
+        let udid = resolve_cli_udid(cli.udid, &cli.command).await?;
+        dispatch_command(cli.command, udid, cli.no_json).await
+    }
+    .await;
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{phase} failed: {}", output::error_message(&error));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
     use std::mem::size_of_val;
 
     use super::*;

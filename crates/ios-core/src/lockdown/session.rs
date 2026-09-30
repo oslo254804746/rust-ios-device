@@ -172,7 +172,7 @@ where
     })?;
 
     let ssl = resp.enable_service_ssl.unwrap_or(false);
-    tracing::debug!("StartService '{service_name}': port={port} enable_ssl={ssl}");
+    tracing::debug!(service = %crate::redaction::diagnostic_id(service_name), port, enable_ssl = ssl, "StartService");
     Ok((port, ssl))
 }
 

@@ -1,5 +1,8 @@
 # Host output and path contract
 
+Automatic failures and progress follow the [diagnostic data contract](diagnostic-contract.md).
+Explicitly requested device data retains its documented output purpose.
+
 This Q03 contract covers host destinations for file pulls, backup artifacts,
 OS trace, JUnit and screenshots. Device paths are a separate namespace: do not
 normalize them with host filesystem APIs. Git Bash/MSYS argument conversion is

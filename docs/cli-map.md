@@ -9,6 +9,11 @@ schemas, service routing, and iOS-version support can differ.
 
 ## Global conventions
 
+Automatic errors follow the [diagnostic data contract](diagnostic-contract.md):
+command phase, error category and process-local correlation, without raw source
+chains or credential-bearing environment values. Runtime failures exit 1;
+argument failures exit 2 and direct the caller to command help.
+
 | Area | rust-ios-device | go-ios | pymobiledevice3 |
 | --- | --- | --- | --- |
 | Binary | `ios` | `ios` | `pymobiledevice3` |

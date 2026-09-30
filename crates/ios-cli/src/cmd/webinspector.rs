@@ -291,7 +291,7 @@ struct AppError {
 }
 
 impl AppError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    fn bad_request(message: &'static str) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
@@ -313,7 +313,10 @@ impl From<anyhow::Error> for AppError {
     fn from(value: anyhow::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: value.to_string(),
+            message: format!(
+                "WebInspector operation failed: {}",
+                crate::output::error_message(&value)
+            ),
         }
     }
 }
@@ -322,7 +325,10 @@ impl From<axum::Error> for AppError {
     fn from(value: axum::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: value.to_string(),
+            message: format!(
+                "WebInspector HTTP failed: {}",
+                ios_core::redaction::diagnostic_error(&value)
+            ),
         }
     }
 }
@@ -331,7 +337,10 @@ impl From<serde_json::Error> for AppError {
     fn from(value: serde_json::Error) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            message: value.to_string(),
+            message: format!(
+                "WebInspector JSON decode failed: {}",
+                ios_core::redaction::diagnostic_error(&value)
+            ),
         }
     }
 }
@@ -803,7 +812,14 @@ async fn run_js_shell_loop<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                 }
             }
             Err(error) if continue_on_error => {
-                print_shell_error(expression, &error.to_string(), json_output)?;
+                print_shell_error(
+                    expression,
+                    &format!(
+                        "evaluation request failed: {}",
+                        ios_core::redaction::diagnostic_error(&error)
+                    ),
+                    json_output,
+                )?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -1194,7 +1210,10 @@ async fn cdp_page_ws(
         .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             if let Err(error) = handle_cdp_socket(socket, &udid, timeout, &page_id).await {
-                eprintln!("cdp bridge closed with error: {error:#}");
+                eprintln!(
+                    "cdp bridge closed with error: {}",
+                    crate::output::error_message(&error)
+                );
             }
         }))
 }
@@ -1253,6 +1272,7 @@ async fn handle_cdp_socket(
                                     adapter.incoming(message)
                                 } else { vec![message] };
                                 for message in incoming {
+                                    let message = diagnostic_cdp_response(message);
                                     sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
                                 }
                             }
@@ -1320,7 +1340,10 @@ async fn cdp_browser_ws(
         .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             if let Err(error) = handle_cdp_browser_socket(socket, &state).await {
-                eprintln!("cdp browser bridge closed with error: {error:#}");
+                eprintln!(
+                    "cdp browser bridge closed with error: {}",
+                    crate::output::error_message(&error)
+                );
             }
         }))
 }
@@ -1553,6 +1576,7 @@ async fn open_cdp_browser_page(
                                     adapter.incoming(message)
                                 } else { vec![message] };
                                 for message in messages {
+                                    let message = diagnostic_cdp_response(message);
                                     tokio::select! {
                                         result = output.send(BrowserPageOutput::Message {session_id: cdp_session_id.clone(), message}) => { if result.is_err() { break 'page; } }
                                         changed = cancellation.changed() => { if changed.is_err() || *cancellation.borrow() { break 'page; } }
@@ -1582,6 +1606,41 @@ async fn open_cdp_browser_page(
         });
     });
     Ok(((input, cancel), task))
+}
+
+// Only the top-level protocol failure is a diagnostic. Runtime results,
+// exceptionDetails, console events and page data are explicitly requested
+// debugger data and keep their protocol shape.
+fn diagnostic_cdp_response(mut message: JsonValue) -> JsonValue {
+    struct ProtocolReplyError(JsonValue);
+    impl std::fmt::Display for ProtocolReplyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&self.0, f)
+        }
+    }
+    impl std::fmt::Debug for ProtocolReplyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&ios_core::redaction::diagnostic_error(self), f)
+        }
+    }
+    impl std::error::Error for ProtocolReplyError {}
+    if let Some(object) = message.as_object_mut() {
+        if let Some(error) = object.remove("error") {
+            let code = error
+                .get("code")
+                .and_then(JsonValue::as_i64)
+                .unwrap_or(-32000);
+            object.insert(
+                "error".into(),
+                json!({
+                    "code": code,
+                    "message": format!("WebInspector protocol request failed: {}",
+                        ios_core::redaction::diagnostic_error(&ProtocolReplyError(error))),
+                }),
+            );
+        }
+    }
+    message
 }
 
 async fn webdriver_status() -> Json<JsonValue> {
@@ -2046,11 +2105,7 @@ fn parse_by(value: &str) -> Result<By, AppError> {
         "tag name" => By::TagName,
         "class name" => By::ClassName,
         "css selector" => By::CssSelector,
-        other => {
-            return Err(AppError::bad_request(format!(
-                "unsupported locator strategy: {other}"
-            )))
-        }
+        _ => return Err(AppError::bad_request("unsupported locator strategy")),
     })
 }
 
@@ -2103,6 +2158,108 @@ mod tests {
     use ios_core::webinspector::{Application, AutomationAvailability};
 
     use super::*;
+
+    #[tokio::test]
+    async fn cdp_websocket_failure_hides_device_error_data_and_keeps_routing() {
+        const SECRET: &str = "synthetic-private-key-UDID-token-device-data";
+        let raw = json!({"id": 17, "sessionId": "synthetic-session", "error": {
+            "code": -32001, "message": SECRET, "data": {"PrivateKey": SECRET}
+        }});
+        assert!(raw.to_string().contains(SECRET));
+        let router = Router::new().route(
+            "/synthetic-reply",
+            get(move |ws: WebSocketUpgrade| {
+                let raw = raw.clone();
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        socket
+                            .send(Message::Text(diagnostic_cdp_response(raw).to_string()))
+                            .await
+                            .unwrap();
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (mut socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/synthetic-reply"))
+                .await
+                .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let raw = frame.into_text().unwrap();
+        assert!(!raw.contains(SECRET));
+        let reply: JsonValue = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reply["id"], 17);
+        assert_eq!(reply["sessionId"], "synthetic-session");
+        assert_eq!(reply["error"]["code"], -32001);
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("WebInspector protocol request failed: operation error:"));
+        assert!(reply["error"].get("data").is_none());
+        let result =
+            json!({"id": 18, "result": {"value": SECRET, "exceptionDetails": {"text": SECRET}}});
+        assert_eq!(diagnostic_cdp_response(result.clone()), result);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn webdriver_http_error_hides_device_data_and_error_sources() {
+        const SECRET: &str = "synthetic-private-key-UDID-token-device-data";
+        let router = Router::new().route(
+            "/synthetic-failure",
+            get(|| async {
+                let error = anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    SECRET,
+                ))
+                .context(format!("https://user:{SECRET}@example.invalid/{SECRET}"));
+                assert!(format!("{error:#}").contains(SECRET));
+                AppError::from(error).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("http://127.0.0.1:{port}/synthetic-failure"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let raw = response.text().await.unwrap();
+        assert!(!raw.contains(SECRET));
+        assert!(!raw.contains("https://"));
+        let json: JsonValue = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["value"]["error"], "unknown error");
+        assert!(json["value"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("WebInspector operation failed: io/PermissionDenied error:"));
+        server.abort();
+        let _ = server.await;
+        let error = parse_by(SECRET).unwrap_err().into_response();
+        let raw = axum::body::to_bytes(error.into_body(), 1024).await.unwrap();
+        assert!(!std::str::from_utf8(&raw).unwrap().contains(SECRET));
+    }
 
     #[derive(Parser)]
     struct TestCli {

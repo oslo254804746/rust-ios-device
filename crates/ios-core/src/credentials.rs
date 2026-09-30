@@ -225,14 +225,11 @@ impl RemotePairingRecord {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("no remote pairing record directory at {}", dir.display());
+                tracing::debug!("remote pairing record directory not found");
                 return vec![];
             }
             Err(err) => {
-                tracing::warn!(
-                    "cannot list remote pairing records in {}: {err}",
-                    dir.display()
-                );
+                tracing::warn!(kind = ?err.kind(), "cannot list remote pairing records");
                 return vec![];
             }
         };

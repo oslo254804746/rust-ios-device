@@ -28,7 +28,12 @@ enum ProfilesSub {
         path: PathBuf,
         #[arg(long, help = "Supervisor identity in .p12 format for silent install")]
         p12: Option<PathBuf>,
-        #[arg(long, env = "P12_PASSWORD", help = "Password for the .p12 file")]
+        #[arg(
+            long,
+            env = "P12_PASSWORD",
+            hide_env_values = true,
+            help = "Password for the .p12 file"
+        )]
         password: Option<String>,
     },
     /// Remove a configuration profile by identifier

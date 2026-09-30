@@ -430,7 +430,7 @@ where
         match parse_handshake_message(msg) {
             Ok(handshake) => return Ok(handshake),
             Err(err) => {
-                tracing::debug!("RSD: skipping non-handshake stream-1 message: {err}");
+                tracing::debug!(error = %crate::redaction::diagnostic_error(&err), "RSD: skipping non-handshake stream-1 message");
                 last_err = Some(err);
             }
         }

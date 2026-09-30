@@ -136,7 +136,7 @@ where
                 let strategy = connection.strategy;
                 tokio::spawn(async move {
                     if let Err(err) = forward_packets_inner(stream, tun, mtu, cancel_rx).await {
-                        tracing::error!(strategy, "kernel TUN forward failed: {err}");
+                        tracing::error!(strategy, error = %crate::redaction::diagnostic_error(&err), "kernel TUN forward failed");
                     }
                 });
                 let rsd =

@@ -1225,7 +1225,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         );
         self.send_raw(&frame).await?;
         self.outstanding_reply_ids.insert(id);
-        tracing::debug!("method_call '{selector}' id={id} ch={channel_code}");
+        tracing::debug!(selector = %crate::redaction::diagnostic_id(selector), id, channel = channel_code, "method_call");
 
         let result = self.wait_for_reply(id).await;
         if result.is_err() {

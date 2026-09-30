@@ -70,7 +70,7 @@ impl DdiDownloader {
             let img_path = dir.join("DeveloperDiskImage.dmg");
             let sig_path = dir.join("DeveloperDiskImage.dmg.signature");
             if img_path.exists() && sig_path.exists() {
-                tracing::info!("Using cached DDI from {}", dir.display());
+                tracing::info!(path = %crate::redaction::diagnostic_id(&dir.to_string_lossy()), "Using cached DDI");
                 let image = tokio::fs::read(&img_path)
                     .await
                     .map_err(|e| ImageMounterError::Download(format!("read cached image: {e}")))?;
@@ -86,7 +86,7 @@ impl DdiDownloader {
             let zip_url = format!("{DDI_GITHUB_RELEASES}/{ver_str}/{ver_str}.zip");
 
             let client = build_client()?;
-            tracing::info!("Downloading DDI from {zip_url}");
+            tracing::info!(url = %crate::redaction::diagnostic_id(&zip_url), "Downloading DDI");
             let resp = client
                 .get(&zip_url)
                 .send()
@@ -94,7 +94,7 @@ impl DdiDownloader {
                 .map_err(|e| ImageMounterError::Download(format!("fetch DDI zip: {e}")))?;
 
             if !resp.status().is_success() {
-                tracing::debug!("DDI not found at {zip_url} (HTTP {})", resp.status());
+                tracing::debug!(url = %crate::redaction::diagnostic_id(&zip_url), status = %resp.status(), "DDI not found");
                 continue;
             }
 
@@ -117,7 +117,7 @@ impl DdiDownloader {
             )
             .await
             {
-                tracing::warn!("Failed to cache DDI: {e}");
+                tracing::warn!(error = %crate::redaction::diagnostic_error(&e), "Failed to cache DDI");
             }
 
             return Ok(StandardDdi { image, signature });
@@ -141,7 +141,7 @@ impl DdiDownloader {
         let bm_path = dir.join("Restore").join("BuildManifest.plist");
 
         if img_path.exists() && tc_path.exists() && bm_path.exists() {
-            tracing::info!("Using cached personalized DDI from {}", dir.display());
+            tracing::info!(path = %crate::redaction::diagnostic_id(&dir.to_string_lossy()), "Using cached personalized DDI");
             let ddi = load_personalized_from_dir(&dir).await?;
             validate_personalized_build_id(&ddi.build_manifest)?;
             return Ok(ddi);
@@ -312,7 +312,7 @@ where
         }
 
         if file.enclosed_name().is_none() {
-            tracing::warn!(entry = %entry_name, "skipping unsafe DDI zip entry");
+            tracing::warn!(entry = %crate::redaction::diagnostic_id(&entry_name), "skipping unsafe DDI zip entry");
             continue;
         }
         let normalized_name = entry_name.replace('\\', "/");
@@ -332,7 +332,7 @@ where
                 .iter()
                 .any(|component| matches!(*component, "." | ".."))
         {
-            tracing::warn!(entry = %entry_name, "skipping unsafe DDI Restore entry");
+            tracing::warn!(entry = %crate::redaction::diagnostic_id(&entry_name), "skipping unsafe DDI Restore entry");
             continue;
         }
         let mut rel_path = PathBuf::from("Restore");

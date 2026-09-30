@@ -122,7 +122,7 @@ fn ios_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn list_devices(py: Python<'_>) -> PyResult<PyObject> {
     let devices = py
         .allow_threads(|| RUNTIME.block_on(ios_core::list_devices()))
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(|e| operation_error("list devices", &e))?;
 
     let list = PyList::empty_bound(py);
     for d in devices {
@@ -155,7 +155,7 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     let udid = udid.to_string();
     let device = py
         .allow_threads(|| RUNTIME.block_on(ios_core::connect(&udid, opts)))
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(|e| operation_error("start tunnel", &e))?;
 
     let server_address = device.server_address().unwrap_or("").to_string();
     let rsd_port = device.rsd_port().unwrap_or(0);
@@ -198,13 +198,20 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     })
 }
 
+fn operation_error(phase: &'static str, error: &(dyn std::error::Error + 'static)) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "{phase} failed: {}",
+        ios_core::redaction::diagnostic_error(error)
+    ))
+}
+
 fn parse_tunnel_mode(mode: &str) -> PyResult<ios_core::TunMode> {
     match mode {
         "userspace" => Ok(ios_core::TunMode::Userspace),
         "kernel" => Ok(ios_core::TunMode::Kernel),
-        _ => Err(PyValueError::new_err(format!(
-            "invalid tunnel mode {mode:?}; expected \"userspace\" or \"kernel\""
-        ))),
+        _ => Err(PyValueError::new_err(
+            "invalid tunnel mode; expected \"userspace\" or \"kernel\"",
+        )),
     }
 }
 
@@ -286,7 +293,7 @@ impl Tunnel {
     fn __repr__(&self) -> String {
         format!(
             "Tunnel(server='{}', rsd_port={}, userspace_port={:?}, services={})",
-            self.server_address,
+            ios_core::redaction::diagnostic_id(&self.server_address),
             self.rsd_port,
             self.userspace_port,
             self.services.len(),
@@ -353,7 +360,8 @@ impl AsyncioProxyPatch {
     fn __repr__(&self) -> String {
         format!(
             "AsyncioProxyPatch(remote_host='{}', proxy_port={})",
-            self.remote_host, self.proxy_port
+            ios_core::redaction::diagnostic_id(&self.remote_host),
+            self.proxy_port
         )
     }
 
@@ -444,6 +452,58 @@ impl Drop for AsyncioProxyPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_exception_hides_protocol_data_and_invalid_argument_values() {
+        pyo3::prepare_freethreaded_python();
+        let secret = "synthetic-private-key-UDID-token-device-data";
+        let raw = ios_core::CoreError::Protocol(secret.into());
+        assert!(raw.to_string().contains(secret));
+        Python::with_gil(|py| {
+            let error = operation_error("start tunnel", &raw);
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            let rendered = error.value_bound(py).str().unwrap().to_string();
+            assert!(rendered.contains("start tunnel failed: protocol error:"));
+            assert!(!format!("{rendered} {error:?}").contains(secret));
+            let error = parse_tunnel_mode(secret).err().unwrap();
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert!(!format!("{error} {error:?}").contains(secret));
+        });
+    }
+
+    #[test]
+    fn python_repr_hides_address_but_connect_info_preserves_explicit_selector() {
+        pyo3::prepare_freethreaded_python();
+        let secret = "synthetic-private-tunnel-address";
+        let tunnel = Tunnel {
+            server_address: secret.into(),
+            rsd_port: 1234,
+            userspace_port: Some(49160),
+            services: vec![],
+            service_ports: BTreeMap::new(),
+            service_features: BTreeMap::new(),
+            _state: Arc::new(Mutex::new(TunnelState {
+                device: None,
+                retained_patches: 0,
+                close_requested: false,
+            })),
+        };
+        assert!(!tunnel.__repr__().contains(secret));
+        assert!(tunnel.__repr__().contains("id:"));
+        let patch = tunnel.asyncio_proxy().unwrap();
+        assert!(!patch.__repr__().contains(secret));
+        Python::with_gil(|py| {
+            let info = tunnel.connect_info(py).unwrap();
+            assert_eq!(
+                info.bind(py)
+                    .get_item("server_address")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                secret
+            );
+        });
+    }
 
     #[test]
     fn tunnel_mode_rejects_unknown_values_with_value_error() {

@@ -145,10 +145,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
     ) -> Result<(), ImageMounterError> {
         // 1. Query personalization identifiers
         let ids = self.query_personalization_identifiers().await?;
-        tracing::debug!(
-            "personalization identifiers: {:?}",
-            ids.keys().collect::<Vec<_>>()
-        );
+        tracing::debug!(fields = ids.len(), "personalization identifiers received");
 
         // 2. Query nonce
         let nonce = self.query_nonce().await?;

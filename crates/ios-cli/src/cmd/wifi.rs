@@ -19,6 +19,7 @@ enum WifiSub {
         #[arg(
             long,
             env = "IOS_WIFI_PASSWORD",
+            hide_env_values = true,
             help = "Wi-Fi password (never printed)"
         )]
         password: String,

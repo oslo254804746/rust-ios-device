@@ -211,7 +211,9 @@ async fn connect_dproxy_device(
             }
             Err(err) => {
                 tracing::info!(
-                    "dproxy: tunnel unavailable for {udid}: {err}; falling back to lockdown"
+                    device = %ios_core::redaction::diagnostic_id(udid),
+                    error = %crate::output::error_message(&err),
+                    "dproxy: tunnel unavailable; falling back to lockdown"
                 );
                 let device = connect_lockdown_device(udid).await?;
                 Ok((device, TransportKind::Lockdown))

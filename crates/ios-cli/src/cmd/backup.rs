@@ -1175,9 +1175,9 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
                     }
                     Err(err) => {
                         tracing::warn!(
-                            "failed to read placeholder icon for {}: {}",
-                            app.bundle_id,
-                            err
+                            app = %ios_core::redaction::diagnostic_id(&app.bundle_id),
+                            error = %ios_core::redaction::diagnostic_error(&err),
+                            "failed to read placeholder icon"
                         );
                     }
                 }
@@ -1197,7 +1197,7 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
                 }
                 Err(AfcError::Status(AfcStatusCode::ObjectNotFound)) => {}
                 Err(err) => {
-                    tracing::warn!("failed to read backup metadata file {}: {}", path, err);
+                    tracing::warn!(path = %ios_core::redaction::diagnostic_id(&path), error = %ios_core::redaction::diagnostic_error(&err), "failed to read backup metadata file");
                 }
             }
         }
@@ -1300,7 +1300,7 @@ async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<p
             }
             Err(AfcError::Status(AfcStatusCode::ObjectNotFound)) => {}
             Err(err) => {
-                tracing::warn!("failed to read /Books/iBooksData2.plist: {}", err);
+                tracing::warn!(error = %ios_core::redaction::diagnostic_error(&err), "failed to read /Books/iBooksData2.plist");
             }
         }
     }

@@ -70,11 +70,17 @@ impl ScreenshotCmd {
 
         loop {
             let (socket, peer) = listener.accept().await?;
-            eprintln!("Screenshot stream client connected: {peer}");
+            eprintln!(
+                "Screenshot stream client connected: {}",
+                ios_core::redaction::diagnostic_id(&peer.to_string())
+            );
             let udid = udid.to_string();
             tokio::spawn(async move {
                 if let Err(err) = serve_stream_client(socket, &udid).await {
-                    eprintln!("screenshot stream client error: {err}");
+                    eprintln!(
+                        "screenshot stream client error: {}",
+                        crate::output::error_message(&err)
+                    );
                 }
             });
         }
@@ -91,12 +97,12 @@ async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str
                     // Screenshot is read-only, so falling back after a modern
                     // service error cannot repeat a mutating operation. Keep the
                     // failure as context in debug logs and try legacy DTX/lockdown.
-                    tracing::debug!("CoreDevice screenshot failed, falling back: {error}");
+                    tracing::debug!(error = %crate::output::error_message(&error), "CoreDevice screenshot failed, falling back");
                 }
                 Err(error) => return Err(error),
             },
             Err(error) if coredevice_fallback_allowed(&error) => {
-                tracing::debug!("CoreDevice tunnel unavailable, falling back: {error}");
+                tracing::debug!(error = %crate::output::error_message(&error), "CoreDevice tunnel unavailable, falling back");
             }
             Err(error) => return Err(error),
         }
@@ -104,7 +110,7 @@ async fn capture_screenshot(udid: &str) -> Result<(ScreenshotImage, &'static str
     match try_dtx_screenshot(udid).await {
         Ok(data) => Ok((ScreenshotImage::from_bytes(data), "dtx")),
         Err(e) if dtx_fallback_allowed(&e) => {
-            tracing::debug!("DTX screenshot failed, falling back to legacy: {e}");
+            tracing::debug!(error = %crate::output::error_message(&e), "DTX screenshot failed, falling back to legacy");
             let data = take_legacy_screenshot(udid).await?;
             Ok((data, "legacy"))
         }

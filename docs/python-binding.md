@@ -6,6 +6,12 @@ CoreDevice tunnel metadata, and a local userspace transport bridge for compatibl
 devices. It does not provide direct Python bindings for the Rust lockdown or
 individual service clients.
 
+Operation exceptions retain RuntimeError/ValueError types and report a fixed
+phase, error category and process-local correlation. They omit raw source text
+and invalid argument values. Tunnel and patch repr use an address pseudonym;
+attributes and `connect_info()` retain the actual address needed to connect.
+See the [diagnostic contract](diagnostic-contract.md).
+
 ## Build locally
 
 ```sh

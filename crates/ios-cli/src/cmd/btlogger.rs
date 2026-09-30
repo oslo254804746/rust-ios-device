@@ -123,7 +123,7 @@ async fn run_capture(
                     }
                 }
                 Err(err) => {
-                    tracing::debug!("skipping malformed BTPacketLogger record: {err}");
+                    tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skipping malformed BTPacketLogger record");
                     skipped += 1;
                 }
             },

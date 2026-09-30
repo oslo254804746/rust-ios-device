@@ -386,9 +386,9 @@ async fn run_smoltcp(
 
         while let Ok(req) = conn_req_rx.try_recv() {
             tracing::info!(
-                "userspace: new conn request to [{:?}]:{}",
-                req.remote_ip,
-                req.remote_port
+                remote = %crate::redaction::diagnostic_id(&req.remote_ip.to_string()),
+                port = req.remote_port,
+                "userspace: new conn request"
             );
             let rx_buf = tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER_BYTES]);
             let tx_buf = tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER_BYTES]);
@@ -404,9 +404,9 @@ async fn run_smoltcp(
                 })
             }) else {
                 tracing::error!(
-                    "userspace: no free ephemeral port for [{:?}]:{}",
-                    req.remote_ip,
-                    req.remote_port
+                    remote = %crate::redaction::diagnostic_id(&req.remote_ip.to_string()),
+                    port = req.remote_port,
+                    "userspace: no free ephemeral port"
                 );
                 continue;
             };
@@ -436,12 +436,7 @@ async fn run_smoltcp(
         iface.poll(smol_now(), &mut device, &mut sockets);
 
         while let Some(pkt) = device.tx_buf.pop_front() {
-            tracing::trace!(
-                "userspace: tx packet {} bytes to iOS, src={:?} dst={:?}",
-                pkt.len(),
-                pkt.get(8..24).map(|b| format!("{:02x?}", b)),
-                pkt.get(24..40).map(|b| format!("{:02x?}", b))
-            );
+            tracing::trace!("userspace: tx packet {} bytes to iOS", pkt.len());
             match ios_tx.try_send(pkt) {
                 Ok(()) => {
                     made_progress = true;
@@ -621,7 +616,7 @@ async fn run_local_listener_with_limit(
             _ = conn_req_tx.closed() => break,
             joined = client_tasks.join_next(), if !client_tasks.is_empty() => {
                 if let Some(Err(error)) = joined {
-                    tracing::debug!("userspace: local proxy task exited with error: {error}");
+                    tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "userspace: local proxy task exited with error");
                 }
             }
             accepted = listener.accept() => {
@@ -631,14 +626,14 @@ async fn run_local_listener_with_limit(
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        tracing::debug!("userspace: rejecting local connection from {peer}: proxy limit reached");
+                        tracing::debug!(peer = %crate::redaction::diagnostic_id(&peer.to_string()), "userspace: rejecting local connection: proxy limit reached");
                         // Dropping the stream sends a connection reset/FIN without
                         // allowing an excess client to consume an unbounded task.
                         drop(client);
                         continue;
                     }
                 };
-                tracing::info!("userspace: local connection from {peer}");
+                tracing::info!(peer = %crate::redaction::diagnostic_id(&peer.to_string()), "userspace: local connection");
                 let tx = conn_req_tx.clone();
                 client_tasks.spawn(async move {
                     handle_local_client(client, tx, permit, preamble_timeout).await;
@@ -654,23 +649,27 @@ async fn handle_local_client(
     _permit: OwnedSemaphorePermit,
     preamble_timeout: Duration,
 ) {
-    let (remote_ip, remote_port) =
-        match tokio::time::timeout(preamble_timeout, read_proxy_preamble(&mut client)).await {
-            Ok(Ok(remote)) => remote,
-            Ok(Err(error)) => {
-                tracing::debug!("userspace: local proxy preamble read failed: {error}");
-                return;
-            }
-            Err(_) => {
-                tracing::debug!(
-                    "userspace: local proxy preamble timed out after {} ms",
-                    preamble_timeout.as_millis()
-                );
-                return;
-            }
-        };
+    let (remote_ip, remote_port) = match tokio::time::timeout(
+        preamble_timeout,
+        read_proxy_preamble(&mut client),
+    )
+    .await
+    {
+        Ok(Ok(remote)) => remote,
+        Ok(Err(error)) => {
+            tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "userspace: local proxy preamble read failed");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(
+                "userspace: local proxy preamble timed out after {} ms",
+                preamble_timeout.as_millis()
+            );
+            return;
+        }
+    };
 
-    tracing::info!("userspace: tunneling to [{remote_ip}]:{remote_port}");
+    tracing::info!(remote = %crate::redaction::diagnostic_id(&remote_ip.to_string()), port = remote_port, "userspace: tunneling");
 
     let (from_client_tx, from_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);
     let (to_client_tx, to_client_rx) = mpsc::channel::<Vec<u8>>(LOCAL_PROXY_CHANNEL_CAPACITY);

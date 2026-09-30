@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent arbitrary error/source text from reaching automatic CLI, manager,
+  WebDriver and Python diagnostics; retain phases, categories and correlation.
+  Hide credential environment values in help and addresses in Python repr.
+  CDP device protocol failures retain routing/error codes while omitting raw
+  error data. Explicit debugger results and device selectors retain their use.
+- Add bounded raw stdout/stderr checks that independently report original
+  secret detection and masked-copy results; timeout and overflow fail closed.
+
 - Redact discovery/connection Debug output and device-not-found/pair-record
   error diagnostics, including credential paths and malformed record data.
   Typed variants, IO categories and process-local device correlation support

@@ -62,14 +62,14 @@ pub async fn run_port_forward(
 
     loop {
         let (client, peer) = listener.accept().await?;
-        tracing::debug!("forward: connection from {peer}");
+        tracing::debug!(peer = %ios_core::redaction::diagnostic_id(&peer.to_string()), "forward: connection accepted");
 
         let connector = connector.clone();
         let forward_task = tokio::spawn(async move {
             match forward_client_connection(connector, device_port, client).await {
                 Ok(()) => Ok::<(), anyhow::Error>(()),
                 Err(err) => {
-                    tracing::warn!("forward: connection from {peer} failed: {err}");
+                    tracing::warn!(peer = %ios_core::redaction::diagnostic_id(&peer.to_string()), error = %crate::output::error_message(&err), "forward: connection failed");
                     Err(err)
                 }
             }
@@ -128,8 +128,8 @@ async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
             }
         },
         Err(err) => {
-            tracing::info!(device = %ios_core::redaction::diagnostic_id(udid),
-                "forward: tunnel unavailable: {err}; falling back to usbmux");
+            tracing::info!(device = %ios_core::redaction::diagnostic_id(udid), error = %ios_core::redaction::diagnostic_error(&err),
+                "forward: tunnel unavailable; falling back to usbmux");
             None
         }
     };
@@ -182,11 +182,10 @@ impl ForwardConnector {
                 Ok(stream) => return Ok(stream),
                 Err(err) => {
                     tracing::warn!(
-                        "forward: tunnel proxy connect to [{}]:{} via 127.0.0.1:{} failed: {}; falling back to usbmux",
-                        target.server_addr,
-                        device_port,
-                        target.proxy_port,
-                        err
+                        remote = %ios_core::redaction::diagnostic_id(&target.server_addr),
+                        device_port, proxy_port = target.proxy_port,
+                        error = %crate::output::error_message(&err),
+                        "forward: tunnel proxy connect failed; falling back to usbmux"
                     );
                 }
             }

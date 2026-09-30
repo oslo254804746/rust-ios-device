@@ -8,7 +8,7 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
             Some(h)
         }
         Err(e) => {
-            tracing::debug!("RSD handshake failed (may be iOS <17): {e}");
+            tracing::debug!(error = %crate::redaction::diagnostic_error(&e), "RSD handshake failed (may be iOS <17)");
             None
         }
     }
@@ -54,7 +54,7 @@ async fn attempt_rsd_via_proxy(
             Some(handshake)
         }
         Err(error) => {
-            tracing::debug!("RSD via proxy failed: {error}");
+            tracing::debug!(error = %crate::redaction::diagnostic_error(&error), "RSD via proxy failed");
             None
         }
     }

@@ -138,6 +138,12 @@ def ffi(build_directory=None):
         "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
     env[key] = str(target) + os.pathsep + env.get(key, "")
     run("C ABI and failure/ownership contract", [str(output)], env=env)
+    from diagnostics import assess, capture, secret_variants
+    report = assess(capture([str(output)], env=env),
+                    secret_variants(b"synthetic-ffi-credential-UDID"), 0)
+    if not report["passed"]:
+        raise RuntimeError("C ABI raw diagnostic capture failed")
+    print("[PASS] C ABI raw diagnostic capture; " + json.dumps(report), flush=True)
 
 
 def python_package(interpreter):
@@ -159,7 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=["full", "quick", "fmt", "check", "lint",
         "rust-tests", "python-host", "msrv", "features", "docs", "ffi", "python-package",
-        "tooling-tests", "capabilities"])
+        "tooling-tests", "capabilities", "diagnostics"])
     parser.add_argument("--package", choices=["ios-core", "ios-cli", "ios-ffi"],
                         help="package to test in quick mode")
     parser.add_argument("--python", default=os.environ.get("PYO3_PYTHON", sys.executable))
@@ -182,6 +188,8 @@ def main():
         "features": features, "docs": docs, "ffi": ffi,
         "capabilities": lambda: run("capability inventory", [sys.executable,
             "scripts/capabilities.py", "--build-cli"]),
+        "diagnostics": lambda: run("raw host diagnostic capture", [sys.executable,
+            "scripts/diagnostics.py", "--build-cli"]),
         "tooling-tests": lambda: run("validation failure paths", [sys.executable, "-m",
             "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]),
         "python-package": lambda: python_package(args.python),
@@ -189,7 +197,7 @@ def main():
             args.package or "ios-core", "--all-features", "--locked"]),
     }
     scopes = ["fmt", "check", "lint", "rust-tests", "python-host", "msrv", "features",
-              "docs", "ffi", "python-package", "tooling-tests", "capabilities"] if args.scope == "full" else [args.scope]
+              "docs", "ffi", "python-package", "tooling-tests", "capabilities", "diagnostics"] if args.scope == "full" else [args.scope]
     for scope in scopes:
         actions[scope]()
     print(f"[PASS] validation/{args.scope}", flush=True)

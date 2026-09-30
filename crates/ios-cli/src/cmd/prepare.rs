@@ -38,7 +38,7 @@ enum PrepareSub {
         output_prefix: PathBuf,
         #[arg(long, default_value = ios_core::prepare::DEFAULT_ORGANIZATION_NAME)]
         common_name: String,
-        #[arg(long, env = "P12_PASSWORD", default_value = "")]
+        #[arg(long, env = "P12_PASSWORD", hide_env_values = true, default_value = "")]
         password: String,
     },
 }
@@ -177,7 +177,7 @@ async fn run_prepare(
     let _ = mcinstall.get_cloud_configuration().await?;
     mcinstall.hello_host_identifier().await?;
     if let Err(err) = mcinstall.escalate_unsupervised().await {
-        tracing::debug!("prepare escalate-unsupervised returned non-fatal error: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "prepare escalate-unsupervised returned non-fatal error");
     }
     mcinstall.hello_host_identifier().await?;
     mcinstall
@@ -279,10 +279,10 @@ async fn ensure_skip_setup_marker(device: &ConnectedDevice) -> Result<()> {
     let stream = device.connect_service(AFC_SERVICE_NAME).await?;
     let mut afc = ios_core::afc::AfcClient::new(stream);
     if let Err(err) = afc.remove_all(SKIP_SETUP_FILE).await {
-        tracing::debug!("skip-setup marker cleanup ignored: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skip-setup marker cleanup ignored");
     }
     if let Err(err) = afc.make_dir(SKIP_SETUP_DIR).await {
-        tracing::debug!("skip-setup dir creation returned: {err}");
+        tracing::debug!(error = %ios_core::redaction::diagnostic_error(&err), "skip-setup dir creation returned");
     }
     afc.write_file(SKIP_SETUP_FILE, b"").await?;
     Ok(())

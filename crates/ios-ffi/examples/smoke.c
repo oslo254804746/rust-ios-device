@@ -24,6 +24,8 @@ int main(void) {
     assert(ios_list_devices(&devices, NULL) == IOS_ERR_NULL && devices == NULL);
     assert(ios_device_open(NULL, &device) == IOS_ERR_NULL && device == NULL);
     assert(ios_device_open("\xff", &device) == IOS_ERR_UTF8 && device == NULL);
+    assert(ios_device_open("synthetic-ffi-credential-UDID\xff", &device) == IOS_ERR_UTF8 && device == NULL);
+    assert(ios_start_tunnel("synthetic-ffi-credential-UDID\xff", IOS_TUN_USERSPACE, &tunnel) == IOS_ERR_UTF8 && tunnel == NULL);
     assert(ios_start_tunnel(NULL, IOS_TUN_USERSPACE, &tunnel) == IOS_ERR_NULL);
     assert(ios_get_product_version(NULL, &text) == IOS_ERR_NULL && text == NULL);
     assert(ios_get_lockdown_value_json(NULL, NULL, &text) == IOS_ERR_NULL);

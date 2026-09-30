@@ -7,9 +7,11 @@ for name in ("server_address", "rsd_port", "userspace_port", "services", "servic
              "service_features", "connect_info", "asyncio_proxy", "close"):
     assert hasattr(ios_rs.Tunnel, name), name
 try:
-    ios_rs.start_tunnel("synthetic-unreachable-device", mode="invalid")
+    ios_rs.start_tunnel("synthetic-python-credential-UDID", mode="synthetic-python-credential-UDID")
 except ValueError as error:
     assert "userspace" in str(error) and "kernel" in str(error)
+    assert "synthetic-python-credential-UDID" not in str(error)
+    assert "synthetic-python-credential-UDID" not in repr(error)
 else:
     raise AssertionError("invalid mode must raise ValueError before device access")
 print("Installed Python API smoke passed")

@@ -40,6 +40,7 @@ enum PairSubcommand {
         #[arg(
             long,
             env = "P12_PASSWORD",
+            hide_env_values = true,
             default_value = "",
             help = "P12 password; prefer the P12_PASSWORD env var so it stays out of \
                     shell history and the process list"

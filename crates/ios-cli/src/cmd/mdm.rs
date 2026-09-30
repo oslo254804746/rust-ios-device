@@ -75,7 +75,12 @@ struct SupervisorArgs {
         help = "Supervisor identity in PKCS#12 format"
     )]
     p12: PathBuf,
-    #[arg(long, env = "P12_PASSWORD", help = "Password for the PKCS#12 identity")]
+    #[arg(
+        long,
+        env = "P12_PASSWORD",
+        hide_env_values = true,
+        help = "Password for the PKCS#12 identity"
+    )]
     password: Option<String>,
 }
 

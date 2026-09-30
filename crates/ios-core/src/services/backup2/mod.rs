@@ -918,7 +918,7 @@ where
     async fn disconnect_best_effort(&mut self) {
         if let Err(err) = self.device_link.disconnect().await {
             if !should_suppress_disconnect_error(&err) {
-                warn!("backup2 disconnect failed: {err}");
+                warn!(error = %crate::redaction::diagnostic_error(&err), "backup2 disconnect failed");
             }
         }
     }
@@ -1039,7 +1039,7 @@ where
                         run_blocking(move || available_space(&device_directory)).await?;
                     tracing::debug!(
                         free_bytes,
-                        path = %layout.device_directory.display(),
+                        path = %crate::redaction::diagnostic_id(&layout.device_directory.to_string_lossy()),
                         "reporting available backup disk space"
                     );
                     self.reported_free_space = Some(free_bytes);
@@ -2559,7 +2559,7 @@ fn contents_of_directory(
             "DLFileTypeUnknown"
         };
         let modified = metadata.modified().unwrap_or_else(|err| {
-            tracing::debug!("cannot read mtime for {}: {err}", entry_path.display());
+            tracing::debug!(path = %crate::redaction::diagnostic_id(&entry_path.to_string_lossy()), error = %crate::redaction::diagnostic_error(&err), "cannot read mtime");
             SystemTime::UNIX_EPOCH
         });
         entries.insert(

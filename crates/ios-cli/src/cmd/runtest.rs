@@ -229,9 +229,10 @@ pub(crate) fn write_junit_diagnostic(
     error: &anyhow::Error,
 ) -> Result<()> {
     if let Some(path) = path {
-        write_junit_xml_atomic_with_diagnostic(summary, path, &error.to_string()).with_context(
-            || format!("failed writing diagnostic JUnit XML to {}", path.display()),
-        )?;
+        write_junit_xml_atomic_with_diagnostic(summary, path, &crate::output::error_message(error))
+            .with_context(|| {
+                format!("failed writing diagnostic JUnit XML to {}", path.display())
+            })?;
     }
     Ok(())
 }
@@ -862,7 +863,7 @@ where
         match probe().await {
             Ok(()) => return Ok(()),
             Err(err) => {
-                tracing::debug!("device port not ready yet: {err}");
+                tracing::debug!(error = %crate::output::error_message(&err), "device port not ready yet");
                 tokio::time::sleep(DEVICE_PORT_POLL_INTERVAL).await;
             }
         }

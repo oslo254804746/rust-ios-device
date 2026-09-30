@@ -658,7 +658,7 @@ fn replace_file_atomically(temporary: &Path, destination: &Path) -> Result<(), M
     // A directory fsync failure occurs after the atomic replacement and must not be reported as
     // a failed transaction: callers cannot safely roll the replacement back at that point.
     if let Err(error) = sync_directory(destination.parent()) {
-        warn!(path = %destination.display(), error = %error, "could not sync backup replacement directory");
+        warn!(path = %crate::redaction::diagnostic_id(&destination.to_string_lossy()), error = %crate::redaction::diagnostic_error(&error), "could not sync backup replacement directory");
     }
     Ok(())
 }
@@ -1195,9 +1195,9 @@ impl PayloadStage {
             if fs::symlink_metadata(staged).is_ok() {
                 if let Err(error) = fs::rename(staged, source) {
                     warn!(
-                        source = %source.display(),
-                        staged = %staged.display(),
-                        error = %error,
+                        source = %crate::redaction::diagnostic_id(&source.to_string_lossy()),
+                        staged = %crate::redaction::diagnostic_id(&staged.to_string_lossy()),
+                        error = %crate::redaction::diagnostic_error(&error),
                         "could not roll back staged backup payload"
                     );
                 }
@@ -1215,18 +1215,18 @@ impl PayloadStage {
         let staging_is_directory = match fs::symlink_metadata(&self.staging) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                warn!(path = %self.staging.display(), "refusing to clean symlinked backup staging directory");
+                warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), "refusing to clean symlinked backup staging directory");
                 false
             }
             Ok(_) => {
-                warn!(path = %self.staging.display(), "refusing to clean non-directory backup staging path");
+                warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), "refusing to clean non-directory backup staging path");
                 false
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => {
                 warn!(
-                    path = %self.staging.display(),
-                    error = %error,
+                    path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                    error = %crate::redaction::diagnostic_error(&error),
                     "could not inspect backup payload staging directory"
                 );
                 false
@@ -1240,8 +1240,8 @@ impl PayloadStage {
                             Ok(entry) => entry.path(),
                             Err(error) => {
                                 warn!(
-                                    path = %self.staging.display(),
-                                    error = %error,
+                                    path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                                    error = %crate::redaction::diagnostic_error(&error),
                                     "could not enumerate backup payload staging directory"
                                 );
                                 continue;
@@ -1253,8 +1253,8 @@ impl PayloadStage {
                             {
                                 if let Err(error) = fs::remove_file(&path) {
                                     warn!(
-                                        path = %path.display(),
-                                        error = %error,
+                                        path = %crate::redaction::diagnostic_id(&path.to_string_lossy()),
+                                        error = %crate::redaction::diagnostic_error(&error),
                                         "could not remove staged backup payload"
                                     );
                                 }
@@ -1263,16 +1263,16 @@ impl PayloadStage {
                                 // Stage entries are flat regular files.  Never recursively delete an
                                 // unexpected directory because the staging path shares a user-owned
                                 // filesystem and cleanup must not follow an injected tree.
-                                warn!(path = %path.display(), "refusing to recursively remove staged directory");
+                                warn!(path = %crate::redaction::diagnostic_id(&path.to_string_lossy()), "refusing to recursively remove staged directory");
                             }
                             Ok(_) => {
-                                warn!(path = %path.display(), "refusing to remove special staged payload");
+                                warn!(path = %crate::redaction::diagnostic_id(&path.to_string_lossy()), "refusing to remove special staged payload");
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                             Err(error) => {
                                 warn!(
-                                    path = %path.display(),
-                                    error = %error,
+                                    path = %crate::redaction::diagnostic_id(&path.to_string_lossy()),
+                                    error = %crate::redaction::diagnostic_error(&error),
                                     "could not inspect staged backup payload"
                                 );
                             }
@@ -1282,15 +1282,15 @@ impl PayloadStage {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     warn!(
-                        path = %self.staging.display(),
-                        error = %error,
+                        path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()),
+                        error = %crate::redaction::diagnostic_error(&error),
                         "could not inspect backup payload staging directory"
                     );
                 }
             }
         }
         if let Err(error) = fs::remove_dir(&self.staging) {
-            warn!(path = %self.staging.display(), error = %error, "could not remove backup payload staging directory");
+            warn!(path = %crate::redaction::diagnostic_id(&self.staging.to_string_lossy()), error = %crate::redaction::diagnostic_error(&error), "could not remove backup payload staging directory");
         }
         // Prefix directories are only an index for hashed payload names. Remove only the direct
         // parents of files moved by this operation; scanning every empty directory here could
