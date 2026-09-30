@@ -97,10 +97,10 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待开始 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：私密凭据文件接口已交付；管理面接入仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
-| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：展示策略、源码审查与合成秘密验收；新增安全接口继续沿用 |
+| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 进行中：已验收自有输出边界；新发现第三方日志来源需整改 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 待开始 |
@@ -903,3 +903,37 @@ PASS，随后从头复跑上述 full 全部 PASS。空日志未计为安全成�
 持续验收；S01–S03 的认证/授权、Host/Origin 和受保护联邦尚未交付，不能被安全
 错误文本替代。实现提交后主工作区干净，仅随后新增本记录/证据/质量文档；未操作
 实际设备、远端 CI、推送、发布、历史或参考 checkout。持久化目标继续 active。
+
+### 大类 2 进度：S01 凭据文件基础与 S04 重新打开（2026-09-30）
+
+S01 实现提交：`004b6af2c6041202a1f395d7466b7a241852e373`。
+新增 `secret_file::read_secret` 和 `write_secret_new`，供后续服务端策略和客户端
+凭据使用。前者返回 Zeroizing buffer，最多 1 MiB、检查实际打开的 regular file；
+Unix 要求有效用户所有且无 group/other 权限，O_NOFOLLOW/O_NONBLOCK 拒绝叶子
+链接及 FIFO。Windows 使用 OPEN_REPARSE_POINT 和 reparse attribute 检查；
+ACL 仍依赖父目录，Windows 执行未发生，不能将文档旗标核对当平台证据。
+后者私有随机 staging、sync、hard-link no-clobber，既有文件/目录/叶子 symlink
+不被替换，仅清理本轮 staging；不支持 hard link 明确失败。Unix 对已有非私密
+父目录报错且不 chmod，缺失私有父目录可创建。父路径仍需可信，非目录原子保证；
+收尾失败可能发生在发布之后，不承诺多文件事务或断电持久性。
+
+先运行 `cargo test -p ios-core --locked secret_file`，7 PASS；
+`cargo clippy -p ios-core --all-targets --all-features --locked -- -D warnings` PASS。
+随后完整入口 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，日志
+`/tmp/ios-s01-secret-foundation-full.log`。Linux x86_64 / Rust 1.97.1、
+MSRV 1.80.1、CPython 3.12.13：Rust 1593 PASS、0 FAIL、1 既有 ignored，
+Python 8 PASS；66 feature/四组、默认/full doctest 各 7、三个下游示例、C/wheel/sdist、
+17 工具测试、118 能力条目/实际帮助、十例原始诊断捕获全部 PASS。diff/staged
+diff --check PASS。提交仅三个相关文件，之后剩余仅本计划进度，参考与用户变更保留。
+
+S01 仍需服务端/客户端接入、权限与设备/端口策略、失效凭据、重新配置及实际
+拒绝/成功回归；manager 当前仍未认证。本提交不关闭 S01。
+
+检查 S01 网络依赖时发现 S04 的具体遗漏：CLI main 最高等级订阅了所有 target；
+当前 tungstenite 0.24.0 源码的 TRACE 会格式化握手请求和 WebSocket frame/message，
+DEBUG 会格式化 close reason。此前原始捕获未执行这种依赖协议路径。第三方日志
+可能含请求 UDID/认证头和设备 payload，故重新打开 S04，而不是保留完成声明。
+原 S04 验收记录作为自有输出边界的历史证据保留；总览状态已更正。
+下一步限制 CLI 日志来源并以真实 WebSocket fixture 检查原始捕获；认证接入继续
+依赖这一安全日志基础，不先引入令牌后忽略依赖泄漏。仍在第二类，目标 active。

@@ -61,3 +61,9 @@ proof. Authentication material added by S01–S03 must extend the same raw-outpu
 checks. No actual pairing, DDI/TSS/device operation, remote CI, push or publication
 was performed. The roadmap retains Q02 device/platform conditions and unfinished
 access control; this evidence does not close the second category.
+
+Subsequent finding: while preparing S01, source inspection confirmed that the
+CLI's global maximum level also enables tungstenite 0.24.0's request/frame/message
+TRACE and close-reason DEBUG. This gate did not capture that dependency protocol
+path. S04 was reopened for CLI subscriber filtering and a real WebSocket fixture;
+the successful checks above remain evidence for the listed owned surfaces only.
