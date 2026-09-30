@@ -79,23 +79,20 @@ impl PersistedCredentials {
     /// a missing one: the record is still on disk and the surprise re-pair needs
     /// a trace to explain it.
     fn load_from_path(path: &std::path::Path) -> Option<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(json) => match serde_json::from_str(&json) {
+        match crate::lockdown::pair_record::read_pair_record_bytes(path) {
+            Ok(json) => match serde_json::from_slice(&json) {
                 Ok(creds) => Some(creds),
-                Err(err) => {
-                    tracing::warn!("ignoring corrupt credential file {}: {err}", path.display());
+                Err(_) => {
+                    tracing::warn!("ignoring corrupt credential file");
                     None
                 }
             },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("no credential file at {}", path.display());
+                tracing::debug!("credential file not found");
                 None
             }
-            Err(err) => {
-                tracing::warn!(
-                    "ignoring unreadable credential file {}: {err}",
-                    path.display()
-                );
+            Err(_) => {
+                tracing::warn!("ignoring unreadable credential file");
                 None
             }
         }
@@ -115,20 +112,58 @@ impl PersistedCredentials {
             }
         };
         entries
+            .take(4096)
             .filter_map(|e| e.ok())
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
             .map(|e| e.path())
             .filter(|path| path.extension().map(|x| x == "json").unwrap_or(false))
             .filter_map(|path| Self::load_from_path(&path))
+            .take(128)
             .collect()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemotePairingRecord {
+    #[serde(with = "serde_bytes")]
     pub public_key: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub private_key: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_unlock_host_key: Option<String>,
+    /// Device alternate identity resolving key received during pair setup.
+    /// Older records omit this and remain usable through direct RSD.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_bytes",
+        deserialize_with = "deserialize_optional_bytes"
+    )]
+    pub peer_alt_irk: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for RemotePairingRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemotePairingRecord")
+            .finish_non_exhaustive()
+    }
+}
+
+fn serialize_optional_bytes<S: serde::Serializer>(
+    value: &Option<Vec<u8>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    value
+        .as_deref()
+        .map(serde_bytes::Bytes::new)
+        .serialize(serializer)
+}
+
+fn deserialize_optional_bytes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<u8>>, D::Error> {
+    Ok(Option::<serde_bytes::ByteBuf>::deserialize(deserializer)?
+        .map(serde_bytes::ByteBuf::into_vec))
 }
 
 impl RemotePairingRecord {
@@ -160,27 +195,21 @@ impl RemotePairingRecord {
     /// from the plist parse so that the two cases stay distinguishable —
     /// `plist::from_file` folds the io error into its own error type.
     fn load_from_path(path: &std::path::Path) -> Option<Self> {
-        let data = match std::fs::read(path) {
+        let data = match crate::lockdown::pair_record::read_pair_record_bytes(path) {
             Ok(data) => data,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("no remote pairing record at {}", path.display());
+                tracing::debug!("remote pairing record not found");
                 return None;
             }
-            Err(err) => {
-                tracing::warn!(
-                    "ignoring unreadable remote pairing record {}: {err}",
-                    path.display()
-                );
+            Err(_) => {
+                tracing::warn!("ignoring unreadable remote pairing record");
                 return None;
             }
         };
 
         plist::from_bytes(&data)
-            .inspect_err(|err| {
-                tracing::warn!(
-                    "ignoring corrupt remote pairing record {}: {err}",
-                    path.display()
-                );
+            .inspect_err(|_| {
+                tracing::warn!("ignoring corrupt remote pairing record");
             })
             .ok()
     }
@@ -202,7 +231,9 @@ impl RemotePairingRecord {
         };
 
         entries
+            .take(4096)
             .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
             .filter_map(|entry| {
                 // Files that do not follow the naming scheme belong to someone
                 // else and are skipped without a trace; only records we claim
@@ -215,6 +246,7 @@ impl RemotePairingRecord {
                     .to_string();
                 Some((remote_identifier, Self::load_from_path(&path)?))
             })
+            .take(128)
             .collect()
     }
 }
@@ -222,6 +254,39 @@ impl RemotePairingRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_record_accepts_legacy_arrays_and_new_plist_data() {
+        let old = br#"<?xml version="1.0"?><plist version="1.0"><dict>
+            <key>public_key</key><array><integer>1</integer></array>
+            <key>private_key</key><array><integer>2</integer></array>
+            </dict></plist>"#;
+        let record: RemotePairingRecord = plist::from_bytes(old).unwrap();
+        assert_eq!(record.public_key, [1]);
+        assert_eq!(record.private_key, [2]);
+        assert!(record.peer_alt_irk.is_none());
+        let new = RemotePairingRecord {
+            peer_alt_irk: Some(vec![9; 16]),
+            ..record
+        };
+        let mut bytes = Vec::new();
+        plist::to_writer_xml(&mut bytes, &new).unwrap();
+        let value: plist::Value = plist::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            value.as_dictionary().unwrap()["peer_alt_irk"]
+                .as_data()
+                .unwrap(),
+            &[9; 16]
+        );
+        assert!(value.as_dictionary().unwrap()["private_key"]
+            .as_data()
+            .is_some());
+        assert_eq!(
+            plist::from_bytes::<RemotePairingRecord>(&bytes).unwrap(),
+            new
+        );
+        assert!(!format!("{new:?}").contains("peer_alt_irk"));
+    }
 
     #[test]
     fn test_roundtrip() {
@@ -328,6 +393,7 @@ mod tests {
             public_key: vec![0x01, 0x02, 0x03],
             private_key: vec![0x04, 0x05, 0x06],
             remote_unlock_host_key: Some("PcV5xhyuJBL7Qq9HOGeGVwtU4sJLe1jtl/vRy1tRKcI=".into()),
+            peer_alt_irk: Some((0..16).collect()),
         };
 
         record

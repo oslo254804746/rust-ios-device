@@ -43,6 +43,7 @@ together with `.sha256` files.
 ```sh
 ios --help
 ios list                                         # connected devices (USB + network)
+ios doctor                                       # bounded, read-only host diagnostic report
 ios info                                         # default device summary
 ios -u <UDID> lockdown get --key ProductVersion
 ios syslog                                       # stream device logs
@@ -58,7 +59,7 @@ Commands that target a device default to the first device returned by
 - `-u <UDID>` on the command line.
 - `IOS_UDID=<UDID>` environment variable.
 
-`ios list`, `ios listen`, and `ios discover` do not need a UDID.
+`ios list`, `ios listen`, `ios discover`, and `ios doctor` do not need a UDID.
 
 ## Command groups
 

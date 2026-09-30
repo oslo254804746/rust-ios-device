@@ -1522,6 +1522,7 @@ dependencies = [
  "h2",
  "hex",
  "hkdf",
+ "hmac",
  "http",
  "indexmap",
  "libc",
@@ -1547,6 +1548,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "siphasher",
  "smoltcp",
  "subtle",
  "tar",
@@ -2809,6 +2811,12 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "slab"

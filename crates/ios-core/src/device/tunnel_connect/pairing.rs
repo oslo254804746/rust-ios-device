@@ -17,10 +17,10 @@ use crate::xpc::XpcClient;
 
 use super::credentials::load_remote_pairing_credentials;
 use super::protocol::{
-    build_direct_handshake_request, build_direct_pair_verify_failed_event, build_direct_pairing_event,
-    build_remote_pairing_handshake_request, build_remote_pairing_pair_verify_failed_event,
-    build_remote_pairing_pairing_event, create_direct_tcp_listener,
-    create_remote_pairing_tcp_listener, extract_direct_pairing_tlv,
+    build_direct_handshake_request, build_direct_pair_verify_failed_event,
+    build_direct_pairing_event, build_remote_pairing_handshake_request,
+    build_remote_pairing_pair_verify_failed_event, build_remote_pairing_pairing_event,
+    create_direct_tcp_listener, create_remote_pairing_tcp_listener, extract_direct_pairing_tlv,
     extract_direct_remote_identifier, extract_remote_pairing_tlv,
 };
 use super::{DIRECT_PAIRING_TYPE_ERROR, DIRECT_PAIRING_TYPE_PUBLIC_KEY};
@@ -77,9 +77,7 @@ impl RemotePairingControlChannel {
                 format!("remote pairing dial to {host}:{port} timed out"),
             )
         })??;
-        Ok(Self {
-            stream,
-        })
+        Ok(Self { stream })
     }
 
     pub(super) async fn send(&mut self, payload: &serde_json::Value) -> Result<(), CoreError> {

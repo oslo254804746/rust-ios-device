@@ -8,8 +8,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chacha20poly1305::{aead::Aead, KeyInit};
 use indexmap::IndexMap;
 
-use super::{CoreError, DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE, DIRECT_CONTROL_CHANNEL_ORIGIN};
 use super::pairing::RemotePairingControlChannel;
+use super::{CoreError, DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE, DIRECT_CONTROL_CHANNEL_ORIGIN};
 use crate::lockdown::pairing::VerifyPairSession;
 use crate::xpc::message::XpcValue;
 use crate::xpc::XpcClient;
@@ -368,7 +368,9 @@ pub(super) fn build_remote_pairing_pairing_event(
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn build_remote_pairing_pair_verify_failed_event(sequence_number: u64) -> serde_json::Value {
+pub(super) fn build_remote_pairing_pair_verify_failed_event(
+    sequence_number: u64,
+) -> serde_json::Value {
     serde_json::json!({
         "message": {
             "plain": {
@@ -467,7 +469,9 @@ pub(super) fn extract_direct_stream_encrypted(body: &XpcValue) -> Result<Vec<u8>
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) -> Result<Vec<u8>, CoreError> {
+pub(super) fn extract_remote_pairing_stream_encrypted(
+    body: &serde_json::Value,
+) -> Result<Vec<u8>, CoreError> {
     let encoded = body
         .get("message")
         .and_then(|value| value.get("streamEncrypted"))
@@ -486,7 +490,9 @@ pub(super) fn extract_remote_pairing_stream_encrypted(body: &serde_json::Value) 
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
+pub(super) fn direct_control_value(
+    body: &XpcValue,
+) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     let envelope = body.as_dict().ok_or_else(|| {
         CoreError::Protocol("direct control message body must be a dictionary".into())
     })?;
@@ -508,7 +514,9 @@ pub(super) fn direct_control_value(body: &XpcValue) -> Result<&IndexMap<String, 
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn direct_plain_message(body: &XpcValue) -> Result<&IndexMap<String, XpcValue>, CoreError> {
+pub(super) fn direct_plain_message(
+    body: &XpcValue,
+) -> Result<&IndexMap<String, XpcValue>, CoreError> {
     direct_control_value(body)?
         .get("message")
         .and_then(XpcValue::as_dict)
@@ -535,7 +543,9 @@ pub(super) fn extract_direct_rejection_message(value: &XpcValue) -> Option<Strin
 }
 
 #[cfg(feature = "tunnel")]
-pub(super) fn extract_remote_pairing_rejection_message(value: &serde_json::Value) -> Option<String> {
+pub(super) fn extract_remote_pairing_rejection_message(
+    value: &serde_json::Value,
+) -> Option<String> {
     value
         .get("wrappedError")
         .and_then(|wrapped| wrapped.get("userInfo"))

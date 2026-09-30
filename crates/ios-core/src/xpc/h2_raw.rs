@@ -152,6 +152,7 @@ pub struct H2Framer<S> {
     outbound_connection_window: i64,
     peer_initial_window_size: i64,
     outbound_stream_windows: HashMap<u32, i64>,
+    locally_finished_streams: HashSet<u32>,
     outbound_max_frame_size: usize,
     // DATA frames consumed by the writer's flow-control reader. Keeping the
     // frame boundary and flags here prevents a later read_next_data_frame from
@@ -213,6 +214,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
             outbound_stream_windows: HashMap::new(),
+            locally_finished_streams: HashSet::new(),
             outbound_max_frame_size: MAX_FRAME_PAYLOAD,
             pending_data_frames: VecDeque::new(),
             reset_streams: HashMap::new(),
@@ -224,7 +226,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     /// Perform the HTTP/2 handshake and return a framer ready for use.
-    pub async fn connect(mut stream: S) -> Result<Self, H2Error> {
+    pub async fn connect(stream: S) -> Result<Self, H2Error> {
+        let mut framer = Self::begin_connect(stream).await?;
+        framer.finish_connect().await?;
+        Ok(framer)
+    }
+
+    /// Send the local HTTP/2 preface. RSD must be able to enqueue its XPC
+    /// bootstrap before waiting for the peer's SETTINGS.
+    pub(crate) async fn begin_connect(mut stream: S) -> Result<Self, H2Error> {
         // 1. Send HTTP/2 connection preface
         stream.write_all(H2_PREFACE).await?;
 
@@ -240,12 +250,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         stream.write_all(&wupdate).await?;
         stream.flush().await?;
 
-        let mut framer = Self::new(stream);
+        Ok(Self::new(stream))
+    }
 
-        // 4. Read server SETTINGS, send ACK
-        framer.read_until_settings_ack_needed().await?;
-
-        Ok(framer)
+    /// Receive and acknowledge the peer SETTINGS after the local preface.
+    pub(crate) async fn finish_connect(&mut self) -> Result<(), H2Error> {
+        self.read_until_settings_ack_needed().await
     }
 
     async fn read_until_settings_ack_needed(&mut self) -> Result<(), H2Error> {
@@ -1012,6 +1022,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Open an arbitrary stream with an empty HEADERS frame if it is not open yet.
     pub async fn open_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
         self.ensure_connection_open()?;
+        if self.locally_finished_streams.contains(&stream_id) {
+            return Err(H2Error::Protocol(format!(
+                "stream {stream_id} is locally finished"
+            )));
+        }
         if stream_id == STREAM_INIT || stream_id > MAX_FLOW_CONTROL_WINDOW as u32 {
             return Err(
                 self.connection_protocol_error(format!("invalid local stream ID {stream_id}"))
@@ -1045,6 +1060,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Close the sending half of a stream while allowing its final peer response.
+    /// An empty END_STREAM frame consumes no flow-control credit.
+    #[cfg(any(feature = "cryptex", test))]
+    pub async fn finish_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        self.open_stream(stream_id).await?;
+        self.stream
+            .write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, stream_id, &[]))
+            .await?;
+        self.stream.flush().await?;
+        self.locally_finished_streams.insert(stream_id);
         Ok(())
     }
 
@@ -1471,6 +1499,27 @@ mod tests {
         // Stream ID 1
         let sid = u32::from_be_bytes([frame[5] & 0x7F, frame[6], frame[7], frame[8]]);
         assert_eq!(sid, STREAM_CLIENT_SERVER);
+    }
+
+    #[tokio::test]
+    async fn finish_stream_works_without_credit_and_keeps_receive_half_open() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(5).await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+        framer.outbound_connection_window = 0;
+        framer.outbound_stream_windows.insert(5, 0);
+        framer.finish_stream(5).await.unwrap();
+        let end = read_wire_frame(&mut peer).await;
+        assert_eq!(
+            (end.frame_type, end.flags, end.stream_id),
+            (FRAME_DATA, FLAG_END_STREAM, 5)
+        );
+        assert!(end.payload.is_empty());
+        assert!(framer.write_stream(5, b"late bytes").await.is_err());
+        assert!(framer.finish_stream(5).await.is_err());
+        peer.write_all(&build_data_frame(5, b"done")).await.unwrap();
+        assert_eq!(framer.read_stream(5, 4).await.unwrap().as_ref(), b"done");
     }
 
     #[tokio::test]

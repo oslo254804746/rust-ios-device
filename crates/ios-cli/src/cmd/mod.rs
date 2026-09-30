@@ -18,6 +18,7 @@ pub mod devicestate;
 pub mod diagnostics;
 pub mod discover;
 pub mod diskspace;
+pub mod doctor;
 pub mod dproxy;
 pub mod erase;
 pub mod file;

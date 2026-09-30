@@ -1,5 +1,3 @@
-#[cfg(feature = "mdns")]
-use std::collections::HashMap;
 #[cfg(feature = "tunnel")]
 use std::net::Ipv6Addr;
 #[cfg(feature = "tunnel")]

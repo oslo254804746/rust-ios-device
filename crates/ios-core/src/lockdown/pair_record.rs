@@ -3,6 +3,48 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
+pub(crate) const MAX_PAIR_RECORD_BYTES: u64 = 1024 * 1024;
+#[cfg(feature = "mdns")]
+pub(crate) const MAX_DISCOVERY_PAIR_RECORDS: usize = 128;
+
+/// Shared bounded reader for local pairing stores. The original serialized
+/// private keys are wiped when parsing finishes.
+pub(crate) fn read_pair_record_bytes(
+    path: &std::path::Path,
+) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(MAX_PAIR_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PAIR_RECORD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pair record exceeds size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "mdns")]
+pub(crate) fn discovery_pair_record_paths(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    // Bound directory work as well as parsed records. Skip links so enumeration
+    // never expands the configured credential directory into other locations.
+    let mut paths: Vec<_> = entries
+        .take(4096)
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "plist"))
+        .collect();
+    paths.sort();
+    paths.truncate(MAX_DISCOVERY_PAIR_RECORDS);
+    paths
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PairRecordError {
     #[error("pair record not found for UDID: {0}")]
@@ -74,8 +116,8 @@ impl PairRecord {
     pub fn load_from_path(path: &std::path::Path, udid: &str) -> Result<Self, PairRecordError> {
         // The raw plist carries the private key too, so the read buffer gets the
         // same protection as the parsed field.
-        let data = match std::fs::read(path) {
-            Ok(data) => Zeroizing::new(data),
+        let data = match read_pair_record_bytes(path) {
+            Ok(data) => data,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 return Err(PairRecordError::NotFound(udid.to_string()));
             }

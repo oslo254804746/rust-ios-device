@@ -18,6 +18,11 @@ pub struct DdiCmd {
 
 #[derive(clap::Subcommand)]
 enum DdiSub {
+    /// Manage Cryptex developer images over an RSD tunnel
+    Cryptex {
+        #[command(subcommand)]
+        command: CryptexSub,
+    },
     /// Detect the device version, download a matching DDI, and mount it
     Auto {
         /// Cache directory for downloaded DDIs
@@ -55,7 +60,7 @@ enum DdiSub {
     Unmount,
     /// Download and mount a developer disk image
     Mount {
-        /// Path to a local DDI (skips download)
+        /// Local DDI directory; on iOS 27+, the unpacked Cryptex Restore directory
         #[arg(long)]
         path: Option<PathBuf>,
         /// Cache directory for downloaded DDIs
@@ -64,11 +69,40 @@ enum DdiSub {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum CryptexSub {
+    /// List installed Cryptex images
+    List,
+    /// Read AppleImage4 personalization identifiers
+    PersonalizationIdentifiers,
+    /// Read the unwrapped nonce using a domain index or handle
+    Nonce {
+        #[arg(long, conflicts_with = "nonce_domain_handle")]
+        nonce_domain: Option<u64>,
+        #[arg(long, conflicts_with = "nonce_domain")]
+        nonce_domain_handle: Option<u64>,
+    },
+    /// Personalize and install the DDI Cryptex
+    AutoInstall {
+        #[arg(long)]
+        restore_dir: Option<PathBuf>,
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+    },
+    /// Uninstall a Cryptex image by identifier
+    Uninstall {
+        identifier: String,
+        #[arg(long)]
+        version: Option<String>,
+    },
+}
+
 impl DdiCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for ddi"))?;
 
         match self.sub {
+            DdiSub::Cryptex { command } => run_cryptex(udid, json, command).await,
             DdiSub::Auto { cache_dir } => run_mount(udid, None, cache_dir).await,
             DdiSub::Status => run_status(udid, json).await,
             DdiSub::List => run_list(udid, json).await,
@@ -93,6 +127,27 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
         skip_tunnel: true,
     };
     let device = ios_core::connect(&udid, opts).await?;
+    if uses_cryptex(&device.product_version().await?) {
+        let device = connect_cryptex_device(&udid).await?;
+        let mut client = ios_core::cryptex::CryptexClient::connect(&device).await?;
+        let installed = client.installed_ddi().await?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"mounted": installed.is_some(), "backend": "cryptex", "installed": installed})
+                )?
+            );
+        } else if let Some(installed) = installed {
+            println!(
+                "DDI Cryptex {} {} is installed.",
+                installed.identifier, installed.version
+            );
+        } else {
+            println!("No DDI Cryptex installed.");
+        }
+        return Ok(());
+    }
     let mut stream = device
         .connect_service(ios_core::imagemounter::protocol::SERVICE_NAME)
         .await?;
@@ -372,6 +427,17 @@ async fn run_unmount(udid: String) -> Result<()> {
     };
     let device = ios_core::connect(&udid, opts).await?;
     let version = device.product_version().await?;
+    if uses_cryptex(&version) {
+        let tunnel_device = connect_cryptex_device(&udid).await?;
+        let mut client = ios_core::cryptex::CryptexClient::connect(&tunnel_device).await?;
+        if let Some(installed) = client.installed_ddi().await? {
+            client
+                .uninstall(&installed.identifier, Some(&installed.version))
+                .await?;
+            println!("Uninstalled DDI Cryptex {}.", installed.version);
+            return Ok(());
+        }
+    }
     let mount_path = if version.major >= 17 {
         "/System/Developer"
     } else {
@@ -417,20 +483,34 @@ async fn run_mount(
     };
     let device = ios_core::connect(&udid, opts).await?;
 
+    let version = device.product_version().await?;
+    eprintln!("Device iOS version: {version}");
+    if uses_cryptex(&version) {
+        let device = connect_cryptex_device(&udid).await?;
+        let installed = ios_core::cryptex::auto_install_ddi(
+            &device,
+            local_path.as_deref(),
+            cache_dir.as_deref(),
+        )
+        .await?;
+        eprintln!(
+            "Installed DDI Cryptex {} {}.",
+            installed.identifier, installed.version
+        );
+        return Ok(());
+    }
+
     // Check if already mounted
     {
         let mut stream = device
             .connect_service(ios_core::imagemounter::protocol::SERVICE_NAME)
             .await?;
         let mut client = ImageMounterClient::new(&mut *stream);
-        if client.is_image_mounted().await.unwrap_or(false) {
+        if client.is_image_mounted().await? {
             eprintln!("Developer disk image is already mounted.");
             return Ok(());
         }
     }
-
-    let version = device.product_version().await?;
-    eprintln!("Device iOS version: {version}");
 
     if version.major >= 17 {
         // Personalized DDI path
@@ -439,6 +519,101 @@ async fn run_mount(
         // Standard DDI path
         mount_standard(&device, &version, local_path, cache_dir).await
     }
+}
+
+fn uses_cryptex(version: &semver::Version) -> bool {
+    version.major >= 27
+}
+
+async fn connect_cryptex_device(udid: &str) -> Result<ios_core::ConnectedDevice> {
+    Ok(ios_core::connect(
+        udid,
+        ios_core::device::ConnectOptions {
+            tun_mode: ios_core::TunMode::Userspace,
+            pair_record_path: None,
+            skip_tunnel: false,
+        },
+    )
+    .await?)
+}
+
+async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()> {
+    use ios_core::cryptex::{CryptexClient, NonceDomain};
+    let device = connect_cryptex_device(&udid).await?;
+    if let CryptexSub::AutoInstall {
+        restore_dir,
+        cache_dir,
+    } = command
+    {
+        let installed = ios_core::cryptex::auto_install_ddi(
+            &device,
+            restore_dir.as_deref(),
+            cache_dir.as_deref(),
+        )
+        .await?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&installed)?);
+        } else {
+            println!("Installed {} {}.", installed.identifier, installed.version);
+        }
+        return Ok(());
+    }
+    let mut client = CryptexClient::connect(&device).await?;
+    match command {
+        CryptexSub::List => {
+            let installed = client.copy_installed().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&installed)?);
+            } else if installed.is_empty() {
+                println!("No Cryptex images installed.");
+            } else {
+                for item in installed {
+                    println!("{} {}", item.identifier, item.version);
+                }
+            }
+        }
+        CryptexSub::PersonalizationIdentifiers => {
+            let identifiers = client.read_personalization_identifiers().await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&plist_to_json(&Value::Dictionary(identifiers)))?
+                );
+            } else {
+                for (key, value) in identifiers {
+                    println!("{key}: {}", format_plist_value(&value));
+                }
+            }
+        }
+        CryptexSub::Nonce {
+            nonce_domain,
+            nonce_domain_handle,
+        } => {
+            let domain = nonce_domain_handle
+                .map(NonceDomain::Handle)
+                .or_else(|| nonce_domain.map(NonceDomain::Index))
+                .unwrap_or_default();
+            let nonce = client.nonce(domain).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
+            } else {
+                println!("{}", hex::encode(nonce));
+            }
+        }
+        CryptexSub::Uninstall {
+            identifier,
+            version,
+        } => {
+            client.uninstall(&identifier, version.as_deref()).await?;
+            if json {
+                println!("{}", serde_json::json!({"uninstalled": identifier}));
+            } else {
+                println!("Uninstalled {identifier}.");
+            }
+        }
+        CryptexSub::AutoInstall { .. } => unreachable!("handled before connecting client"),
+    }
+    Ok(())
 }
 
 async fn mount_standard(
@@ -712,6 +887,54 @@ mod tests {
     struct TestCli {
         #[command(subcommand)]
         command: DdiSub,
+    }
+
+    #[test]
+    fn cryptex_selection_starts_at_ios_27() {
+        for version in ["16.7.0", "17.0.0", "26.9.0"] {
+            assert!(!uses_cryptex(&semver::Version::parse(version).unwrap()));
+        }
+        for version in ["27.0.0", "27.2.0", "28.0.0"] {
+            assert!(uses_cryptex(&semver::Version::parse(version).unwrap()));
+        }
+    }
+
+    #[test]
+    fn cryptex_nonce_selectors_conflict_and_handle_parses() {
+        assert!(TestCli::try_parse_from([
+            "ddi",
+            "cryptex",
+            "nonce",
+            "--nonce-domain",
+            "2",
+            "--nonce-domain-handle",
+            "4"
+        ])
+        .is_err());
+        let cli = TestCli::parse_from(["ddi", "cryptex", "nonce", "--nonce-domain-handle", "4"]);
+        assert!(matches!(
+            cli.command,
+            DdiSub::Cryptex {
+                command: CryptexSub::Nonce {
+                    nonce_domain: None,
+                    nonce_domain_handle: Some(4)
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn cryptex_auto_install_accepts_a_local_restore_directory() {
+        let cli = TestCli::parse_from([
+            "ddi",
+            "cryptex",
+            "auto-install",
+            "--restore-dir",
+            "/tmp/Restore",
+        ]);
+        assert!(
+            matches!(cli.command, DdiSub::Cryptex { command: CryptexSub::AutoInstall { restore_dir: Some(path), cache_dir: None } } if path.as_path() == std::path::Path::new("/tmp/Restore"))
+        );
     }
 
     #[test]

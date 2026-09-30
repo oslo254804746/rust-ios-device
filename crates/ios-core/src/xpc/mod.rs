@@ -15,6 +15,8 @@ pub mod client;
     feature = "restore"
 ))]
 pub mod h2_raw;
+#[cfg(feature = "tunnel")]
+pub(crate) mod identity;
 pub mod message;
 pub mod rsd;
 

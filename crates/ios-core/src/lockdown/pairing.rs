@@ -470,12 +470,75 @@ pub fn build_device_info_tlv(
 /// Decrypts the device's encrypted TLV response using the setup key derived
 /// during the device info exchange. A successful decryption proves the device
 /// holds the same session key, completing mutual authentication.
-pub fn verify_device_info_response(
+/// Recognize the optional peer key from the authenticated M6 payload. Missing
+/// or malformed optional info must not invalidate older devices' pair setup.
+pub(crate) fn verify_device_info_response(
     setup_key: &[u8; 32],
     encrypted_data: &[u8],
-) -> Result<(), PairingError> {
-    chacha_open(setup_key, b"PS-Msg06", encrypted_data)?;
-    Ok(())
+) -> Result<Option<Vec<u8>>, PairingError> {
+    let plaintext = zeroize::Zeroizing::new(chacha_open(setup_key, b"PS-Msg06", encrypted_data)?);
+    let fields = TlvBuffer::decode(&plaintext);
+    let Some(info) = fields.get(&TYPE_INFO) else {
+        return Ok(None);
+    };
+    let Ok((opack::OpackValue::Dict(entries), consumed)) = opack::decode(info) else {
+        return Ok(None);
+    };
+    if consumed != info.len() {
+        return Ok(None);
+    }
+    Ok(entries
+        .into_iter()
+        .find_map(|(key, value)| match (key, value) {
+            (opack::OpackValue::String(key), opack::OpackValue::Bytes(value))
+                if key == "altIRK" && value.len() == 16 =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }))
+}
+
+#[cfg(test)]
+mod peer_discovery_key_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_device_info_extracts_optional_alt_irk() {
+        let info = opack::encode(&opack::OpackValue::Dict(vec![(
+            opack::OpackValue::String("altIRK".into()),
+            opack::OpackValue::Bytes(vec![42; 16]),
+        )]))
+        .unwrap();
+        let mut tlv = TlvBuffer::new();
+        tlv.push_bytes(TYPE_INFO, &info);
+        let ciphertext = chacha_seal(&[3; 32], b"PS-Msg06", &tlv.into_bytes()).unwrap();
+        assert_eq!(
+            verify_device_info_response(&[3; 32], &ciphertext).unwrap(),
+            Some(vec![42; 16])
+        );
+        assert!(verify_device_info_response(&[4; 32], &ciphertext).is_err());
+    }
+
+    #[test]
+    fn missing_or_malformed_optional_alt_irk_preserves_pair_setup() {
+        let invalid_length = opack::encode(&opack::OpackValue::Dict(vec![(
+            opack::OpackValue::String("altIRK".into()),
+            opack::OpackValue::Bytes(vec![42; 15]),
+        )]))
+        .unwrap();
+        for info in [None, Some(vec![255]), Some(invalid_length)] {
+            let mut tlv = TlvBuffer::new();
+            if let Some(info) = info {
+                tlv.push_bytes(TYPE_INFO, &info);
+            }
+            let ciphertext = chacha_seal(&[3; 32], b"PS-Msg06", &tlv.into_bytes()).unwrap();
+            assert_eq!(
+                verify_device_info_response(&[3; 32], &ciphertext).unwrap(),
+                None
+            );
+        }
+    }
 }
 
 /// Derive the two session cipher keys from the SRP session key.

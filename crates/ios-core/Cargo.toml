@@ -34,6 +34,7 @@ developer = [
     "accessibility_audit",
     "amfi",
     "btlogger",
+    "cryptex",
     "debugserver",
     "dproxy",
     "dtx",
@@ -57,6 +58,7 @@ management = [
 ios17 = [
     "apps",
     "configuration",
+    "cryptex",
     "deviceinfo",
     "diagnosticsservice",
     "dproxy",
@@ -76,7 +78,7 @@ ios17 = [
 coredevice-base = ["tunnel-userspace", "mdns"]
 coredevice-files = ["coredevice-base", "fileservice"]
 coredevice-info = ["coredevice-base", "deviceinfo"]
-mdns = ["dep:mdns-sd"]
+mdns = ["dep:mdns-sd", "dep:hmac", "dep:siphasher"]
 tunnel = ["dep:openssl", "dep:tokio-openssl"]
 tunnel-kernel = ["tunnel", "dep:tun-rs"]
 tunnel-userspace = ["tunnel", "dep:smoltcp"]
@@ -110,6 +112,7 @@ debugserver = []
 fileservice = []
 deviceinfo = []
 imagemounter = ["dep:reqwest", "dep:zip"]
+cryptex = ["imagemounter", "tunnel"]
 pcap = []
 power_assertion = []
 preboard = []
@@ -152,7 +155,7 @@ backup2-manifest = [
 ]
 
 [dependencies]
-tokio        = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio        = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 bytes        = { workspace = true }
 zerocopy     = { workspace = true }
 thiserror    = { workspace = true }
@@ -196,6 +199,8 @@ aes-kw       = { workspace = true, optional = true }
 cbc          = { workspace = true, optional = true }
 pbkdf2       = { workspace = true, optional = true, features = ["hmac", "sha1", "sha2"] }
 hkdf         = { workspace = true }
+hmac         = { workspace = true, optional = true }
+siphasher    = { workspace = true, optional = true }
 zeroize      = { workspace = true }
 subtle       = { workspace = true }
 num-bigint   = { workspace = true }

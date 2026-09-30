@@ -22,6 +22,7 @@ schemas, service routing, and iOS-version support can differ.
 | Task | rust-ios-device command | Comparable go-ios command | Comparable pymobiledevice3 command |
 | --- | --- | --- | --- |
 | List devices | `ios list` | `ios list` | `pymobiledevice3 usbmux list` |
+| Host diagnostics | `ios doctor [--mdns]` | host/tunnel diagnostics | `pymobiledevice3 doctor` (Rust currently checks host prerequisites only) |
 | Watch attach/detach | `ios listen` | `ios listen` | usbmux/bonjour-oriented workflows |
 | Bonjour discovery | `ios discover mobdev2` | tunnel/RSD discovery flags and helpers | `pymobiledevice3 bonjour rsd` |
 | Pair device | `ios pair` | `ios pair` | lockdown pairing flows |
@@ -55,7 +56,7 @@ schemas, service routing, and iOS-version support can differ.
 | Device IP discovery | `ios ip` (packet-derived IPv4/IPv6) | `ios diagnostics` / `pcap` IP finder | `pymobiledevice3 pcap` workflows |
 | Bluetooth HCI capture | `ios btlogger capture trace.pklg`, `ios btlogger capture --format pcapng trace.pcapng` | Bluetooth packet logging workflows | `pymobiledevice3 btlogger ...` |
 | OS trace | `ios os-trace ps`, `ios os-trace stream`/`live`, `ios os-trace archive`/`collect`, `ios instruments trace` | `ios sysmontap`, trace-related tools | `pymobiledevice3 developer dvt oslog`, `syslog collect` |
-| Developer Disk Image | `ios ddi status`, `ios ddi mount ...` | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount` |
+| Developer Disk Image | `ios ddi auto|status|mount|unmount`, `ios ddi cryptex ...` (iOS 27+) | `ios image list`, `ios image mount`, `ios image auto` | `pymobiledevice3 mounter auto-mount`, `pymobiledevice3 cryptex ...` |
 | Instruments process list | `ios instruments ps` | `ios ps`, `ios instruments ...` | `pymobiledevice3 developer dvt sysmon ...` |
 | Instruments CPU/memory | `ios instruments cpu`, `ios instruments sysmon-process ...` | `ios sysmontap` | `pymobiledevice3 developer dvt sysmon ...` |
 | CoreDevice appearance/accessibility | `ios device-control configuration get|set ...` | `pymobiledevice3 developer core-device user-interface-style ...` and accessibility controls | iOS 17+ `com.apple.coredevice.configuration`; setters mutate device-wide UI state |

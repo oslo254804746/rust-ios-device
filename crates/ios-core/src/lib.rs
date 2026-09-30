@@ -128,6 +128,8 @@ pub use services::companion;
 pub use services::configuration;
 #[cfg(feature = "crashreport")]
 pub use services::crashreport;
+#[cfg(feature = "cryptex")]
+pub use services::cryptex;
 #[cfg(feature = "debugserver")]
 pub use services::debugserver;
 #[cfg(feature = "deviceinfo")]

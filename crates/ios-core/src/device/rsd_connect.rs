@@ -4,10 +4,7 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
     let addr = Ipv6Addr::from_str(server_addr).ok()?;
     match rsd_handshake(addr, rsd_port).await {
         Ok(h) => {
-            tracing::info!(
-                "RSD: {} services discovered",
-                h.services.len()
-            );
+            tracing::info!("RSD: {} services discovered", h.services.len());
             Some(h)
         }
         Err(e) => {
@@ -27,207 +24,145 @@ async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> Option<RsdHandshake>
     None
 }
 
-/// Attempt RSD via go-ios-compatible userspace proxy.
+/// Attempt RSD via the go-ios-compatible userspace proxy. The direct and proxy
+/// routes share the same host identity, bootstrap ordering and bounded retries.
 #[cfg(feature = "tunnel")]
 async fn attempt_rsd_via_proxy(
     proxy_port: u16,
     server_addr: &str,
     rsd_port: u16,
 ) -> Option<RsdHandshake> {
-    tracing::info!(
-        "RSD via proxy: probing [{server_addr}]:{rsd_port} through proxy port {proxy_port}"
-    );
-
-    let mut framer = match open_rsd_proxy_framer(proxy_port, server_addr, rsd_port).await {
-        Some(framer) => framer,
-        None => return None,
-    };
-
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        crate::xpc::rsd::queue_rsd_handshake_bootstrap_on_framer(&mut framer),
-    )
-    .await
-    {
-        Ok(Ok(())) => match tokio::time::timeout(
-            Duration::from_secs(4),
-            crate::xpc::rsd::handshake_on_framer(&mut framer),
-        )
-        .await
-        {
-            Ok(Ok(handshake)) => {
-                tracing::info!(
-                    "RSD via proxy: queued bootstrap succeeded with {} services",
-                    handshake.services.len()
-                );
-                return Some(handshake);
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    "RSD via proxy: queued bootstrap handshake failed: {e}; trying legacy bootstrap"
-                );
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "RSD via proxy: queued bootstrap handshake timed out; trying legacy bootstrap"
-                );
-            }
-        },
-        Ok(Err(e)) => {
-            tracing::warn!("RSD via proxy: queued bootstrap failed: {e}; trying legacy bootstrap");
-        }
+    let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
+        Ok(endpoint) => endpoint,
         Err(_) => {
-            tracing::warn!("RSD via proxy: queued bootstrap timed out; trying legacy bootstrap");
+            tracing::warn!("RSD proxy endpoint is invalid");
+            return None;
         }
-    }
-
-    let mut framer = match open_rsd_proxy_framer(proxy_port, server_addr, rsd_port).await {
-        Some(framer) => framer,
-        None => return None,
     };
-
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        crate::xpc::rsd::initialize_xpc_connection_on_framer(&mut framer),
-    )
-    .await
-    {
-        Ok(Ok(())) => match tokio::time::timeout(
-            Duration::from_secs(3),
-            crate::xpc::rsd::handshake_on_framer(&mut framer),
-        )
-        .await
-        {
-            Ok(Ok(h)) => {
-                tracing::info!(
-                    "RSD via proxy: legacy bootstrap succeeded with {} services",
-                    h.services.len()
-                );
-                Some(h)
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    "RSD handshake via proxy after legacy bootstrap: {e}; trying passive fallback"
-                );
-                match tokio::time::timeout(
-                    Duration::from_secs(2),
-                    crate::xpc::rsd::handshake_on_framer(&mut framer),
-                )
-                .await
-                {
-                    Ok(Ok(h)) => {
-                        tracing::info!(
-                            "RSD via proxy (passive fallback): {} services",
-                            h.services.len()
-                        );
-                        Some(h)
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("RSD passive fallback failed: {e}");
-                        None
-                    }
-                    Err(_) => {
-                        tracing::warn!("RSD passive fallback timed out");
-                        None
-                    }
-                }
-            }
-            Err(_) => {
-                tracing::warn!("RSD handshake via proxy timed out after legacy bootstrap");
-                None
-            }
-        },
-        Ok(Err(e)) => {
-            tracing::warn!("RSD legacy bootstrap failed: {e}; trying passive fallback");
-            match tokio::time::timeout(
-                Duration::from_secs(2),
-                crate::xpc::rsd::handshake_on_framer(&mut framer),
-            )
-            .await
-            {
-                Ok(Ok(h)) => {
-                    tracing::info!(
-                        "RSD via proxy (passive fallback): {} services",
-                        h.services.len()
-                    );
-                    Some(h)
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("RSD passive fallback failed: {e}");
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!("RSD passive fallback timed out");
-                    None
-                }
-            }
+    let result = crate::xpc::rsd::handshake_with_connector(|| async {
+        endpoint.connect(rsd_port).await.map_err(|error| {
+            crate::xpc::XpcError::Tls(format!("RSD proxy connection failed: {error}"))
+        })
+    })
+    .await;
+    match result {
+        Ok(handshake) => {
+            tracing::info!(
+                "RSD via proxy: {} services discovered",
+                handshake.services.len()
+            );
+            Some(handshake)
         }
-        Err(_) => {
-            tracing::warn!("RSD legacy bootstrap timed out; trying passive fallback");
-            match tokio::time::timeout(
-                Duration::from_secs(2),
-                crate::xpc::rsd::handshake_on_framer(&mut framer),
-            )
-            .await
-            {
-                Ok(Ok(h)) => {
-                    tracing::info!(
-                        "RSD via proxy (passive fallback): {} services",
-                        h.services.len()
-                    );
-                    Some(h)
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("RSD passive fallback failed: {e}");
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!("RSD passive fallback timed out");
-                    None
-                }
-            }
+        Err(error) => {
+            tracing::debug!("RSD via proxy failed: {error}");
+            None
         }
     }
 }
 
-#[cfg(feature = "tunnel")]
-async fn open_rsd_proxy_framer(
-    proxy_port: u16,
-    server_addr: &str,
-    rsd_port: u16,
-) -> Option<crate::xpc::h2_raw::H2Framer<tokio::net::TcpStream>> {
-    tracing::info!("RSD via proxy: connecting to 127.0.0.1:{proxy_port}");
-    let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
-        Ok(endpoint) => endpoint,
-        Err(e) => {
-            tracing::warn!("RSD bad server addr '{server_addr}': {e}");
-            return None;
-        }
-    };
-    let proxy = match endpoint.connect(rsd_port).await {
-        Ok(stream) => {
-            tracing::info!("RSD via proxy: connected to proxy");
-            stream
-        }
-        Err(e) => {
-            tracing::warn!("RSD proxy connect failed: {e}");
-            return None;
-        }
-    };
+#[cfg(all(test, feature = "tunnel"))]
+mod rsd_proxy_tests {
+    use super::*;
+    use crate::xpc::message::{decode_message, encode_message, flags, XpcMessage, XpcValue};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    tracing::info!(
-        "RSD via proxy: connecting to [{server_addr}]:{rsd_port} through proxy port {proxy_port}"
-    );
-    tracing::info!("RSD via proxy: starting H2 framer connect");
-    match crate::xpc::h2_raw::H2Framer::connect(proxy).await {
-        Ok(framer) => {
-            tracing::info!("RSD via proxy: H2 framer connected");
-            Some(framer)
+    async fn read_frame(stream: &mut TcpStream) -> (u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        stream.read_exact(&mut header).await.unwrap();
+        let length =
+            (usize::from(header[0]) << 16) | (usize::from(header[1]) << 8) | usize::from(header[2]);
+        assert!(length <= 4096);
+        let mut payload = vec![0; length];
+        stream.read_exact(&mut payload).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            payload,
+        )
+    }
+
+    #[tokio::test]
+    async fn proxy_route_sends_destination_and_reuses_stable_rsd_identity() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let identity = crate::xpc::rsd::default_handshake_uuid().await.unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut destination = [0; 20];
+                stream.read_exact(&mut destination).await.unwrap();
+                assert_eq!(
+                    &destination[..16],
+                    &"fd00::42".parse::<std::net::Ipv6Addr>().unwrap().octets()
+                );
+                assert_eq!(
+                    u32::from_le_bytes(destination[16..].try_into().unwrap()),
+                    58783
+                );
+                let mut preface = [0; 24];
+                stream.read_exact(&mut preface).await.unwrap();
+                assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+                assert_eq!(read_frame(&mut stream).await.0, 4);
+                assert_eq!(read_frame(&mut stream).await.0, 8);
+                stream
+                    .write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0])
+                    .await
+                    .unwrap();
+                loop {
+                    let (kind, stream_id, payload) = read_frame(&mut stream).await;
+                    if kind != 0 || stream_id != 1 {
+                        continue;
+                    }
+                    let message = decode_message(bytes::Bytes::from(payload)).unwrap();
+                    let Some(body) = message.body.as_ref().and_then(XpcValue::as_dict) else {
+                        continue;
+                    };
+                    if body.get("MessageType").and_then(XpcValue::as_str) != Some("Handshake") {
+                        continue;
+                    }
+                    assert_eq!(body["UUID"], XpcValue::Uuid(*identity.as_bytes()));
+                    break;
+                }
+                let reply = encode_message(&XpcMessage {
+                    flags: flags::ALWAYS_SET | flags::DATA,
+                    msg_id: 1,
+                    body: Some(XpcValue::Dictionary(indexmap::IndexMap::from([
+                        ("MessageType".into(), XpcValue::String("Handshake".into())),
+                        (
+                            "Properties".into(),
+                            XpcValue::Dictionary(indexmap::IndexMap::from([(
+                                "UniqueDeviceID".into(),
+                                XpcValue::String("synthetic-proxy-device".into()),
+                            )])),
+                        ),
+                        (
+                            "Services".into(),
+                            XpcValue::Dictionary(indexmap::IndexMap::new()),
+                        ),
+                    ]))),
+                })
+                .unwrap();
+                let length = u32::try_from(reply.len()).unwrap().to_be_bytes();
+                stream
+                    .write_all(&[length[1], length[2], length[3], 0, 0, 0, 0, 0, 1])
+                    .await
+                    .unwrap();
+                stream.write_all(&reply).await.unwrap();
+            }
+        });
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                attempt_rsd_via_proxy(proxy_port, "fd00::42", 58783),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.udid, "synthetic-proxy-device");
         }
-        Err(e) => {
-            tracing::warn!("RSD H2 framer: {e}");
-            None
-        }
+        server.await.unwrap();
     }
 }
 

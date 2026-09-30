@@ -8,16 +8,60 @@ use crate::lockdown::pairing::HostIdentity;
 
 pub(super) struct LoadedRemotePairingCredentials {
     pub(super) host_identity: HostIdentity,
+    #[cfg(feature = "mdns")]
+    pub(super) peer_alt_irk: Option<zeroize::Zeroizing<[u8; 16]>>,
+}
+
+#[cfg(feature = "mdns")]
+pub(super) type RemoteDiscoveryKeys = Vec<(String, zeroize::Zeroizing<[u8; 16]>)>;
+
+#[cfg(feature = "mdns")]
+pub(super) fn load_remote_discovery_keys() -> Result<RemoteDiscoveryKeys, CoreError> {
+    let own_dir = PersistedCredentials::default_dir();
+    let compatible_dir = PersistedCredentials::pymobiledevice3_dir();
+    let hostname = current_hostname()?;
+    Ok(load_remote_discovery_keys_from_dirs(
+        &own_dir,
+        &compatible_dir,
+        &hostname,
+    ))
+}
+
+#[cfg(feature = "mdns")]
+pub(super) fn load_remote_discovery_keys_from_dirs(
+    own_dir: &Path,
+    compatible_dir: &Path,
+    hostname: &str,
+) -> RemoteDiscoveryKeys {
+    let mut identifiers = std::collections::BTreeSet::new();
+    for dir in [&own_dir, &compatible_dir] {
+        identifiers.extend(RemotePairingRecord::list(dir).into_iter().map(|(id, _)| id));
+    }
+    identifiers
+        .into_iter()
+        .take(128)
+        .filter_map(|identifier| {
+            let loaded = load_remote_pairing_credentials_from_dirs(
+                &identifier,
+                own_dir,
+                compatible_dir,
+                hostname,
+            )
+            .ok()?;
+            Some((identifier, loaded.peer_alt_irk?))
+        })
+        .collect()
 }
 
 pub(super) fn load_remote_pairing_credentials(
     remote_identifier: &str,
 ) -> Result<LoadedRemotePairingCredentials, CoreError> {
+    let hostname = current_hostname()?;
     load_remote_pairing_credentials_from_dirs(
         remote_identifier,
         &PersistedCredentials::default_dir(),
         &PersistedCredentials::pymobiledevice3_dir(),
-        &current_hostname(),
+        &hostname,
     )
 }
 
@@ -51,16 +95,14 @@ pub(super) fn load_remote_pairing_credentials_from_dirs(
     }
 
     if RemotePairingRecord::load_for_identifier(ios_rs_dir, remote_identifier).is_some() {
-        return Err(CoreError::Unsupported(format!(
-            "missing persisted host identity for remote identifier {remote_identifier}"
-        )));
+        return Err(CoreError::Unsupported(
+            "missing persisted host identity for remote pairing record".into(),
+        ));
     }
 
-    Err(CoreError::Unsupported(format!(
-        "missing remote pairing record for {remote_identifier} in {} or {}",
-        ios_rs_dir.display(),
-        pymobiledevice3_dir.display()
-    )))
+    Err(CoreError::Unsupported(
+        "missing remote pairing record in the configured credential directories".into(),
+    ))
 }
 
 pub(super) fn find_persisted_host_identity(
@@ -73,7 +115,7 @@ pub(super) fn find_persisted_host_identity(
 }
 
 pub(super) fn load_ios_rs_remote_pairing_credentials(
-    remote_identifier: &str,
+    _remote_identifier: &str,
     remote_pair_record: RemotePairingRecord,
     persisted: PersistedCredentials,
 ) -> Result<LoadedRemotePairingCredentials, CoreError> {
@@ -83,89 +125,70 @@ pub(super) fn load_ios_rs_remote_pairing_credentials(
             .map_err(|e| CoreError::Other(format!("invalid persisted host identity: {e}")))?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {
-        return Err(CoreError::Protocol(format!(
-            "persisted host key mismatch for remote identifier {remote_identifier}"
-        )));
+        return Err(CoreError::Protocol(
+            "persisted host key mismatch for remote pairing record".into(),
+        ));
     }
 
     if let Some(host_private_key_hex) = persisted.host_private_key_hex {
         let persisted_private_key = hex::decode(host_private_key_hex)
             .map_err(|e| CoreError::Other(format!("invalid host private key hex: {e}")))?;
         if persisted_private_key != remote_pair_record.private_key {
-            return Err(CoreError::Protocol(format!(
-                "persisted host private key mismatch for remote identifier {remote_identifier}"
-            )));
+            return Err(CoreError::Protocol(
+                "persisted host private key mismatch for remote pairing record".into(),
+            ));
         }
     }
 
-    Ok(LoadedRemotePairingCredentials { host_identity })
+    Ok(LoadedRemotePairingCredentials {
+        host_identity,
+        #[cfg(feature = "mdns")]
+        peer_alt_irk: remote_pair_record
+            .peer_alt_irk
+            .as_deref()
+            .and_then(|key| <[u8; 16]>::try_from(key).ok())
+            .map(zeroize::Zeroizing::new),
+    })
 }
 
 pub(super) fn load_pymobiledevice3_remote_pairing_credentials(
-    remote_identifier: &str,
+    _remote_identifier: &str,
     hostname: &str,
     remote_pair_record: RemotePairingRecord,
-    creds_dir: &Path,
+    _creds_dir: &Path,
 ) -> Result<LoadedRemotePairingCredentials, CoreError> {
     let host_identifier = pymobiledevice3_host_identifier(hostname);
     let host_identity =
         HostIdentity::from_private_key_bytes(host_identifier, &remote_pair_record.private_key)
             .map_err(|e| {
                 CoreError::Other(format!(
-                    "invalid pymobiledevice3 remote pairing identity for {remote_identifier}: {e}"
+                    "invalid pymobiledevice3 remote pairing identity: {e}"
                 ))
             })?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {
-        return Err(CoreError::Protocol(format!(
-            "pymobiledevice3 host key mismatch for remote identifier {remote_identifier} in {}",
-            creds_dir.display()
-        )));
+        return Err(CoreError::Protocol(
+            "pymobiledevice3 host key mismatch for remote pairing record".into(),
+        ));
     }
 
-    Ok(LoadedRemotePairingCredentials { host_identity })
+    Ok(LoadedRemotePairingCredentials {
+        host_identity,
+        #[cfg(feature = "mdns")]
+        peer_alt_irk: remote_pair_record
+            .peer_alt_irk
+            .as_deref()
+            .and_then(|key| <[u8; 16]>::try_from(key).ok())
+            .map(zeroize::Zeroizing::new),
+    })
 }
 
-pub(super) fn current_hostname() -> String {
-    std::env::var_os("COMPUTERNAME")
-        .or_else(|| std::env::var_os("HOSTNAME"))
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned()
+pub(super) fn current_hostname() -> Result<String, CoreError> {
+    Ok(crate::xpc::identity::current_hostname()?)
 }
 
 pub(super) fn pymobiledevice3_host_identifier(hostname: &str) -> String {
-    const NAMESPACE_DNS: [u8; 16] = [
-        0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
-        0xc8,
-    ];
-
-    let mut input = Vec::with_capacity(NAMESPACE_DNS.len() + hostname.len());
-    input.extend_from_slice(&NAMESPACE_DNS);
-    input.extend_from_slice(hostname.as_bytes());
-
-    let mut bytes = md5::compute(&input).0.to_vec();
-    bytes[6] = (bytes[6] & 0x0f) | 0x30;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15]
-    )
-    .to_uppercase()
+    crate::xpc::identity::hostname_uuid(hostname)
+        .to_string()
+        .to_uppercase()
 }

@@ -96,6 +96,10 @@ pub async fn connect_direct_usb_tunnel(
     }
 }
 
+/// Connect only to Bonjour advertisements recognized by existing RemotePairing
+/// trust records. An empty identifier selects a single matched device; several
+/// devices require an explicit identifier or host filter. Legacy records without
+/// a peer altIRK remain usable through direct RSD, but cannot identify Wi-Fi adverts.
 pub async fn connect_remote_pairing_tunnel(
     udid: &str,
     host: Option<&str>,
@@ -135,32 +139,51 @@ pub async fn connect_remote_pairing_tunnel(
     {
         let targets = discover_remote_pairing_targets(udid, host).await?;
         if targets.is_empty() {
-            return Err(CoreError::Unsupported(format!(
-                "no _remotepairing target matched udid={udid} host={host:?}"
-            )));
+            return Err(CoreError::Unsupported(
+                "no RemotePairing target matched the requested device and host".into(),
+            ));
         }
 
         let mut last_error = None;
-        for (remote_host, port) in targets {
-            match connect_via_remote_pairing_target(
-                info.clone(),
-                pair_record.clone(),
-                opts.clone(),
-                udid,
-                &remote_host,
-                port,
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        for (remote_identifier, remote_host, port) in targets {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            let mut remote_info = info.clone();
+            remote_info.udid = remote_identifier.clone();
+            let candidate_pair_record = if udid.is_empty() {
+                try_load_pair_record(&remote_identifier, opts.pair_record_path.as_deref())
+            } else {
+                pair_record.clone()
+            };
+            match tokio::time::timeout_at(
+                (tokio::time::Instant::now() + Duration::from_secs(10)).min(deadline),
+                connect_via_remote_pairing_target(
+                    remote_info,
+                    candidate_pair_record,
+                    opts.clone(),
+                    &remote_identifier,
+                    &remote_host,
+                    port,
+                ),
             )
             .await
             {
-                Ok(device) => return Ok(device),
-                Err(err) => last_error = Some(err),
+                Ok(Ok(device)) => return Ok(device),
+                Ok(Err(err)) => last_error = Some(err),
+                Err(_) => {
+                    last_error = Some(CoreError::Protocol(
+                        "remote pairing connection timed out".into(),
+                    ))
+                }
             }
         }
 
         Err(last_error.unwrap_or_else(|| {
-            CoreError::Unsupported(format!(
-                "no remote pairing target produced a tunnel for udid={udid}"
-            ))
+            CoreError::Unsupported(
+                "no remote pairing target produced a tunnel for the requested device".into(),
+            )
         }))
     }
 }
@@ -189,12 +212,20 @@ pub async fn connect_tcp_lockdown_tunnel(
 }
 
 #[cfg(feature = "mdns")]
+/// Discover already paired devices, including devices using private Wi-Fi MACs.
+/// Unknown MACs may open bounded lockdown sessions to validate candidate records;
+/// this function never creates a new pairing or starts a tunnel.
 pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
-    let wifi_mac_to_udid = tokio::task::spawn_blocking(load_wifi_mac_pairings)
+    let records = tokio::task::spawn_blocking(load_wifi_pairings)
         .await
-        .map_err(|e| CoreError::Other(format!("join error: {e}")))??;
+        .map_err(|e| CoreError::Other(format!("join error: {e}")))?;
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
     let services = browse_mobdev2(MOBDEV2_DISCOVERY_TIMEOUT).await?;
-    Ok(match_paired_mobdev2_targets(&services, &wifi_mac_to_udid))
+    let mut targets = match_paired_mobdev2_targets(&services, &records);
+    resolve_private_mobdev2_targets(&services, &records, &mut targets).await;
+    Ok(targets)
 }
 
 fn select_mux_device(

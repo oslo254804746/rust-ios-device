@@ -153,6 +153,7 @@ impl PairCmd {
             public_key: creds.host_public_key.clone(),
             private_key: creds.host_private_key.clone(),
             remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
+            peer_alt_irk: creds.peer_alt_irk.clone(),
         };
         remote_pair_record.save_for_identifier(&creds_dir, &creds.remote_identifier)?;
 
@@ -242,6 +243,7 @@ async fn wifi_pair(
         public_key: creds.host_public_key.clone(),
         private_key: creds.host_private_key.clone(),
         remote_unlock_host_key: creds.remote_unlock_host_key.clone(),
+        peer_alt_irk: creds.peer_alt_irk.clone(),
     };
     remote_pair_record.save_for_identifier(&creds_dir, &creds.remote_identifier)?;
 

@@ -5,14 +5,14 @@
 // shared CDTunnel lifecycle lives in `tunnel_activation.rs`.
 
 #[cfg(feature = "tunnel")]
-#[path = "tunnel_connect/protocol.rs"]
-mod protocol;
-#[cfg(feature = "tunnel")]
 #[path = "tunnel_connect/credentials.rs"]
 mod credentials;
 #[cfg(feature = "tunnel")]
 #[path = "tunnel_connect/pairing.rs"]
 mod pairing;
+#[cfg(feature = "tunnel")]
+#[path = "tunnel_connect/protocol.rs"]
+mod protocol;
 #[cfg(feature = "tunnel")]
 use pairing::{establish_direct_tunnel_stream, establish_remote_pairing_tunnel_stream};
 
@@ -68,31 +68,72 @@ async fn discover_direct_rsd_targets(
 async fn discover_remote_pairing_targets(
     udid: &str,
     host_filter: Option<&str>,
-) -> Result<Vec<(String, u16)>, CoreError> {
+) -> Result<Vec<(String, String, u16)>, CoreError> {
+    let keys = tokio::task::spawn_blocking(credentials::load_remote_discovery_keys)
+        .await
+        .map_err(|_| CoreError::Other("remote pairing record task failed".into()))??;
+    if keys.is_empty() {
+        return Err(CoreError::Unsupported(
+            "no existing RemotePairing record has a usable peer altIRK; direct RSD remains available for older records".into()
+        ));
+    }
     let services = browse_remotepairing(MOBDEV2_DISCOVERY_TIMEOUT).await?;
+    let targets = match_remote_pairing_targets(&services, &keys, udid, host_filter)?;
+    if targets.is_empty() {
+        return Err(CoreError::Unsupported(
+            "no RemotePairing advertisement matched the existing trust records and filters".into(),
+        ));
+    }
+    Ok(targets)
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+fn match_remote_pairing_targets(
+    services: &[BonjourService],
+    keys: &[(String, zeroize::Zeroizing<[u8; 16]>)],
+    requested_identifier: &str,
+    host_filter: Option<&str>,
+) -> Result<Vec<(String, String, u16)>, CoreError> {
     let mut targets = Vec::new();
     let mut seen = std::collections::HashSet::new();
-
+    let mut matched_identifiers = std::collections::HashSet::new();
     for service in services {
-        let Some(host) = preferred_lockdown_address(&service.addresses) else {
+        // Match against every record before applying the requested identifier:
+        // narrowing first would conceal duplicate discovery keys.
+        let mut matched = keys.iter().filter(|(_, key)| {
+            crate::discovery::auth::remote_pairing_matches(&service.properties, key)
+        });
+        let Some((identifier, _)) = matched.next() else {
             continue;
         };
-        if host_filter.map(|filter| filter != host).unwrap_or(false) {
+        if matched.any(|(other, _)| other != identifier) {
+            return Err(CoreError::Protocol(
+                "ambiguous RemotePairing advertisement matches multiple trust records".into(),
+            ));
+        }
+        if !requested_identifier.is_empty() && identifier != requested_identifier {
             continue;
         }
-
-        let key = (host.to_string(), service.port);
-        if seen.insert(key.clone()) {
-            targets.push(key);
+        if service.port == 0 {
+            continue;
+        }
+        for host in ordered_lockdown_addresses(&service.addresses)
+            .into_iter()
+            .take(4)
+        {
+            if host_filter.is_some_and(|filter| filter != host) {
+                continue;
+            }
+            matched_identifiers.insert(identifier);
+            if requested_identifier.is_empty() && matched_identifiers.len() > 1 {
+                return Err(CoreError::Unsupported("multiple paired RemotePairing devices found; specify a device identifier or host".into()));
+            }
+            let key = (identifier.clone(), host.to_string(), service.port);
+            if targets.len() < 16 && seen.insert(key.clone()) {
+                targets.push(key);
+            }
         }
     }
-
-    if targets.is_empty() {
-        return Err(CoreError::Unsupported(format!(
-            "no browse_remotepairing target matched udid={udid} host={host_filter:?}"
-        )));
-    }
-
     Ok(targets)
 }
 
@@ -140,7 +181,8 @@ async fn connect_via_remote_pairing_target(
     host: &str,
     port: u16,
 ) -> Result<ConnectedDevice, CoreError> {
-    let remote_stream = establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
+    let remote_stream =
+        establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
 
     activate_tunnel(
         TunnelConnection::new(

@@ -7,6 +7,26 @@ use tokio_stream::Stream;
 
 use crate::error::CoreError;
 
+#[cfg(feature = "mdns")]
+#[path = "discovery_auth.rs"]
+pub(crate) mod auth;
+
+#[cfg(feature = "mdns")]
+struct BonjourBrowseGuard {
+    daemon: mdns_sd::ServiceDaemon,
+    service_type: &'static str,
+}
+
+#[cfg(feature = "mdns")]
+impl Drop for BonjourBrowseGuard {
+    fn drop(&mut self) {
+        // A browse can be cancelled by dropping its future/stream. Close the
+        // background daemon in that path too, not only on the timeout path.
+        let _ = self.daemon.stop_browse(self.service_type);
+        let _ = self.daemon.shutdown();
+    }
+}
+
 /// Summary info about a connected iOS device.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfo {
@@ -80,12 +100,18 @@ pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError
     let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
 
     let service_type = "_remoted._tcp.local.";
-    let receiver = mdns
+    let guard = BonjourBrowseGuard {
+        daemon: mdns,
+        service_type,
+    };
+    let receiver = guard
+        .daemon
         .browse(service_type)
         .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
 
     // Convert mdns_sd sync channel to async stream
     let stream = async_stream::stream! {
+        let _guard = guard;
         loop {
             match receiver.recv_async().await {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
@@ -135,7 +161,15 @@ pub async fn browse_remotepairing(timeout: Duration) -> Result<Vec<BonjourServic
 }
 
 pub fn mobdev2_wifi_mac(instance: &str) -> Option<&str> {
-    instance.split_once('@').map(|(mac, _)| mac)
+    let (mac, _) = instance.split_once('@')?;
+    if mac.len() != 17
+        || !mac
+            .split(':')
+            .all(|part| part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    Some(mac)
 }
 
 /// A device discovered via mDNS.
@@ -154,13 +188,18 @@ pub struct MdnsDevice {
 
 #[cfg(feature = "mdns")]
 async fn browse_bonjour_service(
-    service_type: &str,
+    service_type: &'static str,
     timeout: Duration,
 ) -> Result<Vec<BonjourService>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
     let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
-    let receiver = mdns
+    let guard = BonjourBrowseGuard {
+        daemon: mdns,
+        service_type,
+    };
+    let receiver = guard
+        .daemon
         .browse(service_type)
         .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
 
@@ -176,6 +215,9 @@ async fn browse_bonjour_service(
         match tokio::time::timeout(remaining, receiver.recv_async()).await {
             Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
                 let instance = info.get_fullname().to_string();
+                if services.len() >= 256 && !services.contains_key(&instance) {
+                    continue;
+                }
                 let entry = services
                     .entry(instance.clone())
                     .or_insert_with(|| BonjourService {
@@ -192,9 +234,17 @@ async fn browse_bonjour_service(
                     });
 
                 entry.port = info.get_port();
+                // TXT identifiers and auth tags rotate. Keep them from the
+                // same resolution event instead of retaining stale credentials.
+                entry.properties = info
+                    .get_properties()
+                    .iter()
+                    .take(64)
+                    .map(|property| (property.key().to_string(), property.val_str().to_string()))
+                    .collect();
                 for address in info.get_addresses() {
                     let full = address.to_string();
-                    if !entry.addresses.contains(&full) {
+                    if entry.addresses.len() < 16 && !entry.addresses.contains(&full) {
                         entry.addresses.push(full);
                     }
                 }
@@ -204,7 +254,9 @@ async fn browse_bonjour_service(
         }
     }
 
-    Ok(services.into_values().collect())
+    let mut services: Vec<_> = services.into_values().collect();
+    services.sort_by(|a, b| a.instance.cmp(&b.instance));
+    Ok(services)
 }
 
 #[derive(Default)]

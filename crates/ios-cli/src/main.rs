@@ -83,6 +83,8 @@ enum Commands {
     Diagnostics(cmd::diagnostics::DiagnosticsCmd),
     /// Discover iOS devices via mDNS/Bonjour
     Discover(cmd::discover::DiscoverCmd),
+    /// Diagnose host connectivity and tunnel prerequisites without pairing a device
+    Doctor(cmd::doctor::DoctorCmd),
     /// Disk usage from lockdown com.apple.disk_usage
     Diskspace(cmd::diskspace::DiskspaceCmd),
     /// Erase the device via MCInstall
@@ -184,6 +186,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Devicestate(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Diagnostics(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Discover(c) => Box::pin(async move { c.run(!no_json).await }),
+        Commands::Doctor(c) => Box::pin(async move { c.run(!no_json).await }),
         Commands::Diskspace(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Erase(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::File(c) => Box::pin(async move { c.run(udid, !no_json).await }),
@@ -223,7 +226,9 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
 
 fn command_needs_default_udid(command: &Commands) -> bool {
     match command {
-        Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) => false,
+        Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) | Commands::Doctor(_) => {
+            false
+        }
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
@@ -260,7 +265,10 @@ async fn main() -> Result<()> {
         2 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    tracing_subscriber::fmt().with_max_level(level).init();
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_writer(std::io::stderr)
+        .init();
 
     let udid = resolve_cli_udid(cli.udid, &cli.command).await?;
     dispatch_command(cli.command, udid, cli.no_json).await
@@ -701,6 +709,16 @@ mod tests {
         let cli = Cli::try_parse_from(["ios", "list"]).expect("list command should parse");
 
         assert!(!command_needs_default_udid(&cli.command));
+    }
+
+    #[test]
+    fn doctor_needs_no_device_and_rejects_unbounded_probe_windows() {
+        let cli = Cli::try_parse_from(["ios", "doctor", "--mdns", "--timeout", "1"]).unwrap();
+        assert!(!command_needs_default_udid(&cli.command));
+        for timeout in ["0", "61"] {
+            assert!(Cli::try_parse_from(["ios", "doctor", "--timeout", timeout]).is_err());
+        }
+        assert!(Cli::try_parse_from(["ios", "doctor", "--tunnel-port", "0"]).is_err());
     }
 
     #[test]

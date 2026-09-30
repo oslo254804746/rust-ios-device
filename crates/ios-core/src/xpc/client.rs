@@ -175,6 +175,60 @@ impl XpcClient {
         self.inner.send(body).await
     }
 
+    #[cfg(feature = "cryptex")]
+    pub(crate) async fn send_request(&mut self, body: XpcValue) -> Result<(), XpcError> {
+        self.inner
+            .send_with_flags(body, flags::WANTING_REPLY)
+            .await
+            .map(|_| ())
+    }
+
+    /// Send a bounded announced file without retaining its contents in memory.
+    #[cfg(feature = "cryptex")]
+    pub(crate) async fn send_file_transfer<R: AsyncRead + Unpin>(
+        &mut self,
+        transfer_id: u64,
+        size: u64,
+        reader: &mut R,
+    ) -> Result<(), XpcError> {
+        use tokio::io::AsyncReadExt;
+
+        if !(1..=5).contains(&transfer_id) || size == 0 || size > 2 * 1024 * 1024 * 1024 {
+            return Err(XpcError::Tls(
+                "invalid Cryptex file transfer ID or size".into(),
+            ));
+        }
+        let stream_id = 5 + (transfer_id as u32 - 1) * 2;
+        let preamble = crate::xpc::message::encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::FILE_TX_STREAM_REQUEST,
+            msg_id: transfer_id,
+            body: None,
+        })?;
+        let framer = self.inner.framer_mut();
+        framer
+            .write_stream(stream_id, &preamble)
+            .await
+            .map_err(|e| XpcError::Tls(e.to_string()))?;
+        let mut remaining = size;
+        let mut chunk = vec![0u8; 64 * 1024];
+        while remaining > 0 {
+            let amount = remaining.min(chunk.len() as u64) as usize;
+            reader.read_exact(&mut chunk[..amount]).await?;
+            framer
+                .write_stream(stream_id, &chunk[..amount])
+                .await
+                .map_err(|e| XpcError::Tls(e.to_string()))?;
+            remaining -= amount as u64;
+        }
+        if reader.read(&mut chunk[..1]).await? != 0 {
+            return Err(XpcError::Tls("file transfer exceeds announced size".into()));
+        }
+        framer
+            .finish_stream(stream_id)
+            .await
+            .map_err(|e| XpcError::Tls(e.to_string()))
+    }
+
     /// Receive the next XPC message.
     pub async fn recv(&mut self) -> Result<XpcMessage, XpcError> {
         self.inner.recv().await

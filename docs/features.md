@@ -130,8 +130,9 @@ Some features add heavier optional dependencies only when enabled:
 | --- | --- |
 | `apps` | IPA/Zip parsing and CRC support. |
 | `imagemounter` | HTTP downloads plus Zip handling for Developer Disk Images. |
+| `cryptex` | iOS 27+ Cryptex DDI installation; implies `imagemounter` and `tunnel`, and is included in `developer` / `ios17`. See [Cryptex DDI](cryptex-ddi.md). |
 | `dtx`, `instruments`, `testmanager`, `accessibility_audit`, `dproxy` | DTX codec support. |
-| `mdns` | Bonjour/mDNS discovery via `mdns-sd`. Required for iOS 17+ network discovery and remote pairing target discovery. |
+| `mdns` | Bonjour/mDNS discovery via `mdns-sd`, HMAC host tags and SipHash device tags. Required for iOS 17+ network discovery and remote pairing target discovery. See [Wi-Fi discovery](wifi-discovery.md). |
 | `tunnel` | CoreDevice tunnel infrastructure and TLS-PSK support via `openssl` and `tokio-openssl`. |
 | `tunnel-userspace` | Userspace tunnel backend via `smoltcp`; implies `tunnel`. |
 | `tunnel-kernel` | Kernel TUN backend via `tun-rs`; implies `tunnel`. |

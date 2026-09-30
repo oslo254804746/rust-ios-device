@@ -36,6 +36,7 @@ mod tests {
             public_key: identity.public_key_bytes(),
             private_key: identity.private_key_bytes(),
             remote_unlock_host_key: None,
+            peer_alt_irk: None,
         }
     }
 
@@ -202,6 +203,76 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    #[cfg(all(feature = "tunnel", feature = "mdns"))]
+    fn remote_discovery_keys_use_only_existing_valid_records_and_match_saved_alt_irk() {
+        use base64::Engine as _;
+
+        let base_dir = temp_test_dir("remote_discovery_keys");
+        let own_dir = base_dir.join("ios-rs");
+        let compatible_dir = base_dir.join(".pymobiledevice3");
+        let own_identity = HostIdentity::generate();
+        let mut own_record = make_remote_pair_record(&own_identity);
+        own_record.peer_alt_irk = Some(
+            base64::engine::general_purpose::STANDARD
+                .decode("Mgp6ZGPzXM2ku9br46vsiw==")
+                .unwrap(),
+        );
+        own_record.save_for_identifier(&own_dir, "own").unwrap();
+        PersistedCredentials {
+            remote_identifier: Some("own".into()),
+            host_identifier: own_identity.identifier.clone(),
+            host_public_key_hex: hex::encode(own_identity.public_key_bytes()),
+            host_private_key_hex: Some(hex::encode(own_identity.private_key_bytes())),
+            remote_unlock_host_key: None,
+            device_address: "fd00::1".into(),
+            rsd_port: 58783,
+        }
+        .save(&own_dir)
+        .unwrap();
+
+        // A good plist without the companion identity, a stale record, and a
+        // corrupt file must not become network candidates.
+        own_record.save_for_identifier(&own_dir, "orphan").unwrap();
+        let hostname = "known-host";
+        let compatible_identity = HostIdentity::from_private_key_bytes(
+            pymobiledevice3_host_identifier(hostname),
+            &[0x44; 32],
+        )
+        .unwrap();
+        let mut compatible_record = make_remote_pair_record(&compatible_identity);
+        compatible_record.peer_alt_irk = Some(vec![7; 16]);
+        compatible_record
+            .save_for_identifier(&compatible_dir, "compatible")
+            .unwrap();
+        let mut stale = make_remote_pair_record(&compatible_identity);
+        stale.peer_alt_irk = None;
+        stale.save_for_identifier(&compatible_dir, "stale").unwrap();
+        std::fs::write(compatible_dir.join("remote_corrupt.plist"), b"not a plist").unwrap();
+
+        let keys = load_remote_discovery_keys_from_dirs(&own_dir, &compatible_dir, hostname);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(
+            keys.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["compatible", "own"]
+        );
+        let service = BonjourService {
+            instance: "opaque._remotepairing._tcp.local.".into(),
+            port: 49152,
+            addresses: vec!["192.0.2.1".into()],
+            properties: HashMap::from([
+                (
+                    "identifier".into(),
+                    "2BE6E510-0325-4365-923E-B14C6F57DB3A".into(),
+                ),
+                ("authTag".into(), "kXjlTr2l".into()),
+            ]),
+        };
+        let matches = match_remote_pairing_targets(&[service], &keys, "", None).unwrap();
+        assert_eq!(matches, vec![("own".into(), "192.0.2.1".into(), 49152)]);
+        std::fs::remove_dir_all(base_dir).unwrap();
     }
 
     #[test]
@@ -723,10 +794,13 @@ mod tests {
                 properties: HashMap::new(),
             },
         ];
-        let wifi_mac_to_udid =
-            HashMap::from([("34:10:be:1b:a6:4c".to_string(), "test-udid".to_string())]);
+        let records = vec![wifi_matching_tests::record(
+            "test-udid",
+            "host",
+            Some("34:10:be:1b:a6:4c"),
+        )];
 
-        let targets = match_paired_mobdev2_targets(&services, &wifi_mac_to_udid);
+        let targets = match_paired_mobdev2_targets(&services, &records);
 
         assert_eq!(
             targets,

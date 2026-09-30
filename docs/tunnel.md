@@ -36,6 +36,21 @@ system's long SYN retry window. A timeout is reported as an I/O timeout; later
 service requests and long-running streams retain their own service-specific
 behavior.
 
+RSD now announces a stable host UUID with the modern active handshake. On
+macOS it first queries the local remoted identity (a maximum of ten seconds,
+once per process); otherwise it derives UUIDv3 from the OS hostname. Direct
+and userspace routes use the same identity. Active, queued, synchronous and
+passive bootstrap modes fall back on fresh connections within a shared
+30-second discovery budget. A hostname change changes the fallback identity.
+Resolve the identity before externally suspending remoted if that workflow
+is used; this library does not manage remoted's lifecycle.
+
+Wi-Fi discovery recognizes saved host/device authentication tags, including
+private MAC advertisements. See [Wi-Fi discovery](wifi-discovery.md) for
+candidate validation, time limits, existing-record compatibility and ambiguity
+handling. `ios doctor` provides bounded host prerequisites checks;
+`ios --no-json doctor --mdns` also checks for local advertisements.
+
 ## Userspace proxy protocol
 
 The local proxy expects each new connection to begin with:

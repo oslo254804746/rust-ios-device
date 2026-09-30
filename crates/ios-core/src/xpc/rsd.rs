@@ -1,13 +1,8 @@
 //! RSD (Remote Service Discovery) client for iOS 17+.
 //!
-//! Protocol:
-//! 1. TCP connect to [server_address]:58783
-//! 2. Raw HTTP/2 handshake (preface + SETTINGS exchange)
-//! 3. Read XPC handshake message on clientServer stream (stream 1)
-//!    containing UDID + Services
-//!
-//! The device sends the handshake immediately after the H2 SETTINGS exchange;
-//! do not send the usual XPC initialization sequence on the RSD port.
+//! Modern RSD announces a stable host UUID after the RemoteXPC bootstrap and
+//! reads the device's service directory on stream 1. Older queued, synchronous
+//! and passive bootstrap styles are retried on fresh connections.
 //!
 //! Reference: go-ios/ios/rsd.go + go-ios/ios/http/http.go
 
@@ -117,34 +112,193 @@ impl RsdHandshake {
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcError> {
     let sock_addr = SocketAddr::new(addr.into(), port);
-    let stream = tokio::time::timeout(
-        crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
-        TcpStream::connect(sock_addr),
-    )
-    .await
-    .map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("RSD dial to {sock_addr} timed out"),
-        )
-    })??;
-    tokio::time::timeout(crate::tunnel::TUNNEL_CONNECT_TIMEOUT, async {
-        let mut framer = H2Framer::connect(stream)
-            .await
-            .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
-        read_rsd_handshake(&mut framer).await
+    handshake_with_connector(|| async {
+        TcpStream::connect(sock_addr).await.map_err(XpcError::from)
     })
     .await
-    .map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("RSD handshake with {sock_addr} timed out"),
-        )
-    })?
 }
 
-/// Perform an RSD handshake on an already-connected H2 framer.
-/// Used by ios-core's `attempt_rsd_via_proxy`.
+/// Resolve the UUID shared by RSD connections from this host.
+///
+/// On macOS this queries the local `remoted` identity once, with a bounded
+/// subprocess. Other hosts (and macOS without remoted) use UUIDv3 derived from
+/// the OS hostname. Resolve this before suspending remoted, if applicable.
+#[cfg(feature = "tunnel")]
+pub async fn default_handshake_uuid() -> Result<uuid::Uuid, XpcError> {
+    Ok(crate::xpc::identity::default_handshake_uuid().await?)
+}
+
+#[cfg(feature = "tunnel")]
+#[derive(Clone, Copy, Debug)]
+enum HandshakeMode {
+    Active,
+    Queued,
+    Legacy,
+    Passive,
+}
+
+/// Both routed TCP and userspace proxy connections use the same identity and
+/// retry policy. A failed/timed-out read may consume a partial frame, so each
+/// fallback owns a fresh transport; no parser state is reused after cancellation.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn handshake_with_connector<F, Fut, S>(
+    connector: F,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let identity = default_handshake_uuid().await?;
+    // Preserve the former direct path's dial + handshake upper bound across
+    // all retries instead of multiplying it by the number of bootstrap modes.
+    rsd_timeout(
+        crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
+        "RSD discovery timed out",
+        handshake_attempts(connector, identity),
+    )
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+async fn handshake_attempts<F, Fut, S>(
+    mut connector: F,
+    identity: uuid::Uuid,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use std::time::Duration;
+
+    let mut last_error = None;
+    for mode in [
+        HandshakeMode::Active,
+        HandshakeMode::Queued,
+        HandshakeMode::Legacy,
+        HandshakeMode::Passive,
+    ] {
+        let stream = rsd_timeout(
+            crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            "RSD dial timed out",
+            connector(),
+        )
+        .await?;
+        let attempt = async {
+            let mut framer =
+                rsd_timeout(Duration::from_secs(3), "RSD bootstrap timed out", async {
+                    let mut framer = if matches!(mode, HandshakeMode::Active) {
+                        let mut framer = H2Framer::begin_connect(stream)
+                            .await
+                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?;
+                        queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
+                        framer
+                            .finish_connect()
+                            .await
+                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?;
+                        framer
+                    } else {
+                        H2Framer::connect(stream)
+                            .await
+                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?
+                    };
+                    match mode {
+                        HandshakeMode::Active => {
+                            send_device_handshake_on_framer(&mut framer, identity).await?
+                        }
+                        HandshakeMode::Queued => {
+                            queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?
+                        }
+                        HandshakeMode::Legacy => {
+                            initialize_xpc_connection_on_framer(&mut framer).await?
+                        }
+                        HandshakeMode::Passive => {}
+                    }
+                    Ok(framer)
+                })
+                .await?;
+            let response_timeout = match mode {
+                HandshakeMode::Active | HandshakeMode::Queued => Duration::from_secs(4),
+                HandshakeMode::Legacy => Duration::from_secs(3),
+                HandshakeMode::Passive => Duration::from_secs(2),
+            };
+            rsd_timeout(
+                response_timeout,
+                "RSD response timed out",
+                handshake_on_framer(&mut framer),
+            )
+            .await
+        }
+        .await;
+        match attempt {
+            Ok(handshake) => return Ok(handshake),
+            Err(error) => {
+                tracing::debug!(?mode, "RSD bootstrap attempt failed");
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("RSD attempted every bootstrap mode"))
+}
+
+#[cfg(feature = "tunnel")]
+async fn rsd_timeout<T>(
+    duration: std::time::Duration,
+    context: &'static str,
+    operation: impl std::future::Future<Output = Result<T, XpcError>>,
+) -> Result<T, XpcError> {
+    tokio::time::timeout(duration, operation)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, context))?
+}
+
+/// Announce this host on an RSD control connection after the XPC bootstrap.
+/// Never send this device handshake to an ordinary RemoteXPC service.
+#[cfg(feature = "tunnel")]
+pub async fn send_device_handshake_on_framer<S>(
+    framer: &mut H2Framer<S>,
+    identity: uuid::Uuid,
+) -> Result<(), XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let message = crate::xpc::message::encode_message(&device_handshake_message(identity))?;
+    framer
+        .write_client_server(&message)
+        .await
+        .map_err(|err| XpcError::Tls(format!("RSD host handshake: {err}")))
+}
+
+#[cfg(feature = "tunnel")]
+fn device_handshake_message(identity: uuid::Uuid) -> XpcMessage {
+    use indexmap::IndexMap;
+
+    XpcMessage {
+        flags: flags::ALWAYS_SET | flags::DATA,
+        // The empty bootstrap dictionary already consumed message zero.
+        msg_id: 1,
+        body: Some(XpcValue::Dictionary(IndexMap::from([
+            ("MessageType".into(), XpcValue::String("Handshake".into())),
+            ("MessagingProtocolVersion".into(), XpcValue::Uint64(7)),
+            ("UUID".into(), XpcValue::Uuid(*identity.as_bytes())),
+            (
+                "Properties".into(),
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "RemoteXPCVersionFlags".into(),
+                        XpcValue::Uint64(0x0100_0000_0000_0006),
+                    ),
+                    ("SensitivePropertiesVisible".into(), XpcValue::Bool(true)),
+                ])),
+            ),
+            ("Services".into(), XpcValue::Dictionary(IndexMap::new())),
+        ]))),
+    }
+}
+
+/// Read the device's RSD handshake from an already-connected H2 framer.
+/// The caller is responsible for selecting and sending any bootstrap traffic.
 #[cfg(feature = "tunnel")]
 pub async fn handshake_on_framer<S>(framer: &mut H2Framer<S>) -> Result<RsdHandshake, XpcError>
 where
@@ -770,6 +924,11 @@ pub struct XpcConnection<S> {
 
 #[cfg(feature = "tunnel")]
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
+    #[cfg(feature = "cryptex")]
+    pub(crate) fn framer_mut(&mut self) -> &mut H2Framer<S> {
+        &mut self.framer
+    }
+
     pub fn new(framer: H2Framer<S>) -> Self {
         Self::with_pending_memory_limits(
             framer,
@@ -1076,6 +1235,188 @@ mod tests {
     const STREAM_INIT: u32 = 0;
     const STREAM_CLIENT_SERVER: u32 = 1;
     const STREAM_SERVER_CLIENT: u32 = 3;
+
+    async fn read_test_frame<S: AsyncRead + Unpin>(stream: &mut S) -> (u8, u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        stream.read_exact(&mut header).await.unwrap();
+        let length =
+            (usize::from(header[0]) << 16) | (usize::from(header[1]) << 8) | usize::from(header[2]);
+        assert!(length <= 4096);
+        let mut data = vec![0; length];
+        stream.read_exact(&mut data).await.unwrap();
+        (
+            header[3],
+            header[4],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            data,
+        )
+    }
+
+    async fn read_test_preface<S: AsyncRead + Unpin>(stream: &mut S) {
+        let mut preface = [0; 24];
+        stream.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
+        assert_eq!(read_test_frame(stream).await.0, FRAME_SETTINGS);
+        assert_eq!(read_test_frame(stream).await.0, 0x08);
+    }
+
+    async fn read_test_bootstrap<S: AsyncRead + Unpin>(stream: &mut S) {
+        for (frame_type, stream_id) in [
+            (FRAME_HEADERS, 1),
+            (FRAME_DATA, 1),
+            (FRAME_HEADERS, 3),
+            (FRAME_DATA, 1),
+            (FRAME_DATA, 3),
+        ] {
+            let frame = read_test_frame(stream).await;
+            assert_eq!((frame.0, frame.2), (frame_type, stream_id));
+        }
+    }
+
+    #[test]
+    fn modern_device_handshake_preserves_xpc_wire_types() {
+        let identity = uuid::Uuid::parse_str("49800e74-c74b-378c-958f-d88cb0dfdfd0").unwrap();
+        let encoded = encode_message(&device_handshake_message(identity)).unwrap();
+        let decoded = decode_message(encoded).unwrap();
+        assert_eq!(decoded.flags, flags::ALWAYS_SET | flags::DATA);
+        assert_eq!(decoded.msg_id, 1);
+        let body = decoded.body.unwrap();
+        let body = body.as_dict().unwrap();
+        assert_eq!(body["MessageType"], XpcValue::String("Handshake".into()));
+        assert_eq!(body["MessagingProtocolVersion"], XpcValue::Uint64(7));
+        assert_eq!(body["UUID"], XpcValue::Uuid(*identity.as_bytes()));
+        let properties = body["Properties"].as_dict().unwrap();
+        assert_eq!(
+            properties["RemoteXPCVersionFlags"],
+            XpcValue::Uint64(0x0100_0000_0000_0006)
+        );
+        assert_eq!(
+            properties["SensitivePropertiesVisible"],
+            XpcValue::Bool(true)
+        );
+        assert!(body["Services"].as_dict().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn modern_rsd_sends_bootstrap_before_peer_settings_and_announces_host() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let identity = uuid::Uuid::from_bytes([0x4a; 16]);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            // This peer deliberately withholds SETTINGS until stream bootstrap.
+            read_test_bootstrap(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            let ack = read_test_frame(&mut server).await;
+            assert_eq!((ack.0, ack.1), (FRAME_SETTINGS, FLAG_SETTINGS_ACK));
+            let (_, _, stream, payload) = read_test_frame(&mut server).await;
+            assert_eq!(stream, 1);
+            let message = decode_message(Bytes::from(payload)).unwrap();
+            assert_eq!(message.body, device_handshake_message(identity).body);
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        let mut stream = Some(client);
+        let result = timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || {
+                    std::future::ready(Ok(stream
+                        .take()
+                        .expect("modern handshake should connect once")))
+                },
+                identity,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.get_port("com.apple.instruments.dtservicehub"),
+            Some(12345)
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_modern_rsd_reconnects_with_queued_legacy_bootstrap() {
+        let (rejected, rejected_peer) = tokio::io::duplex(4096);
+        drop(rejected_peer);
+        let (legacy, mut server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            assert_eq!(read_test_frame(&mut server).await.1, FLAG_SETTINGS_ACK);
+            read_test_bootstrap(&mut server).await;
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        let mut streams = VecDeque::from([rejected, legacy]);
+        let result = timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || std::future::ready(Ok(streams.pop_front().unwrap())),
+                uuid::Uuid::from_bytes([0x4a; 16]),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!result.services.is_empty());
+        assert!(streams.is_empty());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_bootstraps_eventually_reconnect_with_passive_rsd() {
+        let mut streams = VecDeque::new();
+        for _ in 0..3 {
+            let (client, server) = tokio::io::duplex(4096);
+            drop(server);
+            streams.push_back(client);
+        }
+        let (client, mut server) = tokio::io::duplex(4096);
+        streams.push_back(client);
+        let task = tokio::spawn(async move {
+            read_test_preface(&mut server).await;
+            server.write_all(&settings_frame()).await.unwrap();
+            assert_eq!(read_test_frame(&mut server).await.1, FLAG_SETTINGS_ACK);
+            server
+                .write_all(&data_frame(1, &sample_handshake_message()))
+                .await
+                .unwrap();
+        });
+        timeout(
+            Duration::from_secs(2),
+            handshake_attempts(
+                || std::future::ready(Ok(streams.pop_front().unwrap())),
+                uuid::Uuid::from_bytes([0x4a; 16]),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(streams.is_empty());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rsd_stage_timeout_reports_timeout_without_peer_contents() {
+        let error = rsd_timeout(
+            Duration::from_millis(1),
+            "RSD response timed out",
+            std::future::pending::<Result<(), XpcError>>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, XpcError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(error.to_string().contains("RSD response timed out"));
+    }
 
     struct CapturingSubscriber {
         events: Arc<Mutex<Vec<String>>>,

@@ -1,5 +1,31 @@
 # Troubleshooting
 
+## Host diagnostic report
+
+Run `ios doctor` for a read-only JSON report, or `ios --no-json doctor` for
+human-readable output. It does not require a device or create a pairing:
+
+```bash
+ios doctor
+ios --no-json doctor --mdns --timeout 5
+ios doctor --tunnel-port 49151
+```
+
+The report checks usbmuxd enumeration, IPv6 loopback sockets, Linux TUN presence,
+compiled userspace tunnel support, and the optional loopback tunnel manager.
+`--mdns` also observes mobdev2 and RemotePairing advertisements. Each probe is
+bounded by `--timeout` (1–60 seconds); Bonjour has an additional one-second
+setup/cleanup allowance. The optional Bonjour phase runs after the other probes.
+The manager probe bypasses HTTP proxies and redirects and caps responses at 1 MiB.
+
+Exit status is 1 when a required check fails (including unavailable usbmuxd).
+Warnings, an absent optional tunnel manager, and unknown checks do not cause a
+failure exit. Enumeration success does not prove device service connectivity;
+no Bonjour responses does not prove that multicast is broken. TUN presence does
+not prove permission to create an interface. Device trust, Developer Mode and
+DDI readiness need separate device checks. The report contains counts, not
+device identifiers or pairing records. CLI logs go to stderr to keep JSON clean.
+
 ## Device is not listed
 
 - Unlock the device and accept the trust prompt.

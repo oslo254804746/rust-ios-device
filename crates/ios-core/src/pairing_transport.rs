@@ -69,6 +69,8 @@ pub struct PairedCredentials {
     pub host_public_key: Vec<u8>,
     pub host_private_key: Vec<u8>,
     pub remote_unlock_host_key: Option<String>,
+    /// Optional device discovery key for recognizing RemotePairing over Wi-Fi.
+    pub peer_alt_irk: Option<Vec<u8>>,
     /// Cipher keys for subsequent sessions (client_key, server_key)
     pub session_keys: Option<([u8; 32], [u8; 32])>,
 }
@@ -196,7 +198,7 @@ pub async fn pair_new_device(
         .get(&TYPE_ENCRYPTED_DATA)
         .ok_or_else(|| PairingTransportError::Failed("no encrypted data in response".into()))?;
 
-    verify_device_info_response(&setup_key, enc_payload)
+    let peer_alt_irk = verify_device_info_response(&setup_key, enc_payload)
         .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
 
     // 12. Derive session cipher keys
@@ -212,6 +214,7 @@ pub async fn pair_new_device(
         host_public_key: identity.public_key_bytes(),
         host_private_key: identity.private_key_bytes(),
         remote_unlock_host_key,
+        peer_alt_irk,
         session_keys: Some((client_key, server_key)),
     })
 }

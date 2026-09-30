@@ -42,6 +42,7 @@
 //! | `display` | [`display`] | iOS 17+ CoreDevice media negotiation and bounded RTP access units |
 //! | `installcoordination` | [`installcoordination`] | iOS 17+ InstallCoordinationProxy query |
 //! | `imagemounter` | [`imagemounter`] | DeveloperDiskImage mount |
+//! | `cryptex` | [`cryptex`] | Cryptex developer image installation (iOS 27+) |
 //! | `pcap` | [`pcap`] | Network packet capture |
 //! | `power_assertion` | [`power_assertion`] | Prevent device sleep |
 //! | `preboard` | [`preboard`] | Stashbag commit/rollback |
@@ -248,6 +249,9 @@ pub mod simlocation;
 
 #[cfg(feature = "imagemounter")]
 pub mod imagemounter;
+
+#[cfg(feature = "cryptex")]
+pub mod cryptex;
 
 // Always-available modules
 #[cfg(feature = "diagnostics")]

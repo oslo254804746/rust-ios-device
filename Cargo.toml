@@ -44,6 +44,8 @@ aes-kw       = "0.2"
 cbc          = "0.1.2"
 pbkdf2       = "0.12"
 hkdf         = "0.12"
+hmac         = "0.12"
+siphasher    = "1"
 chacha20poly1305 = "0.10"
 zeroize      = { version = "1", features = ["derive"] }
 subtle       = "2"
