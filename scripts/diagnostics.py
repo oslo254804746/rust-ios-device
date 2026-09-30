@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only raw diagnostic checks; fixture secrets never enter reports or files."""
+"""Host-only raw diagnostic checks; sensitive bytes never enter reports."""
 
 import argparse
 import base64
@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -156,7 +157,9 @@ def cli_cases(binary):
     for name, args in [("root", []), ("wifi", ["wifi", "install"]),
                        ("pair", ["pair", "supervised"]), ("prepare", ["prepare", "create-cert"]),
                        ("profiles", ["profiles", "add"]),
-                       ("httpproxy", ["httpproxy", "set"]), ("mdm", ["mdm"])]:
+                       ("httpproxy", ["httpproxy", "set"]), ("mdm", ["mdm"]),
+                       ("tunnel-auth-create", ["tunnel", "auth", "create"]),
+                       ("tunnel-auth-check", ["tunnel", "auth", "check"])]:
         cases.append(("help-" + name, args + ["--help"], 0))
     reports = {}
     for name, args, code in cases:
@@ -170,6 +173,62 @@ def cli_cases(binary):
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report
+    reports.update(credential_cases(binary, env, variants, value))
+    return reports
+
+
+def credential_cases(binary, env, variants, device):
+    """Create only this fixture's private files and detect the generated token.
+
+    TemporaryDirectory owns cleanup; no production policy or device is used.
+    Generated token bytes are read with a fixed bound, checked in RAM, and never
+    printed. Creation is a two-file operation, so dependent cases fail closed.
+    """
+    reports = {}
+    env = env.copy()
+    env.pop("IOS_UDID", None)
+    with tempfile.TemporaryDirectory(prefix="ios-auth-diagnostic-") as directory:
+        config = str(Path(directory) / "policy.json")
+        token_path = Path(directory) / "client-token"
+        create_args = ["-vvvv", "tunnel", "auth", "create", "--config", config,
+                       "--token-file", str(token_path), "--permission", "connect",
+                       "--device", device, "--port", "58783"]
+        created = capture([str(binary)] + create_args, env=env)
+        try:
+            with token_path.open("rb") as file:
+                token = file.read(67)
+            if len(token) != 64 or any(byte not in b"0123456789abcdef" for byte in token):
+                raise ValueError("invalid generated fixture credential")
+            checked_variants = variants | secret_variants(token)
+            creation_contract = json.loads(created.stdout).get("operation") == "credential_create"
+            creation_contract = creation_contract and json.loads(created.stdout).get("data") is True
+        except (OSError, ValueError, TypeError, AttributeError):
+            checked_variants = variants
+            creation_contract = False
+        report = assess(created, checked_variants, 0)
+        report["contract"] = creation_contract
+        report["passed"] = report["passed"] and creation_contract
+        reports["auth-create"] = report
+        if not report["passed"]:
+            for name in ("auth-check", "auth-denied-port"):
+                reports[name] = {"passed": False, "reason": "credential fixture creation failed"}
+            return reports
+        base = ["-vvvv", "tunnel", "auth", "check", "--config", config,
+                "--token-file", str(token_path), "--permission", "connect", "--device", device]
+        for name, port, code in [("auth-check", "58783", 0), ("auth-denied-port", "22", 1)]:
+            result = capture([str(binary)] + base + ["--port", port], env=env)
+            report = assess(result, checked_variants, code)
+            if code == 0:
+                try:
+                    reply = json.loads(result.stdout)
+                    contract = reply.get("operation") == "credential_check" and reply.get("data") is True
+                except (ValueError, TypeError, AttributeError):
+                    contract = False
+            else:
+                contract = all(marker in result.stderr for marker in (b"tunnel failed:", b"error:"))
+            report["contract"] = contract
+            report["passed"] = report["passed"] and contract
+            reports[name] = report
     return reports
 
 

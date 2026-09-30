@@ -63,6 +63,9 @@ Access-control implementation is tracked as S01–S03 in the
 [engineering roadmap](engineering-roadmap-2026-09-30.md). The first S01
 foundation adds `ios_core::secret_file::read_secret` and `write_secret_new` for
 future manager/client credentials. It does not yet change manager admission.
+`ios tunnel auth create|check` now provides host-only policy preparation and
+precise scope checks; see [management access configuration](management-access.md).
+Server/client authentication and policy reload are still being implemented.
 The reader bounds its buffer to a caller-selected maximum of 1 MiB and wipes it
 on drop. On Unix, it requires the effective user's regular file without
 group/other permissions and rejects leaf symlinks/FIFOs. New-secret publication

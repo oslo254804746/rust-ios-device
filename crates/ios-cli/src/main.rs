@@ -1,5 +1,6 @@
 //! ios-cli: Command-line interface for iOS device management.
 
+mod access;
 mod cmd;
 mod http_diagnostics;
 mod logging;

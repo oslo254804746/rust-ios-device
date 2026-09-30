@@ -76,6 +76,14 @@ output flooding and timeout cleanup. Unix captures own a new process session;
 Windows host cases launch only the CLI, and general descendant supervision
 remains part of Q02's unfinished workflow harness.
 
+Credential preparation checks additionally create only owned temporary private
+policy/token files, read the generated token with a fixed bound, and capture
+`tunnel auth create`, an allowed check and a denied port at maximum verbosity.
+They remove the default device selector and keep usbmux unavailable, so host
+preparation must succeed without a device. The generated token and selector are
+checked in original output and an independent masked copy; neither enters the
+report. Preparing these files is not server-admission evidence.
+
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
 They are host adapter evidence, not simulated complete WebInspector workflows

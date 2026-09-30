@@ -47,6 +47,8 @@ pub struct TunnelCmd {
 
 #[derive(clap::Subcommand)]
 enum TunnelSub {
+    /// Create or check private manager credentials without contacting a device
+    Auth(crate::access::AuthCmd),
     /// Start a tunnel for a device
     Start {
         #[arg(long, help = "Use userspace smoltcp TUN (no root required)")]
@@ -90,6 +92,7 @@ impl TunnelCmd {
 
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         match self.sub {
+            TunnelSub::Auth(command) => command.run().await?,
             TunnelSub::Start {
                 userspace,
                 script_mode,
