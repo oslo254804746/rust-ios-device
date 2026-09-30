@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Redact discovery/connection Debug output and device-not-found/pair-record
+  error diagnostics, including credential paths and malformed record data.
+  Typed variants, IO categories and process-local device correlation support
+  diagnosis; explicit selection fields retain their purpose.
 - Preserve existing file-pull and backup output until staged transfers succeed;
   clean owned temporary files on cancellation. Refuse symlink image/file
   destinations with `--force` on every platform and prevent no-force races from

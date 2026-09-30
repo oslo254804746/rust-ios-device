@@ -45,17 +45,36 @@ pub(crate) fn discovery_pair_record_paths(dir: &std::path::Path) -> Vec<PathBuf>
     paths
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PairRecordError {
-    #[error("pair record not found for UDID: {0}")]
+    #[error("pair record not found for device: {}", crate::redaction::diagnostic_id(.0))]
     NotFound(String),
-    #[error("failed to read pair record {path}: {source}")]
+    #[error("failed to read pair record ({:?})", .source.kind())]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to parse pair record: {0}")]
+    #[error("failed to parse pair record (invalid credential file)")]
     Parse(String),
+}
+
+impl std::fmt::Debug for PairRecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(identifier) => f
+                .debug_tuple("PairRecordError::NotFound")
+                .field(&crate::redaction::diagnostic_id(identifier))
+                .finish(),
+            Self::Read { source, .. } => f
+                .debug_struct("PairRecordError::Read")
+                .field("kind", &source.kind())
+                .field("os_code", &source.raw_os_error())
+                .finish_non_exhaustive(),
+            Self::Parse(_) => f
+                .debug_struct("PairRecordError::Parse")
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// iOS device pair record, loaded from the platform-specific lockdown directory.
@@ -180,6 +199,30 @@ fn pair_record_dir_for_platform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pair_record_error_diagnostics_hide_paths_identifiers_and_parser_data() {
+        let secret = "synthetic-pair-record-private-material";
+        let errors = [
+            PairRecordError::NotFound(secret.into()),
+            PairRecordError::Read {
+                path: PathBuf::from(format!("/synthetic/{secret}.plist")),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, secret),
+            },
+            PairRecordError::Parse(secret.into()),
+        ];
+        for error in errors {
+            let output = format!("{error} {error:?} {error:#?}");
+            assert!(!output.contains(secret));
+            assert!(output.contains("pair record"));
+        }
+        let read = PairRecordError::Read {
+            path: PathBuf::from("synthetic-path"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        assert!(read.to_string().contains("PermissionDenied"));
+        assert!(std::error::Error::source(&read).is_some());
+    }
 
     #[test]
     fn pair_record_debug_hides_certificates_keys_and_identifiers() {

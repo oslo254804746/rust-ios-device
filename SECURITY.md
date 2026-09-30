@@ -27,6 +27,21 @@ PairRecord, PersistedCredentials and PairedCredentials Debug implementations
 omit all credential fields. Serialization remains intentionally available for
 owner-only persistence and must never be used as a diagnostic formatter.
 
+Discovery events, mDNS/Bonjour records, usbmux devices and connection options
+also use diagnostic Debug formatting: raw identifiers, addresses, TXT contents
+and pair-record paths are omitted or replaced by correlation values.
+Device-selection fields and their explicit JSON serialization retain their
+selection purpose. CoreError/MuxError Debug output contains the variant and
+safe IO metadata; targeted device-not-found and PairRecordError Display output
+does not render raw identifiers, paths or malformed credential data. Match
+typed errors for programmatic handling rather than parsing diagnostic text.
+
+These formatter checks do not certify every diagnostic boundary. Arbitrary
+protocol/IO Display messages and explicitly traversed error sources can still
+carry device data; CLI, HTTP/CDP and Python error-boundary review and raw-output
+capture remain tracked under S04. A sanitized copy cannot prove the original
+output did not leak.
+
 ## Scope
 
 Security reports may include memory safety issues in FFI boundaries, credential leakage, unsafe handling of pair records or private keys, unauthorized device operations, and network services exposed by the tunnel manager.

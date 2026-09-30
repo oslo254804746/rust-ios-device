@@ -110,11 +110,11 @@ impl PersistedCredentials {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("no credential directory at {}", dir.display());
+                tracing::debug!("credential directory not found");
                 return vec![];
             }
             Err(err) => {
-                tracing::warn!("cannot list credentials in {}: {err}", dir.display());
+                tracing::warn!(kind = ?err.kind(), "cannot list credentials");
                 return vec![];
             }
         };

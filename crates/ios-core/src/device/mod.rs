@@ -44,12 +44,22 @@ use crate::error::CoreError;
 
 // ── ConnectOptions ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ConnectOptions {
     pub tun_mode: TunMode,
     pub pair_record_path: Option<std::path::PathBuf>,
     /// Skip tunnel; use direct lockdown (iOS <17 or service-only access).
     pub skip_tunnel: bool,
+}
+
+impl std::fmt::Debug for ConnectOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectOptions")
+            .field("tun_mode", &self.tun_mode)
+            .field("pair_record_configured", &self.pair_record_path.is_some())
+            .field("skip_tunnel", &self.skip_tunnel)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -108,16 +118,40 @@ pub struct ConnectedDevice {
     lockdown_transport: LockdownTransport,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairedMobdev2Device {
     pub udid: String,
     pub host: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for PairedMobdev2Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairedMobdev2Device")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("host", &crate::redaction::diagnostic_id(&self.host))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum LockdownTransport {
     Usbmux { device_id: u32 },
     Tcp { host: String },
+}
+
+impl std::fmt::Debug for LockdownTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Usbmux { device_id } => f
+                .debug_struct("Usbmux")
+                .field("device_id", device_id)
+                .finish(),
+            Self::Tcp { host } => f
+                .debug_struct("Tcp")
+                .field("host", &crate::redaction::diagnostic_id(host))
+                .finish(),
+        }
+    }
 }
 
 fn should_strip_service_ssl(service_name: &str) -> bool {

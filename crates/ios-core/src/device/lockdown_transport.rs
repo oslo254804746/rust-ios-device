@@ -68,7 +68,8 @@ pub async fn connect_direct_usb_tunnel(
         let targets = discover_direct_rsd_targets(udid, rsd_ip).await?;
         if targets.is_empty() {
             return Err(CoreError::Unsupported(format!(
-                "no _remoted target matched udid={udid} ip={rsd_ip:?}"
+                "no _remoted target matched device {}",
+                crate::redaction::diagnostic_id(udid)
             )));
         }
 
@@ -90,7 +91,8 @@ pub async fn connect_direct_usb_tunnel(
 
         Err(last_error.unwrap_or_else(|| {
             CoreError::Unsupported(format!(
-                "no direct RSD target produced a tunnel for udid={udid}"
+                "no direct RSD target produced a tunnel for device {}",
+                crate::redaction::diagnostic_id(udid)
             ))
         }))
     }
@@ -274,7 +276,10 @@ fn require_pair_record(
     context: &str,
 ) -> Result<Arc<PairRecord>, CoreError> {
     pair_record.ok_or_else(|| {
-        CoreError::Unsupported(format!("{context} a lockdown pair record for {udid}"))
+        CoreError::Unsupported(format!(
+            "{context} a lockdown pair record for device {}",
+            crate::redaction::diagnostic_id(udid)
+        ))
     })
 }
 

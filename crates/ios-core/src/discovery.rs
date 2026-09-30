@@ -28,12 +28,28 @@ impl Drop for BonjourBrowseGuard {
 }
 
 /// Summary info about a connected iOS device.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct DeviceInfo {
     pub udid: String,
     pub device_id: u32,
     pub connection_type: String,
     pub product_id: u16,
+}
+
+impl std::fmt::Debug for DeviceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let connection_type = match self.connection_type.as_str() {
+            "USB" => "USB",
+            "Network" => "Network",
+            _ => "Other",
+        };
+        f.debug_struct("DeviceInfo")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("device_id", &self.device_id)
+            .field("connection_type", &connection_type)
+            .field("product_id", &self.product_id)
+            .finish()
+    }
 }
 
 impl DeviceInfo {
@@ -48,10 +64,23 @@ impl DeviceInfo {
 }
 
 /// A device plug/unplug event.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DeviceEvent {
     Attached(DeviceInfo),
     Detached { udid: String, device_id: u32 },
+}
+
+impl std::fmt::Debug for DeviceEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Attached(device) => f.debug_tuple("Attached").field(device).finish(),
+            Self::Detached { udid, device_id } => f
+                .debug_struct("Detached")
+                .field("udid", &crate::redaction::diagnostic_id(udid))
+                .field("device_id", device_id)
+                .finish(),
+        }
+    }
 }
 
 /// List all currently connected devices via usbmuxd.
@@ -141,13 +170,23 @@ pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError
     Ok(stream)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg(feature = "mdns")]
 pub struct BonjourService {
     pub instance: String,
     pub port: u16,
     pub addresses: Vec<String>,
     pub properties: HashMap<String, String>,
+}
+
+#[cfg(feature = "mdns")]
+impl std::fmt::Debug for BonjourService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BonjourService")
+            .field("instance", &crate::redaction::diagnostic_id(&self.instance))
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "mdns")]
@@ -173,7 +212,7 @@ pub fn mobdev2_wifi_mac(instance: &str) -> Option<&str> {
 }
 
 /// A device discovered via mDNS.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg(feature = "mdns")]
 pub struct MdnsDevice {
     /// Device's IPv6 address (USB-Ethernet or Wi-Fi)
@@ -184,6 +223,16 @@ pub struct MdnsDevice {
     pub udid: String,
     /// mDNS service full name
     pub name: String,
+}
+
+#[cfg(feature = "mdns")]
+impl std::fmt::Debug for MdnsDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MdnsDevice")
+            .field("udid", &crate::redaction::diagnostic_id(&self.udid))
+            .field("rsd_port", &self.rsd_port)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "mdns")]
@@ -295,6 +344,56 @@ impl DeviceEventMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_debug_redacts_identifiers_but_device_selection_keeps_raw_fields() {
+        let secret = "synthetic-discovery-private-identifier";
+        let device = DeviceInfo {
+            udid: secret.into(),
+            device_id: 7,
+            connection_type: secret.into(),
+            product_id: 1,
+        };
+        let attached = DeviceEvent::Attached(device.clone());
+        let detached = DeviceEvent::Detached {
+            udid: secret.into(),
+            device_id: 7,
+        };
+        let mux = crate::mux::MuxDevice {
+            serial_number: secret.into(),
+            device_id: 7,
+            connection_type: secret.into(),
+            product_id: 1,
+        };
+        let output = format!("{device:?} {device:#?} {attached:?} {attached:#?} {detached:?} {detached:#?} {mux:?} {mux:#?}");
+        assert!(!output.contains(secret));
+        assert!(output.contains("id:"));
+        assert_eq!(device.udid, secret);
+        assert_eq!(serde_json::to_value(&device).unwrap()["udid"], secret);
+    }
+
+    #[cfg(feature = "mdns")]
+    #[test]
+    fn bonjour_debug_omits_txt_data_names_and_addresses() {
+        let secret = "synthetic-bonjour-private-data";
+        let service = BonjourService {
+            instance: secret.into(),
+            port: 1234,
+            addresses: vec![secret.into()],
+            properties: HashMap::from([(secret.into(), secret.into())]),
+        };
+        let device = MdnsDevice {
+            ipv6: "2001:db8::1234".parse().unwrap(),
+            rsd_port: 1234,
+            udid: secret.into(),
+            name: secret.into(),
+        };
+        let output = format!("{service:?} {service:#?} {device:?} {device:#?}");
+        assert!(!output.contains(secret));
+        assert!(!output.contains("2001:db8::1234"));
+        assert!(output.contains("1234"));
+        assert_eq!(service.properties[secret], secret);
+    }
 
     #[test]
     fn mapper_preserves_attached_device_details() {
