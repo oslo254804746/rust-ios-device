@@ -94,7 +94,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | B03 | 统一本地与 CI 验证入口 | P1 | B01、B02 | 待验收 |
 | B04 | 补齐发布门禁与制品验证 | P1 | B03 | 待条件 |
 | Q01 | 建立能力成熟度与验证矩阵 | P2 | 无 | 完成 |
-| Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 待开始 |
+| Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待开始 |
@@ -790,3 +790,63 @@ URL/认证材料/设备 payload 的异常、timeout 和 cleanup 路径；原始 
 捕获自检及脱敏副本分开验收。源码审查索引在 `/tmp/ios-s04-log-sites.txt`（876 个
 log/output 匹配位置，含显式产品结果，并非 876 个已证实泄漏）。仍需逐项区分
 用户请求的设备选择/结果输出与默认诊断；定点 Debug 无命中不证明所有原始日志安全。
+
+### 大类 2 进度：S04 自动错误边界与 Q02 捕获基础（2026-09-30，仍进行中）
+
+实现提交：`395b90bd206f746ceb80af736402b316cc731a5f`。
+受测代码为该提交；[边界验收证据](validation/diagnostic-boundaries-2026-09-30.md)
+和 [诊断合同](diagnostic-contract.md) 记录行为、兼容变化和剩余范围。本次是类内交付，
+不关闭 S04/Q02，不推进第三类，也不结束持久化目标。
+
+- 新增公开 `diagnostic_error` 借用视图：阶段由调用方固定提供，错误只展示类型类别、
+  可得的 IO kind 与进程内随机盐关联代号。哈希最多消费 4096 格式化字节和八层来源，
+  不拼装中间错误字符串；循环来源受限。原始错误类型、字段和 source 仍供明确 API 使用。
+- CLI main 不再由 anyhow Termination 打印任意来源链；保留运行错误退出 1、参数错误
+  退出 2，参数值不回显，帮助/版本正常展示。ForceRequired 穿过 context 仍给出固定
+  `--force` 提示。UDID/P12/Wi-Fi 密码环境值不进入帮助输出。
+- manager 操作错误、WebDriver 异常及 CDP 桥错误使用固定阶段与安全错误视图；
+  manager 缺失/不支持目标的错误体改用 `device` 关联代号，不回显 `udid`/IP。
+  CDP 设备协议错误保留 id/sessionId/数值 code，替换 message 并丢弃任意 error data；
+  显式 Runtime 结果、exceptionDetails、console 和页面数据不改写。
+- Python RuntimeError/ValueError 类型保持，异常不回显协议正文/非法模式值；repr
+  隐藏地址，connect_info/属性保留实际选择数据。C 仍以数字状态报告错误，增加合成
+  UDID/无效 UTF-8 的无设备失败检查，并实际捕获 C stdout/stderr。
+- 逐点整改 backup rollback/cleanup、DDI、RSD、DTX、活动 trace、userspace、forward、
+  prepare、screenshot、syslog、manager、dproxy 等诊断。路径/上游/端点/任意名称使用
+  关联代号，错误不打印正文；RemotePairingRecord::list 的遗留目录日志已整改。
+  dproxy 自动进度不再展示协议 summary，明确请求的原始录制仍保持数据用途。
+- `scripts/diagnostics.py` 在 256 KiB 总 RAM/时间预算内捕获实际 CLI；原始检测和
+  脱敏副本独立记录，报告无原始输出/argv/env。退出码、阶段、非空输出、timeout、
+  overflow 和 incomplete 都参加判定。六个工具回归覆盖变体、双流、空成功、洪泛、
+  timeout 与 Unix 本轮进程组的继承管道清理。已接入 full/CI 的强制 diagnostics。
+
+先跑错误视图两项定点测试，CLI 538 PASS、Python 7 PASS、捕获工具 5 PASS 与十个
+CLI 原始捕获 PASS；新增 CDP/ Python repr/C 路径纳入最终完整主线。开发期曾出现
+Parser trait 导入、anyhow 到 StdError 的转换、测试 router 名称和未启用 reqwest json
+方法的编译失败；已改用现有导入、as_ref、实际路由及序列化 body，不增加依赖。
+
+```sh
+python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python
+python3 scripts/validate.py tooling-tests
+python3 scripts/diagnostics.py
+/tmp/ios-validation-tools/actionlint .github/workflows/ci.yml
+```
+
+Linux x86_64 / Rust 1.97.1、MSRV 1.80.1 / CPython 3.12.13。
+主线 `/tmp/ios-s04-boundaries-full.log` 全部 PASS：Rust 1577 PASS、0 FAIL、1 既有
+PBKDF2 ignored，Python 8 PASS，66 feature/四组合、默认/full doctest 七项各自、
+三个下游示例、C ABI/原始捕获、wheel/sdist 重建安装、118 能力条目/真实帮助均通过。
+完整入口工具测试 15 PASS；随后添加空成功拒绝自检，复跑 tooling-tests 16 PASS
+(`/tmp/ios-s04-boundary-tooling-final.log`)。最终 CLI 十例捕获
+(`/tmp/ios-s04-process-final-capture.json`) 均原始/副本零命中且合同通过；不以副本
+零命中推导原始安全。actionlint/diff --check PASS。
+按 AGENTS.MD 的 Python 变更验证要求，从 crates/ios-py 使用现有 .venv 设置
+VIRTUAL_ENV/PYO3_PYTHON/PATH 执行 `uvx maturin develop --locked` PASS
+(`/tmp/ios-s04-maturin-develop.log`)，仅安装本地 editable 扩展，无发布。
+
+真实剩余：框架自动 Query/Json/Path 拒绝回复、剩余输出点及派生 Debug 审查、实际
+timeout/cleanup 日志捕获、协议/设备真机证据；S01–S03 认证/授权/Host/Origin/
+受保护联邦仍待实现。Q02 的完整代表矩阵、受测提交/二进制/参数与安全证据持久化、
+跨平台进程树管理和全部真机流程仍待；当前捕获基础只解除该工具的主机接口依赖。
+Windows/macOS 未运行本批，不能据 Linux/合成 WS fixture 认定设备或平台验收完成。
+实现提交后工作区干净；无设备操作、推送、发布、历史改写或参考 checkout 修改。

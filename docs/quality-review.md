@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [S04 formatter gate](validation/error-diagnostics-2026-09-30.md), 1569 Rust tests and Python/C checks | Update per implementation commit; aggregate tests do not certify workflows or complete diagnostic safety |
+| Host build/tests | [S04 boundary gate](validation/diagnostic-boundaries-2026-09-30.md), 1577 Rust/eight Python tests, C capture and ten CLI raw captures | Update per implementation commit; aggregate tests do not certify workflows or complete diagnostic safety |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |
