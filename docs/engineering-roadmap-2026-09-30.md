@@ -2,7 +2,8 @@
 
 日期：2026-09-30；代码基线：`572c297`。
 
-状态：实施已启动；首类 B01–B04 正在验收。实际结果与待条件项见第 14 节。
+状态：首类 B01–B04 的可执行主机范围已交付；B01/B02 完成，B03 待跨平台验收，
+B04 保留平台和 registry 发布条件。接续第二类，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -88,10 +89,10 @@
 
 | ID | 任务 | 优先级 | 前置依赖 | 状态 |
 | --- | --- | --- | --- | --- |
-| B01 | 修复 feature 依赖并验证最小组合 | P1 | 无 | 进行中 |
-| B02 | 修复默认文档测试与公开接入示例 | P1 | 无 | 进行中 |
-| B03 | 统一本地与 CI 验证入口 | P1 | B01、B02 | 进行中 |
-| B04 | 补齐发布门禁与制品验证 | P1 | B03 | 进行中 |
+| B01 | 修复 feature 依赖并验证最小组合 | P1 | 无 | 完成 |
+| B02 | 修复默认文档测试与公开接入示例 | P1 | 无 | 完成 |
+| B03 | 统一本地与 CI 验证入口 | P1 | B01、B02 | 待验收 |
+| B04 | 补齐发布门禁与制品验证 | P1 | B03 | 待条件 |
 | Q01 | 建立能力成熟度与验证矩阵 | P2 | 无 | 待开始 |
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 待开始 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待开始 |
@@ -117,7 +118,7 @@
 | F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 待开始 |
 | F05 | 完成媒体查看器、VNC 与双向剪贴板 | P3 | S02、S03、L03、Q02 | 待开始 |
 | F06 | 完成恢复预检入口与实验恢复执行流程 | P3 | A02、L01、Q02、Q04 | 待开始 |
-| D01 | 维护文档、变更记录与交付规则 | P2 | 首批整改依赖 B01、B02、Q01；随后持续执行 | 待开始 |
+| D01 | 维护文档、变更记录与交付规则 | P2 | 首批整改依赖 B01、B02、Q01；随后持续执行 | 进行中 |
 | D02 | 建立质量指标与 1.0 发布准备标准 | P2 | 指标先随 Q01 建立；发布准备依赖 B04、A01、A02、L04、F02 | 待开始 |
 
 ## 4. 构建、接入与发布任务
@@ -613,3 +614,56 @@ B01 落地后增加自动化最小 feature 编译与相应测试；B02 落地后
 - 保持目标 active；按第 13 节逐类实现、验收、提交和文档收尾；不推送、不发布。
 - 首类验收正在执行；本记录仅说明启动事实，完整结果和实现哈希在本类实现
   提交后追加，不提前把平台或真机条件标为通过。
+
+### 大类 1：构建、接入与发布（2026-09-30）
+
+实现与受测提交：`3013799b88ca710a9ca7bf42942c25a9394a8dc1`。
+完整主机证据索引：[构建与发布验收](validation/build-release-2026-09-30.md)。
+初始未跟踪计划已包含在该提交；提交范围为本类 30 个文件，未包含参考 checkout、
+本地指南、凭据、构建制品或无关用户修改。实现提交后工作区干净。
+
+| 任务与子项 | 实际交付与用户可观察行为 | 验收与剩余条件 | 状态 |
+| --- | --- | --- | --- |
+| B01：两个依赖、默认、各服务/分组/别名、常用组合 | `fileservice`/`deviceinfo` 自动启用 `tunnel`；三个服务集成测试声明 required-features；验证脚本从 Cargo metadata 自动发现全部公开和隐式 feature，保留裁剪告警日志 | Linux 66 个最小配置编译及四组测试 PASS；新增 feature 自动入 CI；告警来自 shared tunnel/MTU、pairing/H2/TLV、条件导入，full 严格 Clippy PASS | 完成 |
+| B02：默认文档、封装边界、四个 README 与根目录/入门示例 | 修正私有模块路径，RemotePairing 示例显式 cfg，Python 空设备判断及 finally 释放；C 状态常量/错误清空合同和完整示例，纠正绑定能力描述 | 默认/full 各 7 doctest PASS，保留 5 个 compile_fail；3 个默认 feature 下游 Rust 示例 PASS，Python 语法及安装 API PASS，C 示例/ABI 调用 PASS；不声称设备执行 | 完成 |
+| B03：统一入口、快速/完整模式、Python host/打包分离 | 新增标准库 Python 入口与细分 scope；派生解释器/libpython/prefix，失败退出且标注项目；CI、贡献指南、PR 模板使用同一集合 | Linux full PASS；失败退出与缺工具检查 PASS；macOS/Windows 的入口、库搜索路径及 MSVC 调用已配置，但尚无对应系统执行证据 | 待验收 |
+| B04：必需门禁、CLI/C/wheel/sdist、版本/checksum/清单 | 三个发布任务传递依赖全部必需检查及全部候选制品矩阵；PR 可安全验证制品；取消制品缺失的 `|| true`；实际 CLI `--version`、发布库 C 调用、归档和 Python 安装验证 | Linux native 和 Python 3.9/3.13 PASS，3.12 sdist 重建/安装 PASS；工作流 actionlint 与依赖图 PASS；其他平台/ARM runner NOT_RUN；CLI registry dry-run FAIL，具体原因见下 | 待条件 |
+| D01 首批文档 | 根目录中英文及四 crate README、build/getting-started/python-binding、CHANGELOG Unreleased 和 PR 模板同步 | 首批整改完成；Q01 权威清单联接和后续各类文档维护仍需持续执行 | 进行中 |
+
+先执行的相关检查：`python3 scripts/validate.py features`、`docs`、`ffi`、
+`quick --package ios-cli`、`tooling-tests`；分别通过 66 个配置、默认/full 文档、
+C 动态链接/调用、529 CLI 测试和 5 个验证工具失败/门禁检查。
+
+随后执行 `python3 scripts/validate.py full --python <本仓库 .venv/bin/python>`，
+选择 CPython 3.12.13；完整集合 PASS，包含以下第 11 节主线（均为 locked）：
+
+```sh
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --exclude ios-py --all-features --locked
+cargo test -p ios-py --no-default-features --locked
+cargo +1.80 check --workspace --exclude ios-py --locked
+```
+
+Rust 1546 PASS、0 FAIL、1 既有 PBKDF2 ignored；Python 6 PASS。
+同入口追加 feature、默认/full doctest、下游示例、C、wheel/sdist 与工具测试；全部
+通过。Rust 1.97.1 / MSRV Cargo 1.80.1；Linux x86_64，不等价于其他系统验证。
+
+额外执行 `artifacts.py native --target x86_64-unknown-linux-gnu` 与 `verify-native`
+PASS；release wheel 构建后分别执行 `artifacts.py python --directory
+target/validation/python-release --python 3.9` / `3.13` PASS；host 测试亦在
+3.9.25/3.13.15 各 6 PASS。`actionlint` 1.7.7、`bash -n`、diff 空白检查 PASS。
+期间提取规则、缺 CLI version 和 rustfmt 检查曾真实失败，修复后的复跑通过；
+未将早期失败当作通过。最终输出位置见证据索引。
+
+发布条件：core/CLI `cargo package --list --allow-dirty --locked` PASS；core
+`cargo publish --registry crates-io --dry-run --allow-dirty --locked` PASS。
+CLI 同命令与多包验证解析到已发布 `ios-core 0.1.15`，缺少当前新增 API，26 个
+编译错误，FAIL；不是本地 workspace 构建失败，也不能凭文件清单替代 tarball 验证。
+当前 0.1.13 已在 registry 存在，需 D02 发布准备选择未使用版本，同步 workspace
+依赖，按 core 入索引后 CLI 验证的顺序处理；本次不发布或覆盖现有版本。
+
+本类出口：可执行主机部分已验收并提交；B03/B04 的上述条件保留，整类不宣称
+跨平台全部完成。B03 的验证接口已就绪，可以解除 Q03、R/A/L 的主机工具依赖；
+跨平台验收依赖继续保持。下一类从 Q01、S04、Q03 推进，再落实 S01–S03/Q02。
