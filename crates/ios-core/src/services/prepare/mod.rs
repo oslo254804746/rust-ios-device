@@ -2,6 +2,8 @@
 //!
 //! Reference: go-ios `mcinstall/prepare.go` and `crypto_utils.go`
 
+crate::redaction::error_debug!(PrepareError);
+
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
 use openssl::hash::MessageDigest;
@@ -90,7 +92,7 @@ pub const DEFAULT_SKIP_SETUP_KEYS: &[&str] = &[
     "Zoom",
 ];
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PrepareError {
     #[error("crypto error: {0}")]
     Crypto(String),
@@ -98,12 +100,19 @@ pub enum PrepareError {
     Plist(#[from] plist::Error),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SupervisionIdentity {
     pub certificate_der: Vec<u8>,
     pub certificate_pem: Vec<u8>,
     pub private_key_pem: Vec<u8>,
     pub pkcs12_der: Vec<u8>,
+}
+
+impl std::fmt::Debug for SupervisionIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupervisionIdentity")
+            .finish_non_exhaustive()
+    }
 }
 
 pub fn generate_supervision_identity(
@@ -308,4 +317,26 @@ pub fn build_initial_profile() -> Result<Vec<u8>, PrepareError> {
 
 fn crypto_err(err: openssl::error::ErrorStack) -> PrepareError {
     PrepareError::Crypto(err.to_string())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn supervision_identity_debug_omits_all_credential_encodings() {
+        let secret = b"synthetic-private-credential-device-data".to_vec();
+        let identity = SupervisionIdentity {
+            certificate_der: secret.clone(),
+            certificate_pem: secret.clone(),
+            private_key_pem: secret.clone(),
+            pkcs12_der: secret.clone(),
+        };
+        let output = format!("{identity:?} {identity:#?}");
+        assert!(!output.contains(std::str::from_utf8(&secret).unwrap()));
+        assert!(!output.contains(&format!("{secret:?}")));
+        assert!(!output.contains(&hex::encode(&secret)));
+        assert!(output.contains("SupervisionIdentity"));
+        assert_eq!(identity.private_key_pem, secret);
+    }
 }

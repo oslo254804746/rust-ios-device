@@ -274,7 +274,10 @@ impl AppsCmd {
                         &mut stream,
                         source_path,
                         Some(Box::new(|percent, status| {
-                            eprintln!("  [{percent}%] {status}");
+                            eprintln!(
+                                "  [{percent}%] status={}",
+                                ios_core::redaction::diagnostic_id(status)
+                            );
                         })),
                     )
                     .await

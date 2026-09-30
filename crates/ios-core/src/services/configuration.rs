@@ -5,6 +5,8 @@
 //! not contain `CoreDevice.featureIdentifier` or `CoreDevice.action`; this
 //! mirrors pymobiledevice3's `ConfigurationService` exactly.
 
+crate::redaction::error_debug!(ConfigurationError);
+
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -36,7 +38,7 @@ const ACTION_GET_REDUCE_TRANSPARENCY: &str = "com.apple.coredevice.action.getred
 const ACTION_SET_REDUCE_TRANSPARENCY: &str = "com.apple.coredevice.action.setreducetransparency";
 
 /// Errors returned by CoreDevice configuration actions.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ConfigurationError {
     /// Underlying RemoteXPC transport failure.
     #[error("xpc error: {0}")]

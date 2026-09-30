@@ -7,6 +7,8 @@
 //!   4. Send central directory header signature as terminator
 //!   5. Poll for DataComplete / progress / error responses
 
+crate::redaction::error_debug!(ZipConduitError);
+
 use std::io::Read;
 use std::path::Path;
 
@@ -15,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ZipConduitError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

@@ -6,6 +6,8 @@
 mod assets;
 mod signing;
 
+crate::redaction::error_debug!(CryptexError);
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -27,7 +29,7 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 type Result<T> = std::result::Result<T, CryptexError>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum CryptexError {
     #[error("Cryptex XPC: {0}")]
     Xpc(#[from] XpcError),

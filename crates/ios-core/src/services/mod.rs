@@ -79,7 +79,7 @@ macro_rules! service_error {
     };
     ($name:ident, before { $($before:tt)* }, between { $($between:tt)* }, after { $($after:tt)* } $(,)?) => {
         #[doc = concat!("Error type for ", stringify!($name), ".")]
-        #[derive(Debug, thiserror::Error)]
+        #[derive(thiserror::Error)]
         pub enum $name {
             $($before)*
             /// Underlying I/O error.
@@ -93,6 +93,13 @@ macro_rules! service_error {
             #[error("protocol error: {0}")]
             Protocol(String),
             $($after)*
+        }
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("diagnostic", &crate::redaction::diagnostic_error(self))
+                    .finish_non_exhaustive()
+            }
         }
     };
     ($name:ident, $($after:tt)*) => {
@@ -266,6 +273,25 @@ mod tests {
         Extra(String),
         },
     );
+
+    #[test]
+    fn service_error_debug_omits_protocol_and_extended_variant_source_data() {
+        let secret = "synthetic-private-credential-device-data";
+        for error in [
+            MacroSmokeError::Protocol(secret.into()),
+            MacroSmokeError::Extra(secret.into()),
+            MacroSmokeError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                secret,
+            )),
+        ] {
+            assert!(error.to_string().contains(secret));
+            let output = format!("{error:?} {error:#?}");
+            assert!(!output.contains(secret));
+            assert!(output.contains("MacroSmokeError"));
+            assert!(output.contains("error:"));
+        }
+    }
 
     #[test]
     fn service_error_macro_preserves_common_variants_and_display() {

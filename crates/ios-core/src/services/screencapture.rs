@@ -5,6 +5,8 @@
 //! directly in the CoreDevice output dictionary together with display and
 //! format metadata.
 
+crate::redaction::error_debug!(ScreenCaptureError);
+
 use bytes::Bytes;
 use indexmap::IndexMap;
 
@@ -52,7 +54,7 @@ impl ScreenCaptureImage {
 }
 
 /// Errors returned by CoreDevice screen capture.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ScreenCaptureError {
     /// Underlying RemoteXPC transport failure.
     #[error("xpc error: {0}")]

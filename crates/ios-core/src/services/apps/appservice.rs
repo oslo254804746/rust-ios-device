@@ -5,6 +5,8 @@
 //! spawning executables, icon retrieval, and process termination monitoring when the
 //! device exposes the appservice features through RSD.
 
+crate::redaction::error_debug!(AppServiceError);
+
 use crate::xpc::{XpcClient, XpcError, XpcMessage, XpcValue};
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -24,7 +26,7 @@ const FEATURE_SEND_SIGNAL: &str = "com.apple.coredevice.feature.sendsignaltoproc
 const SIGKILL: i64 = 9;
 
 /// Errors returned by CoreDevice appservice operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum AppServiceError {
     /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]

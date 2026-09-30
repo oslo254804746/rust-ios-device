@@ -5,6 +5,8 @@
 //!
 //! Reference: go-ios/ios/installationproxy/installationproxy.go
 
+crate::redaction::error_debug!(IpError);
+
 use std::collections::HashMap;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,7 +23,7 @@ const MAX_BROWSE_CHUNKS: usize = 1_000;
 /// Maximum number of app entries retained from one Browse operation.
 const MAX_BROWSE_ENTRIES: usize = 1_000_000;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum IpError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

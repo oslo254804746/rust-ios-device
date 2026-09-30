@@ -1318,6 +1318,44 @@ impl PayloadStage {
     }
 }
 
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_failure_diagnostics_hide_original_and_staged_paths() {
+        let secret = "synthetic-private-UDID-backup-path";
+        let root = std::env::temp_dir().join(format!("ios-diagnostic-{}", uuid::Uuid::new_v4()));
+        let staging = root.join(format!("{secret}-staging"));
+        fs::create_dir_all(&staging).unwrap();
+        let source = root.join(format!("{secret}-source"));
+        fs::create_dir(&source).unwrap();
+        let staged = staging.join(secret);
+        fs::write(&staged, b"synthetic payload").unwrap();
+        let mut stage = PayloadStage {
+            directory: root.clone(),
+            staging,
+            moved: vec![(source.clone(), staged.clone())],
+            removed: 0,
+        };
+        let (dispatch, log) = crate::redaction::test_support::capture();
+        tracing::dispatcher::with_default(&dispatch, || stage.rollback());
+        let log = log.lock().unwrap();
+        assert!(!log.overflow);
+        assert!(log
+            .raw
+            .contains("could not roll back staged backup payload"));
+        assert!(log.raw.contains("io/"));
+        assert!(log.raw.contains("id:"));
+        assert!(!log.raw.contains(secret));
+        assert!(!log.raw.contains(&source.to_string_lossy().to_string()));
+        assert!(!log.raw.contains(&staged.to_string_lossy().to_string()));
+        assert!(source.is_dir());
+        assert_eq!(fs::read(staged).unwrap(), b"synthetic payload");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn stage_payloads(
     device_directory: &Path,
     allowed_ids: &HashSet<String>,

@@ -1,7 +1,9 @@
+crate::redaction::error_debug!(PlistFrameError);
+
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub(crate) enum PlistFrameError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

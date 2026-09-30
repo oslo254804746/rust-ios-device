@@ -5,6 +5,8 @@
 //! - `set(lat, lon)` sends mode `0`, followed by two length-prefixed strings
 //! - `reset()` sends mode `1` only
 
+crate::redaction::error_debug!(SimLocationError);
+
 use std::time::Duration;
 
 use quick_xml::de::from_str;
@@ -14,7 +16,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.dt.simulatelocation";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum SimLocationError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

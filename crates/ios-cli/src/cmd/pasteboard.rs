@@ -671,7 +671,7 @@ fn render_event(event: &PasteboardEvent, show_data: bool, json_output: bool) -> 
                 "size": data.data.as_ref().map(|bytes| bytes.len()),
                 "sha256": data.data.as_ref().map(|bytes| sha256_hex(bytes.as_ref())),
                 "data_base64": show_data.then(|| data.data.as_ref().map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()))).flatten(),
-                "error": data.error,
+                "error": data.error.as_ref().map(|error| format!("promise failed: {}", ios_core::redaction::diagnostic_id(error))),
             });
             if json_output {
                 println!("{}", serde_json::to_string(&value)?);
@@ -704,7 +704,7 @@ fn snapshot_to_json(snapshot: &PasteboardSnapshot, show_data: bool) -> serde_jso
                         }),
                         PasteboardPayload::Error(error) => serde_json::json!({
                             "state": "error",
-                            "error": error,
+                            "error": format!("promise failed: {}", ios_core::redaction::diagnostic_id(error)),
                         }),
                     };
                     if show_data {
@@ -783,7 +783,12 @@ fn human_snapshot_summary(snapshot: &PasteboardSnapshot, show_data: bool) -> Str
                     )
                 }
                 PasteboardPayload::Error(error) => {
-                    format!("[{}] {}: error: {error}", item.index, entry.uti)
+                    format!(
+                        "[{}] {}: promise failed: {}",
+                        item.index,
+                        entry.uti,
+                        ios_core::redaction::diagnostic_id(error)
+                    )
                 }
             };
             lines.push(line);
@@ -1214,5 +1219,38 @@ mod tests {
         assert!(redacted.contains("sha256"));
         let shown = snapshot_to_json(&snapshot, true).to_string();
         assert!(shown.contains("c2VjcmV0"));
+    }
+
+    #[test]
+    fn snapshot_promise_failures_hide_device_error_text_in_json_and_human_output() {
+        let secret = "synthetic-private-credential-device-data";
+        let snapshot = PasteboardSnapshot {
+            command: None,
+            pasteboard_name: None,
+            change_count: None,
+            uuid: None,
+            metadata: None,
+            source_metadata: None,
+            items: vec![pasteboard::PasteboardSnapshotItem {
+                index: 0,
+                types: vec![pasteboard::UTI_TEXT.into()],
+                data: vec![pasteboard::PasteboardEntry {
+                    uti: pasteboard::UTI_TEXT.into(),
+                    payload: PasteboardPayload::Error(secret.into()),
+                }],
+            }],
+        };
+        assert!(
+            format!("{snapshot:?}").contains(secret),
+            "the API data fixture contains the original promise diagnostic"
+        );
+        for show_data in [false, true] {
+            let json = snapshot_to_json(&snapshot, show_data).to_string();
+            let human = human_snapshot_summary(&snapshot, show_data);
+            assert!(!json.contains(secret));
+            assert!(!human.contains(secret));
+            assert!(json.contains("promise failed: id:"));
+            assert!(human.contains("promise failed: id:"));
+        }
     }
 }

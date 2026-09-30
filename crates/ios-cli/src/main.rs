@@ -1,6 +1,7 @@
 //! ios-cli: Command-line interface for iOS device management.
 
 mod cmd;
+mod http_diagnostics;
 mod output;
 
 use std::future::Future;

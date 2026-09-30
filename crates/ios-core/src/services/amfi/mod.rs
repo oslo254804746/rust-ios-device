@@ -2,6 +2,8 @@
 //!
 //! Service: `com.apple.amfi.lockdown`
 
+crate::redaction::error_debug!(AmfiError);
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.amfi.lockdown";
@@ -9,7 +11,7 @@ pub const SERVICE_NAME: &str = "com.apple.amfi.lockdown";
 const DEVELOPER_MODE_REVEAL: u64 = 0;
 const DEVELOPER_MODE_ENABLE: u64 = 1;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum AmfiError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

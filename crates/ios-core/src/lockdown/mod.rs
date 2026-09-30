@@ -4,6 +4,7 @@
 //! Use [`LockdownClient`] to read device values, start services, and manage pairing.
 
 pub mod client;
+crate::redaction::error_debug!(LockdownError);
 pub(crate) mod pair_record;
 #[cfg(feature = "tunnel")]
 pub mod pairing;
@@ -35,7 +36,7 @@ pub struct ServiceInfo {
 }
 
 /// Errors from lockdown operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum LockdownError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

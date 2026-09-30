@@ -7,6 +7,8 @@
 //! machine therefore rejects concurrent contacts instead of silently putting
 //! fields on the wire that CoreDevice does not understand.
 
+crate::redaction::error_debug!(HidError);
+
 use std::fmt;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -55,7 +57,7 @@ pub const TOUCHSCREEN_REPORT_ID: u8 = 0x09;
 pub const KEYBOARD_REPORT_ID: u8 = 0x01;
 
 /// Errors returned by CoreDevice HID operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum HidError {
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),

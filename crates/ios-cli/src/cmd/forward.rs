@@ -168,7 +168,7 @@ impl ForwardConnector {
         match &self.tunnel_proxy {
             Some(target) => format!(
                 "Forwarding {host}:{host_port} → [{}]:{device_port}  (prefers proxy 127.0.0.1:{}; usbmux fallback enabled)",
-                target.server_addr, target.proxy_port
+                ios_core::redaction::diagnostic_id(&target.server_addr), target.proxy_port
             ),
             None => format!(
                 "Forwarding {host}:{host_port} → device:{device_port}  (via usbmux direct)"

@@ -26,8 +26,9 @@ pub enum OpackValue {
 /// The per-level element cap bounds width, not depth: ~1 MB of repeated `0xD1`
 /// or `0xE1` bytes would otherwise recurse until the stack overflows.
 const MAX_OPACK_DEPTH: usize = 64;
+crate::redaction::error_debug!(OpackError);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum OpackError {
     #[error("unexpected end of buffer")]
     UnexpectedEof,

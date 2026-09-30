@@ -13,6 +13,24 @@ use sha2::{Digest, Sha256};
 
 static PROCESS_KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
+// Internal implementation shared by owned error types. Preserve typed fields,
+// variants, Display and sources; Debug is always an automatic diagnostic view.
+macro_rules! error_debug {
+    ($name:ty) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("diagnostic", &$crate::redaction::diagnostic_error(self))
+                    .finish_non_exhaustive()
+            }
+        }
+    };
+}
+pub(crate) use error_debug;
+
 fn process_key() -> &'static Option<[u8; 32]> {
     PROCESS_KEY.get_or_init(|| {
         let mut key = [0; 32];
@@ -168,6 +186,43 @@ fn encode_id(key: &[u8; 32], value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_error_debug_hides_parser_protocol_and_source_payloads() {
+        let secret = "synthetic-private-credential-device-data";
+        let errors: Vec<Box<dyn Error>> = vec![
+            Box::new(crate::lockdown::LockdownError::Protocol(secret.into())),
+            Box::new(crate::xpc::XpcError::Tls(secret.into())),
+            Box::new(crate::tunnel::TunnelError::Protocol(secret.into())),
+            Box::new(crate::proto::opack::OpackError::Encode(secret.into())),
+            Box::new(crate::proto::nskeyedarchiver::ArchiveError::Invalid(
+                secret.into(),
+            )),
+        ];
+        for error in errors {
+            assert!(error.to_string().contains(secret));
+            let output = format!("{error:?} {error:#?}");
+            assert!(!output.contains(secret));
+            assert!(output.contains("diagnostic"));
+            assert!(output.contains("error:"));
+        }
+    }
+
+    #[cfg(not(feature = "tunnel"))]
+    #[test]
+    fn fallback_tunnel_info_debug_hides_addresses_without_tunnel_feature() {
+        let secret = "synthetic-private-tunnel-address";
+        let info = crate::tunnel::TunnelInfo {
+            server_address: secret.into(),
+            server_rsd_port: 1234,
+            client_address: secret.into(),
+            client_mtu: 1280,
+        };
+        let output = format!("{info:?} {info:#?}");
+        assert!(!output.contains(secret));
+        assert!(output.contains("id:"));
+        assert!(output.contains("1280"));
+    }
 
     #[test]
     fn correlation_is_consistent_without_raw_identifiers() {

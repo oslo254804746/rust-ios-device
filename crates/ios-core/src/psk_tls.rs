@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(PskTlsError);
+
 use std::pin::Pin;
 
 use openssl::error::ErrorStack;
@@ -5,7 +7,7 @@ use openssl::ssl::{Error, Ssl, SslContext, SslMethod, SslVerifyMode, SslVersion}
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PskTlsError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

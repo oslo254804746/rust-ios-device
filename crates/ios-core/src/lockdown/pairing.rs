@@ -16,6 +16,8 @@
 //! 7. setupCiphers() – HKDF → two ChaCha20Poly1305 streams
 //! 8. createUnlockKey() – final handshake to finish pairing
 
+crate::redaction::error_debug!(PairingError);
+
 use crate::proto::{opack, tlv::TlvBuffer};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -352,7 +354,7 @@ fn chacha_open(
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PairingError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -566,13 +568,20 @@ pub fn build_verify_start_tlv(x25519_pub: &[u8]) -> Vec<u8> {
 /// Complete the pair verify handshake (step 2).
 ///
 /// Returns the derived cipher keys (client_key, server_key) on success.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg(feature = "tunnel")]
 pub struct VerifyPairSession {
     pub tlv: Vec<u8>,
     pub encryption_key: [u8; 32],
     pub client_key: [u8; 32],
     pub server_key: [u8; 32],
+}
+
+#[cfg(feature = "tunnel")]
+impl std::fmt::Debug for VerifyPairSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifyPairSession").finish_non_exhaustive()
+    }
 }
 
 /// The session is held for as long as the tunnel lives, so its three keys are
@@ -647,6 +656,24 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
+
+    #[cfg(feature = "tunnel")]
+    #[test]
+    fn pair_verification_debug_omits_tlv_and_cipher_keys() {
+        let secret = *b"synthetic-private-key-material!!";
+        let session = VerifyPairSession {
+            tlv: secret.to_vec(),
+            encryption_key: secret,
+            client_key: secret,
+            server_key: secret,
+        };
+        let output = format!("{session:?} {session:#?}");
+        assert!(!output.contains(std::str::from_utf8(&secret).unwrap()));
+        assert!(!output.contains(&format!("{secret:?}")));
+        assert!(!output.contains(&hex::encode(secret)));
+        assert!(output.contains("VerifyPairSession"));
+        assert_eq!(session.client_key, secret);
+    }
 
     #[test]
     fn test_host_identity_generation() {

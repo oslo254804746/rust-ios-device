@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(CrashReportError);
+
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -27,7 +29,7 @@ pub struct CrashReportEntry {
     pub modified: Option<String>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum CrashReportError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

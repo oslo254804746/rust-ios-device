@@ -89,7 +89,11 @@ impl DproxyCmd {
 
                 eprintln!(
                     "dproxy listening on {}:{} for {} via {:?} ({:?})",
-                    host, listen_port, service, transport, protocol
+                    host,
+                    listen_port,
+                    ios_core::redaction::diagnostic_id(&service),
+                    transport,
+                    protocol
                 );
 
                 let mut counter = 0usize;
@@ -109,8 +113,10 @@ impl DproxyCmd {
                     .await??;
                     eprintln!(
                         "accepted {} -> capture {}",
-                        peer,
-                        recorder.output_dir().display()
+                        ios_core::redaction::diagnostic_id(&peer.to_string()),
+                        ios_core::redaction::diagnostic_id(
+                            &recorder.output_dir().to_string_lossy()
+                        )
                     );
 
                     let remote = match transport {

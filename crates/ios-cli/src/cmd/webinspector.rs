@@ -301,11 +301,10 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        (
+        crate::http_diagnostics::reviewed((
             self.status,
             Json(json!({ "value": { "error": "unknown error", "message": self.message } })),
-        )
-            .into_response()
+        ))
     }
 }
 
@@ -920,8 +919,11 @@ fn runtime_remote_object(response: &JsonValue) -> Option<&JsonValue> {
 }
 
 fn runtime_evaluation_error(response: &JsonValue) -> Option<String> {
-    if let Some(error) = response.get("error") {
-        return Some(error.to_string());
+    if response.get("error").is_some() {
+        return diagnostic_cdp_response(response.clone())
+            .pointer("/error/message")
+            .and_then(JsonValue::as_str)
+            .map(ToOwned::to_owned);
     }
     let exception = response
         .get("exceptionDetails")
@@ -1114,7 +1116,11 @@ async fn run_cdp_server(udid: &str, host: String, port: u16, timeout: Duration) 
         .route("/json/version/", get(cdp_version))
         .route("/devtools/page/:page_id", get(cdp_page_ws))
         .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            crate::http_diagnostics::ErrorShape::Cdp,
+            crate::http_diagnostics::rejections,
+        ));
     serve(host, port, app).await
 }
 
@@ -1164,7 +1170,11 @@ async fn run_selenium_server(udid: &str, host: String, port: u16, timeout: Durat
             "/session/:session_id/element/:element_id/click",
             post(webdriver_element_click),
         )
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            crate::http_diagnostics::ErrorShape::WebDriver,
+            crate::http_diagnostics::rejections,
+        ));
     serve(host, port, app).await
 }
 
@@ -2212,6 +2222,22 @@ mod tests {
         assert_eq!(diagnostic_cdp_response(result.clone()), result);
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn shell_protocol_failure_is_safe_while_requested_js_exception_keeps_its_value() {
+        let secret = "synthetic-private-credential-device-data";
+        let response =
+            json!({"id": 1, "error": {"code": -32000, "message": secret, "data": secret}});
+        assert!(response.to_string().contains(secret));
+        let message = runtime_evaluation_error(&response).unwrap();
+        assert!(!message.contains(secret));
+        assert!(message.contains("WebInspector protocol request failed:"));
+        let requested = json!({"result": {"exceptionDetails": {"text": secret}}});
+        assert_eq!(
+            runtime_evaluation_error(&requested).as_deref(),
+            Some(secret)
+        );
     }
 
     #[tokio::test]

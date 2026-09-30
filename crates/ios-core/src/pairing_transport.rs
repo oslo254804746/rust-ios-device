@@ -14,6 +14,8 @@
 //! go-ios/ios/tunnel/tunnel.go (ManualPairAndConnectToTunnel)
 //! go-ios/ios/tunnel/untrusted.go (ManualPair, setupManualPairing, etc.)
 
+crate::redaction::error_debug!(PairingTransportError);
+
 use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddr};
 
@@ -39,7 +41,7 @@ const TYPE_ENCRYPTED_DATA: u8 = 0x05;
 const TYPE_SALT: u8 = 0x02;
 
 /// Error type for pairing transport.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PairingTransportError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

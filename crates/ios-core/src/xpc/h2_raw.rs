@@ -7,6 +7,8 @@
 //!
 //! Reference: go-ios/ios/http/http.go
 
+crate::redaction::error_debug!(H2Error);
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use bytes::{Bytes, BytesMut};
@@ -1455,7 +1457,7 @@ fn build_data_frame(stream_id: u32, data: &[u8]) -> Vec<u8> {
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum H2Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

@@ -11,6 +11,8 @@
 //! already validated manifest values and paths, which keeps format parsing and
 //! filesystem safety independently testable.
 
+crate::redaction::error_debug!(CryptoError);
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -42,7 +44,7 @@ const MAX_KEYBAG_VALUE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_PBKDF2_ITERATIONS: u32 = 10_000_000;
 const CBC_BUFFER_BYTES: usize = 128 * 1024;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub(crate) enum CryptoError {
     #[error("BackupKeyBag is malformed: {0}")]
     Keybag(&'static str),

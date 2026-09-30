@@ -1,5 +1,7 @@
 //! iOS 17+ CoreDevice device info service via XPC/RSD.
 
+crate::redaction::error_debug!(DeviceInfoError);
+
 use indexmap::IndexMap;
 
 use crate::xpc::{XpcClient, XpcError, XpcValue};
@@ -11,7 +13,7 @@ const FEATURE_GET_DISPLAY_INFO: &str = "com.apple.coredevice.feature.getdisplayi
 const FEATURE_QUERY_MOBILEGESTALT: &str = "com.apple.coredevice.feature.querymobilegestalt";
 const FEATURE_GET_LOCKSTATE: &str = "com.apple.coredevice.feature.getlockstate";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DeviceInfoError {
     #[error("xpc error: {0}")]
     Xpc(#[from] XpcError),

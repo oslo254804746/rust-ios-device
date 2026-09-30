@@ -216,7 +216,10 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
     };
 
     if !script_mode {
-        eprintln!("Starting {mode} tunnel for {udid}...");
+        eprintln!(
+            "Starting {mode} tunnel for {}...",
+            ios_core::redaction::diagnostic_id(udid)
+        );
     } else {
         eprintln!("tunnel: connecting ({mode})...");
     }
@@ -1256,12 +1259,16 @@ fn agent_router(state: TunnelAgentState) -> Router {
             get(agent_get_tunnel).delete(agent_delete_tunnel),
         )
         .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            crate::http_diagnostics::ErrorShape::Manager,
+            crate::http_diagnostics::rejections,
+        ))
 }
 
 async fn agent_list_tunneld(
     State(state): State<TunnelAgentState>,
     Query(query): Query<FederationQuery>,
-) -> Result<Json<FederationListing>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<FederationListing>, Response> {
     if query.hop > MAX_FEDERATION_HOPS {
         return Err(manager_error(
             StatusCode::LOOP_DETECTED,
@@ -1271,25 +1278,22 @@ async fn agent_list_tunneld(
     Ok(Json(state.list_federated(query.hop).await))
 }
 
-fn manager_error(
-    status: StatusCode,
-    message: &'static str,
-) -> (StatusCode, Json<serde_json::Value>) {
-    (status, Json(json!({ "message": message })))
+fn manager_error(status: StatusCode, message: &'static str) -> Response {
+    crate::http_diagnostics::reviewed((status, Json(json!({ "message": message }))))
 }
 
 fn manager_operation_error(
     status: StatusCode,
     phase: &'static str,
     error: &(dyn std::error::Error + 'static),
-) -> (StatusCode, Json<serde_json::Value>) {
-    (
+) -> Response {
+    crate::http_diagnostics::reviewed((
         status,
         Json(json!({
             "message": phase,
             "error": ios_core::redaction::diagnostic_error(error).to_string(),
         })),
-    )
+    ))
 }
 
 fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
@@ -1304,7 +1308,7 @@ async fn agent_list_upstreams(State(state): State<TunnelAgentState>) -> Json<Vec
 async fn agent_add_upstream(
     State(state): State<TunnelAgentState>,
     Json(body): Json<UpstreamBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<serde_json::Value>, Response> {
     let url = normalize_upstream_url(&body.url).map_err(|err| {
         manager_operation_error(
             StatusCode::BAD_REQUEST,
@@ -1328,7 +1332,7 @@ async fn agent_add_upstream(
 async fn agent_remove_upstream(
     State(state): State<TunnelAgentState>,
     Json(body): Json<UpstreamBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<serde_json::Value>, Response> {
     let url = normalize_upstream_url(&body.url).map_err(|err| {
         manager_operation_error(
             StatusCode::BAD_REQUEST,
@@ -1346,7 +1350,7 @@ async fn agent_connect(
     State(state): State<TunnelAgentState>,
     Query(query): Query<ConnectQuery>,
     ws: WebSocketUpgrade,
-) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Response, Response> {
     if query.hop > MAX_FEDERATION_HOPS {
         return Err(manager_error(
             StatusCode::LOOP_DETECTED,
@@ -1457,46 +1461,46 @@ async fn agent_list_records(State(state): State<TunnelAgentState>) -> Json<Vec<T
 async fn agent_get_tunnel(
     State(state): State<TunnelAgentState>,
     Path(udid): Path<String>,
-) -> Result<Json<TunnelRecord>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<TunnelRecord>, Response> {
     state.get_record(&udid).await.map(Json).ok_or_else(|| {
-        (
+        crate::http_diagnostics::reviewed((
             StatusCode::NOT_FOUND,
             Json(json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() })),
-        )
+        ))
     })
 }
 
 async fn agent_delete_tunnel(
     State(state): State<TunnelAgentState>,
     Path(udid): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<serde_json::Value>, Response> {
     if state.remove_tunnel(&udid).await {
         Ok(Json(
             json!({ "operation": "cancel", "udid": udid, "data": true }),
         ))
     } else {
-        Err((
+        Err(crate::http_diagnostics::reviewed((
             StatusCode::NOT_FOUND,
             Json(
                 json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() }),
             ),
-        ))
+        )))
     }
 }
 
 async fn agent_start_tunnel(
     State(state): State<TunnelAgentState>,
     Query(query): Query<StartTunnelQuery>,
-) -> Result<Json<StartTunnelResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<StartTunnelResponse>, Response> {
     if let Some(message) = query.unsupported_transport_message() {
-        return Err((
+        return Err(crate::http_diagnostics::reviewed((
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "message": message,
                 "device": ios_core::redaction::diagnostic_id(&query.udid).to_string(),
                 "connection_type": query.requested_connection_type(),
             })),
-        ));
+        )));
     }
 
     state

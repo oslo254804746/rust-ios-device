@@ -5,6 +5,8 @@
 //! expose both RSD services should report a clear missing-service error rather than
 //! falling back to AFC or another CoreDevice service name.
 
+crate::redaction::error_debug!(FileServiceError);
+
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -25,7 +27,7 @@ const FILE_WIRE_HEADER_LEN: usize = 40;
 const FILE_TRANSFER_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Errors returned by the CoreDevice fileservice client.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum FileServiceError {
     /// Underlying XPC transport or encoding error.
     #[error("xpc error: {0}")]

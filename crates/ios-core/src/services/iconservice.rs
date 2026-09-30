@@ -4,6 +4,8 @@
 //! systems `dtappserviced` does not expose the icon feature; icons are served
 //! by `com.apple.coredevice.iconservice` instead.
 
+crate::redaction::error_debug!(IconServiceError);
+
 use bytes::Bytes;
 use indexmap::IndexMap;
 
@@ -46,7 +48,7 @@ impl AppIcon {
 }
 
 /// Errors returned by CoreDevice icon requests.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum IconServiceError {
     /// Underlying RemoteXPC transport failure.
     #[error("xpc error: {0}")]

@@ -495,7 +495,8 @@ async fn run_mount(
         .await?;
         eprintln!(
             "Installed DDI Cryptex {} {}.",
-            installed.identifier, installed.version
+            ios_core::redaction::diagnostic_id(&installed.identifier),
+            ios_core::redaction::diagnostic_id(&installed.version)
         );
         return Ok(());
     }

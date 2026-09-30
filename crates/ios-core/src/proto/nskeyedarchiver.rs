@@ -10,6 +10,8 @@
 //! - NSDictionary → HashMap
 //! - nil / NSNull → null
 
+crate::redaction::error_debug!(ArchiveError);
+
 use std::collections::HashMap;
 
 use bytes::Bytes;
@@ -27,7 +29,7 @@ pub enum ArchiveValue {
     Unknown(String), // class name for unhandled types
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ArchiveError {
     #[error("plist error: {0}")]
     Plist(String),

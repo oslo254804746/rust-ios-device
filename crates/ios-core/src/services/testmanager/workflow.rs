@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(RunXcTestPlanError);
+
 use std::collections::{HashMap, HashSet};
 
 use crate::proto::nskeyedarchiver_encode::{NsUrl, XcTestConfiguration, XctCapabilities};
@@ -59,7 +61,7 @@ pub struct RunXcTestPlan {
 }
 
 /// Validation failures for a direct XCTest plan.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RunXcTestPlanError {
     #[error("test runner bundle identifier is required")]
     MissingRunnerBundleId,

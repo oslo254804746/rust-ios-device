@@ -36,11 +36,15 @@ safe IO metadata; targeted device-not-found and PairRecordError Display output
 does not render raw identifiers, paths or malformed credential data. Match
 typed errors for programmatic handling rather than parsing diagnostic text.
 
-These formatter checks do not certify every diagnostic boundary. Arbitrary
-protocol/IO Display messages and explicitly traversed error sources can still
-carry device data; CLI, HTTP/CDP and Python error-boundary review and raw-output
-capture remain tracked under S04. A sanitized copy cannot prove the original
-output did not leak.
+Owned protocol/service errors use safe Debug views, and supervised-pairing,
+supervision identity and verify-pair session Debug omit credential material.
+Their typed fields, Display and explicitly traversed error sources can still
+carry data for API use. Value-model Debug and serialization are also explicit
+data access, not diagnostic formatters. Automatic CLI, HTTP/CDP and Python
+boundaries use the [diagnostic contract](docs/diagnostic-contract.md), including
+framework HTTP rejection handling. Host fixtures check original output before
+any masking; a sanitized copy cannot prove the original output did not leak.
+These checks do not certify all device workflows or access-control boundaries.
 
 ## Scope
 

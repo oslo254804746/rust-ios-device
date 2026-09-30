@@ -18,6 +18,7 @@ pub mod h2_raw;
 #[cfg(feature = "tunnel")]
 pub(crate) mod identity;
 pub mod message;
+crate::redaction::error_debug!(XpcError);
 pub mod rsd;
 
 #[cfg(feature = "tunnel")]
@@ -41,7 +42,7 @@ pub use client::XpcClient;
 pub(crate) use message::{XpcMessage, XpcValue};
 
 /// Errors from XPC operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum XpcError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

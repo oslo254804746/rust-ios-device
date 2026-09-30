@@ -29,12 +29,29 @@ const HEADER_LEN: usize = 10;
 const MAX_BODY_LEN: usize = u8::MAX as usize;
 
 /// Information returned by the CDTunnel handshake.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TunnelInfo {
     pub server_address: String,
     pub server_rsd_port: u16,
     pub client_address: String,
     pub client_mtu: u32,
+}
+
+impl std::fmt::Debug for TunnelInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelInfo")
+            .field(
+                "server",
+                &crate::redaction::diagnostic_id(&self.server_address),
+            )
+            .field("rsd_port", &self.server_rsd_port)
+            .field(
+                "client",
+                &crate::redaction::diagnostic_id(&self.client_address),
+            )
+            .field("mtu", &self.client_mtu)
+            .finish()
+    }
 }
 
 fn parse_nonzero_u16(raw: &serde_json::Value, field: &str) -> Result<u16, TunnelError> {
@@ -154,6 +171,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_info_debug_hides_both_address_types_without_changing_selectors() {
+        let secret = "synthetic-private-tunnel-address";
+        let info = TunnelInfo {
+            server_address: secret.into(),
+            server_rsd_port: 1234,
+            client_address: secret.into(),
+            client_mtu: 1280,
+        };
+        let public_info = crate::tunnel::TunnelInfo {
+            server_address: secret.into(),
+            server_rsd_port: 1234,
+            client_address: secret.into(),
+            client_mtu: 1280,
+        };
+        for output in [
+            format!("{info:?} {info:#?}"),
+            format!("{public_info:?} {public_info:#?}"),
+        ] {
+            assert!(!output.contains(secret));
+            assert!(output.contains("id:"));
+            assert!(output.contains("1280"));
+        }
+        assert_eq!(info.server_address, secret);
+        assert_eq!(public_info.client_address, secret);
+    }
 
     async fn exchange_with_response_json(
         response_json: serde_json::Value,

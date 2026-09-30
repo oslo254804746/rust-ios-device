@@ -10,6 +10,8 @@
 //! For ReadDir responses, the device puts filenames in the header_payload section.
 //! For FileRead responses, the data is in the payload section.
 
+crate::redaction::error_debug!(AfcError);
+
 use std::collections::HashMap;
 
 use crate::proto::afc::{AfcHeader, AfcOpcode, AFC_MAGIC};
@@ -24,7 +26,7 @@ pub mod protocol; // kept for re-export compatibility
 
 // ── error ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum AfcError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

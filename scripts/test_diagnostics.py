@@ -1,5 +1,6 @@
 """Raw leaks cannot pass by masking a copy; capture budgets fail closed."""
 import os
+import re
 import sys
 import unittest
 
@@ -7,6 +8,14 @@ import diagnostics
 
 
 class DiagnosticCaptureTests(unittest.TestCase):
+    def test_owned_rust_error_debug_does_not_regress_to_payload_derivation(self):
+        violations = []
+        for source in (diagnostics.ROOT / "crates/ios-core/src").rglob("*.rs"):
+            for derive in re.findall(r"#\[derive\(([^)]*)\)\]", source.read_text(encoding="utf-8")):
+                if "thiserror::Error" in derive and "Debug" in derive:
+                    violations.append(str(source.relative_to(diagnostics.ROOT)))
+        self.assertEqual(violations, [], "owned errors must use a safe Debug view")
+
     def test_empty_success_cannot_satisfy_diagnostic_contract(self):
         result = diagnostics.Capture(b"", b"", 0, False, False, False)
         self.assertFalse(diagnostics.assess(result, {b"absent-secret"}, 0)["passed"])

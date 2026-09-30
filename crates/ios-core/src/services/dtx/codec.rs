@@ -9,6 +9,8 @@
 //! - Message type 0 = OK/Ack, type 2 = MethodInvocation, type 3 = Response/Object,
 //!   type 4 = Error, type 5 = Barrier
 
+crate::redaction::error_debug!(DtxError);
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::size_of;
 
@@ -56,7 +58,7 @@ const _MSG_LZ4_COMPRESSED: u32 = 0x0707; // LZ4 compressed payload
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DtxError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

@@ -10,6 +10,8 @@
 //! callers while the convenience helpers cover the common UTF-8 text and URL
 //! cases.
 
+crate::redaction::error_debug!(PasteboardError);
+
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -83,7 +85,7 @@ impl Default for PasteboardLimits {
 const TEXT_UTIS: [&str; 3] = [UTI_UTF8_PLAIN_TEXT, UTI_PLAIN_TEXT, UTI_TEXT];
 
 /// Errors returned by the pasteboard service.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum PasteboardError {
     #[error("pasteboard notification error: {0}")]
     Notification(#[from] crate::notificationproxy::NotificationProxyError),

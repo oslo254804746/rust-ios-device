@@ -436,7 +436,10 @@ async fn run_cpu(
             }
             Ok(None) => break,
             Err(e) => {
-                eprintln!("Error: {e}");
+                eprintln!(
+                    "sysmontap failed: {}",
+                    ios_core::redaction::diagnostic_error(&e)
+                );
                 break;
             }
         }

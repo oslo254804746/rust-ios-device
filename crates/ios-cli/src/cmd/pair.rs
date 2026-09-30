@@ -124,7 +124,7 @@ impl PairCmd {
                 mdns_stream.next(),
             ).await {
                 Ok(Some(dev)) => {
-                    eprintln!("Found: {} ({})", dev.name, dev.ipv6);
+                    eprintln!("Found: {} ({})", ios_core::redaction::diagnostic_id(&dev.name), ios_core::redaction::diagnostic_id(&dev.ipv6.to_string()));
                     dev.ipv6
                 }
                 Ok(None) => anyhow::bail!("mDNS stream ended without finding a device"),
@@ -132,7 +132,10 @@ impl PairCmd {
             }
         };
 
-        eprintln!("Connecting to {}...", device_addr);
+        eprintln!(
+            "Connecting to {}...",
+            ios_core::redaction::diagnostic_id(&device_addr.to_string())
+        );
         eprintln!("*** Please press 'Trust' on the device when prompted ***");
 
         // Run SRP pairing
@@ -206,7 +209,10 @@ async fn wifi_pair(
             .next()
             .ok_or_else(|| anyhow::anyhow!("No WiFi pairing services found via Bonjour"))?;
 
-        eprintln!("Found: {}", svc.instance);
+        eprintln!(
+            "Found: {}",
+            ios_core::redaction::diagnostic_id(&svc.instance)
+        );
 
         // Extract an IPv6 address from the discovered service
         svc.addresses
@@ -222,7 +228,10 @@ async fn wifi_pair(
             })?
     };
 
-    eprintln!("Connecting to {}...", device_addr);
+    eprintln!(
+        "Connecting to {}...",
+        ios_core::redaction::diagnostic_id(&device_addr.to_string())
+    );
     eprintln!("*** Please press 'Trust' on the device when prompted ***");
 
     // Run SRP pairing
@@ -303,7 +312,10 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     //    WiFi address can be obtained separately if needed.
 
     // 5. Run supervised pairing protocol
-    eprintln!("Starting supervised pairing for device {}...", serial);
+    eprintln!(
+        "Starting supervised pairing for device {}...",
+        ios_core::redaction::diagnostic_id(&serial)
+    );
     let (pair_record, escrow_bag) =
         ios_core::pair_supervised(&mut stream, &p12_bytes, password, &buid).await?;
 

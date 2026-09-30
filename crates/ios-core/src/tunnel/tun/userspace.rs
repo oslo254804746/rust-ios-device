@@ -754,6 +754,84 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn proxy_timeout_and_eof_diagnostics_hide_raw_partial_preamble() {
+        const CHILD_ENV: &str = "IOS_PROXY_DIAGNOSTIC_CAPTURE_CHILD";
+        const TEST_NAME: &str = "tunnel::tun::userspace::tests::proxy_timeout_and_eof_diagnostics_hide_raw_partial_preamble";
+        let isolated_child = std::env::var_os(CHILD_ENV).is_some()
+            && std::env::args().any(|argument| argument == "--exact");
+        if !isolated_child {
+            // Tracing callsite interests and maximum levels are process-wide.
+            // Capture in a dedicated harness so other parallel tests cannot
+            // change the filter while this async fixture is suspended.
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn isolated proxy diagnostic fixture");
+            let result = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+            if result.is_err() {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                panic!("isolated proxy diagnostic fixture timed out");
+            }
+            assert!(
+                result
+                    .unwrap()
+                    .expect("wait for diagnostic fixture")
+                    .success(),
+                "isolated proxy diagnostic fixture failed"
+            );
+            return;
+        }
+        let (dispatch, log) = crate::redaction::test_support::capture();
+        tracing::dispatcher::set_global_default(dispatch).expect("isolated diagnostic subscriber");
+        let secret = b"secret42";
+        for eof in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            client.write_all(secret).await.unwrap();
+            let held_client = if eof {
+                drop(client);
+                None
+            } else {
+                Some(client)
+            };
+            let semaphore = Arc::new(Semaphore::new(1));
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let (tx, mut rx) = mpsc::channel(1);
+            *log.lock().unwrap() = Default::default();
+            handle_local_client(server, tx, permit, Duration::from_millis(20)).await;
+            let log = log.lock().unwrap();
+            assert!(!log.overflow);
+            assert!(!log.raw.contains(std::str::from_utf8(secret).unwrap()));
+            assert!(!log.raw.contains(&hex::encode(secret)));
+            assert!(!log.raw.contains(&format!("{secret:?}")));
+            assert!(
+                log.raw.contains(if eof {
+                    "preamble read failed"
+                } else {
+                    "preamble timed out"
+                }),
+                "expected lifecycle phase missing; eof={eof}, captured_bytes={}",
+                log.raw.len()
+            );
+            if eof {
+                assert!(log.raw.contains("io/UnexpectedEof error:"));
+            }
+            assert_eq!(semaphore.available_permits(), 1);
+            assert!(rx.try_recv().is_err());
+            drop(held_client);
+        }
+    }
+
     #[derive(Default)]
     struct CountingWriter {
         writes: Vec<Vec<u8>>,

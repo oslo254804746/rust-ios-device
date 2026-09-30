@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(DproxyError);
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -58,7 +60,7 @@ pub struct ProxyEvent {
     pub decoded: serde_json::Value,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DproxyError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

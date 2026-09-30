@@ -268,8 +268,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 Some(Ok(entry)) => return Ok(entry),
                 Some(Err(err)) => {
                     tracing::trace!(
-                        "remote fetchsymbols catalog entry parse failed: err={err}; body={:?}",
-                        message.body
+                        error = %crate::redaction::diagnostic_error(&err),
+                        "remote fetchsymbols catalog entry parse failed"
                     );
                     last_error = Some(err);
                 }

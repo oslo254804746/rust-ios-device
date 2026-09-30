@@ -6,6 +6,8 @@
 //! use an out-of-band file-transfer protocol and are deliberately not
 //! invented here.
 
+crate::redaction::error_debug!(InstallCoordinationError);
+
 use std::time::Duration;
 
 use indexmap::IndexMap;
@@ -46,7 +48,7 @@ const MAX_RESPONSE_ITEMS: usize = 4096;
 const MAX_RESPONSE_VALUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Install-coordination protocol errors.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum InstallCoordinationError {
     /// Underlying RemoteXPC transport failure.
     #[error("install coordination XPC error: {0}")]

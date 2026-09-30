@@ -1,3 +1,5 @@
+crate::redaction::error_debug!(AccessibilityAuditError);
+
 use std::time::Duration;
 
 use crate::proto::nskeyedarchiver_encode;
@@ -17,7 +19,7 @@ const EVENT_AUDIT_COMPLETE: &str = "hostDeviceDidCompleteAuditCategoriesWithAudi
 const EVENT_FOCUS_CHANGED: &str = "hostInspectorCurrentElementChanged:";
 const EVENT_MONITORED_EVENT_TYPE_CHANGED: &str = "hostInspectorMonitoredEventTypeChanged:";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum AccessibilityAuditError {
     #[error("DTX error: {0}")]
     Dtx(#[from] DtxError),

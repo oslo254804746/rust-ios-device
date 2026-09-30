@@ -4,6 +4,8 @@
 //! exposes encoded RTP/HEVC/AAC data, rather than pretending to decode pixels or
 //! audio.  The VNC/pixel decoder remains a consumer-level concern.
 
+crate::redaction::error_debug!(DisplayError);
+
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -56,7 +58,7 @@ pub const DEFAULT_MAX_ACCESS_UNIT_PACKETS: usize = 4_096;
 const DISPLAYSERVICE_NAL_TRAILER: &[u8] =
     b"\x04\xf0\x0a\xc0\x00\x00\x03\x00\x00\x04\xec\x0a\xb0\x03";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum DisplayError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

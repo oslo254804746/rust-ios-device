@@ -37,7 +37,7 @@ use crate::lockdown::LockdownError;
 ///
 /// All certificate and key fields are PEM-encoded, matching the format
 /// that `PairRecord::load()` expects on disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct FullPairRecord {
     #[serde(with = "serde_bytes")]
@@ -54,6 +54,12 @@ pub struct FullPairRecord {
     pub host_id: String,
     #[serde(rename = "SystemBUID")]
     pub system_buid: String,
+}
+
+impl std::fmt::Debug for FullPairRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FullPairRecord").finish_non_exhaustive()
+    }
 }
 
 // ── Certificate generation ───────────────────────────────────────────────────
@@ -625,6 +631,27 @@ pub fn save_pair_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_pair_record_debug_omits_all_credential_bytes_and_identifiers() {
+        let secret = "synthetic-private-credential-device-data";
+        let bytes = secret.as_bytes().to_vec();
+        let record = FullPairRecord {
+            device_certificate: bytes.clone(),
+            host_certificate: bytes.clone(),
+            host_private_key: bytes.clone(),
+            root_certificate: bytes.clone(),
+            root_private_key: bytes.clone(),
+            host_id: secret.into(),
+            system_buid: secret.into(),
+        };
+        let output = format!("{record:?} {record:#?}");
+        assert!(!output.contains(secret));
+        assert!(!output.contains(&format!("{bytes:?}")));
+        assert!(!output.contains(&hex::encode(&bytes)));
+        assert!(output.contains("FullPairRecord"));
+        assert_eq!(record.host_private_key, bytes);
+    }
 
     #[test]
     fn test_generate_pair_certs_structure() {

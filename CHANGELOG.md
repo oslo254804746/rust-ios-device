@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Discard unreviewed HTTP error bodies from manager/CDP/Selenium framework
+  rejections while preserving status, Allow and HEAD behavior. Hide credentials
+  in supervised-pairing/session Debug and raw payloads in owned error Debug.
+  Clipboard promise errors and remaining automatic progress messages use
+  diagnostic correlation; explicitly requested data keeps its API purpose.
 - Prevent arbitrary error/source text from reaching automatic CLI, manager,
   WebDriver and Python diagnostics; retain phases, categories and correlation.
   Hide credential environment values in help and addresses in Python repr.

@@ -5,6 +5,8 @@
 //! `CoreDevice.*` wrapper; this is the wire shape used by pymobiledevice3's
 //! `OrientationService`.
 
+crate::redaction::error_debug!(OrientationError);
+
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -25,7 +27,7 @@ pub const ORIENTATION_FEATURE: &str =
 const MESSAGE_TYPE: &str = "OrientationRequest";
 
 /// Errors returned by orientation control.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum OrientationError {
     /// Underlying RemoteXPC transport failure.
     #[error("xpc error: {0}")]

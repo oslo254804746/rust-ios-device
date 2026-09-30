@@ -1,5 +1,7 @@
 //! CDTunnel handshake, TUN device abstraction, and packet forwarding.
 
+crate::redaction::error_debug!(TunnelError);
+
 use std::time::Duration;
 
 /// Maximum time allowed for a TCP dial or initial protocol setup through a tunnel.
@@ -72,17 +74,35 @@ pub mod tun;
 #[cfg(feature = "tunnel")]
 pub use handshake::TunnelInfo;
 #[cfg(not(feature = "tunnel"))]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TunnelInfo {
     pub server_address: String,
     pub server_rsd_port: u16,
     pub client_address: String,
     pub client_mtu: u32,
 }
+
+#[cfg(not(feature = "tunnel"))]
+impl std::fmt::Debug for TunnelInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelInfo")
+            .field(
+                "server",
+                &crate::redaction::diagnostic_id(&self.server_address),
+            )
+            .field("rsd_port", &self.server_rsd_port)
+            .field(
+                "client",
+                &crate::redaction::diagnostic_id(&self.client_address),
+            )
+            .field("mtu", &self.client_mtu)
+            .finish()
+    }
+}
 pub use manager::{TunMode, TunnelHandle, TunnelManager};
 
 /// Errors from tunnel operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum TunnelError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
