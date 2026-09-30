@@ -491,6 +491,157 @@ async fn inspector_session_wraps_target_commands_and_unwraps_nested_responses() 
 }
 
 #[tokio::test]
+async fn browser_page_session_uses_unpaused_setup_and_explicit_teardown() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "TEST-SESSION");
+        session
+            .attach_unpaused(&mut client, true, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session
+            .send_bridge_message(&mut client, &json!({"id": 17, "method": "Runtime.enable"}))
+            .await
+            .unwrap();
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        let reply = session.bridge_message(&raw).unwrap().unwrap();
+        client
+            .send_socket_teardown(
+                session.session_id(),
+                session.application_id(),
+                session.page_id(),
+            )
+            .await
+            .unwrap();
+        reply
+    });
+
+    let setup = read_plist_frame(&mut server_stream).await;
+    let setup = setup.as_dictionary().unwrap();
+    assert_eq!(
+        setup["__selector"].as_string(),
+        Some("_rpc_forwardSocketSetup:")
+    );
+    assert_eq!(
+        setup["__argument"].as_dictionary().unwrap()["WIRAutomaticallyPause"].as_boolean(),
+        Some(false)
+    );
+    server_stream
+        .write_all(&encode_plist(&target_created_message()))
+        .await
+        .unwrap();
+
+    let data = read_plist_frame(&mut server_stream).await;
+    let data = data.as_dictionary().unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(
+        data["__argument"].as_dictionary().unwrap()["WIRSocketDataKey"]
+            .as_data()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["method"], "Target.sendMessageToTarget");
+    let nested: serde_json::Value =
+        serde_json::from_str(wire["params"]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(nested["id"], 17);
+    server_stream.write_all(&encode_plist(&plist::Value::Dictionary(plist::Dictionary::from_iter([
+        ("__selector".to_string(), plist::Value::String("_rpc_applicationSentData:".into())),
+        ("__argument".to_string(), plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "WIRMessageDataKey".to_string(), plist::Value::Data(serde_json::to_vec(&json!({
+                "method": "Target.dispatchMessageFromTarget",
+                "params": {"targetId": "target-1", "message": "{\"id\":17,\"result\":{\"enabled\":true}}"}
+            })).unwrap())
+        )]))),
+    ])))).await.unwrap();
+
+    let teardown = read_plist_frame(&mut server_stream).await;
+    let teardown = teardown.as_dictionary().unwrap();
+    assert_eq!(
+        teardown["__selector"].as_string(),
+        Some("_rpc_forwardDidClose:")
+    );
+    let args = teardown["__argument"].as_dictionary().unwrap();
+    assert_eq!(args["WIRSenderKey"].as_string(), Some("TEST-SESSION"));
+    assert_eq!(args["WIRPageIdentifierKey"].as_unsigned_integer(), Some(1));
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
+}
+
+#[tokio::test]
+async fn javascript_context_session_routes_direct_messages_without_target_event() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
+        session
+            .attach_unpaused(&mut client, false, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session
+            .send_bridge_message(&mut client, &json!({"id": 3, "method": "Runtime.enable"}))
+            .await
+            .unwrap();
+        let raw = session
+            .next_raw_message(&mut client, Duration::from_secs(1))
+            .await
+            .unwrap();
+        session.bridge_message(&raw).unwrap().unwrap()
+    });
+    let setup = read_plist_frame(&mut server_stream).await;
+    assert_eq!(
+        setup.as_dictionary().unwrap()["__selector"].as_string(),
+        Some("_rpc_forwardSocketSetup:")
+    );
+    let data = read_plist_frame(&mut server_stream).await;
+    let data = data.as_dictionary().unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(
+        data["__argument"].as_dictionary().unwrap()["WIRSocketDataKey"]
+            .as_data()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["method"], "Runtime.enable");
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            3,
+            json!({"enabled": true}),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
+}
+
+#[tokio::test]
+async fn inspector_idle_timeout_does_not_consume_later_socket_data() {
+    let (client_stream, mut server_stream) = duplex(16 * 1024);
+    let task = tokio::spawn(async move {
+        let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
+        let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
+        assert!(matches!(
+            session
+                .next_raw_message(&mut client, Duration::from_millis(20))
+                .await,
+            Err(WebInspectorError::Timeout(_))
+        ));
+        session
+            .next_raw_message(&mut client, Duration::from_millis(200))
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    server_stream
+        .write_all(&encode_plist(&automation_command_response_message(
+            3,
+            json!({"enabled": true}),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(task.await.unwrap()["result"]["enabled"], true);
+}
+
+#[tokio::test]
 async fn inspector_session_wait_for_response_preserves_unmatched_target_events() {
     let (client_stream, mut server_stream) = duplex(16 * 1024);
     let task = tokio::spawn(async move {

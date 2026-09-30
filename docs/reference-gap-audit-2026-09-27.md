@@ -39,9 +39,9 @@ Display 捕获的 Ctrl-C 和输出文件打开失败路径也已调整，避免�
 | 真机待验 | iOS 27.2 RSD host-wide UUID、macOS remoted 身份 | 主机协议实现已完成，仍需 macOS remoted 共存与 iOS 27.2 跨进程重连验证；hostname 变更会改变 fallback UUID |
 | 真机待验 | iOS 27 Cryptex DDI 自动安装 | 协议链和模拟服务测试已完成；尚未实际调用 Apple TSS 或安装设备。未验证的 roll-nonce 没有暴露命令；见 [Cryptex DDI](cryptex-ddi.md) |
 | 部分 | Wi-Fi mobdev2 / RemotePairing authTag 与私有 MAC 识别 | 算法和候选流程已完成；只读既有文件记录，尚无 usbmuxd-only 记录枚举；真实 TLS、私有 MAC 轮换、scoped IPv6 与仅 Wi-Fi 连接待验。旧 remote 记录缺 altIRK 时仍走 direct RSD；见 [Wi-Fi discovery](wifi-discovery.md) |
-| 中 | CDP 的 Playwright/Puppeteer、JSContext、iframe、Fetch、Memory/Performance 兼容 | 已有页面 CDP/WebDriver 桥；没有上游近期完整 browser-endpoint 会话及各域兼容层。需按协议域实现并引入客户端黄金流程测试，不能宣称整个 CDP 缺失或完整兼容 |
-| 中 | tunneld `/connect` WebSocket 与 federation | 已有本地 tunnel manager 和 TCP proxy；缺 HTTP 隧道桥、远端 federation 及 hop budget |
-| 中 | restore preflight requests、TSS batch 和固件消息处理 | 已有 `restore preflight-info` 元数据查询；缺设备侧预检请求生成、批量 TSS riders 与新增恢复消息链路 |
+| 部分 | CDP 的 Playwright/Puppeteer、JSContext、iframe、Fetch、Memory/Performance 兼容 | browser endpoint、Target 和 flat session 路由已进入第二阶段模拟验证；各域需独立 fixture 与客户端黄金流程，尚不能宣称完整兼容 |
+| 真机待验 | tunneld `/connect` WebSocket 与 federation | 第二阶段增加 manager 间双向桥、目标选择、远端聚合及 hop budget，模拟服务覆盖数据、断开、背压和循环；`/connect`/hop 属本项目扩展，参考 tunneld 当前只有 `/upstream` 聚合 |
+| 部分 | restore preflight requests、TSS batch 和固件消息处理 | 第二阶段增加设备侧 preflight 构建/命令、TSS 合签与回退、消息分类和固件分块 codec；未有 IPSW identity 选择和完整刷机循环，CLI 保留 `preflight-info` 查询 |
 | 中 | serve-web / VNC、图像剪贴板双向同步 | 已有编码后的 RTP 捕获和 HID；缺完整解码查看器、Web/VNC 服务、双向剪贴板和回环去重。新 watch 仅报告设备变化；断线自动重连仍未实现 |
 | 部分 | `doctor` 主机能力诊断 | 主机基础报告已完成；尚未实现 OS USB 硬件枚举、设备信任／Developer Mode／DDI 探测或 native remoted 生命周期诊断 |
 | 待专项核对 | legacy CopyDevices 断连、WebInspector 握手重试、native tunnel 生命周期、XDG 目录 | 属于平台／传输差异，未在本批修改；需各自的可复现协议或平台测试 |
@@ -85,3 +85,25 @@ pmd3 本期大消息分帧、设备路径约束与帧长度限制，在 Rust 中
 Notes 等应用复制富内容时的监听，以及监督设备上 LiquidGlass 页跳过行为。
 新分支仍未包含剪贴板自动重连、双向剪贴板或完整 CDP 实现。
 第一阶段的实施／验证状态见 [实施计划](implementation-plan-2026-09-27.md)。
+
+## 第二阶段证据边界（2026-09-30）
+
+- E 的 `/connect` 接收二进制 WebSocket 帧并转发到选定设备 TCP 端口，
+  支持本地和已注册的远端 manager；帧预算、远端列表预算与 hop 上限均有
+  本地假服务测试。当前参考 checkout 的 tunneld 仅对 `/upstream` 聚合列表，
+  没有相同的 WebSocket/hop 线协议；不能宣称跨实现 `/connect` 互通。
+- F 的 browser endpoint、Target 发现／附着／分离、flat `sessionId` 路由
+  使用合成 WebInspector 消息验证。JSContext Runtime.enable 上下文事件与
+  Runtime.evaluate 的 contextId 处理有独立 fixture；iframe、
+  输入／截图、Fetch、Memory/Performance 仍缺逐域协议 fixture 和
+  Playwright/Puppeteer 黄金流程。
+- G 的 `getdevicesidepreflightinfo` payload 从调用方选定的 BuildIdentity 与
+  IPSW 固件成员构建；TSS rider 使用设备返回的请求，签名时核对 nonce，
+  合签失败或缺票时单项重试。新增恢复事件和固件响应分块只实现有证据的
+  codec/解析，没有接入尚不存在的完整恢复执行循环。自动选择正确 IPSW
+  identity、芯片专有 manifest 映射、真实 Apple TSS 与恢复设备均待验。
+
+第二阶段主机验证：格式、workspace 全目标／全 feature 编译、严格 Clippy、
+按 CI 拆分的 Rust 测试、根目录 `.venv` 的 PyO3 6 项 host 测试、maturin
+重建及导入／无效参数合同均通过。以上模拟结果不替代真机上的 RSD 服务、
+CDP 客户端、私有 MAC、Cryptex、恢复前 nonce 或固件传输验证。

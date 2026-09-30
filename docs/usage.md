@@ -547,6 +547,7 @@ ios -u <UDID> webinspector launch https://example.com
 ios -u <UDID> webinspector launch https://example.com --bundle-id com.example.app
 ios -u <UDID> webinspector js-shell --bundle-id com.apple.mobilesafari
 printf 'document.title\n1 + 1\n.exit\n' | ios -u <UDID> webinspector js-shell --page-id 1
+ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222
 ```
 
 Many developer services require Developer Mode, a mounted Developer Disk Image,
@@ -568,6 +569,14 @@ session metadata/result/error object per line; human mode keeps results on
 stdout and evaluation errors on stderr. `--timeout` bounds connection and
 initial page setup, and each individual evaluation; it does not expire an
 otherwise idle interactive shell. Ctrl+C or EOF exits the shell.
+
+`webinspector cdp` serves `/json/list`, `/json/version`, page WebSockets, and
+the browser WebSocket advertised by `/json/version`. The browser endpoint
+implements Target discovery, attachment, detachment, and flat `sessionId`
+routing to inspectable WebKit pages and JavaScript contexts. Unsupported
+browser methods return a CDP error. This is a protocol bridge with partial
+domain coverage; Playwright/Puppeteer compatibility still requires client
+workflow validation for each relevant domain.
 
 Comparable upstream workflows:
 
@@ -637,6 +646,16 @@ for lifecycle messages such as progress, status, checkpoint, data request,
 previous log, or restored-crash notifications; it does not start a restore by
 itself. Data request events include an `async` flag so later restore-loop work
 can distinguish `DataRequestMsg` from `AsyncDataRequestMsg`.
+
+The `ios_core::restore` Rust API also builds device-side preflight payloads
+from a caller-selected IPSW build identity and firmware reader. Open a fresh
+`RestoreServiceClient` for each updater, then call the consuming
+`get_device_side_preflight_info` method. `restore::tss` extracts the resulting
+device-generated requests and batches peripheral tickets, falling back to
+individual signing when needed. Use `PrefetchedTicket::for_nonce` against the
+live runtime nonce before using a cached ticket. The CLI does not yet select
+IPSW build identities or run a full restore loop; the host protocol tests use
+fake restore and TSS services and do not contact Apple's TSS.
 
 ## Rust API
 

@@ -9,10 +9,39 @@ use crate::xpc::{XpcMessage, XpcValue};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod preflight;
+pub mod tss;
+
 /// RSD service name for RestoreRemoteServices.
 pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced";
 
 service_error!(RestoreError);
+
+/// Known restore data requests. iOS 27 aliases share the same handler families
+/// as their older counterparts when a restore transport is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreDataRequestKind {
+    SourceBootObjectV4,
+    SourceBootObjectV5,
+    FirmwareUpdaterPreflight,
+    DeviceRestoreInfoPreflight,
+    FirmwareUpdaterData,
+    HostSystemTime,
+}
+
+impl RestoreDataRequestKind {
+    pub fn from_data_type(data_type: &str) -> Option<Self> {
+        match data_type {
+            "SourceBootObjectV4" => Some(Self::SourceBootObjectV4),
+            "SourceBootObjectV5" => Some(Self::SourceBootObjectV5),
+            "FirmwareUpdaterPreflight" => Some(Self::FirmwareUpdaterPreflight),
+            "DeviceRestoreInfoPreflight" => Some(Self::DeviceRestoreInfoPreflight),
+            "FirmwareUpdaterData" => Some(Self::FirmwareUpdaterData),
+            "HostSystemTime" => Some(Self::HostSystemTime),
+            _ => None,
+        }
+    }
+}
 
 /// Normalized restore lifecycle event.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +82,13 @@ pub enum RestoreLifecycleEvent {
         /// Full raw XPC payload for fields not modeled by ios-core.
         raw: IndexMap<String, XpcValue>,
     },
+    /// iOS 27 restore transport selection announcement.
+    RestoreProtocol {
+        /// Selected host protocol, expected to be `MuxSocket`.
+        protocol: Option<String>,
+        /// Full message for diagnostics.
+        raw: IndexMap<String, XpcValue>,
+    },
     /// Previous restore log payload.
     PreviousRestoreLog(String),
     /// Crash report emitted by restored.
@@ -70,6 +106,17 @@ pub enum RestoreLifecycleEvent {
 }
 
 impl RestoreLifecycleEvent {
+    /// Classify an updater or boot-object request without discarding its raw fields.
+    pub fn data_request_kind(&self) -> Option<RestoreDataRequestKind> {
+        match self {
+            Self::DataRequest {
+                data_type: Some(data_type),
+                ..
+            } => RestoreDataRequestKind::from_data_type(data_type),
+            _ => None,
+        }
+    }
+
     /// Convert a raw XPC dictionary from restored into a typed lifecycle event.
     pub fn from_xpc_dictionary(message: &IndexMap<String, XpcValue>) -> Self {
         match message.get("MsgType").and_then(XpcValue::as_str) {
@@ -104,6 +151,13 @@ impl RestoreLifecycleEvent {
             ),
             Some("RestoredCrash") => Self::RestoredCrash {
                 backtrace: xpc_string_array(message, "RestoredBacktrace"),
+            },
+            Some("RestoreProtocol") => Self::RestoreProtocol {
+                protocol: message
+                    .get("Arguments")
+                    .and_then(XpcValue::as_dict)
+                    .and_then(|arguments| xpc_string(arguments, "RestoreProtocol")),
+                raw: message.clone(),
             },
             other => Self::Unknown {
                 msg_type: other.map(ToString::to_string),
@@ -171,6 +225,44 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         self.send_command("getpreflightinfo", None).await
     }
 
+    /// Ask restoreserviced to build updater TSS requests from the given build identity and
+    /// firmware payload. Consumes the connection because iOS 27.0 aborts after a second request.
+    /// A fresh service connection is required for each updater.
+    pub async fn get_device_side_preflight_info(
+        mut self,
+        payload: Option<XpcValue>,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let response = self.send_preflight_command(payload).await?;
+        if response.get("result").and_then(XpcValue::as_str) != Some("preflightinfo") {
+            return Err(RestoreError::Protocol(
+                "device-side preflight did not return preflightinfo".into(),
+            ));
+        }
+        response
+            .get("preflightinfo")
+            .and_then(XpcValue::as_dict)
+            .cloned()
+            .ok_or_else(|| {
+                RestoreError::Protocol(
+                    "device-side preflight missing preflightinfo dictionary".into(),
+                )
+            })
+    }
+
+    async fn send_preflight_command(
+        &mut self,
+        payload: Option<XpcValue>,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let mut request = IndexMap::from([(
+            "command".to_string(),
+            XpcValue::String("getdevicesidepreflightinfo".into()),
+        )]);
+        if let Some(payload) = payload {
+            request.insert("payload".into(), payload);
+        }
+        self.send_request(XpcValue::Dictionary(request)).await
+    }
+
     /// Query restore nonces such as AP and SEP nonces.
     pub async fn get_nonces(&mut self) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         self.send_command("getnonces", None).await
@@ -211,12 +303,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         command: &str,
         argument: Option<XpcValue>,
     ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        self.send_request(build_command_request(command, argument))
+            .await
+    }
+
+    async fn send_request(
+        &mut self,
+        body: XpcValue,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
         let request = crate::xpc::message::encode_message(&XpcMessage {
             flags: crate::xpc::message::flags::ALWAYS_SET
                 | crate::xpc::message::flags::DATA
                 | crate::xpc::message::flags::WANTING_REPLY,
             msg_id: self.next_msg_id,
-            body: Some(build_command_request(command, argument)),
+            body: Some(body),
         })
         .map_err(|err| RestoreError::Protocol(format!("restore request encode failed: {err}")))?;
         self.framer
@@ -474,6 +574,11 @@ pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_j
             "type": "restored_crash",
             "backtrace": backtrace,
         }),
+        RestoreLifecycleEvent::RestoreProtocol { protocol, raw } => serde_json::json!({
+            "type": "restore_protocol",
+            "protocol": protocol,
+            "raw": xpc_value_to_json(&XpcValue::Dictionary(raw.clone())),
+        }),
         RestoreLifecycleEvent::Unknown { msg_type, raw } => serde_json::json!({
             "type": "unknown",
             "msg_type": msg_type,
@@ -601,6 +706,87 @@ mod tests {
         assert_eq!(json["data_type"], "SystemImageData");
         assert_eq!(json["data_port"], 12345);
         assert_eq!(json["async"], true);
+    }
+
+    #[test]
+    fn parses_restore_protocol_selection() {
+        let message = IndexMap::from([
+            ("MsgType".into(), XpcValue::String("RestoreProtocol".into())),
+            (
+                "Arguments".into(),
+                XpcValue::Dictionary(IndexMap::from([(
+                    "RestoreProtocol".into(),
+                    XpcValue::String("MuxSocket".into()),
+                )])),
+            ),
+        ]);
+        let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+        assert_eq!(
+            restore_lifecycle_event_to_json(&event)["protocol"],
+            "MuxSocket"
+        );
+    }
+
+    #[test]
+    fn classifies_ios27_restore_data_requests() {
+        for (name, kind) in [
+            (
+                "SourceBootObjectV5",
+                RestoreDataRequestKind::SourceBootObjectV5,
+            ),
+            (
+                "DeviceRestoreInfoPreflight",
+                RestoreDataRequestKind::DeviceRestoreInfoPreflight,
+            ),
+        ] {
+            let message = IndexMap::from([
+                ("MsgType".into(), XpcValue::String("DataRequestMsg".into())),
+                ("DataType".into(), XpcValue::String(name.into())),
+            ]);
+            let event = RestoreLifecycleEvent::from_xpc_dictionary(&message);
+            assert_eq!(event.data_request_kind(), Some(kind));
+        }
+    }
+
+    #[tokio::test]
+    async fn device_side_preflight_sends_payload_and_validates_reply() {
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+            let request = read_xpc_request(&mut server, 1).await;
+            let dict = request.body.unwrap().as_dict().unwrap().clone();
+            assert_eq!(dict["command"].as_str(), Some("getdevicesidepreflightinfo"));
+            assert_eq!(
+                dict["payload"].as_dict().unwrap()["BuildIdentity"],
+                XpcValue::Int64(7)
+            );
+            write_xpc_response(
+                &mut server,
+                3,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("result".into(), XpcValue::String("preflightinfo".into())),
+                    (
+                        "preflightinfo".into(),
+                        XpcValue::Dictionary(IndexMap::from([(
+                            "DeviceInfoRequests".into(),
+                            XpcValue::Dictionary(IndexMap::new()),
+                        )])),
+                    ),
+                ])),
+            )
+            .await;
+        });
+        let client = RestoreServiceClient::connect(client).await.unwrap();
+        let info = client
+            .get_device_side_preflight_info(Some(XpcValue::Dictionary(IndexMap::from([(
+                "BuildIdentity".into(),
+                XpcValue::Int64(7),
+            )]))))
+            .await
+            .unwrap();
+        assert!(info.contains_key("DeviceInfoRequests"));
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

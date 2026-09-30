@@ -46,7 +46,7 @@
 4. 按仓库 CI 运行 `cargo test --workspace --exclude ios-py --all-features`，
    Python host 测试使用根目录 `.venv` 单独运行；若影响绑定，再执行 maturin
    构建／导入检查。环境配置见 [Python 构建说明](python-binding.md)。
-5. 验证通过的阶段提交并推送到当前远端分支，报告准确的已实现和待实现项。
+5. 验证通过的第二阶段仅在本地提交，不推送远端；报告准确的已实现和待实现项。
 
 真机验收另列：iOS 27.2 多进程 RSD 重连、macOS remoted 共存、iOS 27 Cryptex
 安装与服务可用性、私有 MAC 的仅 Wi-Fi 发现，以及之前待验的媒体／剪贴板行为。
@@ -73,3 +73,37 @@ Cryptex 的 nonce/TSS/五文件上传、Wi-Fi 的固定密码算法向量与候�
 剩余覆盖与验证边界已更新到 [功能差异核对](reference-gap-audit-2026-09-27.md)，
 具体用法见 [Cryptex DDI](cryptex-ddi.md)、[Wi-Fi 发现](wifi-discovery.md)
 及 [主机诊断](troubleshooting.md#host-diagnostic-report)。
+
+## 第二阶段并行安排（2026-09-30）
+
+| 执行者 | 所有权 | 集成边界 |
+| --- | --- | --- |
+| E 任务代理 | tunnel manager 的 WebSocket 桥、远端聚合与 hop 限制及模拟测试 | 现有 manager/TCP proxy 保留；共享依赖由主代理合并 |
+| F 任务代理 | WebInspector CDP browser endpoint、Target 与会话路由及模拟测试 | 先交付可验证的 browser 流程，各协议域独立验收 |
+| G 任务代理 | restore preflight、TSS batch、恢复消息和有证据的传输 codec 及模拟测试 | 保留 preflight-info；不接入未实现的刷机主循环 |
+| 主代理 | Cargo 依赖、共享接口、文档、集成审查及最终验证 | 使用根目录 `.venv`，按 CI 拆分 Rust/Python 测试 |
+
+当前参考 checkout 的 tunneld 仅提供 `/upstream` 的 JSON 列表聚合，未定义
+`/connect` WebSocket 或 hop 线协议。E 的桥和 hop 合同作为本项目 manager
+之间的扩展交付，不能宣称与参考 tunneld 的未实现端点互通。
+
+## 第二阶段本地主机交付结果（2026-09-30）
+
+- E：manager 的 `/connect` 双向 WebSocket/TCP 桥、接口与远端目标选择、
+  `/upstream` 注册和聚合、三跳预算已交付。假 TCP/WebSocket 服务验证
+  双向数据、关闭、背压、超大帧、循环和超限；旧 `/tunnels` 与 TCP proxy
+  继续可用。参考 tunneld 没有 `/connect`/hop 协议，跨实现互通不在已验范围。
+- F：CDP browser WebSocket、Target 发现／附着／分离、flat `sessionId`
+  路由，以及 JSContext 的 Runtime 执行上下文适配已交付。状态机和合成
+  WebInspector 服务已验证；iframe、输入／截图、Fetch、Memory/Performance
+  与 Playwright/Puppeteer 完整客户端流程仍需逐域实施和验证。
+- G：设备侧 preflight payload 与专用命令、TSS rider/合签/回退/nonce
+  校验、新恢复消息解析、固件分块 codec 已交付。假恢复与 TSS 服务已验证。
+  缺少 IPSW build identity 的可靠自动选择及完整恢复执行循环，因此未
+  添加 `preflight-requests` CLI，现有 `preflight-info` 保留。
+
+本轮验证：`cargo fmt --all -- --check`、workspace 全目标／全 feature
+`cargo check`、严格 Clippy 均通过。按 CI 拆分的 CLI/FFI 与 ios-core Rust
+测试通过；根目录 `.venv` 的 PyO3 host 测试 6 通过，`uvx maturin develop`
+重建与导入／错误合同通过。没有连接真机、安装 DDI、配对、恢复或请求真实
+Apple TSS；真机验收仍按上表和[差异清单](reference-gap-audit-2026-09-27.md)。

@@ -8,6 +8,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{timeout, Duration, Instant};
 use uuid::Uuid;
 
+pub mod cdp_browser;
+
 pub const SERVICE_NAME: &str = "com.apple.webinspector";
 pub const RSD_SERVICE_NAME: &str = "com.apple.webinspector.shim.remote";
 pub const SAFARI_BUNDLE_ID: &str = "com.apple.mobilesafari";
@@ -456,6 +458,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         .await
     }
 
+    /// Close a debugger forwarding socket before another client attaches to the page.
+    pub async fn send_socket_teardown(
+        &mut self,
+        session_id: &str,
+        application_id: &str,
+        page_id: u64,
+    ) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_forwardDidClose:",
+            plist::Dictionary::from_iter([
+                (
+                    "WIRApplicationIdentifierKey".to_string(),
+                    plist::Value::String(application_id.to_string()),
+                ),
+                (
+                    "WIRPageIdentifierKey".to_string(),
+                    plist::Value::Integer(page_id.into()),
+                ),
+                (
+                    "WIRSenderKey".to_string(),
+                    plist::Value::String(session_id.to_string()),
+                ),
+            ]),
+        )
+        .await
+    }
+
     pub async fn next_event(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
         if let Some(event) = self.pending_events.pop_front() {
             return Ok(event);
@@ -710,6 +739,27 @@ impl InspectorSession {
         timeout(
             remaining_time(deadline, timeout_duration)?,
             client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, true),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        if wait_for_target {
+            self.wait_for_target(client, deadline, timeout_duration)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Attach a CDP debugger without pausing the page as soon as it opens.
+    pub async fn attach_unpaused<S: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        client: &mut WebInspectorClient<S>,
+        wait_for_target: bool,
+        timeout_duration: Duration,
+    ) -> Result<(), WebInspectorError> {
+        let deadline = deadline_after(timeout_duration)?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, false),
         )
         .await
         .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;

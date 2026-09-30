@@ -65,6 +65,7 @@ futures-core = "0.3"
 flate2       = "1"
 async-stream = "0.3"
 axum         = { version = "0.7", features = ["ws", "json"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 chrono       = "0.4"
 http         = "1"
 dirs-next    = "2"

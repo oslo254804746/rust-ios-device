@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as StdWrite};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -13,6 +13,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
+use ios_core::webinspector::cdp_browser::{
+    self, BrowserCdpAction, BrowserCdpState, JsContextCdpAdapter,
+};
 use ios_core::webinspector::{
     ApplicationPage, AutomationSession, By, InspectorSession, Page, WebInspectorClient,
     WebInspectorError, WirType, RSD_SERVICE_NAME, SAFARI_BUNDLE_ID, SERVICE_NAME,
@@ -22,7 +25,7 @@ use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, watch, Mutex, OwnedMutexGuard};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -33,6 +36,26 @@ const SESSION_CLEANUP_MAX: Duration = Duration::from_millis(100);
 // so an unterminated pipe line cannot consume memory indefinitely. This is
 // large enough for normal scripts while remaining below the plist message cap.
 const MAX_SHELL_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_CDP_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
+const CDP_TARGET_POLL: Duration = Duration::from_secs(2);
+const CDP_PAGE_CHANNEL: usize = 64;
+const CDP_PAGE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CDP_PAGE_LOCKS: usize = 4096;
+static CDP_PAGE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+async fn lock_cdp_page(target_id: &str, timeout_duration: Duration) -> Result<OwnedMutexGuard<()>> {
+    let locks = CDP_PAGE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = locks.lock().await;
+    if !map.contains_key(target_id) && map.len() >= MAX_CDP_PAGE_LOCKS {
+        map.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    if !map.contains_key(target_id) && map.len() >= MAX_CDP_PAGE_LOCKS {
+        return Err(anyhow!("too many concurrent CDP page locks"));
+    }
+    let lock = map.entry(target_id.to_string()).or_default().clone();
+    drop(map);
+    Ok(tokio::time::timeout(timeout_duration, lock.lock_owned()).await?)
+}
 
 #[derive(clap::Args)]
 pub struct WebInspectorCmd {
@@ -1073,6 +1096,7 @@ async fn run_cdp_server(udid: &str, host: String, port: u16, timeout: Duration) 
         .route("/json/list", get(cdp_targets))
         .route("/json/version", get(cdp_version))
         .route("/devtools/page/:page_id", get(cdp_page_ws))
+        .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
         .with_state(state);
     serve(host, port, app).await
 }
@@ -1166,11 +1190,14 @@ async fn cdp_page_ws(
 ) -> Result<impl IntoResponse, AppError> {
     let udid = state.udid.clone();
     let timeout = state.timeout;
-    Ok(ws.on_upgrade(move |socket| async move {
-        if let Err(error) = handle_cdp_socket(socket, &udid, timeout, &page_id).await {
-            eprintln!("cdp bridge closed with error: {error:#}");
-        }
-    }))
+    Ok(ws
+        .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = handle_cdp_socket(socket, &udid, timeout, &page_id).await {
+                eprintln!("cdp bridge closed with error: {error:#}");
+            }
+        }))
 }
 
 async fn handle_cdp_socket(
@@ -1179,37 +1206,360 @@ async fn handle_cdp_socket(
     timeout: Duration,
     page_id: &str,
 ) -> Result<()> {
+    let _page_guard = lock_cdp_page(page_id, timeout).await?;
     let (_device, stream, _use_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
     client.start(timeout).await?;
     client.open_application_pages(timeout).await?;
     let (application_id, page) = find_page_by_id(&client, page_id)?;
     let mut session = InspectorSession::new(application_id, page.id);
-    session.attach(&mut client, true, timeout).await?;
+    session
+        .attach_unpaused(&mut client, page.page_type != WirType::JavaScript, timeout)
+        .await?;
 
     let (mut sender, mut receiver) = socket.split();
-    loop {
-        tokio::select! {
-            inbound = receiver.next() => {
-                match inbound {
-                    Some(Ok(Message::Text(text))) => {
-                        let message: JsonValue = serde_json::from_str(text.as_ref())?;
-                        session.send_bridge_message(&mut client, &message).await?;
+    let bridge_result = async {
+        loop {
+            tokio::select! {
+                inbound = receiver.next() => {
+                    match inbound {
+                        Some(Ok(Message::Text(text))) => {
+                            let message: JsonValue = serde_json::from_str(text.as_ref())?;
+                            session.send_bridge_message(&mut client, &message).await?;
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(error.into()),
                     }
-                    Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => return Err(error.into()),
+                }
+                outbound = session.next_raw_message(&mut client, timeout) => {
+                    match outbound {
+                        Ok(message) => {
+                            if let Some(message) = session.bridge_message(&message)? {
+                                sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+                            }
+                        }
+                        Err(WebInspectorError::Timeout(_)) => {},
+                        Err(error) => return Err(error.into()),
+                    }
                 }
             }
-            outbound = session.next_raw_message(&mut client, timeout) => {
-                let message = outbound?;
-                if let Some(message) = session.bridge_message(&message)? {
-                    sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = tokio::time::timeout(
+        timeout,
+        client.send_socket_teardown(
+            session.session_id(),
+            session.application_id(),
+            session.page_id(),
+        ),
+    )
+    .await;
+    bridge_result
+}
+
+struct BrowserPageSession {
+    sender: mpsc::Sender<JsonValue>,
+    cancel: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn stop_browser_page(page: BrowserPageSession) {
+    let _ = page.cancel.send(true);
+    drop(page.sender);
+    let mut task = page.task;
+    if tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+enum BrowserPageOutput {
+    Message {
+        session_id: String,
+        message: JsonValue,
+    },
+    Closed {
+        session_id: String,
+    },
+}
+
+async fn cdp_browser_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    Path(browser_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    if browser_id != "ios-cli" {
+        return Err(AppError::bad_request("unknown CDP browser endpoint"));
+    }
+    Ok(ws
+        .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = handle_cdp_browser_socket(socket, &state).await {
+                eprintln!("cdp browser bridge closed with error: {error:#}");
+            }
+        }))
+}
+
+async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> Result<()> {
+    let (mut sender, mut receiver) = socket.split();
+    let mut state = BrowserCdpState::new("ios-cli");
+    let initial = load_open_pages(&server.udid, server.timeout).await?;
+    state.refresh(&initial);
+    let (page_output_tx, mut page_output_rx) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let mut sessions: HashMap<String, BrowserPageSession> = HashMap::new();
+    let mut poll = tokio::time::interval(CDP_TARGET_POLL);
+    poll.tick().await;
+    let result = async {
+        loop {
+            tokio::select! {
+                inbound = receiver.next() => {
+                    match inbound {
+                        Some(Ok(Message::Text(text))) => {
+                            let request: JsonValue = match serde_json::from_str(text.as_ref()) {
+                                Ok(request) => request,
+                                Err(_) => {
+                                    sender.send(Message::Text(json!({"error": {"code": -32700, "message": "Parse error"}}).to_string())).await?;
+                                    continue;
+                                }
+                            };
+                            if matches!(request.get("method").and_then(JsonValue::as_str), Some("Target.getTargets" | "Target.attachToTarget")) {
+                                match load_open_pages(&server.udid, server.timeout).await {
+                                    Ok(pages) => {
+                                        let refresh = state.refresh(&pages);
+                                        for id in refresh.removed_sessions {
+                                            if let Some(page) = sessions.remove(&id) { stop_browser_page(page).await; }
+                                        }
+                                        send_cdp_messages(&mut sender, refresh.messages).await?;
+                                    }
+                                    Err(_) => {
+                                        send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32000, "Target discovery failed")]).await?;
+                                        continue;
+                                    }
+                                }
+                            }
+                            let action = state.handle(request);
+                            match action {
+                                BrowserCdpAction::Send(messages) => send_cdp_messages(&mut sender, messages).await?,
+                                BrowserCdpAction::Attach { request, target_id } => {
+                                    let id = state.register_attachment(&target_id).expect("known target");
+                                    match open_cdp_browser_page(server, &target_id, &id, page_output_tx.clone()).await {
+                                        Ok((input, task)) => {
+                                            sessions.insert(id.clone(), BrowserPageSession { sender: input.0, cancel: input.1, task });
+                                            send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({"sessionId": id}))]).await?;
+                                        }
+                                        Err(_) => {
+                                            state.detach(&id, false);
+                                            send_cdp_messages(&mut sender, vec![cdp_browser::error(&request, -32000, "Cannot attach to target")]).await?;
+                                        }
+                                    }
+                                }
+                                BrowserCdpAction::Detach { request, session_id } => {
+                                    if let Some(page) = sessions.remove(&session_id) {
+                                        stop_browser_page(page).await;
+                                    }
+                                    state.detach(&session_id, false);
+                                    send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({}))]).await?;
+                                }
+                                BrowserCdpAction::Forward { session_id, message } => {
+                                    if let Some(page) = sessions.get(&session_id) {
+                                        if page.sender.send(message).await.is_err() {
+                                            sessions.remove(&session_id);
+                                            send_cdp_messages(&mut sender, state.detach(&session_id, true)).await?;
+                                        }
+                                    }
+                                }
+                            }
+                            auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Ok(_)) => {},
+                        Some(Err(error)) => return Err(error.into()),
+                    }
                 }
+                output = page_output_rx.recv() => {
+                    match output {
+                        Some(BrowserPageOutput::Message {session_id, message}) => {
+                            if let Some(message) = state.page_message(&session_id, message) {
+                                send_cdp_messages(&mut sender, vec![message]).await?;
+                            }
+                        }
+                        Some(BrowserPageOutput::Closed {session_id}) => {
+                            sessions.remove(&session_id);
+                            send_cdp_messages(&mut sender, state.detach(&session_id, true)).await?;
+                        }
+                        None => break,
+                    }
+                }
+                _ = poll.tick() => {
+                    if let Ok(pages) = load_open_pages(&server.udid, server.timeout).await {
+                        let refresh = state.refresh(&pages);
+                        for id in refresh.removed_sessions {
+                            if let Some(page) = sessions.remove(&id) {
+                                stop_browser_page(page).await;
+                            }
+                        }
+                        send_cdp_messages(&mut sender, refresh.messages).await?;
+                        auto_attach_cdp_pages(server, &mut state, &mut sessions, &page_output_tx, &mut sender).await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }.await;
+    for (_, page) in sessions {
+        stop_browser_page(page).await;
+    }
+    result
+}
+
+async fn send_cdp_messages(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    messages: Vec<JsonValue>,
+) -> Result<()> {
+    for message in messages {
+        sender.send(Message::Text(message.to_string())).await?;
+    }
+    Ok(())
+}
+
+async fn auto_attach_cdp_pages(
+    server: &ServerState,
+    state: &mut BrowserCdpState,
+    sessions: &mut HashMap<String, BrowserPageSession>,
+    output: &mpsc::Sender<BrowserPageOutput>,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> Result<()> {
+    for target_id in state.unattached_targets() {
+        if let Some(session_id) = state.register_attachment(&target_id) {
+            if let Ok((input, task)) =
+                open_cdp_browser_page(server, &target_id, &session_id, output.clone()).await
+            {
+                sessions.insert(
+                    session_id.clone(),
+                    BrowserPageSession {
+                        sender: input.0,
+                        cancel: input.1,
+                        task,
+                    },
+                );
+                if let Some(event) = state.attached_event(&session_id) {
+                    send_cdp_messages(sender, vec![event]).await?;
+                }
+            } else {
+                state.detach(&session_id, false);
             }
         }
     }
     Ok(())
+}
+
+async fn open_cdp_browser_page(
+    server: &ServerState,
+    target_id: &str,
+    cdp_session_id: &str,
+    output: mpsc::Sender<BrowserPageOutput>,
+) -> Result<(
+    (mpsc::Sender<JsonValue>, watch::Sender<bool>),
+    tokio::task::JoinHandle<()>,
+)> {
+    let guard = lock_cdp_page(target_id, server.timeout).await?;
+    let (device, stream, _) =
+        connect_webinspector_with_timeout(&server.udid, server.timeout).await?;
+    let mut client = WebInspectorClient::new(stream);
+    client.start(server.timeout).await?;
+    client.open_application_pages(PAGE_DISCOVERY_IDLE).await?;
+    let (application_id, page) = find_page_by_id(&client, target_id)?;
+    let mut inspector = InspectorSession::new(application_id, page.id);
+    let mut js_adapter = (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
+    if let Err(error) = inspector
+        .attach_unpaused(
+            &mut client,
+            page.page_type != WirType::JavaScript,
+            server.timeout,
+        )
+        .await
+    {
+        let _ = tokio::time::timeout(
+            server.timeout,
+            client.send_socket_teardown(
+                inspector.session_id(),
+                inspector.application_id(),
+                inspector.page_id(),
+            ),
+        )
+        .await;
+        return Err(error.into());
+    }
+    let (input, mut receiver) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let (cancel, mut cancellation) = watch::channel(false);
+    let timeout = server.timeout;
+    let cdp_session_id = cdp_session_id.to_string();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        let _device = device;
+        'page: loop {
+            tokio::select! {
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow() { break; }
+                }
+                inbound = receiver.recv() => {
+                    match inbound {
+                        Some(message) => {
+                            let messages = if let Some(adapter) = &mut js_adapter {
+                                adapter.outgoing(message)
+                            } else { vec![message] };
+                            for message in messages {
+                                if inspector.send_bridge_message(&mut client, &message).await.is_err() { break 'page; }
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                outbound = inspector.next_raw_message(&mut client, timeout) => {
+                    match outbound {
+                        Ok(message) => match inspector.bridge_message(&message) {
+                            Ok(Some(message)) => {
+                                // The outer session ID is added by the browser state.
+                                let messages = if let Some(adapter) = &mut js_adapter {
+                                    adapter.incoming(message)
+                                } else { vec![message] };
+                                for message in messages {
+                                    tokio::select! {
+                                        result = output.send(BrowserPageOutput::Message {session_id: cdp_session_id.clone(), message}) => { if result.is_err() { break 'page; } }
+                                        changed = cancellation.changed() => { if changed.is_err() || *cancellation.borrow() { break 'page; } }
+                                    }
+                                }
+                            }
+                            Ok(None) => {},
+                            Err(_) => break,
+                        },
+                        Err(WebInspectorError::Timeout(_)) => {},
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        let _ = tokio::time::timeout(
+            timeout,
+            client.send_socket_teardown(
+                inspector.session_id(),
+                inspector.application_id(),
+                inspector.page_id(),
+            ),
+        )
+        .await;
+        let _ = output.try_send(BrowserPageOutput::Closed {
+            session_id: cdp_session_id,
+        });
+    });
+    Ok(((input, cancel), task))
 }
 
 async fn webdriver_status() -> Json<JsonValue> {

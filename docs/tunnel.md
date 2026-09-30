@@ -21,11 +21,38 @@ Run the tunnel manager:
 ios tunnel serve --userspace --host 127.0.0.1 --port 49151
 ```
 
-The manager exposes health and tunnel endpoints for local tooling. Check the exact route behavior with:
+The manager exposes health, tunnel, and federation endpoints for local tooling.
+Check its CLI options with:
 
 ```sh
 ios tunnel serve --help
 ```
+
+## Manager federation and WebSocket bridge
+
+`GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
+UDID-keyed tunnel listing including registered upstream managers. Register one
+with `POST /upstream` and `{"url":"http://host:port/"}`; `GET /upstream` lists
+registrations and `DELETE /upstream` with the same JSON body removes one. The
+manager fetches upstream listings with a two-second deadline and a 1 MiB body
+limit. Listings stop following upstreams after three manager hops, including
+cycles. An explicit request beyond that budget receives HTTP 508.
+
+`GET /connect?udid=<UDID>&port=<DEVICE_PORT>` upgrades to a WebSocket and
+relays binary frames to that device-side TCP port. Use `interface=<NAME>` to
+select one tunnel when a UDID has multiple records, or `upstream=<REGISTERED_URL>`
+to select a registered remote manager. The optional `hop` query counts relays;
+the manager increments it on each remote bridge and rejects values above three.
+Frames are limited to 64 KiB in either direction and each write awaits the
+receiver, so a slow endpoint applies backpressure. The existing userspace TCP
+proxy remains available.
+
+This `/connect` and hop contract is specific to this project's managers. The
+reference tunneld currently implements `/upstream` listing aggregation but has
+no matching WebSocket bridge or hop wire protocol. Upstream URLs currently use
+`http`/`ws` only. The manager API has no authentication; bind it to a trusted
+interface or use a protected host transport such as an SSH forward for remote
+federation.
 
 ## Connection timeout
 
