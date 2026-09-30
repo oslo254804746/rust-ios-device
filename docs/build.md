@@ -35,7 +35,8 @@ feature cuts can expose unused imports/dead code from shared transports. These
 are recorded warnings; full-feature Clippy still rejects warnings.
 
 Each step also has a focused scope: `fmt`, `check`, `lint`, `rust-tests`,
-`python-host`, `msrv`, `features`, `docs`, `ffi`, `python-package`, `tooling-tests`. CI calls
+`python-host`, `msrv`, `features`, `docs`, `ffi`, `python-package`, `tooling-tests`,
+`capabilities`. CI calls
 these same scopes. Linux results do not establish macOS/Windows support;
 CI is configured for native/C checks on three systems and Python host/wheel checks on 3.9
 and 3.13. No test in this entry point pairs, installs to or modifies a device.

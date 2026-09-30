@@ -18,6 +18,9 @@ common Apple device services.
 > depends on iOS version, pairing/trust state, Developer Mode, supervision,
 > and the host's Apple Mobile Device components.
 
+The maintained [capability inventory](docs/capabilities.md) separates each
+command/service's implementation from host, simulated and real-device evidence.
+
 ## Highlights
 
 - **Cross-platform CLI (`ios`)** with 54+ subcommands covering devices, files,

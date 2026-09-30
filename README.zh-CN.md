@@ -15,6 +15,9 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 > 但稳定版本前公开 API 与 CLI 仍可能变化。具体服务是否可用取决于 iOS 版本、
 > 设备信任与配对状态、Developer Mode、监督状态以及主机的 Apple Mobile Device 组件。
 
+[能力清单](docs/capabilities.md) 分别登记各命令/服务的实现、主机测试、模拟流程和
+真机证据；具体支持边界以该清单和关联专题文档为准。
+
 ## 亮点
 
 - **跨平台 CLI（`ios`）**——54+ 子命令，覆盖设备、文件、应用、Instruments、

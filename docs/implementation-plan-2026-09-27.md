@@ -1,5 +1,8 @@
 # 参考功能补齐实施计划
 
+本文保留 2026-09-27 阶段的实施历史。当前能力与证据见
+[权威清单](capabilities.md)，后续调度见 [工程计划](engineering-roadmap-2026-09-30.md)。
+
 基于 [功能差异核对](reference-gap-audit-2026-09-27.md)，继续在
 `feat/device-service-updates-20260927` 开发。已有首批功能和验证结果保留。
 参考实现使用已 fetch 的远端 Git 对象，精确提交记录仍保存在仓库外；

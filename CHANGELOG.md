@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a maintained capability/evidence inventory for CLI, Rust service families
+  and binding/workflow boundaries, with CI checks for drift and unsupported
+  maturity claims.
+
 - Added a cross-platform validation entry point for minimal feature builds,
   split Rust/Python tests, doctests, downstream examples and linked C ABI smoke.
 - Added candidate CLI/C/Python artifact validation and complete release gates,
