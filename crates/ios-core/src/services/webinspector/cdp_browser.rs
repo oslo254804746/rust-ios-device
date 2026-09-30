@@ -35,6 +35,7 @@ pub struct BrowserCdpState {
     target_sessions: HashMap<String, String>, // qualified target ID -> CDP session ID
     discover: bool,
     auto_attach: bool,
+    auto_attach_filter: Vec<(Option<String>, bool)>,
     events_session: Option<String>,
 }
 
@@ -48,6 +49,7 @@ impl BrowserCdpState {
             target_sessions: HashMap::new(),
             discover: false,
             auto_attach: false,
+            auto_attach_filter: Vec::new(),
             events_session: None,
         }
     }
@@ -62,7 +64,9 @@ impl BrowserCdpState {
         }
         self.targets
             .keys()
-            .filter(|id| !self.target_sessions.contains_key(*id))
+            .filter(|id| {
+                !self.target_sessions.contains_key(*id) && self.filter_allows(&self.targets[*id])
+            })
             .cloned()
             .collect()
     }
@@ -73,6 +77,16 @@ impl BrowserCdpState {
 
     pub fn target_for_session(&self, session_id: &str) -> Option<&str> {
         self.page_sessions.get(session_id).map(String::as_str)
+    }
+
+    fn filter_allows(&self, info: &Value) -> bool {
+        let target_type = info.get("type").and_then(Value::as_str);
+        self.auto_attach_filter
+            .iter()
+            .find_map(|(kind, excluded)| {
+                (kind.as_deref().is_none() || kind.as_deref() == target_type).then_some(!excluded)
+            })
+            .unwrap_or(self.auto_attach_filter.is_empty())
     }
 
     pub fn register_attachment(&mut self, target_id: &str) -> Option<String> {
@@ -183,7 +197,10 @@ impl BrowserCdpState {
                     .messages
                     .push(self.event("Target.targetCreated", json!({"targetInfo": info})));
             }
-            if self.auto_attach && !self.target_sessions.contains_key(target_id) {
+            if self.auto_attach
+                && !self.target_sessions.contains_key(target_id)
+                && self.filter_allows(info)
+            {
                 output.auto_attach_targets.push(target_id.clone());
             }
         }
@@ -209,6 +226,12 @@ impl BrowserCdpState {
         if let Some(session_id) = &session_id {
             if !self.browser_sessions.contains(session_id) {
                 if self.page_sessions.contains_key(session_id) {
+                    if unverified_page_method(&message) {
+                        return BrowserCdpAction::Send(
+                            id.map(|_| vec![error(&message, -32601, "CDP domain not implemented")])
+                                .unwrap_or_default(),
+                        );
+                    }
                     let mut forwarded = message;
                     forwarded
                         .as_object_mut()
@@ -251,6 +274,7 @@ impl BrowserCdpState {
             "Target.getTargets" => {
                 json!({"targetInfos": self.targets.values().collect::<Vec<_>>()})
             }
+            "Target.getBrowserContexts" => json!({"browserContextIds": []}),
             "Target.getTargetInfo" => {
                 let requested = params
                     .and_then(|p| p.get("targetId"))
@@ -327,7 +351,18 @@ impl BrowserCdpState {
                         "Only flattened sessions are supported",
                     )]);
                 }
+                let filter = match parse_target_filter(params.and_then(|p| p.get("filter"))) {
+                    Ok(filter) => filter,
+                    Err(()) => {
+                        return BrowserCdpAction::Send(vec![error(
+                            &message,
+                            -32602,
+                            "invalid Target filter",
+                        )])
+                    }
+                };
                 self.auto_attach = auto_attach;
+                self.auto_attach_filter = filter;
                 if auto_attach {
                     self.events_session = session_id.clone();
                 }
@@ -412,6 +447,32 @@ impl BrowserCdpState {
     }
 }
 
+fn parse_target_filter(value: Option<&Value>) -> Result<Vec<(Option<String>, bool)>, ()> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let entries = value.as_array().ok_or(())?;
+    if entries.len() > 32 {
+        return Err(());
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let entry = entry.as_object().ok_or(())?;
+            let kind = entry
+                .get("type")
+                .map(|kind| kind.as_str().map(str::to_owned).ok_or(()))
+                .transpose()?;
+            let excluded = entry
+                .get("exclude")
+                .map(|exclude| exclude.as_bool().ok_or(()))
+                .transpose()?
+                .unwrap_or(false);
+            Ok((kind, excluded))
+        })
+        .collect()
+}
+
 pub fn reply(request: &Value, result: Value) -> Value {
     let mut response = json!({"id": request["id"], "result": result});
     if let Some(session_id) = request.get("sessionId") {
@@ -428,6 +489,25 @@ pub fn error(request: &Value, code: i32, message: &str) -> Value {
     response
 }
 
+/// WebKit and CDP share some method names while differing in parameters and results.
+/// Reject domains that have no verified translation instead of forwarding a misleading success.
+pub fn unverified_page_method(message: &Value) -> bool {
+    message
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| {
+            ["Page.", "Input.", "Fetch.", "Memory.", "Performance."]
+                .iter()
+                .any(|prefix| method.starts_with(prefix))
+                || (method == "Runtime.evaluate"
+                    && message
+                        .get("params")
+                        .and_then(|params| params.get("throwOnSideEffect"))
+                        .and_then(Value::as_bool)
+                        == Some(true))
+        })
+}
+
 /// The JavaScriptCore inspector has one implicit execution context and no
 /// Target wrapper. Keep the small amount of state needed for that CDP view.
 #[derive(Debug, Default)]
@@ -439,6 +519,21 @@ pub struct JsContextCdpAdapter {
 const JS_CONSOLE_ENABLE_ID: i64 = -0x4000_0000;
 
 impl JsContextCdpAdapter {
+    pub fn invalid_context_response(&self, message: &Value) -> Option<Value> {
+        if message.get("method").and_then(Value::as_str) != Some("Runtime.evaluate") {
+            return None;
+        }
+        let params = message.get("params")?;
+        let invalid_id = params
+            .get("contextId")
+            .is_some_and(|id| id.as_u64() != Some(1));
+        let invalid_unique = params
+            .get("uniqueContextId")
+            .is_some_and(|id| id.as_str() != Some("jscontext.1"));
+        (invalid_id || invalid_unique)
+            .then(|| error(message, -32602, "Unknown JavaScript execution context"))
+    }
+
     pub fn outgoing(&mut self, mut message: Value) -> Vec<Value> {
         match message.get("method").and_then(Value::as_str) {
             Some("Runtime.enable") => {
@@ -633,6 +728,36 @@ mod tests {
     }
 
     #[test]
+    fn puppeteer_browser_context_and_auto_attach_filter_flow() {
+        let mut state = BrowserCdpState::new("ios-cli");
+        let web_page = page("PID:42", "1", WirType::WebPage);
+        let node = page("PID:43", "2", WirType::JavaScript);
+        state.refresh(&[web_page.clone(), node.clone()]);
+        let contexts = sent(
+            &mut state,
+            json!({"id": 1, "method": "Target.getBrowserContexts"}),
+        );
+        assert_eq!(contexts[0]["result"]["browserContextIds"], json!([]));
+        sent(
+            &mut state,
+            json!({"id": 2, "method": "Target.setAutoAttach", "params": {
+                "autoAttach": true, "flatten": true, "waitForDebuggerOnStart": true,
+                "filter": [{"type": "page", "exclude": true}, {}]
+            }}),
+        );
+        assert_eq!(state.unattached_targets(), vec!["PID:43:2"]);
+        let update = state.refresh(&[web_page, node]);
+        assert_eq!(update.auto_attach_targets, vec!["PID:43:2"]);
+        let invalid = sent(
+            &mut state,
+            json!({"id": 3, "method": "Target.setAutoAttach", "params": {
+                "autoAttach": true, "filter": [{"exclude": "yes"}]
+            }}),
+        );
+        assert_eq!(invalid[0]["error"]["code"], -32602);
+    }
+
+    #[test]
     fn js_context_enable_announces_one_context_and_strips_unsupported_selectors() {
         let mut adapter = JsContextCdpAdapter::default();
         let messages = adapter.outgoing(json!({"id": 7, "method": "Runtime.enable"}));
@@ -660,5 +785,51 @@ mod tests {
             adapter.incoming(json!({"id": 7, "error": {"code": -32000, "message": "unavailable"}}));
         assert_eq!(incoming.len(), 1);
         assert_eq!(incoming[0]["error"]["code"], -32000);
+    }
+
+    #[test]
+    fn unverified_domains_and_side_effect_preview_never_reach_webinspector() {
+        let mut state = BrowserCdpState::new("ios-cli");
+        state.refresh(&[page("PID:42", "1", WirType::WebPage)]);
+        let session = state.register_attachment("PID:42:1").unwrap();
+        for (index, method) in [
+            "Page.getFrameTree",
+            "Page.captureScreenshot",
+            "Input.dispatchMouseEvent",
+            "Fetch.enable",
+            "Memory.getDOMCounters",
+            "Performance.getMetrics",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let request = json!({"id": index + 1, "sessionId": session, "method": method});
+            let BrowserCdpAction::Send(messages) = state.handle(request) else {
+                panic!("unverified method was forwarded: {method}");
+            };
+            assert_eq!(messages[0]["error"]["code"], -32601);
+        }
+        let preview = json!({"id": 20, "sessionId": session, "method": "Runtime.evaluate",
+            "params": {"expression": "mutate()", "throwOnSideEffect": true}});
+        let BrowserCdpAction::Send(messages) = state.handle(preview) else {
+            panic!("unsafe preview was forwarded");
+        };
+        assert_eq!(messages[0]["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn js_context_rejects_unknown_context_before_stripping_selector() {
+        let adapter = JsContextCdpAdapter::default();
+        let request = json!({"id": 5, "method": "Runtime.evaluate", "params": {
+            "expression": "1+1", "contextId": 2
+        }});
+        assert_eq!(
+            adapter.invalid_context_response(&request).unwrap()["error"]["code"],
+            -32602
+        );
+        let valid = json!({"id": 6, "method": "Runtime.evaluate", "params": {
+            "expression": "1+1", "contextId": 1
+        }});
+        assert!(adapter.invalid_context_response(&valid).is_none());
     }
 }

@@ -46,6 +46,11 @@ the manager increments it on each remote bridge and rejects values above three.
 Frames are limited to 64 KiB in either direction and each write awaits the
 receiver, so a slow endpoint applies backpressure. The existing userspace TCP
 proxy remains available.
+When a selected listing entry belongs to a second upstream, `/connect` carries
+that next registered upstream URL to the intermediate manager. This preserves
+the chosen interface and target across federation hops. Closing either side of
+a remote WebSocket bridge attempts to forward a close frame to the other side
+within one second.
 
 This `/connect` and hop contract is specific to this project's managers. The
 reference tunneld currently implements `/upstream` listing aggregation but has

@@ -249,6 +249,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             })
     }
 
+    /// Build a bounded IPSW payload and request one updater's device-side preflight data.
+    /// This consumes the connection because affected devices reject a second request.
+    pub async fn get_device_side_preflight_info_from_ipsw<R: std::io::Read + std::io::Seek>(
+        self,
+        ipsw: &mut preflight::IpswPreflight<R>,
+        updater: &str,
+    ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        let payload = ipsw.payload_for_updater(updater)?;
+        self.get_device_side_preflight_info(Some(payload)).await
+    }
+
     async fn send_preflight_command(
         &mut self,
         payload: Option<XpcValue>,
@@ -786,6 +797,93 @@ mod tests {
             .await
             .unwrap();
         assert!(info.contains_key("DeviceInfoRequests"));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ipsw_preflight_uses_selected_identity_with_fake_restore_service() {
+        use std::io::{Cursor, Write};
+        let info = plist::Dictionary::from_iter([
+            ("DeviceClass", plist::Value::String("d63ap".into())),
+            ("RestoreBehavior", plist::Value::String("Update".into())),
+        ]);
+        let identity = plist::Dictionary::from_iter([
+            ("ApBoardID", plist::Value::Integer(16.into())),
+            ("ApChipID", plist::Value::Integer(32.into())),
+            ("Info", plist::Value::Dictionary(info)),
+            (
+                "Manifest",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Rap,RTKitOS",
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "Info",
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                            "Path",
+                            plist::Value::String("Firmware/rose.bin".into()),
+                        )])),
+                    )])),
+                )])),
+            ),
+        ]);
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "BuildIdentities",
+            plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+        )]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("Firmware/rose.bin", options).unwrap();
+        writer.write_all(b"rose").unwrap();
+        let mut ipsw = preflight::IpswPreflight::open(
+            Cursor::new(writer.finish().unwrap().into_inner()),
+            preflight::IpswIdentitySelector {
+                board_id: 16,
+                chip_id: 32,
+                device_class: "d63ap",
+                restore_behavior: "Update",
+            },
+        )
+        .unwrap();
+        let (client, mut server) = tokio::io::duplex(32 * 1024);
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+            let request = read_xpc_request(&mut server, 1).await;
+            let body = request.body.unwrap();
+            let payload = body.as_dict().unwrap()["payload"].as_dict().unwrap();
+            assert_eq!(
+                payload["BuildIdentity"].as_dict().unwrap()["ApBoardID"],
+                XpcValue::Int64(16)
+            );
+            assert_eq!(
+                payload["Rose"].as_dict().unwrap()["Rap,RTKitOS"],
+                XpcValue::Data(bytes::Bytes::from_static(b"rose"))
+            );
+            write_xpc_response(
+                &mut server,
+                3,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("result".into(), XpcValue::String("preflightinfo".into())),
+                    (
+                        "preflightinfo".into(),
+                        XpcValue::Dictionary(IndexMap::from([(
+                            "RoseRequests".into(),
+                            XpcValue::Dictionary(IndexMap::new()),
+                        )])),
+                    ),
+                ])),
+            )
+            .await;
+        });
+        let client = RestoreServiceClient::connect(client).await.unwrap();
+        let result = client
+            .get_device_side_preflight_info_from_ipsw(&mut ipsw, "Rose")
+            .await
+            .unwrap();
+        assert!(result.contains_key("RoseRequests"));
         server_task.await.unwrap();
     }
 

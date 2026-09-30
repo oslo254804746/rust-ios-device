@@ -37,6 +37,7 @@ const MAX_UPSTREAMS: usize = 32;
 const MAX_LIST_BYTES: usize = 1024 * 1024;
 const BRIDGE_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+const BRIDGE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(clap::Args)]
 pub struct TunnelCmd {
@@ -376,6 +377,7 @@ type FederationListing = HashMap<String, Vec<serde_json::Value>>;
 struct RemoteTarget {
     upstream: String,
     interface: Option<String>,
+    next_upstream: Option<String>,
 }
 
 impl StartTunnelQuery {
@@ -537,7 +539,7 @@ impl TunnelAgentState {
                 }
             };
             if let Some(entries) = listing.get(&query.udid) {
-                if entries.iter().any(|entry| {
+                if let Some(entry) = entries.iter().find(|entry| {
                     query.interface.as_ref().map_or(true, |interface| {
                         entry.get("interface").and_then(serde_json::Value::as_str)
                             == Some(interface.as_str())
@@ -545,7 +547,14 @@ impl TunnelAgentState {
                 }) {
                     return Ok(Some(RemoteTarget {
                         upstream,
-                        interface: query.interface.clone(),
+                        interface: entry
+                            .get("interface")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        next_upstream: entry
+                            .get("upstream")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
                     }));
                 }
             }
@@ -943,6 +952,9 @@ fn remote_connect_url(target: &RemoteTarget, query: &ConnectQuery) -> Result<req
     if let Some(interface) = &target.interface {
         url.query_pairs_mut().append_pair("interface", interface);
     }
+    if let Some(next_upstream) = &target.next_upstream {
+        url.query_pairs_mut().append_pair("upstream", next_upstream);
+    }
     Ok(url)
 }
 
@@ -972,7 +984,9 @@ where
         loop {
             let count = tcp_rx.read(&mut buffer).await?;
             if count == 0 {
-                let _ = ws_tx.send(Message::Close(None)).await;
+                let _ =
+                    tokio::time::timeout(BRIDGE_CLOSE_TIMEOUT, ws_tx.send(Message::Close(None)))
+                        .await;
                 return Ok::<(), anyhow::Error>(());
             }
             ws_tx
@@ -1010,41 +1024,88 @@ where
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
     let to_upstream = async {
         while let Some(message) = client_rx.next().await {
-            match message? {
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        upstream_tx.send(tungstenite::Message::Close(None)),
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
+            match message {
                 Message::Binary(bytes) => {
                     upstream_tx
                         .send(tungstenite::Message::Binary(bytes))
                         .await?
                 }
                 Message::Close(_) => {
-                    let _ = upstream_tx.send(tungstenite::Message::Close(None)).await;
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        upstream_tx.send(tungstenite::Message::Close(None)),
+                    )
+                    .await;
                     return Ok::<(), anyhow::Error>(());
                 }
                 Message::Ping(_) | Message::Pong(_) => {}
                 Message::Text(_) => {
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        upstream_tx.send(tungstenite::Message::Close(None)),
+                    )
+                    .await;
                     anyhow::bail!("TCP bridge accepts binary WebSocket messages only")
                 }
             }
         }
+        let _ = tokio::time::timeout(
+            BRIDGE_CLOSE_TIMEOUT,
+            upstream_tx.send(tungstenite::Message::Close(None)),
+        )
+        .await;
         Ok(())
     };
     let to_client = async {
         while let Some(message) = upstream_rx.next().await {
-            match message? {
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        client_tx.send(Message::Close(None)),
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
+            match message {
                 tungstenite::Message::Binary(bytes) => {
                     client_tx.send(Message::Binary(bytes)).await?
                 }
                 tungstenite::Message::Close(_) => {
-                    let _ = client_tx.send(Message::Close(None)).await;
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        client_tx.send(Message::Close(None)),
+                    )
+                    .await;
                     return Ok::<(), anyhow::Error>(());
                 }
                 tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {}
                 tungstenite::Message::Text(_) => {
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        client_tx.send(Message::Close(None)),
+                    )
+                    .await;
                     anyhow::bail!("upstream TCP bridge sent a text WebSocket message")
                 }
                 tungstenite::Message::Frame(_) => {}
             }
         }
+        let _ =
+            tokio::time::timeout(BRIDGE_CLOSE_TIMEOUT, client_tx.send(Message::Close(None))).await;
         Ok(())
     };
     tokio::select! { result = to_upstream => result, result = to_client => result }
@@ -1901,8 +1962,78 @@ mod tests {
             tungstenite::Message::Binary(b"remote".to_vec())
         );
         proxy_task.await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .unwrap(),
+            Some(Ok(tungstenite::Message::Close(_)))
+        ));
         agent_task.abort();
         upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn nested_federation_preserves_selected_upstream_and_hop() {
+        let (proxy_port, proxy_task) = spawn_fake_proxy().await;
+        let record = fake_record(proxy_port);
+        let listing_record = serde_json::to_value(&record).unwrap();
+        let leaf = Router::new()
+            .route(
+                "/",
+                get(move || async move { Json(json!({"test-udid": [listing_record]})) }),
+            )
+            .route(
+                "/connect",
+                get(
+                    move |Query(query): Query<ConnectQuery>, ws: WebSocketUpgrade| async move {
+                        assert_eq!(query.hop, 2);
+                        assert_eq!(query.interface.as_deref(), Some("fake-interface"));
+                        let stream = connect_record_port(&record, query.port).await.unwrap();
+                        ws.on_upgrade(move |socket| async move {
+                            bridge_tcp_websocket(socket, stream).await.unwrap();
+                        })
+                    },
+                ),
+            );
+        let (leaf_port, leaf_task) = spawn_test_router(leaf).await;
+        let middle = TunnelAgentState::new(TunMode::Userspace);
+        middle
+            .inner
+            .upstreams
+            .write()
+            .await
+            .insert(format!("http://127.0.0.1:{leaf_port}/"));
+        let (middle_port, middle_task) = spawn_test_router(agent_router(middle)).await;
+        let root = TunnelAgentState::new(TunMode::Userspace);
+        root.inner
+            .upstreams
+            .write()
+            .await
+            .insert(format!("http://127.0.0.1:{middle_port}/"));
+        let (root_port, root_task) = spawn_test_router(agent_router(root)).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{root_port}/connect?udid=test-udid&port=12345&interface=fake-interface"
+        ))
+        .await
+        .unwrap();
+        client
+            .send(tungstenite::Message::Binary(b"nested".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(
+            client.next().await.unwrap().unwrap(),
+            tungstenite::Message::Binary(b"nested".to_vec())
+        );
+        proxy_task.await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .unwrap(),
+            Some(Ok(tungstenite::Message::Close(_)))
+        ));
+        root_task.abort();
+        middle_task.abort();
+        leaf_task.abort();
     }
 
     #[tokio::test]
@@ -1938,6 +2069,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(over_limit.status(), StatusCode::LOOP_DETECTED);
+        let exhausted = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{first_port}/connect?udid=missing&port=12345&hop=3"
+        ))
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(exhausted, tungstenite::Error::Http(response) if response.status() == StatusCode::LOOP_DETECTED)
+        );
         let connect_over_limit = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{first_port}/connect?udid=missing&port=12345&hop=4"
         ))

@@ -56,7 +56,8 @@
 
 A、B、C 和主机范围的 D 已完成。RSD 的 macOS 身份解析、主动握手及回退、
 Cryptex 的 nonce/TSS/五文件上传、Wi-Fi 的固定密码算法向量与候选校验、doctor
-的期限／响应预算／输出脱敏均有主机测试。后续 E–I 仍按上表保留，未开始实施。
+的期限／响应预算／输出脱敏均有主机测试。E–G 的后续进度见下方第二阶段记录；
+H–I 仍保留为后续工作。
 
 - 格式检查、workspace 全目标／全 feature 编译、严格 Clippy：通过。
 - `cargo test --workspace --exclude ios-py --all-features`：1508 通过，
@@ -107,3 +108,25 @@ Cryptex 的 nonce/TSS/五文件上传、Wi-Fi 的固定密码算法向量与候�
 测试通过；根目录 `.venv` 的 PyO3 host 测试 6 通过，`uvx maturin develop`
 重建与导入／错误合同通过。没有连接真机、安装 DDI、配对、恢复或请求真实
 Apple TSS；真机验收仍按上表和[差异清单](reference-gap-audit-2026-09-27.md)。
+
+## 第二阶段收尾复核（2026-09-30）
+
+- F：从实际 Playwright 1.63.0 和 Puppeteer 25.12.0 的启动请求探针确定
+  `Target.getBrowserContexts`、自动附着过滤器及 Playwright 的
+  `Browser.setDownloadBehavior` 要求。已补前两者和 `/json/version/` 路由；
+  下载行为仍明确报不支持。JSContext 的 Runtime 流程增加合成
+  WebInspector 服务测试。Page/iframe、Input/截图、Fetch、Memory、
+  Performance 仍缺通过 Rust 桥的真实客户端流程，均保留未实现；
+  重名 WebKit 命令现返回显式错误。逐域证据与复现步骤见
+  [CDP 兼容状态](cdp-compatibility.md)。
+- G：增加 IPSW ZIP 读取与 BuildManifest identity 精确选择，限定 manifest、
+  ZIP 成员和固件总量；通过现有单次设备侧 preflight API 发出 payload。
+  假恢复服务覆盖所选 identity 与固件字节。CLI 所需的设备板号、芯片号、
+  硬件型号查询及系统版本门槛仍无真机协议证据，因此不新增
+  `preflight-requests`。用法与限制见 [IPSW preflight](restore-preflight.md)。
+- E：二级上游目标选择现在携带下一跳 URL；远端桥一侧结束后向另一侧
+  发送关闭帧。两跳选择、关闭与 hop=3/4 边界均有假服务测试。
+  `/connect` 和 hop 继续明确为本项目 manager 间的协议扩展。
+
+本次仅做主机和模拟服务验证；新的 Rust/Python 全量验证与本地提交号在
+交付报告中记录。第三阶段 H 和横向 I 的状态不变。

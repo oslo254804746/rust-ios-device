@@ -577,6 +577,9 @@ routing to inspectable WebKit pages and JavaScript contexts. Unsupported
 browser methods return a CDP error. This is a protocol bridge with partial
 domain coverage; Playwright/Puppeteer compatibility still requires client
 workflow validation for each relevant domain.
+The current per-domain status, explicit errors for unverified methods, and a
+reproducible Playwright/Puppeteer startup probe are in
+[CDP compatibility](cdp-compatibility.md).
 
 Comparable upstream workflows:
 

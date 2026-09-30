@@ -107,3 +107,17 @@ Notes 等应用复制富内容时的监听，以及监督设备上 LiquidGlass �
 按 CI 拆分的 Rust 测试、根目录 `.venv` 的 PyO3 6 项 host 测试、maturin
 重建及导入／无效参数合同均通过。以上模拟结果不替代真机上的 RSD 服务、
 CDP 客户端、私有 MAC、Cryptex、恢复前 nonce 或固件传输验证。
+
+## 第二阶段收尾差异（2026-09-30）
+
+| 范围 | 本轮证据与剩余缺口 |
+| --- | --- |
+| F：browser/JSContext | 合成 WebInspector 服务验证 JSContext Runtime.enable、上下文事件及求值；Puppeteer 25.12.0 独立假 CDP 端点探针提供初始化请求序列，补了 `Target.getBrowserContexts` 与自动附着过滤器。此探针没有通过 Rust 桥；JSContext 客户端兼容仍列未实现。 |
+| F：Playwright | Playwright 1.63.0 启动探针要求 `/json/version/` 与 `Browser.setDownloadBehavior`；前者已补，后者没有下载语义实现，客户端启动明确失败。缺 Rust 桥加合成 WebInspector 的客户端流程。 |
+| F：iframe、输入/截图、Fetch、Memory/Performance | 均保留未实现。Page、Input、Fetch、Memory、Performance 命令在桥上明确返回 CDP 错误；缺逐域 WebInspector 抓包、客户端交互 fixture 与完整事件顺序。具体下一步见 [CDP 兼容状态](cdp-compatibility.md)。 |
+| G：IPSW preflight | 精确选择板号、芯片号、DeviceClass、RestoreBehavior 和标准 variant；有界读取 ZIP/固件，并通过假恢复服务验证现有 preflight API。`preflight-requests` CLI 仍缺设备字段来源和版本门槛的真机证据；不启动刷机。 |
+| E：远端隧道 | 修复二级上游选择和远端 EOF 关闭帧，假服务覆盖两跳与 hop 边界。`/connect` 和 hop 是本项目协议扩展，不是参考 tunneld 互通合同。 |
+
+仍需真机验证：设备侧 preflight 的身份字段和支持版本、请求回复格式与
+nonce；WebInspector iframe/输入/截图/Fetch/指标域的 WebKit 消息及客户端
+完整流程；远端隧道在真实设备链路上的选择与断开。以上本轮均未执行。

@@ -1095,6 +1095,7 @@ async fn run_cdp_server(udid: &str, host: String, port: u16, timeout: Duration) 
         .route("/json", get(cdp_targets))
         .route("/json/list", get(cdp_targets))
         .route("/json/version", get(cdp_version))
+        .route("/json/version/", get(cdp_version))
         .route("/devtools/page/:page_id", get(cdp_page_ws))
         .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
         .with_state(state);
@@ -1177,8 +1178,6 @@ async fn cdp_version(State(state): State<ServerState>) -> Json<JsonValue> {
         "Browser": "Safari",
         "Protocol-Version": "1.1",
         "User-Agent": "ios-cli",
-        "V8-Version": "7.2.233",
-        "WebKit-Version": "537.36",
         "webSocketDebuggerUrl": format!("ws://{}:{}/devtools/browser/ios-cli", state.cdp_host, state.cdp_port),
     }))
 }
@@ -1213,6 +1212,7 @@ async fn handle_cdp_socket(
     client.open_application_pages(timeout).await?;
     let (application_id, page) = find_page_by_id(&client, page_id)?;
     let mut session = InspectorSession::new(application_id, page.id);
+    let mut js_adapter = (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
     session
         .attach_unpaused(&mut client, page.page_type != WirType::JavaScript, timeout)
         .await?;
@@ -1225,7 +1225,20 @@ async fn handle_cdp_socket(
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             let message: JsonValue = serde_json::from_str(text.as_ref())?;
-                            session.send_bridge_message(&mut client, &message).await?;
+                            if cdp_browser::unverified_page_method(&message) {
+                                sender.send(Message::Text(cdp_browser::error(&message, -32601, "CDP domain not implemented").to_string())).await?;
+                                continue;
+                            }
+                            if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
+                                sender.send(Message::Text(error.to_string())).await?;
+                                continue;
+                            }
+                            let outgoing = if let Some(adapter) = &mut js_adapter {
+                                adapter.outgoing(message)
+                            } else { vec![message] };
+                            for message in outgoing {
+                                session.send_bridge_message(&mut client, &message).await?;
+                            }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
                         Some(Ok(_)) => {}
@@ -1236,7 +1249,12 @@ async fn handle_cdp_socket(
                     match outbound {
                         Ok(message) => {
                             if let Some(message) = session.bridge_message(&message)? {
-                                sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+                                let incoming = if let Some(adapter) = &mut js_adapter {
+                                    adapter.incoming(message)
+                                } else { vec![message] };
+                                for message in incoming {
+                                    sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+                                }
                             }
                         }
                         Err(WebInspectorError::Timeout(_)) => {},
@@ -1512,6 +1530,10 @@ async fn open_cdp_browser_page(
                 inbound = receiver.recv() => {
                     match inbound {
                         Some(message) => {
+                            if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
+                                if output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await.is_err() { break 'page; }
+                                continue;
+                            }
                             let messages = if let Some(adapter) = &mut js_adapter {
                                 adapter.outgoing(message)
                             } else { vec![message] };

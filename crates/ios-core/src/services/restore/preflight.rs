@@ -1,6 +1,7 @@
 //! Device-side preflight request construction for normal-mode updater inspection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -10,6 +11,184 @@ use crate::xpc::XpcValue;
 
 const MAX_PREFLIGHT_FIRMWARE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLIST_DEPTH: usize = 64;
+const MAX_BUILD_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IPSW_ENTRIES: usize = 100_000;
+
+/// Device identifiers and requested restore behavior used to select one IPSW identity.
+/// All four fields must match; a missing or ambiguous match is an error.
+#[derive(Debug, Clone, Copy)]
+pub struct IpswIdentitySelector<'a> {
+    pub board_id: u64,
+    pub chip_id: u64,
+    pub device_class: &'a str,
+    pub restore_behavior: &'a str,
+}
+
+/// A bounded IPSW reader with one unambiguous build identity selected up front.
+pub struct IpswPreflight<R: Read + Seek> {
+    archive: zip::ZipArchive<R>,
+    identity: plist::Dictionary,
+}
+
+impl<R: Read + Seek> IpswPreflight<R> {
+    pub fn open(reader: R, selector: IpswIdentitySelector<'_>) -> Result<Self, RestoreError> {
+        if !matches!(selector.restore_behavior, "Update" | "Erase")
+            || selector.device_class.is_empty()
+        {
+            return Err(RestoreError::Protocol(
+                "invalid IPSW identity selector".into(),
+            ));
+        }
+        let mut archive = zip::ZipArchive::new(reader)
+            .map_err(|e| RestoreError::Protocol(format!("open IPSW: {e}")))?;
+        if archive.len() > MAX_IPSW_ENTRIES {
+            return Err(RestoreError::Protocol(
+                "IPSW has too many ZIP entries".into(),
+            ));
+        }
+        let manifest = read_zip_member(
+            &mut archive,
+            "BuildManifest.plist",
+            MAX_BUILD_MANIFEST_BYTES,
+        )?;
+        let root = plist::from_bytes::<plist::Value>(&manifest)
+            .map_err(|e| RestoreError::Protocol(format!("parse BuildManifest.plist: {e}")))?;
+        let identities = root
+            .as_dictionary()
+            .and_then(|value| value.get("BuildIdentities"))
+            .and_then(plist::Value::as_array)
+            .ok_or_else(|| {
+                RestoreError::Protocol("BuildManifest missing BuildIdentities array".into())
+            })?;
+        if identities.len() > 256 {
+            return Err(RestoreError::Protocol(
+                "too many IPSW build identities".into(),
+            ));
+        }
+        let matches = identities
+            .iter()
+            .filter_map(plist::Value::as_dictionary)
+            .filter(|identity| {
+                let info = identity.get("Info").and_then(plist::Value::as_dictionary);
+                plist_u64(identity, "ApBoardID") == Some(selector.board_id)
+                    && plist_u64(identity, "ApChipID") == Some(selector.chip_id)
+                    && info
+                        .and_then(|info| info.get("DeviceClass"))
+                        .and_then(plist::Value::as_string)
+                        == Some(selector.device_class)
+                    && info
+                        .and_then(|info| info.get("RestoreBehavior"))
+                        .and_then(plist::Value::as_string)
+                        == Some(selector.restore_behavior)
+            })
+            .collect::<Vec<_>>();
+        let preferred_variant = match selector.restore_behavior {
+            "Update" => "Upgrade Install (IPSW)",
+            _ => "Erase Install (IPSW)",
+        };
+        let preferred = matches
+            .iter()
+            .copied()
+            .filter(|identity| {
+                identity
+                    .get("Info")
+                    .and_then(plist::Value::as_dictionary)
+                    .and_then(|info| info.get("Variant"))
+                    .and_then(plist::Value::as_string)
+                    == Some(preferred_variant)
+            })
+            .collect::<Vec<_>>();
+        let candidates = if preferred.is_empty() {
+            &matches
+        } else {
+            &preferred
+        };
+        if candidates.len() != 1 {
+            return Err(RestoreError::Protocol(format!(
+                "IPSW identity selection found {} candidates for board={:#x}, chip={:#x}, class={}, behavior={}",
+                candidates.len(), selector.board_id, selector.chip_id, selector.device_class,
+                selector.restore_behavior
+            )));
+        }
+        Ok(Self {
+            archive,
+            identity: (*candidates[0]).clone(),
+        })
+    }
+
+    pub fn identity(&self) -> &plist::Dictionary {
+        &self.identity
+    }
+
+    /// Build a payload for one updater. The service uses a fresh connection per updater.
+    pub fn payload_for_updater(&mut self, updater: &str) -> Result<XpcValue, RestoreError> {
+        build_device_side_preflight_payload(&self.identity, updater, |path| {
+            read_zip_member(&mut self.archive, path, MAX_PREFLIGHT_FIRMWARE_BYTES)
+        })
+    }
+}
+
+fn plist_u64(dict: &plist::Dictionary, key: &str) -> Option<u64> {
+    match dict.get(key)? {
+        plist::Value::Integer(value) => value.as_unsigned(),
+        plist::Value::String(value) => {
+            let value = value.trim();
+            if let Some(hex) = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                u64::from_str_radix(hex, 16).ok()
+            } else {
+                value.parse().ok()
+            }
+        }
+        _ => None,
+    }
+}
+
+fn read_zip_member<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    path: &str,
+    limit: usize,
+) -> Result<Vec<u8>, RestoreError> {
+    if !safe_ipsw_path(path) {
+        return Err(RestoreError::Protocol("unsafe IPSW member path".into()));
+    }
+    let mut found = None;
+    let mut seen = HashSet::new();
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index_raw(index)
+            .map_err(|e| RestoreError::Protocol(format!("inspect IPSW ZIP entry: {e}")))?;
+        if !seen.insert(file.name().to_string()) {
+            return Err(RestoreError::Protocol("duplicate IPSW ZIP member".into()));
+        }
+        if file.name() == path {
+            found = Some(index);
+        }
+    }
+    let index =
+        found.ok_or_else(|| RestoreError::Protocol(format!("missing IPSW member {path}")))?;
+    let file = archive
+        .by_index(index)
+        .map_err(|e| RestoreError::Protocol(format!("open IPSW member {path}: {e}")))?;
+    if file.is_dir() || file.size() > limit as u64 {
+        return Err(RestoreError::Protocol(format!(
+            "IPSW member {path} exceeds size limit"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(file.size() as usize);
+    let read_limit = (limit as u64).saturating_add(1);
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| RestoreError::Protocol(format!("read IPSW member {path}: {e}")))?;
+    if bytes.len() > limit {
+        return Err(RestoreError::Protocol(format!(
+            "IPSW member {path} exceeds size limit"
+        )));
+    }
+    Ok(bytes)
+}
 
 /// Updater names accepted by the device-side preflight payload builder.
 pub const UPDATERS: &[&str] = &[
@@ -185,6 +364,100 @@ pub fn firmware_response_messages<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
+
+    fn ipsw(identities: Vec<plist::Dictionary>, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "BuildIdentities",
+            plist::Value::Array(
+                identities
+                    .into_iter()
+                    .map(plist::Value::Dictionary)
+                    .collect(),
+            ),
+        )]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        for (path, data) in files {
+            writer.start_file(path, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn selected_identity(behavior: &str, variant: &str, path: &str) -> plist::Dictionary {
+        plist::Dictionary::from_iter([
+            ("ApBoardID", plist::Value::String("0x10".into())),
+            ("ApChipID", plist::Value::Integer(32.into())),
+            (
+                "Info",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    ("DeviceClass", plist::Value::String("d63ap".into())),
+                    ("RestoreBehavior", plist::Value::String(behavior.into())),
+                    ("Variant", plist::Value::String(variant.into())),
+                ])),
+            ),
+            (
+                "Manifest",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Rap,RTKitOS",
+                    entry(path),
+                )])),
+            ),
+        ])
+    }
+
+    fn selector<'a>() -> IpswIdentitySelector<'a> {
+        IpswIdentitySelector {
+            board_id: 16,
+            chip_id: 32,
+            device_class: "d63ap",
+            restore_behavior: "Update",
+        }
+    }
+
+    #[test]
+    fn ipsw_selects_exact_update_identity_and_reads_firmware() {
+        let bytes = ipsw(
+            vec![
+                selected_identity("Erase", "Erase Install (IPSW)", "Firmware/erase.bin"),
+                selected_identity("Update", "Other", "Firmware/other.bin"),
+                selected_identity("Update", "Upgrade Install (IPSW)", "Firmware/rose.bin"),
+            ],
+            &[("Firmware/rose.bin", b"rose")],
+        );
+        let mut reader = IpswPreflight::open(Cursor::new(bytes), selector()).unwrap();
+        let payload = reader.payload_for_updater("Rose").unwrap();
+        assert_eq!(
+            payload.as_dict().unwrap()["Rose"].as_dict().unwrap()["Rap,RTKitOS"],
+            XpcValue::Data(Bytes::from_static(b"rose"))
+        );
+    }
+
+    #[test]
+    fn ipsw_rejects_missing_ambiguous_and_oversized_members() {
+        let identity = selected_identity("Update", "Upgrade Install (IPSW)", "Firmware/rose.bin");
+        assert!(IpswPreflight::open(
+            Cursor::new(ipsw(vec![identity.clone()], &[])),
+            IpswIdentitySelector {
+                board_id: 17,
+                ..selector()
+            }
+        )
+        .is_err());
+        assert!(IpswPreflight::open(
+            Cursor::new(ipsw(vec![identity.clone(), identity.clone()], &[])),
+            selector()
+        )
+        .is_err());
+        let oversized = ipsw(vec![identity], &[("Firmware/rose.bin", b"four")]);
+        let mut archive = zip::ZipArchive::new(Cursor::new(oversized)).unwrap();
+        assert!(read_zip_member(&mut archive, "Firmware/rose.bin", 3).is_err());
+    }
 
     #[test]
     fn builds_rose_payload_with_shared_file_and_signed_integers() {
