@@ -95,7 +95,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | B04 | 补齐发布门禁与制品验证 | P1 | B03 | 待条件 |
 | Q01 | 建立能力成熟度与验证矩阵 | P2 | 无 | 完成 |
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 待开始 |
-| Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 进行中 |
+| Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待开始 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
@@ -706,3 +706,45 @@ CLI 同命令与多包验证解析到已发布 `ios-core 0.1.15`，缺少当前�
 重建安装、工具测试和真实 `cargo run -p ios-cli --locked -- --help` 清单均 PASS。
 `actionlint` 与 `git diff --check` PASS。受测代码为上述两个相邻实现提交的最终
 组合；无设备操作、远端 CI、推送或发布。提交后剩余仅本进度计划和 Q03 合同文档。
+
+### 大类 2 进度：Q03 宿主输出保护（2026-09-30，整类仍进行中）
+
+实现提交：`9e568032ecd34421ebe02ff810e9ed035e09a311`。
+受测代码为该提交；验证与边界见 [宿主输出证据](validation/host-output-2026-09-30.md)
+和 [输出合同](output-contract.md)。这是类内交付，S04、S01–S03、Q02 尚未
+满足第二类可执行范围，继续本类，不进入第三类。
+
+| Q03 子项 | 已交付行为与验证 | 剩余条件 |
+| --- | --- | --- |
+| AFC/CoreDevice pull 和 image 输出 | 下载完成前不截断既有目标；私有临时文件、flush/sync、提交及取消 guard；无 force 原子 no-clobber，force 拒绝符号链接和目录 | 真机 AFC/RSD/image 流程另登记；macOS/Windows 执行尚无证据 |
+| 备份接收、metadata、regular-file copy | 新增私有 staging helper，保留 root/layout 检查；成功后逐文件替换；EOF/取消/逐文件 remote error 保留原内容，filtered placeholder 仅成功后提交 | 整个备份不是事务；保留 DeviceLink remote error 后继续的既有协议，循环成功不认证每个文件；真机及跨平台待验收 |
+| JUnit 与 trace | 同目录临时文件名不再追加到目标名，合法 255 字节组件可用；JUnit 共享替换，trace collect 排他目录提交，清理失败明确报错/记录类别 | macOS 排他 rename 和系统别名、Windows readonly/Unicode/long/verbatim/收尾需要对应系统结果 |
+| 失败、取消与资源边界 | 合成 EOF/取消保留旧文件；并发创建目标不被覆盖；NUL 不写路径前缀；Linux 内核 EFBIG 写失败在独立子进程验收，不改父进程限制；成功样本大小/SHA-256 一致 | 文件系统不支持 hard link/排他 rename 时明确失败；开始后的提交可完成，不能承诺取消回滚、断电持久性或多文件事务 |
+| 路径与文档 | 区分设备/宿主路径，沿用私有根和父目录信任边界；MSYS 既有排障保留，根目录中英文/CLI README 与 CHANGELOG 同步 | 真实 UNC 为 NOT_RUN，需明确授权 share/fixture；不声称 dirfd/openat2 并发目录替换保护 |
+
+先运行相关检查（全部 locked）：`cargo test -p ios-cli cmd::file::tests`
+30 PASS；`cargo test -p ios-core --all-features backup2` 64 PASS、1 既有
+PBKDF2 ignored；`... ostrace` 27 PASS；`... fs_replace` 3 PASS；
+`... staged_file` 3 PASS（含隔离子进程的真实写失败）；`... --test testmanager junit`
+3 PASS。完整入口在补充写失败和成功提交解除 guard 后复跑：
+
+```sh
+python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python
+```
+
+日志 `/tmp/ios-q03-final-full.log`，Linux x86_64 / Rust 1.97.1、MSRV 1.80.1 /
+CPython 3.12.13。第 11 节全部主线 PASS：Rust 1564 PASS、0 FAIL、1 PBKDF2
+ignored；Python host 6 PASS。66 个 feature 编译/四组合测试、默认/full 各 7
+doctest、3 默认 feature 下游示例、C ABI 调用、wheel/sdist 重建安装、10 工具测试
+及 118 条能力清单/实际 CLI help 均 PASS。首轮 lint 曾因移除 error-preview
+后留下未用常量 FAIL，已删除常量；最终严格 lint PASS。不抹去该失败。
+
+参考 DeviceLink remote-error 行为从 `raw-projects/pymobiledevice3` 只读核对，
+实际参考 HEAD 记录在 `/tmp/ios-q03-pymobiledevice3-ref.txt` 和
+`/tmp/ios-q03-go-ios-ref.txt`，符合 AGENTS.MD 的树外记录要求。检查参考 checkout
+时观察到 Python 的未跟踪 `uv.lock` 和 Go 的 `go.mod` 修改，均原样保留；本轮
+没有在参考 checkout 执行安装、测试或写入。主工作区实现提交后干净，仅随后新增
+本交付记录/证据/质量文档；无实际设备、推送、发布或远端 CI 操作。
+
+Q03 状态为待验收：主机接口/合同已就绪，可供后续 R01 等主机依赖使用；上述
+跨平台/真实 UNC/设备条件不自动解除。S04 的后续错误链和 Debug 审查继续执行。
