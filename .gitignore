@@ -42,5 +42,6 @@ selfIdentity.plist
 
 # Release/build outputs
 /dist/
+__pycache__/
 AGENTS.MD
 raw-projcects/

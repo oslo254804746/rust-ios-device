@@ -1,0 +1,18 @@
+name: Native build dependencies
+description: OpenSSL and the Windows C compiler for build and ABI checks
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+        vcpkg install openssl:x64-windows-static-md
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1

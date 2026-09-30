@@ -40,10 +40,10 @@ ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
 | Group        | Includes                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
-| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel                  |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, iconservice, installcoordination, instruments, orientation, hid, display, pasteboard, screencapture, testmanager, mdns, tunnel-userspace |
+| `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 CoreDevice service availability is **service-surface dependent**: a device can
 expose USB, lockdown, tunnel, and RSD while still omitting a specific
@@ -87,10 +87,11 @@ if let Some(device) = devices.first() {
 # }
 ```
 
-For lower-level access, use the modules re-exported at the crate root:
-`ios_core::mux`, `ios_core::lockdown`, `ios_core::xpc`, plus the gated service
-modules (`ios_core::afc`, `ios_core::apps`, `ios_core::syslog`, etc.) that
-become available with the matching feature.
+For lower-level access, use `ios_core::MuxClient`, `ios_core::LockdownClient`,
+`ios_core::RsdHandshake`, and `ios_core::XpcClient` (requires `tunnel`).
+The transport modules themselves are private. Service modules such as
+`ios_core::afc`, `ios_core::apps` and `ios_core::syslog` become available with
+the matching feature.
 
 ## Requirements
 

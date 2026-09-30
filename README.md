@@ -206,9 +206,9 @@ ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
 | Group        | Includes                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, configuration, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, hid, pasteboard, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, iconservice, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 The CLI builds with `full`; libraries should usually pick a smaller subset.
@@ -236,9 +236,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For lower-level access, use the modules re-exported at the crate root, such as
-`ios_core::mux`, `ios_core::lockdown`, `ios_core::xpc`, and the gated service
-modules `ios_core::afc`, `ios_core::apps`, `ios_core::syslog`, etc.
+For lower-level access, use public types re-exported at the crate root:
+`ios_core::MuxClient`, `ios_core::LockdownClient`, `ios_core::RsdHandshake`,
+and `ios_core::XpcClient` (requires `tunnel`). The private transport modules
+are implementation details. Feature-gated public service modules include
+`ios_core::afc`, `ios_core::apps`, `ios_core::syslog`, etc.
 
 ## Python bindings
 
@@ -257,18 +259,22 @@ uvx maturin develop
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
-print(tunnel.services)
-print(tunnel.service_ports)    # service name -> device port
-print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
-print(tunnel.connect_info())
+try:
+    print(tunnel.services)
+    print(tunnel.service_ports)    # service name -> device port
+    print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
+    print(tunnel.connect_info())
 
-with tunnel.asyncio_proxy():
-    # asyncio.open_connection() to the device tunnel address is routed
-    # through the userspace proxy while this context is active.
-    ...
+    with tunnel.asyncio_proxy():
+        # asyncio.open_connection() to the device tunnel address is routed
+        # through the userspace proxy while this context is active.
+        print("userspace proxy active")
 
-tunnel.close()
+finally:
+    tunnel.close()
 ```
 
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` shows how to run
@@ -287,7 +293,8 @@ cargo build --release -p ios-ffi
 
 Outputs include `libios_ffi.{so,dylib,a}` (or `ios_ffi.dll` + `.lib` on
 Windows) and `crates/ios-ffi/include/ios_rs.h`. The FFI surface covers device
-listing, lockdown queries, pairing/service access, and tunnel lifecycle.
+listing, lockdown queries, tunnel lifecycle, and RSD metadata. Individual
+service clients are available through Rust and the CLI.
 `ios_tunnel_rsd_services_json` returns the discovered RSD service map as
 deterministic compact JSON; each service value contains `port` and `features`.
 Pre-built archives for the supported targets are attached to each release.
@@ -317,15 +324,10 @@ cargo build --workspace --exclude ios-py
 # Release CLI binary
 cargo build --release -p ios-cli
 
-# Tests
-cargo test --workspace --exclude ios-core --exclude ios-py
-cargo test -p ios-core --all-features
-# Host-side Python binding tests (requires Python development headers)
-PYO3_PYTHON=/path/to/python cargo test -p ios-py
-
-# Lint / format
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+# Complete local/CI checks (Python 3.9+, Rust 1.80 toolchain, uv, C compiler)
+python scripts/validate.py full --python /path/to/python
+# Focused checks while developing
+python scripts/validate.py quick --package ios-core
 ```
 
 Run the CLI from a checkout:

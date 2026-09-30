@@ -30,10 +30,16 @@
 //! control.
 //!
 //! ```
-//! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
 //! use ios_core::{default_pair_record_path, LockdownClient, LockdownError, PairRecord};
 //! use ios_core::{archive_string, NsUrl, XcTestConfiguration, XctCapabilities};
 //! use ios_core::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
+//! ```
+//!
+//! Remote pairing requires both `tunnel` and `mdns` (or `coredevice-base`):
+//!
+//! ```
+//! # #[cfg(all(feature = "tunnel", feature = "mdns"))]
+//! use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
 //! ```
 //!
 //! ```compile_fail

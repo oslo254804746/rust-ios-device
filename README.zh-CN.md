@@ -180,9 +180,9 @@ ios-core = { version = "0.1.13", features = ["afc", "syslog"] }
 | 分组         | 包含内容                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | `classic`    | afc, apps, crashreport, diagnostics, file_relay, heartbeat, house_arrest, installation, mcinstall, mobileactivation, notificationproxy, profiles, screenshot, springboard, syslog |
-| `developer`  | accessibility_audit, amfi, btlogger, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
+| `developer`  | accessibility_audit, amfi, btlogger, cryptex, debugserver, dproxy, dtx, fetchsymbols, imagemounter, instruments, pcap, testmanager, webinspector |
 | `management` | arbitration, companion, idam, misagent, power_assertion, preboard, prepare, restore                   |
-| `ios17`      | apps, configuration, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, pasteboard, testmanager, mdns, tunnel-userspace |
+| `ios17`      | apps, configuration, cryptex, deviceinfo, diagnosticsservice, dproxy, fileservice, instruments, orientation, iconservice, screencapture, hid, display, pasteboard, testmanager, mdns, tunnel-userspace |
 | `full`       | classic + developer + ios17 + management + ostrace + supervised-pair + tunnel-kernel + backup2-manifest |
 
 CLI 使用 `full`；库消费者通常应选择更窄的子集。
@@ -210,8 +210,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-需要更底层的访问时，可使用 crate 根部重新导出的模块，例如 `ios_core::mux`、
-`ios_core::lockdown`、`ios_core::xpc`，以及对应 feature 启用后的服务模块
+需要更底层的访问时，可使用 crate 根部重新导出的公开类型 `ios_core::MuxClient`、
+`ios_core::LockdownClient`、`ios_core::RsdHandshake` 和 `ios_core::XpcClient`
+（需要 `tunnel`）。传输模块本身为私有实现；服务模块按对应 feature 启用，例如
 `ios_core::afc`、`ios_core::apps`、`ios_core::syslog` 等。
 
 ## Python 绑定
@@ -231,18 +232,22 @@ uvx maturin develop
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
-print(tunnel.services)
-print(tunnel.service_ports)    # 服务名 -> 设备端口
-print(tunnel.service_features) # 服务名 -> 设备公布的标识符（可能为空列表）
-print(tunnel.connect_info())
+try:
+    print(tunnel.services)
+    print(tunnel.service_ports)    # 服务名 -> 设备端口
+    print(tunnel.service_features) # 服务名 -> 设备公布的标识符（可能为空列表）
+    print(tunnel.connect_info())
 
-with tunnel.asyncio_proxy():
-    # asyncio.open_connection() 在 with 作用域内会自动通过本地用户态代理
-    # 路由到设备隧道地址。
-    ...
+    with tunnel.asyncio_proxy():
+        # asyncio.open_connection() 在 with 作用域内会自动通过本地用户态代理
+        # 路由到设备隧道地址。
+        print("userspace proxy active")
 
-tunnel.close()
+finally:
+    tunnel.close()
 ```
 
 `crates/ios-py/examples/pymobiledevice3_coredevice_bridge.py` 展示了如何让
@@ -258,7 +263,8 @@ cargo build --release -p ios-ffi
 
 输出包括 `libios_ffi.{so,dylib,a}`（Windows 上是 `ios_ffi.dll` + `.lib`）以及
 `crates/ios-ffi/include/ios_rs.h`。FFI 表面覆盖设备列表、lockdown 查询、
-配对/服务访问与隧道生命周期。`ios_tunnel_rsd_services_json` 返回稳定排序的紧凑
+隧道生命周期与 RSD 元数据；各服务客户端目前通过 Rust 和 CLI 使用。
+`ios_tunnel_rsd_services_json` 返回稳定排序的紧凑
 JSON 服务映射，每个服务值包含 `port` 与 `features`。每个发布版本都为支持的 target
 附带预编译归档。
 
@@ -285,15 +291,10 @@ cargo build --workspace --exclude ios-py
 # 发布版 CLI 二进制
 cargo build --release -p ios-cli
 
-# 测试
-cargo test --workspace --exclude ios-core --exclude ios-py
-cargo test -p ios-core --all-features
-# Python binding 本机测试（需要 Python 开发文件）
-PYO3_PYTHON=/path/to/python cargo test -p ios-py
-
-# Lint / 格式
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+# 本地/CI 完整检查（Python 3.9+、Rust 1.80 工具链、uv、C 编译器）
+python scripts/validate.py full --python /path/to/python
+# 开发中的局部检查
+python scripts/validate.py quick --package ios-core
 ```
 
 从 checkout 直接运行 CLI：

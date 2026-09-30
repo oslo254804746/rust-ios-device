@@ -63,17 +63,21 @@ Do not commit machine-specific Python paths.
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 print(devices)
 
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
-print(tunnel.server_address)
-print(tunnel.rsd_port)
-print(tunnel.userspace_port)
-print(tunnel.services)
-print(tunnel.service_ports)
-print(tunnel.service_features)
-print(tunnel.connect_info())
-tunnel.close()
+try:
+    print(tunnel.server_address)
+    print(tunnel.rsd_port)
+    print(tunnel.userspace_port)
+    print(tunnel.services)
+    print(tunnel.service_ports)
+    print(tunnel.service_features)
+    print(tunnel.connect_info())
+finally:
+    tunnel.close()
 ```
 
 The `services` list and both mapping attributes use stable service-name order.

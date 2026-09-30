@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a cross-platform validation entry point for minimal feature builds,
+  split Rust/Python tests, doctests, downstream examples and linked C ABI smoke.
+- Added candidate CLI/C/Python artifact validation and complete release gates,
+  including MSRV, feature checks and minimum/newer Python wheel imports.
+- Expose the CLI version with `ios --version` for installed artifact checks.
+
 - Added Darwin-notification pasteboard monitoring with fresh PULL connections,
   baseline suppression and `(nonce, changeCount)` deduplication. `pasteboard watch`
   now works without experimental opt-in; `--autonotify --experimental` retains the
@@ -17,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for CoreDevice camera/microphone conflicts (9022).
 
 ### Fixed
+
+- Make independent `fileservice` and `deviceinfo` features enable their required
+  RemoteXPC transport; gate service integration tests by their required features.
+- Correct default doctests, private transport import paths and binding examples'
+  empty-list/error/cleanup behavior.
 
 - Open a fresh RemoteXPC connection for each subsequent Display request and use
   the `stopAll`/`identifiers` stop payload. Direct and userspace routes are retained.

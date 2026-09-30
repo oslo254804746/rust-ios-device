@@ -28,12 +28,25 @@ you need:
 ios-core = { version = "0.1.13", features = ["classic"] }
 ```
 
+Minimal Rust examples and the public import paths are in the
+[core README](../crates/ios-core/README.md). `MuxClient`, `LockdownClient` and
+`RsdHandshake` are root re-exports; the underlying transport modules are private.
+Remote pairing requires `tunnel` + `mdns` (or `coredevice-base`), and `XpcClient`
+requires `tunnel`. The independent `fileservice` and `deviceinfo` features bring
+that transport dependency automatically.
+
 The Python binding is published as `rust-ios-device-tunnel` (imported as
 `ios_rs`):
 
 ```sh
 pip install rust-ios-device-tunnel
 ```
+
+Python currently exposes device listing and tunnel/transport helpers, while C
+also exposes synchronous lockdown queries. Individual service clients are
+Rust/CLI APIs. Check empty device lists, close Python tunnels in `finally`, and
+release C handles/strings only with their matching functions. See
+[Python](python-binding.md) and [C](../crates/ios-ffi/README.md) examples.
 
 ## Prerequisites
 

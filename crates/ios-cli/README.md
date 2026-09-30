@@ -25,6 +25,10 @@ workspace.
   pinned upstream client does not implement their file-transfer protocol.
 - Built on `ios-core` with the `full` feature set.
 
+From a checkout, `python scripts/validate.py quick --package ios-cli` runs
+focused tests. `python scripts/validate.py full --python <interpreter>` runs
+the same complete check set used by CI; see [build notes](../../docs/build.md).
+
 ## Install
 
 From crates.io:
@@ -42,6 +46,7 @@ together with `.sha256` files.
 
 ```sh
 ios --help
+ios --version                                    # matches the workspace/artifact version
 ios list                                         # connected devices (USB + network)
 ios doctor                                       # bounded, read-only host diagnostic report
 ios info                                         # default device summary

@@ -16,7 +16,8 @@ include = ["IosDevice", "IosDeviceHandle", "IosTunMode", "ios_runtime_init",
            "ios_device_close", "ios_get_product_version",
            "ios_get_lockdown_value_json", "ios_free_string",
            "ios_start_tunnel", "ios_tunnel_close", "ios_tunnel_server_address",
-           "ios_tunnel_rsd_port", "ios_tunnel_userspace_port"]
+           "ios_tunnel_rsd_port", "ios_tunnel_userspace_port",
+           "ios_tunnel_rsd_services_json"]
 exclude = ["IosTunnel"]
 
 [export.rename]

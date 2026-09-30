@@ -43,6 +43,17 @@ typedef struct IosTunnel IosTunnel;
 /** Opaque non-tunnel device handle. */
 typedef struct IosDeviceHandle IosDeviceHandle;
 
+/* Status values returned by int functions; these match the Rust ABI. */
+#define IOS_SUCCESS 0
+#define IOS_ERR_NULL 1
+#define IOS_ERR_UTF8 2
+#define IOS_ERR_CORE 3
+#define IOS_ERR_ALLOC 4
+#define IOS_ERR_STATE 5
+#define IOS_ERR_RUNTIME 6
+#define IOS_ERR_PANIC 7
+#define IOS_ERR_BUFFER_TOO_SMALL 8
+
 /* ── Lifecycle ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -58,7 +69,7 @@ void ios_runtime_init(void);
  *
  * On success: *devices_out points to a heap-allocated IosDevice array of
  * *count_out elements, returns 0.
- * On error: returns non-zero; *devices_out and *count_out are unchanged.
+ * On error: returns non-zero; non-null outputs are cleared to NULL/0.
  *
  * Free with: ios_free_devices(*devices_out, *count_out);
  */
@@ -137,7 +148,7 @@ int ios_tunnel_server_address(const IosTunnel *tunnel, char *buf, size_t buf_len
 /**
  * Get the RSD port for iOS 17+ Remote Service Discovery.
  *
- * Connect to [server_address]:rsd_port with TLS to enumerate services.
+ * Use the RemoteXPC/RSD transport on [server_address]:rsd_port to enumerate services.
  * Returns 0 if not available.
  */
 uint16_t ios_tunnel_rsd_port(const IosTunnel *tunnel);

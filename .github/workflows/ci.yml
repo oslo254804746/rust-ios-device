@@ -6,107 +6,67 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   validate-tag:
-    name: Validate tag matches workspace version
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check tag version matches Cargo.toml
-        shell: bash
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION="$(sed -nE 's/^version *= *"([^"]+)"/\1/p' Cargo.toml | head -1)"
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match workspace version ($CARGO_VERSION)"
-            exit 1
-          fi
-          echo "Tag version ($TAG_VERSION) matches workspace version"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/artifacts.py tag
 
   check:
-    name: Check (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-rust
-          cache-bin: false
-
-      - name: Rustfmt
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: python scripts/validate.py fmt
+      - run: python scripts/validate.py check
+      - run: python scripts/validate.py lint
+      - run: python scripts/validate.py tooling-tests
 
   feature-check:
-    name: Feature subset check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
+      - run: python3 scripts/validate.py features
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          prefix-key: v1-rust
-          cache-bin: false
-
-      - name: Check no-default-features
-        run: cargo check -p ios-core --no-default-features
-
-      - name: Check feature classic
-        run: cargo check -p ios-core --features classic
-
-      - name: Check feature developer
-        run: cargo check -p ios-core --features developer
-
-      - name: Check feature ios17
-        run: cargo check -p ios-core --features ios17
-
-      - name: Check feature management
-        run: cargo check -p ios-core --features management
+          name: feature-logs
+          path: target/validation/features/*.log
+          if-no-files-found: error
 
   msrv:
-    name: MSRV (1.80)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.80"
-
       - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-rust
-          cache-bin: false
-
-      - name: Check workspace compiles on MSRV
-        run: cargo check --workspace --exclude ios-py
+      - run: python3 scripts/validate.py msrv
 
   build-and-test:
-    name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -114,222 +74,72 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
-      # macOS: OpenSSL is available via Homebrew (pre-installed on GitHub runners).
-      # Windows: OpenSSL is installed through the runner-provided vcpkg.
-
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          vcpkg install openssl:x64-windows-static-md
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
         with:
-          prefix-key: v1-rust
-          cache-bin: false
-
-      - name: Build
-        run: cargo build --workspace --exclude ios-py
-
-      - name: Test
-        shell: bash
-        run: |
-          cargo test --workspace --exclude ios-core --exclude ios-py
-          cargo test -p ios-core --all-features
+          python-version: "3.12"
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python scripts/validate.py rust-tests
+      - run: python scripts/validate.py docs
+      - run: python scripts/validate.py ffi
 
   python-smoke:
-    name: Python binding (host + wheel smoke)
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.13"]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install native and Python development headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config python3-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: astral-sh/setup-uv@v5
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
         with:
-          prefix-key: v1-rust
-          cache-bin: false
+          python-version: ${{ matrix.python }}
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: python scripts/validate.py python-host
+      - run: python scripts/validate.py python-package
 
-      - name: Run host-side Rust tests
-        env:
-          PYO3_PYTHON: /usr/bin/python3
-        run: |
-          # The workspace gate excludes the packaging-only extension-module
-          # feature; test the binding separately against the host Python ABI.
-          cargo test --workspace --no-run --exclude ios-py
-          cargo test -p ios-py --no-default-features
-
-      - name: Build abi3 wheel
-        env:
-          PYO3_PYTHON: /usr/bin/python3
-        run: |
-          cd crates/ios-py
-          uvx maturin build --release --out ../../dist
-
-      - name: Import wheel and validate Python error contract
-        run: |
-          uv venv .venv
-          uv pip install --python .venv/bin/python dist/*.whl
-          .venv/bin/python - <<'PY'
-          import ios_rs
-
-          assert callable(ios_rs.list_devices)
-          try:
-              ios_rs.start_tunnel("no-such-device", mode="invalid")
-          except ValueError as exc:
-              message = str(exc)
-              assert "userspace" in message and "kernel" in message
-          else:
-              raise AssertionError("invalid tunnel mode must raise ValueError")
-          PY
-
-  release:
-    name: Release (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+  # Candidate artifacts are also tested on PRs, before any publishing.
+  native-artifacts:
+    needs: [check, feature-check, msrv, build-and-test, python-smoke]
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            archive: tar.gz
-            lib_ext: so
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            archive: tar.gz
-            lib_ext: so
           - target: aarch64-apple-darwin
             runner: macos-latest
-            archive: tar.gz
-            lib_ext: dylib
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            archive: zip
-            lib_ext: dll
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          vcpkg install openssl:x64-windows-static-md
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
       - uses: Swatinem/rust-cache@v2
+      - run: python scripts/validate.py ffi
+      - run: python scripts/artifacts.py native --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
         with:
-          prefix-key: v1-rust
-          key: release-${{ matrix.target }}
-          cache-bin: false
-
-      - name: Build release binary + FFI library
-        run: cargo build --release --package ios-cli --package ios-ffi --target ${{ matrix.target }}
-
-      - name: Determine version
-        id: version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Package CLI (Unix)
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
-          tar czf "$ASSET_NAME" -C "target/${{ matrix.target }}/release" ios
-          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
-          echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
-
-      - name: Package CLI (Windows)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          ASSET_NAME="ios-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
-          cd "target/${{ matrix.target }}/release"
-          7z a "../../../$ASSET_NAME" ios.exe
-          cd ../../..
-          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
-          echo "CLI_ASSET=$ASSET_NAME" >> "$GITHUB_ENV"
-
-      - name: Package FFI library (Unix)
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
-          RELEASE_DIR="target/${{ matrix.target }}/release"
-          # Collect shared lib + static lib + header
-          mkdir -p _ffi_pkg
-          cp "$RELEASE_DIR/libios_ffi.${{ matrix.lib_ext }}" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/libios_ffi.a" _ffi_pkg/ 2>/dev/null || true
-          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
-          tar czf "$FFI_ASSET" -C _ffi_pkg .
-          sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
-          echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
-
-      - name: Package FFI library (Windows)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          FFI_ASSET="ios-ffi-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip"
-          RELEASE_DIR="target/${{ matrix.target }}/release"
-          mkdir -p _ffi_pkg
-          cp "$RELEASE_DIR/ios_ffi.dll" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/ios_ffi.dll.lib" _ffi_pkg/ 2>/dev/null || true
-          cp "$RELEASE_DIR/ios_ffi.lib" _ffi_pkg/ 2>/dev/null || true
-          cp "crates/ios-ffi/include/ios_rs.h" _ffi_pkg/
-          cd _ffi_pkg
-          7z a "../$FFI_ASSET" .
-          cd ..
-          sha256sum "$FFI_ASSET" > "$FFI_ASSET.sha256"
-          echo "FFI_ASSET=$FFI_ASSET" >> "$GITHUB_ENV"
-
-      - name: Upload Release Assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.CLI_ASSET }}
-            ${{ env.CLI_ASSET }}.sha256
-            ${{ env.FFI_ASSET }}
-            ${{ env.FFI_ASSET }}.sha256
-
-  # ── Python wheels (maturin) ──────────────────────────────────────────────────
+          name: native-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
 
   python-wheels:
-    name: Python wheels (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, python-smoke]
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -342,119 +152,110 @@ jobs:
             runner: macos-latest
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          vcpkg install openssl:x64-windows-static-md
-
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
+      - uses: astral-sh/setup-uv@v5
       - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-rust
-          key: python-${{ matrix.target }}
-          cache-bin: false
-
-      - name: Build wheel
-        shell: bash
+      - name: Build abi3 wheel
+        working-directory: crates/ios-py
+        run: uvx --from "maturin>=1.5,<2" maturin build --release --locked --target ${{ matrix.target }} --out ../../dist
+      - name: Verify on minimum and newer Python
         run: |
-          cd crates/ios-py
-          uvx maturin build --release --target ${{ matrix.target }} --out ../../dist
-
-      - name: Upload wheels as artifacts
-        uses: actions/upload-artifact@v4
+          uv python install 3.9 3.13
+          python scripts/artifacts.py python --directory dist --python 3.9
+          python scripts/artifacts.py python --directory dist --python 3.13
+      - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.target }}
-          path: dist/*.whl
+          path: dist/*
+          if-no-files-found: error
 
   python-sdist:
-    name: Python sdist
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, validate-tag]
+    needs: [check, feature-check, msrv, build-and-test, python-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Build sdist
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Build wheel and source distribution
+        working-directory: crates/ios-py
         run: |
-          cd crates/ios-py
-          uvx maturin sdist --out ../../dist
-
-      - name: Upload sdist as artifact
-        uses: actions/upload-artifact@v4
+          uvx --from "maturin>=1.5,<2" maturin build --locked --out ../../dist
+          uvx --from "maturin>=1.5,<2" maturin sdist --out ../../dist
+      - run: python scripts/artifacts.py python --directory dist --build-sdist
+      - uses: actions/upload-artifact@v4
         with:
           name: sdist
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
 
-  publish-pypi:
-    name: Publish to PyPI
+  release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python-wheels, python-sdist]
+    needs: [validate-tag, native-artifacts, python-wheels, python-sdist]
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      contents: write
     steps:
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: dist
+          merge-multiple: true
+      - run: python3 scripts/artifacts.py verify-native --directory dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: dist/*
+
+  publish-pypi:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [validate-tag, native-artifacts, python-wheels, python-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
           path: dist
           merge-multiple: true
-
-      - name: Download sdist artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: sdist
           path: dist
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Verify downloaded checksums and prepare upload
+        run: |
+          cd dist
+          sha256sum --check -- *.sha256
+          rm -- *.sha256
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
 
   publish-crates:
-    name: Publish to Crates.io
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, build-and-test, validate-tag]
+    needs: [validate-tag, native-artifacts, python-wheels, python-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
+      - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish workspace crates
+      - name: Publish in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: scripts/publish-crates.sh

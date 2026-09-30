@@ -43,17 +43,21 @@ Start a CoreDevice tunnel to a trusted iOS device:
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"], mode="userspace")
+try:
 
-print(tunnel.server_address)   # device tunnel IPv6 address
-print(tunnel.rsd_port)         # Remote Service Discovery port
-print(tunnel.userspace_port)   # local TCP proxy port
-print(tunnel.services)         # discovered RSD service names
-print(tunnel.service_ports)    # service name -> device TCP port
-print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
-print(tunnel.connect_info())   # connection summary dict
+    print(tunnel.server_address)   # device tunnel IPv6 address
+    print(tunnel.rsd_port)         # Remote Service Discovery port
+    print(tunnel.userspace_port)   # local TCP proxy port
+    print(tunnel.services)         # discovered RSD service names
+    print(tunnel.service_ports)    # service name -> device TCP port
+    print(tunnel.service_features) # service name -> advertised identifiers (possibly [])
+    print(tunnel.connect_info())   # connection summary dict
 
-tunnel.close()
+finally:
+    tunnel.close()
 ```
 
 The `services` list and both mapping attributes use stable service-name order.
@@ -73,16 +77,22 @@ import asyncio
 import ios_rs
 
 devices = ios_rs.list_devices()
+if not devices:
+    raise SystemExit("no device found")
 tunnel = ios_rs.start_tunnel(devices[0]["udid"])
+try:
 
-with tunnel.asyncio_proxy():
-    # Connections to the tunnel IPv6 address are routed
-    # through the local userspace proxy automatically.
-    reader, writer = asyncio.get_event_loop().run_until_complete(
-        asyncio.open_connection(tunnel.server_address, tunnel.rsd_port)
-    )
+    with tunnel.asyncio_proxy():
+        # Connections to the tunnel IPv6 address are routed
+        # through the local userspace proxy automatically.
+        async def connect_and_close():
+            reader, writer = await asyncio.open_connection(tunnel.server_address, tunnel.rsd_port)
+            writer.close()
+            await writer.wait_closed()
+        asyncio.run(connect_and_close())
 
-tunnel.close()
+finally:
+    tunnel.close()
 ```
 
 ## pymobiledevice3 interoperability

@@ -8,28 +8,20 @@
 //! # Quick start (C)
 //! ```c
 //! #include "ios_rs.h"
+//! #include <stdio.h>
 //!
-//! ios_runtime_init();
-//!
-//! // List devices
-//! IosDevice *devices = NULL;
-//! size_t count = 0;
-//! ios_list_devices(&devices, &count);
-//! const char *udid = devices[0].udid;
-//!
-//! // Start tunnel
-//! IosTunnel *tunnel = NULL;
-//! if (ios_start_tunnel(udid, IOS_TUN_USERSPACE, &tunnel) != 0) { ... }
-//!
-//! // Use the tunnel
-//! char addr[64];
-//! ios_tunnel_server_address(tunnel, addr, sizeof(addr));
-//! uint16_t rsd_port = ios_tunnel_rsd_port(tunnel);
-//! uint16_t proxy_port = ios_tunnel_userspace_port(tunnel);
-//!
-//! // Cleanup
-//! ios_tunnel_close(tunnel);
-//! ios_free_devices(devices, count);
+//! int main(void) {
+//!     ios_runtime_init();
+//!     IosDevice *devices = NULL;
+//!     size_t count = 0;
+//!     int status = ios_list_devices(&devices, &count);
+//!     if (status != IOS_SUCCESS) return 1;
+//!     if (count == 0) puts("no device found");
+//!     for (size_t i = 0; i < count; ++i)
+//!         printf("%s %s\n", devices[i].udid, devices[i].connection_type);
+//!     ios_free_devices(devices, count);
+//!     return 0;
+//! }
 //! ```
 
 use std::collections::BTreeMap;

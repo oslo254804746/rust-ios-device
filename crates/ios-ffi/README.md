@@ -7,8 +7,8 @@ workspace. Builds a `cdylib` and a `staticlib` plus a public C header
 
 ## Highlights
 
-- C-callable surface for device listing, lockdown queries, pairing/service
-  access, and CoreDevice tunnel lifecycle.
+- C-callable surface for device listing, lockdown queries, CoreDevice tunnel lifecycle and RSD metadata. Individual service clients
+  are currently available through Rust and the CLI.
 - RSD service ports and advertised capability identifiers available as compact
   JSON through `ios_tunnel_rsd_services_json`.
 - Both shared (`libios_ffi.so` / `.dylib` / `ios_ffi.dll`) and static
@@ -56,6 +56,14 @@ Outputs are written to `target/release/`:
 | Windows  | `ios_ffi.dll`, `ios_ffi.dll.lib`, `ios_ffi.lib`        |
 
 The public C header is at `crates/ios-ffi/include/ios_rs.h`.
+
+The complete device-listing example is [list_devices.c](examples/list_devices.c).
+It checks errors and empty lists before using entries and releases the list on
+success. `python scripts/validate.py ffi` compiles/links the public header and
+calls the library without a device, checking status constants, layout, NULL
+outputs and safe NULL cleanup. Integer results use `IOS_SUCCESS` and the
+`IOS_ERR_*` constants in the header. Non-NULL handles and strings must be freed
+exactly once; clearing a caller variable does not make a freed pointer reusable.
 
 ## Linking
 

@@ -109,8 +109,8 @@ instruments = ["dtx"]
 testmanager = ["dtx"]
 accessibility_audit = ["dtx"]
 debugserver = []
-fileservice = []
-deviceinfo = []
+fileservice = ["tunnel"]
+deviceinfo = ["tunnel"]
 imagemounter = ["dep:reqwest", "dep:zip"]
 cryptex = ["imagemounter", "tunnel"]
 pcap = []
@@ -222,3 +222,15 @@ libc         = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[test]]
+name = "accessibility_audit"
+required-features = ["accessibility_audit"]
+
+[[test]]
+name = "fetchsymbols"
+required-features = ["fetchsymbols"]
+
+[[test]]
+name = "ostrace"
+required-features = ["ostrace"]
