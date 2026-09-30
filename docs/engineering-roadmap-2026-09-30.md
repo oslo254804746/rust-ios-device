@@ -100,7 +100,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待开始 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
-| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 进行中 |
+| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：展示策略、源码审查与合成秘密验收；新增安全接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 待开始 |
@@ -850,3 +850,56 @@ timeout/cleanup 日志捕获、协议/设备真机证据；S01–S03 认证/授�
 跨平台进程树管理和全部真机流程仍待；当前捕获基础只解除该工具的主机接口依赖。
 Windows/macOS 未运行本批，不能据 Linux/合成 WS fixture 认定设备或平台验收完成。
 实现提交后工作区干净；无设备操作、推送、发布、历史改写或参考 checkout 修改。
+
+### 大类 2 进度：S04 框架拒绝、Debug 与生命周期日志验收（2026-09-30）
+
+实现提交：`1953f8b4273ea61703c22245e4da5b2e2bedc591`。
+受测代码为该提交；[本轮证据](validation/http-debug-diagnostics-2026-09-30.md)
+连接之前三个 S04 实现批次与当前 [展示合同](diagnostic-contract.md)。S04 达到所列
+合成秘密/主机诊断验收，状态完成；不将这个结果升级为设备工作流、平台安全或
+访问控制认证。Q02 的设备观察和 S01–S03 的新增接口仍要持续执行同一展示策略。
+第二类仍进行中，接下来实施 S01，再按实际接口落实 S02/S03/Q02。
+
+- manager、CDP、Selenium 的框架 Query/Json/Path/握手等未审查错误体直接丢弃，
+  不先读取或格式化；保留 HTTP status、Allow、HEAD 空体，加入固定 HTTP 阶段、
+  数值类别、随机请求关联代号和 no-store。已审查错误 helper 使用服务器内部
+  response extension 标记，客户端 header 无法豁免。真实 HTTP fixture 覆盖三种回复形状。
+- 38 个具名 protocol/service 错误和 service_error! 生成类型统一安全 Debug；
+  原变体、字段、Display/source 保留。FullPairRecord、SupervisionIdentity、
+  VerifyPairSession 隐藏全部材料；TunnelInfo 地址使用关联代号，包含无 tunnel 构建。
+  typed-value Debug/serde 属于明确数据访问，不能被自动诊断调用；不是全类型禁用 Debug。
+- 审查剩余 stderr/tracing 点：文件/配对/安装/DDI/dproxy 进度、sysmontap、
+  fetchsymbols 解析失败、JS shell 协议错误及剪贴板 promise 错误不渲染原文。
+  明确请求的脚本异常、剪贴板值、选择数据与录制仍保留产品用途。新增 derive guard
+  防止 owned thiserror::Error 回退到 payload Debug；它是源码约定检查，不声称 AST 证明。
+- 256 KiB 原始 RAM tracing 捕获有故意输出合成秘密的正向控制和 UTF-8 overflow
+  自检；真实备份回滚失败与 userspace TCP 的部分前导 EOF/超时要求非空实际阶段、
+  安全类别/关联和零原始命中。异步用例在本轮独立、限时子进程安装全局 subscriber，
+  stdout/stderr 丢弃，取消/超时只终止该子进程，不修改并行父测试的全局 tracing。
+
+先跑相关检查：core 全 feature lib 953 PASS、1 既有 ignored；CLI 542 PASS；
+tooling-tests 17 PASS。最终完整入口（锁定 CPython 3.12.13）为：
+
+```sh
+python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python
+/tmp/ios-validation-tools/actionlint .github/workflows/ci.yml
+git diff --check
+```
+
+日志 `/tmp/ios-s04-http-debug-final-full.log`，Linux x86_64 / Rust 1.97.1、
+MSRV 1.80.1。第 11 节全部 PASS：Rust 1589 PASS、0 FAIL、1 既有 PBKDF2 ignored，
+Python 8 PASS；66 feature 编译、四组裁剪测试、默认/full doctest 各 7、三个下游
+示例、C ABI/19 字节原始捕获、wheel/sdist 重建安装、17 工具测试、118 能力条目
+及十个实际 CLI 原始/副本独立捕获全部通过。actionlint 与 staged diff --check PASS。
+主机 CLI 二进制 SHA-256 和具体命令见本轮证据；不归档敏感原始输出。
+
+开发失败如实保留：测试 key fixture 长度与无 tunnel 条件编译曾失败，已修正；
+严格 lint 曾拒绝 prepare 模块测试位置，移至文件末尾后 PASS。首轮完整入口
+`/tmp/ios-s04-http-debug-full.log` 因并行异步 tracing 捕获为空 FAIL；局部 subscriber
+与 WithSubscriber 两次完整 core 复跑仍 FAIL，未放宽阶段断言。隔离捕获后 core 全套
+PASS，随后从头复跑上述 full 全部 PASS。空日志未计为安全成功。
+
+当前无已知剩余 S04 主机修复项。真实设备、多系统和全部代表工作流的观察归 Q02
+持续验收；S01–S03 的认证/授权、Host/Origin 和受保护联邦尚未交付，不能被安全
+错误文本替代。实现提交后主工作区干净，仅随后新增本记录/证据/质量文档；未操作
+实际设备、远端 CI、推送、发布、历史或参考 checkout。持久化目标继续 active。
