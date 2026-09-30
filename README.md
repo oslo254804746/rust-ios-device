@@ -52,8 +52,9 @@ Detailed docs live in [`docs/`](docs/): [architecture](docs/architecture.md),
 [build](docs/build.md), [features](docs/features.md),
 [usage](docs/usage.md), [CLI map](docs/cli-map.md),
 [tunnel](docs/tunnel.md), [protocol](docs/protocol.md),
-[python binding](docs/python-binding.md), and
-[troubleshooting](docs/troubleshooting.md).
+[python binding](docs/python-binding.md),
+[troubleshooting](docs/troubleshooting.md), and
+[host output/cancellation contracts](docs/output-contract.md).
 
 ## Install
 

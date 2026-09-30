@@ -306,6 +306,27 @@ mod tests {
     }
 
     #[test]
+    fn junit_output_unicode_and_full_length_filename_match_size_and_hash() {
+        use sha2::{Digest, Sha256};
+        let directory = std::env::temp_dir().join(format!("ios-junit-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let summary = junit_fixture_summary();
+        let expected = summary.to_junit_xml();
+        for name in ["报告😀.xml".to_owned(), "a".repeat(255)] {
+            let output = directory.join(name);
+            std::fs::write(&output, b"old report").unwrap();
+            write_junit_xml_atomic(&summary, &output).unwrap();
+            let actual = std::fs::read(&output).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(Sha256::digest(&actual), Sha256::digest(expected.as_bytes()));
+            std::fs::remove_file(output).unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        assert!(write_junit_xml_atomic(&summary, &directory).is_err());
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
     fn recorder_attaches_cases_to_running_suite_and_uses_test_duration() {
         let mut recorder = TestRunRecorder::default();
         recorder.apply(TestExecutionEvent::SuiteStarted {

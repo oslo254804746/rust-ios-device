@@ -4,10 +4,8 @@
 //! selectors. This module translates the selectors into stable Rust events and
 //! accumulates those events into a serializable summary for CLI and binding users.
 
-use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::dtx::{DtxMessage, DtxPayload, NSObject};
 use serde::Serialize;
@@ -639,65 +637,11 @@ pub fn write_junit_xml_atomic_with_diagnostic(
 }
 
 fn write_junit_xml_text_atomic(xml: &str, path: &Path) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "JUnit output path must name a file",
-        )
-    })?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-
-    for attempt in 0..16u32 {
-        let temporary = parent.join(format!(
-            ".{}.ios-junit-{pid}-{nonce}-{attempt}.tmp",
-            file_name.to_string_lossy()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        let result = file.write_all(xml.as_bytes()).and_then(|_| file.sync_all());
-        drop(file);
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        match replace_file_atomically(&temporary, path) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-        }
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique temporary JUnit output path",
-    ))
-}
-
-#[cfg(windows)]
-fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
-    crate::fs_replace::move_file_replace(temporary, destination)
-}
-
-#[cfg(not(windows))]
-fn replace_file_atomically(temporary: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(temporary, destination)
+    let (mut file, pending) = crate::staged_file::create(path)?;
+    let result = file.write_all(xml.as_bytes()).and_then(|_| file.sync_all());
+    drop(file);
+    result?;
+    pending.commit()
 }
 
 #[derive(Debug, Clone, Copy)]

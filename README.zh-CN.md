@@ -47,7 +47,8 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 [构建](docs/build.md)、[feature flags](docs/features.md)、
 [用法](docs/usage.md)、[CLI 对照](docs/cli-map.md)、
 [隧道](docs/tunnel.md)、[协议](docs/protocol.md)、
-[Python 绑定](docs/python-binding.md)、[故障排查](docs/troubleshooting.md)。
+[Python 绑定](docs/python-binding.md)、[故障排查](docs/troubleshooting.md)、
+[宿主输出与取消合同](docs/output-contract.md)。
 
 ## 安装
 

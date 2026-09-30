@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve existing file-pull and backup output until staged transfers succeed;
+  clean owned temporary files on cancellation. Refuse symlink image/file
+  destinations with `--force` on every platform and prevent no-force races from
+  overwriting concurrently created files. Filesystems without hard links fail
+  explicitly for no-force publication.
+- Support full-length output filename components without staging suffixes
+  exceeding filesystem limits. OS trace collect exclusively publishes a new
+  directory and reports temporary cleanup failure.
 - Omit credential fields from pairing-record Debug output and use process-local
   identifier correlation in manager/forward/tunnel diagnostics. Instruments
   diagnostics no longer render device response payloads.

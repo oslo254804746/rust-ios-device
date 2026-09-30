@@ -83,6 +83,7 @@ pub mod redaction;
 /// Owner-only persistence for files containing private-key material.
 pub mod secret_file;
 pub mod services;
+pub(crate) mod staged_file;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub(crate) mod tunnel;

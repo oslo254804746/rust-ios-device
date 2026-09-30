@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use ios_core::crashreport::{
@@ -257,7 +256,7 @@ impl FileCmd {
                     ensure_local_overwrite_allowed(Path::new(&local), force)?;
                     eprintln!("Downloading {remote} → {local}");
                     let data = afc.read_file_follow_links(&remote).await?;
-                    fs::write(&local, &data).await?;
+                    write_local_bytes_atomic(Path::new(&local), &data, force).await?;
                     eprintln!("Done ({} bytes)", data.len());
                 }
                 FileSub::Push { local, remote } => {
@@ -420,66 +419,117 @@ fn local_path_entry_missing(error: &std::io::Error) -> bool {
 
 /// Write device bytes with a private temporary file and atomic replacement.
 ///
-/// This is used by CoreDevice image commands. The temporary is always 0600;
+/// This is used by file pulls and image commands. The temporary is always 0600;
 /// the destination is replaced only after the complete payload is flushed.
 pub(crate) async fn write_local_bytes_atomic(path: &Path, data: &[u8], force: bool) -> Result<()> {
-    ensure_local_overwrite_allowed(path, force)?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
+    let mut output = LocalOutput::create(path, force).await?;
+    output.file.write_all(data).await?;
+    output.commit().await
+}
 
-    for attempt in 0..16u32 {
-        let temporary = parent.join(format!(
-            ".{}.ios-image-{pid}-{nonce}-{attempt}.tmp",
-            file_name.to_string_lossy()
-        ));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
+/// Owns the temporary entry even if a transfer future is dropped. The Tokio
+/// file is declared first so its handle drops before the cleanup guard.
+struct LocalOutput {
+    file: fs::File,
+    temporary: LocalTemporary,
+    destination: PathBuf,
+    force: bool,
+}
+
+struct LocalTemporary {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for LocalTemporary {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
         }
-        let mut file = match options.open(&temporary).await {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let result = async {
-            file.write_all(data).await?;
-            file.sync_all().await
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(kind = ?error.kind(), "temporary output cleanup failed");
+            }
         }
-        .await;
-        drop(file);
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary).await;
-            return Err(error.into());
-        }
-        let result = replace_local_file(&temporary, path).await;
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary).await;
-        }
-        return result;
+    }
+}
+
+impl LocalOutput {
+    async fn create(path: &Path, force: bool) -> Result<Self> {
+        let destination = path.to_owned();
+        let (file, temporary) = tokio::task::spawn_blocking(move || {
+            ensure_local_overwrite_allowed(&destination, force)?;
+            destination
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("output path must name a file"))?;
+            let parent = destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            // Do not extend the user's filename: a valid 255-byte component
+            // must not fail just because staging appends a suffix to it.
+            for _ in 0..16 {
+                let temporary = parent.join(format!(".ios-image-{}.tmp", uuid::Uuid::new_v4()));
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                match options.open(&temporary) {
+                    Ok(file) => {
+                        return Ok::<_, anyhow::Error>((
+                            file,
+                            LocalTemporary {
+                                path: temporary,
+                                armed: true,
+                            },
+                        ))
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(anyhow::anyhow!(
+                "could not allocate a unique temporary output path"
+            ))
+        })
+        .await??;
+        Ok(Self {
+            file: fs::File::from_std(file),
+            temporary,
+            destination: path.to_owned(),
+            force,
+        })
     }
 
-    Err(anyhow::anyhow!(
-        "could not allocate a unique temporary image output path"
-    ))
+    async fn commit(mut self) -> Result<()> {
+        self.file.flush().await?;
+        self.file.sync_all().await?;
+        drop(self.file);
+        // The worker owns the guard once publication starts. Dropping the
+        // awaiting future cannot delete its source while a move is pending.
+        // A started filesystem commit cannot be rolled back by cancellation.
+        tokio::task::spawn_blocking(move || {
+            let mut temporary = self.temporary;
+            if self.force {
+                replace_local_file(&temporary.path, &self.destination)?;
+            } else {
+                // Unlike precheck + rename, hard-link creation cannot overwrite
+                // a destination created concurrently after the precheck. A
+                // filesystem without hard links fails explicitly.
+                std::fs::hard_link(&temporary.path, &self.destination)?;
+                std::fs::remove_file(&temporary.path)?;
+            }
+            temporary.armed = false;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    }
 }
 
-#[cfg(not(windows))]
-async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
-    fs::rename(temporary, destination).await?;
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
+fn replace_local_file(temporary: &Path, destination: &Path) -> Result<()> {
     // Refuse symlinks and non-files before replacing.  The replacement itself
     // is MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) via the shared helper:
     // ReplaceFileW was evaluated and removed because its
@@ -584,10 +634,11 @@ fn run_coredevice_subcommand<'a>(
             let mut data_stream = device
                 .connect_rsd_service(ios_core::fileservice::DATA_SERVICE_NAME)
                 .await?;
-            let mut output = fs::File::create(&local).await?;
+            let mut output = LocalOutput::create(Path::new(&local), force).await?;
             let bytes = fileservice
-                .download_file_to_writer(&remote, &mut data_stream, &mut output)
+                .download_file_to_writer(&remote, &mut data_stream, &mut output.file)
                 .await?;
+            output.commit().await?;
             eprintln!("Done ({bytes} bytes)");
             Ok(())
         }),
@@ -855,6 +906,7 @@ fn render_tree_label(entry: &FileTreeEntry) -> String {
 mod tests {
     use clap::Parser;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -927,6 +979,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn staged_pull_cancellation_keeps_old_bytes_and_only_cleans_its_own_file() {
+        let directory = unique_output_directory("cancel");
+        let destination = directory.join("下载😀.bin");
+        let unrelated = directory.join(".ios-image-other-operation.tmp");
+        std::fs::write(&destination, b"old complete file").unwrap();
+        std::fs::write(&unrelated, b"another operation").unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task_path = destination.clone();
+        let task = tokio::spawn(async move {
+            let mut output = LocalOutput::create(&task_path, true).await.unwrap();
+            output.file.write_all(b"partial transfer").await.unwrap();
+            output.file.flush().await.unwrap();
+            ready_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+            output.commit().await.unwrap();
+        });
+        ready_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old complete file");
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"another operation");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_does_not_clobber_a_concurrently_created_destination() {
+        let directory = unique_output_directory("no-clobber");
+        let destination = directory.join("out.bin");
+        let mut output = LocalOutput::create(&destination, false).await.unwrap();
+        output.file.write_all(b"device bytes").await.unwrap();
+        // Another producer creates the target after our existence check.
+        std::fs::write(&destination, b"other producer").unwrap();
+        assert!(output.commit().await.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"other producer");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_unicode_and_full_length_component_match_size_and_hash() {
+        use sha2::{Digest, Sha256};
+        let directory = unique_output_directory("unicode");
+        let data = b"synthetic payload\0with binary bytes\xff";
+        for name in ["截图😀.bin".to_owned(), "a".repeat(255)] {
+            let destination = directory.join(name);
+            write_local_bytes_atomic(&destination, data, false)
+                .await
+                .unwrap();
+            let actual = std::fs::read(&destination).unwrap();
+            assert_eq!(actual.len(), data.len());
+            assert_eq!(Sha256::digest(&actual), Sha256::digest(data));
+            std::fs::remove_file(destination).unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_pull_rejects_nul_without_writing_the_path_prefix() {
+        let directory = unique_output_directory("nul");
+        let destination = directory.join("out.bin");
+        std::fs::write(&destination, b"old").unwrap();
+        let malformed = directory.join("out.bin\0ignored");
+        assert!(write_local_bytes_atomic(&malformed, b"new", true)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn staged_pull_refuses_symlink_and_replaces_readonly_file_with_private_output() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = unique_output_directory("readonly-symlink");
+        let destination = directory.join("out.bin");
+        let linked = directory.join("link.bin");
+        std::fs::write(&destination, b"old").unwrap();
+        symlink(&destination, &linked).unwrap();
+        assert!(write_local_bytes_atomic(&linked, b"new", true)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old");
+        assert!(std::fs::symlink_metadata(&linked)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o400)).unwrap();
+        // Unix replacement permissions belong to the parent directory. A
+        // read-only destination does not imply that rename must be denied.
+        write_local_bytes_atomic(&destination, b"new", true)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn atomic_image_write_failure_keeps_old_destination_and_cleans_temporaries() {
         let directory = unique_output_directory("failure");
         let destination = directory.join("out.bin");
@@ -996,7 +1157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_image_write_creates_missing_parent_only_when_requested_target_exists() {
+    async fn atomic_image_write_rejects_missing_parent_without_creating_it() {
         let directory = unique_output_directory("missing-parent");
         let nested = directory.join("nested");
         let destination = nested.join("out.bin");

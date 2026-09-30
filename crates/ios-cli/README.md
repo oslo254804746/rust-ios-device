@@ -95,6 +95,13 @@ flags. A side-by-side mapping with `go-ios` and `pymobiledevice3` lives in
 
 ## Documentation
 
+File pulls and screenshots stage output before replacing the destination.
+`--force` refuses symlink/directory targets; without it, publication requires
+filesystem hard-link support and cannot overwrite a concurrently created file.
+Cancellation before commit preserves the old file; an already-started commit
+can finish. See the [host output contract](../../docs/output-contract.md) for
+per-file backup semantics, cleanup failures and platform acceptance conditions.
+
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - API docs: <https://docs.rs/ios-cli>
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>

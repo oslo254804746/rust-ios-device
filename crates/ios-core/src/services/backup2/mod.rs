@@ -310,7 +310,6 @@ const EMPTY_PARAMETER_STRING: &str = "___EmptyParameterString___";
 // BackupAgent2 buffers one complete transfer frame before writing it to disk. Keep frames small
 // enough for large incremental Manifest.db files to avoid exhausting the device process.
 const DOWNLOAD_CHUNK_SIZE: usize = 32 * 1024;
-const MAX_TRANSFER_ERROR_PREVIEW_SIZE: usize = 64 * 1024;
 const MAX_DEVICE_TRANSFER_FILES: u64 = 1_000_000;
 const MAX_DEVICE_TRANSFER_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 // Device-side Unback/Extract are long-running DeviceLink operations. Keep one
@@ -1276,21 +1275,12 @@ where
             let preserve = self.backup_filter.as_ref().map_or(true, |filter| {
                 should_preserve_backup_file(&file_name, &device_name, filter)
             });
-            let mut file = if preserve {
-                Some(tokio::fs::File::from_std(open_layout_file_for_write(
-                    layout,
-                    &output_path,
-                )?))
-            } else {
-                // BackupAgent2 may refer to a rejected file in a subsequent Move/Copy command.
-                // A zero-byte placeholder keeps that protocol exchange valid; it is removed
-                // only after the DeviceLink loop completes.
-                let _ = open_layout_file_for_write(layout, &output_path)?;
-                self.discarded_files.push(output_path.clone());
-                None
-            };
+            let (file, pending) = create_layout_staged_file(layout, &output_path)?;
+            // Keep the file ahead of the guard in this aggregate so cancellation
+            // drops the handle before removing this operation's temporary.
+            let mut staged = (tokio::fs::File::from_std(file), pending);
 
-            loop {
+            let succeeded = loop {
                 let frame_size = read_u32_be(self.device_link.stream_mut()).await?;
                 let mut code = [0u8; 1];
                 self.device_link.stream_mut().read_exact(&mut code).await?;
@@ -1305,9 +1295,13 @@ where
                         self.account_transfer_bytes(payload_len)?;
                         // A device can advertise a very large frame size. Stream its payload in
                         // bounded pieces instead of allocating the complete frame up front.
-                        if let Some(file) = file.as_mut() {
-                            copy_transfer_payload(self.device_link.stream_mut(), file, payload_len)
-                                .await?;
+                        if preserve {
+                            copy_transfer_payload(
+                                self.device_link.stream_mut(),
+                                &mut staged.0,
+                                payload_len,
+                            )
+                            .await?;
                         } else {
                             discard_transfer_payload(self.device_link.stream_mut(), payload_len)
                                 .await?;
@@ -1316,19 +1310,20 @@ where
                     FILE_TRANSFER_CODE_SUCCESS => {
                         discard_transfer_payload(self.device_link.stream_mut(), payload_len)
                             .await?;
-                        break;
+                        break true;
                     }
                     FILE_TRANSFER_CODE_REMOTE_ERROR => {
-                        let message =
-                            read_transfer_error_preview(self.device_link.stream_mut(), payload_len)
-                                .await?;
+                        discard_transfer_payload(self.device_link.stream_mut(), payload_len)
+                            .await?;
                         warn!(
-                            "backup upload for device path '{}' to local file '{}' reported remote error: {}",
-                            device_name,
-                            file_name,
-                            message
+                            device_path = %crate::redaction::diagnostic_id(&device_name),
+                            output_path = %crate::redaction::diagnostic_id(&file_name),
+                            "backup file transfer failed on device; staged output discarded"
                         );
-                        break;
+                        // DeviceLink permits per-file remote errors followed by
+                        // more uploads. Keep that wire flow, but never publish
+                        // a partial file or truncate its previous contents.
+                        break false;
                     }
                     other => {
                         discard_transfer_payload(self.device_link.stream_mut(), payload_len)
@@ -1338,9 +1333,22 @@ where
                         )));
                     }
                 }
-            }
-            if let Some(file) = file.as_mut() {
-                file.flush().await?;
+            };
+            if succeeded {
+                staged.0.flush().await?;
+                staged.0.sync_all().await?;
+                let (file, pending) = staged;
+                drop(file);
+                ensure_no_symlink_components_at_root(
+                    &layout.root,
+                    &layout_relative_path(layout, &output_path)?,
+                )?;
+                pending.commit()?;
+                if !preserve {
+                    // BackupAgent2 may Move/Copy a filtered file later. Commit
+                    // an empty placeholder only after its transfer succeeds.
+                    self.discarded_files.push(output_path);
+                }
             }
         }
 
@@ -1583,11 +1591,17 @@ pub fn initialize_backup_directory(
     }
     let full = should_do_full_backup(full, &device_directory)?;
 
-    let mut info_file = open_file_for_write(&device_directory.join("Info.plist"))?;
-    plist::to_writer_xml(
+    let (mut info_file, info_pending) =
+        crate::staged_file::create(&device_directory.join("Info.plist"))?;
+    let result = plist::to_writer_xml(
         &mut info_file,
         &plist::Value::Dictionary(info_plist.clone()),
-    )?;
+    )
+    .map_err(Mobilebackup2Error::from)
+    .and_then(|()| info_file.sync_all().map_err(Mobilebackup2Error::from));
+    drop(info_file);
+    result?;
+    info_pending.commit()?;
 
     let status_path = device_directory.join("Status.plist");
     let status_missing = matches!(
@@ -1618,8 +1632,13 @@ pub fn initialize_backup_directory(
                 plist::Value::String(generate_backup_uuid()),
             ),
         ]);
-        let mut status_file = open_file_for_write(&status_path)?;
-        plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))?;
+        let (mut status_file, status_pending) = crate::staged_file::create(&status_path)?;
+        let result = plist::to_writer_binary(&mut status_file, &plist::Value::Dictionary(status))
+            .map_err(Mobilebackup2Error::from)
+            .and_then(|()| status_file.sync_all().map_err(Mobilebackup2Error::from));
+        drop(status_file);
+        result?;
+        status_pending.commit()?;
     }
 
     let manifest_path = device_directory.join("Manifest.plist");
@@ -1627,18 +1646,19 @@ pub fn initialize_backup_directory(
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(symlink_path_error(&manifest_path));
         }
-        Ok(_) if full => {
-            fs::remove_file(&manifest_path)?;
-            true
-        }
+        Ok(_) if full => true,
         Ok(_) => false,
         Err(error) if error.kind() == ErrorKind::NotFound => true,
         Err(error) => return Err(error.into()),
     };
-    // `touch` the manifest only when it is new or a full backup removed it. In incremental mode
+    // Reset the manifest only when it is new or a full backup requests it. In incremental mode
     // its existing plist is part of the backup state and must not be truncated.
     if create_manifest {
-        let _ = open_file_for_write(&manifest_path)?;
+        let (file, pending) = crate::staged_file::create(&manifest_path)?;
+        let result = file.sync_all();
+        drop(file);
+        result?;
+        pending.commit()?;
     }
 
     Ok(BackupDirectoryLayout {
@@ -2301,6 +2321,7 @@ fn open_file_for_read(path: &Path) -> Result<File, Mobilebackup2Error> {
     options.open(path).map_err(Mobilebackup2Error::Io)
 }
 
+#[cfg(feature = "backup2-manifest")]
 fn open_file_for_write(path: &Path) -> Result<File, Mobilebackup2Error> {
     reject_symlink_components(path)?;
     let mut options = OpenOptions::new();
@@ -2376,13 +2397,13 @@ fn create_layout_parent_directory(
     Ok(())
 }
 
-fn open_layout_file_for_write(
+fn create_layout_staged_file(
     layout: &BackupDirectoryLayout,
     path: &Path,
-) -> Result<File, Mobilebackup2Error> {
+) -> Result<(File, crate::staged_file::PendingFile), Mobilebackup2Error> {
     let relative = layout_relative_path(layout, path)?;
     ensure_no_symlink_components_at_root(&layout.root, &relative)?;
-    open_file_for_write(path)
+    Ok(crate::staged_file::create(path)?)
 }
 
 fn open_layout_file_for_read(
@@ -2485,8 +2506,12 @@ fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobilebackup2Err
             create_dir_all_no_symlink(root, parent_relative)?;
         }
         let mut source = open_file_for_read(src)?;
-        let mut destination = open_file_for_write(dst)?;
-        std::io::copy(&mut source, &mut destination)?;
+        let (mut destination, pending) = crate::staged_file::create(dst)?;
+        let result =
+            std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
+        drop(destination);
+        result?;
+        pending.commit()?;
     } else {
         return Err(Mobilebackup2Error::Protocol(format!(
             "backup copy source is neither a file nor a directory: {}",
@@ -2666,20 +2691,6 @@ where
         remaining -= chunk_len;
     }
     Ok(())
-}
-
-async fn read_transfer_error_preview<S>(
-    stream: &mut S,
-    payload_len: usize,
-) -> Result<String, Mobilebackup2Error>
-where
-    S: AsyncRead + Unpin,
-{
-    let preview_len = payload_len.min(MAX_TRANSFER_ERROR_PREVIEW_SIZE);
-    let mut preview = vec![0u8; preview_len];
-    stream.read_exact(&mut preview).await?;
-    discard_transfer_payload(stream, payload_len - preview_len).await?;
-    Ok(String::from_utf8_lossy(&preview).into_owned())
 }
 
 async fn write_prefixed_string<S>(stream: &mut S, value: &str) -> Result<(), Mobilebackup2Error>
@@ -3366,6 +3377,90 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove backup fixture");
     }
 
+    #[tokio::test]
+    async fn upload_failures_and_cancellation_preserve_old_file_and_clean_staging() {
+        for failure in ["eof", "cancel", "remote-error"] {
+            let root = test_backup_root(failure, "source-id");
+            let parent = root.join("source-id/HomeDomain");
+            std::fs::create_dir(&parent).unwrap();
+            let output = parent.join("数据.txt");
+            std::fs::write(&output, b"previous complete backup").unwrap();
+            let layout = BackupDirectoryLayout {
+                root: root.clone(),
+                device_directory: root.join("source-id"),
+                target_identifier: "source-id".into(),
+            };
+            let (client_stream, mut server_stream) = duplex(16 * 1024);
+            let task = tokio::spawn(async move {
+                Mobilebackup2Client::new(client_stream)
+                    .run_loop(&layout)
+                    .await
+            });
+            server_stream
+                .write_all(&encode_test_frame(&plist::Value::Array(vec![
+                    plist::Value::String("DLMessageUploadFiles".into()),
+                ])))
+                .await
+                .unwrap();
+            for _ in 0..2 {
+                write_prefixed_string(&mut server_stream, "HomeDomain/数据.txt")
+                    .await
+                    .unwrap();
+            }
+            write_transfer_frame(&mut server_stream, FILE_TRANSFER_CODE_FILE_DATA, b"partial")
+                .await
+                .unwrap();
+            // Observe an actual staged write before injecting the failure.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let written = std::fs::read_dir(&parent).unwrap().any(|entry| {
+                        let entry = entry.unwrap();
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".ios-output-")
+                            && entry.metadata().unwrap().len() == 7
+                    });
+                    if written {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("staged partial payload");
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous complete backup");
+            match failure {
+                "cancel" => {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled());
+                }
+                "eof" => {
+                    drop(server_stream);
+                    assert!(task.await.unwrap().is_err());
+                }
+                _ => {
+                    write_transfer_frame(
+                        &mut server_stream,
+                        FILE_TRANSFER_CODE_REMOTE_ERROR,
+                        b"synthetic device error",
+                    )
+                    .await
+                    .unwrap();
+                    write_prefixed_string(&mut server_stream, "").await.unwrap();
+                    let _ = read_test_frame(&mut server_stream).await;
+                    complete_process_message(&mut server_stream, 0, None).await;
+                    // Per-file remote errors keep the established DeviceLink
+                    // flow; a successful loop is not proof of every artifact.
+                    assert_eq!(task.await.unwrap().unwrap(), None);
+                }
+            }
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous complete backup");
+            assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn transfer_budgets_reject_excess_files_and_bytes() {
         let (stream, _) = duplex(16);
@@ -3909,7 +4004,9 @@ mod tests {
         let err = resolve_relative_path(&layout, "final").unwrap_err();
         assert!(err.to_string().contains("symlink"));
 
-        let err = open_layout_file_for_write(&layout, &device.join("final")).unwrap_err();
+        let err = create_layout_staged_file(&layout, &device.join("final"))
+            .err()
+            .expect("symlink output must be rejected");
         assert!(err.to_string().contains("symlink"));
         assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
 

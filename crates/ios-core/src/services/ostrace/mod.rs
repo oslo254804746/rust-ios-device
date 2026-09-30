@@ -763,7 +763,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
         options: ArchiveOptions,
     ) -> Result<ArchiveStats, OsTraceError> {
         let parent = safe_output_parent(output)?;
-        let (temp_path, std_file) = create_secure_temp_file(parent, output.file_name())?;
+        let (temp_path, std_file) = create_secure_temp_file(parent)?;
         let mut guard = TempFileGuard::new(temp_path.clone());
         let mut file = tokio::fs::File::from_std(std_file);
         let result = self.create_archive(&mut file, options).await?;
@@ -790,10 +790,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
                 output.display()
             )));
         }
-        let staging_path = create_secure_temp_dir(parent, output.file_name())?;
+        let staging_path = create_secure_temp_dir(parent)?;
         let mut staging = TempDirGuard::new(staging_path.clone());
-        let (tar_path, tar_file) =
-            create_secure_temp_file(parent, Some(std::ffi::OsStr::new("os-trace.tar")))?;
+        let (tar_path, tar_file) = create_secure_temp_file(parent)?;
         let mut tar_guard = TempFileGuard::new(tar_path.clone());
         let mut file = tokio::fs::File::from_std(tar_file);
         let archive = self.create_archive(&mut file, options).await?;
@@ -805,9 +804,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
         // cancellation drops the cleanup guards without a detached task
         // racing the staging-directory removal.
         let extraction = extract_archive(&tar_path, &staging_path, options)?;
-        atomic_replace(&staging_path, output)?;
+        let _ = safe_output_parent(output)?;
+        crate::fs_replace::move_directory_no_replace(&staging_path, output)?;
         staging.disarm();
-        tar_guard.remove_now();
+        tar_guard.remove_now()?;
         Ok(CollectStats {
             bytes: archive.bytes,
             chunks: archive.chunks,
@@ -982,20 +982,15 @@ fn is_approved_system_alias(path: &Path) -> bool {
     }
 }
 
-fn temp_stem(name: Option<&std::ffi::OsStr>, suffix: &str) -> String {
-    let name = name
-        .map(|value| value.to_string_lossy())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(std::borrow::Cow::Borrowed("archive"));
-    format!(".{name}.{suffix}.{}", uuid::Uuid::new_v4())
+fn temp_stem(suffix: &str) -> String {
+    // Do not disclose device-derived destination names or extend a component
+    // that is already at the filesystem's filename-length limit.
+    format!(".ios-trace-{suffix}-{}", uuid::Uuid::new_v4())
 }
 
-fn create_secure_temp_file(
-    parent: &Path,
-    name: Option<&std::ffi::OsStr>,
-) -> Result<(PathBuf, File), OsTraceError> {
+fn create_secure_temp_file(parent: &Path) -> Result<(PathBuf, File), OsTraceError> {
     for _ in 0..4 {
-        let path = parent.join(temp_stem(name, "tmp"));
+        let path = parent.join(temp_stem("tmp"));
         let mut options = OpenOptions::new();
         options.write(true).read(true).create_new(true);
         #[cfg(unix)]
@@ -1011,12 +1006,9 @@ fn create_secure_temp_file(
     ))
 }
 
-fn create_secure_temp_dir(
-    parent: &Path,
-    name: Option<&std::ffi::OsStr>,
-) -> Result<PathBuf, OsTraceError> {
+fn create_secure_temp_dir(parent: &Path) -> Result<PathBuf, OsTraceError> {
     for _ in 0..4 {
-        let path = parent.join(temp_stem(name, "staging"));
+        let path = parent.join(temp_stem("staging"));
         #[cfg(unix)]
         let mut builder = fs::DirBuilder::new();
         #[cfg(not(unix))]
@@ -1047,19 +1039,23 @@ impl TempFileGuard {
         self.path = None;
     }
 
-    fn remove_now(&mut self) {
-        if let Some(path) = self.path.take() {
-            if fs::remove_file(&path).is_err() {
-                self.path = Some(path);
-            }
+    fn remove_now(&mut self) -> Result<(), OsTraceError> {
+        if let Some(path) = self.path.as_ref() {
+            fs::remove_file(path)?;
+            self.path = None;
         }
+        Ok(())
     }
 }
 
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            let _ = fs::remove_file(path);
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(kind = ?error.kind(), "OS trace temporary file cleanup failed");
+                }
+            }
         }
     }
 }
@@ -1081,7 +1077,11 @@ impl TempDirGuard {
 impl Drop for TempDirGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            let _ = fs::remove_dir_all(path);
+            if let Err(error) = fs::remove_dir_all(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(kind = ?error.kind(), "OS trace staging directory cleanup failed");
+                }
+            }
         }
     }
 }
@@ -2055,9 +2055,11 @@ mod tests {
 
     #[tokio::test]
     async fn archive_to_path_validates_tar_and_collect_is_staged() {
+        use sha2::{Digest, Sha256};
         let output = test_temp_dir().join(format!("ios-trace-{}.tar", uuid::Uuid::new_v4()));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let archive = archive_tar();
+        let expected_hash = Sha256::digest(&archive);
         let server_task = tokio::spawn(archive_server(
             server,
             vec![archive],
@@ -2070,6 +2072,7 @@ mod tests {
             .unwrap();
         assert!(output.is_file());
         assert_eq!(stats.bytes, fs::metadata(&output).unwrap().len());
+        assert_eq!(Sha256::digest(fs::read(&output).unwrap()), expected_hash);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2122,6 +2125,95 @@ mod tests {
         }
         server_task.await.unwrap();
         fs::remove_dir_all(collect_output).unwrap();
+    }
+
+    #[tokio::test]
+    async fn archive_output_failures_and_cancellation_preserve_existing_and_clean_staging() {
+        for failure in ["eof", "cancel"] {
+            let directory = test_temp_dir().join(format!("ios-trace-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let output = directory.join("追踪😀.tar");
+            fs::write(&output, b"previous complete archive").unwrap();
+            let unrelated = directory.join(".ios-trace-tmp-other-operation");
+            fs::write(&unrelated, b"keep another operation").unwrap();
+            let (client, mut server) = tokio::io::duplex(4096);
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let server_task = tokio::spawn(async move {
+                let mut length = [0u8; 4];
+                server.read_exact(&mut length).await.unwrap();
+                let mut request = vec![0; u32::from_be_bytes(length) as usize];
+                server.read_exact(&mut request).await.unwrap();
+                server
+                    .write_all(&archive_status("RequestSuccessful"))
+                    .await
+                    .unwrap();
+                server.write_all(&[ARCHIVE_CHUNK_MAGIC]).await.unwrap();
+                server.write_all(&1024u32.to_le_bytes()).await.unwrap();
+                server.write_all(b"partial payload").await.unwrap();
+                ready_tx.send(()).unwrap();
+                if failure == "cancel" {
+                    std::future::pending::<()>().await;
+                }
+            });
+            let task_output = output.clone();
+            let task = tokio::spawn(async move {
+                OsTraceClient::new(client)
+                    .archive_to_path(&task_output, ArchiveOptions::default())
+                    .await
+            });
+            ready_rx.await.unwrap();
+            if failure == "cancel" {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                server_task.abort();
+                assert!(server_task.await.unwrap_err().is_cancelled());
+            } else {
+                assert!(task.await.unwrap().is_err());
+                server_task.await.unwrap();
+            }
+            assert_eq!(fs::read(&output).unwrap(), b"previous complete archive");
+            assert_eq!(fs::read(&unrelated).unwrap(), b"keep another operation");
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_and_collect_allow_full_length_destination_component() {
+        let directory = test_temp_dir().join(format!("ios-trace-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let output = directory.join("a".repeat(255));
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![archive_tar()],
+            "RequestSuccessful",
+            None,
+        ));
+        OsTraceClient::new(client)
+            .archive_to_path(&output, ArchiveOptions::default())
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+        fs::remove_file(&output).unwrap();
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(archive_server(
+            server,
+            vec![archive_tar()],
+            "RequestSuccessful",
+            None,
+        ));
+        OsTraceClient::new(client)
+            .collect(&output, ArchiveOptions::default())
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+        assert_eq!(
+            fs::read_to_string(output.join("logs/世界.log")).unwrap(),
+            "diagnostic 世界\n"
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
