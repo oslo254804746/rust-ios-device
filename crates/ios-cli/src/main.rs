@@ -2,6 +2,7 @@
 
 mod cmd;
 mod http_diagnostics;
+mod logging;
 mod output;
 
 use std::future::Future;
@@ -292,10 +293,7 @@ async fn main() -> ExitCode {
         2 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_writer(std::io::stderr)
-        .init();
+    logging::init(level);
 
     let result = async {
         let udid = resolve_cli_udid(cli.udid, &cli.command).await?;

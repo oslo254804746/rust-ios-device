@@ -7,6 +7,16 @@ CLI verbosity does not opt in to raw credentials, protocol error bodies or
 error source chains. Rust callers can still inspect the original typed error
 and its sources when they explicitly need them.
 
+The CLI subscriber accepts only the reviewed `ios`, `ios_cli` and `ios_core`
+target namespaces at the selected level. Namespace component boundaries are
+checked; similarly named targets are excluded. Dependency logs remain excluded
+at every verbosity, including TRACE, because their handshake headers, frame
+payloads, close reasons, URLs and IO error text have independent formatting
+policies. The project emits its own safe phase/category/correlation diagnostics
+for failures instead. Library/SDK embedders control their own subscribers and
+must apply an equivalent dependency policy; the library does not install a
+global subscriber for another application.
+
 `ios_core::redaction::diagnostic_id` pseudonymizes identifiers, addresses, paths
 and untrusted names. `diagnostic_error` formats errors without their text or
 Debug payloads. Correlation uses a random process key; it cannot correlate
@@ -80,6 +90,15 @@ with a global subscriber, isolating process-wide tracing filters from parallel
 tests; child stdout/stderr are discarded and raw captured fields are never
 persisted. A positive control confirms that the capture detects an actual raw
 secret. These fixtures do not supply physical-device observations.
+
+A real tokio-tungstenite loopback fixture also sends a synthetic UDID in the
+request URL, a marked-sensitive Authorization header, text payloads and a close
+reason. In a separate unfiltered child it requires actual request/message/close
+logs and detects the original secret, proving why HeaderValue sensitivity alone
+does not protect serialized handshake logs. With the production CLI subscriber,
+the same protocol exchange succeeds, reviewed project phases remain captured
+and raw dependency/secret output is absent. Both child streams are discarded;
+capture is bounded RAM and the parent owns their time limit and termination.
 
 S04 evidence remains scoped to the reviewed host surfaces; future authentication
 and protocol changes must extend raw-output checks. Authentication, authorization,

@@ -45,6 +45,11 @@ boundaries use the [diagnostic contract](docs/diagnostic-contract.md), including
 framework HTTP rejection handling. Host fixtures check original output before
 any masking; a sanitized copy cannot prove the original output did not leak.
 These checks do not certify all device workflows or access-control boundaries.
+CLI verbosity applies only to reviewed project log targets. Third-party logs
+are excluded even at TRACE because their protocol/transport logging can contain
+raw headers or device content. Applications embedding the Rust library choose
+their own global logging policy; this CLI filter cannot protect an independent
+application's subscriber.
 
 ## Scope
 

@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restrict every CLI verbosity to reviewed project log targets, preventing
+  dependency handshake/frame/close logging from exposing identifiers, headers
+  or device data. Verify with a real loopback WebSocket exchange and raw control.
 - Discard unreviewed HTTP error bodies from manager/CDP/Selenium framework
   rejections while preserving status, Allow and HEAD behavior. Hide credentials
   in supervised-pairing/session Debug and raw payloads in owned error Debug.
