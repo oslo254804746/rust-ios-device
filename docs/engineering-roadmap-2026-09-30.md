@@ -748,3 +748,45 @@ doctest、3 默认 feature 下游示例、C ABI 调用、wheel/sdist 重建安�
 
 Q03 状态为待验收：主机接口/合同已就绪，可供后续 R01 等主机依赖使用；上述
 跨平台/真实 UNC/设备条件不自动解除。S04 的后续错误链和 Debug 审查继续执行。
+
+### 大类 2 进度：S04 错误与发现诊断（2026-09-30，S04 仍进行中）
+
+实现提交：`c8ed4c9c252d50f493d1117c9089982c384aa3aa`。
+受测代码为该提交；[格式化验收证据](validation/error-diagnostics-2026-09-30.md)
+区分定点格式化回归与尚未验收的完整输出边界。本次不关闭 S04，不推进第三类。
+
+- CoreError/MuxError 手写 Debug 只保留错误类别、IO kind/os code 或关联代号，
+  不渲染任意协议/来源数据；DeviceNotFound Display 使用进程内代号。
+- PairRecordError 普通/pretty Debug 和 Display 隐藏标识、路径、解析材料及自定义
+  IO 文本；Read 仍保留 IO 类型和 source，Rust 字段/变体可供明确的程序调用使用。
+  缺少配对记录及 direct-RSD 目标的连接错误也不再拼入原始 UDID/IP。
+- DeviceInfo、DeviceEvent、MuxDevice、BonjourService、MdnsDevice、ConnectOptions、
+  PairedMobdev2Device 与内部 LockdownTransport 的 Debug 隐藏设备身份、网络地址、
+  TXT 内容或配对文件路径。显式选设备字段/serde 输出保持用途；测试同时验证该合同。
+- PersistedCredentials::list 不打印目录或任意 IO 文本；SECURITY/CHANGELOG 同步
+  本批范围。RemotePairingRecord::list 的目录日志尚未整改，不能把前者结果推广至后者。
+
+先运行 `cargo test -p ios-core --all-features --locked debug_` 9 PASS（含四个新增
+格式化测试），`... pair_record_error_diagnostics` 1 PASS，`... device::tests`
+47 PASS；单独 `rustfmt --edition 2021 --check crates/ios-core/src/device/tests.rs`
+PASS，因该文件通过 include! 接入。设备相关用例是合成协议/主机测试，不是真机证据。
+窄回归曾因缺配对记录错误仍含原始 UDID FAIL；沿实际 Unsupported 构造路径整改后
+复跑 PASS，保留错误类型与阶段。最终执行完整入口：
+
+```sh
+python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python
+```
+
+日志 `/tmp/ios-s04-error-debug-full.log`。Linux x86_64 / Rust 1.97.1、MSRV 1.80.1 /
+CPython 3.12.13；第 11 节全部主线 PASS。Rust 1569 PASS、0 FAIL、1 既有 PBKDF2
+ignored；Python 6 PASS；66 feature/四组合、默认/full doctest、3 下游示例、C ABI、
+wheel/sdist 重建安装、10 工具测试、118 能力条目/真实 CLI help 均 PASS。
+审查明确文件范围后提交；提交后主工作区干净，参考 checkout 的既有变更原样保留。
+无设备操作、推送、发布或远端 CI。
+
+真实剩余主机工作：任意 Protocol/IO Display 与 source 链的默认渲染，CLI main/
+eprintln、manager HTTP/WS、CDP/Selenium、Python 异常及全部诊断 log site；上游
+URL/认证材料/设备 payload 的异常、timeout 和 cleanup 路径；原始 stdout/stderr
+捕获自检及脱敏副本分开验收。源码审查索引在 `/tmp/ios-s04-log-sites.txt`（876 个
+log/output 匹配位置，含显式产品结果，并非 876 个已证实泄漏）。仍需逐项区分
+用户请求的设备选择/结果输出与默认诊断；定点 Debug 无命中不证明所有原始日志安全。
