@@ -62,7 +62,7 @@ pub enum PairingTransportError {
 }
 
 /// Stored credentials after successful pairing.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PairedCredentials {
     pub remote_identifier: String,
     pub host_identifier: String,
@@ -73,6 +73,12 @@ pub struct PairedCredentials {
     pub peer_alt_irk: Option<Vec<u8>>,
     /// Cipher keys for subsequent sessions (client_key, server_key)
     pub session_keys: Option<([u8; 32], [u8; 32])>,
+}
+
+impl std::fmt::Debug for PairedCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairedCredentials").finish_non_exhaustive()
+    }
 }
 
 /// Perform the full SRP pairing handshake with a new (untrusted) device.
@@ -693,6 +699,36 @@ mod tests {
     const FRAME_DATA: u8 = 0x00;
     const FRAME_SETTINGS: u8 = 0x04;
     const FLAG_SETTINGS_ACK: u8 = 0x01;
+
+    #[test]
+    fn paired_credentials_debug_hides_keys_and_session_material() {
+        let credentials = PairedCredentials {
+            remote_identifier: "synthetic-remote-identifier".into(),
+            host_identifier: "synthetic-host-identifier".into(),
+            host_public_key: b"synthetic-host-public-key".to_vec(),
+            host_private_key: b"synthetic-host-private-key".to_vec(),
+            remote_unlock_host_key: Some("synthetic-unlock-key".into()),
+            peer_alt_irk: Some(b"synthetic-alt-irk".to_vec()),
+            session_keys: Some(([0xa1; 32], [0xb2; 32])),
+        };
+        let output = format!("{credentials:?} {credentials:#?}");
+        for secret in [
+            "synthetic-remote-identifier",
+            "synthetic-host-identifier",
+            "synthetic-unlock-key",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        for secret in [
+            &credentials.host_public_key,
+            &credentials.host_private_key,
+            credentials.peer_alt_irk.as_ref().unwrap(),
+        ] {
+            assert!(!output.contains(&format!("{secret:?}")));
+        }
+        assert!(!output.contains(&format!("{:?}", credentials.session_keys.unwrap())));
+        assert!(output.contains("PairedCredentials"));
+    }
 
     #[test]
     fn handshake_envelope_contains_required_control_fields() {

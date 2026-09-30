@@ -110,9 +110,9 @@ where
     let mtu = ValidatedMtu::new(tunnel_info.client_mtu).map_err(CoreError::Tunnel)?;
     tracing::info!(
         strategy = connection.strategy,
-        server = %tunnel_info.server_address,
+        server = %crate::redaction::diagnostic_id(&tunnel_info.server_address),
         rsd_port = tunnel_info.server_rsd_port,
-        client = %tunnel_info.client_address,
+        client = %crate::redaction::diagnostic_id(&tunnel_info.client_address),
         mtu = mtu.as_u16(),
         "tunnel connect: CDTunnel parameters received"
     );

@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Omit credential fields from pairing-record Debug output and use process-local
+  identifier correlation in manager/forward/tunnel diagnostics. Instruments
+  diagnostics no longer render device response payloads.
+
 - Make independent `fileservice` and `deviceinfo` features enable their required
   RemoteXPC transport; gate service integration tests by their required features.
 - Correct default doctests, private transport import paths and binding examples'

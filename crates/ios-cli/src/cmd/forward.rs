@@ -121,13 +121,15 @@ async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
             Some(target) => Some(target),
             None => {
                 tracing::info!(
-                    "forward: userspace tunnel metadata unavailable for {udid}, falling back to usbmux"
+                    device = %ios_core::redaction::diagnostic_id(udid),
+                    "forward: userspace tunnel metadata unavailable, falling back to usbmux"
                 );
                 None
             }
         },
         Err(err) => {
-            tracing::info!("forward: tunnel unavailable for {udid}: {err}; falling back to usbmux");
+            tracing::info!(device = %ios_core::redaction::diagnostic_id(udid),
+                "forward: tunnel unavailable: {err}; falling back to usbmux");
             None
         }
     };

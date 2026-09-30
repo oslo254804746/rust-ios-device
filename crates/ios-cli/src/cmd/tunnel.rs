@@ -822,14 +822,14 @@ impl TunnelAgentState {
                 Ok(Err(err)) => {
                     tracing::warn!(
                         "tunnel agent: failed to establish tunnel for {}: {err}",
-                        device.serial_number
+                        ios_core::redaction::diagnostic_id(&device.serial_number)
                     );
                     self.record_failed_attempt(&device.serial_number).await;
                 }
                 Err(_) => {
                     tracing::warn!(
                         "tunnel agent: timed out establishing tunnel for {}",
-                        device.serial_number
+                        ios_core::redaction::diagnostic_id(&device.serial_number)
                     );
                     self.record_failed_attempt(&device.serial_number).await;
                 }
@@ -874,8 +874,8 @@ impl TunnelAgentState {
                 Err(err) => {
                     tracing::warn!(
                         "tunnel agent: failed to establish mobdev2 tunnel for {} via {}: {err}",
-                        target.udid,
-                        target.host
+                        ios_core::redaction::diagnostic_id(&target.udid),
+                        ios_core::redaction::diagnostic_id(&target.host)
                     );
                     self.record_failed_attempt(&target.udid).await;
                 }

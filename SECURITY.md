@@ -19,6 +19,14 @@ Include:
 
 This project can handle highly sensitive material, including pair records, private keys, provisioning profiles, backups, syslogs, crash reports, and device identifiers. Do not include those files or values in issues, PRs, logs, test fixtures, or screenshots unless they are synthetic.
 
+Diagnostic identifiers use `ios_core::redaction::diagnostic_id`, a process-local
+opaque correlation value. It cannot sanitize arbitrary device data or error
+text; callers must avoid logging those payloads. Explicit device-selection
+output and public API fields still carry identifiers for their intended purpose.
+PairRecord, PersistedCredentials and PairedCredentials Debug implementations
+omit all credential fields. Serialization remains intentionally available for
+owner-only persistence and must never be used as a diagnostic formatter.
+
 ## Scope
 
 Security reports may include memory safety issues in FFI boundaries, credential leakage, unsafe handling of pair records or private keys, unauthorized device operations, and network services exposed by the tunnel manager.

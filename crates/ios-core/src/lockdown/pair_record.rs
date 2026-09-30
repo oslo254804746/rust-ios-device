@@ -59,7 +59,7 @@ pub enum PairRecordError {
 }
 
 /// iOS device pair record, loaded from the platform-specific lockdown directory.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PairRecord {
     /// DER/PEM-encoded device certificate
@@ -93,6 +93,12 @@ pub struct PairRecord {
     /// disabled Wi-Fi matching in discovery.
     #[serde(rename = "WiFiMACAddress")]
     pub wifi_mac_address: Option<String>,
+}
+
+impl std::fmt::Debug for PairRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairRecord").finish_non_exhaustive()
+    }
 }
 
 /// Plists store key material as `<data>`, which only `serde_bytes` decodes into
@@ -174,6 +180,37 @@ fn pair_record_dir_for_platform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pair_record_debug_hides_certificates_keys_and_identifiers() {
+        let record = PairRecord {
+            device_certificate: b"synthetic-device-certificate".to_vec(),
+            host_certificate: b"synthetic-host-certificate".to_vec(),
+            host_private_key: Zeroizing::new(b"synthetic-host-private-key".to_vec()),
+            root_certificate: b"synthetic-root-certificate".to_vec(),
+            host_id: "synthetic-host-identifier".into(),
+            system_buid: "synthetic-system-identifier".into(),
+            wifi_mac_address: Some("synthetic-mac-address".into()),
+        };
+        let output = format!("{record:?} {record:#?}");
+        for secret in [
+            "synthetic-host-identifier",
+            "synthetic-system-identifier",
+            "synthetic-mac-address",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        for secret in [
+            &record.device_certificate,
+            &record.host_certificate,
+            &*record.host_private_key,
+            &record.root_certificate,
+        ] {
+            assert!(!output.contains(&format!("{secret:?}")));
+            assert!(!output.contains(std::str::from_utf8(secret).unwrap()));
+        }
+        assert!(output.contains("PairRecord"));
+    }
 
     #[test]
     fn test_pair_record_path_macos() {

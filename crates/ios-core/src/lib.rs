@@ -78,6 +78,8 @@ pub(crate) mod pairing_transport;
 pub(crate) mod proto;
 #[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
+/// Diagnostic display policy for sensitive identifiers.
+pub mod redaction;
 /// Owner-only persistence for files containing private-key material.
 pub mod secret_file;
 pub mod services;

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PersistedCredentials {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_identifier: Option<String>,
@@ -24,6 +24,13 @@ pub struct PersistedCredentials {
     pub device_address: String,
     /// RSD port at time of pairing
     pub rsd_port: u16,
+}
+
+impl std::fmt::Debug for PersistedCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistedCredentials")
+            .finish_non_exhaustive()
+    }
 }
 
 impl PersistedCredentials {
@@ -254,6 +261,31 @@ impl RemotePairingRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_debug_does_not_disclose_any_material_or_identifier() {
+        let credential = PersistedCredentials {
+            remote_identifier: Some("synthetic-device-secret".into()),
+            host_identifier: "synthetic-host-secret".into(),
+            host_public_key_hex: "synthetic-public-key".into(),
+            host_private_key_hex: Some("synthetic-private-key".into()),
+            remote_unlock_host_key: Some("synthetic-unlock-key".into()),
+            device_address: "synthetic-address".into(),
+            rsd_port: 1234,
+        };
+        let output = format!("{credential:?} {credential:#?}");
+        for secret in [
+            "synthetic-device-secret",
+            "synthetic-host-secret",
+            "synthetic-public-key",
+            "synthetic-private-key",
+            "synthetic-unlock-key",
+            "synthetic-address",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        assert!(output.contains("PersistedCredentials"));
+    }
 
     #[test]
     fn remote_record_accepts_legacy_arrays_and_new_plist_data() {

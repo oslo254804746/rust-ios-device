@@ -173,7 +173,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
         let cfg_resp = conn
             .method_call(ch, "setConfig:", &[archived_object(archived)])
             .await?;
-        tracing::debug!("sysmontap setConfig: response: {:?}", cfg_resp.payload);
+        tracing::debug!(
+            identifier = cfg_resp.identifier,
+            "sysmontap setConfig response received"
+        );
 
         // start (fire-and-forget)
         conn.method_call_async(ch, "start", &[]).await?;
@@ -210,7 +213,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SysmontapService<S> {
             tracing::debug!(
                 "sysmontap msg ch={} payload={:?}",
                 msg.channel_code,
-                &msg.payload
+                std::mem::discriminant(&msg.payload)
             );
 
             if let Some(sample) = parse_cpu_sample(&msg) {
