@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add bounded, zeroizing private-file reads and exclusive new-secret publication
+  for access-control credentials; existing shared directory permissions are
+  preserved. Manager authentication integration remains in progress.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

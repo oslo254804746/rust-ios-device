@@ -59,6 +59,26 @@ no matching WebSocket bridge or hop wire protocol. Upstream URLs currently use
 interface or use a protected host transport such as an SSH forward for remote
 federation.
 
+Access-control implementation is tracked as S01–S03 in the
+[engineering roadmap](engineering-roadmap-2026-09-30.md). The first S01
+foundation adds `ios_core::secret_file::read_secret` and `write_secret_new` for
+future manager/client credentials. It does not yet change manager admission.
+The reader bounds its buffer to a caller-selected maximum of 1 MiB and wipes it
+on drop. On Unix, it requires the effective user's regular file without
+group/other permissions and rejects leaf symlinks/FIFOs. New-secret publication
+uses owner-only staging and exclusive hard-link creation, preserves an existing
+destination and cleans only its own staging file. It rejects an existing shared
+parent on Unix instead of changing that directory's permissions.
+
+These APIs require trusted parent paths; they do not provide an atomic
+directory-traversal guarantee or a multi-file credential transaction. An
+unsupported hard-link filesystem fails, and a cleanup failure may be reported
+after publication. Windows inherits the configured parent ACL and has a leaf
+reparse-point rejection path; Windows/macOS execution remains pending. Flag
+semantics were checked against [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+and [file attributes](https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants),
+not treated as platform execution evidence.
+
 ## Connection timeout
 
 TCP dials and the initial tunnel/RSD/XPC setup are bounded by a 15-second
