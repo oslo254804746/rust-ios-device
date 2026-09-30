@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | S01 credential-file gate `004b6af`, 1593 Rust/eight Python; previous [S04 HTTP/Debug scope](validation/http-debug-diagnostics-2026-09-30.md) retained | S04 reopened for dependency WebSocket logs; aggregate tests do not certify device workflows or access control |
+| Host build/tests | [S04 dependency-log gate](validation/http-debug-diagnostics-2026-09-30.md), `447730f`, 1594 Rust/eight Python, raw WebSocket control and filtered production capture | Aggregate tests do not certify device workflows, access control or another application's subscriber |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

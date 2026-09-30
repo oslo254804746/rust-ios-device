@@ -67,3 +67,20 @@ CLI's global maximum level also enables tungstenite 0.24.0's request/frame/messa
 TRACE and close-reason DEBUG. This gate did not capture that dependency protocol
 path. S04 was reopened for CLI subscriber filtering and a real WebSocket fixture;
 the successful checks above remain evidence for the listed owned surfaces only.
+
+The finding was resolved by `447730f153f5c962dcc153b2875ff8a5b91f0060`:
+every CLI verbosity admits only reviewed project target namespaces. A real
+loopback WebSocket fixture checks URL/header/message/close data with an
+unfiltered positive control and the production subscriber in separate owned
+child processes. Both protocol exchanges succeed; raw control requires actual
+dependency phases and secret hits, filtered capture retains own phases and has
+no secret/dependency/similarly named target output. Captures stay in bounded RAM,
+with child output discarded and owned deadlines/termination.
+
+Final full gate `/tmp/ios-s04-dependency-logging-full.log` PASS: 1594 Rust/eight
+Python, 66 features/four combinations, docs/snippets, C ABI/raw capture,
+wheel/sdist, 17 tools, 118 capabilities and ten CLI captures. One existing
+PBKDF2 test remains ignored. The actual CLI SHA-256 is
+`a54bb30e9199bbf26d8507163d635b2418707d32f987a175095bf3be587e6fb4`.
+S04 host diagnostic acceptance is restored; this does not certify device
+workflows or an external library embedder's logging policy.

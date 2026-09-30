@@ -100,7 +100,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：私密凭据文件接口已交付；管理面接入仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
-| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 进行中：已验收自有输出边界；新发现第三方日志来源需整改 |
+| S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 待开始 |
@@ -937,3 +937,34 @@ DEBUG 会格式化 close reason。此前原始捕获未执行这种依赖协议�
 原 S04 验收记录作为自有输出边界的历史证据保留；总览状态已更正。
 下一步限制 CLI 日志来源并以真实 WebSocket fixture 检查原始捕获；认证接入继续
 依赖这一安全日志基础，不先引入令牌后忽略依赖泄漏。仍在第二类，目标 active。
+
+### 大类 2 进度：S04 依赖日志边界补齐（2026-09-30）
+
+实现提交：`447730f153f5c962dcc153b2875ff8a5b91f0060`。
+CLI subscriber 只接纳当前已审查的 ios/ios_cli/ios_core namespace，检查组件
+边界并保留选择的等级；任何 verbosity 不启用第三方日志。项目自己的失败阶段、
+安全类别和关联信息继续显示。不修改依赖或其协议行为；库/SDK 的外部宿主自己
+控制 subscriber，不能把 CLI 策略宣传为其他应用的全局保护。
+
+真实 tokio-tungstenite 0.24.0 loopback fixture 发送合成 UDID URL、标记 sensitive
+的 Authorization、text payload 与 close reason。两个本轮独立子进程分别使用旧式
+未过滤对照和生产 subscriber：对照必须捕获真实 Request/Bearer/Received message/
+close 阶段并命中原始秘密；生产配置保持协议交换与自有阶段成功，原始秘密、hex
+变体、依赖 target 和近似 namespace 均不出现。256 KiB RAM、实际阶段非空要求、
+三秒协议/十秒子进程期限、owned kill/reap 和丢弃子输出均参加验收；无原始归档。
+
+先运行 `cargo test -p ios-cli --bin ios --locked logging::tests` 1 PASS（两种实际
+协议子用例）；CLI 全目标严格 Clippy PASS。随后从头运行 full，日志
+`/tmp/ios-s04-dependency-logging-full.log`：第 11 节及扩展门禁全部 PASS。
+Linux x86_64 / Rust 1.97.1、MSRV 1.80.1、CPython 3.12.13；Rust 1594 PASS、
+0 FAIL、1 既有 PBKDF2 ignored，Python 8 PASS；66 feature/四组、默认/full
+doctest 各 7、三个下游示例、C ABI/19-byte 原始捕获、wheel/sdist、17 工具测试、
+118 能力条目/实际帮助及十例 CLI 原始/副本捕获均 PASS。diff/staged diff --check
+和 actionlint PASS。实际 target/debug/ios SHA-256：
+`a54bb30e9199bbf26d8507163d635b2418707d32f987a175095bf3be587e6fb4`。
+
+这次补充解除已证实的依赖日志缺口，S04 恢复完成状态；保留重新打开的历史，
+不抹去之前捕获范围不足的事实。新认证与协议接口仍持续执行 S04 合同；Q02 的
+真实设备/平台观察及 S01–S03 的访问控制保持未完成。实现提交只含五个相关文件，
+提交后主工作区干净，仅随后新增本记录/证据/质量更新。继续 S01 策略及管理面
+接入，不进入第三类、不结束目标；未推送、发布、改写历史或操作实际设备/参考。
