@@ -94,6 +94,10 @@ capture or a wrong HTTP/CLI contract fails. It persists only sanitized counters.
 Four additional maximum-verbosity CLI captures now reject nonloopback forward,
 WDA proxy, dproxy and raw screenshot-stream options before device/service access;
 their runtime error phase and original secret variants are checked in the gate.
+Doctor captures also exercise a legal private manager token and a missing file.
+With usbmux intentionally unavailable, both overall exits are 1; acceptance
+checks the separate manager entry (ok/failed) and retained host scope, so one
+healthy probe cannot hide the independent failed host checks.
 
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.

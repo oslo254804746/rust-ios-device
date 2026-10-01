@@ -97,7 +97,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager 认证/scope/reload、raw listener loopback 审查已交付；其他客户端/调试桥及平台验收仍待 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor 认证、scope/reload 与 raw listener 边界已交付；调试桥及平台验收仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
@@ -1102,3 +1102,39 @@ GET 迁移、S03 每上游凭据及受保护联邦仍未交付。截图完整 F0
 安全合同，当前 raw loopback stream 不算该工作流完成。实现仅 12 个相关文件，
 提交后工作区干净，随后本记录/证据另做文档收尾；目标和第二类持续推进，无设备
 操作、推送、发布、参考变更或历史改写。
+
+### 大类 2 进度：S01 doctor 私密 manager 客户端（2026-10-01，仍进行中）
+
+实现提交：`2c8c8c818669517f53161229b0840066bbdcd024`；
+[验收证据](validation/doctor-manager-access-2026-10-01.md)，用法在
+[troubleshooting](troubleshooting.md) / [管理访问](management-access.md)。
+此交付只接入既有 host doctor，不冒充 F01 的设备 doctor。
+
+- `ios doctor --token-file PRIVATE_FILE` 复用 S01 有界私密 token 读取、敏感 header、
+  loopback 目标。继续禁代理/redirect、限制 body 1 MiB，不读取拒绝 body；report
+  保留 counts 和 host scope。ClientAccessArgs 可借用，以服务并发 host probes。
+- 没有凭据时，可选受保护 manager 仍 warning 并给出 token/list scope 提示；明确
+  提供凭据读失败（保留安全 error category/correlation）、401/403 或凭据 probe
+  deadline 则 Failed，Report.failed 导致 exit 1。其他主机检查独立保留状态。
+- 真实 HTTP 假服务检查合法/错误 token、越权 403、缺少私密文件，并确认报告不
+  含 token、设备、地址或远端原始错误。既有 redirect/oversized/timeout 回归保留。
+- raw gate 在生产 manager 的 list/server-only 私密配置下实际运行两次 doctor：
+  合法 token 的 manager check 为 ok，缺失文件为 failed；故意禁用 usbmux 使总体
+  exit 1，并分别验证 JSON scope/entry，而非把这个总体非零误算全部失败/成功。
+  26 captures 原始/独立副本零命中，不写出 secrets、argv/env 或 raw 输出。
+
+相关检查 `cargo test -p ios-cli --locked cmd::doctor::tests` 6 PASS、严格 CLI
+Clippy 与实际 raw capture PASS。随后完整 `python3 scripts/validate.py full
+--python /home/oslo/projects/rust-ios-device/.venv/bin/python` 全部 PASS，日志
+`/tmp/ios-s01-doctor-full.log`：Rust **1617 PASS、0 FAIL、1 既有 PBKDF2 ignored**，
+Python 8 PASS；66 features/四组、7+7 doctests/三个示例、C ABI/19-byte capture、
+wheel/sdist rebuild/install/import、17 tools、118 inventory/实际帮助、26 CLI/服务
+captures、actionlint、diff/staged diff --check PASS。CLI SHA-256
+`219211b96c019f1cd0f71adb7153cfe4fbac92dfbc17b6b1122561f5e2b34066`。
+
+实现仅六个相关文件，提交后主工作区干净，本记录/证据/质量另行收尾。真实剩余
+为 CDP/Selenium admission 与 browser 合同、S02 Host/Origin/票据和 GET 迁移、S03
+独立上游凭据/TLS，及平台/真机条件；host doctor 没有 device trust/Developer Mode/
+DDI/设备服务证据，F01 未开始。接着扩展 shared admission 到固定设备 debug scope，
+再落实 S02/S03/Q02；第二类和目标保持进行中。无配对、设备启动、DDI、真实 TSS、
+刷机/擦除、推送、发布、历史改写或参考 checkout 修改。
