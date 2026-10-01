@@ -15,7 +15,9 @@ scoped bearer header; `debug` must cover the server's selected device.
 Expiry/reload revokes established sockets and pending requests. Host acceptance
 checks only admission/metadata, including a WebSocket blocked before device
 access; it does not supply client initialization or page workflow evidence.
-Browser handshakes and Host/Origin controls remain S02. See
+Host/Origin checks are enforced; browser handshake tickets remain S02. Debug
+listeners require explicit UDID selection without first-device discovery. See
+[HTTP boundaries](http-boundary.md) and
 [management access](management-access.md) before migrating existing clients.
 
 The following CDP domains remain **unimplemented** as compatible domains:

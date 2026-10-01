@@ -49,11 +49,13 @@ async fn actual_http_authentication_precedes_parsing_and_all_manager_operations(
         (reqwest::Method::GET, "/tunnel/synthetic-secret"),
         (reqwest::Method::DELETE, "/tunnel/synthetic-secret"),
         (reqwest::Method::GET, "/start-tunnel?udid=synthetic-secret"),
+        (reqwest::Method::POST, "/start-tunnel"),
         (reqwest::Method::GET, "/upstream"),
         (reqwest::Method::POST, "/upstream"),
         (reqwest::Method::DELETE, "/upstream"),
         (reqwest::Method::POST, "/auth/reload"),
         (reqwest::Method::GET, "/shutdown"),
+        (reqwest::Method::POST, "/shutdown"),
         (reqwest::Method::GET, "/health"),
         (reqwest::Method::GET, "/ready"),
         (reqwest::Method::GET, "/not-a-route"),
@@ -176,21 +178,28 @@ async fn device_and_port_scopes_filter_lists_and_deny_before_upstream_contact() 
             matches!(failure, tungstenite::Error::Http(response) if response.status() == StatusCode::FORBIDDEN)
         );
     }
-    for path in [
-        "/start-tunnel?udid=synthetic-forbidden-device",
-        "/tunnel/synthetic-forbidden-device",
-    ] {
-        assert_eq!(
-            client
-                .get(format!("{base}{path}"))
-                .bearer_auth(TOKEN)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::FORBIDDEN
-        );
-    }
+    assert_eq!(
+        client
+            .get(format!("{base}/tunnel/synthetic-forbidden-device"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/start-tunnel"))
+            .bearer_auth(TOKEN)
+            .header("content-type", "application/json")
+            .body("{\"udid\":\"synthetic-forbidden-device\"}")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         client
             .delete(format!("{base}/tunnel/synthetic-forbidden-device"))

@@ -243,6 +243,7 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::Wda(command) => command.needs_default_udid(),
         Commands::Tunnel(command) => command.needs_default_udid(),
         Commands::Backup(command) => command.needs_default_udid(),
+        Commands::Webinspector(command) => command.needs_default_udid(),
         _ => true,
     }
 }
@@ -795,6 +796,20 @@ mod tests {
 
         let http = Cli::try_parse_from(["ios", "wda", "status"]).expect("wda status should parse");
         assert!(!command_needs_default_udid(&http.command));
+    }
+
+    #[tokio::test]
+    async fn debug_listeners_require_a_selector_without_global_device_discovery() {
+        for command in ["cdp", "selenium"] {
+            let cli = Cli::try_parse_from(["ios", "webinspector", command]).unwrap();
+            assert!(!command_needs_default_udid(&cli.command));
+            assert!(resolve_cli_udid(None, &cli.command)
+                .await
+                .unwrap()
+                .is_none());
+        }
+        let tabs = Cli::try_parse_from(["ios", "webinspector", "opened-tabs"]).unwrap();
+        assert!(command_needs_default_udid(&tabs.command));
     }
 
     #[test]

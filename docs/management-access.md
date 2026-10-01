@@ -89,8 +89,8 @@ check. Other host probes retain their separate results.
 | GET `/`, `/tunnels` | list; records are filtered to allowed device selectors |
 | GET `/tunnel/:udid` | list for that exact device |
 | GET `/connect` WebSocket upgrade | connect for the exact device and nonzero port |
-| Start/delete a device tunnel | manage-tunnels for the exact device |
-| List/add/delete upstreams; shutdown; POST `/auth/reload` | manage-server |
+| POST `/start-tunnel` JSON; DELETE `/tunnel/:udid` | manage-tunnels for the exact device |
+| List/add/delete upstreams; POST `/shutdown`; POST `/auth/reload` | manage-server |
 | Health/readiness | Any valid, unexpired grant |
 
 The monitor auto-connects only devices covered by a current connect or
@@ -123,8 +123,9 @@ ios --udid DEVICE_UDID webinspector cdp --auth-config PRIVATE_POLICY_FILE
 ios --udid DEVICE_UDID webinspector selenium --auth-config PRIVATE_POLICY_FILE
 ```
 
-Both validate loopback binding and read the policy before opening a listener or
-contacting a device. Every debug route, including adapter metadata, unknown
+Both require an explicit `--udid`/`IOS_UDID` selector and skip global first-device
+discovery. They validate loopback binding and read the policy before opening a
+listener or contacting a device. Every debug route, including adapter metadata, unknown
 routes, extractor failures and WebSocket upgrades, requires one valid bearer
 header and `debug` for the server's exact selected device. Unauthorized requests
 receive 401; wrong roles/devices receive 403 before device or body processing.
@@ -154,8 +155,9 @@ actual allocated endpoint, and CDP metadata brackets IPv6 correctly. Metadata
 describes the local adapter and does not check a device, Developer Mode, DDI,
 Safari inspection or Remote Automation readiness. Native clients must load the
 private token into their HTTP/WebSocket bearer header without printing it or
-placing it in URLs. Browser handshake support and Host/Origin checks are still
-S02 work; a browser cannot use a custom WebSocket Authorization header.
+placing it in URLs. Host/Origin checks apply as described in
+[HTTP boundaries](http-boundary.md). Browser handshake support is still S02
+work; a browser cannot use a custom WebSocket Authorization header.
 
 The previous implicit trust mode now fails at startup. Local users who intend
 to trust every local process must explicitly pass `--local-unauthenticated`;
@@ -175,8 +177,9 @@ cannot federate with a manager in policy mode; do not deploy that topology yet.
 
 `--local-unauthenticated` explicitly trusts every local process and conflicts
 with `--auth-config`. It is accepted only on loopback and bypasses roles/scopes;
-do not use it where local processes are untrusted. Host/Origin policies and
-proper methods for legacy GET management operations are still S02 work.
+do not use it where local processes are untrusted. Host/Origin policies apply
+even in this mode. Legacy GET management now gives a read-only, finite migration
+notice; use POST for shutdown/start. See [HTTP boundaries](http-boundary.md).
 Browsers cannot supply a custom WebSocket Authorization header; a browser
 handshake mechanism will be provided by S02. Long-lived tokens must never be
 placed in URLs.

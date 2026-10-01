@@ -70,6 +70,8 @@ enum TunnelSub {
         scan_interval_ms: u64,
         #[command(flatten)]
         access: ServerAccessArgs,
+        #[command(flatten)]
+        boundary: crate::access::HttpBoundaryArgs,
     },
     /// Stop a tunnel
     Stop {
@@ -120,6 +122,7 @@ impl TunnelCmd {
                 port,
                 scan_interval_ms,
                 access,
+                boundary,
             } => {
                 let tun_mode = if userspace {
                     TunMode::Userspace
@@ -132,6 +135,7 @@ impl TunnelCmd {
                     tun_mode,
                     Duration::from_millis(scan_interval_ms),
                     access,
+                    boundary,
                 )
                 .await?;
             }
@@ -1260,20 +1264,25 @@ async fn run_tunnel_agent(
     tun_mode: TunMode,
     scan_interval: Duration,
     access: ServerAccessArgs,
+    boundary: crate::access::HttpBoundaryArgs,
 ) -> Result<()> {
     anyhow::ensure!(!scan_interval.is_zero(), "scan interval must be nonzero");
+    let boundary = boundary.validate()?;
     let (address, access) = access.load(host).await?;
     let state = TunnelAgentState::with_access(tun_mode, access);
-    let app = agent_router(state.clone());
 
     let listener = TcpListener::bind((address, port))
         .await
         .with_context(|| format!("failed to bind tunnel agent on {host}:{port}"))?;
+    let bound = listener.local_addr()?;
+    let app = boundary.for_listener(bound).protect(
+        agent_router(state.clone()),
+        crate::http_diagnostics::ErrorShape::Manager,
+    );
 
     tracing::info!(
-        "tunnel agent listening on http://{}:{} ({})",
-        host,
-        port,
+        "tunnel agent listening on http://{} ({})",
+        bound,
         match tun_mode {
             TunMode::Userspace => "userspace",
             TunMode::Kernel => "kernel",
@@ -1323,9 +1332,15 @@ fn agent_router(state: TunnelAgentState) -> Router {
         )
         .route("/health", get(agent_health))
         .route("/ready", get(agent_ready))
-        .route("/shutdown", get(agent_shutdown))
+        .route(
+            "/shutdown",
+            axum::routing::post(agent_shutdown).get(legacy_shutdown_get),
+        )
         .route("/auth/reload", axum::routing::post(agent_reload_policy))
-        .route("/start-tunnel", get(agent_start_tunnel))
+        .route(
+            "/start-tunnel",
+            axum::routing::post(agent_start_tunnel).get(legacy_start_get),
+        )
         .route("/tunnels", get(agent_list_records))
         .route(
             "/tunnel/:udid",
@@ -1628,7 +1643,7 @@ async fn agent_delete_tunnel(
 async fn agent_start_tunnel(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-    Query(query): Query<StartTunnelQuery>,
+    Json(query): Json<StartTunnelQuery>,
 ) -> Result<Json<StartTunnelResponse>, Response> {
     principal.require(Permission::ManageTunnels, Some(&query.udid), None)?;
     if let Some(message) = query.unsupported_transport_message() {
@@ -1658,6 +1673,46 @@ async fn agent_start_tunnel(
 
 async fn agent_health() -> StatusCode {
     StatusCode::OK
+}
+
+// GET management never mutates state. Keep a bounded migration notice until
+// 2026-11-01 00:00 UTC, then retain an authenticated 410 tombstone.
+const LEGACY_GET_NOTICE_UNTIL: u64 = 1_793_491_200;
+
+fn legacy_management_reply(now: u64) -> Response {
+    let (status, message) = if now < LEGACY_GET_NOTICE_UNTIL {
+        (
+            StatusCode::METHOD_NOT_ALLOWED,
+            "management requires POST; GET notice ends 2026-11-01",
+        )
+    } else {
+        (StatusCode::GONE, "legacy GET management removed; use POST")
+    };
+    let mut response = manager_error(status, message);
+    response
+        .headers_mut()
+        .insert(axum::http::header::ALLOW, "POST".parse().unwrap());
+    response
+}
+
+async fn legacy_shutdown_get(
+    Extension(principal): Extension<Principal>,
+) -> Result<Response, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
+    Ok(legacy_management_reply(legacy_notice_time()))
+}
+
+async fn legacy_start_get(
+    Extension(principal): Extension<Principal>,
+) -> Result<Response, Response> {
+    principal.require_permission(Permission::ManageTunnels)?;
+    Ok(legacy_management_reply(legacy_notice_time()))
+}
+
+fn legacy_notice_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(LEGACY_GET_NOTICE_UNTIL, |duration| duration.as_secs())
 }
 
 async fn agent_ready(State(state): State<TunnelAgentState>) -> StatusCode {
@@ -1709,6 +1764,7 @@ mod tests {
     use super::*;
 
     mod access_tests;
+    mod method_tests;
 
     fn fake_record(proxy_port: u16) -> TunnelRecord {
         TunnelRecord {
@@ -1730,6 +1786,11 @@ mod tests {
     async fn spawn_test_router(app: Router) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let app = crate::access::HttpBoundaryArgs::default()
+            .validate()
+            .unwrap()
+            .for_listener(listener.local_addr().unwrap())
+            .protect(app, crate::http_diagnostics::ErrorShape::Manager);
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (port, task)
     }

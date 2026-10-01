@@ -168,6 +168,12 @@ def cli_cases(binary):
         cases += [("debug-explicit-" + command, ["-vvvv", "webinspector", command], 1),
                   ("debug-remote-" + command, ["-vvvv", "webinspector", command,
                     "--host", "0.0.0.0", "--local-unauthenticated"], 1)]
+        cases.append(("debug-invalid-" + command, ["-vvvv", "webinspector", command,
+            "--local-unauthenticated", "--allow-origin", "https://" + value + "/path"], 1))
+        cases.append(("debug-no-selector-" + command, ["-vvvv", "webinspector", command,
+            "--local-unauthenticated"], 1))
+    cases.append(("manager-invalid-boundary", ["-vvvv", "tunnel", "serve", "--userspace",
+        "--local-unauthenticated", "--allow-origin", "https://" + value + "/path"], 1))
     for name, args in [
         ("forward", ["forward", "1234", "62078"]),
         ("runwda", ["runwda", "com.synthetic.wda.xctrunner"]),
@@ -183,7 +189,10 @@ def cli_cases(binary):
         cases.append(("help-" + name, args + ["--help"], 0))
     reports = {}
     for name, args, code in cases:
-        result = capture([str(binary)] + args, env=env)
+        case_env = env.copy()
+        if name.startswith("debug-no-selector-"):
+            case_env.pop("IOS_UDID", None)
+        result = capture([str(binary)] + args, env=case_env)
         report = assess(result, variants, code)
         required = {
             "invalid-port": (b"argument parsing failed", b"ValueValidation"),
@@ -191,12 +200,15 @@ def cli_cases(binary):
             "usbmux-source-error": (b"list failed:", b"usbmux error:"),
             "manager-explicit-access": (b"tunnel failed:", b"error:"),
             "manager-remote-plaintext": (b"tunnel failed:", b"error:"),
+            "manager-invalid-boundary": (b"tunnel failed:", b"error:"),
         }.get(name, (b"Usage:",))
         if name.startswith("local-bind-"):
             required = ((name.removeprefix("local-bind-") + " failed:").encode(), b"error:")
         if name.startswith("debug-"):
             required = (b"webinspector failed:", b"error:")
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
+        if name.startswith("debug-no-selector-"):
+            report["contract"] = report["contract"] and b"usbmux" not in result.stderr
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report
     reports.update(credential_cases(binary, env, variants, value))
@@ -269,7 +281,7 @@ def manager_cases(binary, env, variants, device, token, directory):
     """
     config = directory / "live-policy.json"
     variants = set(variants)
-    for secret in (b"f" * 64, b"synthetic-denied-device", b"synthetic-invalid-policy", b"synthetic-invalid-body"):
+    for secret in (b"f" * 64, b"synthetic-denied-device", b"synthetic-invalid-policy", b"synthetic-invalid-body", b"synthetic-secret.evil.invalid"):
         variants.update(secret_variants(secret))
     policy = {"version": 1, "grants": [{
         "token_sha256": hashlib.sha256(token).hexdigest(),
@@ -322,6 +334,14 @@ def manager_cases(binary, env, variants, device, token, directory):
             status, _ = request(method, path, authorized=False, body=b"synthetic-invalid-body")
             checks["unauthenticated-" + name] = status == 401
         checks["invalid-token"] = request("GET", "/tunnels", invalid=True)[0] == 401
+        for name, headers in [
+            ("untrusted-host", {"Host": "synthetic-secret.evil.invalid:1234"}),
+            ("untrusted-origin", {"Origin": "https://synthetic-secret.evil.invalid"}),
+            ("null-origin", {"Origin": "null"}),
+            ("forwarded-host", {"X-Forwarded-Host": "synthetic-secret.evil.invalid"})]:
+            checks[name] = request("POST", "/auth/reload", headers=headers)[0] == 403
+        checks["same-origin-native-header"] = request("GET", "/tunnels", headers={
+            "Origin": "http://127.0.0.1:" + str(port)})[0] == 200
         status, body = request("GET", "/tunnels")
         checks["authorized-list"] = status == 200 and json.loads(body) == []
         for name, args, code in [
@@ -368,7 +388,9 @@ def manager_cases(binary, env, variants, device, token, directory):
         config.write_bytes(json.dumps(policy).encode())
         status, body = request("POST", "/auth/reload")
         checks["authorized-reload"] = status == 200 and json.loads(body).get("data") is True
-        status, body = request("GET", "/shutdown")
+        checks["legacy-shutdown-is-readonly"] = request("GET", "/shutdown")[0] in (405, 410)
+        checks["alive-after-legacy-get"] = request("GET", "/health")[0] == 200
+        status, body = request("POST", "/shutdown")
         checks["authorized-shutdown"] = status == 200 and json.loads(body).get("data") is True
     except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError):
         checks["fixture-contract"] = False
@@ -391,7 +413,7 @@ def debug_cases(binary, env, variants, device, token, directory):
     """
     reports = {}
     variants = set(variants)
-    for secret in (b"synthetic-invalid-policy", b"synthetic-invalid-body", b"f" * 64):
+    for secret in (b"synthetic-invalid-policy", b"synthetic-invalid-body", b"f" * 64, b"synthetic-secret.evil.invalid"):
         variants.update(secret_variants(secret))
     for command, metadata in (("cdp", "/json/version"), ("selenium", "/status")):
         config = directory / (command + "-policy.json")
@@ -413,10 +435,10 @@ def debug_cases(binary, env, variants, device, token, directory):
         worker.start()
         checks = {}
 
-        def request(method, path, authorized=True, invalid=False, body=None):
+        def request(method, path, authorized=True, invalid=False, body=None, fields=None):
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
             try:
-                headers = {}
+                headers = dict(fields or {})
                 if authorized:
                     headers["Authorization"] = "Bearer " + ("f" * 64 if invalid else token.decode())
                 connection.request(method, path, body=body, headers=headers)
@@ -454,6 +476,14 @@ def debug_cases(binary, env, variants, device, token, directory):
                          else reply.get("value", {}).get("error") == "invalid request")
                 checks["unauthenticated-" + str(index)] = status == 401 and shape
             checks["invalid-token"] = request("GET", metadata, invalid=True)[0] == 401
+            for name, fields in [
+                ("untrusted-host", {"Host": "synthetic-secret.evil.invalid:1234"}),
+                ("untrusted-origin", {"Origin": "https://synthetic-secret.evil.invalid"}),
+                ("null-origin", {"Origin": "null"}),
+                ("forwarded-host", {"X-Forwarded-Host": "synthetic-secret.evil.invalid"})]:
+                checks[name] = request("POST", "/auth/reload", fields=fields)[0] == 403
+            checks["same-origin-native-header"] = request("GET", metadata, fields={
+                "Origin": "http://127.0.0.1:" + str(port)})[0] == 200
             config.write_bytes(b"synthetic-invalid-policy")
             checks["failed-reload"] = request("POST", "/auth/reload")[0] == 400
             checks["old-policy-survives"] = request("GET", metadata)[0] == 200

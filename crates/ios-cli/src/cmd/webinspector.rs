@@ -29,7 +29,10 @@ use tokio::sync::{mpsc, watch, Mutex, OwnedMutexGuard};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::access::{AccessControl, Admission, Permission, Principal, ServerAccessArgs};
+use crate::access::{
+    AccessControl, Admission, HttpBoundary, HttpBoundaryArgs, Permission, Principal,
+    ServerAccessArgs,
+};
 
 mod sessions;
 use sessions::Sessions;
@@ -126,6 +129,8 @@ enum WebInspectorSub {
         timeout: f64,
         #[command(flatten)]
         access: ServerAccessArgs,
+        #[command(flatten)]
+        boundary: HttpBoundaryArgs,
     },
     Selenium {
         #[arg(long, default_value = "127.0.0.1")]
@@ -136,6 +141,8 @@ enum WebInspectorSub {
         timeout: f64,
         #[command(flatten)]
         access: ServerAccessArgs,
+        #[command(flatten)]
+        boundary: HttpBoundaryArgs,
     },
 }
 
@@ -358,6 +365,15 @@ impl From<serde_json::Error> for AppError {
 }
 
 impl WebInspectorCmd {
+    /// Long-lived debug listeners must pin an explicit selector. Resolving the
+    /// global default here would scan devices before validating their policy.
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        !matches!(
+            self.sub,
+            WebInspectorSub::Cdp { .. } | WebInspectorSub::Selenium { .. }
+        )
+    }
+
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
         match self.sub {
@@ -421,13 +437,35 @@ impl WebInspectorCmd {
                 port,
                 timeout,
                 access,
-            } => run_cdp_server(&udid, host, port, duration_from_secs(timeout)?, access).await,
+                boundary,
+            } => {
+                run_cdp_server(
+                    &udid,
+                    host,
+                    port,
+                    duration_from_secs(timeout)?,
+                    access,
+                    boundary,
+                )
+                .await
+            }
             WebInspectorSub::Selenium {
                 host,
                 port,
                 timeout,
                 access,
-            } => run_selenium_server(&udid, host, port, duration_from_secs(timeout)?, access).await,
+                boundary,
+            } => {
+                run_selenium_server(
+                    &udid,
+                    host,
+                    port,
+                    duration_from_secs(timeout)?,
+                    access,
+                    boundary,
+                )
+                .await
+            }
         }
     }
 }
@@ -1122,7 +1160,9 @@ async fn server_state(
     port: u16,
     timeout: Duration,
     access: ServerAccessArgs,
-) -> Result<(TcpListener, ServerState)> {
+    boundary: HttpBoundaryArgs,
+) -> Result<(TcpListener, ServerState, HttpBoundary)> {
+    let boundary = boundary.validate()?;
     let (address, access) = access.load(host).await?;
     let listener = TcpListener::bind((address, port)).await?;
     let bound = listener.local_addr()?;
@@ -1137,7 +1177,7 @@ async fn server_state(
         access,
         selenium_sessions: Sessions::default(),
     };
-    Ok((listener, state))
+    Ok((listener, state, boundary.for_listener(bound)))
 }
 
 async fn run_cdp_server(
@@ -1146,9 +1186,15 @@ async fn run_cdp_server(
     port: u16,
     timeout: Duration,
     access: ServerAccessArgs,
+    boundary: HttpBoundaryArgs,
 ) -> Result<()> {
-    let (listener, state) = server_state(udid, &host, port, timeout, access).await?;
-    serve(listener, cdp_router(state)).await
+    let (listener, state, boundary) =
+        server_state(udid, &host, port, timeout, access, boundary).await?;
+    serve(
+        listener,
+        boundary.protect(cdp_router(state), crate::http_diagnostics::ErrorShape::Cdp),
+    )
+    .await
 }
 
 fn cdp_router(state: ServerState) -> Router {
@@ -1182,9 +1228,18 @@ async fn run_selenium_server(
     port: u16,
     timeout: Duration,
     access: ServerAccessArgs,
+    boundary: HttpBoundaryArgs,
 ) -> Result<()> {
-    let (listener, state) = server_state(udid, &host, port, timeout, access).await?;
-    serve(listener, selenium_router(state)).await
+    let (listener, state, boundary) =
+        server_state(udid, &host, port, timeout, access, boundary).await?;
+    serve(
+        listener,
+        boundary.protect(
+            selenium_router(state),
+            crate::http_diagnostics::ErrorShape::WebDriver,
+        ),
+    )
+    .await
 }
 
 fn selenium_router(state: ServerState) -> Router {

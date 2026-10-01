@@ -30,7 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Enforce exact-device debug access before parsing/device I/O, support scoped
   policy reload, revoke HTTP/WS and stored automation leases on expiry/reload,
   and abort owned CDP page tasks when their parent connection ends. Browser
-  handshakes/Host/Origin and physical-device cleanup acceptance remain pending.
+  handshakes and physical-device cleanup acceptance remain pending.
+- Enforce actual-listener Host and exact allowed Origin on manager/CDP/Selenium,
+  reject proxy authority spoofing and require explicit debug device selection
+  before global discovery. Move shutdown/start-tunnel to POST; legacy GET/HEAD
+  give a read-only notice until 2026-11-01 UTC and 410 thereafter. Browser
+  handshake tickets and protected federation remain pending.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

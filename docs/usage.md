@@ -587,10 +587,13 @@ device, or explicit loopback `--local-unauthenticated`. Native clients supply th
 private token in a bearer header for HTTP and WebSocket requests. Missing or
 denied credentials fail before device access. Expiry or an authorized policy
 reload revokes pending requests, connections and stored automation sessions.
+These listeners require explicit global UDID selection without first-device
+discovery, and validate actual listener Host and allowed Origin for HTTP/WS.
 Local metadata is adapter information, not device readiness. See
 [management access](management-access.md) for migration, reload, resource and
-transport boundaries. Browser tickets/Host/Origin and protected federation
-remain unfinished S02/S03 work.
+transport boundaries. See [HTTP boundaries](http-boundary.md) for exact settings
+and POST management migration. Browser tickets and protected federation remain
+unfinished S02/S03 work.
 
 Comparable upstream workflows:
 

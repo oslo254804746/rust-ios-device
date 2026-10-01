@@ -45,6 +45,18 @@ async fn spawn(
     } else {
         selenium_router(state)
     };
+    let router = HttpBoundaryArgs::default()
+        .validate()
+        .unwrap()
+        .for_listener(listener.local_addr().unwrap())
+        .protect(
+            router,
+            if cdp {
+                crate::http_diagnostics::ErrorShape::Cdp
+            } else {
+                crate::http_diagnostics::ErrorShape::WebDriver
+            },
+        );
     (
         port,
         tokio::spawn(async move {
@@ -83,11 +95,16 @@ async fn startup_rejects_implicit_trust_and_remote_hosts_before_binding_or_devic
                 } => (host, port, access),
                 _ => unreachable!(),
             };
-            assert!(
-                server_state(DEVICE, &host, port, Duration::from_secs(1), access)
-                    .await
-                    .is_err()
-            );
+            assert!(server_state(
+                DEVICE,
+                &host,
+                port,
+                Duration::from_secs(1),
+                access,
+                HttpBoundaryArgs::default()
+            )
+            .await
+            .is_err());
         }
         assert!(Arguments::try_parse_from([
             "webinspector",
@@ -119,9 +136,16 @@ async fn local_startup_uses_the_actual_ephemeral_and_ipv6_endpoint_in_metadata()
         else {
             unreachable!()
         };
-        let (listener, state) = server_state(DEVICE, &host, port, Duration::from_secs(1), access)
-            .await
-            .unwrap();
+        let (listener, state, _) = server_state(
+            DEVICE,
+            &host,
+            port,
+            Duration::from_secs(1),
+            access,
+            HttpBoundaryArgs::default(),
+        )
+        .await
+        .unwrap();
         let bound = listener.local_addr().unwrap();
         assert_ne!(bound.port(), 0);
         let Json(metadata) = cdp_version(State(state)).await;

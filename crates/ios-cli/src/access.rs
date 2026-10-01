@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod http_boundary;
+pub(crate) use http_boundary::{HttpBoundary, HttpBoundaryArgs};
 mod runtime;
 pub(crate) use runtime::{
     admission, denied_for, loopback_address, AccessControl, Admission, ClientAccessArgs, Principal,
