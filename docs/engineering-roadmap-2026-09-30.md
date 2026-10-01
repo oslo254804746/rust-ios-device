@@ -106,7 +106,7 @@
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
-| A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 待开始 |
+| A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 进行中 |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 待开始 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
@@ -1743,3 +1743,85 @@ public-contract/usage与CHANGELOG同步。Q01新增单项host evidence，不升�
 在3.9/3.13各3 PASS另行记录。没有配对、DDI、真实TSS、恢复/擦除、推送、发布或
 历史改写。文档收尾核对后自动继续 **A02错误与机器输出合同**；R04接口/主机结果
 已就绪，因此A02依赖解除，第三类/总体目标仍active，尚未进入第四类。
+
+### 大类 3 进行中：A02 类型分类与机器合同（2026-10-01）
+
+R04实现 `c365d5569cb94cc9bade2d17499a37040ae9736a` 与文档收尾
+`4306eb9469e9ffa38ac1f9179bfa11607f3be211` 已核对，收尾后工作区clean；保持原分支。
+开始A02独立实现，当前未提交。只读盘点Core/transport、service_error宏及手写service
+errors、CLI/HTTP/C/Python边界与stream错误处理。发现已有部分flattened String错误
+不能恢复原始类别/链，WebInspector startup把timeout/reset归为Disabled；不得通过
+匹配自然语言猜测timeout/permission，也不能把尚未探测/metadata缺失当成不支持。
+
+新增附加 `ErrorClass` 非穷尽enum与稳定snake_case code、`classify_error(&dyn Error)`
+和 `CoreError::class()`；原CoreError/各service variants、字段、Display/source不变。
+分类只查看typed variants/IO kind/真实tokio elapsed或cancelled join，最多32 sources，
+source cycle有界，不调用Display/Debug；IO custom payload直接检查，避免source
+forwarding跳过typed inner error。对已编译service按feature调用typed adapters；未知
+device status保持ServiceFailure、flattened Other保持Unknown，EINTR/host file EOF
+不猜为取消/设备断开。当前是分类草稿，不代表CLI/HTTP/Python/C已经获得机器字段。
+
+首次all-feature check/test FAIL：MuxError与house_arrest原本没有crate-root reexport，
+已改为现有内部/服务路径，不为测试扩大visibility；修正专项正在运行
+（`/tmp/ios-a02-classification-fixed.log`）。新增原链/24层context、IO payload、codec
+IO vs malformed data、cycle/no formatting、真实owned task取消/elapsed、固定机器codes
+及AFC/WebInspector/media/clipboard/HID具名分支回归，未提前计为PASS。
+
+修正后 `cargo test -p ios-core --all-features --locked error::classification`
+**10 PASS、0 FAIL/ignored**（`/tmp/ios-a02-classification-fixed.log`）；最小feature同
+filter **7 PASS**（`/tmp/ios-a02-classification-minimal.log`），原有minimal warnings
+保留，不当成strict minimal Clippy。`cargo clippy -p ios-core --all-targets --all-features
+--locked -- -D warnings` PASS（`/tmp/ios-a02-classification-lint.log`）；上述handles均
+terminal exit0。新增外部consumer同时检查原CoreError exhaustive match、新classifier/
+稳定JSON code与未来category fallback，最小consumer正在运行。初步
+[分类合同](error-contract.md)明确stable codes、32-source bound、真实剩余信息丢失和
+尚未接入的各入口，不宣称A02/第三类完成。当前未跑A02完整主线、未提交。
+
+再新增附加 `RsdFeatureEvidence` 非穷尽enum，successful目录的exact/resolved查询
+区分Advertised/NotAdvertised/MetadataUnavailable/ServiceMissing，canonical优先于shim，
+ServiceDescriptor旧supports_feature的empty permissive行为不变。MetadataUnavailable
+如实表示现有Vec不能区分omitted/empty metadata；NotAdvertised不是daemon明确拒绝。
+没有把ConnectedDevice::rsd None（含skipped/failed）命名为NotProbed，真实probe状态
+仍待owner维护。原classifier consumer最小feature **7 PASS**
+（`/tmp/ios-a02-public-minimal.log`）；新增evidence consumer后最小 **8 PASS**、
+全feature **10 PASS**（`/tmp/ios-a02-evidence-public-minimal.log`、
+`/tmp/ios-a02-public-all.log`）。新API、合同与CHANGELOG同步，未增加绑定/CLI的字段。
+
+`cargo test -p ios-core --all-features --locked rsd` **36 unit+2 selected integration
+PASS**（AX一项、public consumer一项；其余filtered targets不计PASS），
+`/tmp/ios-a02-rsd-regressions.log`。补充nested backup→DeviceLink→IO source回归后
+分类专项 **11 PASS**（`/tmp/ios-a02-classification-final.log`）；相关handles均terminal
+exit0，changed local links **67 PASS**。将首批Rust classifier/evidence作为可独立审查
+slice验收，随后继续A02各入口/stream工作；当前完整gate待执行，不宣称主任务完成。
+
+已启动首批slice完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`（`/tmp/ios-a02-classification-full.log`）；
+当前未接受完整gate或提交。该阶段只新增Rust分类与RSD evidence查询，无CLI/HTTP/
+Python/C machine字段或旧输出修改；后续source保留涉及旧variant赋值的变化必须单独
+审查和记录迁移，不把附加分类误报成原信息已经恢复。
+
+### 大类 3：A02 Rust 分类/evidence 首批交付（2026-10-01，主任务进行中）
+
+实现 **`678fb9975fa3fe9747b8efb7e29996b31f33c745`**，11个明确相关文件；
+提交后只留本计划。完整gate **PASS**（`/tmp/ios-a02-classification-full.log`），handle
+已确认terminal exit0。该slice主机验收完成，A02/第三类未完成。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 范围 | 附加typed ErrorClass/classify_error/CoreError::class，32-source bound；RSD successful snapshot的exact/resolved evidence query；两个真实外部consumer，原error variants/descriptor字段不变 |
+| 相关验证 | 最终classification11 PASS、之前minimal7 PASS、public consumer最小8/全10 PASS、RSD36 unit+2 selected integration PASS；严格core Clippy及最终workspace Clippy PASS |
+| 第11节主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1706 Rust/8 Python PASS、0 FAIL、2既有PBKDF2/browser ignored；66 features/4 groups、7+7 docs/3snippets、check/Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist重建安装、41tooling、118help、38raw、5host/22device NOT_RUN、8CLI/3backup PASS |
+| 受测二进制 | ios0.1.13 SHA-256 `7fbab03cfb87b8b75ae0a96978b59ddc4d861696c2c3e0ca5cf78abaebc16f1c` |
+| 审查/索引 | 三个旧public declarations/variants/fields逐字保留；不据此宣称ABI普遍等价；67 changed local links/whitespace PASS；[验收](validation/error-classes-2026-10-01.md)、[合同](error-contract.md)和Q01单项host evidence同步，无成熟度升级 |
+| 真实剩余 | 原flattened strings/Disabled source丢失、未尝试/失败probe owner状态、CLI/HTTP/Python/C可编程机器错误、stderr callback/stream/partial语义均待实施；L01设备有序清理/取消/期限与平台/真机工作流待相应条件 |
+
+无CLI/HTTP/Python/C状态或输出格式迁移；源码仅添加Rust API，不恢复既有已丢失
+信息。没有真机、配对、DDI、TSS/擦除恢复、推送、发布或历史改写；browser与A01
+3.9/3.13 wheel仍为历史独立证据。文档收尾后继续A02 source保留与机器错误边界，
+总体目标active，第四类尚未开始。
+
+剩余：最终分类专项/最小feature与public consumer验证，审查所有类型/状态来源；
+补充service missing/metadata missing/unprobed/explicit unsupported的查询合同，CLI
+stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；
+修正可执行的source flattening而不破坏已发布variants；完整第11节gate、diff与阶段
+实现/文档提交。A02/第三类进行中，总体目标active；第四类尚未开始。

@@ -13,12 +13,12 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [R04 conversion/output gate](validation/plist-output-2026-10-01.md), `c365d55`, 1693 Rust/eight Python, 41 tooling tests, 38 raw cases, five regression host cases/eight CLI output/three backup contracts; C signatures and Python 3.12 wheel/sdist; prior A01 3.9/3.13 and TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 classifier/evidence gate](validation/error-classes-2026-10-01.md), `678fb99`, 1706 Rust/eight Python, 41 tooling tests, 38 raw cases, five regression host cases/eight CLI output/three backup contracts; C signatures and Python 3.12 wheel/sdist; prior A01 3.9/3.13 and TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |
 | Resource release and bounded long-run checks | Debug host revocation/ownership fixtures PASS; bounded long-run NOT_RUN | Orderly device cleanup, L02/L03 fixtures and L04 sampling |
-| Public compatibility contract | A01 candidate profiles, source/CLI/C/Python fixtures and migration policy accepted | A02 classification, L01 cancellation, A03 SDK resources and cross-platform/1.0 workflow evidence remain pending |
+| Public compatibility contract | A01 candidate profiles and source/CLI/C/Python fixtures; additive A02 typed classifications/RSD evidence with retained exhaustive error matches and descriptor fields accepted | A02 upstream source/probe tracking, machine mappings/streams; L01 cancellation, A03 SDK resources and cross-platform/1.0 workflow evidence remain pending |
 | Internal module boundaries | R03 device, R01 backup, R02 WebInspector and R04 explicit plist/result-output boundaries accepted; public paths preserved, actual Rust CDP routers accept owned synthetic service streams | A02 error/stream contracts, L01 cleanup and F03 external-client/physical-device workflows remain pending |
 | 1.0 candidate workflow matrix | NOT_RUN | Cross-platform/device automation and long-run evidence |
 

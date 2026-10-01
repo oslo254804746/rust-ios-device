@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-error-classes-678fb99",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Typed synthetic errors/source chains, owned Tokio task/timer, constructed RSD directory and external Rust consumer"],
+      "required_state": ["Host-only classification and successful-directory evidence; no device/probe-state/adapter certification"],
+      "tested_commit": "678fb9975fa3fe9747b8efb7e29996b31f33c745",
+      "date": "2026-10-01",
+      "location": "docs/validation/error-classes-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 first additive Rust classifier/evidence slice only; original types/success outputs retained. Full A02 source/probe/machine adapter/stream and L01 lifecycle acceptance remain pending."
+    },
+    {
       "id": "linux-plist-output-c365d55",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
