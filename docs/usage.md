@@ -547,7 +547,8 @@ ios -u <UDID> webinspector launch https://example.com
 ios -u <UDID> webinspector launch https://example.com --bundle-id com.example.app
 ios -u <UDID> webinspector js-shell --bundle-id com.apple.mobilesafari
 printf 'document.title\n1 + 1\n.exit\n' | ios -u <UDID> webinspector js-shell --page-id 1
-ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222
+ios -u <UDID> webinspector cdp --host 127.0.0.1 --port 9222 --auth-config PRIVATE_POLICY_FILE
+ios -u <UDID> webinspector selenium --auth-config PRIVATE_POLICY_FILE
 ```
 
 Many developer services require Developer Mode, a mounted Developer Disk Image,
@@ -580,6 +581,16 @@ workflow validation for each relevant domain.
 The current per-domain status, explicit errors for unverified methods, and a
 reproducible Playwright/Puppeteer startup probe are in
 [CDP compatibility](cdp-compatibility.md).
+
+Both debug servers require a private policy with `debug` for the exact selected
+device, or explicit loopback `--local-unauthenticated`. Native clients supply the
+private token in a bearer header for HTTP and WebSocket requests. Missing or
+denied credentials fail before device access. Expiry or an authorized policy
+reload revokes pending requests, connections and stored automation sessions.
+Local metadata is adapter information, not device readiness. See
+[management access](management-access.md) for migration, reload, resource and
+transport boundaries. Browser tickets/Host/Origin and protected federation
+remain unfinished S02/S03 work.
 
 Comparable upstream workflows:
 

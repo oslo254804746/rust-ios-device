@@ -50,7 +50,9 @@ impl ServerAccessArgs {
             Some(path) => AccessControl::from_file(path).await?,
             None if self.local_unauthenticated => AccessControl::local(),
             None => {
-                anyhow::bail!("manager requires --auth-config or explicit --local-unauthenticated")
+                anyhow::bail!(
+                    "local server requires --auth-config or explicit --local-unauthenticated"
+                )
             }
         };
         Ok((address, access))
@@ -275,7 +277,11 @@ pub(crate) struct ScopeDenied;
 
 impl From<ScopeDenied> for Response {
     fn from(_: ScopeDenied) -> Self {
-        denied(StatusCode::FORBIDDEN, false)
+        denied_for(
+            crate::http_diagnostics::ErrorShape::Manager,
+            StatusCode::FORBIDDEN,
+            false,
+        )
     }
 }
 
@@ -292,7 +298,7 @@ impl Principal {
         })
     }
 
-    fn current(&self) -> bool {
+    pub(crate) fn current(&self) -> bool {
         self.0.as_ref().map_or(true, |principal| {
             principal.updates.borrow().revision == principal.snapshot.revision
                 && tokio::time::Instant::now() < principal.deadline
@@ -388,21 +394,34 @@ impl Principal {
     }
 }
 
-fn denied(status: StatusCode, head: bool) -> Response {
-    let message = if status == StatusCode::UNAUTHORIZED {
-        "manager authentication required"
-    } else {
-        "manager scope denied"
+pub(crate) fn denied_for(
+    shape: crate::http_diagnostics::ErrorShape,
+    status: StatusCode,
+    head: bool,
+) -> Response {
+    use crate::http_diagnostics::ErrorShape;
+    let message = match (shape, status == StatusCode::UNAUTHORIZED) {
+        (ErrorShape::Manager, true) => "manager authentication required",
+        (ErrorShape::Manager, false) => "manager scope denied",
+        (_, true) => "debug authentication required",
+        (_, false) => "debug scope denied",
     };
-    let mut response =
-        crate::http_diagnostics::reviewed((status, Json(json!({"message": message}))));
+    let body = match shape {
+        ErrorShape::Manager => json!({"message": message}),
+        ErrorShape::Cdp => json!({"error": {"code": -32600, "message": message}}),
+        ErrorShape::WebDriver => json!({"value": {"error": "invalid request", "message": message}}),
+    };
+    let mut response = crate::http_diagnostics::reviewed((status, Json(body)));
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if status == StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
             header::WWW_AUTHENTICATE,
-            HeaderValue::from_static("Bearer realm=\"ios-manager\""),
+            match shape {
+                ErrorShape::Manager => HeaderValue::from_static("Bearer realm=\"ios-manager\""),
+                _ => HeaderValue::from_static("Bearer realm=\"ios-debug\""),
+            },
         );
     }
     if head {
@@ -411,16 +430,67 @@ fn denied(status: StatusCode, head: bool) -> Response {
     response
 }
 
+#[derive(Clone)]
+pub(crate) struct Admission {
+    access: AccessControl,
+    shape: crate::http_diagnostics::ErrorShape,
+    debug_device: Option<String>,
+}
+
+impl Admission {
+    pub(crate) fn manager(access: AccessControl) -> Self {
+        Self {
+            access,
+            shape: crate::http_diagnostics::ErrorShape::Manager,
+            debug_device: None,
+        }
+    }
+
+    pub(crate) fn debug(
+        access: AccessControl,
+        shape: crate::http_diagnostics::ErrorShape,
+        device: String,
+    ) -> Self {
+        Self {
+            access,
+            shape,
+            debug_device: Some(device),
+        }
+    }
+}
+
 pub(crate) async fn admission(
-    State(access): State<AccessControl>,
+    State(admission): State<Admission>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(principal) = access.authenticate(request.headers()) else {
-        return denied(StatusCode::UNAUTHORIZED, request.method() == Method::HEAD);
+    let head = request.method() == Method::HEAD;
+    let Some(principal) = admission.access.authenticate(request.headers()) else {
+        return denied_for(admission.shape, StatusCode::UNAUTHORIZED, head);
     };
-    request.extensions_mut().insert(principal);
-    let mut response = next.run(request).await;
+    let reload = request.uri().path() == "/auth/reload";
+    if let Some(device) = &admission.debug_device {
+        let permitted = if reload {
+            principal.allows(Permission::ManageServer, None, None)
+        } else {
+            principal.allows(Permission::Debug, Some(device), None)
+        };
+        if !permitted {
+            return denied_for(admission.shape, StatusCode::FORBIDDEN, head);
+        }
+    }
+    request.extensions_mut().insert(principal.clone());
+    // Manager handlers guard their exact per-device operations. Debug servers
+    // guard the whole HTTP operation, including pending extraction/device I/O.
+    // A reload response must survive its own successful policy replacement.
+    let mut response = if admission.debug_device.is_some() && !reload {
+        match principal.run(next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => denied_for(admission.shape, StatusCode::FORBIDDEN, head),
+        }
+    } else {
+        next.run(request).await
+    };
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

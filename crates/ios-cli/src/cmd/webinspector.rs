@@ -10,7 +10,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::webinspector::cdp_browser::{
@@ -28,6 +28,14 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch, Mutex, OwnedMutexGuard};
 use tokio::time::Instant;
 use uuid::Uuid;
+
+use crate::access::{AccessControl, Admission, Permission, Principal, ServerAccessArgs};
+
+mod sessions;
+use sessions::Sessions;
+
+#[cfg(test)]
+mod access_tests;
 
 const WD_ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const PAGE_DISCOVERY_IDLE: Duration = Duration::from_millis(500);
@@ -116,6 +124,8 @@ enum WebInspectorSub {
         port: u16,
         #[arg(short = 't', long, default_value = "3.0")]
         timeout: f64,
+        #[command(flatten)]
+        access: ServerAccessArgs,
     },
     Selenium {
         #[arg(long, default_value = "127.0.0.1")]
@@ -124,6 +134,8 @@ enum WebInspectorSub {
         port: u16,
         #[arg(short = 't', long, default_value = "3.0")]
         timeout: f64,
+        #[command(flatten)]
+        access: ServerAccessArgs,
     },
 }
 
@@ -179,7 +191,8 @@ struct ServerState {
     timeout: Duration,
     cdp_host: String,
     cdp_port: u16,
-    selenium_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<SeleniumRuntime>>>>>,
+    access: AccessControl,
+    selenium_sessions: Sessions<SeleniumRuntime>,
 }
 
 struct SeleniumRuntime {
@@ -407,12 +420,14 @@ impl WebInspectorCmd {
                 host,
                 port,
                 timeout,
-            } => run_cdp_server(&udid, host, port, duration_from_secs(timeout)?).await,
+                access,
+            } => run_cdp_server(&udid, host, port, duration_from_secs(timeout)?, access).await,
             WebInspectorSub::Selenium {
                 host,
                 port,
                 timeout,
-            } => run_selenium_server(&udid, host, port, duration_from_secs(timeout)?).await,
+                access,
+            } => run_selenium_server(&udid, host, port, duration_from_secs(timeout)?, access).await,
         }
     }
 }
@@ -1101,38 +1116,85 @@ fn page_target_id(application_id: &str, page: &Page) -> String {
     format!("{application_id}:{}", page.listing_key)
 }
 
-async fn run_cdp_server(udid: &str, host: String, port: u16, timeout: Duration) -> Result<()> {
+async fn server_state(
+    udid: &str,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    access: ServerAccessArgs,
+) -> Result<(TcpListener, ServerState)> {
+    let (address, access) = access.load(host).await?;
+    let listener = TcpListener::bind((address, port)).await?;
+    let bound = listener.local_addr()?;
     let state = ServerState {
         udid: udid.to_string(),
         timeout,
-        cdp_host: host.clone(),
-        cdp_port: port,
-        selenium_sessions: Arc::new(Mutex::new(HashMap::new())),
+        cdp_host: match bound {
+            SocketAddr::V4(_) => bound.ip().to_string(),
+            SocketAddr::V6(_) => format!("[{}]", bound.ip()),
+        },
+        cdp_port: bound.port(),
+        access,
+        selenium_sessions: Sessions::default(),
     };
-    let app = Router::new()
+    Ok((listener, state))
+}
+
+async fn run_cdp_server(
+    udid: &str,
+    host: String,
+    port: u16,
+    timeout: Duration,
+    access: ServerAccessArgs,
+) -> Result<()> {
+    let (listener, state) = server_state(udid, &host, port, timeout, access).await?;
+    serve(listener, cdp_router(state)).await
+}
+
+fn cdp_router(state: ServerState) -> Router {
+    let admission = Admission::debug(
+        state.access.clone(),
+        crate::http_diagnostics::ErrorShape::Cdp,
+        state.udid.clone(),
+    );
+    Router::new()
         .route("/json", get(cdp_targets))
         .route("/json/list", get(cdp_targets))
         .route("/json/version", get(cdp_version))
         .route("/json/version/", get(cdp_version))
         .route("/devtools/page/:page_id", get(cdp_page_ws))
         .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
+        .route("/auth/reload", post(cdp_reload_policy))
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
             crate::http_diagnostics::ErrorShape::Cdp,
             crate::http_diagnostics::rejections,
-        ));
-    serve(host, port, app).await
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            admission,
+            crate::access::admission,
+        ))
 }
 
-async fn run_selenium_server(udid: &str, host: String, port: u16, timeout: Duration) -> Result<()> {
-    let state = ServerState {
-        udid: udid.to_string(),
-        timeout,
-        cdp_host: "127.0.0.1".to_string(),
-        cdp_port: 9222,
-        selenium_sessions: Arc::new(Mutex::new(HashMap::new())),
-    };
-    let app = Router::new()
+async fn run_selenium_server(
+    udid: &str,
+    host: String,
+    port: u16,
+    timeout: Duration,
+    access: ServerAccessArgs,
+) -> Result<()> {
+    let (listener, state) = server_state(udid, &host, port, timeout, access).await?;
+    serve(listener, selenium_router(state)).await
+}
+
+fn selenium_router(state: ServerState) -> Router {
+    let admission = Admission::debug(
+        state.access.clone(),
+        crate::http_diagnostics::ErrorShape::WebDriver,
+        state.udid.clone(),
+    );
+    let sessions = state.selenium_sessions.clone();
+    Router::new()
         .route("/status", get(webdriver_status))
         .route("/session", post(webdriver_new_session))
         .route(
@@ -1170,22 +1232,70 @@ async fn run_selenium_server(udid: &str, host: String, port: u16, timeout: Durat
             "/session/:session_id/element/:element_id/click",
             post(webdriver_element_click),
         )
+        .route("/auth/reload", post(webdriver_reload_policy))
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
             crate::http_diagnostics::ErrorShape::WebDriver,
             crate::http_diagnostics::rejections,
-        ));
-    serve(host, port, app).await
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            sessions,
+            sessions::admission::<SeleniumRuntime>,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            admission,
+            crate::access::admission,
+        ))
 }
 
-async fn serve(host: String, port: u16, app: Router) -> Result<()> {
-    let addr: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .with_context(|| format!("invalid listen address {host}:{port}"))?;
-    let listener = TcpListener::bind(addr).await?;
+async fn serve(listener: TcpListener, app: Router) -> Result<()> {
+    let addr = listener.local_addr()?;
     println!("Listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn cdp_reload_policy(
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+) -> axum::response::Response {
+    debug_reload_policy(state, principal, crate::http_diagnostics::ErrorShape::Cdp).await
+}
+
+async fn webdriver_reload_policy(
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+) -> axum::response::Response {
+    debug_reload_policy(
+        state,
+        principal,
+        crate::http_diagnostics::ErrorShape::WebDriver,
+    )
+    .await
+}
+
+async fn debug_reload_policy(
+    state: ServerState,
+    principal: Principal,
+    shape: crate::http_diagnostics::ErrorShape,
+) -> axum::response::Response {
+    if !principal.allows(Permission::ManageServer, None, None) {
+        return crate::access::denied_for(shape, StatusCode::FORBIDDEN, false);
+    }
+    if let Err(error) = state.access.reload(&principal).await {
+        let message = format!(
+            "debug policy reload failed: {}",
+            crate::output::error_message(&error)
+        );
+        let body = match shape {
+            crate::http_diagnostics::ErrorShape::Cdp => {
+                json!({"error": {"code": -32600, "message": message}})
+            }
+            _ => json!({"value": {"error": "invalid request", "message": message}}),
+        };
+        return crate::http_diagnostics::reviewed((StatusCode::BAD_REQUEST, Json(body)));
+    }
+    Json(json!({"operation": "reload_policy", "data": true})).into_response()
 }
 
 async fn cdp_targets(
@@ -1211,6 +1321,7 @@ async fn cdp_version(State(state): State<ServerState>) -> Json<JsonValue> {
 async fn cdp_page_ws(
     ws: WebSocketUpgrade,
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(page_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let udid = state.udid.clone();
@@ -1219,7 +1330,10 @@ async fn cdp_page_ws(
         .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            if let Err(error) = handle_cdp_socket(socket, &udid, timeout, &page_id).await {
+            if let Ok(Err(error)) = principal
+                .run(handle_cdp_socket(socket, &udid, timeout, &page_id))
+                .await
+            {
                 eprintln!(
                     "cdp bridge closed with error: {}",
                     crate::output::error_message(&error)
@@ -1314,16 +1428,23 @@ struct BrowserPageSession {
     task: tokio::task::JoinHandle<()>,
 }
 
-async fn stop_browser_page(page: BrowserPageSession) {
+impl Drop for BrowserPageSession {
+    fn drop(&mut self) {
+        let _ = self.cancel.send(true);
+        // Dropping JoinHandle detaches its task. Revoked parent connections
+        // must instead drop every child device stream and page lock.
+        self.task.abort();
+    }
+}
+
+async fn stop_browser_page(mut page: BrowserPageSession) {
     let _ = page.cancel.send(true);
-    drop(page.sender);
-    let mut task = page.task;
-    if tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, &mut task)
+    if tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, &mut page.task)
         .await
         .is_err()
     {
-        task.abort();
-        let _ = task.await;
+        page.task.abort();
+        let _ = (&mut page.task).await;
     }
 }
 
@@ -1340,6 +1461,7 @@ enum BrowserPageOutput {
 async fn cdp_browser_ws(
     ws: WebSocketUpgrade,
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(browser_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if browser_id != "ios-cli" {
@@ -1349,7 +1471,10 @@ async fn cdp_browser_ws(
         .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            if let Err(error) = handle_cdp_browser_socket(socket, &state).await {
+            if let Ok(Err(error)) = principal
+                .run(handle_cdp_browser_socket(socket, &state))
+                .await
+            {
                 eprintln!(
                     "cdp browser bridge closed with error: {}",
                     crate::output::error_message(&error)
@@ -1661,14 +1786,19 @@ async fn webdriver_status() -> Json<JsonValue> {
 
 async fn webdriver_new_session(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<JsonValue>, AppError> {
     let runtime = build_selenium_runtime(&state.udid, state.timeout).await?;
     let session_id = Uuid::new_v4().to_string();
     state
         .selenium_sessions
-        .lock()
-        .await
-        .insert(session_id.clone(), Arc::new(Mutex::new(runtime)));
+        .insert(
+            session_id.clone(),
+            runtime,
+            principal,
+            stop_selenium_runtime,
+        )
+        .await;
     Ok(Json(json!({
         "value": {
             "sessionId": session_id,
@@ -1685,11 +1815,17 @@ async fn webdriver_delete_session(
     State(state): State<ServerState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<JsonValue>, AppError> {
-    if let Some(runtime) = state.selenium_sessions.lock().await.remove(&session_id) {
-        let mut runtime = runtime.lock().await;
-        let _ = runtime.stop().await;
+    if let Some(runtime) = state.selenium_sessions.remove(&session_id).await {
+        let _ = tokio::time::timeout(SESSION_CLEANUP_MAX, stop_selenium_runtime(runtime)).await;
     }
     Ok(Json(json!({ "value": null })))
+}
+
+async fn stop_selenium_runtime(runtime: Arc<Mutex<SeleniumRuntime>>) {
+    let mut runtime = runtime.lock().await;
+    if let Err(error) = runtime.stop().await {
+        tracing::warn!(error = %crate::output::error_message(&error), "automation cleanup failed");
+    }
 }
 
 async fn webdriver_get_url(
@@ -1901,10 +2037,8 @@ async fn get_runtime(
 ) -> Result<Arc<Mutex<SeleniumRuntime>>, AppError> {
     state
         .selenium_sessions
-        .lock()
-        .await
         .get(session_id)
-        .cloned()
+        .await
         .ok_or_else(|| AppError::bad_request("unknown webdriver session"))
 }
 

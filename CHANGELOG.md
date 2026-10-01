@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Let the host doctor read private manager credentials with `--token-file`;
   explicit credential read failures and authentication/scope refusals now fail
   its manager check without including remote error bodies or secrets.
+- Require private scoped credentials or explicit loopback trust for CDP/Selenium.
+  Enforce exact-device debug access before parsing/device I/O, support scoped
+  policy reload, revoke HTTP/WS and stored automation leases on expiry/reload,
+  and abort owned CDP page tasks when their parent connection ends. Browser
+  handshakes/Host/Origin and physical-device cleanup acceptance remain pending.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

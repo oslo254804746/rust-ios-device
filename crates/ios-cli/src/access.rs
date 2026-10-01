@@ -14,7 +14,8 @@ use zeroize::Zeroizing;
 
 mod runtime;
 pub(crate) use runtime::{
-    admission, loopback_address, AccessControl, ClientAccessArgs, Principal, ServerAccessArgs,
+    admission, denied_for, loopback_address, AccessControl, Admission, ClientAccessArgs, Principal,
+    ServerAccessArgs,
 };
 
 #[cfg(test)]

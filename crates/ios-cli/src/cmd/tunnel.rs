@@ -1337,7 +1337,7 @@ fn agent_router(state: TunnelAgentState) -> Router {
             crate::http_diagnostics::rejections,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            access,
+            crate::access::Admission::manager(access),
             crate::access::admission,
         ))
 }

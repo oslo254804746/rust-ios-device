@@ -1,11 +1,12 @@
 # Management access configuration
 
-The tunnel manager requires a private scoped policy or explicit local trust.
+The tunnel manager, CDP and Selenium servers require a private scoped policy or
+explicit local trust.
 `ios tunnel auth create|check` prepares/checks credentials without starting a
 server or contacting a device. Start the manager with `--auth-config`; clients
 use `--token-file`. Raw forwarding listeners have been audited and restricted
-to loopback. Debug-server admission is still pending; browser access and
-protected federation are S02/S03.
+to loopback. Native debug admission shares the policy mechanism; browser access
+and protected federation remain S02/S03.
 Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
 
 For Unix shells, choose two new paths in a trusted private directory:
@@ -111,6 +112,56 @@ revocation, with HTTP 403 instead of an empty success. Reload rechecks server
 authority after serialization and the private file read. Completed HTTP/device
 operations are not rolled back by a later policy change.
 
+## CDP and Selenium admission
+
+Create a separate credential with `--permission debug --device DEVICE_UDID`.
+Server administration requires its own explicit `manage-server` permission; it
+does not imply debug access. Start either bridge with that private policy:
+
+```sh
+ios --udid DEVICE_UDID webinspector cdp --auth-config PRIVATE_POLICY_FILE
+ios --udid DEVICE_UDID webinspector selenium --auth-config PRIVATE_POLICY_FILE
+```
+
+Both validate loopback binding and read the policy before opening a listener or
+contacting a device. Every debug route, including adapter metadata, unknown
+routes, extractor failures and WebSocket upgrades, requires one valid bearer
+header and `debug` for the server's exact selected device. Unauthorized requests
+receive 401; wrong roles/devices receive 403 before device or body processing.
+Responses are `no-store` and use the CDP or WebDriver diagnostic envelope.
+Debug grants do not trigger the tunnel manager's device monitor.
+
+`POST /auth/reload` on either debug server instead requires `manage-server`.
+It uses only that server's startup file. Invalid replacements preserve existing
+admission; successful replacements revoke old requests and WebSockets even if
+their credentials are unchanged. These reload responses use a host management
+receipt, not a CDP command or a WebDriver session command. Pending HTTP body
+extraction and device operations are cancelled on expiry/reload. The CDP browser
+connection owns its page tasks; cancelling it aborts those children instead of
+detaching their device streams or page locks.
+
+A stored Selenium session also keeps its creator's authorization lease. On
+expiry/reload it is removed from the session map before bounded cleanup. A
+different valid debug credential cannot continue an expired creator's session.
+Credentials currently authorize the whole selected device; active debug holders
+can use active sessions on that device. This is not per-user session isolation.
+Revocation does not undo device operations already performed or promise an
+Apple teardown acknowledgement. Orderly protocol cleanup and actual Safari/CDP
+client workflows remain device/lifecycle acceptance work.
+
+Defaults are loopback ports 9222 (CDP) and 4444 (Selenium). `--port 0` reports the
+actual allocated endpoint, and CDP metadata brackets IPv6 correctly. Metadata
+describes the local adapter and does not check a device, Developer Mode, DDI,
+Safari inspection or Remote Automation readiness. Native clients must load the
+private token into their HTTP/WebSocket bearer header without printing it or
+placing it in URLs. Browser handshake support and Host/Origin checks are still
+S02 work; a browser cannot use a custom WebSocket Authorization header.
+
+The previous implicit trust mode now fails at startup. Local users who intend
+to trust every local process must explicitly pass `--local-unauthenticated`;
+it conflicts with `--auth-config` and still requires loopback. Use this only
+within the documented host trust boundary.
+
 ## Local and remote transport boundary
 
 Default binding remains `127.0.0.1:49151`. Plain HTTP clients and listeners now
@@ -144,7 +195,7 @@ claim an OS sandbox for raw TCP or kernel routes.
 | `runwda` proxy | Loopback and nonzero ports checked before WDA startup | One selected WDA/device port; raw TCP local trust |
 | `dproxy service` | Loopback checked before service access/capture creation | One selected device/service; raw TCP local trust |
 | `screenshot --stream` | Loopback checked before binding or capture | Existing raw multipart stream; local trust; F05 will use shared admission |
-| CDP/Selenium | Default loopback; additional auth/browser admission unfinished | Pending under S01/S02 |
+| CDP/Selenium | Literal loopback; scoped bearer admission before device access | Exact-device debug grant or explicit local trust; browser handshake pending S02 |
 
 Explicit nonloopback `--host` values for forward/WDA/dproxy/raw screenshot
 streams now fail instead of opening unauthenticated network services. Use a

@@ -56,7 +56,7 @@ class Capture:
     incomplete: bool
 
 
-def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES):
+def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=None):
     """Bound RAM and time; terminate only this owned fixture process/group.
 
     Unix uses a new session to clean up inherited pipe writers. On Windows the
@@ -100,6 +100,10 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES):
     timed_out = False
     try:
         while not (process.poll() is not None and all(done.is_set() for done in completed)):
+            if stop is not None and stop.is_set() and process.poll() is None:
+                # Terminate only this capture's owned CLI after its service
+                # contract checks. This is not a timeout or graceful-device ACK.
+                process.terminate()
             if overflow.wait(0.02):
                 break
             if time.monotonic() >= deadline:
@@ -160,6 +164,10 @@ def cli_cases(binary):
     cases += [("manager-explicit-access", ["-vvvv", "tunnel", "serve", "--userspace"], 1),
               ("manager-remote-plaintext", ["-vvvv", "tunnel", "serve", "--userspace",
                                              "--host", "0.0.0.0", "--local-unauthenticated"], 1)]
+    for command in ("cdp", "selenium"):
+        cases += [("debug-explicit-" + command, ["-vvvv", "webinspector", command], 1),
+                  ("debug-remote-" + command, ["-vvvv", "webinspector", command,
+                    "--host", "0.0.0.0", "--local-unauthenticated"], 1)]
     for name, args in [
         ("forward", ["forward", "1234", "62078"]),
         ("runwda", ["runwda", "com.synthetic.wda.xctrunner"]),
@@ -186,6 +194,8 @@ def cli_cases(binary):
         }.get(name, (b"Usage:",))
         if name.startswith("local-bind-"):
             required = ((name.removeprefix("local-bind-") + " failed:").encode(), b"error:")
+        if name.startswith("debug-"):
+            required = (b"webinspector failed:", b"error:")
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report
@@ -246,6 +256,7 @@ def credential_cases(binary, env, variants, device):
             report["passed"] = report["passed"] and contract
             reports[name] = report
         reports.update(manager_cases(binary, env, checked_variants, device, token, Path(directory)))
+        reports.update(debug_cases(binary, env, checked_variants, device, token, Path(directory)))
     return reports
 
 
@@ -370,6 +381,105 @@ def manager_cases(binary, env, variants, device, token, directory):
     report["contract"] = bool(checks) and all(checks.values()) and b"tunnel agent listening" in result.stderr
     report["passed"] = report["passed"] and report["contract"]
     return dict(client_reports, **{"manager-live": report})
+
+
+def debug_cases(binary, env, variants, device, token, directory):
+    """Capture production debug admission using metadata only, without devices.
+
+    Denied device routes never reach their backend. Authorized paths are only
+    local adapter metadata/reload, not Safari/CDP/Remote Automation evidence.
+    """
+    reports = {}
+    variants = set(variants)
+    for secret in (b"synthetic-invalid-policy", b"synthetic-invalid-body", b"f" * 64):
+        variants.update(secret_variants(secret))
+    for command, metadata in (("cdp", "/json/version"), ("selenium", "/status")):
+        config = directory / (command + "-policy.json")
+        policy = {"version": 1, "grants": [{
+            "token_sha256": hashlib.sha256(token).hexdigest(),
+            "expires_unix": int(time.time()) + 60,
+            "permissions": ["debug", "manage_server"], "devices": [device]}]}
+        with os.fdopen(os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+            file.write(json.dumps(policy).encode())
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        stop = threading.Event()
+        results = []
+        worker = threading.Thread(target=lambda: results.append(capture(
+            [str(binary), "-vvvv", "--udid", device, "webinspector", command,
+             "--port", str(port), "--auth-config", str(config)],
+            env=env, timeout=10, stop=stop)), daemon=True)
+        worker.start()
+        checks = {}
+
+        def request(method, path, authorized=True, invalid=False, body=None):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
+            try:
+                headers = {}
+                if authorized:
+                    headers["Authorization"] = "Bearer " + ("f" * 64 if invalid else token.decode())
+                connection.request(method, path, body=body, headers=headers)
+                response = connection.getresponse()
+                data = response.read(4097)
+                if len(data) > 4096 or raw_hits(data, variants):
+                    raise ValueError("debug admission reply contract failed")
+                return response.status, data
+            finally:
+                connection.close()
+
+        try:
+            deadline = time.monotonic() + 4
+            while worker.is_alive() and time.monotonic() < deadline:
+                try:
+                    status, body = request("GET", metadata)
+                    if status == 200:
+                        reply = json.loads(body)
+                        checks["metadata"] = (
+                            reply.get("User-Agent") == "ios-cli" if command == "cdp"
+                            else reply.get("value", {}).get("ready") is True)
+                        break
+                except (OSError, http.client.HTTPException, ValueError):
+                    pass
+                time.sleep(0.02)
+            if not checks.get("metadata"):
+                raise ValueError("owned debug listener did not become ready")
+            cases = [("GET", metadata), ("POST", "/auth/reload"), ("GET", "/not-a-route")]
+            cases += ([("GET", "/json/list"), ("GET", "/devtools/page/synthetic-page")]
+                      if command == "cdp" else [("POST", "/session"), ("POST", "/session/synthetic-session/url")])
+            for index, (method, path) in enumerate(cases):
+                status, body = request(method, path, authorized=False, body=b"synthetic-invalid-body")
+                reply = json.loads(body)
+                shape = (reply.get("error", {}).get("code") == -32600 if command == "cdp"
+                         else reply.get("value", {}).get("error") == "invalid request")
+                checks["unauthenticated-" + str(index)] = status == 401 and shape
+            checks["invalid-token"] = request("GET", metadata, invalid=True)[0] == 401
+            config.write_bytes(b"synthetic-invalid-policy")
+            checks["failed-reload"] = request("POST", "/auth/reload")[0] == 400
+            checks["old-policy-survives"] = request("GET", metadata)[0] == 200
+            policy["grants"][0]["permissions"] = ["manage_server"]
+            config.write_bytes(json.dumps(policy).encode())
+            checks["reload"] = request("POST", "/auth/reload")[0] == 200
+            checks["admin-does-not-imply-debug"] = request("GET", metadata)[0] == 403
+            policy["grants"][0]["expires_unix"] = int(time.time())
+            config.write_bytes(json.dumps(policy).encode())
+            checks["expiry-reload"] = request("POST", "/auth/reload")[0] == 200
+            checks["expired-token"] = request("GET", metadata)[0] == 401
+        except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError):
+            checks["fixture-contract"] = False
+        finally:
+            stop.set()
+        worker.join(timeout=12)
+        if not results or worker.is_alive():
+            reports["debug-live-" + command] = {"passed": False, "reason": "owned debug capture incomplete"}
+            continue
+        expected = -signal.SIGTERM if os.name == "posix" else 1
+        report = assess(results[0], variants, expected)
+        report["http_checks"] = checks
+        report["contract"] = bool(checks) and all(checks.values()) and b"Listening on http://" in results[0].stdout
+        report["passed"] = report["passed"] and report["contract"]
+        reports["debug-live-" + command] = report
+    return reports
 
 
 def main():

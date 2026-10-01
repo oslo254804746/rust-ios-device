@@ -9,6 +9,15 @@ execution-context announcement, and `Runtime.evaluate` with the synthetic
 context ID. These are protocol tests, not a passed Playwright or Puppeteer page
 workflow.
 
+The Rust CDP and Selenium servers now require `--auth-config` or explicit
+loopback `--local-unauthenticated`. Native HTTP and WebSocket clients need the
+scoped bearer header; `debug` must cover the server's selected device.
+Expiry/reload revokes established sockets and pending requests. Host acceptance
+checks only admission/metadata, including a WebSocket blocked before device
+access; it does not supply client initialization or page workflow evidence.
+Browser handshakes and Host/Origin controls remain S02. See
+[management access](management-access.md) before migrating existing clients.
+
 The following CDP domains remain **unimplemented** as compatible domains:
 
 | Domain | Missing evidence and next validation |
