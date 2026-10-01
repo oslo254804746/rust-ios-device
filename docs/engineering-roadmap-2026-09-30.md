@@ -2112,3 +2112,59 @@ quality及Q01单项host evidence同步，无设备成熟度升级。
 该slice主机验收完成，A02/第三类未完成。无实际设备、配对、DDI/TSS/擦除恢复、
 推送/发布/历史改写；文档收尾核对后继续A02 C binding mapping，HTTP等独立范围仍
 保留。总体目标active，第四类尚未开始；前述pending full以本条terminal结果为准。
+
+### 大类 3 进行中：A02 C caller-thread error category（2026-10-01）
+
+Python实现 `465b3208f9fd65ee4a106d9785872315c50648ff` 与文档收尾
+`62acdbe561e3ca56a3332a9ae100c8b9e5efe676` 已核对，收尾后clean。继续A02，当前
+未提交：附加 `ios_last_error_class(void)`，返回borrowed static NUL code，不分配、
+不释放，library loaded期间有效；每个caller OS thread独立，int-status calls开始
+reset、成功none、失败typed category或诚实named-status fallback。void cleanup/
+runtime init/u16 port/getter不改category；getter可在runtime init前使用。既有14个
+symbol signatures/status0–8/layout/enum不变，新增第15个symbol。
+
+七个Core/serialization failure边界在status转换前记录typed source，runtime的原String
+flatten改为std::io::Error保留，numeric status仍6。NULL/UTF8→InvalidInput、state→
+Precondition、caller buffer不足→ResourceLimit；IOS_ERR_ALLOC也可表示embedded NUL，
+不猜为memory exhaustion而Unknown；panic7覆盖之前class为Unknown，不把已捕获panic
+误报原cancel。新增4个source/实际metadata调用/线程隔离/static codes用例，原panic
+用例扩展覆盖；专项、actual C link/owned malformed ListDevices、完整第11节、审查与
+聚焦实现/文档收尾尚待验证。无interruptible C、device ACK或retry承诺；HTTP/Python
+剩余/probe/stream/partial和真机平台条件仍保留，A02/第三类/总体目标active。
+
+首轮C专项compile **FAIL**（`/tmp/ios-a02-c-errors-host.log`，terminal exit101）：
+测试错误要求std::io::Error/CoreError实现RefUnwindSafe。测试中的只读owned error引用
+用显式AssertUnwindSafe，线程fixture改为catch closure内部创建错误；production
+`ffi_status` 的原UnwindSafe bound未减小，未计PASS。修正专项与后续gate仍待验证。
+
+修正后的 `cargo test -p ios-ffi --all-features --locked` **19 PASS**（原15+新增4，
+`/tmp/ios-a02-c-errors-host-fixed.log`，terminal exit0）；strict package Clippy
+**PASS**（`/tmp/ios-a02-c-errors-clippy.log`，terminal exit0）。新C error fixture工具
+negative **3 PASS**，拒绝empty/wrong exit/unexpected stderr/unsafe capture、timeout/
+overflow/incomplete/cleanup失败和无peer证据（`/tmp/ios-a02-c-errors-validator.log`）。
+实际 `validate.py ffi` **PASS**（`/tmp/ios-a02-c-errors-linked.log`，terminal exit0）：
+strict C11 compile/link/例子、原19B smoke/raw，以及新25B owned malformed ListDevices
+library call；status3+Protocol/output reset、后续NULL call替换class、void/u16不改
+class、saved static pointer仍有效，0 raw hits/cleanup完成。源码核对原14 header
+declarations、IosDevice/IosTunMode声明不变，新增getter；不是跨架构ABI普遍证明。
+80 changed local links/whitespace PASS。完整第11节随后执行，尚未接受主线/提交。
+
+### 大类 3：A02 C category 验收（2026-10-01，主任务进行中）
+
+实现 **`3ae96914ae70cd70f4dcc62e1eafb0904af56b25`**，十个明确相关code/tool/contract
+文件；提交后只留本计划。完整第11节 **PASS**（`/tmp/ios-a02-c-errors-full.log`，
+handle terminal exit0）；首次compile FAIL保留为历史，最终证据见
+[验收索引](validation/c-errors-2026-10-01.md)。quality及Q01单项host evidence同步，
+不升级设备成熟度。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1736 Rust/12 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI原19B raw+新25B owned typed failure、3.12 wheel/sdist重建安装PASS |
+| 专项/工具 | FFI19 PASS；C11 strict header/link/例子、原14 signatures+新getter、status/layout、actual owned ListDevices malformed错误PASS；3 negative工具用例在3.14/3.9/3.13各PASS，完整49 tooling/118 help/38 raw/5 host/22 device NOT_RUN/15 CLI/3 backup合同PASS；owned cleanup/原始secret检查PASS |
+| 二进制 | ios0.1.13 SHA-256 `7be336add56789ec4753be95de47d8f9964b9b9d59350fb310fef1ad23c9a053`，未改CLI产品代码 |
+| 审查/迁移 | 原C status0–8/symbol签名/device layout/mode保持；新增same-caller-thread borrowed static code，int成功none/每次替换，void/u16/getter不替换、不释放pointer；七个native/serialization边界与runtime source分类；ALLOC/NUL不猜resource limit、panicUnknown；80 local links/whitespace PASS |
+| 真实剩余 | HTTP映射、其他Python interpreter/callback/runtime与C过滤/void/port边界、RSD probe owner、flattened source及普通stderr/stream/partial仍待实施；C取消仅typed marker分类测试，不承诺interruptible call；runtime IO failure用构造typed源测映射，未诱导实际资源耗尽；真机/平台/L01cleanup待相应条件 |
+
+该slice主机验收完成，A02/第三类未完成。无实际设备、配对、DDI/TSS/擦除恢复、
+推送/发布/历史改写；文档收尾核对后继续A02 HTTP adapter，保留其余真实pending。
+总体目标active，第四类尚未开始；前述pending full以本条terminal结果为准。

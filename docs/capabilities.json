@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-c-error-categories-3ae9691",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python tools 3.9.25/3.13.15/3.14.4",
+      "device": null,
+      "ios": null,
+      "transport": ["Typed sources, concurrent caller threads and static code lifetime; strict linked C header plus owned malformed ListDevices reply"],
+      "required_state": ["Host-only int-status category query; no interruptible C call, physical query/tunnel or Apple cleanup certification"],
+      "tested_commit": "3ae96914ae70cd70f4dcc62e1eafb0904af56b25",
+      "date": "2026-10-01",
+      "location": "docs/validation/c-errors-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 additive caller-thread C category with original fourteen signatures/statuses/layouts retained and native/runtime sources classified before conversion. HTTP, remaining bindings/probe/stream/partial and L01 lifecycle acceptance remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-python-error-metadata-465b320",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.9.25/3.12.13/3.13.15 installed bindings",
