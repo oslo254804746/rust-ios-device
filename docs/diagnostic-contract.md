@@ -111,6 +111,18 @@ selectors. Three production listeners refuse original Host/Origin/proxy inputs
 without emitting them before reload/device operations. Legacy manager GET is
 read-only, shutdown is POST; omitted debug UDID no longer starts discovery.
 
+The 37-case CLI/service gate also issues an actual CDP browser ticket, adds its
+generated variants to original/masked server-output checks, and verifies safe
+plain-HTTP ticket/long-term URL denials without device access. The successful
+credential JSON is intentional API delivery. A separate explicit Chromium gate
+checks real browser fetch/WebSocket through the production manager with owned
+TCP/upstream fixtures and bounded original child stdout/stderr. It reports only
+versions/counts/results and checks long-term token, selector and any 64-hex ticket
+for raw leakage. No browser console/HAR/video is collected; developer tools and
+external proxy logs can still retain short-lived ticket URLs. See
+[browser access evidence](validation/browser-access-2026-10-01.md) for commands
+and the platform/device/F03 boundary; default full-test ignore is not browser PASS.
+
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
 They are host adapter evidence, not simulated complete WebInspector workflows

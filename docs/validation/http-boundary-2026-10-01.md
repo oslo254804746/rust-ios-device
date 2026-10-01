@@ -49,3 +49,8 @@ credential bootstrap/CORS and actual browser acceptance are next. Native bearer
 and allowed Origin do not provide those steps. S03 isolated upstream credentials/
 protected transport and platform/device evidence remain pending. No push,
 publication, destructive device, history or reference operation occurred.
+
+Follow-up: `826ebf3312e54fb52651969ad5d45fbee914aa5b` adds actual controlled browser
+bootstrap/CORS and single-use handshakes. See [browser access evidence](browser-access-2026-10-01.md).
+The original result above certifies only its original method/Host/Origin scope;
+F03/Apple and future F05 acceptance remain independent.

@@ -98,7 +98,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor/debug 主机入口已交付；平台/真机验收与 S03 联邦凭据接入仍待 |
-| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 进行中：HTTP 方法/Host/Origin 主机合同已交付；浏览器票据/bootstrap/CORS 与验收仍待 |
+| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 进行中：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
@@ -1216,3 +1216,53 @@ PASS。CLI SHA-256 `11b7229d9890d251548fc3e2f6b3ded6edda3e1ff29c1a0bd3b167e3aba3
 浏览器验收；S03 独立上游凭据/保护传输随后，平台/真机待条件。全部任务子项
 保留，继续独立主机范围，无设备启动、配对/DDI/TSS/刷机擦除、推送发布或参考/
 历史修改。
+
+### 大类 2 进度：S02 浏览器 bootstrap、单次票据与真实浏览器主机验收（2026-10-01）
+
+实现提交：`826ebf3312e54fb52651969ad5d45fbee914aa5b`；
+[浏览器合同](http-boundary.md)，[验收证据与重跑命令](validation/browser-access-2026-10-01.md)。
+
+- manager/CDP POST `/auth/ticket` 发行 30 秒、单次、32-byte OS random 的握手；
+  registry 只留 SHA-256，最多 512 pending、body 16 KiB、target URI 2048 bytes。
+  管理 scope 不隐含 connect/debug；精确 device/port 或固定 debug device 才可发行。
+  Browser JSON origin 必须是本来源，native bootstrap 只能选已允许来源。
+- 绑定本监听器 registry、normalized approved Origin 和完整 path/query（目标/
+  options/hop/order）；GET+WS upgrade+canonical ticket 一次消费且从 routed URI
+  移除。重放/并发第二次、缺 Origin、target/origin 替换、重复/encoded alias、
+  header+ticket、长期 token URL、过期均拒绝，错误不反射凭据/选择器；无 cookie
+  认证。Registry quota 明确 429、entropy 失败 503。Reload 撤销旧票据和连接，
+  失败 reload 保留原 snapshot；已连接 lifetime 是 grant，不是握手 30 秒。
+- 三服务 shared CORS：允许来源 exact allow-origin/Vary，known-route OPTIONS
+  仅提供 GET/HEAD/POST/DELETE 与 Authorization/Content-Type metadata，不执行或
+  授权实际请求；无 cookie credentials。Selenium 没有 WS，不新增 ticket route。
+  native 无 Origin bearer 保持原合同，explicit local trust 仍信任本机进程。
+- 实际 Chromium `151.0.7922.34` / Playwright-core `1.63.0` fresh context，原生
+  fetch+CORS+WebSocket，没有自定义 WS header：两组各 **16** 检查 PASS，覆盖
+  bootstrap/精确 scope/错误来源/长 token URL/target tamper/replay、真实经过 Rust
+  production manager 的 binary bytes、grant 到期及 reload 关流和 pending 票据失效。
+  自有 TCP/upstream fixture 检查既有项目 preamble 与 EOF，无 auth/ticket 上游转发。
+  CDP page 生产路由票据 101/revoke PASS，但 page lock 阻止设备连接，非 CDP 工作流。
+- Browser child stdin 配置、私密 fixture token、bounded raw stdout/stderr ≤64 KiB
+  each、Linux 自有 process group cleanup；检查原始 token/device/64-hex ticket 不泄漏，
+  只持久化计数/版本/结果。不启用浏览器 console/HAR/video；浏览器开发工具及外部
+  proxy 仍可能记录短期 ticket URL，合同明确限制日志及 HTTPS/WSS 的 S03 依赖。
+
+相关 manager **36 PASS、1 browser ignored**，debug **28 PASS**，shared access
+**21 PASS**，显式 browser gate **1 PASS（2 variants ×16 checks）**，CLI strict
+Clippy、17 tools PASS。完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，`/tmp/ios-s02-tickets-full.log`：
+Linux x86_64 / Rust 1.97.1 / MSRV 1.80.1 / Python 3.12.13，Rust **1642 PASS、0 FAIL、
+2 ignored**（既有高成本 PBKDF2；浏览器必须配依赖单独执行，已另 PASS），Python
+**8 PASS**；66 feature builds/四组、7+7 doctests/三个 snippets、C ABI/19-byte capture、
+wheel/sdist rebuild/install/import、118 inventory/实际帮助、37 raw CLI/service
+captures、actionlint 与 diff/staged check PASS。37 cases 内新增 CDP 实际发行票据与
+拒绝使用其 plain HTTP/长期 URL、manager admin 无 connect 不能发行；generated
+ticket variants 加入 raw 检测，credential JSON 成功发行是显式 API data。
+CLI SHA-256 `5263e21510a3b134d25e1a890f4e8bd0840754266c06dd2e856a5a851f13c33b`。
+
+18 个相关实现/合同文件已提交，工作区干净；本记录/证据/质量另作收尾提交。
+S02 既有入口 Linux host 范围已验收，任务继续保留 F05 新入口适配与平台/实际
+设备工作流待条件；S01 平台/真机与 S03 上游证据不被此门禁代替。F03 真实 CDP
+客户端经过 Rust/Apple 的初始化与页面流程仍未验收。第二类和持久化目标保持
+进行中，文档收尾后继续 **S03 独立上游凭据与保护传输**，再推进 Q02 余下范围。
+无配对、DDI、真实 TSS、刷机/擦除、推送/发布、历史改写或参考 checkout 修改。
