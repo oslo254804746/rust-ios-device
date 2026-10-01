@@ -9,6 +9,14 @@ execution-context announcement, and `Runtime.evaluate` with the synthetic
 context ID. These are protocol tests, not a passed Playwright or Puppeteer page
 workflow.
 
+R02 adds an internal Rust-only `InspectorSource` boundary shared by the actual
+protected CDP and Selenium routers. Owned host tests now traverse the Rust page
+and browser WebSockets through synthetic plist peers, covering discovery,
+unpaused Target attachment, Runtime replies/errors, flattened session routing,
+detach and teardown. See [module/injection acceptance](validation/webinspector-boundaries-2026-10-01.md).
+This supplies the F03 fixture entry point; Playwright/Puppeteer and physical
+Safari/WebView/JSContext workflow acceptance remain pending.
+
 The Rust CDP and Selenium servers now require `--auth-config` or explicit
 loopback `--local-unauthenticated`. Native HTTP and WebSocket clients need the
 scoped bearer header; `debug` must cover the server's selected device.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Separate WebInspector wire/model/client/session ownership from CLI command,
+  workflow, HTTP, CDP and WebDriver adapters while retaining public paths and
+  command contracts. Add a Rust-only service injection boundary and owned
+  synthetic tests through the actual protected HTTP/WebSocket bridge.
+
 - Separate backup wire, filtering, host filesystem and session responsibilities
   behind the existing public facade; use owned blocking disk operations in
   async backup callers and add actual local CLI output/failure fixtures.

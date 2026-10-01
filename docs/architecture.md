@@ -94,6 +94,32 @@ cancellation and physical-device cleanup acceptance. Existing transfer and
 metadata budgets are unchanged. CLI local operations retain their result formats
 and return output errors; see [backup output contracts](backup-contract.md).
 
+## WebInspector boundaries
+
+The `webinspector` public facade retains metadata, client/session types,
+constants, errors and `cdp_browser` paths. Its private `wire` and `timing`
+modules consume supplied streams/values and preserve the existing framing and
+deadline budgets. `model` owns typed metadata parsing; `client` owns the stream,
+application/page cache and event routing. `inspector` owns Target envelopes and
+response state, and `automation` owns WebKit automation commands and element
+semantics. These layers do not dial devices or serve HTTP.
+
+The CLI facade delegates grammar/dispatch to `commands`, discovery/selection
+and result interpretation to `workflows`, and one-shot/interactive execution to
+`tasks` and `shell`. `http` owns listener startup and shared resources; `cdp`
+owns debugger adaptation and child task guards; `webdriver` owns HTTP automation
+sessions and element representations. Stored credential leases remain in
+`sessions`, and safe protocol diagnostics remain separate from requested JS data.
+
+`connection::InspectorSource` is an internal Rust interface returning an owned
+service stream and optional device guard. Production startup always installs
+`DeviceInspectorSource`, retaining the real guard across the complete session.
+Owned synthetic tests may supply a stream without constructing a fake device.
+HTTP/CLI inputs cannot select a synthetic source. The actual protected Rust
+routers use this interface after admission, so F03 can exercise the bridge
+with controlled plist peers. Host synthetic tests do not certify Apple devices
+or external CDP client interoperability.
+
 ## Feature flags
 
 `ios-core` keeps most service implementations behind feature flags. Examples include `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, and `deviceinfo`.

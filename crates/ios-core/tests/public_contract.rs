@@ -26,6 +26,64 @@ fn error_family(error: &CoreError) -> &'static str {
     }
 }
 
+#[cfg(feature = "webinspector")]
+#[test]
+fn webinspector_facade_models_clients_and_sessions_remain_public() {
+    use ios_core::webinspector::{
+        Application, ApplicationPage, AutomationAvailability, AutomationSession, By,
+        InspectorSession, Page, WebInspectorClient, WebInspectorEvent, WirType,
+    };
+    let application = Application {
+        id: "PID:42".into(),
+        bundle_identifier: "com.example.synthetic".into(),
+        pid: 42,
+        name: "Synthetic".into(),
+        availability: AutomationAvailability::Available,
+        is_active: true,
+        is_proxy: false,
+        is_ready: true,
+        host_application_identifier: None,
+    };
+    let page = Page {
+        id: 1,
+        listing_key: "page-1".into(),
+        page_type: WirType::WebPage,
+        title: Some("Synthetic page".into()),
+        url: None,
+        automation_is_paired: None,
+        automation_name: None,
+        automation_version: None,
+        automation_session_id: None,
+        automation_connection_id: None,
+    };
+    let row = ApplicationPage { application, page };
+    assert_eq!(
+        serde_json::to_value(&row).unwrap()["page"]["page_type"],
+        "web_page"
+    );
+    let _: ios_core::services::webinspector::WebInspectorEvent =
+        WebInspectorEvent::ConnectedDrivers;
+    let _: ios_core::services::webinspector::By = By::CssSelector;
+    let (stream, _peer) = tokio::io::duplex(64);
+    let mut client = WebInspectorClient::with_connection_id(stream, "synthetic-connection");
+    let mut inspector = InspectorSession::with_session_id("PID:42", 1, "synthetic-session");
+    let mut automation = AutomationSession::with_session_id(
+        "PID:42",
+        "com.example.synthetic",
+        "synthetic-automation",
+    );
+    automation.set_implicit_wait_timeout(std::time::Duration::ZERO);
+    assert_eq!(client.connection_id(), "synthetic-connection");
+    assert_eq!(inspector.session_id(), "synthetic-session");
+    assert_eq!(automation.session_id(), "synthetic-automation");
+    // Check old method paths without polling any service I/O.
+    drop(client.start(std::time::Duration::ZERO));
+    drop(inspector.attach_unpaused(&mut client, true, std::time::Duration::ZERO));
+    drop(automation.attach(&mut client, std::time::Duration::ZERO));
+    drop(automation.find_element(&mut client, By::CssSelector, ".synthetic"));
+    let _browser = ios_core::webinspector::cdp_browser::BrowserCdpState::new("synthetic-browser");
+}
+
 fn event_id(event: DeviceEvent) -> u32 {
     match event {
         DeviceEvent::Attached(DeviceInfo { device_id, .. })

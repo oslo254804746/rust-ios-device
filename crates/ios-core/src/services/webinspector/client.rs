@@ -1,0 +1,882 @@
+//! WebInspector service state, application/page cache and incoming event routing.
+//! Owns a supplied async stream; device dialing and HTTP adapters are callers.
+
+use super::timing::{deadline_after, remaining_time};
+use super::wire::{extract_json_payload, optional_string, recv_plist, required_string, send_plist};
+use super::{
+    Application, ApplicationPage, AutomationAvailability, Page, WebInspectorError,
+    WebInspectorEvent, WirType,
+};
+use indexmap::IndexMap;
+use serde_json::Value as JsonValue;
+use std::collections::VecDeque;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::time::{timeout, Duration};
+use uuid::Uuid;
+
+#[derive(Debug)]
+pub struct WebInspectorClient<S> {
+    stream: S,
+    connection_id: String,
+    automation_availability: Option<AutomationAvailability>,
+    applications: IndexMap<String, Application>,
+    application_pages: IndexMap<String, IndexMap<u64, Page>>,
+    pending_events: VecDeque<WebInspectorEvent>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
+    pub fn new(stream: S) -> Self {
+        Self::with_connection_id(stream, Uuid::new_v4().to_string().to_uppercase())
+    }
+
+    pub fn with_connection_id(stream: S, connection_id: impl Into<String>) -> Self {
+        Self {
+            stream,
+            connection_id: connection_id.into(),
+            automation_availability: None,
+            applications: IndexMap::new(),
+            application_pages: IndexMap::new(),
+            pending_events: VecDeque::new(),
+        }
+    }
+
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+
+    pub fn automation_availability(&self) -> Option<AutomationAvailability> {
+        self.automation_availability.clone()
+    }
+
+    pub fn applications(&self) -> &IndexMap<String, Application> {
+        &self.applications
+    }
+
+    pub fn application_pages(&self, application_id: &str) -> Option<&IndexMap<u64, Page>> {
+        self.application_pages.get(application_id)
+    }
+
+    pub fn application_by_bundle(&self, bundle_identifier: &str) -> Option<&Application> {
+        self.applications
+            .values()
+            .find(|application| application.bundle_identifier == bundle_identifier)
+    }
+
+    pub fn page(&self, application_id: &str, page_id: u64) -> Option<&Page> {
+        self.application_pages
+            .get(application_id)
+            .and_then(|pages| pages.get(&page_id))
+    }
+
+    pub fn automation_page_by_session(
+        &self,
+        application_id: &str,
+        session_id: &str,
+    ) -> Option<&Page> {
+        self.application_pages
+            .get(application_id)
+            .and_then(|pages| {
+                pages.values().find(|page| {
+                    page.page_type == WirType::Automation
+                        && page.automation_session_id.as_deref() == Some(session_id)
+                })
+            })
+    }
+
+    pub fn open_pages_snapshot(&self) -> Vec<ApplicationPage> {
+        let mut result = Vec::new();
+        for (application_id, application) in &self.applications {
+            if let Some(pages) = self.application_pages.get(application_id) {
+                for page in pages.values() {
+                    result.push(ApplicationPage {
+                        application: application.clone(),
+                        page: page.clone(),
+                    });
+                }
+            }
+        }
+        result
+    }
+
+    pub async fn start(&mut self, timeout_duration: Duration) -> Result<(), WebInspectorError> {
+        let deadline = deadline_after(timeout_duration)?;
+        timeout(
+            remaining_time(deadline, timeout_duration)?,
+            self.report_identifier(),
+        )
+        .await
+        .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
+        .map_err(map_handshake_disabled_error)?;
+        loop {
+            let event = self
+                .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
+                .await
+                .map_err(map_handshake_disabled_error)?;
+            if matches!(event, WebInspectorEvent::CurrentState { .. }) {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Discovers all open application pages on the device.
+    ///
+    /// Sends `_rpc_getConnectedApplications:` and consumes incoming events until no
+    /// new event arrives within `idle_timeout`. The timeout signals quiescence (no
+    /// more pages are being reported) and is the **expected completion path** — it is
+    /// not an error. Returns the accumulated snapshot of open pages.
+    pub async fn open_application_pages(
+        &mut self,
+        idle_timeout: Duration,
+    ) -> Result<Vec<ApplicationPage>, WebInspectorError> {
+        timeout(idle_timeout, self.request_connected_applications())
+            .await
+            .map_err(|_| WebInspectorError::Timeout(idle_timeout))??;
+        loop {
+            match self.next_event_with_timeout(idle_timeout).await {
+                Ok(_) => continue,
+                Err(WebInspectorError::Timeout(_)) => return Ok(self.open_pages_snapshot()),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    pub async fn report_identifier(&mut self) -> Result<(), WebInspectorError> {
+        self.send_message("_rpc_reportIdentifier:", plist::Dictionary::new())
+            .await
+    }
+
+    pub async fn request_connected_applications(&mut self) -> Result<(), WebInspectorError> {
+        self.send_message("_rpc_getConnectedApplications:", plist::Dictionary::new())
+            .await
+    }
+
+    pub async fn request_listing(&mut self, application_id: &str) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_forwardGetListing:",
+            plist::Dictionary::from_iter([(
+                "WIRApplicationIdentifierKey".to_string(),
+                plist::Value::String(application_id.to_string()),
+            )]),
+        )
+        .await
+    }
+
+    pub async fn request_application_launch(
+        &mut self,
+        bundle_identifier: &str,
+    ) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_requestApplicationLaunch:",
+            plist::Dictionary::from_iter([(
+                "WIRApplicationBundleIdentifierKey".to_string(),
+                plist::Value::String(bundle_identifier.to_string()),
+            )]),
+        )
+        .await
+    }
+
+    pub async fn request_automation_session(
+        &mut self,
+        session_id: &str,
+        application_id: &str,
+    ) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_forwardAutomationSessionRequest:",
+            plist::Dictionary::from_iter([
+                (
+                    "WIRApplicationIdentifierKey".to_string(),
+                    plist::Value::String(application_id.to_string()),
+                ),
+                (
+                    "WIRSessionCapabilitiesKey".to_string(),
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([
+                        (
+                            "org.webkit.webdriver.webrtc.allow-insecure-media-capture".to_string(),
+                            plist::Value::Boolean(true),
+                        ),
+                        (
+                            "org.webkit.webdriver.webrtc.suppress-ice-candidate-filtering"
+                                .to_string(),
+                            plist::Value::Boolean(false),
+                        ),
+                    ])),
+                ),
+                (
+                    "WIRSessionIdentifierKey".to_string(),
+                    plist::Value::String(session_id.to_string()),
+                ),
+            ]),
+        )
+        .await
+    }
+
+    pub async fn send_socket_setup(
+        &mut self,
+        session_id: &str,
+        application_id: &str,
+        page_id: u64,
+        pause: bool,
+    ) -> Result<(), WebInspectorError> {
+        let mut args = plist::Dictionary::from_iter([
+            (
+                "WIRApplicationIdentifierKey".to_string(),
+                plist::Value::String(application_id.to_string()),
+            ),
+            (
+                "WIRPageIdentifierKey".to_string(),
+                plist::Value::Integer(page_id.into()),
+            ),
+            (
+                "WIRSenderKey".to_string(),
+                plist::Value::String(session_id.to_string()),
+            ),
+            (
+                "WIRMessageDataTypeChunkSupportedKey".to_string(),
+                plist::Value::Integer(0.into()),
+            ),
+        ]);
+        if !pause {
+            args.insert(
+                "WIRAutomaticallyPause".to_string(),
+                plist::Value::Boolean(false),
+            );
+        }
+        self.send_message("_rpc_forwardSocketSetup:", args).await
+    }
+
+    pub async fn send_socket_data(
+        &mut self,
+        session_id: &str,
+        application_id: &str,
+        page_id: u64,
+        message: &JsonValue,
+    ) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_forwardSocketData:",
+            plist::Dictionary::from_iter([
+                (
+                    "WIRApplicationIdentifierKey".to_string(),
+                    plist::Value::String(application_id.to_string()),
+                ),
+                (
+                    "WIRPageIdentifierKey".to_string(),
+                    plist::Value::Integer(page_id.into()),
+                ),
+                (
+                    "WIRSessionIdentifierKey".to_string(),
+                    plist::Value::String(session_id.to_string()),
+                ),
+                (
+                    "WIRSenderKey".to_string(),
+                    plist::Value::String(session_id.to_string()),
+                ),
+                (
+                    "WIRSocketDataKey".to_string(),
+                    plist::Value::Data(serde_json::to_vec(message)?),
+                ),
+            ]),
+        )
+        .await
+    }
+
+    /// Close a debugger forwarding socket before another client attaches to the page.
+    pub async fn send_socket_teardown(
+        &mut self,
+        session_id: &str,
+        application_id: &str,
+        page_id: u64,
+    ) -> Result<(), WebInspectorError> {
+        self.send_message(
+            "_rpc_forwardDidClose:",
+            plist::Dictionary::from_iter([
+                (
+                    "WIRApplicationIdentifierKey".to_string(),
+                    plist::Value::String(application_id.to_string()),
+                ),
+                (
+                    "WIRPageIdentifierKey".to_string(),
+                    plist::Value::Integer(page_id.into()),
+                ),
+                (
+                    "WIRSenderKey".to_string(),
+                    plist::Value::String(session_id.to_string()),
+                ),
+            ]),
+        )
+        .await
+    }
+
+    pub async fn next_event(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(event);
+        }
+        let plist = recv_plist(&mut self.stream).await?;
+        self.handle_message(plist).await
+    }
+
+    pub async fn next_event_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<WebInspectorEvent, WebInspectorError> {
+        timeout(timeout_duration, self.next_event())
+            .await
+            .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
+    }
+
+    pub(super) async fn next_socket_data_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<WebInspectorEvent, WebInspectorError> {
+        let deadline = deadline_after(timeout_duration)?;
+        loop {
+            let event = self
+                .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
+                .await?;
+            if matches!(event, WebInspectorEvent::SocketData { .. }) {
+                return Ok(event);
+            }
+        }
+    }
+
+    pub(super) fn restore_pending_events_front(&mut self, mut events: Vec<WebInspectorEvent>) {
+        while let Some(event) = events.pop() {
+            self.pending_events.push_front(event);
+        }
+    }
+
+    async fn handle_message(
+        &mut self,
+        message: plist::Dictionary,
+    ) -> Result<WebInspectorEvent, WebInspectorError> {
+        let selector = required_string(&message, "__selector")?;
+        let argument = message
+            .get("__argument")
+            .and_then(plist::Value::as_dictionary)
+            .ok_or_else(|| {
+                WebInspectorError::Protocol(format!(
+                    "webinspector message '{selector}' missing __argument dictionary"
+                ))
+            })?;
+
+        match selector {
+            "_rpc_reportCurrentState:" => {
+                let availability = AutomationAvailability::from_wire(required_string(
+                    argument,
+                    "WIRAutomationAvailabilityKey",
+                )?);
+                self.automation_availability = Some(availability.clone());
+                Ok(WebInspectorEvent::CurrentState { availability })
+            }
+            "_rpc_reportConnectedApplicationList:" => {
+                let applications_dict = argument
+                    .get("WIRApplicationDictionaryKey")
+                    .and_then(plist::Value::as_dictionary)
+                    .ok_or_else(|| {
+                        WebInspectorError::Protocol(
+                            "connected application list missing WIRApplicationDictionaryKey"
+                                .to_string(),
+                        )
+                    })?;
+                let mut applications = IndexMap::new();
+                for application in applications_dict.values() {
+                    let application = application.as_dictionary().ok_or_else(|| {
+                        WebInspectorError::Protocol(
+                            "connected application entry was not a dictionary".to_string(),
+                        )
+                    })?;
+                    let application = Application::from_plist(application)?;
+                    applications.insert(application.id.clone(), application);
+                }
+
+                self.application_pages
+                    .retain(|application_id, _| applications.contains_key(application_id));
+                self.applications = applications.clone();
+                for application_id in applications.keys() {
+                    self.request_listing(application_id).await?;
+                }
+
+                Ok(WebInspectorEvent::ConnectedApplications {
+                    applications: applications.into_values().collect(),
+                })
+            }
+            "_rpc_reportConnectedDriverList:" => Ok(WebInspectorEvent::ConnectedDrivers),
+            "_rpc_applicationSentListing:" => {
+                let application_id =
+                    required_string(argument, "WIRApplicationIdentifierKey")?.to_string();
+                let listing = argument
+                    .get("WIRListingKey")
+                    .and_then(plist::Value::as_dictionary)
+                    .ok_or_else(|| {
+                        WebInspectorError::Protocol(
+                            "application listing missing WIRListingKey dictionary".to_string(),
+                        )
+                    })?;
+
+                let mut listed_pages = Vec::with_capacity(listing.len());
+                for (listing_key, page) in listing {
+                    let page = page.as_dictionary().ok_or_else(|| {
+                        WebInspectorError::Protocol(
+                            "application page entry was not a dictionary".to_string(),
+                        )
+                    })?;
+                    let page = Page::from_plist(listing_key, page)?;
+                    listed_pages.push(page);
+                }
+
+                // A listing is a complete snapshot, not a delta. Replace the
+                // cache only after every page has parsed successfully so a
+                // malformed update cannot partially corrupt the last snapshot.
+                let pages = self
+                    .application_pages
+                    .entry(application_id.clone())
+                    .or_default();
+                pages.clear();
+                for page in &listed_pages {
+                    pages.insert(page.id, page.clone());
+                }
+
+                Ok(WebInspectorEvent::Listing {
+                    application_id,
+                    pages: listed_pages,
+                })
+            }
+            "_rpc_applicationUpdated:" => {
+                let application = Application::from_plist(argument)?;
+                self.applications
+                    .insert(application.id.clone(), application.clone());
+                Ok(WebInspectorEvent::ApplicationUpdated { application })
+            }
+            "_rpc_applicationConnected:" => {
+                let application = Application::from_plist(argument)?;
+                self.applications
+                    .insert(application.id.clone(), application.clone());
+                Ok(WebInspectorEvent::ApplicationConnected { application })
+            }
+            "_rpc_applicationSentData:" => {
+                let payload = extract_json_payload(argument, "WIRMessageDataKey")?;
+                let application_id =
+                    optional_string(argument, "WIRApplicationIdentifierKey").map(ToOwned::to_owned);
+                Ok(WebInspectorEvent::SocketData {
+                    application_id,
+                    message: payload,
+                })
+            }
+            "_rpc_applicationDisconnected:" => {
+                let application_id =
+                    required_string(argument, "WIRApplicationIdentifierKey")?.to_string();
+                self.applications.shift_remove(&application_id);
+                self.application_pages.shift_remove(&application_id);
+                Ok(WebInspectorEvent::ApplicationDisconnected { application_id })
+            }
+            other => Err(WebInspectorError::Protocol(format!(
+                "unsupported webinspector selector '{other}'"
+            ))),
+        }
+    }
+
+    async fn send_message(
+        &mut self,
+        selector: &str,
+        mut arguments: plist::Dictionary,
+    ) -> Result<(), WebInspectorError> {
+        arguments.insert(
+            "WIRConnectionIdentifierKey".to_string(),
+            plist::Value::String(self.connection_id.clone()),
+        );
+        send_plist(
+            &mut self.stream,
+            &plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "__selector".to_string(),
+                    plist::Value::String(selector.to_string()),
+                ),
+                (
+                    "__argument".to_string(),
+                    plist::Value::Dictionary(arguments),
+                ),
+            ])),
+        )
+        .await
+    }
+}
+
+fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
+    match &error {
+        WebInspectorError::Io(io_error)
+            if matches!(
+                io_error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+            ) =>
+        {
+            WebInspectorError::Disabled
+        }
+        WebInspectorError::Timeout(_) => WebInspectorError::Disabled,
+        _ => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indexmap::IndexMap;
+    use tokio::io::{duplex, AsyncWriteExt};
+
+    use super::*;
+
+    fn encode_plist(value: &plist::Value) -> Vec<u8> {
+        let mut payload = Vec::new();
+        plist::to_writer_xml(&mut payload, value).expect("plist serialization");
+        let mut framed = Vec::with_capacity(payload.len() + 4);
+        framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&payload);
+        framed
+    }
+
+    #[test]
+    fn open_pages_snapshot_only_includes_pages_for_connected_apps() {
+        let stream = tokio::io::empty();
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        client.applications.insert(
+            "PID:42".into(),
+            Application {
+                id: "PID:42".into(),
+                bundle_identifier: "com.apple.mobilesafari".into(),
+                pid: 42,
+                name: "Safari".into(),
+                availability: AutomationAvailability::Available,
+                is_active: true,
+                is_proxy: false,
+                is_ready: true,
+                host_application_identifier: None,
+            },
+        );
+        client.application_pages.insert(
+            "PID:42".into(),
+            IndexMap::from_iter([(
+                7,
+                Page {
+                    id: 7,
+                    listing_key: "page-7".into(),
+                    page_type: WirType::WebPage,
+                    title: Some("Example".into()),
+                    url: Some("https://example.com".into()),
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            )]),
+        );
+        client.application_pages.insert(
+            "PID:99".into(),
+            IndexMap::from_iter([(
+                9,
+                Page {
+                    id: 9,
+                    listing_key: "orphan".into(),
+                    page_type: WirType::WebPage,
+                    title: None,
+                    url: None,
+                    automation_is_paired: None,
+                    automation_name: None,
+                    automation_version: None,
+                    automation_session_id: None,
+                    automation_connection_id: None,
+                },
+            )]),
+        );
+
+        let snapshot = client.open_pages_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].application.id, "PID:42");
+        assert_eq!(snapshot[0].page.id, 7);
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn application_listing_message(
+        application_id: &str,
+        pages: &[(&str, u64, &str, Option<&str>, Option<&str>)],
+    ) -> plist::Dictionary {
+        let listing = pages
+            .iter()
+            .map(|(listing_key, page_id, page_type, title, url)| {
+                let mut page = plist::Dictionary::from_iter([
+                    (
+                        "WIRPageIdentifierKey".to_string(),
+                        plist::Value::Integer((*page_id).into()),
+                    ),
+                    (
+                        "WIRTypeKey".to_string(),
+                        plist::Value::String((*page_type).to_string()),
+                    ),
+                ]);
+                if let Some(title) = title {
+                    page.insert(
+                        "WIRTitleKey".to_string(),
+                        plist::Value::String((*title).to_string()),
+                    );
+                }
+                if let Some(url) = url {
+                    page.insert(
+                        "WIRURLKey".to_string(),
+                        plist::Value::String((*url).to_string()),
+                    );
+                }
+                ((*listing_key).to_string(), plist::Value::Dictionary(page))
+            });
+
+        plist::Dictionary::from_iter([
+            (
+                "__selector".to_string(),
+                plist::Value::String("_rpc_applicationSentListing:".into()),
+            ),
+            (
+                "__argument".to_string(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                    (
+                        "WIRApplicationIdentifierKey".to_string(),
+                        plist::Value::String(application_id.to_string()),
+                    ),
+                    (
+                        "WIRListingKey".to_string(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter(listing)),
+                    ),
+                ])),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn handle_message_application_disconnected_clears_cached_state() {
+        let stream = tokio::io::empty();
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        client.applications.insert(
+            "PID:42".into(),
+            Application {
+                id: "PID:42".into(),
+                bundle_identifier: "com.apple.mobilesafari".into(),
+                pid: 42,
+                name: "Safari".into(),
+                availability: AutomationAvailability::Available,
+                is_active: true,
+                is_proxy: false,
+                is_ready: true,
+                host_application_identifier: None,
+            },
+        );
+        client
+            .application_pages
+            .insert("PID:42".into(), IndexMap::new());
+
+        let message = plist::Dictionary::from_iter([
+            (
+                "__selector".to_string(),
+                plist::Value::String("_rpc_applicationDisconnected:".into()),
+            ),
+            (
+                "__argument".to_string(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "WIRApplicationIdentifierKey".to_string(),
+                    plist::Value::String("PID:42".into()),
+                )])),
+            ),
+        ]);
+
+        let event = client.handle_message(message).await.unwrap();
+        assert!(matches!(
+            event,
+            WebInspectorEvent::ApplicationDisconnected { ref application_id } if application_id == "PID:42"
+        ));
+        assert!(client.applications().is_empty());
+        assert!(client.application_pages("PID:42").is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_message_application_listing_replaces_existing_page_cache() {
+        let stream = tokio::io::empty();
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+
+        client
+            .handle_message(application_listing_message(
+                "PID:42",
+                &[
+                    (
+                        "page-1",
+                        1,
+                        "WIRTypeWebPage",
+                        Some("Example"),
+                        Some("https://example.com"),
+                    ),
+                    (
+                        "page-2",
+                        2,
+                        "WIRTypeWebPage",
+                        Some("Second"),
+                        Some("https://second.example.com"),
+                    ),
+                ],
+            ))
+            .await
+            .unwrap();
+
+        let event = client
+            .handle_message(application_listing_message(
+                "PID:42",
+                &[(
+                    "page-1",
+                    1,
+                    "WIRTypeWebPage",
+                    Some("Updated Example"),
+                    Some("https://updated.example.com"),
+                )],
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            event,
+            WebInspectorEvent::Listing { ref application_id, ref pages }
+                if application_id == "PID:42"
+                    && pages.len() == 1
+                    && pages[0].id == 1
+                    && pages[0].title.as_deref() == Some("Updated Example")
+        ));
+
+        let pages = client
+            .application_pages("PID:42")
+            .expect("application pages must exist after listing");
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages.get(&1).and_then(|page| page.title.as_deref()),
+            Some("Updated Example")
+        );
+        assert_eq!(
+            pages.get(&1).and_then(|page| page.url.as_deref()),
+            Some("https://updated.example.com")
+        );
+        assert!(pages.get(&2).is_none());
+    }
+
+    #[tokio::test]
+    async fn open_application_pages_returns_snapshot_on_idle_timeout() {
+        let (client_stream, mut server_stream) = duplex(16 * 1024);
+        let task = tokio::spawn(async move {
+            let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST");
+            client
+                .open_application_pages(Duration::from_millis(50))
+                .await
+                .unwrap()
+        });
+
+        let request = recv_plist(&mut server_stream).await.unwrap();
+        assert_eq!(
+            request.get("__selector").and_then(plist::Value::as_string),
+            Some("_rpc_getConnectedApplications:")
+        );
+
+        server_stream
+            .write_all(&encode_plist(&plist::Value::Dictionary(
+                plist::Dictionary::from_iter([
+                    (
+                        "__selector".to_string(),
+                        plist::Value::String("_rpc_reportConnectedApplicationList:".into()),
+                    ),
+                    (
+                        "__argument".to_string(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                            "WIRApplicationDictionaryKey".to_string(),
+                            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                                "PID:42".to_string(),
+                                plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                    (
+                                        "WIRApplicationIdentifierKey".to_string(),
+                                        plist::Value::String("PID:42".into()),
+                                    ),
+                                    (
+                                        "WIRApplicationBundleIdentifierKey".to_string(),
+                                        plist::Value::String("com.apple.mobilesafari".into()),
+                                    ),
+                                    (
+                                        "WIRApplicationNameKey".to_string(),
+                                        plist::Value::String("Safari".into()),
+                                    ),
+                                    (
+                                        "WIRAutomationAvailabilityKey".to_string(),
+                                        plist::Value::String(
+                                            "WIRAutomationAvailabilityAvailable".into(),
+                                        ),
+                                    ),
+                                    (
+                                        "WIRIsApplicationActiveKey".to_string(),
+                                        plist::Value::Boolean(true),
+                                    ),
+                                    (
+                                        "WIRIsApplicationProxyKey".to_string(),
+                                        plist::Value::Boolean(false),
+                                    ),
+                                    (
+                                        "WIRIsApplicationReadyKey".to_string(),
+                                        plist::Value::Boolean(true),
+                                    ),
+                                ])),
+                            )])),
+                        )])),
+                    ),
+                ]),
+            )))
+            .await
+            .unwrap();
+
+        let listing_request = recv_plist(&mut server_stream).await.unwrap();
+        assert_eq!(
+            listing_request
+                .get("__selector")
+                .and_then(plist::Value::as_string),
+            Some("_rpc_forwardGetListing:")
+        );
+
+        server_stream
+            .write_all(&encode_plist(&plist::Value::Dictionary(
+                plist::Dictionary::from_iter([
+                    (
+                        "__selector".to_string(),
+                        plist::Value::String("_rpc_applicationSentListing:".into()),
+                    ),
+                    (
+                        "__argument".to_string(),
+                        plist::Value::Dictionary(plist::Dictionary::from_iter([
+                            (
+                                "WIRApplicationIdentifierKey".to_string(),
+                                plist::Value::String("PID:42".into()),
+                            ),
+                            (
+                                "WIRListingKey".to_string(),
+                                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                                    "page-7".to_string(),
+                                    plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                        (
+                                            "WIRPageIdentifierKey".to_string(),
+                                            plist::Value::Integer(7.into()),
+                                        ),
+                                        (
+                                            "WIRTypeKey".to_string(),
+                                            plist::Value::String("WIRTypeWebPage".into()),
+                                        ),
+                                    ])),
+                                )])),
+                            ),
+                        ])),
+                    ),
+                ]),
+            )))
+            .await
+            .unwrap();
+
+        let pages = task.await.unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].application.id, "PID:42");
+        assert_eq!(pages[0].page.id, 7);
+    }
+}

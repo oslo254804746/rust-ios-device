@@ -1,8 +1,23 @@
-use super::*;
+use super::cdp::{cdp_router, cdp_version, lock_cdp_page};
+use super::commands::WebInspectorSub;
+use super::connection::DeviceInspectorSource;
+use super::http::{server_state, ServerState};
+use super::sessions::Sessions;
+use super::webdriver::selenium_router;
 use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
+use crate::access::{AccessControl, HttpBoundaryArgs, Permission};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::Json;
 use clap::Parser;
+use futures_util::StreamExt;
+use serde_json::{json, Value as JsonValue};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
+use uuid::Uuid;
 
 #[derive(Parser)]
 struct Arguments {
@@ -39,6 +54,7 @@ async fn spawn(
             .await
             .unwrap(),
         selenium_sessions: Sessions::default(),
+        source: Arc::new(DeviceInspectorSource),
     };
     let router = if cdp {
         cdp_router(state)
@@ -517,24 +533,4 @@ async fn reload_cancels_pending_webdriver_body_extraction_with_a_safe_forbidden_
     assert!(!original.contains("synthetic-session"));
     server.abort();
     let _ = server.await;
-}
-
-#[tokio::test]
-async fn dropping_a_browser_page_ownership_guard_aborts_its_child_task() {
-    let lock = Arc::new(Mutex::new(()));
-    let guard = lock.clone().lock_owned().await;
-    let (sender, _receiver) = mpsc::channel(1);
-    let (cancel, _cancellation) = watch::channel(false);
-    let task = tokio::spawn(async move {
-        let _guard = guard;
-        std::future::pending::<()>().await;
-    });
-    drop(BrowserPageSession {
-        sender,
-        cancel,
-        task,
-    });
-    let _released = tokio::time::timeout(Duration::from_secs(1), lock.lock_owned())
-        .await
-        .unwrap();
 }
