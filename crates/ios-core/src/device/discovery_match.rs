@@ -1,3 +1,34 @@
+//! Existing-trust Bonjour discovery and bounded lockdown identity probes.
+
+use super::PairedMobdev2Device;
+use crate::discovery::{browse_mobdev2, mobdev2_wifi_mac, BonjourService};
+use crate::error::CoreError;
+use crate::lockdown::pair_record::{default_pair_record_dir, PairRecord};
+use crate::lockdown::protocol::{recv_lockdown, send_lockdown};
+use crate::lockdown::session::start_lockdown_session;
+use crate::lockdown::LOCKDOWN_PORT;
+use std::{sync::Arc, time::Duration};
+use tokio::net::TcpStream;
+
+const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[cfg(feature = "mdns")]
+/// Discover already paired devices, including devices using private Wi-Fi MACs.
+/// Unknown MACs may open bounded lockdown sessions to validate candidate records;
+/// this function never creates a new pairing or starts a tunnel.
+pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
+    let records = tokio::task::spawn_blocking(load_wifi_pairings)
+        .await
+        .map_err(|e| CoreError::Other(format!("join error: {e}")))?;
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let services = browse_mobdev2(MOBDEV2_DISCOVERY_TIMEOUT).await?;
+    let mut targets = match_paired_mobdev2_targets(&services, &records);
+    resolve_private_mobdev2_targets(&services, &records, &mut targets).await;
+    Ok(targets)
+}
+
 #[cfg(feature = "mdns")]
 #[derive(Clone)]
 struct LockdownDiscoveryRecord {
@@ -226,7 +257,7 @@ async fn probe_lockdown_pair_record(
 }
 
 #[cfg(feature = "mdns")]
-fn ordered_lockdown_addresses(addresses: &[String]) -> Vec<&str> {
+pub(super) fn ordered_lockdown_addresses(addresses: &[String]) -> Vec<&str> {
     let mut addresses: Vec<_> = addresses.iter().map(String::as_str).collect();
     addresses.sort_by_key(|address| {
         if address.parse::<std::net::Ipv4Addr>().is_ok() {
@@ -461,59 +492,59 @@ mod wifi_matching_tests {
         assert_eq!(records[0].udid, "valid");
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
 
     #[test]
-    #[cfg(feature = "tunnel")]
-    fn remote_pairing_offline_matching_rejects_unmatched_and_ambiguous_keys() {
-        let mut key = [0; 16];
-        STANDARD
-            .decode_slice("Mgp6ZGPzXM2ku9br46vsiw==", &mut key)
-            .unwrap();
-        let keys = vec![("device".into(), zeroize::Zeroizing::new(key))];
-        let service = BonjourService {
-            instance: "opaque._remotepairing._tcp.local.".into(),
-            port: 49152,
-            addresses: vec!["192.0.2.1".into(), "192.0.2.2".into()],
-            properties: HashMap::from([
-                (
-                    "identifier".into(),
-                    "2BE6E510-0325-4365-923E-B14C6F57DB3A".into(),
-                ),
-                ("authTag".into(), "kXjlTr2l".into()),
-            ]),
-        };
-        let targets =
-            match_remote_pairing_targets(std::slice::from_ref(&service), &keys, "", None).unwrap();
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0].0, "device");
-        assert!(
-            match_remote_pairing_targets(std::slice::from_ref(&service), &keys, "other", None)
-                .unwrap()
-                .is_empty()
+    #[cfg(feature = "mdns")]
+    fn preferred_lockdown_address_prefers_ipv4() {
+        let addresses = vec![
+            "fe80::1%Ethernet".to_string(),
+            "192.168.31.247".to_string(),
+            "fd00::1".to_string(),
+        ];
+
+        assert_eq!(
+            preferred_lockdown_address(&addresses),
+            Some("192.168.31.247")
         );
-        assert!(match_remote_pairing_targets(
-            std::slice::from_ref(&service),
-            &keys,
-            "device",
-            Some("192.0.2.3")
-        )
-        .unwrap()
-        .is_empty());
-        let mut duplicate = keys;
-        duplicate.push(("other".into(), zeroize::Zeroizing::new(key)));
-        assert!(match_remote_pairing_targets(
-            std::slice::from_ref(&service),
-            &duplicate,
-            "device",
-            None
-        )
-        .is_err());
-        let mut missing = service;
-        missing.properties.clear();
-        assert!(
-            match_remote_pairing_targets(&[missing], &duplicate, "", None)
-                .unwrap()
-                .is_empty()
+    }
+
+    #[test]
+    #[cfg(feature = "mdns")]
+    fn match_paired_mobdev2_targets_uses_wifi_mac_and_dedupes() {
+        let services = vec![
+            BonjourService {
+                instance: "34:10:be:1b:a6:4c@fe80::1._apple-mobdev2._tcp.local.".into(),
+                port: 32498,
+                addresses: vec!["192.168.31.247".into()],
+                properties: HashMap::new(),
+            },
+            BonjourService {
+                instance: "34:10:be:1b:a6:4c@fe80::1._apple-mobdev2._tcp.local.".into(),
+                port: 32498,
+                addresses: vec!["192.168.31.247".into()],
+                properties: HashMap::new(),
+            },
+        ];
+        let records = vec![wifi_matching_tests::record(
+            "test-udid",
+            "host",
+            Some("34:10:be:1b:a6:4c"),
+        )];
+
+        let targets = match_paired_mobdev2_targets(&services, &records);
+
+        assert_eq!(
+            targets,
+            vec![PairedMobdev2Device {
+                udid: "test-udid".into(),
+                host: "192.168.31.247".into(),
+            }]
         );
     }
 }

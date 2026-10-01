@@ -1,46 +1,12 @@
-#[cfg(feature = "tunnel")]
-use std::net::Ipv6Addr;
-#[cfg(feature = "tunnel")]
-use std::str::FromStr;
-use std::sync::Arc;
-#[cfg(any(feature = "tunnel", feature = "mdns"))]
-use std::time::Duration;
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use std::time::Instant;
-#[cfg(feature = "tunnel")]
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
+//! Device connection facade; implementation dependencies stay in their owners.
 
-#[cfg(feature = "mdns")]
-use crate::lockdown::pair_record::default_pair_record_dir;
-use crate::lockdown::pair_record::PairRecord;
-use crate::lockdown::protocol::{recv_lockdown, send_lockdown};
-#[cfg(feature = "tunnel")]
-use crate::lockdown::session::CORE_DEVICE_PROXY;
-use crate::lockdown::session::{start_lockdown_session, start_service, wrap_service_tls};
-use crate::lockdown::LOCKDOWN_PORT;
-use crate::mux::MuxClient;
-use crate::tunnel::manager::{TunMode, TunnelHandle};
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use crate::xpc::rsd::handshake as rsd_handshake;
-use crate::xpc::rsd::{RsdHandshake, ServiceDescriptor};
-#[cfg(feature = "tunnel")]
-use crate::xpc::XpcClient;
-#[cfg(feature = "tunnel")]
-use tokio::io::ReadBuf;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use tokio_stream::StreamExt;
+use std::sync::Arc;
 
 use crate::discovery::DeviceInfo;
-#[cfg(feature = "mdns")]
-use crate::discovery::{browse_mobdev2, mobdev2_wifi_mac, BonjourService};
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-use crate::discovery::{browse_remotepairing, MdnsDevice};
-use crate::error::CoreError;
+use crate::lockdown::pair_record::PairRecord;
+use crate::tunnel::manager::{TunMode, TunnelHandle};
+use crate::xpc::rsd::RsdHandshake;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 // ── ConnectOptions ─────────────────────────────────────────────────────────────
 
@@ -90,23 +56,6 @@ pub struct ResolvedServiceMetadata {
     pub features: Vec<String>,
 }
 
-#[cfg(feature = "tunnel")]
-const TUNNEL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(feature = "mdns")]
-const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(all(feature = "tunnel", feature = "mdns"))]
-const DIRECT_RSD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
-// Direct pairing TLV type: public key exchange (X25519 ephemeral public key)
-#[cfg(feature = "tunnel")]
-const DIRECT_PAIRING_TYPE_PUBLIC_KEY: u8 = 0x03;
-// Direct pairing TLV type: error response from device (pairing rejected or failed)
-#[cfg(feature = "tunnel")]
-const DIRECT_PAIRING_TYPE_ERROR: u8 = 0x07;
-#[cfg(feature = "tunnel")]
-const DIRECT_CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
-#[cfg(feature = "tunnel")]
-const DIRECT_CONTROL_CHANNEL_ORIGIN: &str = "host";
-
 // ── ConnectedDevice ────────────────────────────────────────────────────────────
 
 pub struct ConnectedDevice {
@@ -154,27 +103,29 @@ impl std::fmt::Debug for LockdownTransport {
     }
 }
 
-fn should_strip_service_ssl(service_name: &str) -> bool {
-    matches!(
-        service_name,
-        "com.apple.instruments.remoteserver" | "com.apple.accessibility.axAuditDaemon.remoteserver"
-    )
-}
+mod connected;
+mod connection;
+mod lockdown_transport;
+mod service_routing;
+mod support;
 
-include!("connected.rs");
+pub use connection::{
+    connect, connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
+};
+
+#[cfg(feature = "mdns")]
+mod discovery_match;
+#[cfg(feature = "mdns")]
+pub use discovery_match::discover_paired_mobdev2_devices;
+
 #[cfg(feature = "tunnel")]
-mod tunnel_endpoint;
-#[cfg(feature = "tunnel")]
-use tunnel_endpoint::TunnelEndpoint;
+mod rsd_connect;
 #[cfg(feature = "tunnel")]
 mod tunnel_activation;
+#[cfg(all(feature = "tunnel", any(feature = "mdns", test)))]
+mod tunnel_connect;
 #[cfg(feature = "tunnel")]
-use tunnel_activation::{activate_tunnel, TunnelConnection};
-include!("lockdown_transport.rs");
-include!("tunnel_connect.rs");
-include!("discovery_match.rs");
-include!("rsd_connect.rs");
-include!("support.rs");
+mod tunnel_endpoint;
 
 #[cfg(test)]
-include!("tests.rs");
+mod tests;

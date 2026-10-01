@@ -49,6 +49,27 @@ host -> usbmuxd or remote pairing path -> CoreDeviceProxy/CDTunnel -> RSD -> Rem
 
 Some services can be available through both paths depending on iOS version and device state.
 
+`device` uses ordinary private submodules with explicit imports. The facade
+retains its public types and connection reexports; the crate-root paths also
+stay available. A source move does not change wire messages or advertised
+device support.
+
+| Owner | Internal boundary |
+| --- | --- |
+| `connection` | Public entry points select USB/TCP/direct-RSD/RemotePairing strategies using explicit options, identity and optional pair records. |
+| `discovery_match` | Existing-trust Bonjour matching and bounded lockdown probes return paired device targets; address ordering is shared explicitly with RemotePairing discovery. |
+| `lockdown_transport` | Pair-record loading, port dialing, lockdown session/service startup and the plain/TLS CoreDeviceProxy stream. |
+| `tunnel_connect` | Direct-RSD/RemotePairing discovery and authenticated streams; nested credential, pairing and codec modules keep their narrow visibility. |
+| `tunnel_activation` | Receives `TunnelConnection`, an authenticated async stream and `TunMode`; negotiates and activates the shared tunnel lifecycle. |
+| `rsd_connect` / `tunnel_endpoint` | Optional RSD probing and direct/userspace socket routes; no lockdown credential or service-start ownership. |
+| `service_routing` | Receives an RSD directory and requested name, returns the exact resolved name/port/features, or performs bounded RSD check-in on a supplied stream. |
+| `connected` / `support` | Connected-device public service methods and typed lockdown value extraction. |
+
+Tests live with their owning layer. Host fixtures cover selection, synthetic
+control messages, userspace routing headers/RSD bootstrap, direct IPv6 endpoint
+selection and bounded TCP lockdown byte exchange. Kernel TUN creation and Apple
+service lifecycles still require their platform and physical-device evidence.
+
 ## Feature flags
 
 `ios-core` keeps most service implementations behind feature flags. Examples include `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, and `deviceinfo`.

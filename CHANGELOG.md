@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Replace device text inclusion with explicit private module boundaries for
+  discovery, strategy selection, lockdown, tunnel activation, RSD and service
+  routing while preserving the public connection paths and wire behavior.
+
 - Add maintained compatibility candidate profiles, external Rust consumer
   fixtures, actual CLI list fixtures and expanded C/Python signature checks.
 - Add a Linux host regression evidence runner with bounded raw capture, exact

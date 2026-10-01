@@ -105,6 +105,47 @@ fn public_async_signatures_compile_without_polling_device_operations() {
     fn returns<T>(_: impl Future<Output = Result<T, CoreError>>) {}
     returns::<Vec<DeviceInfo>>(ios_core::list_devices());
     returns::<ios_core::ConnectedDevice>(ios_core::connect("synthetic", ConnectOptions::default()));
+    returns::<ios_core::ConnectedDevice>(ios_core::device::connect(
+        "synthetic",
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::connect_direct_usb_tunnel(
+        "synthetic",
+        None,
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::device::connect_direct_usb_tunnel(
+        "synthetic",
+        None,
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::connect_tcp_lockdown_tunnel(
+        "synthetic",
+        "127.0.0.1",
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::device::connect_tcp_lockdown_tunnel(
+        "synthetic",
+        "127.0.0.1",
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::connect_remote_pairing_tunnel(
+        "synthetic",
+        None,
+        ConnectOptions::default(),
+    ));
+    returns::<ios_core::ConnectedDevice>(ios_core::device::connect_remote_pairing_tunnel(
+        "synthetic",
+        None,
+        ConnectOptions::default(),
+    ));
+    #[cfg(feature = "mdns")]
+    {
+        returns::<Vec<ios_core::PairedMobdev2Device>>(ios_core::discover_paired_mobdev2_devices());
+        returns::<Vec<ios_core::PairedMobdev2Device>>(
+            ios_core::device::discover_paired_mobdev2_devices(),
+        );
+    }
     // Futures are dropped before their first poll; this does not discover a
     // device, establish a connection or certify cancellation after any I/O.
     drop(ios_core::watch_devices());

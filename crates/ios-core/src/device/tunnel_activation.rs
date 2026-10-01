@@ -12,13 +12,16 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "tunnel-kernel")]
-use super::attempt_rsd;
+use super::rsd_connect::attempt_rsd;
 #[cfg(feature = "tunnel-userspace")]
-use super::attempt_rsd_via_proxy;
+use super::rsd_connect::attempt_rsd_via_proxy;
 #[cfg(feature = "tunnel")]
-use super::{
-    ConnectedDevice, CoreError, DeviceInfo, LockdownTransport, PairRecord, TUNNEL_HANDSHAKE_TIMEOUT,
-};
+use super::{ConnectedDevice, LockdownTransport};
+use crate::discovery::DeviceInfo;
+use crate::error::CoreError;
+use crate::lockdown::pair_record::PairRecord;
+
+const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::forward::forward_packets_inner;

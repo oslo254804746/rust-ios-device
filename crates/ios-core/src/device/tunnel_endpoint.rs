@@ -102,3 +102,80 @@ mod tests {
         assert_eq!(err.to_string(), "test dial timed out");
     }
 }
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn tunnel_endpoint_uses_userspace_proxy_when_available() {
+        let endpoint = TunnelEndpoint::resolve("fd00::1", Some(60105)).expect("valid endpoint");
+
+        assert_eq!(
+            endpoint,
+            TunnelEndpoint::UserspaceProxy {
+                proxy_port: 60105,
+                remote_addr: Ipv6Addr::from_str("fd00::1").expect("valid IPv6"),
+            }
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn tunnel_endpoint_falls_back_to_direct_ipv6() {
+        let endpoint = TunnelEndpoint::resolve("fd00::2", None).expect("valid endpoint");
+
+        assert_eq!(
+            endpoint,
+            TunnelEndpoint::DirectIpv6 {
+                remote_addr: Ipv6Addr::from_str("fd00::2").expect("valid IPv6"),
+            }
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tunnel")]
+    fn tunnel_endpoint_rejects_invalid_ipv6() {
+        let err = TunnelEndpoint::resolve("not-an-ipv6", Some(60105))
+            .expect_err("invalid IPv6 should fail");
+
+        assert!(err.to_string().contains("invalid IPv6 addr"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "tunnel")]
+    async fn userspace_tunnel_endpoint_writes_go_ios_routing_header() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy listener");
+        let proxy_port = listener.local_addr().expect("listener address").port();
+        let remote_addr = Ipv6Addr::from_str("fd00::42").expect("valid IPv6");
+        let endpoint = TunnelEndpoint::UserspaceProxy {
+            proxy_port,
+            remote_addr,
+        };
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept proxy connection");
+            let mut header = [0u8; 20];
+            stream
+                .read_exact(&mut header)
+                .await
+                .expect("read routing header");
+            header
+        });
+
+        let _stream = endpoint
+            .connect(62000)
+            .await
+            .expect("connect through proxy");
+        let header = server.await.expect("join proxy task");
+
+        assert_eq!(&header[..16], &remote_addr.octets());
+        assert_eq!(u32::from_le_bytes(header[16..].try_into().unwrap()), 62000);
+    }
+}

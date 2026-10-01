@@ -23,7 +23,9 @@ use super::protocol::{
     create_direct_tcp_listener, create_remote_pairing_tcp_listener, extract_direct_pairing_tlv,
     extract_direct_remote_identifier, extract_remote_pairing_tlv,
 };
-use super::{DIRECT_PAIRING_TYPE_ERROR, DIRECT_PAIRING_TYPE_PUBLIC_KEY};
+// Pair-verify TLV kinds, kept with the authentication flow that interprets them.
+const DIRECT_PAIRING_TYPE_PUBLIC_KEY: u8 = 0x03;
+const DIRECT_PAIRING_TYPE_ERROR: u8 = 0x07;
 
 pub(super) struct GuardedTunnelStream<G> {
     stream: tokio_openssl::SslStream<TcpStream>,

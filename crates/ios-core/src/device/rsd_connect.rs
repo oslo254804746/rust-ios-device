@@ -1,6 +1,19 @@
+//! Optional direct and userspace-proxy RSD handshakes.
+
+use super::tunnel_endpoint::TunnelEndpoint;
+#[cfg(feature = "mdns")]
+use crate::xpc::rsd::handshake as rsd_handshake;
+use crate::xpc::rsd::RsdHandshake;
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(feature = "mdns")]
+use std::{net::Ipv6Addr, str::FromStr};
+#[cfg(test)]
+use tokio::net::TcpStream;
+
 /// Attempt RSD handshake; returns None on failure (e.g. iOS <17).
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
-async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
+pub(super) async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
     let addr = Ipv6Addr::from_str(server_addr).ok()?;
     match rsd_handshake(addr, rsd_port).await {
         Ok(h) => {
@@ -19,7 +32,7 @@ async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> Option<RsdHandshake> {
 /// discover RSD through their local proxy, while kernel/tunnel-only callers can
 /// simply observe the same optional `None` result as a failed direct probe.
 #[cfg(all(feature = "tunnel", not(feature = "mdns")))]
-async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> Option<RsdHandshake> {
+pub(super) async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> Option<RsdHandshake> {
     tracing::debug!("RSD direct probe skipped because ios-core feature 'mdns' is disabled");
     None
 }
@@ -27,7 +40,7 @@ async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> Option<RsdHandshake>
 /// Attempt RSD via the go-ios-compatible userspace proxy. The direct and proxy
 /// routes share the same host identity, bootstrap ordering and bounded retries.
 #[cfg(feature = "tunnel")]
-async fn attempt_rsd_via_proxy(
+pub(super) async fn attempt_rsd_via_proxy(
     proxy_port: u16,
     server_addr: &str,
     rsd_port: u16,
@@ -163,56 +176,5 @@ mod rsd_proxy_tests {
             assert_eq!(result.udid, "synthetic-proxy-device");
         }
         server.await.unwrap();
-    }
-}
-
-// ── ProxyStream ───────────────────────────────────────────────────────────────
-
-#[cfg(feature = "tunnel")]
-pub(crate) enum ProxyStream {
-    Plain(ServiceStream),
-    Tls(Box<tokio_rustls::client::TlsStream<ServiceStream>>),
-}
-
-#[cfg(feature = "tunnel")]
-impl Unpin for ProxyStream {}
-
-#[cfg(feature = "tunnel")]
-impl AsyncRead for ProxyStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        match &mut *self {
-            ProxyStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
-            ProxyStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
-        }
-    }
-}
-
-#[cfg(feature = "tunnel")]
-impl AsyncWrite for ProxyStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        match &mut *self {
-            ProxyStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
-            ProxyStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
-        }
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match &mut *self {
-            ProxyStream::Plain(s) => Pin::new(s).poll_flush(cx),
-            ProxyStream::Tls(s) => Pin::new(s).poll_flush(cx),
-        }
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match &mut *self {
-            ProxyStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
-            ProxyStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
-        }
     }
 }

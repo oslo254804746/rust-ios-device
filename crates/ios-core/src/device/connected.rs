@@ -1,3 +1,38 @@
+//! Service access on an already connected device.
+
+use super::lockdown_transport::connect_lockdown_port;
+#[cfg(not(feature = "tunnel"))]
+use super::lockdown_transport::tunnel_unavailable;
+#[cfg(feature = "tunnel")]
+use super::rsd_connect::{attempt_rsd, attempt_rsd_via_proxy};
+#[cfg(feature = "tunnel")]
+use super::service_routing::ensure_remote_xpc_service;
+use super::service_routing::{
+    resolve_rsd_service_details, rsd_checkin_with_timeout, ResolvedRsdService, RSD_CHECKIN_TIMEOUT,
+};
+use super::support::{plist_value_to_string, plist_value_to_string_vec};
+#[cfg(feature = "tunnel")]
+use super::tunnel_endpoint::TunnelEndpoint;
+#[cfg(feature = "tunnel")]
+use super::ResolvedServiceMetadata;
+use super::{ConnectedDevice, InternationalConfiguration, ServiceStream};
+use crate::error::CoreError;
+use crate::lockdown::pair_record::PairRecord;
+use crate::lockdown::session::{start_lockdown_session, start_service, wrap_service_tls};
+use crate::lockdown::LOCKDOWN_PORT;
+use crate::tunnel::manager::TunnelHandle;
+use crate::xpc::rsd::RsdHandshake;
+#[cfg(feature = "tunnel")]
+use crate::xpc::XpcClient;
+use std::sync::Arc;
+
+fn should_strip_service_ssl(service_name: &str) -> bool {
+    matches!(
+        service_name,
+        "com.apple.instruments.remoteserver" | "com.apple.accessibility.axAuditDaemon.remoteserver"
+    )
+}
+
 impl ConnectedDevice {
     /// The RSD handshake result, if available (iOS 17+ with tunnel).
     pub fn rsd(&self) -> Option<&RsdHandshake> {
@@ -167,14 +202,15 @@ impl ConnectedDevice {
         let has_legacy_wrapper =
             crate::services::mobileactivation::has_legacy_activation_wrapper(activation_record);
         if has_legacy_wrapper {
-            let legacy_record = crate::services::mobileactivation::extract_legacy_activation_record(
-                activation_record,
-            )
-            .ok_or_else(|| {
-                CoreError::Protocol(
-                    "legacy activation response is missing activation-record".into(),
+            let legacy_record =
+                crate::services::mobileactivation::extract_legacy_activation_record(
+                    activation_record,
                 )
-            })?;
+                .ok_or_else(|| {
+                    CoreError::Protocol(
+                        "legacy activation response is missing activation-record".into(),
+                    )
+                })?;
             let mut lockdown = self.lockdown_client().await?;
             lockdown
                 .activate(legacy_record)
@@ -440,145 +476,47 @@ impl ConnectedDevice {
     }
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct RsdCheckinRequest {
-    label: &'static str,
-    protocol_version: &'static str,
-    request: &'static str,
-}
-
-const RSD_CHECKIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedRsdService {
-    resolved_service_name: String,
-    port: u16,
-    features: Vec<String>,
-}
-
-fn find_rsd_service<'a>(
-    rsd: &'a RsdHandshake,
-    requested_service: &str,
-) -> Option<(&'a String, &'a ServiceDescriptor)> {
-    if let Some(entry) = rsd.services.get_key_value(requested_service) {
-        return Some(entry);
-    }
-
-    let shim_service = format!("{requested_service}.shim.remote");
-    rsd.services.get_key_value(&shim_service)
-}
-
-fn resolve_rsd_service_details(
-    rsd: &RsdHandshake,
-    requested_service: &str,
-) -> Option<ResolvedRsdService> {
-    let (resolved_service_name, descriptor) = find_rsd_service(rsd, requested_service)?;
-    Some(ResolvedRsdService {
-        resolved_service_name: resolved_service_name.clone(),
-        port: descriptor.port,
-        features: descriptor.features.clone(),
-    })
-}
-
 #[cfg(test)]
-fn resolve_rsd_service(rsd: &RsdHandshake, requested_service: &str) -> Option<(String, u16)> {
-    find_rsd_service(rsd, requested_service)
-        .map(|(resolved_service_name, descriptor)| (resolved_service_name.clone(), descriptor.port))
-}
+mod tests {
+    use super::*;
 
-#[cfg(any(feature = "tunnel", test))]
-fn ensure_remote_xpc_service(
-    requested_service: &str,
-    resolved_service: &str,
-) -> Result<(), CoreError> {
-    if resolved_service.ends_with(".shim.remote") {
-        return Err(CoreError::Unsupported(format!(
-            "service '{requested_service}' resolved to lockdown shim '{resolved_service}'; it cannot be opened as RemoteXPC/XPC. Use connect_rsd_service(\"{requested_service}\") for the RSDCheckin path or request the canonical RSD service"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_rsd_checkin_response(
-    response: plist::Value,
-    expected_request: &str,
-    context: &str,
-) -> Result<(), CoreError> {
-    let response = response.as_dictionary().ok_or_else(|| {
-        CoreError::Protocol(format!(
-            "{context} expected plist dictionary response, got {:?}",
-            response
-        ))
-    })?;
-
-    let actual_request = response
-        .get("Request")
-        .and_then(plist::Value::as_string)
-        .ok_or_else(|| {
-            CoreError::Protocol(format!(
-                "{context} missing Request field in response: {:?}",
-                response
-            ))
-        })?;
-
-    if actual_request != expected_request {
-        return Err(CoreError::Protocol(format!(
-            "{context} expected Request={expected_request}, got {actual_request}"
-        )));
+    #[test]
+    fn strip_ssl_selection_matches_legacy_dtx_services() {
+        assert!(should_strip_service_ssl(
+            "com.apple.accessibility.axAuditDaemon.remoteserver"
+        ));
+        assert!(should_strip_service_ssl(
+            "com.apple.instruments.remoteserver"
+        ));
+        assert!(!should_strip_service_ssl(
+            "com.apple.instruments.remoteserver.DVTSecureSocketProxy"
+        ));
+        assert!(!should_strip_service_ssl("com.apple.mobile.screenshotr"));
+        assert!(!should_strip_service_ssl("com.apple.webinspector"));
     }
 
-    if let Some(error) = response.get("Error") {
-        return Err(CoreError::Protocol(format!(
-            "{context} failed with Error={:?}",
-            error
-        )));
+    #[test]
+    fn parses_string_array_values_for_international_configuration() {
+        let value = plist::Value::Array(vec![
+            plist::Value::String("en-US".into()),
+            plist::Value::String("zh-Hans".into()),
+        ]);
+
+        let parsed = plist_value_to_string_vec(&value, "SupportedLanguages")
+            .expect("string array should parse");
+
+        assert_eq!(parsed, vec!["en-US".to_string(), "zh-Hans".to_string()]);
     }
 
-    Ok(())
+    #[test]
+    fn rejects_non_string_entries_in_international_configuration_arrays() {
+        let value = plist::Value::Array(vec![plist::Value::Integer(1i64.into())]);
+
+        let err = plist_value_to_string_vec(&value, "SupportedLocales")
+            .expect_err("non-string entry should fail");
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("SupportedLocales"));
+        assert!(rendered.contains("string"));
+    }
 }
-
-async fn rsd_checkin<S>(stream: &mut S) -> Result<(), CoreError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    send_lockdown(
-        stream,
-        &RsdCheckinRequest {
-            label: "ios-rs",
-            protocol_version: "2",
-            request: "RSDCheckin",
-        },
-    )
-    .await?;
-
-    let checkin_response: plist::Value = recv_lockdown(stream).await?;
-    validate_rsd_checkin_response(checkin_response, "RSDCheckin", "RSD check-in response")?;
-
-    let start_service_response: plist::Value = recv_lockdown(stream).await?;
-    validate_rsd_checkin_response(
-        start_service_response,
-        "StartService",
-        "RSD start-service response",
-    )?;
-    Ok(())
-}
-
-async fn rsd_checkin_with_timeout<S>(
-    stream: &mut S,
-    timeout: std::time::Duration,
-) -> Result<(), CoreError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    tokio::time::timeout(timeout, rsd_checkin(stream))
-        .await
-        .map_err(|_| {
-            CoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("RSD check-in timed out after {} ms", timeout.as_millis()),
-            ))
-        })?
-}
-
-// ── connect() ─────────────────────────────────────────────────────────────────
