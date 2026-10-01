@@ -13,11 +13,11 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [S01 debug admission gate](validation/debug-access-2026-10-01.md), `0bb58a2`, 1627 Rust/eight Python, 32 raw CLI/service cases; prior doctor/boundary/admission/preparation/S04 evidence retained | Browser/remote controls, orderly protocol cleanup, device doctor, platform and physical device workflows remain unfinished |
+| Host build/tests | [S02 HTTP boundary gate](validation/http-boundary-2026-10-01.md), `4f86854`, 1634 Rust/eight Python, 37 raw CLI/service cases; prior debug/doctor/boundary/admission/preparation/S04 evidence retained | Browser ticket/bootstrap/CORS, remote credentials/transport, orderly protocol cleanup, device doctor, platform and physical device workflows remain unfinished |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |
-| Resource release and bounded long-run checks | NOT_RUN | L02/L03 fixtures and L04 sampling |
+| Resource release and bounded long-run checks | Debug host revocation/ownership fixtures PASS; bounded long-run NOT_RUN | Orderly device cleanup, L02/L03 fixtures and L04 sampling |
 | Public compatibility contract | Pending | A01/A02 Rust/CLI/C/Python ownership, errors, cancellation and migration |
 | 1.0 candidate workflow matrix | NOT_RUN | Cross-platform/device automation and long-run evidence |
 

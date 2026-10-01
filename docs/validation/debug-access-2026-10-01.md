@@ -47,3 +47,8 @@ host budget; CDP cancellation aborts child tasks/streams. Orderly Apple teardown
 session quotas and actual client workflows remain lifecycle/F04 acceptance.
 S01 platform/device evidence and S02/S03 remain unfinished; no push, publication,
 pairing, DDI, TSS, destructive device or reference/history operation occurred.
+
+Follow-up scope correction: [S02 HTTP acceptance](http-boundary-2026-10-01.md)
+at `4f868548fba6423e4060c0a1bb681a12d5222822` also disables global first-device
+discovery for omitted debug selectors. This S01 record used explicit synthetic
+selectors; its startup fixtures did not exercise that earlier CLI lookup path.

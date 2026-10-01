@@ -98,7 +98,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor/debug 主机入口已交付；平台/真机验收与 S03 联邦凭据接入仍待 |
-| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
+| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 进行中：HTTP 方法/Host/Origin 主机合同已交付；浏览器票据/bootstrap/CORS 与验收仍待 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
@@ -1177,3 +1177,42 @@ PASS。CLI SHA-256 `30f1e22f1a859dd1586bb53bac7a6b4b4ec6f069f632651453a2903d63d3
 teardown ACK，orderly lifecycle/session quota 留给 L01/F04；F03 Rust-bridge 客户端
 工作流仍无证据。S02 Host/Origin/浏览器握手/GET 迁移及 S03 仍待，接着按依赖推进。
 第二类和总体目标持续进行；无设备操作、推送发布、参考修改或历史改写。
+
+### 大类 2 进度：S02 HTTP 方法与 Host/Origin 主机合同（2026-10-01，仍进行中）
+
+实现提交：`4f868548fba6423e4060c0a1bb681a12d5222822`；
+[合同与迁移](http-boundary.md)，[验收证据](validation/http-boundary-2026-10-01.md)。
+
+- manager/CDP/Selenium 在 credential/extractor/device 前统一检查 actual listener
+  IP/localhost + bound port、URI authority/scheme、单一 Host/Origin；拒绝 proxy
+  authority spoofing、null/不允许来源、userinfo/path/query/fragment/wildcard/
+  非法端口。原生客户端可无 Origin，仍需原 credential/scope。IPv6 真实 HTTP PASS。
+- `--allow-host HOST:PORT` / `--allow-origin ORIGIN` 独立有界 whitelist（各最多
+  32、authority 最多 512 ASCII bytes），启动 bind/monitor 前 validate；不代表
+  凭据、CORS 或 TLS，不隐含另一维度。实际 HTTP/WS 计数 fixture 证明拒绝未到
+  handler；生产三服务捕获验边界拒绝、同源原生 header 和输入不泄露。
+- POST `/shutdown` 与 POST `/start-tunnel` JSON 替代状态变更 GET，保留既有 grant/
+  transport/response。GET/HEAD 经授权仅 405/Allow POST 提示，到 **2026-11-01
+  00:00 UTC** 后为 410 tombstone；无兼容 GET mutation。原query不解析/回显；
+  CLI list GET/stop DELETE 已正确。host验证无shutdown/建连副作用、POSTnotify正向
+  控制、越权设备与 JSON enum 安全拒绝，没有成功创建真机 tunnel。
+- 审查修正 Authority::port 对越界返回 None 的默认端口误用；还发现 global CLI
+  原先先选择首设备才进 debug 校验，现 CDP/Selenium 要求 --udid/IOS_UDID，缺少
+  时不做发现。此前 S01 fixture带显式selector未覆盖省略路径，保留旧记录并补范围
+  说明。primary RFC 9110/6455、WHATWG 浏览器接口依据写入合同，不以native WS当
+  browser PASS。ticket/bootstrap/CORS 仍未实施。
+
+相关边界 4 PASS、manager 35 PASS、debug 27 PASS、explicit-selector 1 PASS、严格
+CLI Clippy、17 tools、37 raw captures PASS。完整 `python3 scripts/validate.py full
+--python /home/oslo/projects/rust-ios-device/.venv/bin/python` 全部 PASS，日志
+`/tmp/ios-s02-http-full.log`：Linux x86_64 / Rust 1.97.1、MSRV 1.80.1、Python 3.12.13，
+Rust **1634 PASS、0 FAIL、1 既有 PBKDF2 ignored**，Python 8 PASS；66 features/四组、
+7+7 doctests/三个示例、C ABI/19-byte capture、wheel/sdist rebuild/install/import、
+17 tools、118 inventory/实际帮助、37 captures、actionlint 与 diff/staged diff --check
+PASS。CLI SHA-256 `11b7229d9890d251548fc3e2f6b3ded6edda3e1ff29c1a0bd3b167e3aba33e5c`。
+
+实现 14 个相关文件，提交后工作区干净；本记录/证据/质量另做文档收尾。S02/
+第二类/目标仍进行中：下一步短期单次 browser WS ticket、bootstrap/CORS 与实际
+浏览器验收；S03 独立上游凭据/保护传输随后，平台/真机待条件。全部任务子项
+保留，继续独立主机范围，无设备启动、配对/DDI/TSS/刷机擦除、推送发布或参考/
+历史修改。

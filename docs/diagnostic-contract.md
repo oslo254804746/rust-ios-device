@@ -105,7 +105,11 @@ plus unauthenticated/expired/role refusals. No device method is admitted. The
 owned processes end by controlled termination, with that platform's explicit
 exit contract; this is not a graceful device teardown or a capture timeout.
 Original headers, token, selector and malformed policy/body stay out of server
-output and reports. Full host acceptance currently covers 32 CLI/service cases.
+output and reports. That debug gate covered 32 CLI/service cases; current HTTP
+boundary acceptance covers 37, including invalid config and missing debug
+selectors. Three production listeners refuse original Host/Origin/proxy inputs
+without emitting them before reload/device operations. Legacy manager GET is
+read-only, shutdown is POST; omitted debug UDID no longer starts discovery.
 
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
@@ -134,5 +138,5 @@ capture is bounded RAM and the parent owns their time limit and termination.
 S04 evidence remains scoped to the reviewed host surfaces; future authentication
 and protocol changes must extend raw-output checks. Manager authentication and
 device/port and fixed-device debug authorization are integrated; platform/device
-acceptance, Host/Origin and protected federation keep S01–S03 in progress. Safe
+acceptance, browser tickets/bootstrap and protected federation keep S01–S03 in progress. Safe
 error text does not supply those controls.
