@@ -101,7 +101,7 @@
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待验收：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待验收：Linux HTTPS/WSS、独立凭据/CA、重定向隔离与两跳主机范围已交付；平台文件/部署/真实设备待条件 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
-| R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
+| R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 完成（主机边界与回归验收） |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 待开始 |
@@ -1486,3 +1486,80 @@ R03 以计划明确的普通模块、既有主机路径回归、公共兼容和�
 Apple 配对/服务生命周期。真实平台/设备条件继续由 B03/Q02/S01/L01 等对应任务
 保持待条件/待验收。第三类继续 **R01 备份协议/路径/过滤/会话与清理边界**，随后
 R02、R04/A02；整体目标 active，第三类尚未全部完成。
+
+### 大类 3：R01 备份边界与输出验收完成（2026-10-01）
+
+基于 `162fd23d796cdb92b2993b081c5a5cf87cf70710` 开始 R01。实现提交
+`a3336572bca72e1cfd083afde075df6182f36c76`（17个相关文件），完成下面记录的主机
+边界与回归验收；各轮失败与修正保留，早期“仍在验证”描述为当时状态。
+已将 bounded presets/regex/manifest/receive-time 策略移入 `filter`，保留原 public
+reexports；三个过滤测试随职责移位，第一轮 backup2 filter 回归 **65 unit PASS、
+1 integration PASS、1 ignored**。这条 substring filter 未覆盖 integration 文件
+全部11项交互；完整交互在 R03 full 的未改 backup2 基线已 PASS，R01 正补独立
+`--test backup2` 检查。CLI baseline `cmd::backup::` **18 PASS**。
+
+`protocol` 首轮移入请求 shape、有界 frame 与 numeric/status/redaction helpers，
+仅消费传入 stream/value。可见性生成初轮误命中非字段，fmt FAIL 后已限定范围，
+重跑后 **65 unit PASS、1 integration PASS、1 ignored**；显式 `--test backup2`
+**11 PASS**，覆盖完整 backup/restore/list/password 等合成协议交互。清理无用测试
+import 后继续拆分。协议字段/预算未有意改变，尚未宣称整个重构或验收完成。
+继续将 bounded transfer accounting/operation deadline 和客户端会话方法移入
+`session`，显式列出 protocol、filter 和宿主 helper 输入。为避免扩大私有 method
+可见性，旧 unit tests 暂留在该 owner，路径 tests 后续随 host owner 整理；补齐
+ErrorKind/Apple epoch 与条件 test imports 后，**65 unit PASS、1 integration PASS、
+1 ignored**，显式11项完整交互仍 PASS。没有新增公共字段或扩大 pairing/device 操作。
+已拆 `host_fs` 的 layout/path/symlink/staging/metadata 与 typed blocking runner，
+将21项 host tests 归到该 owner、options Debug 归回 facade；manifest/会话明确
+引用宿主接口。移位初轮漏改7处 manifest qualified root helper 调用，编译失败后
+改为实际 owner，重跑 **65 unit PASS、1 integration PASS、1 ignored**，完整11项
+交互仍 PASS；清除未使用的 host fixture helper。此前 default（无 manifest）
+unit/11项交互 PASS；
+最初误用不存在的 `backup2` feature 未执行测试，已按实际默认公开模块纠正。
+移位遗留 doc comments 与 test 后 item 位置修正后，core strict Clippy PASS。
+CLI 36处 println 改为 fallible writer，部分内容与 newline 写失败明确返回IO error；
+CLI **20 PASS**（原18+两个新输出失败回归）。Local unback/extract/list、create
+后处理与 restore 的 metadata/applications preflight 已改 owned blocking worker，
+password 持有 Zeroizing；worker 返回原错误链，CLI **20 PASS**。另加入明确 layout
+ownership 的 host worker 接口，将 create-directory、upload staging 和 download
+resolve/open 从 async worker 移到阻塞线程；正跑取消/字节流/安全回归。
+后续已将 move/copy/remove/list、upload commit 的路径检查及完整磁盘步骤放入
+typed layout worker；会话只在 worker 完成后跟踪 placeholder 与发送 status。
+JoinError 保留实际 source 而非转换字符串。新增 single-thread timer/typed source
+回归与真实 filtered backup 的 upload→move/copy/missing-source/list/remove→disconnect/
+cleanup 回归。后者先 FAIL：既有 exact-file relocation/copy 拼接 empty suffix 产生
+尾部分隔符，Linux cleanup 返回 NotADirectory；已修正为确切 destination，重跑
+**68 unit PASS、1 integration PASS、1 ignored**。新测试初轮 plist Dictionary 的
+`.into()` 类型推断 FAIL 已显式约束后修正。默认无 manifest **40 unit PASS、1
+integration PASS**；显式 integration **11 PASS**，下游 facade **full 6/default 5 PASS**；
+CLI **21 PASS**，core/CLI full strict Clippy PASS。
+真实 CLI fixture 首轮使用错误 flag/遗漏 ProductVersion，随后 archive integer 字段
+未按现有 UID object table 编码，均 FAIL；按实际 JSON 默认/`--no-json`、metadata 与
+解码器纠正后，**3个 actual-process contracts PASS**（非空 human 49B、JSON 199B、
+closed-pipe 70B），原始 capture raw_hits=0、owned process/fixture cleanup=true；closed
+child exit1、IO BrokenPipe、无 panic。新增4个工具失败路径 PASS，未知/替换文件及
+目录保留，missing binary 不回显路径并失败；scope 已加入 Linux CI/full。
+输出失败101→1和 partial output/已执行副作用、restore local preflight 提前的变化已
+写入 `docs/backup-contract.md`。已有7类 public helper、所有 facade fields、9个 wire
+request shape、资源预算与11项旧 integration 交互保留；正在跑 §11 full gate。
+最终 §11 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，日志
+`/tmp/ios-r01-full.log`：**1666 Rust、8 Python、0 FAIL、2既有 ignored**；fmt/check/
+strict Clippy/MSRV、66 feature/4分组、doctest 7+7/3 snippets、C ABI/19B原始capture、
+Python3.12 wheel/sdist重建安装、38 tooling、118实际help、38 raw诊断、Q02 5 host PASS/
+22 real-device NOT_RUN、4 CLI list和3 backup actual-process contracts均通过。
+最终审查将 usbmux 固定 sentinel 改为新建 owned loopback trap；之后再次执行38项
+tooling及3项 backup contracts **PASS，device_connections=0**，Python3.9/3.13的新
+工具失败路径各4 PASS。没有新增这些版本的 wheel 证据或重跑历史 browser gate。
+CLI仍0.1.13，受测二进制SHA256
+`8a4fd63fca0e1cc7e1f9ff617a1ec338c55bacff28ef4d69e78fd45dabd7d60f`。
+
+diff/暂存空白、actionlint及变更文档链接PASS；42个原 facade unit test名字全部保留，
+9个 request字段shape一致，150个原函数body中141个归一空白后相同；9个变化逐项审查为
+host/session worker、JoinError原source和exact-file tracking修正。此辅助不是AST证明。
+`docs/validation/backup-boundaries-2026-10-01.md`记录命令、结果、代码哈希及边界，
+architecture/build/output/CHANGELOG持续更新；未修改参考checkout或混入无关变更。
+R01主机模块/既有安全预算/backup-restore-filter-manifest-cancel-output验收完成。
+Windows/macOS native路径、真机backup/restore、started blocking job无法由future drop
+停止及更强deadline/cleanup ACK，仍按B03/Q02/Q03/L01保留真实条件，不由主机模拟替代。
+第三类继续 **R02 WebInspector职责与注入边界**，随后R04/A02；未推进第四类，整体目标
+active，全部31项尚未完成。收尾提交仅更新计划/质量与证据索引，不推送或发布。

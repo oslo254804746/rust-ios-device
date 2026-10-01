@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-boundaries-a333657",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Synthetic DeviceLink streams, private local indexes, external Rust consumer and blocking host workers"],
+      "required_state": ["Owned host fixtures only; no physical backup/restoration or native Windows/macOS certification"],
+      "tested_commit": "a3336572bca72e1cfd083afde075df6182f36c76",
+      "date": "2026-10-01",
+      "location": "docs/validation/backup-boundaries-2026-10-01.md",
+      "result": "PASS",
+      "scope": "R01 module/public boundaries, backup/restore/filter/manifest/transfer cancellation regressions and actual local CLI output failures; no capability maturity or stronger device lifecycle acceptance."
+    },
+    {
       "id": "linux-device-boundaries-f9b96f9",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
