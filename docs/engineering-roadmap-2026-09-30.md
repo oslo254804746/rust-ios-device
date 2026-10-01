@@ -1820,6 +1820,45 @@ Python/C machine字段或旧输出修改；后续source保留涉及旧variant赋
 3.9/3.13 wheel仍为历史独立证据。文档收尾后继续A02 source保留与机器错误边界，
 总体目标active，第四类尚未开始。
 
+### 大类 3 进行中：A02 WebInspector deadline source 保留（2026-10-01）
+
+首批A02实现 `678fb9975fa3fe9747b8efb7e29996b31f33c745` 与文档收尾
+`4ea5748ba725a52c7dd1495e5e1655cbb2386216` 已核对，收尾后clean。继续A02，当前
+此slice未提交：CLI connection、application-list、launch、Safari-launch的四处
+tokio timeout把丢弃Elapsed的map_err改为保留source的anyhow Context；已过期总预算
+仍保留原context文本，但附加现有WebInspectorError::Timeout typed source。未改变
+deadline数值、路由、真实协议、正常输出或exit，不宣称设备取消/cleanup ACK。
+
+新增两个真实失败回归：expired预算的原context与typed Timeout；保留owned 8-byte
+duplex peer不读，实际WebInspector application-list写入阻塞，观察真实Elapsed和
+稳定Timeout分类，无设备dial。已fmt，`cargo test -p ios-cli --all-features --locked
+cmd::webinspector::` 正在执行（`/tmp/ios-a02-web-timeout-source.log`），尚未接受结果。
+该专项随后 **33 PASS、0 FAIL/ignored**，含原31条owner/access/实际Rust bridge回归与
+新增2条typed source用例；handle已确认terminal exit0。此前初始“正在执行”是历史
+启动状态，不解释为已经验收完整主线。
+Core startup的Disabled合并和Ctrl+C字符串取消仍待各自source/迁移处理；后续机器
+CLI/HTTP/C/Python字段、stderr/stream/partial与probe状态未完成。完整gate/diff/本轮
+实现和文档提交仍待执行；A02/总体目标active。
+
+### 大类 3：A02 CLI deadline source 验收（2026-10-01，主任务进行中）
+
+实现 **`7fd97077ad67b474191a2ec64112a98c371fc980`**，三个明确CLI文件；提交后
+只留本计划。专项33 PASS；完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，
+`/tmp/ios-a02-web-source-full.log`，handle已确认terminal exit0。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 分拆主线 | 1708 Rust/8 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist重建安装PASS |
+| 工具/进程 | 41 tooling、118 help、38 raw、5 host/22 device NOT_RUN、8实际CLI/3 backup合同PASS；owned cleanup无secret hits/设备dial |
+| 受测二进制 | ios0.1.13 SHA-256 `ace50f42c398f3f221bc53cab0fc9c4b8122826f6ec84f369ba0cb6d2d85cfb5` |
+| 审查 | 四处真实Tokio wrapper保留Elapsed，一个已过期budget保留typed Timeout；原context、duration、路由、正常输出/exit保留；两个新增真实失败测试，原31项回归保留，diff/whitespace PASS |
+| 索引/剩余 | [验收](validation/error-classes-2026-10-01.md)、[合同](error-contract.md)、CHANGELOG/quality/Q01单项host evidence同步；Core Disabled合并、Ctrl+C、probe owner、各入口machine字段、stderr/stream/partial及L01有序设备清理仍待实施/验收 |
+
+该slice已接受，无成熟度升级，无真机、配对、DDI/TSS/恢复擦除、推送、发布或
+历史改写。文档收尾后继续A02 Core startup source与机器边界；第三类/总体目标active，
+第四类尚未开始。上段“完整gate待执行”保留为启动历史，以本条真实结果为准。
+
 剩余：最终分类专项/最小feature与public consumer验证，审查所有类型/状态来源；
 补充service missing/metadata missing/unprobed/explicit unsupported的查询合同，CLI
 stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；

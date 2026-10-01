@@ -51,6 +51,12 @@ API or an explicit migration; this classifier does not restore information
 that was already discarded. IO UnexpectedEof and EINTR alone do not prove a
 device disconnect or a cancelled operation.
 
+The CLI connection, application-list, launch and Safari-launch deadline wrappers
+retain Tokio Elapsed through anyhow context. An expired shared operation budget
+retains a typed WebInspector Timeout under its existing human context. These
+changes preserve timeout values and exits. They do not yet change legacy Core
+startup's Disabled mapping or establish cancellation/cleanup acknowledgement.
+
 `RsdFeatureEvidence` and the additive `feature_evidence` methods on
 ServiceDescriptor/RsdHandshake describe a successful directory snapshot:
 Advertised, NotAdvertised, MetadataUnavailable or ServiceMissing. Exact and

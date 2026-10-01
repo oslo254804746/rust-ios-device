@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-timeout-sources-7fd9707",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned bounded duplex client write, real elapsed timer and expired budget; retained actual Rust bridge regressions"],
+      "required_state": ["Host-only CLI timeout source retention; no device cleanup or legacy Core startup certification"],
+      "tested_commit": "7fd97077ad67b474191a2ec64112a98c371fc980",
+      "date": "2026-10-01",
+      "location": "docs/validation/error-classes-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 CLI timeout wrappers preserve typed sources and existing context/exit behavior. Machine adapters, probe tracking, legacy startup remapping, streams and L01 cleanup remain pending; no capability maturity upgrade."
+    },
+    {
       "id": "linux-error-classes-678fb99",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

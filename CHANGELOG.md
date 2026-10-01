@@ -89,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve typed timeout sources through WebInspector CLI connection, launch,
+  application-list and expired-budget contexts. Keep timer values, human
+  context text and existing failure exits; legacy Core startup remapping and
+  machine-output adapters remain tracked in [A02](docs/error-contract.md).
+
 - Propagate CLI stdout write/newline/flush failures through a shared fallible
   boundary. Closed result pipes return exit 1 instead of a possible panic/101;
   failed help/version output returns 1 instead of silent success. Successful

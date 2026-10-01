@@ -56,3 +56,33 @@ CLI/HTTP/Python/C mappings, ordinary stderr callbacks, streaming JSON and
 partial-operation semantics remain work. Lifecycle/physical cleanup acceptance
 stays with L01. No maturity upgrade, pairing, DDI/TSS/restore/erase, push,
 publication, history rewrite or reference-checkout mutation occurred.
+
+## CLI deadline source retention
+
+Implementation `7fd97077ad67b474191a2ec64112a98c371fc980`, three private CLI
+WebInspector files. Four real Tokio timeout wrappers retain Elapsed through
+anyhow Context; an expired operation budget retains the existing typed
+WebInspector Timeout. Context text, timer values, routes, normal outputs and
+failure exits remain unchanged. Existing Core startup's Disabled remapping
+and Ctrl+C cancellation strings are still separate pending work.
+
+`cargo test -p ios-cli --all-features --locked cmd::webinspector::` passed
+33 cases, zero FAIL/ignored (`/tmp/ios-a02-web-timeout-source.log`). The two new
+cases exercise a known expired budget and an actual application-list write
+blocked by an owned eight-byte duplex peer, retaining the original typed source
+and Timeout classification. The latter observes a real elapsed timer, without
+a device connection or an invented service response. Existing access and actual
+Rust bridge regressions remain included.
+
+The complete split gate, `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`, passed with **1708 Rust,
+eight Python, zero FAIL, two existing ignored**
+(`/tmp/ios-a02-web-source-full.log`, terminal exit 0). The remaining gate scopes
+match the classifier gate above: 66 feature builds/four groups, 7+7 doctests/
+three snippets, strict Clippy/MSRV, C ABI/19-byte capture, 3.12 wheel/sdist,
+41 tooling, 118 help, 38 raw cases, five host/22 device NOT_RUN, eight CLI/three
+backup contracts. Accepted ios 0.1.13 binary SHA-256:
+`ace50f42c398f3f221bc53cab0fc9c4b8122826f6ec84f369ba0cb6d2d85cfb5`.
+The source/context diff and whitespace were reviewed before the focused commit.
+This host slice is accepted; A02, probe tracking, frontend machine fields,
+stream/partial semantics and L01 device cleanup remain in progress.
