@@ -3,7 +3,9 @@
 Tested implementation `b7837cbdeade2b8812b0d85ffb2aad2104cedf33`,
 2026-09-30, Linux x86_64 / Rust 1.97.1, MSRV 1.80.1, CPython 3.12.13.
 [Management access configuration](../management-access.md) describes the current
-host-only commands; server admission remains unfinished.
+host-only commands. At this tested preparation commit, server admission was
+unfinished; subsequent [manager admission evidence](manager-access-2026-10-01.md)
+records the separate implementation and acceptance.
 
 | Check | Result |
 | --- | --- |
@@ -44,5 +46,5 @@ the partial-creation test preserves an existing token and leaves the newly
 published policy for inspection while returning failure.
 
 This is configuration/host command evidence. It does not authenticate the
-current manager, protect a WebSocket, prove live revocation or grant physical
+manager at this tested commit, protect a WebSocket, prove live revocation or grant physical
 device workflow evidence. S01 and the second roadmap category remain open.

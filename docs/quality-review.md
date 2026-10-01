@@ -5,7 +5,7 @@ When cadence changes, record the reason and next review date; retain previous
 conclusions. This template starts D02 governance, not 1.0 readiness or release
 authorization. The roadmap retains every unfinished task and subtask.
 
-Current review: 2026-09-30. Next planned review: 2026-10-30.
+Current implementation review: 2026-10-01. Monthly review remains planned for 2026-10-30.
 The [capability catalog](capabilities.md) is the source for maturity/evidence;
 [build evidence](validation/build-release-2026-09-30.md) records the first gate.
 
@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [S01 policy preparation gate](validation/management-policy-2026-09-30.md), `b7837cb`, 1599 Rust/eight Python, 15 raw CLI cases; S04 dependency-log evidence retained | Configuration checks do not supply server admission/revocation or device workflow evidence |
+| Host build/tests | [S01 manager admission gate](validation/manager-access-2026-10-01.md), `318dab8`, 1612 Rust/eight Python, 20 raw CLI/service cases; prior preparation/S04 evidence retained | Other forwarding/browser/remote controls, platform and physical device workflows remain unfinished |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

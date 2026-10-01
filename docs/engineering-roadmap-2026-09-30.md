@@ -97,7 +97,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：私密文件、scoped policy 和 host create/check 已交付；管理面接入仍待 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI 认证、设备/端口 scope、expiry/reload 已交付；其他桥与 TCP 边界验收仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
@@ -1011,3 +1011,57 @@ actionlint、diff/staged diff --check PASS；CLI SHA-256
 用离线 policy check 当 HTTP/WS 成功或拒绝证据。先接入 manager，再落实相关桥，
 随后按依赖 S02/S03；本类和目标持续进行，不因准备工具完成而结束。
 实现提交仅 11 个相关文件，提交后工作区干净；无设备、推送、发布、历史或参考操作。
+
+### 大类 2 进度：S01 manager 认证、授权与撤销（2026-10-01，仍进行中）
+
+实现提交：`318dab89ed94e6763d0d488e3191bf1bc976ab58`。
+这是实际生产 manager/CLI 接入，区别于上一条离线准备产物；此前“当前 manager
+未认证”的记录描述受测历史提交，现状态以本条及
+[manager 验收证据](validation/manager-access-2026-10-01.md) 为准。
+
+- manager 启动在 listener/设备扫描前读取私密策略，默认仍绑 loopback；必须
+  `--auth-config` 或明确 `--local-unauthenticated`，两者互斥。明文非 loopback
+  即使有策略也拒绝；CLI 明文目标亦限制 loopback，localhost 固定 IPv4 loopback。
+- 外层 admission 先于 query/path/JSON/WS extractor；所有路由及 unknown route
+  缺少、重复、错误或过期 Bearer 同合同 401；有效凭据越权 403。响应 no-store，
+  401 带 WWW-Authenticate，HEAD 无 body。日志/错误不携 token、策略/设备字段。
+- list 按设备过滤，get/manage-tunnel 精确设备，connect 精确设备/非零端口，
+  upstream/shutdown/reload 要 manage-server。无角色继承；权限检查先于下游拨号。
+  自动扫描仅为有效 connect/manage-tunnels scope 建连，无此 scope 直接跳过发现。
+- POST `/auth/reload` 只读启动路径；有界私密读和 schema 失败保留旧策略/会话。
+  reload 串行、前后复核同一控制器的当前管理员，再原子发布快照；成功重载撤销
+  所有旧 WS，包括 unchanged grants。新请求使用新凭据；expiry 也关闭既有桥。
+  单调 deadline 不受时钟回拨延长，前跳每秒检查；撤销 drop 两端，不承诺 Close
+  握手。等待中的 list/get/delete/start/dial 会被取消并拒绝，已完成操作不回滚。
+- CLI list/stop 从 `--token-file` 有界私密读取，敏感 header，禁用代理/重定向，
+  成功 body 限 1 MiB，失败 body 不读入诊断。真实 redirect 假服务确认第二主机
+  没收到连接。来访 token 当前不会用于上游；独立联邦凭据仍为 S03。
+- 实际 HTTP/WS 假服务覆盖全路由未认证、有效/越权/过期、list 过滤、错误策略
+  保留、新凭据重载、并发/陈旧/其他控制器管理员拒绝、字节往返和双端关闭。
+  审查发现 waiting list 被撤销可能空成功，已改取消并用实际上游 barrier 验收 403。
+  既有 3-hop/循环/EOF/关闭/背压测试仍 PASS，旧假服务明确使用 test-only 本地信任。
+- raw gate 增加生产服务捕获，只有 list/server grants，不接触设备发现；同时
+  捕获实际 CLI token 客户端合法列表/越权 stop。RAM 原始输出和独立副本均零命中，
+  合同/timeout/overflow/incomplete 失败不算 PASS；不写 raw 输出或秘密到证据目录。
+
+相关检查：最终 manager 33 PASS；runtime 六项与此前 policy 五项亦包含完整门禁；
+严格 CLI Clippy、17 tools PASS。首轮 full 1610 PASS 后审查补齐撤销等待路径与
+两项回归，再运行 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` 最终全部 PASS，日志
+`/tmp/ios-s01-manager-final-full.log`。Linux x86_64 / Rust 1.97.1、MSRV 1.80.1、
+CPython 3.12.13：Rust **1612 PASS、0 FAIL、1 既有 PBKDF2 ignored**，Python 8 PASS；
+66 feature/四组、默认/full doctest 各 7、三个下游示例、C ABI/19-byte capture、
+wheel/sdist rebuild/install/import、17 tools、118 inventory/实际帮助、20 CLI/服务
+捕获全部 PASS。actionlint、diff/staged diff --check PASS。实际 CLI SHA-256
+`d272d4bc81036f6c6096736131f0c75123ba1befa38e14c7a8fbbafe63de5804`。
+
+真实剩余：其他桥接/CDP/Selenium 的 admission 与 browser 合同、forward/runwda/
+dproxy/截图等额外监听边界审查与可执行限制；userspace 20-byte proxy 在 loopback
+无认证，任何本地进程可绕过 manager scope，kernel TUN 服从 OS 路由/防火墙。
+本实现不宣称全部转发有凭据保护。macOS/Windows 私密文件/ACL 执行待条件；无
+真机建连/管理回归。S02 Host/Origin/浏览器票据与 legacy GET 迁移仍待；S03 TLS
+与每上游独立凭据仍待，当前两个 policy-mode manager 尚不能联邦。S01/整类/总体
+目标保持进行中，接着处理余下入口，再按依赖推进 S02/S03/Q02。
+
+实现提交仅 13 个相关文件，提交后主工作区干净；本条、证据索引和质量记录随后
+单独收尾提交。无设备配对/DDI/TSS/擦除刷机、推送发布、历史或参考 checkout 操作。
