@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-regression-e9cc536",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Python 3.9.25/3.13.15/3.14.4 tools",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned synthetic subprocess/group/files; CLI version and parser rejection only"],
+      "required_state": ["Selected built binary, checkout-external private evidence; no device selected or admitted"],
+      "tested_commit": "e9cc536351d08d2dc1fa3504d69259b9f215e39b",
+      "date": "2026-10-01",
+      "location": "docs/validation/regression-runner-2026-10-01.md",
+      "result": "PASS",
+      "scope": "Five host regression cases and safe capture/owned cleanup only; 22 real-device risk rows remain NOT_RUN, no capability maturity upgrade."
+    },
+    {
       "id": "linux-protected-federation-39fd900",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64",

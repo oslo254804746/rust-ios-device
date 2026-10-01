@@ -2,8 +2,8 @@
 
 日期：2026-09-30；代码基线：`572c297`。
 
-状态：首类 B01–B04 的可执行主机范围已交付；B01/B02 完成，B03 待跨平台验收，
-B04 保留平台和 registry 发布条件。接续第二类，实际证据见第 14 节。
+状态：第一、二类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。接续第三类，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -94,11 +94,11 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | B03 | 统一本地与 CI 验证入口 | P1 | B01、B02 | 待验收 |
 | B04 | 补齐发布门禁与制品验证 | P1 | B03 | 待条件 |
 | Q01 | 建立能力成熟度与验证矩阵 | P2 | 无 | 完成 |
-| Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
+| Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 待条件：Linux 统一捕获/owned cleanup、27 行风险矩阵及 FUP 文档复核已交付；设备 adapters/真实工作流、Windows/UNC、历史报告勘误待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor/debug 主机入口已交付；平台/真机验收与 S03 联邦凭据接入仍待 |
-| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 进行中：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待验收：manager/CLI/doctor/debug 与 S03 独立联邦凭据主机接入已交付；平台文件/ACL、真机转发/会话撤销待条件 |
+| S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待验收：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待验收：Linux HTTPS/WSS、独立凭据/CA、重定向隔离与两跳主机范围已交付；平台文件/部署/真实设备待条件 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
@@ -1317,3 +1317,67 @@ S03 Linux host 可执行范围已交付；macOS/Windows private-file/ACL/TLS实�
 owned fixtures 作为这些 PASS。第二类/目标保持进行中，随后推进 **Q02 regression
 matrix/runner 与 FUP-01–04 既有内容核查**；S01/S02/F03/F05 待条件不被删除。
 没有配对、DDI、真实 TSS、刷机/擦除、推送/发布、历史改写或参考 checkout 修改。
+
+### 大类 2 进度与主机出口：Q02 回归证据、owned cleanup 与 FUP 复核（2026-10-01）
+
+实现提交：`e9cc536351d08d2dc1fa3504d69259b9f215e39b`；
+[验收证据](validation/regression-runner-2026-10-01.md)、[运行/安全合同](regression.md)、
+[风险矩阵](regression-matrix.json)、[FUP 当前复核](real-device-followup-tasks-2026-08-30.md)。
+
+- 新增标准库主机 runner，27 行矩阵分开登记 5 host 和 22 real-device 条件。
+  USB/Wi-Fi、传统/CoreDevice、RSD/remoted、private MAC/altIRK、Cryptex、Display/
+  HID、富剪贴板、app/file/XCTest 及 Windows T-05 九子例/UNC、InstallCoordination
+  wire 观察均保留；当前执行 5 PASS、0 FAIL、22 NOT_RUN，不填造设备/iOS/state。
+- 统一直接 subprocess 参数、实际 exit、duration、contract、raw/independent masked
+  hits、timeout/overflow/incomplete、owned PID/group 与 cleanup；child sys.argv 在 RAM
+  比较 `/`/`.`/missing/Unicode/private synthetic path，其余标明是 OS 输入而非独立
+  CLI 解析观察。公开参数 allowlist，私密值只有索引/长度/本轮 keyed tag，key 不入证据。
+- HEAD/dirty、binary/version、matrix/runner/capture SHA-256 和 UTC/host/runtime
+  provenance；raw 输出与异常 text 不打印/归档。CLI 参数错误也不回显未知值；
+  未允许 case 在 command spawn 前拒绝。非零 exit 需要精确阶段合同，不能当空成功。
+- 每轮新建 checkout 外私密 identity/key 与独立 evidence；仅 `report.json` 可交付。
+  注册 root/file identities 与绝对边界后只删本轮 regular files；unknown、symlink、
+  replacement 保留并失败，无递归删除。Linux capture 正常退出也检查/终止尚运行
+  的 owned group，覆盖已关闭 pipe 的 descendant；不终止其他 session。非 detach
+  fixture 限定、其他 Unix 保守结果及 Windows process-tree/ACL 未验收写明。
+- 17 个新增工具用例观察真实 child argv、原始秘密/失败/超时/agent SIGTERM 收尾、
+  contract exception、unknown artifact、symlink/regular replacement、case 前置拒绝、
+  CLI parse 和异常 cleanup。FUP-02 文本边界核查完成；FUP-01 公共排障已在现有文档，
+  本地两份 `handoff/` 报告不可访问，勘误不能补造。FUP-03 Linux 新工具主机范围交付，
+  不声称修改了不可访问的仓库外旧工具；FUP-04 全部保留 NOT_RUN。
+- `validate.py regression` 接入 full 与 Linux CI check（发布已依赖该 job）；只读
+  主机范围，不增加任意命令 manifest、设备 executor、配对或状态变更。
+
+先执行相关工具测试和 runner：`python3 -m unittest discover -s scripts -p 'test_*.py'`
+**34 PASS**，`python3 scripts/validate.py regression` **5 PASS/22 NOT_RUN**；
+CPython **3.9.25 与 3.13.15** 分别执行新增 17 tests 和实际 runner，各 PASS。
+审查后补强参数错误/case 前置校验，再完整运行 `python3 scripts/validate.py full
+--python /home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，日志
+`/tmp/ios-q02-regression-full-final.log`：Rust **1651 PASS、0 FAIL、2 ignored**
+（既有 PBKDF2；browser 前项显式 PASS，此 Python 改动未重跑浏览器），Python
+**8 PASS**；66 feature builds/四组、7+7 doctests/三个 snippets、C ABI/19-byte capture、
+wheel/sdist rebuild/install/import、**34** tools、118 inventory/实际 help、**38** raw
+CLI/service captures 与新 host regression 均 PASS；actionlint、Python 3.9 syntax、
+diff/staged check PASS。Binary SHA-256 仍为
+`fc718d5b92f2a25f21ed1a5485edc5cf90d3d49a575b112bbd192df360ea27f9`。
+
+实现仅 10 个相关文件，提交后工作区干净；clean HEAD `e9cc536` 实际重跑 host runner
+PASS，证据 `/tmp/ios-regression-evidence-eur6rg8k/report.json`：dirty=false、5 PASS/
+22 NOT_RUN，删除三个本轮私密文件，unknown/unsafe/agent failures 均零，目录0700/
+report0600、只有 allowlisted report。证据在 checkout 外，不加入 Git。
+
+| 第二类任务 | 当前出口与真实剩余条件 | 状态 |
+| --- | --- | --- |
+| Q01 | 118 项权威清单和证据检查；没有因此认证稳定设备 workflow | 完成 |
+| Q02 | 主机捕获/清理/矩阵/FUP 文档范围交付；缺精确 selected device/state/service/fixture/scope、device adapters 实测、Windows process tree/ACL/输出/UNC 与历史报告勘误 | 待条件 |
+| Q03 | Linux 输出失败/原子文件主机合同交付；macOS aliases、Windows/UNC、实际 AFC 输出待对应条件 | 待验收 |
+| S01 | 原生 listeners 边界、manager/CLI/doctor/debug scopes/reload 与独立 upstream 凭据主机交付；平台文件权限和真实转发/撤销/Apple cleanup 待验收 | 待验收 |
+| S02 | 既有入口 Host/Origin/方法/CORS/短票据和实际 Chromium host fixture 交付；F05 新入口、其他平台/浏览器及真实设备流程待条件 | 待验收 |
+| S03 | HTTPS/WSS verifier、独立 token/CA、redirect/两跳 host fixture 交付；平台文件/TLS、实际 SSH/TLS forward deployment 和真实 topology/EOF 待条件 | 待验收 |
+| S04 | 自有错误/日志/Debug 与 CLI dependency 来源门禁验收；未来新增接口继续沿用，显式设备数据不自动改写 | 完成 |
+
+第二类当前可执行 Linux 主机范围完成验收、实现与文档收尾，不宣称整类真机/平台
+完成。D01/D02 同步记录；全部待条件子项保留，目标仍 active。接续第三类 **A01
+兼容合同、R01–R03 模块边界，再 R04/A02**：依赖的是已就绪 Linux 构建/路径/安全
+接口，不把未有的 Windows/真机证据当作已就绪。没有设备操作、推送、发布、参考
+checkout 修改或历史改写。

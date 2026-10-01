@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [S03 protected federation gate](validation/protected-federation-2026-10-01.md), `39fd900`, 1651 Rust/eight Python, 38 raw CLI/service cases; TLS/credential isolation and actual Chromium two variants ×16 checks; prior evidence retained | F05 future entry points, deployed protected transport, orderly protocol cleanup, device doctor, other platforms/browsers and physical device workflows remain unfinished |
+| Host build/tests | [Q02 regression gate](validation/regression-runner-2026-10-01.md), `e9cc536`, 1651 Rust/eight Python, 34 tooling tests, 38 raw CLI/service cases and five regression host cases; prior TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; device adapters/fixtures, Windows process tree/ACL/UNC, F05 entries, deployed transport, orderly Apple cleanup and other platforms remain unfinished |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

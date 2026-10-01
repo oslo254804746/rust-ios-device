@@ -74,7 +74,13 @@ incomplete capture, empty output and wrong exit/phase contracts fail the check.
 Tool tests include UTF-8, hexadecimal, base64, URL and JSON representations,
 output flooding and timeout cleanup. Unix captures own a new process session;
 Windows host cases launch only the CLI, and general descendant supervision
-remains part of Q02's unfinished workflow harness.
+remains unverified. Q02's [host workflow runner](regression.md) also records
+actual OS-input arguments with private values reduced to per-run keyed tags,
+duration/exit/contract and owned cleanup. Its synthetic Python child checks its
+own argv in RAM; this is separate from Windows/MSYS or CLI-parser observation.
+Linux captures now inspect/stop the owned group even after a successful leader
+and closed descendant pipes; unknown group state fails conservatively. Device
+adapters and platform process trees remain pending conditions.
 
 Credential preparation checks additionally create only owned temporary private
 policy/token files, read the generated token with a fixed bound, and capture
