@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-plist-output-c365d55",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Constructed plist fixtures, external Rust consumer, linked C ABI; actual CLI ListDevices over an owned loopback peer and local backup index"],
+      "required_state": ["Owned host fixtures; no physical service or native macOS/Windows certification"],
+      "tested_commit": "c365d5569cb94cc9bade2d17499a37040ae9736a",
+      "date": "2026-10-01",
+      "location": "docs/validation/plist-output-2026-10-01.md",
+      "result": "PASS",
+      "scope": "R04 historical conversion profiles and fallible stdout; original success fixtures preserved, closed result/help/version output returns a failure. No capability maturity, A02 classification/stream or L01 cleanup acceptance."
+    },
+    {
       "id": "linux-webinspector-boundaries-07ec897",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

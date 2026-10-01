@@ -104,7 +104,7 @@
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 完成（主机边界与回归验收） |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 完成（主机边界验收） |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
-| R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 待开始 |
+| R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 待开始 |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
@@ -1641,3 +1641,105 @@ LaunchResult字段均保留。没有公开字段/枚举变更，生产实际devi
 3.9/3.13构建及S02独立浏览器证据仍为历史结果，此轮未重跑。第三类继续 **R04登记
 既有plist/JSON编码与输出合同，再A02错误分类**。总体目标active，未进入第四类；
 无推送、发布、参考checkout修改或实际设备操作。
+
+### 大类 3 进行中：R04 编码/输出合同基线（2026-10-01）
+
+R02实现 `07ec8977fd5e8e421982348bcc79e376909d698e` 和文档收尾
+`612b480ef769575026cdbd49faf15faf5fd8f67d` 均已核对，收尾后工作区clean，分支
+保持不变；R04当前未提交。按要求先登记历史编码，再抽共享实现。普通转换的Data
+数组/hex、Date/Uid支持与legacy null、MDM tagged base64/独立redaction、i64/u64/
+非有限float、future unknown null及不可构造integer fallback已记录于
+[编码合同](plist-json-contract.md)。没有修改真实协议、输出或编码策略。
+
+为三个crate增加本crate内的固定fixture（不引入跨包源码引用），14个原转换owner
+各调用旧实现，另3个原生plist serde测试覆盖值与pretty结果。fixture包括Data/空Data、
+Date、Uid/u64 MAX、i64 MIN、有限/非有限real、字符串/bool及嵌套容器，序列化再解析
+检查固定值。`cargo test --workspace --exclude ios-py --all-features --locked plist_json_`
+**17 PASS、0 FAIL/ignored**（CLI11/core4/FFI2），日志 `/tmp/ios-r04-legacy-baseline.log`；
+filter后integration无selected cases，不计为成功integration。当前仅增加baseline测试
+和记录，生产转换函数尚未抽取。
+
+随后新增公开 `plist_json` 私有字段policy与非穷尽DataEncoding（无默认隐式格式），
+支持NumericArray/HexString/Base64Object、历史Date/Uid null及不可构造整数zero
+fallback。借用/owned入口使用迭代容器walk，owned字符串/键移动；不引入transport、
+自动脱敏或静默截断，现有输入/输出预算由调用层保留。4096层合成值walk测试采用
+迭代解包/销毁，没有把递归serialization/drop算作通过。第一轮误用plist Values反向
+迭代器，编译FAIL；改为work区间反转后最小core专项PASS（既有最小feature warnings
+保留，未当成严格Clippy）。13个原转换owner变为显式policy delegate，MDM只共享
+普通scalar编码，敏感键/数组/dict traversal保留。包含原17基线与3shared测试的
+`cargo test --workspace --exclude ios-py --all-features --locked plist_json` **20 PASS**，
+`/tmp/ios-r04-shared-baselines.log`；MDM包括秘密键旧回归 **7 PASS**，公开consumer最小
+feature **6 PASS**（新增1个policy consumer），分别为 `/tmp/ios-r04-mdm.log`、
+`/tmp/ios-r04-public-minimal.log`。未更改C ABI header或现有公开类型。
+
+Backup fallible writer及两个原失败测试迁移到CLI共享 `output` owner，backup保留
+private reexport；无newline写入显式flush。新增内部outln/out宏通过`?`保留原IO链。
+语法扫描避开Rust字符串/raw literal、comments及测试模块，生成61个明确文件补丁，
+603个production stdout宏调用已应用完整逐文件补丁；该次迁移的相关compile检查
+正在运行，未宣称helper/callback已接受或R04已完成。中断前3个测试handle已确认
+terminal exit0，未重启已结束进程。
+
+迁移初检 `/tmp/ios-r04-output-migration.log` **FAIL84**：28个void human helpers不能
+传播`?`及一个unused import；已修正为Result并在57处调用传播，未丢弃结果。
+`/tmp/ios-r04-output-helpers.log` all-target/all-feature check PASS，随后严格CLI Clippy
+PASS（`/tmp/ios-r04-output-lint.log`）。6处XML stdout共享原serializer/extra newline并
+显式flush；btlogger补最终flush，file-relay原已有检查；raw stdout审查后CLI严格Clippy
+仍PASS（`/tmp/ios-r04-output-raw-lint.log`）。生产stdout println/print已全迁移，剩余
+两处println为gated browser test probes。现有stderr进度/异步callback合同留A02审查，
+不能把stdout检查扩大为全部diagnostics或stream生命周期已完成。
+
+实际进程复现旧R02二进制help/version在关闭stdout时exit0；新main检查clap print的
+IO结果，返回exit1，既有失败的stderr报告使用fallible best-effort以保留exit1/2。
+扩展owned ListDevices假服务CLI fixture（仅一条list请求，无设备/service连接）：
+原JSON/human空/双设备4项，加JSON/human closed stdout及help/version closed stdout
+4项。旧R02二进制 **4 PASS/4 FAIL**（`/tmp/ios-r04-old-binary-output-contract.log`）；
+构建新CLI后 **8 PASS**（`/tmp/ios-r04-output-contract.log`），三项工具负例PASS
+（`/tmp/ios-r04-output-tooling.log`），CLI全量 **618 PASS、1既有browser ignored**
+（`/tmp/ios-r04-cli-all.log`）。这是实际主机进程证据，不是设备验证。
+
+shared converter再改为逐层cursor，避免宽容器额外暂存所有siblings；不宣称测得性能
+改善。`/tmp/ios-r04-cursor-baselines.log` **20 PASS**，core/CLI/FFI严格Clippy PASS
+（`/tmp/ios-r04-shared-output-lint.log`）。已确认旧测试/Clippy/CLI handles terminal
+exit0。随后追加owned 4096层及XML固定bytes/partial IO source回归，当前专项待重跑。
+
+最终XML专项 **4 PASS**（`/tmp/ios-r04-xml-writer.log`），固定XML bytes及partial IO
+source保留；owned/borrowed深度4096的最终core转换filter **7 PASS**（无selected
+integration不计入），`/tmp/ios-r04-final-converter.log`。显式public consumer/AX
+integration **8+7 PASS**（`/tmp/ios-r04-public-service-contract.log`），工具三负例在
+Python3.9.25/3.13.15各 **3 PASS**（`/tmp/ios-r04-tooling-py39.log`、
+`/tmp/ios-r04-tooling-py313.log`）；不是新增wheel runtime认证。
+对HEAD与worktree作保护literal/comment的词法审查：61文件603个stdout宏的全部
+argument tokens与line/formatted种类相同（`/tmp/ios-r04-output-diff-review.json`），
+不解释为AST等价或全部命令真机PASS。changed local Markdown links **129 PASS**。
+完整 `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`
+已启动（`/tmp/ios-r04-full.log`），当前Rust/Python、Clippy、MSRV通过，feature矩阵
+进行中，完整gate尚未接受。
+
+剩余：完整第11节主线结果、最终diff审查、实现提交/准确哈希与文档收尾。成功
+JSON/Data/Date/Uid策略不变；普通
+结果stdout失败从panic101变为保留IO链的exit1，help/version失败从exit0变为exit1，
+均须进入迁移说明。R04/第三类进行中，总体目标active；A02随后推进。
+
+### 大类 3：R04 主机验收与收尾（2026-10-01）
+
+实现提交 **`c365d5569cb94cc9bade2d17499a37040ae9736a`**，85个明确相关文件；提交后
+仅本计划留在工作区，未混入AGENTS/参考checkout/无关变更。实现已完成历史策略
+共享与stdout错误传播；[验收索引](validation/plist-output-2026-10-01.md)、
+[迁移合同](plist-json-contract.md)、中英文README、crateREADME、architecture/
+public-contract/usage与CHANGELOG同步。Q01新增单项host evidence，不升级成熟度。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 状态 | R04完成：先登记17旧编码fixtures，再共享策略，保留13 delegates与MDM独立redaction；core/CLI/FFI成功fixture及明确stdout失败路径已验收；第三类尚待A02 |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python` PASS；`/tmp/ios-r04-full.log`，所有运行handle已确认terminal exit0 |
+| 分拆结果 | 1693 Rust PASS、8 Python PASS、0 FAIL、2既有ignored（PBKDF2与独立browser gate）；66 features/4 groups、7+7 doctests/3真实下游snippets、严格Clippy/MSRV、C ABI及19B raw capture、3.12 wheel/sdist重建安装PASS |
+| 工具与进程 | 41 tooling PASS、118实际help inventory、38原始diagnostics、5 host regression/22 device NOT_RUN；8实际CLI输出合同与3本地backup合同PASS，owned cleanup完成、无原始secret hits/设备dial |
+| 差异审查 | 61文件603个result宏kind/arguments词法保留；28个私有helper与57调用传播Result、6 XML sites/BT flush/core策略/main clap IO边界已审查；不是AST等价或真机流程证据 |
+| 受测二进制 | ios0.1.13，SHA-256 `d6e9bc8e8f86fad2578c5e3508bd1b26e39cb77c577ba328904faacdb5e84d73` |
+| 迁移 | 普通stdout失败panic101→IO error exit1；help/version失败丢弃error exit0→exit1；已失败命令的stderr报告失败保留exit1/2；成功bytes/JSON/API/C ABI不变，输出失败不意味着副作用回滚或可重试 |
+| 真实剩余条件 | A02稳定分类/各入口映射、普通stderr callback/JSON混入/stream/partial语义仍待实施；L01输出失败后的有序设备清理与期限未认证；macOS/Windows及真机服务workflow各自待条件；未来unknown variant/legacy整数fallback不可构造，仅登记和审查 |
+
+此次完整gate没有重跑S02独立浏览器或A01 Python3.9/3.13安装wheel；R04工具负例
+在3.9/3.13各3 PASS另行记录。没有配对、DDI、真实TSS、恢复/擦除、推送、发布或
+历史改写。文档收尾核对后自动继续 **A02错误与机器输出合同**；R04接口/主机结果
+已就绪，因此A02依赖解除，第三类/总体目标仍active，尚未进入第四类。
