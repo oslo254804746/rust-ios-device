@@ -1,5 +1,8 @@
 # 真机回归后续任务（2026-08-30）
 
+本文件保留 2026-08-30 的任务书与授权边界。2026-10-01 的 Q02 实施复核见文末；
+当前工程计划已另行授权仓库内通用主机工具实现和本地提交，未授予任意设备操作。
+
 ## 本次范围与证据基线
 
 本次仅新增、提交并推送本任务文档，不执行下列待办，不修改产品代码、
@@ -152,3 +155,22 @@ FUP-01、FUP-02 和 FUP-03 的只读分析可并行；若修改同一文档，�
 源码修改如另行获准，执行仓库规定的格式、编译、Clippy 和测试门禁；真实设备证据单独标注。
 所有任务遵守仓库安全约束，参考 checkout 只读，秘密与设备产物不入库。
 本文的提交授权仅覆盖本文，不自动授权后续任务的提交、推送或发布。
+
+## Q02 实施复核（2026-10-01）
+
+此处记录当前 checkout 的事实，保留上方初始状态和历史观测。当前 checkout
+没有 `handoff/` 两份报告，也不能访问原 Windows 证据根；本次没有独立复验
+2026-08-30 的设备结果，不补造报告勘误、原始参数或新的真机 PASS。
+
+| 任务 | 当前已交付范围 | 当前状态与剩余条件 |
+| --- | --- | --- |
+| FUP-01 | [AFC/MSYS 排障](troubleshooting.md) 已包含污染输入、历史 status 8、命令级 `MSYS_NO_PATHCONV=1`、严格 `/`/`.`/不存在路径和非泛化边界；通用工具增加 child `sys.argv` 主机 fixture | 正式排障文本核查完成；本地历史报告追加勘误待原报告可访问，Windows/MSYS 实际 argv 仍不能由 Linux fixture 代替 |
+| FUP-02 | [RSD 排障](troubleshooting.md) 已包含默认 prefix、`--all`/`--prefix`/`check`、限于原设备/轮次的 59 项目录及 canonical 名称、缺 `deviceinfo` 原因未知；持续覆盖边界保留 | 文本与证据边界复核完成；本任务没有变更服务行为或要求重跑设备；历史原始证据仍未独立复验，不能升级能力成熟度 |
+| FUP-03 | [回归工具与安全合同](regression.md)、`scripts/regression.py`、既有有界捕获；统一普通/owned agent 启停/异常/收尾原始 RAM 扫描、独立副本计数、仓库外 identity/key、允许文件审计及精确 owned PID/group/文件清理 | Linux 合成主机范围已执行；Windows 通用 process-tree/ACL、实际外部 agent adapters 与设备工具接入仍待条件，不能声称原仓库外工具已修改或原事故撤回 |
+| FUP-04 | [矩阵](regression-matrix.json) 独立保留全部 Windows T-05 输出子例和单独 UNC 条件；NUL host-only 边界保留 | 全部 NOT_RUN：缺 Windows、所有者放置的 ordinary-AFC 小型合成 fixture/size/hash/精确读范围；UNC 另缺明确授权共享；没有设备下载或新文件上传 |
+
+主机工具使用标准库和现有捕获核心；未来设备 executor 仍须逐用例落实服务与
+操作条件、目标/临时文件完整性、实际 argv 及结果合同。目前只执行自有非 detach
+合成 agent，不启动真机或第三方 agent。删除本轮私密临时文件不能撤回旧终端
+转录；精确 UDID 零命中不能推出未知内容无泄漏。实际受测提交和完整验收在
+[当前工程计划](engineering-roadmap-2026-09-30.md) Q02 交付记录中登记。

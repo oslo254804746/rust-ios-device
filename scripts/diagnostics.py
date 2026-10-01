@@ -54,6 +54,40 @@ class Capture:
     timed_out: bool
     overflow: bool
     incomplete: bool
+    duration_ms: int = 0
+    pid: int = 0
+    cleanup_complete: bool = True
+    cleanup_scope: str = "leader"
+    stop_requested: bool = False
+
+
+def group_alive(group):
+    """Linux distinguishes terminated zombies; other Unix hosts fail conservatively.
+
+    This observes the owned process group, not descendants which deliberately
+    detach into another session. Workflow fixtures must not detach themselves.
+    """
+    if sys.platform.startswith("linux"):
+        uncertain = False
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[2]) == group and fields[0] not in ("Z", "X"):
+                    return True
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, IndexError):
+                uncertain = True
+        return None if uncertain else False
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return None
 
 
 def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=None):
@@ -65,6 +99,7 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=
     """
     if timeout <= 0 or max_bytes <= 0:
         raise ValueError("capture budgets must be positive")
+    started = time.monotonic()
     process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=os.name == "posix")
     buffers = [bytearray(), bytearray()]
@@ -98,19 +133,25 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=
         worker.start()
     deadline = time.monotonic() + timeout
     timed_out = False
+    stop_requested = False
+    cleanup_complete = False
     try:
         while not (process.poll() is not None and all(done.is_set() for done in completed)):
-            if stop is not None and stop.is_set() and process.poll() is None:
+            if stop is not None and stop.is_set() and process.poll() is None and not stop_requested:
                 # Terminate only this capture's owned CLI after its service
                 # contract checks. This is not a timeout or graceful-device ACK.
                 process.terminate()
+                stop_requested = True
             if overflow.wait(0.02):
                 break
             if time.monotonic() >= deadline:
                 timed_out = True
                 break
     finally:
-        if process.poll() is None or not all(done.is_set() for done in completed):
+        # Even a successful leader may leave descendants which closed their
+        # output pipes. Always inspect and stop this capture's owned group.
+        group_remaining = os.name == "posix" and group_alive(process.pid) is not False
+        if group_remaining or process.poll() is None or not all(done.is_set() for done in completed):
             if os.name == "posix":
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -133,10 +174,20 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=
         process.wait(timeout=2)
         for worker in workers:
             worker.join(timeout=1)
+        if os.name == "posix":
+            cleanup_deadline = time.monotonic() + 0.5
+            while group_alive(process.pid) is True and time.monotonic() < cleanup_deadline:
+                time.sleep(0.01)
+            cleanup_complete = group_alive(process.pid) is False
+        else:
+            cleanup_complete = process.poll() is not None
     with lock:
         return Capture(bytes(buffers[0]), bytes(buffers[1]), process.returncode,
                        timed_out, overflow.is_set(), read_failed.is_set()
-                       or any(worker.is_alive() for worker in workers))
+                       or any(worker.is_alive() for worker in workers),
+                       round((time.monotonic() - started) * 1000), process.pid,
+                       cleanup_complete, "process-group" if os.name == "posix" else "leader",
+                       stop_requested)
 
 
 def assess(result, variants, expected_code):
@@ -146,8 +197,10 @@ def assess(result, variants, expected_code):
     return dict(returncode=result.returncode, bytes=len(raw), raw_hits=original_hits,
                 masked_copy_hits=copy_hits, timed_out=result.timed_out,
                 overflow=result.overflow, incomplete=result.incomplete,
+                cleanup_complete=result.cleanup_complete,
                 passed=bool(raw) and result.returncode == expected_code and original_hits == 0
-                and not result.timed_out and not result.overflow and not result.incomplete)
+                and not result.timed_out and not result.overflow and not result.incomplete
+                and result.cleanup_complete)
 
 
 def cli_cases(binary):

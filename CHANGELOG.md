@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a Linux host regression evidence runner with bounded raw capture, exact
+  synthetic argv checks, owned agent cleanup and artifact allowlists; keep
+  representative device/Windows fixture cases explicitly NOT_RUN.
 - Add bounded, zeroizing private-file reads and exclusive new-secret publication
   for access-control credentials; existing shared directory permissions are
   preserved.

@@ -30,17 +30,23 @@ The full set is format, locked all-target/all-feature check and Clippy, split
 Rust/Python host tests, MSRV, every Cargo-reported core feature individually,
 representative feature-group tests, default/full doctests, downstream README
 examples, linked C ABI smoke, wheel/sdist metadata plus wheel installation,
-validation-tool tests, capability inventory and raw host diagnostic capture.
+validation-tool tests, capability inventory, raw host diagnostic capture and
+[host workflow evidence/cleanup](regression.md).
 Feature warnings and test output are retained in `target/validation/features/`;
 feature cuts can expose unused imports/dead code from shared transports. These
 are recorded warnings; full-feature Clippy still rejects warnings.
 
 Each step also has a focused scope: `fmt`, `check`, `lint`, `rust-tests`,
 `python-host`, `msrv`, `features`, `docs`, `ffi`, `python-package`, `tooling-tests`,
-`capabilities`, `diagnostics`. CI calls
+`capabilities`, `diagnostics`, `regression`. CI calls
 these same scopes. Linux results do not establish macOS/Windows support;
 CI is configured for native/C checks on three systems and Python host/wheel checks on 3.9
 and 3.13. No test in this entry point pairs, installs to or modifies a device.
+The `regression` scope currently requires Linux for the owned agent/process-group
+check; other platforms retain that row as NOT_RUN and return nonzero. The Linux
+CI check job runs it. This condition does not disable the separate native/C and
+Python platform jobs. A standalone run needs an already-built `target/debug/ios`;
+the full gate builds it through `capabilities` and `diagnostics` first.
 
 ## Candidate release artifacts
 
