@@ -94,6 +94,7 @@ pub(crate) struct DeviceEntryRaw {
 pub(crate) struct DevicePropertiesRaw {
     pub serial_number: String,
     pub connection_type: String,
+    #[serde(rename = "ProductID", alias = "ProductId")]
     pub product_id: Option<u16>,
 }
 
@@ -178,6 +179,78 @@ pub(crate) struct DeviceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_listing_reads_canonical_product_id_and_retains_legacy_alias() {
+        for key in ["ProductID", "ProductId"] {
+            let response = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "DeviceList".to_string(),
+                plist::Value::Array(vec![plist::Value::Dictionary(
+                    plist::Dictionary::from_iter([
+                        ("DeviceID".to_string(), plist::Value::Integer(42.into())),
+                        (
+                            "Properties".to_string(),
+                            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                (
+                                    "SerialNumber".to_string(),
+                                    plist::Value::String("synthetic".to_string()),
+                                ),
+                                (
+                                    "ConnectionType".to_string(),
+                                    plist::Value::String("USB".to_string()),
+                                ),
+                                (key.to_string(), plist::Value::Integer(1234.into())),
+                            ])),
+                        ),
+                    ]),
+                )]),
+            )]));
+            let mut bytes = Vec::new();
+            response.to_writer_xml(&mut bytes).unwrap();
+            let decoded: DeviceList = plist::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.device_list[0].properties.product_id, Some(1234));
+        }
+    }
+
+    #[test]
+    fn attach_notification_preserves_advertised_and_missing_product_id() {
+        for product in [None, Some(1234)] {
+            let mut properties = plist::Dictionary::from_iter([
+                (
+                    "SerialNumber".to_string(),
+                    plist::Value::String("synthetic".to_string()),
+                ),
+                (
+                    "ConnectionType".to_string(),
+                    plist::Value::String("USB".to_string()),
+                ),
+            ]);
+            if let Some(product) = product {
+                properties.insert(
+                    "ProductID".to_string(),
+                    plist::Value::Integer(product.into()),
+                );
+            }
+            let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+                (
+                    "MessageType".to_string(),
+                    plist::Value::String("Attached".to_string()),
+                ),
+                ("DeviceID".to_string(), plist::Value::Integer(42.into())),
+                (
+                    "Properties".to_string(),
+                    plist::Value::Dictionary(properties),
+                ),
+            ]));
+            let mut bytes = Vec::new();
+            value.to_writer_xml(&mut bytes).unwrap();
+            let decoded: DeviceEvent = plist::from_bytes(&bytes).unwrap();
+            assert_eq!(
+                decoded.properties.unwrap().product_id,
+                product.map(|v| v as u16)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn recv_plist_rejects_oversized_message() {
