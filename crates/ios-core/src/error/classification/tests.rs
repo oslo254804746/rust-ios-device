@@ -41,6 +41,24 @@ fn classification_never_matches_legacy_messages() {
 }
 
 #[test]
+fn caller_observed_cancellation_retains_a_typed_marker_through_context_and_io() {
+    let marker = crate::OperationCancelled::new();
+    assert_eq!(classify_error(&marker), ErrorClass::Cancelled);
+    let mut error = anyhow::Error::new(marker);
+    for _ in 0..24 {
+        error = error.context("synthetic-private-cancellation-context");
+    }
+    assert_eq!(classify_error(error.as_ref()), ErrorClass::Cancelled);
+    assert!(error
+        .chain()
+        .any(|source| source.is::<crate::OperationCancelled>()));
+    let explicit = std::io::Error::new(ErrorKind::Interrupted, marker);
+    assert_eq!(classify_error(&explicit), ErrorClass::Cancelled);
+    let unobserved = std::io::Error::from(ErrorKind::Interrupted);
+    assert_eq!(classify_error(&unobserved), ErrorClass::Io);
+}
+
+#[test]
 fn nested_service_wrappers_retain_the_typed_transport_source() {
     let error =
         crate::backup2::Mobilebackup2Error::DeviceLink(crate::device_link::DeviceLinkError::Io(

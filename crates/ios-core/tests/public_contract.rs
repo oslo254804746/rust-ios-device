@@ -155,6 +155,18 @@ fn public_error_classes_preserve_existing_exhaustive_core_matches() {
 }
 
 #[test]
+fn public_cancellation_marker_is_additive_and_distinct_from_plain_interrupted_io() {
+    let marker: ios_core::error::OperationCancelled = ios_core::OperationCancelled::new();
+    assert_eq!(ios_core::classify_error(&marker).as_str(), "cancelled");
+    assert!(std::error::Error::source(&marker).is_none());
+    assert_eq!(marker.to_string(), "operation cancelled");
+    assert_eq!(format!("{marker:?}"), "OperationCancelled");
+    let io = CoreError::Io(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    assert_eq!(error_family(&io), "io");
+    assert_eq!(io.class().as_str(), "io");
+}
+
+#[test]
 fn public_rsd_evidence_keeps_unknown_metadata_distinct_from_missing_service() {
     use ios_core::RsdFeatureEvidence as Evidence;
     let legacy = ServiceDescriptor::new(1234);

@@ -66,6 +66,12 @@ safe failure diagnostic categories when the original source is available,
 with existing status/exit/body shapes and success output retained. The
 [error contract](error-contract.md) records phase budgets and migration.
 
+The additive private-fields `OperationCancelled` marker records caller-observed
+local cancellation without changing CoreError variants. Plain EINTR stays IO.
+WebInspector launch's successful Ctrl+C branch retains its context and exit
+while supplying this typed source; JSON failure class becomes `cancelled`, with
+effects still unknown. Signal failure remains IO and cleanup remains unconfirmed.
+
 ## CLI and JSON
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation

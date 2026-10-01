@@ -6,8 +6,10 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import plistlib
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 
@@ -168,14 +170,78 @@ def cli_help_closed_output(binary, flag, *, machine=False):
     return report
 
 
+def interrupted_launch(binary):
+    """Interrupt only an owned CLI blocked on its sole ListDevices endpoint."""
+    process = None
+    try:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(3)
+            env = os.environ.copy()
+            env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
+            process = subprocess.Popen([str(binary), "--error-format=json", "-u",
+                                        "synthetic-private-cancel-device", "webinspector", "launch"], env=env)
+            with listener.accept()[0] as connection:
+                connection.settimeout(3)
+                length, version, kind, _tag = struct.unpack("<IIII", read_exact(connection, 16))
+                if not 16 < length <= 16384 or version != 1 or kind != 8:
+                    raise ValueError("fixture-request")
+                request = plistlib.loads(read_exact(connection, length - 16))
+                if request.get("MessageType") != "ListDevices":
+                    raise ValueError("fixture-operation")
+                # No reply, pairing record, device service or private protocol
+                # is supplied. The production launch cannot advance to a device.
+                process.send_signal(signal.SIGINT)
+                code = process.wait(timeout=3)
+                eof = connection.recv(1) == b""
+            print(json.dumps({"child_exit": code, "list_request": True, "peer_eof": eof,
+                              "signal": "SIGINT"}, sort_keys=True))
+            return code == 1 and eof
+    except Exception:
+        print('{"child_exit":null,"fixture_failed":true}')
+        return False
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=0.5)
+
+
+def cli_launch_cancellation(binary):
+    result = capture([sys.executable, str(Path(__file__).resolve()), "--interrupt-launch",
+                      "--binary", str(binary)], timeout=6)
+    report = assess(result, secret_variants(b"synthetic-private-cancel-device"), 0)
+    try:
+        trace = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        trace = None
+    report["contract"] = (trace == {"child_exit": 1, "list_request": True, "peer_eof": True,
+                                    "signal": "SIGINT"} and
+                          machine_error_contract(replace(result, stdout=b"", returncode=1),
+                                                 error_class="cancelled", phase="webinspector",
+                                                 exit_code=1, effects="unknown"))
+    report["passed"] = report["passed"] and report["contract"]
+    return report
+
+
 def main():
     parser = SafeArgumentParser(prog="compatibility.py", description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug" / ("ios.exe" if os.name == "nt" else "ios"))
     parser.add_argument("--closed-output", action="store_true", help="internal owned output probe")
     parser.add_argument("--human", action="store_true", help="internal owned human output probe")
     parser.add_argument("--machine-errors", action="store_true", help="internal owned JSON failure probe")
+    parser.add_argument("--interrupt-launch", action="store_true", help="internal owned SIGINT probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
+    if args.interrupt_launch:
+        if not sys.platform.startswith("linux"):
+            print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
+            return 1
+        return 0 if interrupted_launch(args.binary) else 1
     if args.closed_output:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
@@ -190,6 +256,7 @@ def main():
     reports["argument-error-human"] = cli_argument_error(args.binary)
     reports["argument-error-json"] = cli_argument_error(args.binary, machine=True)
     if sys.platform.startswith("linux"):
+        reports["launch-cancel-json-error"] = cli_launch_cancellation(args.binary)
         for human in (False, True):
             reports[f"list-{'human' if human else 'json'}-closed-output"] = cli_list(args.binary, human=human, close_stdout=True)
         for flag in ["help", "version"]:

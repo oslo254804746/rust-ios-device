@@ -104,8 +104,9 @@ the matching feature.
 ## Documentation
 
 - [Error and RSD evidence contracts](../../docs/error-contract.md) describe
-  additive typed classification and successful-directory capability evidence;
-  CLI/HTTP/C/Python machine mappings remain under A02 implementation.
+  additive typed classification, caller-observed cancellation and successful
+  directory capability evidence. CLI final machine failures are opt-in;
+  HTTP/C/Python mappings and stream/probe semantics remain A02 work.
 - [Plist/JSON policies](../../docs/plist-json-contract.md) document explicit
   borrowed/owned conversion profiles and their input/output budget boundary.
 - [Public compatibility rules](../../docs/public-contract.md) describe maintained

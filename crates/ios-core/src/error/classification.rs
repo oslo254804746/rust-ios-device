@@ -138,6 +138,9 @@ macro_rules! typed_class {
 use typed_class;
 
 fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
+    if error.is::<super::OperationCancelled>() {
+        return Some(ErrorClass::Cancelled);
+    }
     use crate::mux::MuxError;
     use crate::{CoreError, LockdownError, PairRecordError, TunnelError, XpcError};
     typed_class!(error, CoreError, {

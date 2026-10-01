@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a Rust `OperationCancelled` marker for observed local cancellation and
+  retain it through WebInspector launch's Ctrl+C context. Machine failures can
+  classify cancellation while plain EINTR and failed signal registration keep
+  their IO meaning; device cleanup acknowledgement remains separate.
+
 - Add opt-in global `--error-format=json` for versioned final CLI failures on
   stderr, with typed class, safe phase/diagnostic, original exit and explicit
   effect uncertainty. Keep human defaults and successful result formats; add

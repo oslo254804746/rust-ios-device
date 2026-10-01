@@ -147,15 +147,8 @@ pub(super) async fn run_launch(
 ) -> Result<()> {
     let operation = run_launch_inner(udid, bundle_id, url, timeout);
     tokio::pin!(operation);
-    let result = tokio::select! {
-        result = tokio::time::timeout(timeout, &mut operation) => {
-            result.with_context(|| format!("webinspector launch timed out after {timeout:?}"))?
-        }
-        signal = tokio::signal::ctrl_c() => {
-            signal.context("failed waiting for Ctrl+C")?;
-            Err(anyhow!("webinspector launch cancelled"))
-        }
-    }?;
+    let result =
+        launch_result_with_signal(&mut operation, tokio::signal::ctrl_c(), timeout).await?;
 
     if json_output {
         crate::output::outln!("{}", serde_json::to_string_pretty(&result)?);
@@ -171,6 +164,25 @@ pub(super) async fn run_launch(
         crate::output::outln!("  service: {}", result.service_name);
     }
     Ok(())
+}
+
+/// The caller owns the operation future and its device guard. Selecting a
+/// successful local signal records cancellation, without claiming a remote ACK.
+async fn launch_result_with_signal<T>(
+    operation: impl std::future::Future<Output = Result<T>>,
+    signal: impl std::future::Future<Output = std::io::Result<()>>,
+    timeout: Duration,
+) -> Result<T> {
+    tokio::select! {
+        result = tokio::time::timeout(timeout, operation) => {
+            result.with_context(|| format!("webinspector launch timed out after {timeout:?}"))?
+        }
+        signal = signal => {
+            signal.context("failed waiting for Ctrl+C")?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+                .context("webinspector launch cancelled"))
+        }
+    }
 }
 
 async fn run_launch_inner(
@@ -402,6 +414,135 @@ mod tests {
     use super::*;
     use ios_core::webinspector::WirType;
     use serde_json::Value as JsonValue;
+
+    struct OwnedPending(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl std::future::Future for OwnedPending {
+        type Output = Result<()>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for OwnedPending {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn local_launch_cancel_keeps_context_typed_source_and_unknown_effects() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let error = {
+            let operation = OwnedPending(dropped.clone());
+            tokio::pin!(operation);
+            launch_result_with_signal(
+                &mut operation,
+                std::future::ready(Ok(())),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err()
+        };
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(error.to_string(), "webinspector launch cancelled");
+        assert!(error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Cancelled
+        );
+        let message = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "webinspector",
+            &error,
+        )
+        .unwrap();
+        let body: JsonValue = serde_json::from_str(&message).unwrap();
+        assert_eq!(body["error"]["class"], "cancelled");
+        assert_eq!(body["error"]["effects"], "unknown");
+        assert_eq!(body["error"]["exit_code"], 1);
+    }
+
+    #[tokio::test]
+    async fn failed_signal_registration_keeps_io_instead_of_claiming_cancellation() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let error = {
+            let operation = OwnedPending(dropped.clone());
+            tokio::pin!(operation);
+            launch_result_with_signal(
+                &mut operation,
+                std::future::ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic-private-signal-error",
+                ))),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err()
+        };
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(error.to_string(), "failed waiting for Ctrl+C");
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::PermissionDenied
+        );
+        assert!(!error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+        let io = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<std::io::Error>())
+            .unwrap();
+        assert_eq!(io.to_string(), "synthetic-private-signal-error");
+    }
+
+    #[tokio::test]
+    async fn launch_timeout_still_retains_elapsed_and_releases_the_owned_future() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let error = {
+            let operation = OwnedPending(dropped.clone());
+            tokio::pin!(operation);
+            launch_result_with_signal(
+                &mut operation,
+                std::future::pending::<std::io::Result<()>>(),
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err()
+        };
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            error.to_string(),
+            "webinspector launch timed out after 20ms"
+        );
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
+
+    #[tokio::test]
+    async fn completed_launch_result_is_returned_without_cancellation_or_retry() {
+        assert_eq!(
+            launch_result_with_signal(
+                std::future::ready(Ok(7u64)),
+                std::future::pending::<std::io::Result<()>>(),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+            7
+        );
+    }
 
     #[test]
     fn shell_result_and_page_type_names_are_stable() {

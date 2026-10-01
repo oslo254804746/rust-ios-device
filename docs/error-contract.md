@@ -17,7 +17,7 @@ a fallback for future categories. Human diagnostic text is not a classifier.
 | Stable code | Typed evidence |
 | --- | --- |
 | `timeout` | IO TimedOut, Tokio Elapsed, or an existing service Timeout variant |
-| `cancelled` | A cancelled Tokio JoinError; it does not acknowledge device cleanup |
+| `cancelled` | Caller-observed OperationCancelled marker or a cancelled Tokio JoinError; neither acknowledges device cleanup |
 | `disconnected` | Named IO connection-reset/aborted/not-connected/broken-pipe categories or explicit closed/dead-connection variants |
 | `service_missing` | XPC ServiceNotFound or the RemotePairing ServiceNotFound variant |
 | `permission_denied` | IO PermissionDenied, AFC PermDenied, or typed pairing rejection |
@@ -50,6 +50,22 @@ timeout/closed-stream failures to Disabled. Those sources require an additive
 API or an explicit migration; this classifier does not restore information
 that was already discarded. IO UnexpectedEof and EINTR alone do not prove a
 device disconnect or a cancelled operation.
+
+`OperationCancelled::new()` is an additive error marker with private fields,
+also available through Default. A caller uses it only after observing local
+cancellation; it is not inferred from an Interrupted IO kind or prose. Existing
+CoreError variants stay unchanged. WebInspector launch records this marker under
+its existing cancellation context when Ctrl+C completes successfully; failed
+signal registration retains its original IO error, and the outer timeout keeps
+Elapsed. The opt-in final CLI class consequently becomes `cancelled` instead
+of the former string error's `unknown`. Exit 1, safe human text, success output,
+unbiased selection, timeout and caller-owned future scope remain unchanged.
+Host ready-signal/owned-pending tests prove these source and drop boundaries;
+they do not validate actual OS Ctrl+C against a device or orderly Apple cleanup.
+An additional actual CLI fixture sends SIGINT to its owned process while its
+sole owned usbmux peer withholds a ListDevices reply. It observes exit 1,
+`cancelled`/unknown effects and peer EOF, before any pairing/device service.
+This validates the host signal/error path and local socket release only.
 
 The CLI connection, application-list, launch and Safari-launch deadline wrappers
 retain Tokio Elapsed through anyhow context. An expired shared operation budget
