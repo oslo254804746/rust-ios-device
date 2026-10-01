@@ -1,7 +1,7 @@
 //! Device/service connection strategy for WebInspector callers.
 //! Returns the connection guard, supplied byte stream and selected route.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Context, Result};
 use ios_core::device::{ConnectOptions, ConnectedDevice, ServiceStream};
 use ios_core::webinspector::{RSD_SERVICE_NAME, SERVICE_NAME};
 use ios_core::TunMode;
@@ -86,5 +86,5 @@ pub(super) async fn connect_webinspector_with_timeout(
 ) -> Result<(ConnectedDevice, ServiceStream, bool)> {
     tokio::time::timeout(timeout, connect_webinspector(udid))
         .await
-        .map_err(|_| anyhow!("webinspector connection timed out after {timeout:?}"))?
+        .with_context(|| format!("webinspector connection timed out after {timeout:?}"))?
 }

@@ -149,7 +149,7 @@ pub(super) async fn run_launch(
     tokio::pin!(operation);
     let result = tokio::select! {
         result = tokio::time::timeout(timeout, &mut operation) => {
-            result.map_err(|_| anyhow!("webinspector launch timed out after {timeout:?}"))?
+            result.with_context(|| format!("webinspector launch timed out after {timeout:?}"))?
         }
         signal = tokio::signal::ctrl_c() => {
             signal.context("failed waiting for Ctrl+C")?;
@@ -305,7 +305,7 @@ async fn run_js_shell_inner(
             client.request_application_launch(SAFARI_BUNDLE_ID),
         )
         .await
-        .map_err(|_| anyhow!("webinspector Safari launch timed out after {timeout:?}"))??;
+        .with_context(|| format!("webinspector Safari launch timed out after {timeout:?}"))??;
     }
     let (application_id, page) =
         wait_for_inspectable_page(&mut client, page_id, bundle_filter, deadline, timeout).await?;

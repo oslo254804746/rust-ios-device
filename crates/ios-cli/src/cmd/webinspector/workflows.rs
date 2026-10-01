@@ -2,7 +2,7 @@
 //! Supplied client/snapshots only; no device dialing or HTTP ownership.
 use super::diagnostics::diagnostic_cdp_response;
 use super::PAGE_DISCOVERY_IDLE;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use ios_core::device::ServiceStream;
 use ios_core::webinspector::{
     ApplicationPage, Page, WebInspectorClient, WebInspectorError, WirType,
@@ -71,9 +71,11 @@ pub(super) fn remaining_webinspector_time(
 ) -> Result<Duration> {
     let now = Instant::now();
     if now >= deadline {
-        return Err(anyhow!(
-            "webinspector operation timed out after {timeout:?}"
-        ));
+        return Err(
+            anyhow::Error::new(WebInspectorError::Timeout(timeout)).context(format!(
+                "webinspector operation timed out after {timeout:?}"
+            )),
+        );
     }
     Ok(deadline.duration_since(now))
 }
@@ -175,8 +177,8 @@ async fn request_connected_applications_with_deadline(
     let remaining = remaining_webinspector_time(deadline, timeout)?;
     tokio::time::timeout(remaining, client.request_connected_applications())
         .await
-        .map_err(|_| {
-            anyhow!("webinspector application-list request timed out after {timeout:?}")
+        .with_context(|| {
+            format!("webinspector application-list request timed out after {timeout:?}")
         })??;
     Ok(())
 }
@@ -356,6 +358,51 @@ mod tests {
     #[test]
     fn deadline_rejects_system_clock_overflow() {
         assert!(webinspector_deadline(Duration::from_secs(u64::MAX)).is_err());
+    }
+
+    #[test]
+    fn expired_operation_budget_keeps_typed_timeout_and_existing_context() {
+        let timeout = Duration::from_secs(3);
+        let error = remaining_webinspector_time(Instant::now(), timeout).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "webinspector operation timed out after 3s"
+        );
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error.chain().any(|source| {
+            matches!(source.downcast_ref::<WebInspectorError>(), Some(WebInspectorError::Timeout(value)) if *value == timeout)
+        }));
+    }
+
+    #[tokio::test]
+    async fn blocked_application_list_write_keeps_actual_elapsed_source() {
+        // Retain the owned peer without draining it: the bounded duplex makes
+        // the actual client request wait on a write, without dialing a device.
+        let (stream, _peer) = tokio::io::duplex(8);
+        let stream: ServiceStream = Box::new(stream);
+        let mut client = WebInspectorClient::new(stream);
+        let timeout = Duration::from_millis(20);
+        let error = request_connected_applications_with_deadline(
+            &mut client,
+            Instant::now() + timeout,
+            timeout,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "webinspector application-list request timed out after 20ms"
+        );
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
     }
 
     #[test]
