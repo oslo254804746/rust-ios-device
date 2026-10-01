@@ -123,6 +123,14 @@ external proxy logs can still retain short-lived ticket URLs. See
 [browser access evidence](validation/browser-access-2026-10-01.md) for commands
 and the platform/device/F03 boundary; default full-test ignore is not browser PASS.
 
+Protected federation adds a 38th CLI case: maximum-verbosity startup with an
+invalid private upstream file must fail before listener/discovery and omit its
+secret path. Existing output gates retain their independent original/masked
+checks. Per-upstream client Debug omits URL/token/trust paths; HTTP/WS/TLS
+operation errors keep fixed safe phases/correlations and discard refused bodies.
+[Federation evidence](validation/protected-federation-2026-10-01.md) records real
+owned TLS and credential-isolation tests without claiming deployed/device PASS.
+
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
 They are host adapter evidence, not simulated complete WebInspector workflows

@@ -99,7 +99,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor/debug 主机入口已交付；平台/真机验收与 S03 联邦凭据接入仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 进行中：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
-| S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
+| S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待验收：Linux HTTPS/WSS、独立凭据/CA、重定向隔离与两跳主机范围已交付；平台文件/部署/真实设备待条件 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
@@ -1266,3 +1266,54 @@ S02 既有入口 Linux host 范围已验收，任务继续保留 F05 新入口�
 客户端经过 Rust/Apple 的初始化与页面流程仍未验收。第二类和持久化目标保持
 进行中，文档收尾后继续 **S03 独立上游凭据与保护传输**，再推进 Q02 余下范围。
 无配对、DDI、真实 TSS、刷机/擦除、推送/发布、历史改写或参考 checkout 修改。
+
+### 大类 2 进度：S03 受保护联邦与独立上游凭据（2026-10-01）
+
+实现提交：`39fd900b0785ee0baa893c6f97afacbba90f9e74`；
+[传输/迁移合同](protected-federation.md)，[验收证据](validation/protected-federation-2026-10-01.md)。
+
+- `tunnel serve --upstream-config PRIVATE_FILE` bind/monitor 前私密读取 version-1
+  配置及每个独立 token/optional CA；64 KiB 配置、最多 32 normalized roots、URL
+  2048 bytes/path4096、CA64 KiB/16 PEM certs，unknown/duplicate/unsafe scheme/
+  userinfo/query/fragment/non-root/zero-port 均失败。相对文件路径基于配置目录；
+  既有 private-file/permission/symlink 与 zeroizing token 机制，无 URL/argv/env token。
+- Native upstream HTTP(S)/WS(S) 同一 verifier/root store，显式 ring provider，
+  WebPKI roots 与每上游独立附加 CA；不关闭 chain/validity/hostname 校验。
+  只接受 literal loopback 明文，拒绝 remote/DNS HTTP（旧 localhost 改 literal IP）；
+  native listeners 仍 loopback，由独立 verified SSH/TLS host forward 提供远端入口。
+  提供真实配置/Host/Origin/proxy边界说明，不声称工具自动建立 SSH/反向代理。
+- 每个请求头绑定 configured scheme/host/effective port，incoming bearer/browser
+  ticket 和 listing 元数据不成为上游凭据。HTTP no-proxy/no-redirect，WS 不 follow/
+  retry redirect；metadata next-upstream 仅交给下一已注册 manager 作为 selector，
+  不直接拨号。启动配置不可通过 HTTP 改 token/CA；incoming reload 不重读上游文件，
+  修改上游材料需 restart，文件编辑不自动撤销既有流，合同明确。
+- 真实 HTTPS/WSS host fixture：正确 CA 能收发；无信任/过期/wrong-name 失败且
+  HTTP 后端未收到凭据；上游 A 附加 CA 不授予 B。HTTP/WS 302 不联系 redirect目标；
+  独立配置/Debug/原始 header scope 验收。两 production managers 经 TLS 和第三个
+  owned leaf 使用不同凭据，byte/selected root/hop 保持；中间 reload 使两端 EOF。
+- 修正 federation 以前吞错误为 empty success：aggregate/selection 的 credential/
+  cert/redirect/body/transport 失败明确 safe 502；未知 registered selector 保持 400。
+  local `/tunnels` 仍本地view；aggregate `/` 要求所有 attempted upstream成功。
+  原有循环/hop、EOF、close、backpressure与 scope 测试保留并通过。
+- CLI启用 pinned tokio-tungstenite 0.24 TLS feature；lock只增加 webpki-roots
+  **0.26.11 compatibility wrapper → existing 1.0.6**，无既有版本升级。显式TLS
+  fixtures public/test-only EC CA/leaf key 不涉及设备配对，不可用于实际部署。
+
+相关 manager **39 PASS、1 explicit browser ignored**、upstream security **6 PASS**、
+strict CLI Clippy、17 tools PASS；S02 actual Chromium regression **1 PASS（2×16）**。
+完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，`/tmp/ios-s03-federation-full.log`：
+Linux x86_64 / Rust 1.97.1 / MSRV 1.80.1 / Python 3.12.13，Rust **1651 PASS、0 FAIL、
+2 ignored**（既有 PBKDF2；browser另显式PASS）、Python **8 PASS**，66 feature builds/
+四组、7+7 doctests/三个 snippets、C ABI/19-byte capture、wheel/sdist rebuild/install/
+import、17 tools、118 inventory/实际help、**38** original+masked CLI/service captures、
+actionlint、diff/staged check PASS。新增坏 upstream 私密配置最大verbosity capture：
+启动无 listener/discovery、原路径值不泄漏。CLI SHA-256
+`fc718d5b92f2a25f21ed1a5485edc5cf90d3d49a575b112bbd192df360ea27f9`。
+
+16 个相关实现/合同文件已提交、工作区干净；本记录/证据/质量作独立文档收尾。
+S03 Linux host 可执行范围已交付；macOS/Windows private-file/ACL/TLS实测、实际
+部署 host-key/certificate/forward 接入及真实设备 topology/EOF 仍待条件，不能把
+owned fixtures 作为这些 PASS。第二类/目标保持进行中，随后推进 **Q02 regression
+matrix/runner 与 FUP-01–04 既有内容核查**；S01/S02/F03/F05 待条件不被删除。
+没有配对、DDI、真实 TSS、刷机/擦除、推送/发布、历史改写或参考 checkout 修改。
