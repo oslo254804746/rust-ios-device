@@ -158,7 +158,7 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
         stream,
     } = server.source.connect(&server.udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(timeout).await?;
+    client.start_preserving_errors(timeout).await?;
     client.open_application_pages(timeout).await?;
     let (application_id, page) = find_page_by_id(&client, page_id)?;
     let mut session = InspectorSession::new(application_id, page.id);
@@ -456,7 +456,7 @@ async fn open_cdp_browser_page(
     let InspectorConnection { device, stream } =
         server.source.connect(&server.udid, server.timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(server.timeout).await?;
+    client.start_preserving_errors(server.timeout).await?;
     client.open_application_pages(PAGE_DISCOVERY_IDLE).await?;
     let (application_id, page) = find_page_by_id(&client, target_id)?;
     let mut inspector = InspectorSession::new(application_id, page.id);
@@ -557,7 +557,7 @@ async fn load_open_pages(server: &ServerState) -> Result<Vec<ApplicationPage>> {
         stream,
     } = server.source.connect(&server.udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(timeout).await?;
+    client.start_preserving_errors(timeout).await?;
     client
         .open_application_pages(timeout)
         .await

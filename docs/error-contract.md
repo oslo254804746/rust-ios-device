@@ -54,8 +54,28 @@ device disconnect or a cancelled operation.
 The CLI connection, application-list, launch and Safari-launch deadline wrappers
 retain Tokio Elapsed through anyhow context. An expired shared operation budget
 retains a typed WebInspector Timeout under its existing human context. These
-changes preserve timeout values and exits. They do not yet change legacy Core
-startup's Disabled mapping or establish cancellation/cleanup acknowledgement.
+changes preserve timeout values and exits. They do not establish
+cancellation/cleanup acknowledgement.
+
+`WebInspectorClient::start_preserving_errors(timeout)` shares the existing
+identifier-report/event loop and one deadline with `start(timeout)`, but returns
+original IO errors and the existing typed Timeout instead of remapping them to
+Disabled. The old `start` and WebInspectorError variants remain available with
+their old behavior. Elapsed timers inside Core still become the existing
+Timeout(Duration), rather than carrying a Tokio Elapsed source; response timeout
+duration is the remaining phase budget, while a blocked report write uses the
+original startup budget. This API restores the startup IO source, without
+inventing a device setting or unsupported reply from a timeout or EOF.
+
+CLI tasks, CDP discovery/page/browser startup and WebDriver runtime construction
+now use the preserving method. A closed stream can consequently yield an IO
+category in existing safe diagnostics instead of opaque Disabled correlation.
+Existing failure exits/HTTP statuses/error body shapes, successful output and
+wire frames stay unchanged. Migrate Rust callers by selecting the new method
+and inspecting WebInspectorError or classify_error; callers needing the legacy
+mapping can keep start. Neither method promises retry safety after a partial
+write, a cleanup acknowledgement or that AutomationAvailability::NotAvailable
+means Web Inspector itself is disabled.
 
 `RsdFeatureEvidence` and the additive `feature_evidence` methods on
 ServiceDescriptor/RsdHandshake describe a successful directory snapshot:

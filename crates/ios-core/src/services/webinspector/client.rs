@@ -98,7 +98,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         result
     }
 
+    /// Starts discovery with the legacy startup-error mapping.
+    ///
+    /// Some closed-stream and response-timeout failures become `Disabled` for
+    /// compatibility. That variant alone does not prove a device setting or
+    /// permission rejection. Use [`Self::start_preserving_errors`] to retain
+    /// the underlying typed startup failure.
     pub async fn start(&mut self, timeout_duration: Duration) -> Result<(), WebInspectorError> {
+        self.start_with_error_mapping(timeout_duration, map_handshake_disabled_error)
+            .await
+    }
+
+    /// Starts discovery without remapping IO or timeout failures to `Disabled`.
+    ///
+    /// Sends the same identifier report and consumes the same events under one
+    /// deadline as [`Self::start`]. IO errors retain their original source;
+    /// elapsed deadlines use the existing typed `Timeout` variant. A timeout
+    /// or EOF does not prove that Web Inspector is disabled. Failure may follow
+    /// a partial identifier write; it does not acknowledge device cleanup or
+    /// make retrying the supplied stream safe.
+    pub async fn start_preserving_errors(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<(), WebInspectorError> {
+        self.start_with_error_mapping(timeout_duration, std::convert::identity)
+            .await
+    }
+
+    async fn start_with_error_mapping(
+        &mut self,
+        timeout_duration: Duration,
+        map_error: fn(WebInspectorError) -> WebInspectorError,
+    ) -> Result<(), WebInspectorError> {
         let deadline = deadline_after(timeout_duration)?;
         timeout(
             remaining_time(deadline, timeout_duration)?,
@@ -106,12 +137,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         )
         .await
         .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
-        .map_err(map_handshake_disabled_error)?;
+        .map_err(map_error)?;
         loop {
             let event = self
                 .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
                 .await
-                .map_err(map_handshake_disabled_error)?;
+                .map_err(map_error)?;
             if matches!(event, WebInspectorEvent::CurrentState { .. }) {
                 return Ok(());
             }
@@ -531,6 +562,256 @@ mod tests {
         framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         framed.extend_from_slice(&payload);
         framed
+    }
+
+    #[tokio::test]
+    async fn legacy_start_maps_closed_report_write_to_disabled() {
+        let (stream, peer) = duplex(16 * 1024);
+        drop(peer);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let error = client.start(Duration::from_millis(20)).await.unwrap_err();
+        assert!(matches!(error, WebInspectorError::Disabled));
+    }
+
+    #[tokio::test]
+    async fn legacy_start_maps_eof_after_identifier_report_to_disabled() {
+        let (stream, mut peer) = duplex(16 * 1024);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(client.start(Duration::from_secs(1)), async move {
+                let report = recv_plist(&mut peer).await.unwrap();
+                assert_eq!(
+                    report.get("__selector").and_then(plist::Value::as_string),
+                    Some("_rpc_reportIdentifier:")
+                );
+                drop(peer);
+            })
+        })
+        .await
+        .expect("owned startup/peer must finish");
+        assert!(matches!(result, Err(WebInspectorError::Disabled)));
+    }
+
+    #[tokio::test]
+    async fn legacy_start_maps_idle_after_identifier_report_to_disabled() {
+        let (stream, mut peer) = duplex(16 * 1024);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let error = client.start(Duration::from_millis(20)).await.unwrap_err();
+        assert!(matches!(error, WebInspectorError::Disabled));
+        let report = recv_plist(&mut peer).await.unwrap();
+        assert_eq!(
+            report.get("__selector").and_then(plist::Value::as_string),
+            Some("_rpc_reportIdentifier:")
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_start_keeps_timeout_while_identifier_write_is_blocked() {
+        let (stream, _peer) = duplex(8);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let duration = Duration::from_millis(20);
+        let error = client.start(duration).await.unwrap_err();
+        assert!(matches!(error, WebInspectorError::Timeout(value) if value == duration));
+    }
+
+    #[tokio::test]
+    async fn preserving_start_retains_closed_report_write_source() {
+        let (stream, peer) = duplex(16 * 1024);
+        drop(peer);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let error = client
+            .start_preserving_errors(Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, WebInspectorError::Io(source) if source.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+        let source = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+    }
+
+    #[tokio::test]
+    async fn preserving_start_retains_eof_after_identifier_report() {
+        let (stream, mut peer) = duplex(16 * 1024);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                client.start_preserving_errors(Duration::from_secs(1)),
+                async move {
+                    let report = recv_plist(&mut peer).await.unwrap();
+                    assert_eq!(
+                        report.get("__selector").and_then(plist::Value::as_string),
+                        Some("_rpc_reportIdentifier:")
+                    );
+                    drop(peer);
+                }
+            )
+        })
+        .await
+        .expect("owned startup/peer must finish");
+        let error = result.unwrap_err();
+        assert!(
+            matches!(&error, WebInspectorError::Io(source) if source.kind() == std::io::ErrorKind::UnexpectedEof)
+        );
+        // The shared classifier does not guess that a generic file/stream EOF
+        // proves a device disconnect or a disabled setting.
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+    }
+
+    #[tokio::test]
+    async fn preserving_start_retains_idle_timeout_after_identifier_report() {
+        let (stream, mut peer) = duplex(16 * 1024);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let duration = Duration::from_millis(20);
+        let error = client.start_preserving_errors(duration).await.unwrap_err();
+        assert!(matches!(error, WebInspectorError::Timeout(value) if value <= duration));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let report = recv_plist(&mut peer).await.unwrap();
+        assert_eq!(
+            report.get("__selector").and_then(plist::Value::as_string),
+            Some("_rpc_reportIdentifier:")
+        );
+    }
+
+    #[tokio::test]
+    async fn preserving_start_retains_timeout_while_identifier_write_is_blocked() {
+        let (stream, _peer) = duplex(8);
+        let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+        let duration = Duration::from_millis(20);
+        let error = client.start_preserving_errors(duration).await.unwrap_err();
+        assert!(matches!(error, WebInspectorError::Timeout(value) if value == duration));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+    }
+
+    #[tokio::test]
+    async fn both_start_apis_send_the_same_report_and_accept_not_available_state() {
+        for preserve in [false, true] {
+            let (stream, mut peer) = duplex(16 * 1024);
+            let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+            let (result, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(
+                    async {
+                        if preserve {
+                            client.start_preserving_errors(Duration::from_secs(1)).await
+                        } else {
+                            client.start(Duration::from_secs(1)).await
+                        }
+                    },
+                    async move {
+                        let report = recv_plist(&mut peer).await.unwrap();
+                        assert_eq!(
+                            report,
+                            plist::Dictionary::from_iter([
+                                (
+                                    "__selector".to_string(),
+                                    plist::Value::String("_rpc_reportIdentifier:".into()),
+                                ),
+                                (
+                                    "__argument".to_string(),
+                                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                                        "WIRConnectionIdentifierKey".to_string(),
+                                        plist::Value::String("TEST".into()),
+                                    )])),
+                                ),
+                            ])
+                        );
+                        // A valid intermediate event is consumed before the
+                        // existing CurrentState completion condition.
+                        for (selector, arguments) in [
+                            (
+                                "_rpc_reportConnectedApplicationList:",
+                                plist::Dictionary::from_iter([(
+                                    "WIRApplicationDictionaryKey".to_string(),
+                                    plist::Value::Dictionary(plist::Dictionary::new()),
+                                )]),
+                            ),
+                            (
+                                "_rpc_reportCurrentState:",
+                                plist::Dictionary::from_iter([(
+                                    "WIRAutomationAvailabilityKey".to_string(),
+                                    plist::Value::String(
+                                        "WIRAutomationAvailabilityNotAvailable".into(),
+                                    ),
+                                )]),
+                            ),
+                        ] {
+                            send_plist(
+                                &mut peer,
+                                &plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                    (
+                                        "__selector".to_string(),
+                                        plist::Value::String(selector.into()),
+                                    ),
+                                    (
+                                        "__argument".to_string(),
+                                        plist::Value::Dictionary(arguments),
+                                    ),
+                                ])),
+                            )
+                            .await
+                            .unwrap();
+                        }
+                    }
+                )
+            })
+            .await
+            .expect("owned startup/peer must finish");
+            result.unwrap();
+            assert_eq!(
+                client.automation_availability(),
+                Some(AutomationAvailability::NotAvailable)
+            );
+            assert!(client.applications().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn both_start_apis_retain_malformed_state_as_protocol_error() {
+        for preserve in [false, true] {
+            let (stream, mut peer) = duplex(16 * 1024);
+            let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
+            let (result, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(
+                    async {
+                        if preserve {
+                            client.start_preserving_errors(Duration::from_secs(1)).await
+                        } else {
+                            client.start(Duration::from_secs(1)).await
+                        }
+                    },
+                    async move {
+                        recv_plist(&mut peer).await.unwrap();
+                        send_plist(
+                            &mut peer,
+                            &plist::Value::Dictionary(plist::Dictionary::from_iter([
+                                (
+                                    "__selector".to_string(),
+                                    plist::Value::String("_rpc_reportCurrentState:".into()),
+                                ),
+                                (
+                                    "__argument".to_string(),
+                                    plist::Value::Dictionary(plist::Dictionary::new()),
+                                ),
+                            ])),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                )
+            })
+            .await
+            .expect("owned startup/peer must finish");
+            let error = result.unwrap_err();
+            assert!(matches!(error, WebInspectorError::Protocol(_)));
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        }
     }
 
     #[test]

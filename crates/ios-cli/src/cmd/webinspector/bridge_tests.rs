@@ -40,6 +40,7 @@ struct Trace {
 #[derive(Default)]
 struct SyntheticSource {
     reject: bool,
+    close_at_startup: bool,
     calls: Mutex<Vec<String>>,
     tasks: Mutex<Vec<JoinHandle<Result<Trace>>>>,
 }
@@ -54,10 +55,14 @@ impl InspectorSource for SyntheticSource {
                 );
             }
             let (stream, peer) = tokio::io::duplex(64 * 1024);
-            self.tasks
-                .lock()
-                .unwrap()
-                .push(tokio::spawn(fake_service(peer)));
+            if self.close_at_startup {
+                drop(peer);
+            } else {
+                self.tasks
+                    .lock()
+                    .unwrap()
+                    .push(tokio::spawn(fake_service(peer)));
+            }
             Ok(InspectorConnection {
                 device: None,
                 stream: Box::new(stream),
@@ -151,6 +156,7 @@ async fn injected_source_is_called_only_after_admission_and_failures_are_safe() 
     for cdp in [true, false] {
         let source = Arc::new(SyntheticSource {
             reject: true,
+            close_at_startup: false,
             calls: Mutex::default(),
             tasks: Mutex::default(),
         });
@@ -181,6 +187,42 @@ async fn injected_source_is_called_only_after_admission_and_failures_are_safe() 
             .as_str()
             .unwrap()
             .contains("io/PermissionDenied"));
+        assert_eq!(source.calls(), 1);
+        assert!(source.finish().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn actual_debug_routers_preserve_startup_io_and_existing_error_response_shapes() {
+    for cdp in [true, false] {
+        let source = Arc::new(SyntheticSource {
+            reject: false,
+            close_at_startup: true,
+            calls: Mutex::default(),
+            tasks: Mutex::default(),
+        });
+        let (port, _server, _policy) = start(source.clone(), cdp).await;
+        let url = format!(
+            "http://127.0.0.1:{port}/{}",
+            if cdp { "json/list" } else { "session" }
+        );
+        let client = client();
+        let request = if cdp {
+            client.get(&url)
+        } else {
+            client.post(&url)
+        };
+        let response = request.bearer_auth(TOKEN).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let raw = response.text().await.unwrap();
+        assert!(!raw.contains(DEVICE));
+        assert!(!raw.contains(SECRET));
+        let body: JsonValue = serde_json::from_str(&raw).unwrap();
+        assert_eq!(body["value"]["error"], "unknown error");
+        assert!(body["value"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("io/BrokenPipe"));
         assert_eq!(source.calls(), 1);
         assert!(source.finish().await.is_empty());
     }

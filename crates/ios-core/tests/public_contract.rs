@@ -78,10 +78,50 @@ fn webinspector_facade_models_clients_and_sessions_remain_public() {
     assert_eq!(automation.session_id(), "synthetic-automation");
     // Check old method paths without polling any service I/O.
     drop(client.start(std::time::Duration::ZERO));
+    drop(client.start_preserving_errors(std::time::Duration::ZERO));
     drop(inspector.attach_unpaused(&mut client, true, std::time::Duration::ZERO));
     drop(automation.attach(&mut client, std::time::Duration::ZERO));
     drop(automation.find_element(&mut client, By::CssSelector, ".synthetic"));
     let _browser = ios_core::webinspector::cdp_browser::BrowserCdpState::new("synthetic-browser");
+}
+
+#[cfg(feature = "webinspector")]
+#[tokio::test]
+async fn public_webinspector_start_preserves_typed_io_without_changing_legacy_api() {
+    use ios_core::webinspector::{WebInspectorClient, WebInspectorError};
+    // Existing callers may exhaustively match this enum; the additive API
+    // does not require a new variant or a fallback in their old match.
+    fn family(error: &WebInspectorError) -> &'static str {
+        match error {
+            WebInspectorError::Io(_) => "io",
+            WebInspectorError::Plist(_) => "plist",
+            WebInspectorError::Json(_) => "json",
+            WebInspectorError::Disabled => "disabled",
+            WebInspectorError::Protocol(_) => "protocol",
+            WebInspectorError::Timeout(_) => "timeout",
+        }
+    }
+    for preserve in [false, true] {
+        let (stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let mut client = WebInspectorClient::with_connection_id(stream, "synthetic");
+        let duration = std::time::Duration::from_millis(20);
+        let error = if preserve {
+            client.start_preserving_errors(duration).await
+        } else {
+            client.start(duration).await
+        }
+        .unwrap_err();
+        assert_eq!(family(&error), if preserve { "io" } else { "disabled" });
+        assert_eq!(
+            ios_core::classify_error(&error),
+            if preserve {
+                ios_core::ErrorClass::Disconnected
+            } else {
+                ios_core::ErrorClass::Precondition
+            }
+        );
+    }
 }
 
 fn event_id(event: DeviceEvent) -> u32 {

@@ -559,6 +559,13 @@ ios -u <UDID> webinspector selenium --auth-config PRIVATE_POLICY_FILE
 Many developer services require Developer Mode, a mounted Developer Disk Image,
 or the CoreDevice tunnel path on newer iOS versions.
 
+WebInspector CLI/CDP/WebDriver startup retains IO and timeout errors through
+safe diagnostics. A startup timeout or closed stream alone does not prove that
+Web Inspector is disabled. Existing failure exits/statuses and successful
+output remain unchanged; Rust callers can opt into `start_preserving_errors`
+while the old `start` retains its legacy mapping. See the
+[error contract](error-contract.md) for typed classification and partial writes.
+
 `webinspector launch` uses Remote Automation to launch the selected bundle,
 create one browsing context, optionally navigate to the positional URL, and
 report page/title/connection metadata. The connection, launch, page wait,

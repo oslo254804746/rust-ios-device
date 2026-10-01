@@ -471,7 +471,7 @@ async fn build_selenium_runtime(server: &ServerState) -> Result<SeleniumRuntime>
     let InspectorConnection { device, stream } =
         server.source.connect(&server.udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(timeout).await?;
+    client.start_preserving_errors(timeout).await?;
     client.open_application_pages(timeout).await?;
 
     let application = match client.application_by_bundle(SAFARI_BUNDLE_ID) {

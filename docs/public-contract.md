@@ -59,6 +59,13 @@ checks. Their [contract](error-contract.md) keeps typed category, successful
 directory evidence and unknown probe state separate; it does not certify new
 machine fields in the existing CLI/HTTP/C/Python interfaces.
 
+WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
+the existing `start` keeps its legacy phase-specific Disabled mapping and its
+exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing
+safe failure diagnostic categories when the original source is available,
+with existing status/exit/body shapes and success output retained. The
+[error contract](error-contract.md) records phase budgets and migration.
+
 ## CLI and JSON
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `WebInspectorClient::start_preserving_errors` to retain startup IO and
+  typed timeouts while the existing `start` keeps its legacy `Disabled` mapping.
+  CLI/CDP/WebDriver startup uses the new method; success frames/output and
+  failure statuses stay unchanged, with more accurate safe diagnostics.
+
 - Add non-exhaustive Rust error categories from typed sources and additive RSD
   feature-evidence queries. Preserve existing error variants/source chains and
   permissive metadata checks; [binding/output mappings](docs/error-contract.md)

@@ -54,7 +54,7 @@ pub(super) async fn run_opened_tabs(
 ) -> Result<()> {
     let (_device, stream, _use_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(timeout).await?;
+    client.start_preserving_errors(timeout).await?;
     let pages = client.open_application_pages(timeout).await?;
     let rows = pages.into_iter().map(opened_tab_row).collect::<Vec<_>>();
 
@@ -90,7 +90,7 @@ pub(super) async fn run_eval(
 ) -> Result<()> {
     let (_device, stream, _use_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
-    client.start(timeout).await?;
+    client.start_preserving_errors(timeout).await?;
     client.open_application_pages(timeout).await?;
 
     let application_id = match app_id {
@@ -183,7 +183,7 @@ async fn run_launch_inner(
     let (device, stream, uses_rsd) = connect_webinspector(udid).await?;
     let mut client = WebInspectorClient::new(stream);
     client
-        .start(remaining_webinspector_time(deadline, timeout)?)
+        .start_preserving_errors(remaining_webinspector_time(deadline, timeout)?)
         .await?;
     client.request_application_launch(bundle_id).await?;
     let application = wait_for_application(&mut client, bundle_id, deadline, timeout).await?;
@@ -287,7 +287,7 @@ async fn run_js_shell_inner(
     let (device, stream, uses_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
     let mut client = WebInspectorClient::new(stream);
     client
-        .start(remaining_webinspector_time(deadline, timeout)?)
+        .start_preserving_errors(remaining_webinspector_time(deadline, timeout)?)
         .await?;
 
     // Match go-ios: --open-safari starts Safari, while an explicitly supplied
