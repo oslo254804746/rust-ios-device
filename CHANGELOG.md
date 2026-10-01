@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manager. Authenticate HTTP/WebSocket requests, filter device lists, authorize
   device/port operations, and revoke streams at expiry or successful policy
   reload. Private-file CLI credentials disable proxies/redirects and bound
-  response bodies. Protected federation and browser admission remain pending.
+  response bodies. Protected federation remains pending.
 - Restrict raw forward/WDA/dproxy/screenshot-stream listeners to loopback before
   device access; validate WDA proxy ports before startup. Raw userspace proxy
   and kernel routes retain their documented host trust boundary.
@@ -29,13 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Require private scoped credentials or explicit loopback trust for CDP/Selenium.
   Enforce exact-device debug access before parsing/device I/O, support scoped
   policy reload, revoke HTTP/WS and stored automation leases on expiry/reload,
-  and abort owned CDP page tasks when their parent connection ends. Browser
-  handshakes and physical-device cleanup acceptance remain pending.
+  and abort owned CDP page tasks when their parent connection ends. Physical-device
+  cleanup acceptance remains pending.
 - Enforce actual-listener Host and exact allowed Origin on manager/CDP/Selenium,
   reject proxy authority spoofing and require explicit debug device selection
   before global discovery. Move shutdown/start-tunnel to POST; legacy GET/HEAD
-  give a read-only notice until 2026-11-01 UTC and 410 thereafter. Browser
-  handshake tickets and protected federation remain pending.
+  give a read-only notice until 2026-11-01 UTC and 410 thereafter. Protected
+  federation remains pending.
+- Add scoped browser bootstrap with approved-origin CORS and bounded, 30-second,
+  single-use WebSocket tickets for the manager/CDP. Bind handshakes to Origin and
+  complete targets; reject replay/ambiguity and revoke pending tickets/streams
+  on policy replacement. Native bearer clients keep their existing contract.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

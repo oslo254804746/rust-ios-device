@@ -1321,6 +1321,7 @@ async fn run_tunnel_agent(
 
 fn agent_router(state: TunnelAgentState) -> Router {
     let access = state.inner.access.clone();
+    let admission = crate::access::Admission::manager(access);
     Router::new()
         .route("/", get(agent_list_tunneld))
         .route("/connect", get(agent_connect))
@@ -1347,12 +1348,13 @@ fn agent_router(state: TunnelAgentState) -> Router {
             get(agent_get_tunnel).delete(agent_delete_tunnel),
         )
         .with_state(state)
+        .merge(admission.ticket_routes())
         .layer(axum::middleware::from_fn_with_state(
             crate::http_diagnostics::ErrorShape::Manager,
             crate::http_diagnostics::rejections,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            crate::access::Admission::manager(access),
+            admission,
             crate::access::admission,
         ))
 }
@@ -1764,6 +1766,7 @@ mod tests {
     use super::*;
 
     mod access_tests;
+    mod browser_tests;
     mod method_tests;
 
     fn fake_record(proxy_port: u16) -> TunnelRecord {

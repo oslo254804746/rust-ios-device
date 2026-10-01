@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::test_support::{grant, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
+use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tungstenite::client::IntoClientRequest;
 
@@ -365,15 +365,22 @@ async fn reload_cancels_an_admitted_listing_instead_of_returning_empty_success()
 
 #[tokio::test]
 async fn authenticated_websocket_preserves_bytes_and_revocation_closes_both_hops() {
-    authenticated_bridge(false).await;
+    authenticated_bridge(false, false).await;
 }
 
 #[tokio::test]
 async fn authenticated_websocket_expiry_closes_both_hops() {
-    authenticated_bridge(true).await;
+    authenticated_bridge(true, false).await;
 }
 
-async fn authenticated_bridge(expiry: bool) {
+#[tokio::test]
+async fn browser_ticket_bridge_preserves_bytes_and_revoke_or_expiry_closes_both_hops() {
+    for expiry in [false, true] {
+        authenticated_bridge(expiry, true).await;
+    }
+}
+
+async fn authenticated_bridge(expiry: bool, ticket: bool) {
     let proxy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let proxy_port = proxy.local_addr().unwrap().port();
     let proxy_task = tokio::spawn(async move {
@@ -429,10 +436,32 @@ async fn authenticated_bridge(expiry: bool) {
         .await
         .insert(format!("http://127.0.0.1:{upstream_port}/"));
     let (port, server) = spawn_test_router(agent_router(state)).await;
-    let (mut websocket, _) =
-        tokio_tungstenite::connect_async(websocket_request(port, DEVICE, 12345))
+    let request = if ticket {
+        let origin = format!("http://127.0.0.1:{port}");
+        let issued = client()
+            .post(format!("{origin}/auth/ticket"))
+            .bearer_auth(TOKEN)
+            .json(&json!({"origin": origin,
+                "target": {"kind": "tunnel", "udid": DEVICE, "port": 12345}}))
+            .send()
             .await
             .unwrap();
+        assert_eq!(issued.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&issued.text().await.unwrap()).unwrap();
+        let mut request = format!(
+            "ws://127.0.0.1:{port}{}",
+            body["websocket_path"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+        request
+    } else {
+        websocket_request(port, DEVICE, 12345)
+    };
+    let (mut websocket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     websocket
         .send(tungstenite::Message::Binary(
             b"synthetic-device-bytes".to_vec(),

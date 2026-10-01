@@ -9,6 +9,18 @@ pub(crate) const REPLACEMENT: &str =
     "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 pub(crate) const DEVICE: &str = "synthetic-manager-device";
 
+/// Keep test JSON requests independent of reqwest's optional JSON feature.
+pub(crate) trait JsonRequest {
+    fn json(self, value: &serde_json::Value) -> Self;
+}
+
+impl JsonRequest for reqwest::RequestBuilder {
+    fn json(self, value: &serde_json::Value) -> Self {
+        self.header("content-type", "application/json")
+            .body(value.to_string())
+    }
+}
+
 pub(crate) struct TestGrant(GrantFile);
 
 impl TestGrant {

@@ -74,14 +74,91 @@ project's `/connect` WebSocket extension remains a protocol upgrade with exact
 device/port authorization; an ordinary GET without upgrade headers is rejected
 before dialing. It is not a generic reading endpoint or an Apple protocol.
 
-## Browser handshake work still pending
+## Browser bootstrap, CORS and single-use handshakes
 
-Origin checks alone do not finish browser admission. The browser
+The browser
 [WebSocket constructor](https://websockets.spec.whatwg.org/#the-websocket-interface)
 accepts a URL and protocols, without a custom Authorization-header parameter.
-Native clients can supply the bearer header, but browser WS tickets, controlled
-credential bootstrap and browser tests remain S02 work. No token query parameter
-or cookie currently authenticates a WebSocket. Never put a long-lived token in
-a URL. `--allow-origin` is an admission restriction, without automatic CORS
-headers or a browser authentication flow. These host checks do not certify a
-Playwright/Puppeteer, Safari automation or physical-device workflow.
+Native clients keep their scoped bearer header without requiring Origin.
+Policy-mode browser clients obtain a **30-second, single-use** handshake from
+POST `/auth/ticket` on the manager or CDP server. Selenium has no WebSocket
+endpoint and does not expose this ticket route; approved browser HTTP requests
+use their bearer header. No cookie or long-lived URL token authenticates any
+server. Explicit local-trust mode retains its documented trust in local
+processes; tickets do not make that mode credential protected.
+
+Run only a controlled UI on an explicitly approved origin. Read the private
+credential with a user-selected file input into memory and send it in the
+bootstrap HTTP Authorization header. Clear that credential when the UI ends;
+do not put it in a URL, localStorage, cookie, analytics or diagnostic log. The
+server does not host a login UI or distribute private credential files.
+
+```js
+// Controlled UI code: base is the configured loopback/protected server URL;
+// token is read from the user's selected private file and kept only in memory.
+const response = await fetch(`${base}/auth/ticket`, {
+  method: 'POST', credentials: 'omit', cache: 'no-store',
+  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    origin: location.origin,
+    target: { kind: 'tunnel', udid: selectedDevice, port: selectedPort },
+  }),
+});
+if (!response.ok) throw new Error('Browser handshake denied');
+const { websocket_path } = await response.json();
+const endpoint = new URL(base);
+endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+const socket = new WebSocket(new URL(websocket_path, endpoint));
+```
+
+Manager targets accept `kind: "tunnel"`, exact `udid`/nonzero `port`, optional
+`interface`/`upstream`, and `hop` (default 0, maximum 3). They require connect
+for that device/port; list/admin permissions do not imply connect. CDP targets
+accept `{"kind":"cdp_page","page_id":"PAGE_ID"}` or
+`{"kind":"cdp_browser"}` and require debug for the server's selected device.
+The response contains `ticket`, `expires_in: 30` and `websocket_path`. Target
+fields are bounded, unknown JSON fields fail, and the bootstrap body is at most
+16 KiB. The registry retains only ticket digests, with at most 512 pending
+entries; capacity exhaustion returns 429 and entropy failure 503.
+
+Use the returned path unchanged. A handshake needs an approved Origin, GET and
+WebSocket upgrade, and one canonical `ticket` parameter. Its exact Origin and
+path/query (including target, option values, hop and query order) must match
+issuance. Origin compares the same normalized key as the HTTP boundary. A
+browser bootstrap's JSON origin must match its actual Origin; a native
+bootstrap may choose an explicitly approved origin. Missing Origin, duplicated
+or encoded ticket aliases, ticket plus Authorization, expired ticket, replay,
+target substitution and long-lived credential in the ticket field return safe
+401. A redemption on a different approved Origin/target burns the ticket;
+unapproved Origin is rejected by the outer boundary before redemption. Tickets
+authenticate only their one handshake, never metadata or management HTTP.
+They are removed from the routed URI and are not forwarded upstream.
+
+The handshake lifetime ends at 30 seconds or earlier grant expiry/reload. After
+admission, the connection follows the original principal's grant lifetime and
+revision, rather than the handshake's short deadline. Successful policy reload
+invalidates every old pending ticket and connection, including unchanged
+grants; failed reload preserves the old snapshot. Browser errors do not promise
+a graceful WebSocket close handshake or orderly device shutdown.
+
+Approved browser origins receive exact `Access-Control-Allow-Origin` and
+`Vary: Origin` on routed replies. OPTIONS preflight on a known route permits
+GET/HEAD/POST/DELETE and only Authorization/Content-Type headers, returns 204
+with no-store, and never executes or authenticates an operation. Unknown routes,
+unapproved Origin, unsupported methods/headers and malformed preflight fail.
+Actual requests still pass scoped admission; cookies and CORS credentials are
+not enabled. The preflight describes the shared header/method vocabulary; a
+route can still reject an unsupported actual method.
+
+Short-lived tickets necessarily enter handshake URLs and may appear in browser
+developer tools or a forwarding server's access logs. Disable URL/header/frame
+logging on the controlled UI and protected forwarder. The CLI's reviewed logging
+filter does not enable dependency handshake/frame logging. This scheme does not
+provide TLS: an HTTPS UI may require a protected WSS transport (S03), and browser
+mixed-content/local-network policy may reject a plaintext local connection.
+
+The explicit [browser gate](validation/browser-access-2026-10-01.md) uses actual
+Chromium fetch/WebSocket against the Rust production manager and owned host
+fixtures. It checks access control, binary bytes and revocation, without an
+Apple service. F03 client/CDP protocol acceptance and physical-device workflows
+remain separate; F05 must apply this boundary to its future browser entry points.

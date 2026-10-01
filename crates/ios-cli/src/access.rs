@@ -19,6 +19,7 @@ pub(crate) use runtime::{
     admission, denied_for, loopback_address, AccessControl, Admission, ClientAccessArgs, Principal,
     ServerAccessArgs,
 };
+mod tickets;
 
 #[cfg(test)]
 pub(crate) mod test_support;

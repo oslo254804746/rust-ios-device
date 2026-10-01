@@ -5,8 +5,9 @@ explicit local trust.
 `ios tunnel auth create|check` prepares/checks credentials without starting a
 server or contacting a device. Start the manager with `--auth-config`; clients
 use `--token-file`. Raw forwarding listeners have been audited and restricted
-to loopback. Native debug admission shares the policy mechanism; browser access
-and protected federation remain S02/S03.
+to loopback. Native debug admission shares the policy mechanism; controlled
+browser clients use the [HTTP/CORS/ticket contract](http-boundary.md).
+Protected federation remains S03 work.
 Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
 
 For Unix shells, choose two new paths in a trusted private directory:
@@ -71,8 +72,10 @@ successful authorized reload.
 ## Manager admission and reload
 
 Every route, including health/readiness, unknown routes, extractor rejections
-and the WebSocket handshake, requires exactly one `Authorization: Bearer TOKEN`
-header in policy mode. Missing, malformed, duplicate, invalid and expired
+and native WebSocket handshakes, requires exactly one `Authorization: Bearer TOKEN`
+header in policy mode. Browser WebSockets instead redeem a single-use scoped
+ticket; approved OPTIONS preflight describes rules without authenticating an
+operation. Missing, malformed, duplicate, invalid and expired
 credentials receive the same HTTP 401 with `WWW-Authenticate: Bearer` and a
 fixed message. Valid credentials with an insufficient scope receive HTTP 403.
 Replies are `no-store`; credential text and selectors are omitted from rejection
@@ -89,6 +92,7 @@ check. Other host probes retain their separate results.
 | GET `/`, `/tunnels` | list; records are filtered to allowed device selectors |
 | GET `/tunnel/:udid` | list for that exact device |
 | GET `/connect` WebSocket upgrade | connect for the exact device and nonzero port |
+| POST `/auth/ticket` | connect for the exact requested device/port and approved Origin |
 | POST `/start-tunnel` JSON; DELETE `/tunnel/:udid` | manage-tunnels for the exact device |
 | List/add/delete upstreams; POST `/shutdown`; POST `/auth/reload` | manage-server |
 | Health/readiness | Any valid, unexpired grant |
@@ -126,8 +130,10 @@ ios --udid DEVICE_UDID webinspector selenium --auth-config PRIVATE_POLICY_FILE
 Both require an explicit `--udid`/`IOS_UDID` selector and skip global first-device
 discovery. They validate loopback binding and read the policy before opening a
 listener or contacting a device. Every debug route, including adapter metadata, unknown
-routes, extractor failures and WebSocket upgrades, requires one valid bearer
-header and `debug` for the server's exact selected device. Unauthorized requests
+routes, extractor failures and native WebSocket upgrades, requires one valid bearer
+header and `debug` for the server's exact selected device. CDP browser upgrades
+redeem a scoped single-use ticket; approved preflight grants no operation.
+Unauthorized requests
 receive 401; wrong roles/devices receive 403 before device or body processing.
 Responses are `no-store` and use the CDP or WebDriver diagnostic envelope.
 Debug grants do not trigger the tunnel manager's device monitor.
@@ -156,8 +162,9 @@ describes the local adapter and does not check a device, Developer Mode, DDI,
 Safari inspection or Remote Automation readiness. Native clients must load the
 private token into their HTTP/WebSocket bearer header without printing it or
 placing it in URLs. Host/Origin checks apply as described in
-[HTTP boundaries](http-boundary.md). Browser handshake support is still S02
-work; a browser cannot use a custom WebSocket Authorization header.
+[HTTP boundaries](http-boundary.md). CDP browser bootstrap uses POST `/auth/ticket`
+with a native/file-loaded bearer credential and an approved Origin; Selenium
+browser HTTP uses a bearer header. Cookies do not authenticate either server.
 
 The previous implicit trust mode now fails at startup. Local users who intend
 to trust every local process must explicitly pass `--local-unauthenticated`;
@@ -180,9 +187,9 @@ with `--auth-config`. It is accepted only on loopback and bypasses roles/scopes;
 do not use it where local processes are untrusted. Host/Origin policies apply
 even in this mode. Legacy GET management now gives a read-only, finite migration
 notice; use POST for shutdown/start. See [HTTP boundaries](http-boundary.md).
-Browsers cannot supply a custom WebSocket Authorization header; a browser
-handshake mechanism will be provided by S02. Long-lived tokens must never be
-placed in URLs.
+Browsers use controlled bearer bootstrap and single-use WebSocket tickets.
+Long-lived tokens must never be placed in URLs. Future F05 browser entry points
+still need this shared boundary and their workflow acceptance.
 
 The existing userspace proxy's 20-byte IPv6/port preamble remains unauthenticated
 on loopback. Any local process able to reach that proxy can dial device ports
@@ -198,7 +205,7 @@ claim an OS sandbox for raw TCP or kernel routes.
 | `runwda` proxy | Loopback and nonzero ports checked before WDA startup | One selected WDA/device port; raw TCP local trust |
 | `dproxy service` | Loopback checked before service access/capture creation | One selected device/service; raw TCP local trust |
 | `screenshot --stream` | Loopback checked before binding or capture | Existing raw multipart stream; local trust; F05 will use shared admission |
-| CDP/Selenium | Literal loopback; scoped bearer admission before device access | Exact-device debug grant or explicit local trust; browser handshake pending S02 |
+| CDP/Selenium | Literal loopback; scoped admission before device access | Exact-device debug; CDP single-use browser tickets, Selenium browser HTTP bearer; explicit local trust is optional |
 
 Explicit nonloopback `--host` values for forward/WDA/dproxy/raw screenshot
 streams now fail instead of opening unauthenticated network services. Use a

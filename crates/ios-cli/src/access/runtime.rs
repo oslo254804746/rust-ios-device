@@ -433,8 +433,9 @@ pub(crate) fn denied_for(
 #[derive(Clone)]
 pub(crate) struct Admission {
     access: AccessControl,
-    shape: crate::http_diagnostics::ErrorShape,
-    debug_device: Option<String>,
+    pub(super) shape: crate::http_diagnostics::ErrorShape,
+    pub(super) debug_device: Option<String>,
+    pub(super) tickets: super::tickets::Tickets,
 }
 
 impl Admission {
@@ -443,6 +444,7 @@ impl Admission {
             access,
             shape: crate::http_diagnostics::ErrorShape::Manager,
             debug_device: None,
+            tickets: super::tickets::Tickets::default(),
         }
     }
 
@@ -455,7 +457,17 @@ impl Admission {
             access,
             shape,
             debug_device: Some(device),
+            tickets: super::tickets::Tickets::default(),
         }
+    }
+
+    pub(crate) fn ticket_routes(&self) -> axum::Router {
+        super::tickets::routes(self.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn access_for_test(&self) -> AccessControl {
+        self.access.clone()
     }
 }
 
@@ -465,7 +477,12 @@ pub(crate) async fn admission(
     next: Next,
 ) -> Response {
     let head = request.method() == Method::HEAD;
-    let Some(principal) = admission.access.authenticate(request.headers()) else {
+    let principal = match admission.tickets.authenticate(&mut request).await {
+        Some(Ok(principal)) => Some(principal),
+        Some(Err(())) => None,
+        None => admission.access.authenticate(request.headers()),
+    };
+    let Some(principal) = principal else {
         return denied_for(admission.shape, StatusCode::UNAUTHORIZED, head);
     };
     let reload = request.uri().path() == "/auth/reload";

@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::{header, uri::Authority, HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde_json::json;
 
@@ -107,13 +107,13 @@ impl AuthorityKey {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct OriginKey {
+pub(super) struct OriginKey {
     https: bool,
     authority: AuthorityKey,
 }
 
 impl OriginKey {
-    fn parse(value: &str) -> Option<Self> {
+    pub(super) fn parse(value: &str) -> Option<Self> {
         let (scheme, authority) = value.split_once("://")?;
         let (https, default_port) = match scheme {
             "http" => (false, 80),
@@ -204,6 +204,10 @@ fn single<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 impl HttpBoundary {
+    pub(super) fn approved_origin(&self, value: &str) -> Option<OriginKey> {
+        OriginKey::parse(value).filter(|origin| self.origins.contains(origin))
+    }
+
     pub(crate) fn protect(self, router: Router, shape: ErrorShape) -> Router {
         router.layer(axum::middleware::from_fn_with_state(
             BoundaryAdmission {
@@ -258,11 +262,64 @@ impl HttpBoundary {
 
 async fn admission(
     State(admission): State<BoundaryAdmission>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if admission.boundary.accepts(&request) {
-        return next.run(request).await;
+        let origin = request.headers().get(header::ORIGIN).cloned();
+        // Preflight only describes permitted headers/methods on a known route.
+        // Every actual operation still passes scoped credential admission.
+        let preflight = request.method() == Method::OPTIONS
+            && request
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+        let mut response = if preflight {
+            let method = single(request.headers(), "access-control-request-method");
+            let headers = single(request.headers(), "access-control-request-headers");
+            let valid = origin.is_some()
+                && request.extensions().get::<MatchedPath>().is_some()
+                && matches!(method, Some("GET" | "HEAD" | "POST" | "DELETE"))
+                && (!request
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_REQUEST_HEADERS)
+                    || headers.is_some_and(|value| {
+                        !value.is_empty()
+                            && value.split(',').all(|name| {
+                                matches!(
+                                    name.trim().to_ascii_lowercase().as_str(),
+                                    "authorization" | "content-type"
+                                )
+                            })
+                    }));
+            if !valid {
+                return super::denied_for(admission.shape, StatusCode::FORBIDDEN, false);
+            }
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                "GET, HEAD, POST, DELETE".parse().unwrap(),
+            );
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "Authorization, Content-Type".parse().unwrap(),
+            );
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            response
+        } else {
+            request.extensions_mut().insert(admission.boundary);
+            next.run(request).await
+        };
+        if let Some(origin) = origin {
+            response
+                .headers_mut()
+                .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+            response
+                .headers_mut()
+                .append(header::VARY, "Origin".parse().unwrap());
+        }
+        return response;
     }
     let message = "HTTP host/origin boundary denied";
     let body = match admission.shape {

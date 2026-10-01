@@ -342,6 +342,10 @@ def manager_cases(binary, env, variants, device, token, directory):
             checks[name] = request("POST", "/auth/reload", headers=headers)[0] == 403
         checks["same-origin-native-header"] = request("GET", "/tunnels", headers={
             "Origin": "http://127.0.0.1:" + str(port)})[0] == 200
+        checks["admin-cannot-issue-connect-ticket"] = request("POST", "/auth/ticket", body=json.dumps({
+            "origin": "http://127.0.0.1:" + str(port),
+            "target": {"kind": "tunnel", "udid": device, "port": 12345}
+        }).encode(), headers={"Content-Type": "application/json"})[0] == 403
         status, body = request("GET", "/tunnels")
         checks["authorized-list"] = status == 200 and json.loads(body) == []
         for name, args, code in [
@@ -484,6 +488,24 @@ def debug_cases(binary, env, variants, device, token, directory):
                 checks[name] = request("POST", "/auth/reload", fields=fields)[0] == 403
             checks["same-origin-native-header"] = request("GET", metadata, fields={
                 "Origin": "http://127.0.0.1:" + str(port)})[0] == 200
+            if command == "cdp":
+                origin = "http://127.0.0.1:" + str(port)
+                status, body = request("POST", "/auth/ticket", body=json.dumps({
+                    "origin": origin, "target": {"kind": "cdp_page", "page_id": "synthetic-page"}
+                }).encode(), fields={"Content-Type": "application/json"})
+                issued = json.loads(body)
+                ticket = issued.get("ticket", "").encode()
+                checks["browser-ticket-issued"] = status == 200 and len(ticket) == 64 and issued.get("expires_in") == 30
+                if not checks["browser-ticket-issued"] or any(byte not in b"0123456789abcdef" for byte in ticket):
+                    raise ValueError("browser ticket issuance contract failed")
+                variants.update(secret_variants(ticket))
+                # Ticket response is intentional credential delivery, checked
+                # before adding that ticket to the diagnostic leakage detector.
+                # Plain HTTP never upgrades/contacts a device, even with a ticket.
+                checks["browser-ticket-http-denied"] = request("GET", issued["websocket_path"], authorized=False,
+                    fields={"Origin": origin})[0] == 401
+                checks["long-lived-url-denied"] = request("GET", "/devtools/page/synthetic-page?ticket=" + token.decode(),
+                    authorized=False, fields={"Origin": origin})[0] == 401
             config.write_bytes(b"synthetic-invalid-policy")
             checks["failed-reload"] = request("POST", "/auth/reload")[0] == 400
             checks["old-policy-survives"] = request("GET", metadata)[0] == 200

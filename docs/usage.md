@@ -592,8 +592,10 @@ discovery, and validate actual listener Host and allowed Origin for HTTP/WS.
 Local metadata is adapter information, not device readiness. See
 [management access](management-access.md) for migration, reload, resource and
 transport boundaries. See [HTTP boundaries](http-boundary.md) for exact settings
-and POST management migration. Browser tickets and protected federation remain
-unfinished S02/S03 work.
+and POST management migration. Controlled CDP browser clients use scoped
+single-use handshake tickets; Selenium browser HTTP uses the bearer header.
+Protected federation remains S03 work, and client/device workflow acceptance
+remains separate from host access-control tests.
 
 Comparable upstream workflows:
 

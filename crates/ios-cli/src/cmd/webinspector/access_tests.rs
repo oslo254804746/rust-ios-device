@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::test_support::{grant, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
+use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
 use clap::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
@@ -381,6 +381,15 @@ async fn reload_preserves_a_failed_policy_and_replaces_debug_credentials_atomica
 
 #[tokio::test]
 async fn admitted_page_websocket_revokes_while_waiting_for_the_device_page_lock() {
+    page_websocket_revokes(false).await;
+}
+
+#[tokio::test]
+async fn browser_page_ticket_revokes_without_contacting_a_device() {
+    page_websocket_revokes(true).await;
+}
+
+async fn page_websocket_revokes(ticket: bool) {
     for expire in [false, true] {
         let scoped_grant = grant(TOKEN, vec![Permission::Debug, Permission::ManageServer]);
         let fixture = PolicyFixture::new(vec![if expire {
@@ -401,10 +410,39 @@ async fn admitted_page_websocket_revokes_while_waiting_for_the_device_page_lock(
                 ios_core::redaction::diagnostic_error(&other)
             ),
         }
-        let mut request = url.into_client_request().unwrap();
-        request
-            .headers_mut()
-            .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+        let mut request = if ticket {
+            let origin = format!("http://127.0.0.1:{port}");
+            let issued = client()
+                .post(format!("{origin}/auth/ticket"))
+                .bearer_auth(TOKEN)
+                .json(&json!({"origin": origin,
+                    "target": {"kind": "cdp_page", "page_id": page}}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(issued.status(), StatusCode::OK);
+            let body: JsonValue = response_json(issued).await;
+            let mut request = format!(
+                "ws://127.0.0.1:{port}{}",
+                body["websocket_path"].as_str().unwrap()
+            )
+            .into_client_request()
+            .unwrap();
+            request
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
+            request
+        } else {
+            let mut request = url.into_client_request().unwrap();
+            request
+                .headers_mut()
+                .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+            request
+        };
+        // Mark native credential sensitivity even in test-owned fixtures.
+        if let Some(value) = request.headers_mut().get_mut("authorization") {
+            value.set_sensitive(true);
+        }
         let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         if !expire {

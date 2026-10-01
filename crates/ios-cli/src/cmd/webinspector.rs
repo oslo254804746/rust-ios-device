@@ -1212,6 +1212,7 @@ fn cdp_router(state: ServerState) -> Router {
         .route("/devtools/browser/:browser_id", get(cdp_browser_ws))
         .route("/auth/reload", post(cdp_reload_policy))
         .with_state(state)
+        .merge(admission.ticket_routes())
         .layer(axum::middleware::from_fn_with_state(
             crate::http_diagnostics::ErrorShape::Cdp,
             crate::http_diagnostics::rejections,
