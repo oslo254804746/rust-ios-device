@@ -97,7 +97,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor 认证、scope/reload 与 raw listener 边界已交付；调试桥及平台验收仍待 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI/doctor/debug 主机入口已交付；平台/真机验收与 S03 联邦凭据接入仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
@@ -1138,3 +1138,42 @@ captures、actionlint、diff/staged diff --check PASS。CLI SHA-256
 DDI/设备服务证据，F01 未开始。接着扩展 shared admission 到固定设备 debug scope，
 再落实 S02/S03/Q02；第二类和目标保持进行中。无配对、设备启动、DDI、真实 TSS、
 刷机/擦除、推送、发布、历史改写或参考 checkout 修改。
+
+### 大类 2 进度：S01 CDP/Selenium admission 与授权会话撤销（2026-10-01）
+
+实现提交：`0bb58a208de73b16997d8354920bbe7118c94dc5`；
+[验收证据](validation/debug-access-2026-10-01.md)，合同见
+[管理访问](management-access.md) / [CDP](cdp-compatibility.md)。
+
+- CDP/Selenium 接入同一私密策略或显式 loopback local trust。配置/loopback 校验
+  在 bind 与设备访问前；每个 debug 路由、metadata、unknown/extractor/WS 都检查
+  bearer 和固定 UDID 的 debug grant，401/403、no-store 与各自安全错误 envelope。
+  其他角色、设备范围不隐含调试权限；localhost/IPv6/port 0 metadata 使用真实监听。
+- 两桥 POST `/auth/reload` 只需明确 manage-server 并读启动文件；失败保留旧策略，
+  原子成功撤销全部旧租约，返回 host receipt。HTTP 等待 body/device 与 CDP WS
+  在 expiry/reload 取消；browser page owner Drop abort 子任务，避免 JoinHandle detach。
+- Selenium 存储保留创建者租约，原授权过期/重载先从 map 移除再限时清理；另一
+  有效 Debug token 无法继续已过期会话。middleware 使用解码 session_id 防绕过，
+  同时取消当前请求。Host resource 假服务验证 pending cancellation、清理超时/
+  Drop/无持有环；没有构造假的 Apple runtime 或声称 Remote Automation 成功。
+- 生产 page WS 在持有 page lock 的 fixture 中合法 101，再过期/重载关闭，保证
+  没到设备连接；生产 WebDriver partial body 等待被重载撤销为安全 403。实际 CLI
+  最大 verbosity 增四个 startup 拒绝及两桥 metadata/reload 捕获，共 32 例，原始/
+  独立副本零秘密命中。两桥 capture 受控 SIGTERM，明确验 -15，而非设备清理 ACK。
+
+相关 WebInspector 27 PASS、manager 33 PASS、严格 CLI Clippy、17 tools、32 captures
+PASS。随后 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` 全部 PASS，日志
+`/tmp/ios-s01-debug-full.log`：Linux x86_64 / Rust 1.97.1、MSRV 1.80.1、Python 3.12.13，
+Rust **1627 PASS、0 FAIL、1 既有 PBKDF2 ignored**，Python 8 PASS；66 features/四组、
+7+7 doctests/三个示例、C ABI/19-byte capture、wheel/sdist rebuild/install/import、
+17 tools、118 inventory/实际帮助、32 captures、actionlint 与 diff/staged diff --check
+PASS。CLI SHA-256 `30f1e22f1a859dd1586bb53bac7a6b4b4ec6f069f632651453a2903d63d3cd8e`。
+
+实现只含 11 个相关文件，提交后工作区干净；本记录、能力证据与质量另做文档
+收尾。S01 不整体关闭：平台私密文件/ACL 与真机建连/管理/会话撤销待条件，独立
+联邦凭据接入属随后 S03。active Debug grant 仍覆盖整个设备，可使用有效会话，
+不宣称 per-user isolation；已执行操作不回滚。100 ms host cleanup 不代表 Apple
+teardown ACK，orderly lifecycle/session quota 留给 L01/F04；F03 Rust-bridge 客户端
+工作流仍无证据。S02 Host/Origin/浏览器握手/GET 迁移及 S03 仍待，接着按依赖推进。
+第二类和总体目标持续进行；无设备操作、推送发布、参考修改或历史改写。

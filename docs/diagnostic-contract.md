@@ -99,6 +99,14 @@ With usbmux intentionally unavailable, both overall exits are 1; acceptance
 checks the separate manager entry (ok/failed) and retained host scope, so one
 healthy probe cannot hide the independent failed host checks.
 
+CDP/Selenium captures now reject implicit/remote plaintext trust at startup and
+run each production listener for authorized adapter metadata and policy reload,
+plus unauthenticated/expired/role refusals. No device method is admitted. The
+owned processes end by controlled termination, with that platform's explicit
+exit contract; this is not a graceful device teardown or a capture timeout.
+Original headers, token, selector and malformed policy/body stay out of server
+output and reports. Full host acceptance currently covers 32 CLI/service cases.
+
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
 They are host adapter evidence, not simulated complete WebInspector workflows
@@ -125,6 +133,6 @@ capture is bounded RAM and the parent owns their time limit and termination.
 
 S04 evidence remains scoped to the reviewed host surfaces; future authentication
 and protocol changes must extend raw-output checks. Manager authentication and
-device/port authorization are integrated; the remaining forwarding audit,
-Host/Origin and protected federation transport keep S01–S03 in progress. Safe
+device/port and fixed-device debug authorization are integrated; platform/device
+acceptance, Host/Origin and protected federation keep S01–S03 in progress. Safe
 error text does not supply those controls.
