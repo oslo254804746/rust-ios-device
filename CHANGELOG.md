@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add opt-in global `--error-format=json` for versioned final CLI failures on
+  stderr, with typed class, safe phase/diagnostic, original exit and explicit
+  effect uncertainty. Keep human defaults and successful result formats; add
+  actual argument, malformed-reply and closed-help regression fixtures.
+
 - Add `WebInspectorClient::start_preserving_errors` to retain startup IO and
   typed timeouts while the existing `start` keeps its legacy `Disabled` mapping.
   CLI/CDP/WebDriver startup uses the new method; success frames/output and

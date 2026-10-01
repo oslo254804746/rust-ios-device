@@ -30,6 +30,14 @@ struct Cli {
     udid: Option<String>,
     #[arg(long, help = "Disable JSON output, use table format")]
     no_json: bool,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value_t = output::ErrorFormat::Human,
+        help = "Failure diagnostics on stderr: human (default) or JSON"
+    )]
+    error_format: output::ErrorFormat,
     #[arg(short = 'v', action = clap::ArgAction::Count, help = "Increase verbosity")]
     verbose: u8,
     #[command(subcommand)]
@@ -265,26 +273,52 @@ async fn resolve_cli_udid(udid: Option<String>, command: &Commands) -> Result<Op
         .ok_or_else(|| anyhow::anyhow!("--udid required: no connected iOS devices found"))
 }
 
+/// Recover only parser-recognized format selection before an argument error.
+/// Never infer a format by scanning positional values, contexts or error text.
+fn error_format_from_failed_args(args: &[std::ffi::OsString]) -> output::ErrorFormat {
+    // Recovery must not exit early for help/version before returning the
+    // recognized format. The primary parser still owns normal help output.
+    fn recovery_command(command: clap::Command) -> clap::Command {
+        command
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true)
+            .mut_subcommands(recovery_command)
+    }
+    recovery_command(Cli::command())
+        .ignore_errors(true)
+        .try_get_matches_from(args)
+        .ok()
+        .and_then(|matches| {
+            matches
+                .get_one::<output::ErrorFormat>("error_format")
+                .copied()
+        })
+        .unwrap_or_default()
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let matches = match Cli::command().try_get_matches() {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let matches = match Cli::command().try_get_matches_from(&args) {
         Ok(matches) => matches,
         Err(error) => match error.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
                 if let Err(error) = error.print() {
                     let error = anyhow::Error::new(error);
-                    let _ = output::write_error_line(format_args!(
-                        "help/version output failed: {}",
-                        output::error_message(&error)
+                    output::report_failure(output::operation_failure_message(
+                        error_format_from_failed_args(&args),
+                        "help/version output",
+                        &error,
                     ));
                     return ExitCode::FAILURE;
                 }
                 return ExitCode::SUCCESS;
             }
             _ => {
-                let _ = output::write_error_line(format_args!(
-                    "{}",
-                    output::argument_error_message(&error)
+                output::report_failure(output::argument_failure_message(
+                    error_format_from_failed_args(&args),
+                    &error,
                 ));
                 return ExitCode::from(2);
             }
@@ -292,16 +326,18 @@ async fn main() -> ExitCode {
     };
     // Only the parser's canonical command name becomes diagnostic context.
     let phase = matches.subcommand_name().unwrap_or("dispatch").to_owned();
+    let error_format = matches
+        .get_one::<output::ErrorFormat>("error_format")
+        .copied()
+        .unwrap_or_default();
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => {
-            let _ = output::write_error_line(format_args!(
-                "{}",
-                output::argument_error_message(&error)
-            ));
+            output::report_failure(output::argument_failure_message(error_format, &error));
             return ExitCode::from(2);
         }
     };
+    let error_format = cli.error_format;
 
     let level = match cli.verbose {
         0 => tracing::Level::WARN,
@@ -319,9 +355,10 @@ async fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let _ = output::write_error_line(format_args!(
-                "{phase} failed: {}",
-                output::error_message(&error)
+            output::report_failure(output::operation_failure_message(
+                error_format,
+                &phase,
+                &error,
             ));
             ExitCode::FAILURE
         }
@@ -334,6 +371,58 @@ mod tests {
     use std::mem::size_of_val;
 
     use super::*;
+
+    #[test]
+    fn error_format_recovery_uses_recognized_options_and_keeps_legacy_default() {
+        for (args, expected) in [
+            (vec!["ios", "unknown-command"], output::ErrorFormat::Human),
+            (
+                vec!["ios", "--error-format=json", "unknown-command"],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec!["ios", "--error-format", "json"],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec!["ios", "--error-format=json", "--help"],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec!["ios", "--error-format=json", "--version"],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec!["ios", "backup", "--error-format=json", "--help"],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec![
+                    "ios",
+                    "--error-format",
+                    "json",
+                    "forward",
+                    "private-invalid-port",
+                    "62078",
+                ],
+                output::ErrorFormat::Json,
+            ),
+            (
+                vec!["ios", "--error-format=private-invalid-format", "list"],
+                output::ErrorFormat::Human,
+            ),
+            (
+                vec!["ios", "--", "--error-format=json"],
+                output::ErrorFormat::Human,
+            ),
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err());
+            let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+            assert_eq!(error_format_from_failed_args(&args), expected);
+        }
+        let cli = Cli::try_parse_from(["ios", "list", "--error-format", "json"]).unwrap();
+        assert_eq!(cli.error_format, output::ErrorFormat::Json);
+    }
 
     #[test]
     fn parses_lockdown_get_command() {

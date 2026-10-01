@@ -93,10 +93,43 @@ retains its documented permissive legacy behavior; it is not a deny-all list.
 
 ## Machine output and partial results
 
-Current CLI success formats and failure exits remain as recorded by R04. The
-new Rust classifier alone does not add machine error fields to CLI stderr,
-HTTP, Python exceptions or C status values. Those adapters are pending A02
-work and must preserve their existing callers through additive or opt-in forms.
+Current CLI success formats and failure exits remain as recorded by R04.
+`ios --error-format=json <command>` opts into one compact, newline-terminated
+final failure object on stderr. `human` is the default and retains existing
+safe diagnostic text. The option is global; put it before invalid arguments
+so Clap can recognize the selection before its error. Unrecognized/invalid
+format selection safely retains human errors. Recovery uses the same parser
+without help/version early display; it never scans positional values or error
+text to choose a format. Successful commands keep their existing stdout and
+produce no final failure object. Help/version use normal Clap success output.
+
+| JSON v1 field | Meaning |
+| --- | --- |
+| `schema_version` | Integer `1`; consumers should retain a version/fallback branch and ignore additional fields in this new extensible schema |
+| `error.class` | Stable ErrorClass code from typed sources; a typed CLI confirmation guard maps to `precondition`, opaque strings remain `unknown` |
+| `error.phase` | Parser's canonical root command or fixed `argument_parsing` / `help/version output`; no user command value is copied here |
+| `error.diagnostic` | Opaque safe diagnostic/correlation; do not parse it for a category or assume correlation persists across processes |
+| `error.exit_code` | Integer `1` for operation/help-output failure or `2` for argument failure; matches the original process status |
+| `error.confirmation_required` | Boolean from a typed confirmation guard observed within 32 sources; false means no such guard was observed in that bound, and grants no confirmation or retry |
+| `error.effects` | `not_started` for argument parsing before dispatch, `unknown` for operation/output failures; failure alone does not establish rollback, retry safety or completed cleanup |
+
+Argument failures carry `invalid_input` (or an underlying IO class for a typed
+Clap IO failure). IO on a closed result/help pipe may classify as `disconnected`;
+that code alone does not identify a device as the disconnected object. Stderr
+reporting remains best effort after failure: a closed stderr retains the original
+nonzero status and may prevent delivery of the envelope. Ordinary progress,
+tracing and stream callbacks may still emit other stderr records; this option
+does not yet make the entire stderr stream JSON. Partial stdout may already
+exist. No new machine fields are added to existing HTTP, Python exceptions or
+C statuses; those adapters remain pending A02 work with additive contracts.
+
+Both the human confirmation hint and machine field now inspect at most 32
+sources, matching the classifier's bounded interpretation. Normal guard errors
+and 24-layer contexts retain the hint. A guard hidden beyond the bound yields
+no hint and Unknown classification; callers must not infer permission from its
+absence. Previously the hint scan could continue indefinitely through a cyclic
+source. This bounded diagnostic change does not alter the operation's actual
+confirmation check or authorize any device action.
 Existing safe diagnostic messages remain useful for correlation but must not
 be parsed as stable natural-language categories.
 

@@ -96,6 +96,14 @@ retroactively assumed for an older schema. Introduce an explicit output/schema
 version or opt-in form when changing an incompatible shape. Human prose and
 diagnostic correlation are not machine classifiers.
 
+`--error-format=human|json` is an additive global option, defaulting to human.
+The opt-in v1 final-failure stderr schema has stable category/phase/exit and
+explicit unknown effects; success stdout and original exits remain unchanged.
+Select the format before invalid arguments. Additional fields in this new
+schema are extensible; other stderr progress/stream records remain separate
+pending work. See the [error contract](error-contract.md) for exact fields and
+parser recovery. This does not modify existing HTTP/C/Python error schemas.
+
 [R04 encoding/output migration](plist-json-contract.md) retains historical
 Data/Date/Uid profiles. Failed result stdout now returns 1 instead of a possible
 panic/101; failed help/version stdout returns 1 instead of silent success/0.

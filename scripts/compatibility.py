@@ -2,6 +2,7 @@
 """Representative public CLI contracts against an owned synthetic usbmux server."""
 
 import json
+from dataclasses import replace
 import os
 from pathlib import Path
 import plistlib
@@ -25,7 +26,8 @@ def read_exact(connection, size):
     return bytes(data)
 
 
-def cli_list(binary, *, human=False, empty=False, close_stdout=False):
+def cli_list(binary, *, human=False, empty=False, close_stdout=False,
+             error_json=False, malformed_reply=False):
     """Reply only to one ListDevices request; never route to an actual device."""
     expected = [] if empty else [dict(udid="synthetic-compatibility-usb", device_id=42,
                                     connection_type="USB", product_id=1234),
@@ -54,7 +56,8 @@ def cli_list(binary, *, human=False, empty=False, close_stdout=False):
                         if device["product_id"]:
                             properties["ProductID"] = device["product_id"]
                         entries.append(dict(DeviceID=device["device_id"], Properties=properties))
-                    payload = plistlib.dumps(dict(DeviceList=entries))
+                    payload = (b"synthetic-private-invalid-plist" if malformed_reply else
+                               plistlib.dumps(dict(DeviceList=entries)))
                     connection.sendall(struct.pack("<IIII", 16 + len(payload), 1, 8, tag) + payload)
                     valid.append(True)
             except Exception:
@@ -66,7 +69,8 @@ def cli_list(binary, *, human=False, empty=False, close_stdout=False):
         env = os.environ.copy()
         env.update(USBMUXD_SOCKET_ADDRESS="tcp://127.0.0.1:" + str(listener.getsockname()[1]),
                    IOS_UDID=secret.decode())
-        command = [str(binary)] + (["--no-json"] if human else []) + ["list"]
+        command = [str(binary)] + (["--error-format=json"] if error_json else [])
+        command += (["--no-json"] if human else []) + ["list"]
         if close_stdout:
             command = [sys.executable, str(Path(__file__).resolve()), "--closed-output",
                        "--binary", str(binary)] + (["--human"] if human else [])
@@ -76,8 +80,12 @@ def cli_list(binary, *, human=False, empty=False, close_stdout=False):
             worker.join(timeout=5)
         if worker.is_alive() or errors or valid != [True]:
             raise ValueError("fixture-server-failed")
-    report = assess(result, secret_variants(secret), 0)
-    if close_stdout:
+    variants = secret_variants(secret) | secret_variants(b"synthetic-private-invalid-plist")
+    report = assess(result, variants, 1 if malformed_reply else 0)
+    if malformed_reply:
+        contract = machine_error_contract(result, error_class="protocol", phase="list",
+                                          exit_code=1, effects="unknown")
+    elif close_stdout:
         contract = (result.stdout == b'{"child_exit": 1}\n' and
                     b"io/BrokenPipe" in result.stderr and b"panicked" not in result.stderr)
     elif human:
@@ -90,16 +98,72 @@ def cli_list(binary, *, human=False, empty=False, close_stdout=False):
         except (ValueError, TypeError):
             contract = False
     report["contract"] = contract
-    report["passed"] = report["passed"] and contract and (close_stdout or not result.stderr)
+    report["passed"] = report["passed"] and contract and (close_stdout or malformed_reply or not result.stderr)
     return report
 
 
-def cli_help_closed_output(binary, flag):
+def machine_error_contract(result, *, error_class, phase, exit_code, effects):
+    """Require one versioned final stderr error and the actual process status."""
+    try:
+        if result.stdout or result.returncode != exit_code or not result.stderr.endswith(b"\n"):
+            return False
+        if len(result.stderr.splitlines()) != 1:
+            return False
+        body = json.loads(result.stderr)
+        error = body["error"]
+        return (type(body["schema_version"]) is int and body["schema_version"] == 1 and
+                error["class"] == error_class and error["phase"] == phase and
+                type(error["exit_code"]) is int and error["exit_code"] == exit_code and
+                error["effects"] == effects and error["confirmation_required"] is False and
+                isinstance(error["diagnostic"], str) and "error:" in error["diagnostic"])
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def cli_argument_error(binary, *, machine=False):
+    secret = b"synthetic-private-invalid-cli-port"
+    with socket.socket() as trap:
+        trap.bind(("127.0.0.1", 0))
+        trap.listen(1)
+        env = os.environ.copy()
+        env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(trap.getsockname()[1])
+        command = [str(binary)] + (["--error-format=json"] if machine else [])
+        command += ["forward", secret.decode(), "62078"]
+        result = capture(command, env=env, timeout=5)
+        trap.setblocking(False)
+        try:
+            connection, _ = trap.accept()
+        except BlockingIOError:
+            contacted_device_endpoint = False
+        else:
+            connection.close()
+            contacted_device_endpoint = True
+    report = assess(result, secret_variants(secret), 2)
+    if machine:
+        contract = machine_error_contract(result, error_class="invalid_input",
+                                          phase="argument_parsing", exit_code=2, effects="not_started")
+    else:
+        contract = (not result.stdout and b"argument parsing failed (ValueValidation);" in result.stderr and
+                    b"Use 'ios --help'" in result.stderr)
+    report["contract"] = contract and not contacted_device_endpoint
+    report["passed"] = report["passed"] and report["contract"]
+    report["device_connections"] = int(contacted_device_endpoint)
+    return report
+
+
+def cli_help_closed_output(binary, flag, *, machine=False):
     result = capture([sys.executable, str(Path(__file__).resolve()), "--closed-output",
-                      "--binary", str(binary), "--help-kind", flag], timeout=5)
+                      "--binary", str(binary), "--help-kind", flag] +
+                     (["--machine-errors"] if machine else []), timeout=5)
     report = assess(result, secret_variants(b"synthetic-output-private-environment"), 0)
-    report["contract"] = (result.stdout == b'{"child_exit": 1}\n' and
-                          b"io/BrokenPipe" in result.stderr and b"panicked" not in result.stderr)
+    if machine:
+        report["contract"] = (result.stdout == b'{"child_exit": 1}\n' and
+                              machine_error_contract(replace(result, stdout=b"", returncode=1),
+                                                     error_class="disconnected", phase="help/version output",
+                                                     exit_code=1, effects="unknown"))
+    else:
+        report["contract"] = (result.stdout == b'{"child_exit": 1}\n' and
+                              b"io/BrokenPipe" in result.stderr and b"panicked" not in result.stderr)
     report["passed"] = report["passed"] and report["contract"]
     return report
 
@@ -109,22 +173,28 @@ def main():
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug" / ("ios.exe" if os.name == "nt" else "ios"))
     parser.add_argument("--closed-output", action="store_true", help="internal owned output probe")
     parser.add_argument("--human", action="store_true", help="internal owned human output probe")
+    parser.add_argument("--machine-errors", action="store_true", help="internal owned JSON failure probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
     if args.closed_output:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
             return 0
-        command = [str(args.binary)]
+        command = [str(args.binary)] + (["--error-format=json"] if args.machine_errors else [])
         command += ["--" + args.help_kind] if args.help_kind else (["--no-json"] if args.human else []) + ["list"]
         return 0 if closed_output(command) else 1
     reports = {f"list-{'human' if human else 'json'}-{'empty' if empty else 'two-devices'}":
                cli_list(args.binary, human=human, empty=empty) for human in (False, True) for empty in (False, True)}
+    reports["list-with-json-errors-success"] = cli_list(args.binary, error_json=True)
+    reports["list-with-json-errors-malformed-reply"] = cli_list(args.binary, error_json=True, malformed_reply=True)
+    reports["argument-error-human"] = cli_argument_error(args.binary)
+    reports["argument-error-json"] = cli_argument_error(args.binary, machine=True)
     if sys.platform.startswith("linux"):
         for human in (False, True):
             reports[f"list-{'human' if human else 'json'}-closed-output"] = cli_list(args.binary, human=human, close_stdout=True)
         for flag in ["help", "version"]:
             reports[flag + "-closed-output"] = cli_help_closed_output(args.binary, flag)
+            reports[flag + "-closed-output-json-error"] = cli_help_closed_output(args.binary, flag, machine=True)
     else:
         reports["closed-output"] = {"status": "NOT_RUN", "reason": "Linux owned process group required"}
     print(json.dumps(reports, sort_keys=True))

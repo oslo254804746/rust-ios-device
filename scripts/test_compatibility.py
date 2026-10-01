@@ -1,11 +1,63 @@
 """Closed-output acceptance must reject success, panic and missing binaries."""
 
 from pathlib import Path
+import json
 import sys
 import tempfile
 import unittest
 
 import compatibility
+from diagnostics import Capture
+
+
+class MachineErrorContracts(unittest.TestCase):
+    def result(self, *, returncode=2, stdout=b"", prefix=b"", suffix=b"\n", **fields):
+        error = dict(error_class="invalid_input", phase="argument_parsing", exit_code=2,
+                     effects="not_started", confirmation_required=False, diagnostic="argument error:synthetic")
+        error["class"] = error.pop("error_class")
+        error.update(fields)
+        return Capture(stdout=stdout, stderr=prefix + json.dumps({"schema_version": 1, "error": error}).encode() + suffix,
+                       returncode=returncode, timed_out=False, overflow=False, incomplete=False)
+
+    def accepted(self, result):
+        return compatibility.machine_error_contract(result, error_class="invalid_input",
+                                                    phase="argument_parsing", exit_code=2, effects="not_started")
+
+    def test_expected_envelope_is_accepted(self):
+        self.assertTrue(self.accepted(self.result()))
+
+    def test_success_or_wrong_embedded_status_is_rejected(self):
+        self.assertFalse(self.accepted(self.result(returncode=0)))
+        self.assertFalse(self.accepted(self.result(exit_code=1)))
+        self.assertFalse(self.accepted(self.result(exit_code=True)))
+
+    def test_mixed_output_or_unterminated_error_is_rejected(self):
+        self.assertFalse(self.accepted(self.result(stdout=b"progress\n")))
+        self.assertFalse(self.accepted(self.result(prefix=b"diagnostic text\n")))
+        self.assertFalse(self.accepted(self.result(suffix=b"")))
+
+    def test_wrong_class_or_untyped_confirmation_is_rejected(self):
+        self.assertFalse(self.accepted(self.result(**{"class": "timeout"})))
+        self.assertFalse(self.accepted(self.result(confirmation_required=0)))
+        self.assertFalse(self.accepted(self.result(diagnostic=None)))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned process group")
+    def test_capture_rejects_private_values_even_in_a_valid_json_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "owned-machine-error-fixture"
+            body = ("import json, sys\n"
+                    "print(json.dumps({'schema_version':1, 'error':{'class':'invalid_input', "
+                    "'phase':'argument_parsing', 'exit_code':2, 'effects':'not_started', "
+                    "'confirmation_required':False, 'diagnostic':'error:' + sys.argv[-2]}}), file=sys.stderr)\n"
+                    "sys.exit(2)\n")
+            binary.write_text("#!" + sys.executable + "\n" + body)
+            binary.chmod(0o700)
+            report = compatibility.cli_argument_error(binary, machine=True)
+            self.assertTrue(report["contract"])
+            self.assertFalse(report["passed"])
+            self.assertGreater(report["raw_hits"], 0)
+            self.assertEqual(report["device_connections"], 0)
+            self.assertTrue(report["cleanup_complete"])
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned process group")

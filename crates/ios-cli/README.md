@@ -56,6 +56,12 @@ ios screenshot --output screenshot.png
 ios tunnel start --userspace                     # iOS 17+ CoreDevice tunnel
 ```
 
+Use `ios --error-format=json <command>` for a versioned final failure on stderr;
+default human diagnostics and normal stdout stay unchanged. Select the format
+before invalid arguments. Typed categories and original exits support scripts;
+operation effects remain unknown, and progress/stream stderr is separate pending
+work. See the [error contract](../../docs/error-contract.md).
+
 ## Device selection
 
 Commands that target a device default to the first device returned by

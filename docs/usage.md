@@ -566,6 +566,12 @@ output remain unchanged; Rust callers can opt into `start_preserving_errors`
 while the old `start` retains its legacy mapping. See the
 [error contract](error-contract.md) for typed classification and partial writes.
 
+Use `ios --error-format=json <command>` for a versioned final failure on stderr;
+normal stdout remains command-specific. Put the format option before invalid
+arguments. The object reports a typed class, phase and the original exit 1/2;
+operation effects remain unknown. Default human diagnostics are unchanged.
+This option does not yet convert progress or stream callbacks into JSON.
+
 `webinspector launch` uses Remote Automation to launch the selected bundle,
 create one browsing context, optionally navigate to the positional URL, and
 report page/title/connection metadata. The connection, launch, page wait,
