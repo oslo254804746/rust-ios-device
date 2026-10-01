@@ -160,6 +160,12 @@ def cli_cases(binary):
     cases += [("manager-explicit-access", ["-vvvv", "tunnel", "serve", "--userspace"], 1),
               ("manager-remote-plaintext", ["-vvvv", "tunnel", "serve", "--userspace",
                                              "--host", "0.0.0.0", "--local-unauthenticated"], 1)]
+    for name, args in [
+        ("forward", ["forward", "1234", "62078"]),
+        ("runwda", ["runwda", "com.synthetic.wda.xctrunner"]),
+        ("dproxy", ["dproxy", "service", "com.synthetic.service"]),
+        ("screenshot", ["screenshot", "--stream"])]:
+        cases.append(("local-bind-" + name, ["-vvvv"] + args + ["--host", "0.0.0.0"], 1))
     for name, args in [("root", []), ("wifi", ["wifi", "install"]),
                        ("pair", ["pair", "supervised"]), ("prepare", ["prepare", "create-cert"]),
                        ("profiles", ["profiles", "add"]),
@@ -178,6 +184,8 @@ def cli_cases(binary):
             "manager-explicit-access": (b"tunnel failed:", b"error:"),
             "manager-remote-plaintext": (b"tunnel failed:", b"error:"),
         }.get(name, (b"Usage:",))
+        if name.startswith("local-bind-"):
+            required = ((name.removeprefix("local-bind-") + " failed:").encode(), b"error:")
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report

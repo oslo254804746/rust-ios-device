@@ -25,7 +25,12 @@ enum DproxySub {
         service: String,
         #[arg(long, default_value_t = 9100)]
         listen_port: u16,
-        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        #[arg(
+            short = 'H',
+            long,
+            default_value = "127.0.0.1",
+            help = "Literal loopback IP or localhost; raw TCP uses host trust"
+        )]
         host: String,
         #[arg(long, value_enum, default_value = "auto")]
         transport: TransportArg,
@@ -81,9 +86,10 @@ impl DproxyCmd {
                 output,
                 once,
             } => {
+                let address = crate::access::loopback_address(&host)?;
                 let (device, transport) = connect_dproxy_device(&udid, &service, transport).await?;
                 let protocol = choose_protocol(&service, transport, protocol);
-                let listener = TcpListener::bind(format!("{host}:{listen_port}"))
+                let listener = TcpListener::bind((address, listen_port))
                     .await
                     .with_context(|| format!("failed to bind {host}:{listen_port}"))?;
 
@@ -528,6 +534,25 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         command: DproxyCmd,
+    }
+
+    #[tokio::test]
+    async fn nonloopback_dproxy_fails_before_service_access_and_capture_creation() {
+        let command = TestCli::parse_from([
+            "dproxy",
+            "service",
+            "com.synthetic.service",
+            "--host",
+            "0.0.0.0",
+        ]);
+        let error = command
+            .command
+            .run(Some("synthetic-device".into()))
+            .await
+            .unwrap_err();
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("loopback")));
     }
 
     #[test]

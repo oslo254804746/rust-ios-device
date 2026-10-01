@@ -3,8 +3,9 @@
 The tunnel manager requires a private scoped policy or explicit local trust.
 `ios tunnel auth create|check` prepares/checks credentials without starting a
 server or contacting a device. Start the manager with `--auth-config`; clients
-use `--token-file`. S01 remains in progress while the remaining forwarding
-boundary is audited; browser admission and protected federation are S02/S03.
+use `--token-file`. Raw forwarding listeners have been audited and restricted
+to loopback. Debug-server admission is still pending; browser access and
+protected federation are S02/S03.
 Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
 
 For Unix shells, choose two new paths in a trusted private directory:
@@ -128,8 +129,24 @@ The existing userspace proxy's 20-byte IPv6/port preamble remains unauthenticate
 on loopback. Any local process able to reach that proxy can dial device ports
 without the manager's HTTP grant. Kernel TUN access follows host route/firewall
 permissions. The manager grant protects its HTTP/WebSocket requests; it does not
-claim an OS sandbox for raw TCP or kernel routes. Further forwarding-entry audit
-is still pending under S01.
+claim an OS sandbox for raw TCP or kernel routes.
+
+| Existing entry | Enforced boundary | Credentials/protocol |
+| --- | --- | --- |
+| Userspace TUN proxy | Fixed `127.0.0.1`, ephemeral port; per-tunnel lifetime | No credentials in its existing IPv6/port preamble |
+| Kernel TUN | Host route/interface/firewall permissions | No HTTP grant in an OS route |
+| `forward` | Literal loopback IP/localhost, checked before device resolution | One CLI-selected device/port; raw TCP local trust |
+| `runwda` proxy | Loopback and nonzero ports checked before WDA startup | One selected WDA/device port; raw TCP local trust |
+| `dproxy service` | Loopback checked before service access/capture creation | One selected device/service; raw TCP local trust |
+| `screenshot --stream` | Loopback checked before binding or capture | Existing raw multipart stream; local trust; F05 will use shared admission |
+| CDP/Selenium | Default loopback; additional auth/browser admission unfinished | Pending under S01/S02 |
+
+Explicit nonloopback `--host` values for forward/WDA/dproxy/raw screenshot
+streams now fail instead of opening unauthenticated network services. Use a
+loopback endpoint with a protected host transport for remote native clients.
+`localhost` maps to fixed IPv4 loopback, and IPv6 loopback is accepted without
+constructing a malformed host:port string. This migration preserves raw wire
+protocols rather than adding an incompatible credential preamble.
 
 Private reads use [secret_file](tunnel.md): Unix requires a regular file owned
 by the effective user without group/other access, rejecting leaf symlinks and

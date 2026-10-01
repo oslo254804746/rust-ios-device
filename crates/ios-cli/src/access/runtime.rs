@@ -27,17 +27,17 @@ pub(crate) struct ServerAccessArgs {
     local_unauthenticated: bool,
 }
 
-fn loopback_address(host: &str) -> Result<IpAddr> {
+pub(crate) fn loopback_address(host: &str) -> Result<IpAddr> {
     let address = if host.eq_ignore_ascii_case("localhost") {
         IpAddr::from([127, 0, 0, 1])
     } else {
         host.trim_matches(['[', ']'])
             .parse::<IpAddr>()
-            .context("manager host must be a literal loopback IP or localhost")?
+            .context("local service host must be a literal loopback IP or localhost")?
     };
     anyhow::ensure!(
         address.is_loopback(),
-        "plaintext manager access requires loopback; use a protected host transport"
+        "plaintext local service access requires loopback; use a protected host transport"
     );
     Ok(address)
 }

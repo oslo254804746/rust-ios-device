@@ -15,7 +15,12 @@ pub struct RunWdaCmd {
     pub host_port: u16,
     #[arg(long, default_value_t = 8100)]
     pub device_port: u16,
-    #[arg(short = 'H', long, default_value = "127.0.0.1")]
+    #[arg(
+        short = 'H',
+        long,
+        default_value = "127.0.0.1",
+        help = "Literal loopback IP or localhost for the raw TCP proxy"
+    )]
     pub host: String,
     #[arg(long, default_value_t = 30)]
     pub startup_timeout_secs: u64,
@@ -24,6 +29,8 @@ pub struct RunWdaCmd {
 impl RunWdaCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runwda"))?;
+        crate::access::loopback_address(&self.host)?;
+        crate::cmd::forward::validate_forward_ports(self.host_port, self.device_port)?;
         eprintln!("UNTESTED: WebDriverAgent startup and port proxy are implemented from reference flows, but have not been real-device validated in this workspace.");
 
         let device = crate::cmd::runtest::connect_testmanager_device(&udid).await?;
@@ -101,6 +108,29 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         command: RunWdaCmd,
+    }
+
+    #[tokio::test]
+    async fn invalid_bind_and_ports_fail_before_wda_device_startup() {
+        for args in [
+            vec!["--host", "0.0.0.0"],
+            vec!["--host-port", "0"],
+            vec!["--device-port", "0"],
+        ] {
+            let mut command = vec!["runwda", "com.synthetic.wda.xctrunner"];
+            command.extend(args);
+            let error = TestCli::parse_from(command)
+                .command
+                .run(Some("synthetic-device".into()))
+                .await
+                .unwrap_err();
+            assert!(error.chain().any(|cause| {
+                let message = cause.to_string();
+                message.contains("loopback")
+                    || message.contains("invalid host port")
+                    || message.contains("invalid device port")
+            }));
+        }
     }
 
     #[test]

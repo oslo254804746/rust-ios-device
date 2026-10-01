@@ -10,7 +10,12 @@ pub struct ForwardCmd {
     pub host_port: u16,
     #[arg(help = "Device port to forward to")]
     pub device_port: u16,
-    #[arg(short = 'H', long, default_value = "127.0.0.1")]
+    #[arg(
+        short = 'H',
+        long,
+        default_value = "127.0.0.1",
+        help = "Literal loopback IP or localhost; raw TCP clients use host trust"
+    )]
     pub host: String,
     #[arg(long, help = "Accept a single client connection, then exit")]
     pub once: bool,
@@ -50,9 +55,9 @@ pub async fn run_port_forward(
     once: bool,
 ) -> Result<()> {
     validate_forward_ports(host_port, device_port)?;
+    let address = crate::access::loopback_address(&host)?;
     let connector = resolve_forward_connector(udid).await?;
-    let listen_addr = format!("{}:{}", host, host_port);
-    let listener = TcpListener::bind(&listen_addr).await?;
+    let listener = TcpListener::bind((address, host_port)).await?;
     eprintln!("{}", connector.describe(&host, host_port, device_port));
     if once {
         eprintln!("Waiting for one connection...");
@@ -84,7 +89,7 @@ pub async fn run_port_forward(
     Ok(())
 }
 
-fn validate_forward_ports(host_port: u16, device_port: u16) -> Result<()> {
+pub(crate) fn validate_forward_ports(host_port: u16, device_port: u16) -> Result<()> {
     if host_port == 0 {
         anyhow::bail!("invalid host port: port must be at least 1");
     }
@@ -232,6 +237,18 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         command: ForwardCmd,
+    }
+
+    #[tokio::test]
+    async fn nonloopback_forward_fails_before_device_resolution() {
+        for host in ["0.0.0.0", "::", "192.0.2.1", "example.invalid"] {
+            let error = run_port_forward("synthetic-device", 1234, 62078, host.into(), true)
+                .await
+                .unwrap_err();
+            assert!(error
+                .chain()
+                .any(|cause| cause.to_string().contains("loopback")));
+        }
     }
 
     #[test]

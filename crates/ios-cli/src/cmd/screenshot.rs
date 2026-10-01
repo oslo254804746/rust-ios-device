@@ -33,8 +33,7 @@ pub struct ScreenshotCmd {
         short = 'H',
         long,
         default_value = "127.0.0.1",
-        help = "Address to bind the screenshot stream to; the stream is unauthenticated, \
-                so only widen this on a network you trust"
+        help = "Literal loopback IP or localhost; the raw stream uses local host trust"
     )]
     pub host: String,
 }
@@ -62,10 +61,9 @@ impl ScreenshotCmd {
     }
 
     async fn run_stream_server(&self, udid: &str) -> Result<()> {
-        // Loopback by default: the stream is a live, unauthenticated view of the
-        // device screen, and `forward` / `tunnel serve` bind loopback too.
-        let bind_addr = format!("{}:{}", self.host, self.port);
-        let listener = TcpListener::bind(&bind_addr).await?;
+        let address = crate::access::loopback_address(&self.host)?;
+        let listener = TcpListener::bind((address, self.port)).await?;
+        let bind_addr = listener.local_addr()?;
         eprintln!("Serving screenshot stream on http://{bind_addr}/");
 
         loop {
@@ -292,6 +290,19 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         command: ScreenshotCmd,
+    }
+
+    #[tokio::test]
+    async fn nonloopback_stream_fails_before_listener_or_screenshot_access() {
+        let command = TestCli::parse_from(["screenshot", "--stream", "--host", "0.0.0.0"]);
+        let error = command
+            .command
+            .run(Some("synthetic-device".into()))
+            .await
+            .unwrap_err();
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("loopback")));
     }
 
     #[test]

@@ -603,6 +603,9 @@ administrator or root privileges. Manager admission is scoped and authenticated;
 plain HTTP requires loopback. See [management-access.md](management-access.md)
 for policy creation, explicit local trust and reload, and [tunnel.md](tunnel.md)
 for the raw proxy boundary.
+Forward, WDA proxy, dproxy and the current raw screenshot stream accept only a
+literal loopback address or localhost; nonloopback is rejected before device
+operations. Remote native clients require a protected host transport.
 
 TCP dials and initial protocol setup on the tunnel/RSD/XPC paths are bounded by
 15 seconds; TCP-backed remote pairing and lockdown setup use the same bound. A

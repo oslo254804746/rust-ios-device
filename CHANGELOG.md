@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device/port operations, and revoke streams at expiry or successful policy
   reload. Private-file CLI credentials disable proxies/redirects and bound
   response bodies. Protected federation and browser admission remain pending.
+- Restrict raw forward/WDA/dproxy/screenshot-stream listeners to loopback before
+  device access; validate WDA proxy ports before startup. Raw userspace proxy
+  and kernel routes retain their documented host trust boundary.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

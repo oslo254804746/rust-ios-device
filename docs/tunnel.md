@@ -74,7 +74,9 @@ Server/client authentication, device/port scopes, expiry and POST policy reload
 are now integrated. Browser admission and legacy GET management methods remain
 S02 work. The existing loopback userspace TCP proxy does not authenticate its
 IPv6/port preamble; manager credentials do not restrict local processes' direct
-proxy access or kernel TUN routes. Further forwarding-entry audit remains open.
+proxy access or kernel TUN routes. The [entry audit](management-access.md)
+records loopback-only forward/WDA/dproxy/screenshot listeners and the remaining
+debug/browser admission work.
 The reader bounds its buffer to a caller-selected maximum of 1 MiB and wipes it
 on drop. On Unix, it requires the effective user's regular file without
 group/other permissions and rejects leaf symlinks/FIFOs. New-secret publication

@@ -143,12 +143,15 @@ iOS 17+ 工作流通过 CoreDevice 隧道与每台设备的 RSD 服务目录路�
 ios tunnel start --userspace
 
 # 运行本地隧道管理器 HTTP 服务（go-ios 兼容 JSON 字段）
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
 ```
 
 用户态隧道暴露一个本地 TCP 代理：客户端连接代理后，先发送 16 字节 IPv6 地址，
 再发送 4 字节小端序端口号，然后开始转发数据。内核 TUN 模式也可用，但通常需要
 管理员/root 权限。
+管理器需要 scoped policy，客户端用 `--token-file` 私密文件认证；创建、权限与重载
+见[管理访问配置](docs/management-access.md)。用户态原生 TCP 代理和内核路由仍遵循
+本地主机信任边界，不能把 manager 的授权当成对所有本地进程的沙箱。
 
 在判断是否为实现 bug 之前，先确认设备实际暴露了哪些服务：
 

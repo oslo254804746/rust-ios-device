@@ -13,7 +13,9 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod runtime;
-pub(crate) use runtime::{admission, AccessControl, ClientAccessArgs, Principal, ServerAccessArgs};
+pub(crate) use runtime::{
+    admission, loopback_address, AccessControl, ClientAccessArgs, Principal, ServerAccessArgs,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support;
