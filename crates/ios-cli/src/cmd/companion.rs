@@ -67,10 +67,10 @@ impl CompanionCmd {
                 let mut client = ios_core::companion::CompanionProxyClient::new(stream);
                 let devices = client.list().await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&devices)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&devices)?);
                 } else {
                     for device in devices {
-                        println!("{}", serde_json::to_string_pretty(&device)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&device)?);
                     }
                 }
             }
@@ -82,11 +82,11 @@ impl CompanionCmd {
                 let mut client = ios_core::companion::CompanionProxyClient::new(stream);
                 let value = client.get_value(&companion_udid, &key).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 } else if let Some(string) = value.as_string() {
-                    println!("{string}");
+                    crate::output::outln!("{string}");
                 } else {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 }
             }
             CompanionSub::Listen { timeout } => {
@@ -115,7 +115,7 @@ impl CompanionCmd {
                     )
                     .await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::json!({
                             "GizmoRemotePortNumber": forwarding.remote_port(),
@@ -123,7 +123,7 @@ impl CompanionCmd {
                         })
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Forwarded companion port {} through service port {}. Press Ctrl+C to stop.",
                         forwarding.remote_port(),
                         forwarding.service_port()
@@ -162,16 +162,16 @@ impl CompanionCmd {
                 drop(client);
                 drop(device);
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string(&plist::Value::Dictionary(response))?
                     );
                 } else if let Some(command) =
                     response.get("Command").and_then(plist::Value::as_string)
                 {
-                    println!("{command}");
+                    crate::output::outln!("{command}");
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&plist::Value::Dictionary(response))?
                     );
@@ -283,9 +283,9 @@ where
             Some(Ok(event)) => {
                 let value = plist::Value::Dictionary(event);
                 if json {
-                    println!("{}", serde_json::to_string(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string(&value)?);
                 } else {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 }
             }
             Some(Err(error)) => return Err(error.into()),

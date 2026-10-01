@@ -68,27 +68,27 @@ impl ProvisioningCmd {
                 let profiles = client.list_profiles().await?;
                 if json {
                     let list: Vec<_> = profiles.iter().map(profile_to_json).collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                 } else {
-                    print_profiles(&profiles);
+                    print_profiles(&profiles)?;
                 }
             }
             ProvisioningSub::Show { query } => {
                 let profiles = client.list_profiles().await?;
                 let profile = find_profile(&profiles, &query)?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&profile_to_json(profile))?
                     );
                 } else {
-                    print_profile_details(profile);
+                    print_profile_details(profile)?;
                 }
             }
             ProvisioningSub::Install { path } => {
                 let payload = std::fs::read(&path)?;
                 client.install(&payload).await?;
-                println!("Installed provisioning profile from {}", path.display());
+                crate::output::outln!("Installed provisioning profile from {}", path.display());
             }
             ProvisioningSub::Export {
                 query,
@@ -101,7 +101,7 @@ impl ProvisioningCmd {
                 std::fs::write(&output, &profile.raw_data)?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&export_result_json(
                             &profile.uuid,
@@ -110,7 +110,7 @@ impl ProvisioningCmd {
                         ))?
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         export_success_message(&profile.uuid, &output, profile.raw_data.len())
                     );
@@ -141,15 +141,15 @@ impl ProvisioningCmd {
                 }
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&dump_result_json(&output_dir, &entries))?
                     );
                 } else {
                     for entry in &entries {
-                        println!("{}", dump_entry_message(entry));
+                        crate::output::outln!("{}", dump_entry_message(entry));
                     }
-                    println!(
+                    crate::output::outln!(
                         "Dumped {} provisioning profile(s) to {}",
                         entries.len(),
                         output_dir.display()
@@ -158,7 +158,7 @@ impl ProvisioningCmd {
             }
             ProvisioningSub::Remove { uuid } => {
                 client.remove(&uuid).await?;
-                println!("Removed provisioning profile {uuid}");
+                crate::output::outln!("Removed provisioning profile {uuid}");
             }
         }
 
@@ -271,7 +271,7 @@ fn dump_entry_message(entry: &serde_json::Value) -> String {
     format!("Dumped provisioning profile {uuid} to {output} ({bytes} bytes)")
 }
 
-fn print_profiles(profiles: &[ios_core::misagent::Profile]) {
+fn print_profiles(profiles: &[ios_core::misagent::Profile]) -> Result<()> {
     let mut table = Table::new();
     table.set_header(["UUID", "Name", "App ID", "Expiry", "Size"]);
     for profile in profiles {
@@ -283,13 +283,15 @@ fn print_profiles(profiles: &[ios_core::misagent::Profile]) {
             Cell::new(profile.raw_data.len()),
         ]);
     }
-    println!("{table}");
+    crate::output::outln!("{table}");
+    Ok(())
 }
 
-fn print_profile_details(profile: &ios_core::misagent::Profile) {
+fn print_profile_details(profile: &ios_core::misagent::Profile) -> Result<()> {
     for (label, value) in profile_detail_lines(profile) {
-        println!("{label:<12} {value}");
+        crate::output::outln!("{label:<12} {value}");
     }
+    Ok(())
 }
 
 fn profile_detail_lines(profile: &ios_core::misagent::Profile) -> Vec<(&'static str, String)> {

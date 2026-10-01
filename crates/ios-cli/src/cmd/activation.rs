@@ -82,7 +82,7 @@ impl ActivationCmd {
                 let activated = state != "Unactivated";
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "ActivationState": state,
@@ -90,8 +90,11 @@ impl ActivationCmd {
                         }))?
                     );
                 } else {
-                    println!("ActivationState: {state}");
-                    println!("Activated:       {}", if activated { "yes" } else { "no" });
+                    crate::output::outln!("ActivationState: {state}");
+                    crate::output::outln!(
+                        "Activated:       {}",
+                        if activated { "yes" } else { "no" }
+                    );
                 }
             }
             ActivationSub::SessionInfo { timeout_secs } => {
@@ -561,18 +564,18 @@ fn looks_like_plist(bytes: &[u8]) -> bool {
 
 fn print_status(json: bool, status: &str, message: &str) -> Result<()> {
     if json {
-        println!("{}", serde_json::json!({"status": status}));
+        crate::output::outln!("{}", serde_json::json!({"status": status}));
     } else {
-        println!("{message}");
+        crate::output::outln!("{message}");
     }
     Ok(())
 }
 
 fn print_value(value: plist::Value, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        println!("{value:?}");
+        crate::output::outln!("{value:?}");
     }
     Ok(())
 }

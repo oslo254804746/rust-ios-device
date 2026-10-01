@@ -221,13 +221,13 @@ impl FileCmd {
                                     Err(_) => list.push(file_info_to_json(name, &full, None)),
                                 }
                             }
-                            println!("{}", serde_json::to_string_pretty(&list)?);
+                            crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                         } else {
                             let list: Vec<_> = entries
                             .iter()
                             .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                             .collect();
-                            println!("{}", serde_json::to_string_pretty(&list)?);
+                            crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                         }
                     } else if long {
                         for name in &entries {
@@ -236,14 +236,14 @@ impl FileCmd {
                                 Ok(info) => {
                                     let kind = info.file_type.as_deref().unwrap_or("?");
                                     let size = info.size.map(|n| n.to_string()).unwrap_or_default();
-                                    println!("{:<10} {:>12}  {name}", kind, size);
+                                    crate::output::outln!("{:<10} {:>12}  {name}", kind, size);
                                 }
-                                Err(_) => println!("?              {name}"),
+                                Err(_) => crate::output::outln!("?              {name}"),
                             }
                         }
                     } else {
                         for name in &entries {
-                            println!("{name}");
+                            crate::output::outln!("{name}");
                         }
                     }
                 }
@@ -297,20 +297,20 @@ impl FileCmd {
                 FileSub::DeviceInfo => {
                     let info = afc.device_info().await?;
                     if json_output {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&afc_device_info_to_json(&info))?
                         );
                     } else {
                         for line in afc_device_info_lines(&info) {
-                            println!("{line}");
+                            crate::output::outln!("{line}");
                         }
                     }
                 }
                 FileSub::Stat { path } => {
                     let info = afc.stat_info(&path).await?;
                     if json_output {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&file_info_to_json(
                                 path.rsplit('/').next().unwrap_or(&path),
@@ -323,19 +323,19 @@ impl FileCmd {
                             if k == "st_mode" {
                                 continue;
                             }
-                            println!("{k}: {v}");
+                            crate::output::outln!("{k}: {v}");
                         }
                         if let Some(mode) = info.mode {
-                            println!("st_mode: {mode:#o}");
+                            crate::output::outln!("st_mode: {mode:#o}");
                         }
                     }
                 }
                 FileSub::Tree { path } => {
                     let tree = build_file_tree(&mut afc, &path).await?;
                     if json_output {
-                        println!("{}", serde_json::to_string_pretty(&tree)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&tree)?);
                     } else {
-                        print!("{}", render_tree(&tree));
+                        crate::output::out!("{}", render_tree(&tree));
                     }
                 }
             }
@@ -624,10 +624,10 @@ fn run_coredevice_subcommand<'a>(
                     .iter()
                     .map(|name| json!({ "name": name, "path": join_device_path(&path, name) }))
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&list)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
             } else {
                 for name in entries {
-                    println!("{name}");
+                    crate::output::outln!("{name}");
                 }
             }
             Ok(())

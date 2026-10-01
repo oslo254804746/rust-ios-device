@@ -108,10 +108,10 @@ impl RestoreCmd {
                 .map(ios_core::restore::restore_lifecycle_event_to_json)
                 .collect();
             if json {
-                println!("{}", serde_json::to_string_pretty(&rendered)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&rendered)?);
             } else {
                 for event in rendered {
-                    println!("{}", serde_json::to_string_pretty(&event)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&event)?);
                 }
             }
             return Ok(());
@@ -131,11 +131,11 @@ impl RestoreCmd {
         let rendered =
             ios_core::restore::xpc_value_to_json(&ios_core::XpcValue::Dictionary(response.clone()));
         if json {
-            println!("{}", serde_json::to_string_pretty(&rendered)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&rendered)?);
         } else if let Some(message) = success_message {
-            println!("{message}");
+            crate::output::outln!("{message}");
         } else {
-            println!("{}", serde_json::to_string_pretty(&rendered)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&rendered)?);
         }
 
         Ok(())

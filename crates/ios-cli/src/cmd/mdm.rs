@@ -111,7 +111,7 @@ impl MdmCmd {
                 let token = client.fetch_unlock_token().await?;
                 let contents = encode_token_file(&token, base64);
                 write_token_file(&output, &contents, force)?;
-                print_token_saved(&output, token.len(), contents.len(), base64, json);
+                print_token_saved(&output, token.len(), contents.len(), base64, json)?;
             }
             MdmSub::SecurityInfo { supervisor } => {
                 let mut client = open_escalated_session(&udid, supervisor).await?;
@@ -122,14 +122,17 @@ impl MdmCmd {
                 let mut client = open_escalated_session(&udid, supervisor).await?;
                 let present = client.passcode_present().await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "passcode_present": present,
                         }))?
                     );
                 } else {
-                    println!("Passcode present: {}", if present { "yes" } else { "no" });
+                    crate::output::outln!(
+                        "Passcode present: {}",
+                        if present { "yes" } else { "no" }
+                    );
                 }
             }
             MdmSub::ClearPasscode {
@@ -147,7 +150,7 @@ impl MdmCmd {
                 let token = read_token_file(&token, token_base64)?;
                 let mut client = open_escalated_session(&udid, supervisor).await?;
                 client.clear_passcode(&token).await?;
-                print_cleared("clear-passcode", json);
+                print_cleared("clear-passcode", json)?;
             }
             MdmSub::ClearScreenTimePassword { supervisor, force } => {
                 crate::output::require_force(
@@ -157,7 +160,7 @@ impl MdmCmd {
                 )?;
                 let mut client = open_escalated_session(&udid, supervisor).await?;
                 client.clear_screen_time_password().await?;
-                print_cleared("clear-screen-time-password", json);
+                print_cleared("clear-screen-time-password", json)?;
             }
         }
 
@@ -288,9 +291,9 @@ fn print_token_saved(
     file_bytes: usize,
     base64_output: bool,
     json: bool,
-) {
+) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::json!({
                 "operation": "fetch-unlock-token",
@@ -301,18 +304,19 @@ fn print_token_saved(
             })
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Wrote unlock token ({} bytes, {}) to {}",
             token_bytes,
             if base64_output { "base64" } else { "raw" },
             path.display()
         );
     }
+    Ok(())
 }
 
-fn print_cleared(operation: &str, json: bool) {
+fn print_cleared(operation: &str, json: bool) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::json!({
                 "operation": operation,
@@ -320,19 +324,20 @@ fn print_cleared(operation: &str, json: bool) {
             })
         );
     } else {
-        println!("{operation} completed");
+        crate::output::outln!("{operation} completed");
     }
+    Ok(())
 }
 
 fn print_security_info(info: &plist::Dictionary, json: bool) -> Result<()> {
     let value = plist_dictionary_to_redacted_json(info);
     if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
     } else if let serde_json::Value::Object(fields) = value {
         let mut fields: Vec<_> = fields.into_iter().collect();
         fields.sort_by(|left, right| left.0.cmp(&right.0));
         for (key, value) in fields {
-            println!("{key}: {}", value_to_human_string(&value));
+            crate::output::outln!("{key}: {}", value_to_human_string(&value));
         }
     }
     Ok(())
@@ -351,24 +356,12 @@ fn plist_to_redacted_json(value: &plist::Value, key: Option<&str>) -> serde_json
                 .collect(),
         ),
         plist::Value::Dictionary(values) => plist_dictionary_to_redacted_json(values),
-        plist::Value::Boolean(value) => serde_json::Value::Bool(*value),
-        plist::Value::Data(value) => serde_json::json!({
-            "data_base64": base64::engine::general_purpose::STANDARD.encode(value),
-        }),
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Integer(value) => {
-            if let Some(value) = value.as_signed() {
-                serde_json::json!(value)
-            } else if let Some(value) = value.as_unsigned() {
-                serde_json::json!(value)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        plist::Value::Real(value) => serde_json::json!(*value),
-        plist::Value::String(value) => serde_json::Value::String(value.clone()),
-        plist::Value::Uid(value) => serde_json::json!(value.get()),
-        _ => serde_json::Value::Null,
+        other => ios_core::plist_json::to_json(
+            other,
+            ios_core::plist_json::PlistJsonPolicy::new(
+                ios_core::plist_json::DataEncoding::Base64Object,
+            ),
+        ),
     }
 }
 
@@ -578,4 +571,15 @@ mod tests {
         assert!(validate_token_output_path(Path::new("-"), false).is_err());
         assert!(validate_token_input_path(Path::new("-")).is_err());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_redacted_json(&crate::plist_contract::value(), None),
+        serde_json::json!({"data_base64":"AH//"}),
+        serde_json::json!({"data_base64":""}),
+        true,
+    );
 }

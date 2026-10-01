@@ -48,14 +48,15 @@ impl PowerAssertCmd {
             .await?;
 
         if json {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&plist::Value::Dictionary(response))?
             );
         } else {
-            println!(
+            crate::output::outln!(
                 "Created power assertion '{}' for {}s. Press Ctrl+C to release early.",
-                self.name, self.timeout
+                self.name,
+                self.timeout
             );
         }
 

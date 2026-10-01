@@ -56,7 +56,7 @@ impl RsdCmd {
                 let services = filtered_services(&rsd, all, prefix.as_deref());
                 if json {
                     if features {
-                        println!("{}", serde_json::to_string_pretty(&services)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&services)?);
                     } else {
                         let legacy: Vec<_> = services
                             .iter()
@@ -67,14 +67,14 @@ impl RsdCmd {
                                 })
                             })
                             .collect();
-                        println!("{}", serde_json::to_string_pretty(&legacy)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&legacy)?);
                     }
                 } else {
                     for service in services {
-                        println!("{:<55} {}", service.name, service.port);
+                        crate::output::outln!("{:<55} {}", service.name, service.port);
                         if features {
                             for feature in service.features {
-                                println!("  {feature}");
+                                crate::output::outln!("  {feature}");
                             }
                         }
                     }
@@ -84,7 +84,7 @@ impl RsdCmd {
                 let result = service_check(&rsd, &service);
                 if json {
                     if features {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&serde_json::json!({
                                 "requested_name": result.requested_name,
@@ -95,24 +95,24 @@ impl RsdCmd {
                             }))?
                         );
                     } else {
-                        println!("{}", serde_json::to_string_pretty(&result)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&result)?);
                     }
                 } else if result.available {
                     if let Some(resolved) = result.resolved_name.as_deref() {
-                        println!("available: true");
-                        println!("service: {resolved}");
-                        println!("port: {}", result.port.unwrap_or_default());
+                        crate::output::outln!("available: true");
+                        crate::output::outln!("service: {resolved}");
+                        crate::output::outln!("port: {}", result.port.unwrap_or_default());
                     } else {
-                        println!("available: true");
+                        crate::output::outln!("available: true");
                     }
                     if features {
                         for feature in result.features {
-                            println!("feature: {feature}");
+                            crate::output::outln!("feature: {feature}");
                         }
                     }
                 } else {
-                    println!("available: false");
-                    println!("service: {service}");
+                    crate::output::outln!("available: false");
+                    crate::output::outln!("service: {service}");
                 }
             }
         }

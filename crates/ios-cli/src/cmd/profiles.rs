@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -79,18 +78,16 @@ impl ProfilesCmd {
                 if raw {
                     let value = client.get_profile_list_raw().await?;
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                     } else {
-                        let mut stdout = std::io::stdout().lock();
-                        plist::to_writer_xml(&mut stdout, &value)?;
-                        writeln!(&mut stdout)?;
+                        crate::output::write_plist_xml(&value)?;
                     }
                 } else {
                     let profiles = client.list_profiles().await?;
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&profiles)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&profiles)?);
                     } else {
-                        print_profiles(&profiles);
+                        print_profiles(&profiles)?;
                     }
                 }
             }
@@ -109,10 +106,10 @@ impl ProfilesCmd {
                             password.as_deref().unwrap_or(""),
                         )
                         .await?;
-                    println!("Installed {} silently", path.display());
+                    crate::output::outln!("Installed {} silently", path.display());
                 } else {
                     client.install_profile(&payload).await?;
-                    println!(
+                    crate::output::outln!(
                         "Install request sent for {}. Confirm on the device if prompted.",
                         path.display()
                     );
@@ -120,7 +117,7 @@ impl ProfilesCmd {
             }
             ProfilesSub::Remove { identifier } => {
                 client.remove_profile(&identifier).await?;
-                println!(
+                crate::output::outln!(
                     "Remove request sent for {identifier}. Confirm on the device if prompted."
                 );
             }
@@ -131,30 +128,26 @@ impl ProfilesCmd {
                     .find(|profile| profile_matches_query(profile, &query))
                     .ok_or_else(|| anyhow::anyhow!("profile not found: {query}"))?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&profile)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&profile)?);
                 } else {
-                    print_profile_details(&profile);
+                    print_profile_details(&profile)?;
                 }
             }
             ProfilesSub::CloudConfig => {
                 let cloud_config = client.get_cloud_configuration().await?;
                 let value = Value::Dictionary(cloud_config);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 } else {
-                    let mut stdout = std::io::stdout().lock();
-                    plist::to_writer_xml(&mut stdout, &value)?;
-                    writeln!(&mut stdout)?;
+                    crate::output::write_plist_xml(&value)?;
                 }
             }
             ProfilesSub::Stored { purpose } => {
                 let value = client.get_stored_profile_raw(&purpose).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 } else {
-                    let mut stdout = std::io::stdout().lock();
-                    plist::to_writer_xml(&mut stdout, &value)?;
-                    writeln!(&mut stdout)?;
+                    crate::output::write_plist_xml(&value)?;
                 }
             }
         }
@@ -163,7 +156,7 @@ impl ProfilesCmd {
     }
 }
 
-fn print_profiles(profiles: &[ios_core::mcinstall::ProfileInfo]) {
+fn print_profiles(profiles: &[ios_core::mcinstall::ProfileInfo]) -> Result<()> {
     let mut table = Table::new();
     table.set_header([
         "Identifier",
@@ -198,13 +191,15 @@ fn print_profiles(profiles: &[ios_core::mcinstall::ProfileInfo]) {
         ]);
     }
 
-    println!("{table}");
+    crate::output::outln!("{table}");
+    Ok(())
 }
 
-fn print_profile_details(profile: &ios_core::mcinstall::ProfileInfo) {
+fn print_profile_details(profile: &ios_core::mcinstall::ProfileInfo) -> Result<()> {
     for (label, value) in profile_detail_lines(profile) {
-        println!("{label:<19} {value}");
+        crate::output::outln!("{label:<19} {value}");
     }
+    Ok(())
 }
 
 fn profile_detail_lines(profile: &ios_core::mcinstall::ProfileInfo) -> Vec<(&'static str, String)> {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use ios_core::TunMode;
 use ios_core::{connect, default_pair_record_path, ConnectOptions};
 
@@ -179,9 +180,12 @@ impl LockdownCmd {
             LockdownSub::Info => {
                 let value = device.lockdown_get_value_in_domain(None, None).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&value))?
+                    );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::Get {
@@ -194,9 +198,12 @@ impl LockdownCmd {
                     .lockdown_get_value_in_domain(domain.as_deref(), key.as_deref())
                     .await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&value))?
+                    );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::Set {
@@ -213,9 +220,12 @@ impl LockdownCmd {
                     .lockdown_get_value_in_domain(domain.as_deref(), Some(&key))
                     .await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&value))?
+                    );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::Remove { domain, key } => {
@@ -223,7 +233,7 @@ impl LockdownCmd {
                     .lockdown_remove_value_in_domain(domain.as_deref(), Some(&key))
                     .await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "removed": true,
@@ -232,9 +242,9 @@ impl LockdownCmd {
                         }))?
                     );
                 } else if let Some(domain) = domain {
-                    println!("removed domain={domain} key={key}");
+                    crate::output::outln!("removed domain={domain} key={key}");
                 } else {
-                    println!("removed key={key}");
+                    crate::output::outln!("removed key={key}");
                 }
             }
             LockdownSub::SavePairRecord { output } => {
@@ -248,7 +258,7 @@ impl LockdownCmd {
                 std::fs::write(&output, &raw)?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "source_path": source.display().to_string(),
@@ -257,9 +267,9 @@ impl LockdownCmd {
                         }))?
                     );
                 } else {
-                    println!("Source: {}", source.display());
-                    println!("Output: {}", output.display());
-                    println!("Bytes: {}", raw.len());
+                    crate::output::outln!("Source: {}", source.display());
+                    crate::output::outln!("Output: {}", output.display());
+                    crate::output::outln!("Bytes: {}", raw.len());
                 }
             }
             LockdownSub::Heartbeat { count, timeout } => {
@@ -277,7 +287,7 @@ impl LockdownCmd {
                     .ok_or_else(|| anyhow::anyhow!("TimeIntervalSince1970 was not numeric"))?;
                 let formatted = format_unix_timestamp(timestamp)?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "formatted_date": formatted,
@@ -285,7 +295,7 @@ impl LockdownCmd {
                         }))?
                     );
                 } else {
-                    println!("{formatted}");
+                    crate::output::outln!("{formatted}");
                 }
             }
             LockdownSub::DeviceName { new_name } => {
@@ -299,24 +309,24 @@ impl LockdownCmd {
                 }
                 let value = device.lockdown_get_value(Some("DeviceName")).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "device_name": plist_value_to_string(&value).unwrap_or_default(),
                         }))?
                     );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::Language { details } => {
                 let config = device.lockdown_international_configuration().await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&config)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&config)?);
                 } else if details {
-                    print_international_configuration(&config);
+                    print_international_configuration(&config)?;
                 } else {
-                    println!("{}", config.language);
+                    crate::output::outln!("{}", config.language);
                 }
             }
             LockdownSub::Locale { new_locale } => {
@@ -333,14 +343,14 @@ impl LockdownCmd {
                     .lockdown_get_value_in_domain(Some(INTERNATIONAL_DOMAIN), Some("Locale"))
                     .await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "locale": plist_value_to_string(&value).unwrap_or_default(),
                         }))?
                     );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::AssistiveTouch { state } => {
@@ -376,7 +386,7 @@ impl LockdownCmd {
                 })?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             USES_24_HOUR_CLOCK_KEY: uses_24_hour_clock,
@@ -384,7 +394,7 @@ impl LockdownCmd {
                         }))?
                     );
                 } else {
-                    println!("{}", if uses_24_hour_clock { "24" } else { "12" });
+                    crate::output::outln!("{}", if uses_24_hour_clock { "24" } else { "12" });
                 }
             }
             LockdownSub::DeveloperMode => {
@@ -401,14 +411,14 @@ impl LockdownCmd {
                 })?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             DEVELOPER_MODE_STATUS_KEY: enabled,
                         }))?
                     );
                 } else {
-                    println!("{enabled}");
+                    crate::output::outln!("{enabled}");
                 }
             }
             LockdownSub::WifiConnections { state } => {
@@ -433,9 +443,12 @@ impl LockdownCmd {
                     .lockdown_get_value_in_domain(Some(ACCESSIBILITY_DOMAIN), None)
                     .await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                    crate::output::outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&plist_to_json(&value))?
+                    );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
             LockdownSub::FontSize => {
@@ -459,22 +472,22 @@ impl LockdownCmd {
 
                 let rendered = serde_json::Value::Object(out);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&rendered)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&rendered)?);
                 } else {
-                    print_value_json(&rendered);
+                    print_value_json(&rendered)?;
                 }
             }
             LockdownSub::TimeZone => {
                 let value = device.lockdown_get_value(Some(TIME_ZONE_KEY)).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             TIME_ZONE_KEY: plist_value_to_string(&value).unwrap_or_default(),
                         }))?
                     );
                 } else {
-                    print_value(&value);
+                    print_value(&value)?;
                 }
             }
         }
@@ -557,14 +570,14 @@ async fn run_accessibility_toggle(
         .ok_or_else(|| anyhow::anyhow!("{key} was not a boolean-compatible value: {value:?}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 key: enabled,
             }))?
         );
     } else {
-        println!("{enabled}");
+        crate::output::outln!("{enabled}");
     }
 
     Ok(())
@@ -599,14 +612,14 @@ async fn run_wifi_connections_toggle(
     })?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 ENABLE_WIFI_CONNECTIONS_KEY: enabled,
             }))?
         );
     } else {
-        println!("{enabled}");
+        crate::output::outln!("{enabled}");
     }
 
     Ok(())
@@ -620,71 +633,50 @@ fn format_unix_timestamp(timestamp: f64) -> Result<String> {
     Ok(datetime.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
 }
 
-fn print_value(value: &plist::Value) {
+fn print_value(value: &plist::Value) -> Result<()> {
     match value {
-        plist::Value::String(value) => println!("{value}"),
-        plist::Value::Boolean(value) => println!("{value}"),
+        plist::Value::String(value) => crate::output::outln!("{value}"),
+        plist::Value::Boolean(value) => crate::output::outln!("{value}"),
         plist::Value::Integer(value) => {
             if let Some(signed) = value.as_signed() {
-                println!("{signed}");
+                crate::output::outln!("{signed}");
             } else if let Some(unsigned) = value.as_unsigned() {
-                println!("{unsigned}");
+                crate::output::outln!("{unsigned}");
             }
         }
-        plist::Value::Real(value) => println!("{value}"),
-        other => println!(
+        plist::Value::Real(value) => crate::output::outln!("{value}"),
+        other => crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&plist_to_json(other)).unwrap_or_else(|_| "null".into())
         ),
     }
+    Ok(())
 }
 
-fn print_value_json(value: &serde_json::Value) {
+fn print_value_json(value: &serde_json::Value) -> Result<()> {
     match value {
-        serde_json::Value::String(value) => println!("{value}"),
-        other => println!(
+        serde_json::Value::String(value) => crate::output::outln!("{value}"),
+        other => crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(other).unwrap_or_else(|_| "null".into())
         ),
     }
+    Ok(())
 }
 
-fn print_international_configuration(config: &ios_core::InternationalConfiguration) {
-    println!("Language: {}", config.language);
-    println!("Locale: {}", config.locale);
-    println!(
+fn print_international_configuration(config: &ios_core::InternationalConfiguration) -> Result<()> {
+    crate::output::outln!("Language: {}", config.language);
+    crate::output::outln!("Locale: {}", config.locale);
+    crate::output::outln!(
         "SupportedLanguages: {}",
         config.supported_languages.join(", ")
     );
-    println!("SupportedLocales: {}", config.supported_locales.join(", "));
+    crate::output::outln!("SupportedLocales: {}", config.supported_locales.join(", "));
+    Ok(())
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::String(value) => serde_json::Value::String(value.clone()),
-        plist::Value::Boolean(value) => serde_json::Value::Bool(*value),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::Number::from_f64(*value)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Dictionary(values) => serde_json::Value::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 #[cfg(test)]
@@ -1155,4 +1147,15 @@ mod tests {
         let rendered = format_unix_timestamp(1_710_000_000.25).expect("timestamp should format");
         assert_eq!(rendered, "2024-03-09T16:00:00.250000000Z");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

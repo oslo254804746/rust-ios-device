@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use ios_core::error::CoreError;
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -190,10 +191,10 @@ impl AppsCmd {
 
                     if json {
                         let list: Vec<_> = apps.iter().map(coredevice_app_to_json).collect();
-                        println!("{}", serde_json::to_string_pretty(&list)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                     } else {
                         for app in &apps {
-                            println!(
+                            crate::output::outln!(
                                 "{:<45} {} ({})",
                                 app.bundle_id,
                                 app.name.as_deref().unwrap_or("-"),
@@ -229,10 +230,15 @@ impl AppsCmd {
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                 } else {
                     for a in &apps {
-                        println!("{:<45} {} ({})", a.bundle_id, a.display_name, a.version);
+                        crate::output::outln!(
+                            "{:<45} {} ({})",
+                            a.bundle_id,
+                            a.display_name,
+                            a.version
+                        );
                     }
                 }
             }
@@ -282,7 +288,7 @@ impl AppsCmd {
                     )
                     .await
                     .context("streaming zip conduit install failed")?;
-                    println!("Installed {ipa_path} (streaming)");
+                    crate::output::outln!("Installed {ipa_path} (streaming)");
                     return Ok(());
                 }
 
@@ -392,7 +398,7 @@ impl AppsCmd {
                 }
 
                 cleanup_result.context("installed app but failed to remove staged payload")?;
-                println!("Installed {ipa_path}");
+                crate::output::outln!("Installed {ipa_path}");
             }
             AppsSub::Upgrade { ipa_path } => {
                 let source_path = std::path::Path::new(&ipa_path);
@@ -478,7 +484,7 @@ impl AppsCmd {
                 }
 
                 cleanup_result.context("upgraded app but failed to remove staged payload")?;
-                println!("Upgraded {ipa_path}");
+                crate::output::outln!("Upgraded {ipa_path}");
             }
             AppsSub::Archive { bundle_id } => {
                 let stream = device
@@ -486,7 +492,7 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.archive(&bundle_id).await?;
-                println!("Archived {bundle_id}");
+                crate::output::outln!("Archived {bundle_id}");
             }
             AppsSub::Restore { bundle_id } => {
                 let stream = device
@@ -494,7 +500,7 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.restore(&bundle_id).await?;
-                println!("Restored {bundle_id}");
+                crate::output::outln!("Restored {bundle_id}");
             }
             AppsSub::Show { bundle_id, attrs } => {
                 let stream = device
@@ -509,9 +515,9 @@ impl AppsCmd {
                 let app_json = app_to_json_with_attrs(&app, &attrs);
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&app_json)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&app_json)?);
                 } else {
-                    print_app_details(&app_json);
+                    print_app_details(&app_json)?;
                 }
             }
             AppsSub::InstallRecord {
@@ -543,20 +549,20 @@ impl AppsCmd {
                 .map_err(|_| anyhow::anyhow!("install-record timed out after {timeout:?}"))??;
                 let output = install_record_to_json(&result);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&output)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    println!("DB UUID: {}", result.db_uuid);
-                    println!("DB sequence: {}", result.db_sequence);
-                    println!(
+                    crate::output::outln!("DB UUID: {}", result.db_uuid);
+                    crate::output::outln!("DB sequence: {}", result.db_sequence);
+                    crate::output::outln!(
                         "Install path: {}",
                         result.install_path.as_deref().unwrap_or("-")
                     );
-                    println!(
+                    crate::output::outln!(
                         "Persistent identifier: {}",
                         hex::encode(&result.persistent_identifier)
                     );
                     if !result.extra.is_empty() {
-                        println!("Extra fields: {}", result.extra.len());
+                        crate::output::outln!("Extra fields: {}", result.extra.len());
                     }
                 }
             }
@@ -600,11 +606,11 @@ impl AppsCmd {
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&list)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
                 } else {
                     for process in &processes {
                         let bundle = process.bundle_id.as_deref().unwrap_or("-");
-                        println!("{:<8} {:<45} {}", process.pid, bundle, process.name);
+                        crate::output::outln!("{:<8} {:<45} {}", process.pid, bundle, process.name);
                     }
                 }
             }
@@ -624,12 +630,12 @@ impl AppsCmd {
                     }
                     Err(e) => return Err(e.into()),
                 }
-                println!("Killed process {pid}");
+                crate::output::outln!("Killed process {pid}");
             }
             AppsSub::Signal { pid, signal } => match connect_appservice(&device, &udid).await {
                 Ok(mut client) => {
                     client.send_signal(pid, signal).await?;
-                    println!("Sent signal {signal} to process {pid}");
+                    crate::output::outln!("Sent signal {signal} to process {pid}");
                 }
                 Err(e) if should_fallback_to_instruments(&e) => {
                     return Err(anyhow::anyhow!(
@@ -671,7 +677,7 @@ impl AppsCmd {
                     .collect();
 
                 if matched.is_empty() {
-                    println!("No processes matched pattern '{pattern}'");
+                    crate::output::outln!("No processes matched pattern '{pattern}'");
                 } else {
                     for p in &matched {
                         match connect_appservice(&device, &udid).await {
@@ -694,9 +700,9 @@ impl AppsCmd {
                             }
                             Err(e) => return Err(e.into()),
                         }
-                        println!("Sent signal {signal} to {} (pid {})", p.name, p.pid);
+                        crate::output::outln!("Sent signal {signal} to {} (pid {})", p.name, p.pid);
                     }
-                    println!("Killed {} process(es)", matched.len());
+                    crate::output::outln!("Killed {} process(es)", matched.len());
                 }
             }
             AppsSub::Launch { bundle_id } => {
@@ -721,16 +727,16 @@ impl AppsCmd {
                     Err(e) => return Err(e.into()),
                 };
                 if let Some(pid) = pid {
-                    println!("Launched {bundle_id} (pid {pid})");
+                    crate::output::outln!("Launched {bundle_id} (pid {pid})");
                 } else {
-                    println!("Launched {bundle_id}");
+                    crate::output::outln!("Launched {bundle_id}");
                 }
             }
             AppsSub::Roots => {
                 let mut client = connect_appservice(&device, &udid).await?;
                 let roots = client.list_roots().await?;
                 let roots_json = xpc_value_to_json(&roots);
-                println!("{}", serde_json::to_string_pretty(&roots_json)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&roots_json)?);
             }
             AppsSub::Spawn { executable, args } => {
                 let mut client = connect_appservice(&device, &udid).await?;
@@ -741,11 +747,11 @@ impl AppsCmd {
                     "pid": pid,
                 });
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&output)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
                 } else if let Some(pid) = pid {
-                    println!("Spawned {executable} (pid {pid})");
+                    crate::output::outln!("Spawned {executable} (pid {pid})");
                 } else {
-                    println!("Spawned {executable}");
+                    crate::output::outln!("Spawned {executable}");
                 }
             }
             AppsSub::Icons {
@@ -817,10 +823,10 @@ impl AppsCmd {
                 };
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&results)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&results)?);
                 } else {
                     for result in &results {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             result
                                 .get("output")
@@ -841,7 +847,7 @@ impl AppsCmd {
                     anyhow::anyhow!("timed out waiting for process {pid} termination")
                 })??;
                 let output = process_termination_to_json(&termination);
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
             }
             AppsSub::Uninstall { bundle_id } => {
                 let stream = device
@@ -849,7 +855,7 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.uninstall(&bundle_id).await?;
-                println!("Uninstalled {bundle_id}");
+                crate::output::outln!("Uninstalled {bundle_id}");
             }
         }
         Ok(())
@@ -1235,42 +1241,10 @@ fn install_record_to_json(
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(v) => serde_json::Value::Bool(*v),
-        plist::Value::Data(bytes) => serde_json::Value::Array(
-            bytes
-                .iter()
-                .map(|byte| serde_json::Value::from(*byte))
-                .collect(),
-        ),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(k, v)| (k.clone(), plist_to_json(v)))
-                .collect(),
-        ),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::Value::from(i)
-            } else if let Some(u) = n.as_unsigned() {
-                serde_json::Value::from(u)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        plist::Value::Real(v) => serde_json::Number::from_f64(*v)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Uid(uid) => serde_json::Value::from(uid.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::NumericArray))
 }
 
-fn print_app_details(json: &serde_json::Value) {
+fn print_app_details(json: &serde_json::Value) -> Result<()> {
     let mut rows: Vec<(String, String)> = json
         .as_object()
         .into_iter()
@@ -1279,8 +1253,9 @@ fn print_app_details(json: &serde_json::Value) {
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, value) in rows {
-        println!("{key}: {value}");
+        crate::output::outln!("{key}: {value}");
     }
+    Ok(())
 }
 
 fn format_json_value(value: &serde_json::Value) -> String {
@@ -2055,4 +2030,15 @@ mod tests {
         assert!(pkill_signal_allows_instruments_fallback(9));
         assert!(!pkill_signal_allows_instruments_fallback(15));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!([0, 127, 255]),
+        serde_json::json!([]),
+        true,
+    );
 }

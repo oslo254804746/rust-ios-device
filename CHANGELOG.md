@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add explicit shared plist-to-JSON policies for historical byte-array,
+  hexadecimal and tagged base64 output, with borrowed and owned iterative
+  traversal. Preserve per-command Date/Uid behavior and separate MDM redaction.
+
 - Separate WebInspector wire/model/client/session ownership from CLI command,
   workflow, HTTP, CDP and WebDriver adapters while retaining public paths and
   command contracts. Add a Rust-only service injection boundary and owned
@@ -79,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for CoreDevice camera/microphone conflicts (9022).
 
 ### Fixed
+
+- Propagate CLI stdout write/newline/flush failures through a shared fallible
+  boundary. Closed result pipes return exit 1 instead of a possible panic/101;
+  failed help/version output returns 1 instead of silent success. Successful
+  output formats remain unchanged; see [migration](docs/plist-json-contract.md).
 
 - Preserve exact filtered-file destinations after device move/copy so placeholder
   cleanup does not append a file-invalid trailing separator. Backup output

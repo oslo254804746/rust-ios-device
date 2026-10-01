@@ -1,3 +1,4 @@
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -132,19 +133,20 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
         let mut client = ios_core::cryptex::CryptexClient::connect(&device).await?;
         let installed = client.installed_ddi().await?;
         if json {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(
                     &serde_json::json!({"mounted": installed.is_some(), "backend": "cryptex", "installed": installed})
                 )?
             );
         } else if let Some(installed) = installed {
-            println!(
+            crate::output::outln!(
                 "DDI Cryptex {} {} is installed.",
-                installed.identifier, installed.version
+                installed.identifier,
+                installed.version
             );
         } else {
-            println!("No DDI Cryptex installed.");
+            crate::output::outln!("No DDI Cryptex installed.");
         }
         return Ok(());
     }
@@ -159,14 +161,14 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({ "mounted": mounted }))?
         );
     } else if mounted {
-        println!("Developer disk image is mounted.");
+        crate::output::outln!("Developer disk image is mounted.");
     } else {
-        println!("No developer disk image mounted.");
+        crate::output::outln!("No developer disk image mounted.");
     }
     Ok(())
 }
@@ -193,7 +195,7 @@ async fn run_list(udid: String, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer": signatures_to_hex(&developer),
@@ -204,12 +206,12 @@ async fn run_list(udid: String, json: bool) -> Result<()> {
     }
 
     if developer.is_empty() && personalized.is_empty() {
-        println!("No developer disk images mounted.");
+        crate::output::outln!("No developer disk images mounted.");
         return Ok(());
     }
 
-    print_image_signatures("Developer", &developer);
-    print_image_signatures("Personalized", &personalized);
+    print_image_signatures("Developer", &developer)?;
+    print_image_signatures("Personalized", &personalized)?;
     Ok(())
 }
 
@@ -231,7 +233,7 @@ async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> 
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&lookup_to_json(&image_type, &signatures))?
         );
@@ -239,11 +241,11 @@ async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> 
     }
 
     if signatures.is_empty() {
-        println!("No mounted image signatures found for {image_type}.");
+        crate::output::outln!("No mounted image signatures found for {image_type}.");
         return Ok(());
     }
 
-    print_image_signatures(&image_type, &signatures);
+    print_image_signatures(&image_type, &signatures)?;
     Ok(())
 }
 
@@ -265,7 +267,7 @@ async fn run_devices(udid: String, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&devices_to_json(&entries))?
         );
@@ -273,11 +275,11 @@ async fn run_devices(udid: String, json: bool) -> Result<()> {
     }
 
     if entries.is_empty() {
-        println!("No mounted image entries reported.");
+        crate::output::outln!("No mounted image entries reported.");
         return Ok(());
     }
 
-    print_devices(&entries);
+    print_devices(&entries)?;
     Ok(())
 }
 
@@ -313,7 +315,7 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
     }
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&personalization_manifests_to_json(&manifests))?
         );
@@ -321,11 +323,11 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
     }
 
     if manifests.is_empty() {
-        println!("No mounted personalized image entries reported.");
+        crate::output::outln!("No mounted personalized image entries reported.");
         return Ok(());
     }
 
-    print_personalization_manifests(&manifests);
+    print_personalization_manifests(&manifests)?;
     Ok(())
 }
 
@@ -347,14 +349,14 @@ async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer_mode": enabled,
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Developer mode is {}.",
             if enabled { "enabled" } else { "disabled" }
         );
@@ -380,9 +382,9 @@ async fn run_nonce(udid: String, json: bool, image_type: String) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
     } else {
-        println!("{}", hex::encode(&nonce));
+        crate::output::outln!("{}", hex::encode(&nonce));
     }
     Ok(())
 }
@@ -409,12 +411,12 @@ async fn run_personalization_identifiers(
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&personalization_identifiers_to_json(&identifiers))?
         );
     } else {
-        print_personalization_identifiers(&identifiers);
+        print_personalization_identifiers(&identifiers)?;
     }
     Ok(())
 }
@@ -434,7 +436,7 @@ async fn run_unmount(udid: String) -> Result<()> {
             client
                 .uninstall(&installed.identifier, Some(&installed.version))
                 .await?;
-            println!("Uninstalled DDI Cryptex {}.", installed.version);
+            crate::output::outln!("Uninstalled DDI Cryptex {}.", installed.version);
             return Ok(());
         }
     }
@@ -456,7 +458,7 @@ async fn run_unmount(udid: String) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
     if developer.is_empty() && personalized.is_empty() {
-        println!("No developer disk images mounted.");
+        crate::output::outln!("No developer disk images mounted.");
         return Ok(());
     }
 
@@ -465,7 +467,7 @@ async fn run_unmount(udid: String) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
 
-    println!("Unmounted developer disk image from {mount_path}.");
+    crate::output::outln!("Unmounted developer disk image from {mount_path}.");
     Ok(())
 }
 
@@ -553,9 +555,9 @@ async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()
         )
         .await?;
         if json {
-            println!("{}", serde_json::to_string_pretty(&installed)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&installed)?);
         } else {
-            println!("Installed {} {}.", installed.identifier, installed.version);
+            crate::output::outln!("Installed {} {}.", installed.identifier, installed.version);
         }
         return Ok(());
     }
@@ -564,25 +566,25 @@ async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()
         CryptexSub::List => {
             let installed = client.copy_installed().await?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&installed)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&installed)?);
             } else if installed.is_empty() {
-                println!("No Cryptex images installed.");
+                crate::output::outln!("No Cryptex images installed.");
             } else {
                 for item in installed {
-                    println!("{} {}", item.identifier, item.version);
+                    crate::output::outln!("{} {}", item.identifier, item.version);
                 }
             }
         }
         CryptexSub::PersonalizationIdentifiers => {
             let identifiers = client.read_personalization_identifiers().await?;
             if json {
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::to_string_pretty(&plist_to_json(&Value::Dictionary(identifiers)))?
                 );
             } else {
                 for (key, value) in identifiers {
-                    println!("{key}: {}", format_plist_value(&value));
+                    crate::output::outln!("{key}: {}", format_plist_value(&value));
                 }
             }
         }
@@ -596,9 +598,9 @@ async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()
                 .unwrap_or_default();
             let nonce = client.nonce(domain).await?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
             } else {
-                println!("{}", hex::encode(nonce));
+                crate::output::outln!("{}", hex::encode(nonce));
             }
         }
         CryptexSub::Uninstall {
@@ -607,9 +609,9 @@ async fn run_cryptex(udid: String, json: bool, command: CryptexSub) -> Result<()
         } => {
             client.uninstall(&identifier, version.as_deref()).await?;
             if json {
-                println!("{}", serde_json::json!({"uninstalled": identifier}));
+                crate::output::outln!("{}", serde_json::json!({"uninstalled": identifier}));
             } else {
-                println!("Uninstalled {identifier}.");
+                crate::output::outln!("Uninstalled {identifier}.");
             }
         }
         CryptexSub::AutoInstall { .. } => unreachable!("handled before connecting client"),
@@ -730,10 +732,11 @@ fn extract_id(ids: &std::collections::HashMap<String, plist::Value>, key: &str) 
     }
 }
 
-fn print_image_signatures(image_type: &str, signatures: &[Vec<u8>]) {
+fn print_image_signatures(image_type: &str, signatures: &[Vec<u8>]) -> Result<()> {
     for signature in signatures {
-        println!("{image_type}: {}", hex::encode(signature));
+        crate::output::outln!("{image_type}: {}", hex::encode(signature));
     }
+    Ok(())
 }
 
 fn signatures_to_hex(signatures: &[Vec<u8>]) -> Vec<String> {
@@ -805,37 +808,42 @@ fn personalization_identifiers_to_json(
     serde_json::Value::Object(obj)
 }
 
-fn print_personalization_identifiers(identifiers: &std::collections::HashMap<String, Value>) {
+fn print_personalization_identifiers(
+    identifiers: &std::collections::HashMap<String, Value>,
+) -> Result<()> {
     let mut entries: Vec<_> = identifiers.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     for (key, value) in entries {
-        println!("{key}: {}", format_plist_value(value));
+        crate::output::outln!("{key}: {}", format_plist_value(value));
     }
+    Ok(())
 }
 
-fn print_devices(entries: &[plist::Dictionary]) {
+fn print_devices(entries: &[plist::Dictionary]) -> Result<()> {
     for (index, entry) in entries.iter().enumerate() {
         if index > 0 {
-            println!();
+            crate::output::outln!();
         }
 
         let mut fields: Vec<_> = entry.iter().collect();
         fields.sort_by(|a, b| a.0.cmp(b.0));
         for (key, value) in fields {
-            println!("{key}: {}", format_plist_value(value));
+            crate::output::outln!("{key}: {}", format_plist_value(value));
         }
     }
+    Ok(())
 }
 
-fn print_personalization_manifests(results: &[ManifestResult]) {
+fn print_personalization_manifests(results: &[ManifestResult]) -> Result<()> {
     for (index, result) in results.iter().enumerate() {
         if index > 0 {
-            println!();
+            crate::output::outln!();
         }
-        println!("PersonalizedImageType: {}", result.personalized_image_type);
-        println!("ImageSignature: {}", hex::encode(&result.image_signature));
-        println!("Manifest: {}", hex::encode(&result.manifest));
+        crate::output::outln!("PersonalizedImageType: {}", result.personalized_image_type);
+        crate::output::outln!("ImageSignature: {}", hex::encode(&result.image_signature));
+        crate::output::outln!("Manifest: {}", hex::encode(&result.manifest));
     }
+    Ok(())
 }
 
 fn format_plist_value(value: &Value) -> String {
@@ -854,28 +862,7 @@ fn format_plist_value(value: &Value) -> String {
 }
 
 fn plist_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::Array(items) => serde_json::Value::Array(items.iter().map(plist_to_json).collect()),
-        Value::Boolean(value) => serde_json::Value::Bool(*value),
-        Value::Data(value) => serde_json::Value::String(hex::encode(value)),
-        Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        Value::Real(value) => serde_json::Number::from_f64(*value)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::String(value) => serde_json::Value::String(value.clone()),
-        Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 #[cfg(test)]
@@ -1147,4 +1134,15 @@ mod tests {
             }])
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

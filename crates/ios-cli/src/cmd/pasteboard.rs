@@ -213,12 +213,12 @@ impl PasteboardCmd {
                     // representation.
                     let reply = client.get_named_with_policy(&pasteboard, policy).await?;
                     if show_data {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&xpc_value_to_json(&reply))?
                         );
                     } else {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::to_string_pretty(&xpc_value_to_redacted_json(&reply))?
                         );
@@ -241,7 +241,7 @@ impl PasteboardCmd {
                 let representations = item.data.len();
                 client.set_items(&pasteboard, &[item], None).await?;
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "operation": "set",
@@ -251,7 +251,9 @@ impl PasteboardCmd {
                         }))?
                     );
                 } else {
-                    println!("Set {bytes} byte(s) across one item on pasteboard '{pasteboard}'");
+                    crate::output::outln!(
+                        "Set {bytes} byte(s) across one item on pasteboard '{pasteboard}'"
+                    );
                 }
             }
             PasteboardSub::Resolve {
@@ -611,9 +613,9 @@ async fn resolve_and_render(
         "data_base64": show_data.then(|| base64::engine::general_purpose::STANDARD.encode(bytes.as_ref())),
     });
     if json_output || out.is_some() || show_data {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        println!(
+        crate::output::outln!(
             "{uti}: {} byte(s), sha256={}",
             bytes.len(),
             sha256_hex(bytes.as_ref())
@@ -629,24 +631,24 @@ fn render_get(
     show_data: bool,
 ) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&snapshot_to_json(snapshot, show_data))?
         );
     } else if let Some(text) = snapshot.text() {
-        print!("{text}");
+        crate::output::out!("{text}");
     } else if let Some(bytes) = snapshot.data_for_uti(pasteboard::UTI_URL) {
         if let Ok(url) = std::str::from_utf8(bytes.as_ref()) {
-            println!("{url}");
+            crate::output::outln!("{url}");
         } else {
-            println!(
+            crate::output::outln!(
                 "Pasteboard '{pasteboard}' contains {} byte(s) of non-UTF-8 URL data (sha256={})",
                 bytes.len(),
                 sha256_hex(bytes.as_ref())
             );
         }
     } else {
-        println!("{}", human_snapshot_summary(snapshot, show_data));
+        crate::output::outln!("{}", human_snapshot_summary(snapshot, show_data));
     }
     Ok(())
 }
@@ -655,12 +657,12 @@ fn render_event(event: &PasteboardEvent, show_data: bool, json_output: bool) -> 
     match event {
         PasteboardEvent::Push(push) => {
             if json_output {
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::to_string(&snapshot_to_json(&push.snapshot, show_data))?
                 );
             } else {
-                println!("{}", human_snapshot_summary(&push.snapshot, show_data));
+                crate::output::outln!("{}", human_snapshot_summary(&push.snapshot, show_data));
             }
         }
         PasteboardEvent::Data(data) => {
@@ -674,9 +676,9 @@ fn render_event(event: &PasteboardEvent, show_data: bool, json_output: bool) -> 
                 "error": data.error.as_ref().map(|error| format!("promise failed: {}", ios_core::redaction::diagnostic_id(error))),
             });
             if json_output {
-                println!("{}", serde_json::to_string(&value)?);
+                crate::output::outln!("{}", serde_json::to_string(&value)?);
             } else {
-                println!("{value}");
+                crate::output::outln!("{value}");
             }
         }
     }

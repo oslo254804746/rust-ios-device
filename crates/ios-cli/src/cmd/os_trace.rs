@@ -1,3 +1,4 @@
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -313,7 +314,7 @@ async fn run_archive(
         Err(termination) => return finish_termination(termination, timeout),
     };
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "operation": "archive",
@@ -324,7 +325,7 @@ async fn run_archive(
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Saved raw PAX log archive to {} ({} bytes, {} chunks)",
             output.display(),
             stats.bytes,
@@ -356,7 +357,7 @@ async fn run_collect(
             Err(termination) => return finish_termination(termination, timeout),
         };
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "operation": "collect",
@@ -369,7 +370,7 @@ async fn run_collect(
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Collected log archive in {} ({} entries, {} bytes)",
             output.display(),
             stats.entries,
@@ -420,14 +421,14 @@ async fn run_ps(udid: &str, json: bool) -> Result<()> {
         Err(termination) => return finish_termination(termination, None),
     };
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&plist_to_json(&plist::Value::Dictionary(
                 response.clone(),
             )))?
         );
     } else {
-        print_pid_table(&response);
+        print_pid_table(&response)?;
     }
     Ok(())
 }
@@ -538,9 +539,9 @@ async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
         let Some(entry) = result else { break };
         received = received.saturating_add(1);
         if json {
-            println!("{}", serde_json::to_string(&trace_entry_to_json(&entry))?);
+            crate::output::outln!("{}", serde_json::to_string(&trace_entry_to_json(&entry))?);
         } else {
-            println!("{}", format_trace_entry(&entry));
+            crate::output::outln!("{}", format_trace_entry(&entry));
         }
         if args
             .count
@@ -552,20 +553,21 @@ async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_pid_table(response: &plist::Dictionary) {
+fn print_pid_table(response: &plist::Dictionary) -> Result<()> {
     let Some(rows) = pid_rows(response) else {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(response).unwrap_or_default()
         );
-        return;
+        return Ok(());
     };
 
-    println!("{:<8} NAME", "PID");
-    println!("{}", "-".repeat(48));
+    crate::output::outln!("{:<8} NAME", "PID");
+    crate::output::outln!("{}", "-".repeat(48));
     for (pid, name) in rows {
-        println!("{:<8} {}", pid, name);
+        crate::output::outln!("{:<8} {}", pid, name);
     }
+    Ok(())
 }
 
 fn pid_rows(response: &plist::Dictionary) -> Option<Vec<(u64, String)>> {
@@ -677,28 +679,7 @@ fn format_trace_entry(entry: &ios_core::ostrace::LogEntry) -> String {
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Boolean(value) => serde_json::Value::Bool(*value),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::json!(value),
-        plist::Value::String(value) => serde_json::Value::String(value.clone()),
-        plist::Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 #[cfg(test)]
@@ -943,4 +924,15 @@ mod tests {
         assert_eq!(termination, Err(RunTermination::Cancelled));
         assert!(finish_termination(RunTermination::Cancelled, Some(3)).is_ok());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

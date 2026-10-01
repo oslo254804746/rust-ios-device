@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Result;
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
@@ -47,14 +45,12 @@ impl MobileGestaltCmd {
         };
 
         if self.plist {
-            let mut stdout = std::io::stdout().lock();
-            plist::to_writer_xml(&mut stdout, &value)?;
-            writeln!(&mut stdout)?;
+            crate::output::write_plist_xml(&value)?;
         } else if json {
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             for (key, rendered) in mobilegestalt_detail_lines(&value) {
-                println!("{key}: {rendered}");
+                crate::output::outln!("{key}: {rendered}");
             }
         }
 

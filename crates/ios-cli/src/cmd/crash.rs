@@ -161,7 +161,7 @@ impl CrashCmd {
                 let reports = client.list_reports(Some(&pattern)).await?;
 
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&reports_to_json(&reports))?
                     );
@@ -179,7 +179,7 @@ impl CrashCmd {
                             report.path,
                         ]);
                     }
-                    println!("{table}");
+                    crate::output::outln!("{table}");
                 }
             }
             CrashSub::Pull {
@@ -209,7 +209,7 @@ impl CrashCmd {
                 let data = client.read_report(&report).await?;
                 crate::cmd::file::write_local_bytes_atomic(Path::new(&local_path), &data, force)
                     .await?;
-                println!("Downloaded {} bytes to {}", data.len(), local_path);
+                crate::output::outln!("Downloaded {} bytes to {}", data.len(), local_path);
             }
             CrashSub::Show { report, head } => {
                 let mut mover = connect_crash_service(
@@ -230,9 +230,9 @@ impl CrashCmd {
                 let data = client.read_report(&report).await?;
                 let text = decode_report_text(&data)?;
                 if head {
-                    println!("{}", head_line(&text)?);
+                    crate::output::outln!("{}", head_line(&text)?);
                 } else {
-                    print!("{text}");
+                    crate::output::out!("{text}");
                 }
             }
             CrashSub::PullAll {
@@ -265,7 +265,7 @@ impl CrashCmd {
                     crate::cmd::file::ensure_local_overwrite_allowed(&local_path, force)?;
                     let data = client.read_report(&report.path).await?;
                     crate::cmd::file::write_local_bytes_atomic(&local_path, &data, force).await?;
-                    println!(
+                    crate::output::outln!(
                         "Downloaded {} bytes to {}",
                         data.len(),
                         local_path.display()
@@ -295,10 +295,10 @@ impl CrashCmd {
                 let mut client = CrashReportClient::new(stream);
                 let removed = client.remove_reports(Some(&pattern)).await?;
                 if removed == 0 {
-                    println!("No crash reports matched {pattern}");
+                    crate::output::outln!("No crash reports matched {pattern}");
                     return Ok(());
                 }
-                println!("Removed {removed} crash report(s)");
+                crate::output::outln!("Removed {removed} crash report(s)");
             }
             CrashSub::Flush { json, .. } => {
                 let mut mover = connect_crash_service_until(
@@ -312,9 +312,9 @@ impl CrashCmd {
                     .ok_or_else(|| anyhow::anyhow!("missing crash operation deadline"))?;
                 flush_crash_reports(&mut mover, use_rsd, deadline).await?;
                 if json {
-                    println!(r#"{{"flushed":true}}"#);
+                    crate::output::outln!(r#"{{"flushed":true}}"#);
                 } else {
-                    println!("Crash reports flushed");
+                    crate::output::outln!("Crash reports flushed");
                 }
             }
             CrashSub::Clear { path, force } => {
@@ -338,7 +338,7 @@ impl CrashCmd {
                 .await?;
                 let mut client = CrashReportClient::new(stream);
                 let removed = client.clear_reports(&path).await?;
-                println!(
+                crate::output::outln!(
                     "Removed {removed} crash report entr{}",
                     if removed == 1 { "y" } else { "ies" }
                 );
@@ -435,7 +435,7 @@ impl CrashCmd {
                 sort_parsed_reports(&mut reports);
                 reports.truncate(count);
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&reports)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&reports)?);
                 } else {
                     for report in reports {
                         print_parsed_report(&report, false)?;
@@ -578,38 +578,38 @@ async fn read_local_report(path: &Path) -> Result<Vec<u8>> {
 
 fn print_parsed_report(report: &ParsedCrashReport, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(report)?);
+        crate::output::outln!("{}", serde_json::to_string(report)?);
         return Ok(());
     }
-    println!("{} {}", report.format, report.path);
+    crate::output::outln!("{} {}", report.format, report.path);
     if let Some(value) = &report.incident_id {
-        println!("incident_id: {value}");
+        crate::output::outln!("incident_id: {value}");
     }
     if let Some(value) = &report.timestamp {
-        println!("timestamp: {value}");
+        crate::output::outln!("timestamp: {value}");
     }
     if let Some(value) = &report.process {
-        println!("process: {value}");
+        crate::output::outln!("process: {value}");
     }
     if let Some(value) = &report.bundle_id {
-        println!("bundle_id: {value}");
+        crate::output::outln!("bundle_id: {value}");
     }
     if let Some(value) = &report.process_path {
-        println!("process_path: {value}");
+        crate::output::outln!("process_path: {value}");
     }
     if let Some(value) = report.pid {
-        println!("pid: {value}");
+        crate::output::outln!("pid: {value}");
     }
     if let Some(value) = &report.exception {
-        println!("exception: {value}");
+        crate::output::outln!("exception: {value}");
     }
     if let Some(value) = &report.termination {
-        println!("termination: {value}");
+        crate::output::outln!("termination: {value}");
     }
     if let Some(value) = report.triggered_thread {
-        println!("triggered_thread: {value}");
+        crate::output::outln!("triggered_thread: {value}");
     }
-    println!(
+    crate::output::outln!(
         "threads: {}  images: {}",
         report.threads.len(),
         report.images.len()

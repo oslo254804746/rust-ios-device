@@ -158,7 +158,7 @@ impl RunTestCmd {
             };
             write_junit_summary(self.junit_output.as_deref(), &summary)?;
 
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "status": "finished",
@@ -183,7 +183,7 @@ impl RunTestCmd {
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest startup"))??;
 
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "status": "started",

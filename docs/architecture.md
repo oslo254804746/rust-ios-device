@@ -120,6 +120,23 @@ routers use this interface after admission, so F03 can exercise the bridge
 with controlled plist peers. Host synthetic tests do not certify Apple devices
 or external CDP client interoperability.
 
+## Result conversion and output
+
+`ios_core::plist_json` owns explicit historical Data/Date/Uid policies and
+borrowed/owned iterative container conversion. Core services, CLI commands and
+C lockdown rendering delegate ordinary conversion to it. MDM key-aware secret
+redaction remains in its own traversal; direct plist serde and typed XPC/model
+serialization retain their separate contracts. Conversion consumes constructed
+values and does not add a transport, parser, redaction or hidden size limit.
+
+CLI `output` owns fallible result lines, formatted prompts and XML stdout;
+private display helpers propagate its IO errors to command dispatch. Backup
+reexports the same line writer. Binary capture checks its direct writes and
+final flush. Main reports existing failures through best-effort stderr while
+retaining their failure status. See [encoding/output contracts and migration](
+plist-json-contract.md); A02 classification/stream and L01 cleanup acceptance
+remain distinct.
+
 ## Feature flags
 
 `ios-core` keeps most service implementations behind feature flags. Examples include `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, and `deviceinfo`.

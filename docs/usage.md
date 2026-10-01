@@ -1,5 +1,10 @@
 # Usage
 
+Historical plist/JSON encodings and failed-stdout exits are documented in the
+[result contract](plist-json-contract.md). Result/help/version output failure
+returns exit 1; successful formats stay compatible. An output error can follow
+completed side effects and does not promise rollback or a safe retry.
+
 The binary is named `ios`. Most commands print JSON by default so they can be
 used from scripts. Pass `--no-json` for a more human-readable table or text
 format where a command supports it.

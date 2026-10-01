@@ -237,14 +237,14 @@ impl RunXcTestCmd {
 
 fn print_result(json_output: bool, value: serde_json::Value) -> Result<()> {
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
     } else if let Some(status) = value.get("status").and_then(serde_json::Value::as_str) {
         let pid = value
             .get("pid")
             .and_then(serde_json::Value::as_u64)
             .map(|pid| format!(" (pid {pid})"))
             .unwrap_or_default();
-        println!("XCTest {status}{pid}");
+        crate::output::outln!("XCTest {status}{pid}");
     }
     Ok(())
 }

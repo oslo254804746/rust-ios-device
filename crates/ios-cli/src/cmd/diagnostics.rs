@@ -1,3 +1,4 @@
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -106,14 +107,14 @@ impl DiagnosticsCmd {
                 )?;
                 ios_core::diagnostics::reboot(&mut *stream).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "status": "reboot_requested",
                         }))?
                     );
                 } else {
-                    println!("Reboot request sent.");
+                    crate::output::outln!("Reboot request sent.");
                 }
             }
             DiagnosticsSub::Shutdown { .. } => {
@@ -122,22 +123,22 @@ impl DiagnosticsCmd {
                     .await
                     .map_err(|_| anyhow::anyhow!("shutdown timed out after 30 seconds"))??;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "status": "shutdown_requested",
                         }))?
                     );
                 } else {
-                    println!("Shutdown request sent.");
+                    crate::output::outln!("Shutdown request sent.");
                 }
             }
             DiagnosticsSub::Battery => {
                 let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&battery)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&battery)?);
                 } else {
-                    print_battery(&battery);
+                    print_battery(&battery)?;
                 }
             }
             DiagnosticsSub::BatteryMonitor { count, interval_ms } => {
@@ -147,12 +148,12 @@ impl DiagnosticsCmd {
                 while collected < limit {
                     let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
                     if json {
-                        println!("{}", serde_json::to_string(&battery)?);
+                        crate::output::outln!("{}", serde_json::to_string(&battery)?);
                     } else {
                         if collected > 0 {
-                            println!();
+                            crate::output::outln!();
                         }
-                        print_battery(&battery);
+                        print_battery(&battery)?;
                     }
 
                     collected += 1;
@@ -164,51 +165,51 @@ impl DiagnosticsCmd {
             }
             DiagnosticsSub::List => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
             }
             DiagnosticsSub::Show { name } => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let (resolved_name, entry) = resolve_named_diagnostics_entry(&value, &name)?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&entry)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&entry)?);
                 } else {
-                    print_named_diagnostics_entry(&resolved_name, &entry);
+                    print_named_diagnostics_entry(&resolved_name, &entry)?;
                 }
             }
             DiagnosticsSub::Gasgauge => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let gas_gauge = extract_named_diagnostics_entry(&value, "GasGauge")?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&gas_gauge)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&gas_gauge)?);
                 } else {
-                    print_named_diagnostics_entry("GasGauge", &gas_gauge);
+                    print_named_diagnostics_entry("GasGauge", &gas_gauge)?;
                 }
             }
             DiagnosticsSub::Hdmi => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let hdmi = extract_named_diagnostics_entry(&value, "HDMI")?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&hdmi)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&hdmi)?);
                 } else {
-                    print_named_diagnostics_entry("HDMI", &hdmi);
+                    print_named_diagnostics_entry("HDMI", &hdmi)?;
                 }
             }
             DiagnosticsSub::Wifi => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let wifi = extract_named_diagnostics_entry(&value, "WiFi")?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&wifi)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&wifi)?);
                 } else {
-                    print_named_diagnostics_entry("WiFi", &wifi);
+                    print_named_diagnostics_entry("WiFi", &wifi)?;
                 }
             }
             DiagnosticsSub::Nand => {
                 let value = ios_core::diagnostics::query_all_values(&mut *stream).await?;
                 let nand = extract_named_diagnostics_entry(&value, "NAND")?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&nand)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&nand)?);
                 } else {
-                    print_named_diagnostics_entry("NAND", &nand);
+                    print_named_diagnostics_entry("NAND", &nand)?;
                 }
             }
             DiagnosticsSub::Ioregistry {
@@ -225,7 +226,7 @@ impl DiagnosticsCmd {
                     },
                 )
                 .await?;
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
             }
             DiagnosticsSub::Sysdiagnose => unreachable!("handled before diagnostics_relay connect"),
         }
@@ -254,7 +255,7 @@ async fn run_coredevice_sysdiagnose_dry_run(udid: &str, json: bool) -> Result<()
     let response = client.capture_sysdiagnose(true).await?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "dry_run": true,
@@ -263,54 +264,55 @@ async fn run_coredevice_sysdiagnose_dry_run(udid: &str, json: bool) -> Result<()
             }))?
         );
     } else {
-        println!("Dry-run sysdiagnose capture:");
-        println!("PreferredFilename: {}", response.preferred_filename);
-        println!("ExpectedLength: {}", response.file_size);
+        crate::output::outln!("Dry-run sysdiagnose capture:");
+        crate::output::outln!("PreferredFilename: {}", response.preferred_filename);
+        crate::output::outln!("ExpectedLength: {}", response.file_size);
     }
 
     Ok(())
 }
 
-fn print_battery(battery: &ios_core::diagnostics::BatteryDiagnostics) {
+fn print_battery(battery: &ios_core::diagnostics::BatteryDiagnostics) -> Result<()> {
     if let Some(value) = battery.current_capacity {
-        println!("CurrentCapacity: {value}");
+        crate::output::outln!("CurrentCapacity: {value}");
     }
     if let Some(value) = battery.is_charging {
-        println!("IsCharging: {value}");
+        crate::output::outln!("IsCharging: {value}");
     }
     if let Some(value) = battery.temperature {
-        println!("Temperature: {value}");
+        crate::output::outln!("Temperature: {value}");
     }
     if let Some(value) = battery.voltage {
-        println!("Voltage: {value}");
+        crate::output::outln!("Voltage: {value}");
     }
     if let Some(value) = battery.instant_amperage {
-        println!("InstantAmperage: {value}");
+        crate::output::outln!("InstantAmperage: {value}");
     }
     if let Some(value) = battery.cycle_count {
-        println!("CycleCount: {value}");
+        crate::output::outln!("CycleCount: {value}");
     }
     if let Some(value) = battery.design_capacity {
-        println!("DesignCapacity: {value}");
+        crate::output::outln!("DesignCapacity: {value}");
     }
     if let Some(value) = battery.nominal_charge_capacity {
-        println!("NominalChargeCapacity: {value}");
+        crate::output::outln!("NominalChargeCapacity: {value}");
     }
     if let Some(value) = battery.absolute_capacity {
-        println!("AbsoluteCapacity: {value}");
+        crate::output::outln!("AbsoluteCapacity: {value}");
     }
     if let Some(value) = battery.apple_raw_current_capacity {
-        println!("AppleRawCurrentCapacity: {value}");
+        crate::output::outln!("AppleRawCurrentCapacity: {value}");
     }
     if let Some(value) = battery.apple_raw_max_capacity {
-        println!("AppleRawMaxCapacity: {value}");
+        crate::output::outln!("AppleRawMaxCapacity: {value}");
     }
     if let Some(value) = battery.at_warn_level {
-        println!("AtWarnLevel: {value}");
+        crate::output::outln!("AtWarnLevel: {value}");
     }
     if let Some(value) = battery.at_critical_level {
-        println!("AtCriticalLevel: {value}");
+        crate::output::outln!("AtCriticalLevel: {value}");
     }
+    Ok(())
 }
 
 fn extract_named_diagnostics_entry(value: &plist::Value, key: &str) -> Result<plist::Value> {
@@ -334,20 +336,21 @@ fn resolve_named_diagnostics_entry(
         .ok_or_else(|| anyhow::anyhow!("diagnostics payload missing {key}"))
 }
 
-fn print_named_diagnostics_entry(label: &str, value: &plist::Value) {
+fn print_named_diagnostics_entry(label: &str, value: &plist::Value) -> Result<()> {
     if let Some(dict) = value.as_dictionary() {
-        println!("{label}:");
+        crate::output::outln!("{label}:");
         let mut keys: Vec<_> = dict.keys().cloned().collect();
         keys.sort();
         for key in keys {
             if let Some(entry) = dict.get(&key) {
-                println!("  {key}: {}", format_plist_value(entry));
+                crate::output::outln!("  {key}: {}", format_plist_value(entry));
             }
         }
-        return;
+        return Ok(());
     }
 
-    println!("{label}: {}", format_plist_value(value));
+    crate::output::outln!("{label}: {}", format_plist_value(value));
+    Ok(())
 }
 
 fn format_plist_value(value: &plist::Value) -> String {
@@ -365,28 +368,12 @@ fn format_plist_value(value: &plist::Value) -> String {
 }
 
 fn plist_to_json(v: &plist::Value) -> serde_json::Value {
-    match v {
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::json!(i)
-            } else {
-                serde_json::json!(n.as_unsigned().unwrap_or(0))
-            }
-        }
-        plist::Value::Real(f) => serde_json::json!(f),
-        plist::Value::Data(d) => serde_json::Value::String(hex::encode(d)),
-        plist::Value::Array(a) => serde_json::Value::Array(a.iter().map(plist_to_json).collect()),
-        plist::Value::Dictionary(d) => {
-            let mut m = serde_json::Map::new();
-            for (k, val) in d {
-                m.insert(k.clone(), plist_to_json(val));
-            }
-            serde_json::Value::Object(m)
-        }
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(
+        v,
+        PlistJsonPolicy::new(DataEncoding::HexString)
+            .without_date_and_uid()
+            .with_zero_integer_fallback(),
+    )
 }
 
 #[cfg(test)]
@@ -565,4 +552,15 @@ mod tests {
         let cmd = TestCli::parse_from(["diagnostics", "sysdiagnose"]);
         assert!(matches!(cmd.command, DiagnosticsSub::Sysdiagnose));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        false,
+    );
 }

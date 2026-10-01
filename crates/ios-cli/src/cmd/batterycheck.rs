@@ -25,15 +25,15 @@ impl BatterycheckCmd {
         let info = fetch_battery_info(&udid).await?;
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&info)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&info)?);
         } else {
-            println!("BatteryCurrentCapacity: {}", info.battery_current_capacity);
-            println!("BatteryIsCharging:      {}", info.battery_is_charging);
-            println!("ExternalChargeCapable:  {}", info.external_charge_capable);
-            println!("ExternalConnected:      {}", info.external_connected);
-            println!("FullyCharged:           {}", info.fully_charged);
-            println!("GasGaugeCapability:     {}", info.gas_gauge_capability);
-            println!("HasBattery:             {}", info.has_battery);
+            crate::output::outln!("BatteryCurrentCapacity: {}", info.battery_current_capacity);
+            crate::output::outln!("BatteryIsCharging:      {}", info.battery_is_charging);
+            crate::output::outln!("ExternalChargeCapable:  {}", info.external_charge_capable);
+            crate::output::outln!("ExternalConnected:      {}", info.external_connected);
+            crate::output::outln!("FullyCharged:           {}", info.fully_charged);
+            crate::output::outln!("GasGaugeCapability:     {}", info.gas_gauge_capability);
+            crate::output::outln!("HasBattery:             {}", info.has_battery);
         }
 
         Ok(())

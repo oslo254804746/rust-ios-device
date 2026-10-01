@@ -80,7 +80,7 @@ impl NotificationCmd {
         match self.sub {
             NotificationSub::Post { notification } => {
                 client.post(&notification).await?;
-                println!("Posted notification: {notification}");
+                crate::output::outln!("Posted notification: {notification}");
             }
             NotificationSub::Roundtrip {
                 notification,
@@ -92,7 +92,7 @@ impl NotificationCmd {
                 client
                     .wait_for(&notification, Duration::from_secs(timeout))
                     .await?;
-                println!("{}", render_notification_output(&notification, json, None)?);
+                crate::output::outln!("{}", render_notification_output(&notification, json, None)?);
             }
             NotificationSub::Observe {
                 notification,
@@ -109,7 +109,7 @@ impl NotificationCmd {
                         ios_core::notificationproxy::NotificationProxyEvent::Notification(name) => {
                             if name == notification {
                                 seen += 1;
-                                println!(
+                                crate::output::outln!(
                                     "{}",
                                     render_notification_output(&name, json, Some(seen))?
                                 );
@@ -129,7 +129,7 @@ impl NotificationCmd {
                 client
                     .wait_for(&notification, Duration::from_secs(timeout))
                     .await?;
-                println!("{}", render_notification_output(&notification, json, None)?);
+                crate::output::outln!("{}", render_notification_output(&notification, json, None)?);
             }
             NotificationSub::Stream {
                 notifications,
@@ -162,7 +162,7 @@ impl NotificationCmd {
                     match event {
                         NotificationEvent::Notification(name) => {
                             received += 1;
-                            println!(
+                            crate::output::outln!(
                                 "{}",
                                 render_notification_output(&name, json, Some(received))?
                             );
@@ -180,7 +180,7 @@ impl NotificationCmd {
                 client
                     .wait_for_springboard(Duration::from_secs(timeout))
                     .await?;
-                println!(
+                crate::output::outln!(
                     "{}",
                     render_notification_output(
                         ios_core::notificationproxy::SPRINGBOARD_FINISHED_STARTUP,

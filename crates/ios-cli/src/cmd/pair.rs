@@ -96,13 +96,15 @@ impl PairCmd {
         if self.list {
             let creds = ios_core::PersistedCredentials::list(&creds_dir);
             if creds.is_empty() {
-                println!("No saved pair credentials found.");
+                crate::output::outln!("No saved pair credentials found.");
             } else {
-                println!("{} credential(s) in {}:", creds.len(), creds_dir.display());
+                crate::output::outln!("{} credential(s) in {}:", creds.len(), creds_dir.display());
                 for c in &creds {
-                    println!(
+                    crate::output::outln!(
                         "  {} (id={}, rsd_port={})",
-                        c.device_address, c.host_identifier, c.rsd_port
+                        c.device_address,
+                        c.host_identifier,
+                        c.rsd_port
                     );
                 }
             }
@@ -161,15 +163,15 @@ impl PairCmd {
         };
         remote_pair_record.save_for_identifier(&creds_dir, &creds.remote_identifier)?;
 
-        println!("Pairing successful!");
-        println!("  Remote ID: {}", creds.remote_identifier);
-        println!("  Host ID: {}", creds.host_identifier);
-        println!(
+        crate::output::outln!("Pairing successful!");
+        crate::output::outln!("  Remote ID: {}", creds.remote_identifier);
+        crate::output::outln!("  Host ID: {}", creds.host_identifier);
+        crate::output::outln!(
             "  Saved legacy creds: {}",
             ios_core::PersistedCredentials::path_for(&creds_dir, &device_addr.to_string())
                 .display()
         );
-        println!(
+        crate::output::outln!(
             "  Saved remote pair: {}",
             ios_core::RemotePairingRecord::path_for_identifier(
                 &creds_dir,
@@ -257,14 +259,14 @@ async fn wifi_pair(
     };
     remote_pair_record.save_for_identifier(&creds_dir, &creds.remote_identifier)?;
 
-    println!("WiFi pairing successful!");
-    println!("  Remote ID: {}", creds.remote_identifier);
-    println!("  Host ID: {}", creds.host_identifier);
-    println!(
+    crate::output::outln!("WiFi pairing successful!");
+    crate::output::outln!("  Remote ID: {}", creds.remote_identifier);
+    crate::output::outln!("  Host ID: {}", creds.host_identifier);
+    crate::output::outln!(
         "  Saved legacy creds: {}",
         ios_core::PersistedCredentials::path_for(&creds_dir, &device_addr.to_string()).display()
     );
-    println!(
+    crate::output::outln!(
         "  Saved remote pair: {}",
         ios_core::RemotePairingRecord::path_for_identifier(&creds_dir, &creds.remote_identifier)
             .display()
@@ -324,7 +326,7 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     ios_core::save_pair_record(&pair_record, &escrow_bag, None, &pair_record_path)?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "success": true,
@@ -336,12 +338,12 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
             }))?
         );
     } else {
-        println!("Supervised pairing successful!");
-        println!("  UDID: {}", serial);
-        println!("  HostID: {}", pair_record.host_id);
-        println!("  SystemBUID: {}", pair_record.system_buid);
-        println!("  Pair record: {}", pair_record_path.display());
-        println!("  EscrowBag: {} bytes", escrow_bag.len());
+        crate::output::outln!("Supervised pairing successful!");
+        crate::output::outln!("  UDID: {}", serial);
+        crate::output::outln!("  HostID: {}", pair_record.host_id);
+        crate::output::outln!("  SystemBUID: {}", pair_record.system_buid);
+        crate::output::outln!("  Pair record: {}", pair_record_path.display());
+        crate::output::outln!("  EscrowBag: {} bytes", escrow_bag.len());
     }
 
     Ok(())
@@ -362,19 +364,19 @@ fn show_pair_record(udid: &str, json: bool) -> Result<()> {
     };
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        println!("UDID: {}", summary.udid);
-        println!("Path: {}", summary.path);
-        println!("HostID: {}", summary.host_id);
-        println!("SystemBUID: {}", summary.system_buid);
-        println!(
+        crate::output::outln!("UDID: {}", summary.udid);
+        crate::output::outln!("Path: {}", summary.path);
+        crate::output::outln!("HostID: {}", summary.host_id);
+        crate::output::outln!("SystemBUID: {}", summary.system_buid);
+        crate::output::outln!(
             "DeviceCertificateBytes: {}",
             summary.device_certificate_bytes
         );
-        println!("HostCertificateBytes: {}", summary.host_certificate_bytes);
-        println!("HostPrivateKeyBytes: {}", summary.host_private_key_bytes);
-        println!("RootCertificateBytes: {}", summary.root_certificate_bytes);
+        crate::output::outln!("HostCertificateBytes: {}", summary.host_certificate_bytes);
+        crate::output::outln!("HostPrivateKeyBytes: {}", summary.host_private_key_bytes);
+        crate::output::outln!("RootCertificateBytes: {}", summary.root_certificate_bytes);
     }
 
     Ok(())

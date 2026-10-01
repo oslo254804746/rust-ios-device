@@ -103,6 +103,8 @@ the matching feature.
 
 ## Documentation
 
+- [Plist/JSON policies](../../docs/plist-json-contract.md) document explicit
+  borrowed/owned conversion profiles and their input/output budget boundary.
 - [Public compatibility rules](../../docs/public-contract.md) describe maintained
   candidate root paths, public fields/enums and feature aliases; device maturity
   remains in the capability catalog.

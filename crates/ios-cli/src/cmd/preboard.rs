@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -53,11 +52,9 @@ impl PreboardCmd {
 
         let value = plist::Value::Dictionary(response);
         if json {
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
         } else {
-            let mut stdout = std::io::stdout().lock();
-            plist::to_writer_xml(&mut stdout, &value)?;
-            writeln!(&mut stdout)?;
+            crate::output::write_plist_xml(&value)?;
         }
         Ok(())
     }

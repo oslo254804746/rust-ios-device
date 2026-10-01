@@ -35,7 +35,7 @@ impl DeviceStateCmd {
             DeviceStateSub::List { json } => {
                 let profiles = client.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&profiles)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&profiles)?);
                 } else {
                     let mut table = Table::new();
                     table.set_header([
@@ -58,7 +58,7 @@ impl DeviceStateCmd {
                             ]);
                         }
                     }
-                    println!("{table}");
+                    crate::output::outln!("{table}");
                 }
             }
             DeviceStateSub::Enable {
@@ -74,11 +74,11 @@ impl DeviceStateCmd {
                         "device reported failure enabling profile {profile_id} for {profile_type_id}"
                     );
                 }
-                println!("Enabled {profile_type_id}:{profile_id}");
+                crate::output::outln!("Enabled {profile_type_id}:{profile_id}");
             }
             DeviceStateSub::Disable => {
                 client.disable().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-                println!("Disabled active condition");
+                crate::output::outln!("Disabled active condition");
             }
         }
         Ok(())

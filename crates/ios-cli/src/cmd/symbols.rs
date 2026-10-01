@@ -190,10 +190,10 @@ async fn open_append(output: &Path) -> Result<std::fs::File> {
 
 fn render_list(files: Vec<String>, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&files)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&files)?);
     } else {
         for (index, path) in files.iter().enumerate() {
-            println!("[{index}] {path}");
+            crate::output::outln!("[{index}] {path}");
         }
     }
     Ok(())
@@ -201,7 +201,7 @@ fn render_list(files: Vec<String>, json: bool) -> Result<()> {
 
 fn render_pull(index: u32, output: &Path, bytes: u64, truncated: bool, json: bool) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "index": index,
@@ -211,7 +211,7 @@ fn render_pull(index: u32, output: &Path, bytes: u64, truncated: bool, json: boo
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Downloaded {bytes} bytes from symbol index {index} to {}",
             output.display()
         );
@@ -221,7 +221,7 @@ fn render_pull(index: u32, output: &Path, bytes: u64, truncated: bool, json: boo
 
 fn render_download(output_dir: &Path, files: usize, bytes: u64, json: bool) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "output_dir": output_dir.display().to_string(),
@@ -230,7 +230,7 @@ fn render_download(output_dir: &Path, files: usize, bytes: u64, json: bool) -> R
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Downloaded {files} symbol files ({bytes} bytes) to {}",
             output_dir.display()
         );

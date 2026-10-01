@@ -49,7 +49,7 @@ impl LocationCmd {
                 ios_core::simlocation::set_location(&mut *stream, &latitude, &longitude)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation set failed: {e}"))?;
-                println!("Location simulation set to {latitude}, {longitude}");
+                crate::output::outln!("Location simulation set to {latitude}, {longitude}");
             }
             LocationSub::Gpx { file } => {
                 let gpx = fs::read_to_string(&file).await.map_err(|e| {
@@ -68,7 +68,7 @@ impl LocationCmd {
                 let count = ios_core::simlocation::replay_gpx_route(&mut *stream, &gpx)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation GPX replay failed: {e}"))?;
-                println!("Replayed {count} GPX point(s) from {}", file.display());
+                crate::output::outln!("Replayed {count} GPX point(s) from {}", file.display());
             }
             LocationSub::Reset => {
                 let opts = ConnectOptions {
@@ -83,7 +83,7 @@ impl LocationCmd {
                 ios_core::simlocation::reset_location(&mut *stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("simlocation reset failed: {e}"))?;
-                println!("Location simulation reset.");
+                crate::output::outln!("Location simulation reset.");
             }
         }
 

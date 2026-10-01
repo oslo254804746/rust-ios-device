@@ -1,3 +1,4 @@
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -53,11 +54,11 @@ pub(crate) async fn run_heartbeat(
 
     if json {
         let list: Vec<_> = messages.iter().map(plist_to_json).collect();
-        println!("{}", serde_json::to_string_pretty(&list)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
     } else {
         for (idx, message) in messages.iter().enumerate() {
-            println!("Heartbeat {}", idx + 1);
-            println!("{}", serde_json::to_string_pretty(&plist_to_json(message))?);
+            crate::output::outln!("Heartbeat {}", idx + 1);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&plist_to_json(message))?);
         }
     }
 
@@ -65,39 +66,7 @@ pub(crate) async fn run_heartbeat(
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(v) => serde_json::Value::Bool(*v),
-        plist::Value::Data(bytes) => serde_json::Value::Array(
-            bytes
-                .iter()
-                .map(|byte| serde_json::Value::from(*byte))
-                .collect(),
-        ),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(k, v)| (k.clone(), plist_to_json(v)))
-                .collect(),
-        ),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::Value::from(i)
-            } else if let Some(u) = n.as_unsigned() {
-                serde_json::Value::from(u)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        plist::Value::Real(v) => serde_json::Number::from_f64(*v)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Uid(uid) => serde_json::Value::from(uid.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::NumericArray))
 }
 
 #[cfg(test)]
@@ -123,4 +92,15 @@ mod tests {
         let cmd = TestCli::parse_from(["heartbeat", "--timeout", "5"]);
         assert_eq!(cmd.command.timeout, Some(5));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!([0, 127, 255]),
+        serde_json::json!([]),
+        true,
+    );
 }

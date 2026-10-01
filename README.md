@@ -58,6 +58,9 @@ Detailed docs live in [`docs/`](docs/): [architecture](docs/architecture.md),
 The [public compatibility rules](docs/public-contract.md) define maintained
 candidate Rust/CLI/C/Python interfaces and migrations; host compatibility
 fixtures do not certify a stable device workflow.
+The [plist/JSON result contract](docs/plist-json-contract.md) records preserved
+encodings and failed-stdout exits: result/help/version write failures return 1,
+including a closed pipe, while successful output formats remain compatible.
 
 ## Install
 

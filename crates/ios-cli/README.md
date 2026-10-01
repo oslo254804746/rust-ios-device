@@ -105,6 +105,9 @@ per-file backup semantics, cleanup failures and platform acceptance conditions.
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - [Public compatibility rules](../../docs/public-contract.md) govern arguments,
   result shapes, exits and explicit migrations.
+- [Encoding and stdout failure contracts](../../docs/plist-json-contract.md)
+  preserve historical result bytes and document the exit 101/0 to 1 migration
+  for failed result/help/version output.
 - API docs: <https://docs.rs/ios-cli>
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>
 - CLI map: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md>

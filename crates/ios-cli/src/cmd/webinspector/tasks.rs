@@ -59,12 +59,12 @@ pub(super) async fn run_opened_tabs(
     let rows = pages.into_iter().map(opened_tab_row).collect::<Vec<_>>();
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&rows)?);
     } else if rows.is_empty() {
-        println!("No inspectable pages reported");
+        crate::output::outln!("No inspectable pages reported");
     } else {
         for row in rows {
-            println!(
+            crate::output::outln!(
                 "{} [{}] page={} {} {}",
                 row.application_name,
                 row.bundle_identifier,
@@ -72,8 +72,8 @@ pub(super) async fn run_opened_tabs(
                 row.title.as_deref().unwrap_or("<no title>"),
                 row.url.as_deref().unwrap_or("<no url>")
             );
-            println!("  app_id: {}", row.application_id);
-            println!("  type: {}", row.page_type);
+            crate::output::outln!("  app_id: {}", row.application_id);
+            crate::output::outln!("  type: {}", row.page_type);
         }
     }
     Ok(())
@@ -131,7 +131,7 @@ pub(super) async fn run_eval(
     }
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&response)?);
     } else {
         print_runtime_evaluation_human(&response)?;
     }
@@ -158,17 +158,17 @@ pub(super) async fn run_launch(
     }?;
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("Launched {} (pid {})", result.bundle_id, result.pid);
-        println!("  page: {}", result.page_id);
-        println!("  url: {}", result.url.as_deref().unwrap_or("<no url>"));
-        println!("  title: {}", result.title);
-        println!("  session: {}", result.session_id);
+        crate::output::outln!("Launched {} (pid {})", result.bundle_id, result.pid);
+        crate::output::outln!("  page: {}", result.page_id);
+        crate::output::outln!("  url: {}", result.url.as_deref().unwrap_or("<no url>"));
+        crate::output::outln!("  title: {}", result.title);
+        crate::output::outln!("  session: {}", result.session_id);
         if let Some(connection_id) = result.automation_connection_id.as_deref() {
-            println!("  automation connection: {connection_id}");
+            crate::output::outln!("  automation connection: {connection_id}");
         }
-        println!("  service: {}", result.service_name);
+        crate::output::outln!("  service: {}", result.service_name);
     }
     Ok(())
 }
@@ -356,9 +356,9 @@ async fn run_js_shell_inner(
         "service_name": if uses_rsd { RSD_SERVICE_NAME } else { SERVICE_NAME },
     });
     if json_output {
-        println!("{}", serde_json::to_string(&metadata)?);
+        crate::output::outln!("{}", serde_json::to_string(&metadata)?);
     } else {
-        println!(
+        crate::output::outln!(
             "Connected to {} page={} {}",
             application.bundle_identifier,
             page.id,

@@ -83,6 +83,13 @@ retroactively assumed for an older schema. Introduce an explicit output/schema
 version or opt-in form when changing an incompatible shape. Human prose and
 diagnostic correlation are not machine classifiers.
 
+[R04 encoding/output migration](plist-json-contract.md) retains historical
+Data/Date/Uid profiles. Failed result stdout now returns 1 instead of a possible
+panic/101; failed help/version stdout returns 1 instead of silent success/0.
+An already-unsuccessful command retains its status if stderr reporting also
+fails. Output failure can follow completed side effects and does not imply
+rollback or permission to retry.
+
 ## C ABI and ownership
 
 Do not change a current symbol, calling convention, parameter type/order,

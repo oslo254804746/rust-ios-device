@@ -91,6 +91,33 @@ fn event_id(event: DeviceEvent) -> u32 {
     }
 }
 
+#[test]
+fn public_plist_conversion_policies_select_historical_data_formats() {
+    use ios_core::plist_json::{into_json, to_json, DataEncoding, PlistJsonPolicy};
+    let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+        ("data".to_string(), plist::Value::Data(vec![0, 127, 255])),
+        (
+            "uid".to_string(),
+            plist::Value::Uid(plist::Uid::new(u64::MAX)),
+        ),
+    ]));
+    let hex = PlistJsonPolicy::new(DataEncoding::HexString);
+    assert_eq!(
+        to_json(&value, hex),
+        serde_json::json!({"data":"007fff","uid":u64::MAX})
+    );
+    let numeric = PlistJsonPolicy::new(DataEncoding::NumericArray);
+    assert_eq!(
+        to_json(&value, numeric),
+        serde_json::json!({"data":[0,127,255],"uid":u64::MAX})
+    );
+    let legacy = hex.without_date_and_uid().with_zero_integer_fallback();
+    assert_eq!(
+        into_json(value, legacy),
+        serde_json::json!({"data":"007fff","uid":null})
+    );
+}
+
 fn mode_name(mode: TunMode) -> &'static str {
     match mode {
         TunMode::Kernel => "kernel",

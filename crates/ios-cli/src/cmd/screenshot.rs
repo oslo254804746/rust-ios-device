@@ -244,7 +244,7 @@ fn print_screenshot_result(
     json: bool,
 ) -> Result<()> {
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "output": output,

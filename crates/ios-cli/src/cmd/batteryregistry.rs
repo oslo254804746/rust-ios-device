@@ -21,54 +21,54 @@ impl BatteryregistryCmd {
         let battery = ios_core::diagnostics::query_battery(&mut *stream).await?;
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&battery)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&battery)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "InstantAmperage:        {}",
                 display_opt(battery.instant_amperage)
             );
-            println!(
+            crate::output::outln!(
                 "Temperature:            {}",
                 display_opt(battery.temperature)
             );
-            println!("Voltage:                {}", display_opt(battery.voltage));
-            println!(
+            crate::output::outln!("Voltage:                {}", display_opt(battery.voltage));
+            crate::output::outln!(
                 "IsCharging:             {}",
                 display_opt(battery.is_charging)
             );
-            println!(
+            crate::output::outln!(
                 "CurrentCapacity:        {}",
                 display_opt(battery.current_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "DesignCapacity:         {}",
                 display_opt(battery.design_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "NominalChargeCapacity:  {}",
                 display_opt(battery.nominal_charge_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "AbsoluteCapacity:       {}",
                 display_opt(battery.absolute_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "AppleRawCurrentCapacity:{}",
                 display_opt(battery.apple_raw_current_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "AppleRawMaxCapacity:    {}",
                 display_opt(battery.apple_raw_max_capacity)
             );
-            println!(
+            crate::output::outln!(
                 "CycleCount:             {}",
                 display_opt(battery.cycle_count)
             );
-            println!(
+            crate::output::outln!(
                 "AtCriticalLevel:        {}",
                 display_opt(battery.at_critical_level)
             );
-            println!(
+            crate::output::outln!(
                 "AtWarnLevel:            {}",
                 display_opt(battery.at_warn_level)
             );

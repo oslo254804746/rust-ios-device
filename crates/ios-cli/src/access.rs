@@ -305,7 +305,7 @@ impl AuthCmd {
         let receipt = tokio::task::spawn_blocking(move || self.run_blocking())
             .await
             .context("manager credential worker failed")??;
-        println!("{}", serde_json::to_string(&receipt)?);
+        crate::output::outln!("{}", serde_json::to_string(&receipt)?);
         Ok(())
     }
 

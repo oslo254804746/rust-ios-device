@@ -271,10 +271,21 @@ async fn main() -> ExitCode {
         Ok(matches) => matches,
         Err(error) => match error.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
-                error.exit()
+                if let Err(error) = error.print() {
+                    let error = anyhow::Error::new(error);
+                    let _ = output::write_error_line(format_args!(
+                        "help/version output failed: {}",
+                        output::error_message(&error)
+                    ));
+                    return ExitCode::FAILURE;
+                }
+                return ExitCode::SUCCESS;
             }
             _ => {
-                eprintln!("{}", output::argument_error_message(&error));
+                let _ = output::write_error_line(format_args!(
+                    "{}",
+                    output::argument_error_message(&error)
+                ));
                 return ExitCode::from(2);
             }
         },
@@ -284,7 +295,10 @@ async fn main() -> ExitCode {
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => {
-            eprintln!("{}", output::argument_error_message(&error));
+            let _ = output::write_error_line(format_args!(
+                "{}",
+                output::argument_error_message(&error)
+            ));
             return ExitCode::from(2);
         }
     };
@@ -305,7 +319,10 @@ async fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{phase} failed: {}", output::error_message(&error));
+            let _ = output::write_error_line(format_args!(
+                "{phase} failed: {}",
+                output::error_message(&error)
+            ));
             ExitCode::FAILURE
         }
     }
@@ -832,3 +849,6 @@ mod tests {
         assert!(!command_needs_default_udid(&list.command));
     }
 }
+
+#[cfg(test)]
+mod plist_contract;

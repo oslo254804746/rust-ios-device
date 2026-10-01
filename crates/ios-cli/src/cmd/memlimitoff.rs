@@ -60,7 +60,7 @@ impl MemlimitoffCmd {
                 pid
             ));
         }
-        println!("Disabled memory limit for PID {pid}");
+        crate::output::outln!("Disabled memory limit for PID {pid}");
         Ok(())
     }
 }

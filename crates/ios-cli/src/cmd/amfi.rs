@@ -40,14 +40,14 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("amfi reveal-developer-mode failed: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer_mode_revealed": true,
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Developer Mode option revealed. Open Settings > Privacy & Security on the device."
         );
     }
@@ -68,7 +68,7 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("amfi enable-developer-mode failed: {e}"))?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "developer_mode_enable_requested": true,
@@ -76,7 +76,9 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
             }))?
         );
     } else {
-        println!("Developer Mode enable requested. Restart the device and confirm the prompt.");
+        crate::output::outln!(
+            "Developer Mode enable requested. Restart the device and confirm the prompt."
+        );
     }
 
     Ok(())

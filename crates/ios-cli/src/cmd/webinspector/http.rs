@@ -116,7 +116,7 @@ pub(super) async fn server_state(
 
 pub(super) async fn serve(listener: TcpListener, app: Router) -> Result<()> {
     let addr = listener.local_addr()?;
-    println!("Listening on http://{addr}");
+    crate::output::outln!("Listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }

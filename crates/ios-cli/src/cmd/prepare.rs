@@ -101,7 +101,7 @@ fn run_create_cert(
     ios_core::secret_file::write_secret(&p12_path, &identity.pkcs12_der)?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "certificate_der": der_path.display().to_string(),
@@ -112,10 +112,10 @@ fn run_create_cert(
             }))?
         );
     } else {
-        println!("DER: {}", der_path.display());
-        println!("PEM: {}", pem_path.display());
-        println!("Key: {}", key_path.display());
-        println!("P12: {}", p12_path.display());
+        crate::output::outln!("DER: {}", der_path.display());
+        crate::output::outln!("PEM: {}", pem_path.display());
+        crate::output::outln!("Key: {}", key_path.display());
+        crate::output::outln!("P12: {}", p12_path.display());
     }
 
     Ok(())
@@ -190,7 +190,7 @@ async fn run_prepare(
     ensure_skip_setup_marker(&device).await?;
 
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "prepared": true,
@@ -203,13 +203,13 @@ async fn run_prepare(
             }))?
         );
     } else {
-        println!("Prepared device {udid}");
-        println!("Language: {language}");
-        println!("Locale: {locale}");
+        crate::output::outln!("Prepared device {udid}");
+        crate::output::outln!("Language: {language}");
+        crate::output::outln!("Locale: {locale}");
         if let Some(time_zone) = time_zone {
-            println!("Time zone: {time_zone}");
+            crate::output::outln!("Time zone: {time_zone}");
         }
-        println!(
+        crate::output::outln!(
             "Supervised: {}",
             if supervision_certificate.is_some() {
                 "yes"
@@ -217,7 +217,7 @@ async fn run_prepare(
                 "no"
             }
         );
-        println!("Skip-setup keys: {}", skip_keys.len());
+        crate::output::outln!("Skip-setup keys: {}", skip_keys.len());
     }
 
     Ok(())

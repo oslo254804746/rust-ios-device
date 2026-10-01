@@ -25,7 +25,7 @@ pub(super) async fn run_js_shell_loop<S: tokio::io::AsyncRead + tokio::io::Async
 
     loop {
         if interactive {
-            print!("> ");
+            crate::output::out!("> ");
             std::io::stdout().flush()?;
         }
         let mut line = String::new();
@@ -38,7 +38,7 @@ pub(super) async fn run_js_shell_loop<S: tokio::io::AsyncRead + tokio::io::Async
         };
         if bytes == 0 {
             if interactive {
-                println!();
+                crate::output::outln!();
             }
             return Ok(());
         }
@@ -133,7 +133,7 @@ async fn read_bounded_shell_line<R: AsyncBufRead + Unpin>(
 
 fn print_shell_value(expression: &str, value: JsonValue, json_output: bool) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string(&json!({
                 "kind": "result",
@@ -149,7 +149,7 @@ fn print_shell_value(expression: &str, value: JsonValue, json_output: bool) -> R
 
 fn print_shell_error(expression: &str, error: &str, json_output: bool) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string(&json!({
                 "kind": "error",
@@ -165,13 +165,13 @@ fn print_shell_error(expression: &str, error: &str, json_output: bool) -> Result
 
 pub(super) fn print_runtime_evaluation_human(value: &JsonValue) -> Result<()> {
     if let Some(value) = runtime_remote_object(value).and_then(|result| result.get("value")) {
-        println!("{}", value.as_str().unwrap_or(&value.to_string()));
+        crate::output::outln!("{}", value.as_str().unwrap_or(&value.to_string()));
     } else if let Some(description) =
         runtime_remote_object(value).and_then(|result| result.get("description"))
     {
-        println!("{description}");
+        crate::output::outln!("{description}");
     } else {
-        println!("{}", serde_json::to_string_pretty(value)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(value)?);
     }
     Ok(())
 }

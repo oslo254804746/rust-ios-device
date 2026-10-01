@@ -102,10 +102,10 @@ async fn run_capabilities(udid: &str, json: bool) -> Result<()> {
     };
     let capabilities = client.capabilities().await?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&capabilities)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&capabilities)?);
     } else {
         for capability in capabilities {
-            println!("{capability}");
+            crate::output::outln!("{capability}");
         }
     }
     Ok(())
@@ -119,7 +119,7 @@ async fn run_audit_types(udid: &str, json: bool) -> Result<()> {
         AccessibilityAuditClient::new(stream, version)
     };
     let types = client.supported_audit_types().await?;
-    println!("{}", render_json_value(&types, json)?);
+    crate::output::outln!("{}", render_json_value(&types, json)?);
     Ok(())
 }
 
@@ -131,7 +131,7 @@ async fn run_settings(udid: &str, json: bool) -> Result<()> {
         AccessibilityAuditClient::new(stream, version)
     };
     let settings = client.settings().await?;
-    println!("{}", render_json_value(&settings, json)?);
+    crate::output::outln!("{}", render_json_value(&settings, json)?);
     Ok(())
 }
 
@@ -143,7 +143,7 @@ async fn run_audit(udid: &str, types: &[String], json: bool) -> Result<()> {
         AccessibilityAuditClient::new(stream, version)
     };
     let result = client.run_audit(types).await?;
-    println!("{}", render_json_value(&result, json)?);
+    crate::output::outln!("{}", render_json_value(&result, json)?);
     Ok(())
 }
 
@@ -187,10 +187,10 @@ async fn run_list_items(udid: &str, limit: usize, timeout: u64, json: bool) -> R
         let items = traversal.into_items();
 
         if json {
-            println!("{}", serde_json::to_string_pretty(&items)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&items)?);
         } else {
             for (index, item) in items.iter().enumerate() {
-                print_focus(index + 1, item);
+                print_focus(index + 1, item)?;
             }
         }
 
@@ -300,9 +300,9 @@ async fn run_navigate(udid: &str, direction: &str, timeout: u64, json: bool) -> 
         match client.navigate(direction, timeout).await? {
             Some(focus) => {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&focus)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&focus)?);
                 } else {
-                    print_focus(1, &focus);
+                    print_focus(1, &focus)?;
                 }
             }
             None => {
@@ -338,12 +338,12 @@ async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("invalid platform identifier: {e}"))?;
                 client.perform_action_activate(&element_bytes).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::json!({"action": "activate", "element": focus})
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Activated: {}",
                         focus.caption.as_deref().unwrap_or("<no caption>")
                     );
@@ -378,11 +378,11 @@ async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
         match focus {
             Some(focus) => {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&focus)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&focus)?);
                 } else {
-                    print_focus(1, &focus);
+                    print_focus(1, &focus)?;
                     if let Some(ref desc) = focus.spoken_description {
-                        println!("  voice: {desc}");
+                        crate::output::outln!("  voice: {desc}");
                     }
                 }
             }
@@ -489,16 +489,17 @@ fn render_json_value(value: &serde_json::Value, json: bool) -> Result<String> {
     }
 }
 
-fn print_focus(index: usize, focus: &FocusElement) {
-    println!(
+fn print_focus(index: usize, focus: &FocusElement) -> Result<()> {
+    crate::output::outln!(
         "[{index}] {}",
         focus.caption.as_deref().unwrap_or("<no caption>")
     );
     if let Some(spoken_description) = &focus.spoken_description {
-        println!("  spoken: {spoken_description}");
+        crate::output::outln!("  spoken: {spoken_description}");
     }
-    println!("  platform_identifier: {}", focus.platform_identifier);
-    println!("  estimated_uid: {}", focus.estimated_uid);
+    crate::output::outln!("  platform_identifier: {}", focus.platform_identifier);
+    crate::output::outln!("  estimated_uid: {}", focus.estimated_uid);
+    Ok(())
 }
 
 #[cfg(test)]

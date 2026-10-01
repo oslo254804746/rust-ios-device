@@ -75,6 +75,8 @@ pub(crate) mod lockdown;
 pub(crate) mod mux;
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub(crate) mod pairing_transport;
+/// Explicit policies for ordinary plist JSON results.
+pub mod plist_json;
 pub(crate) mod proto;
 #[cfg(feature = "tunnel")]
 pub(crate) mod psk_tls;
@@ -253,3 +255,6 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
 pub async fn discover_mdns() -> Result<impl futures_core::Stream<Item = MdnsDevice>, CoreError> {
     discovery::discover_mdns().await
 }
+
+#[cfg(test)]
+mod plist_contract;

@@ -315,7 +315,7 @@ async fn run_notifications(_udid: String, _count: u64, _timeout_secs: u64) -> Re
         obj.insert("selector".to_string(), Value::String(event.selector));
         obj.insert("channel_code".to_string(), Value::from(event.channel_code));
         obj.insert("payload".to_string(), nsobject_to_json(&event.payload));
-        println!("{}", serde_json::to_string_pretty(&Value::Object(obj))?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&Value::Object(obj))?);
     }
 
     fn nsobject_to_json(value: &NSObject) -> Value {
@@ -423,14 +423,19 @@ async fn run_cpu(
             Ok(Some(s)) => {
                 received += 1;
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{{\"cpu_total_load\":{:.2},\"cpu_count\":{},\"enabled_cpus\":{}}}",
-                        s.cpu_total_load, s.cpu_count, s.enabled_cpus
+                        s.cpu_total_load,
+                        s.cpu_count,
+                        s.enabled_cpus
                     );
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "[{:>4}] CPU: {:>6.2}%  ({}/{} cores)",
-                        received, s.cpu_total_load, s.enabled_cpus, s.cpu_count
+                        received,
+                        s.cpu_total_load,
+                        s.enabled_cpus,
+                        s.cpu_count
                     );
                 }
             }
@@ -490,14 +495,14 @@ async fn run_ps(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&list)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
     }
 
-    println!("{:<8} {:<6} NAME", "PID", "APP");
-    println!("{}", "-".repeat(50));
+    crate::output::outln!("{:<8} {:<6} NAME", "PID", "APP");
+    crate::output::outln!("{}", "-".repeat(50));
     for p in &procs {
-        println!(
+        crate::output::outln!(
             "{:<8} {:<6} {}",
             p.pid,
             if p.is_application { "yes" } else { "no" },
@@ -527,10 +532,10 @@ async fn run_device_info_attrs(udid: String, system: bool, json_output: bool) ->
     };
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&attrs)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&attrs)?);
     } else {
         for attr in attrs {
-            println!("{}", format_plist_value(&attr));
+            crate::output::outln!("{}", format_plist_value(&attr));
         }
     }
     Ok(())
@@ -567,7 +572,7 @@ async fn run_launch(udid: String, bundle_id: String, args: Vec<String>) -> Resul
         .await
         .map_err(|e| anyhow::anyhow!("launch error: {e}"))?;
 
-    println!("Launched {bundle_id} with PID {pid}");
+    crate::output::outln!("Launched {bundle_id} with PID {pid}");
     Ok(())
 }
 
@@ -583,7 +588,7 @@ async fn run_kill(udid: String, pid: u64) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("kill error: {e}"))?;
 
-    println!("Sent SIGKILL to PID {pid}");
+    crate::output::outln!("Sent SIGKILL to PID {pid}");
     Ok(())
 }
 
@@ -600,7 +605,7 @@ async fn run_apps(udid: String, json_output: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("application listing error: {e}"))?;
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&apps)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&apps)?);
     } else {
         let mut table = comfy_table::Table::new();
         table.set_header(["BundleID", "Name", "Version", "Type"]);
@@ -637,7 +642,7 @@ async fn run_apps(udid: String, json_output: bool) -> Result<()> {
                 ]);
             }
         }
-        println!("{table}");
+        crate::output::outln!("{table}");
     }
 
     Ok(())
@@ -664,9 +669,9 @@ async fn run_energy(udid: String, pids: Vec<i32>, count: u64, json_output: bool)
         received += 1;
 
         if json_output {
-            println!("{}", serde_json::to_string(&sample)?);
+            crate::output::outln!("{}", serde_json::to_string(&sample)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "[{:>4}] {}",
                 received,
                 serde_json::to_string_pretty(&sample.payload)?
@@ -699,19 +704,21 @@ async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> 
         received += 1;
 
         if json_output {
-            println!("{}", serde_json::to_string(&event)?);
+            crate::output::outln!("{}", serde_json::to_string(&event)?);
             continue;
         }
 
         match event {
             NetworkMonitorEvent::InterfaceDetection(event) => {
-                println!(
+                crate::output::outln!(
                     "[{:>4}] interface idx={} name={}",
-                    received, event.interface_index, event.name
+                    received,
+                    event.interface_index,
+                    event.name
                 );
             }
             NetworkMonitorEvent::ConnectionDetection(event) => {
-                println!(
+                crate::output::outln!(
                     "[{:>4}] {}:{} -> {}:{} pid={} if={} serial={} kind={}",
                     received,
                     event.local_address.address,
@@ -725,7 +732,7 @@ async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> 
                 );
             }
             NetworkMonitorEvent::ConnectionUpdate(event) => {
-                println!(
+                crate::output::outln!(
                     "[{:>4}] serial={} rx={}B/{}pkts tx={}B/{}pkts rtt(min/avg)={}/{}",
                     received,
                     event.connection_serial,
@@ -765,9 +772,9 @@ async fn run_gpu(udid: String, count: u64, json_output: bool) -> Result<()> {
         received += 1;
 
         if json_output {
-            println!("{}", serde_json::to_string(&sample)?);
+            crate::output::outln!("{}", serde_json::to_string(&sample)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "[{:>4}] {}",
                 received,
                 serde_json::to_string_pretty(&sample.payload)?
@@ -807,7 +814,7 @@ async fn run_trace(
         received += 1;
 
         if json_output {
-            println!("{}", serde_json::to_string(&entry)?);
+            crate::output::outln!("{}", serde_json::to_string(&entry)?);
             continue;
         }
 
@@ -838,7 +845,7 @@ async fn run_trace(
             entry.rendered_message.as_str()
         };
 
-        println!(
+        crate::output::outln!(
             "[{}][{}][{}][{}][{}] <{}>: {}",
             Local::now().to_rfc3339_opts(SecondsFormat::Millis, false),
             subsystem,
@@ -952,9 +959,9 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
 
                 emitted += 1;
                 if json_output {
-                    println!("{}", serde_json::to_string(&sample)?);
+                    crate::output::outln!("{}", serde_json::to_string(&sample)?);
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "[{:>4}] FPS: {:>5.1} | Jank: {} | BigJank: {} | Stutter: {:>5.1}% | Frames: {} | Window: {:.0}ms",
                         emitted,
                         sample.fps,
@@ -1007,9 +1014,18 @@ async fn run_kdebug(
     let mut emitted = 0u64;
 
     if !json_output {
-        println!(
+        crate::output::outln!(
             "{:<20} {:>5} {:>5} {:>6} {:>3} {:>16} {:>16} {:>16} {:>16} {:>10}",
-            "TIMESTAMP_NS", "CLASS", "SUBCL", "CODE", "FQ", "ARG1", "ARG2", "ARG3", "ARG4", "TID"
+            "TIMESTAMP_NS",
+            "CLASS",
+            "SUBCL",
+            "CODE",
+            "FQ",
+            "ARG1",
+            "ARG2",
+            "ARG3",
+            "ARG4",
+            "TID"
         );
     }
 
@@ -1067,7 +1083,7 @@ async fn run_kdebug(
 
                     emitted += 1;
                     if json_output {
-                        println!(
+                        crate::output::outln!(
                             "{}",
                             serde_json::json!({
                                 "timestamp_ns": timestamp_ns,
@@ -1084,7 +1100,7 @@ async fn run_kdebug(
                             })
                         );
                     } else {
-                        println!(
+                        crate::output::outln!(
                             "{:<20} {:>5} {:>5} {:>6} {:>5} {:>16x} {:>16x} {:>16x} {:>16x} {:>10}",
                             timestamp_ns,
                             class,
@@ -1202,16 +1218,16 @@ async fn run_sysmon_process(
         emitted += 1;
 
         if json_output {
-            println!("{}", serde_json::to_string(&filtered)?);
+            crate::output::outln!("{}", serde_json::to_string(&filtered)?);
         } else {
-            println!("--- Snapshot #{emitted} ({} processes) ---", filtered.len());
-            println!("{:<8} {:<6.1} {:<12} NAME", "PID", "CPU%", "MEM");
+            crate::output::outln!("--- Snapshot #{emitted} ({} processes) ---", filtered.len());
+            crate::output::outln!("{:<8} {:<6.1} {:<12} NAME", "PID", "CPU%", "MEM");
             for p in &filtered {
                 let pid = p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cpu = p.get("cpuUsage").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let mem = p.get("physFootprint").and_then(|v| v.as_u64()).unwrap_or(0);
                 let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("{:<8} {:<6.1} {:<12} {}", pid, cpu, format_bytes(mem), name);
+                crate::output::outln!("{:<8} {:<6.1} {:<12} {}", pid, cpu, format_bytes(mem), name);
             }
         }
     }
@@ -1289,7 +1305,7 @@ async fn run_sysmon_threshold(
 
         if json_output {
             for p in &above_threshold {
-                println!("{}", serde_json::to_string(p)?);
+                crate::output::outln!("{}", serde_json::to_string(p)?);
             }
         } else {
             for p in &above_threshold {
@@ -1297,7 +1313,7 @@ async fn run_sysmon_threshold(
                 let cpu = p.get("cpuUsage").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let mem = p.get("physFootprint").and_then(|v| v.as_u64()).unwrap_or(0);
                 let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                println!(
+                crate::output::outln!(
                     "PID={:<8} CPU={:.1}% MEM={} NAME={}",
                     pid,
                     cpu,

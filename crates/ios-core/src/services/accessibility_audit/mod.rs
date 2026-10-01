@@ -1,3 +1,4 @@
+use crate::plist_json::{self, DataEncoding, PlistJsonPolicy};
 crate::redaction::error_debug!(AccessibilityAuditError);
 
 use std::time::Duration;
@@ -605,30 +606,7 @@ pub fn deserialize_ax_object(value: &Value) -> JsonValue {
 }
 
 fn plist_to_json(value: &Value) -> JsonValue {
-    match value {
-        Value::Boolean(v) => JsonValue::Bool(*v),
-        Value::Data(bytes) => {
-            JsonValue::Array(bytes.iter().copied().map(JsonValue::from).collect())
-        }
-        Value::Date(date) => JsonValue::String(date.to_xml_format()),
-        Value::Integer(v) => v
-            .as_signed()
-            .map(JsonValue::from)
-            .or_else(|| v.as_unsigned().map(JsonValue::from))
-            .unwrap_or(JsonValue::Null),
-        Value::Real(v) => serde_json::Number::from_f64(*v)
-            .map(JsonValue::Number)
-            .unwrap_or(JsonValue::Null),
-        Value::String(v) => JsonValue::String(v.clone()),
-        Value::Uid(v) => JsonValue::from(v.get()),
-        Value::Array(values) => JsonValue::Array(values.iter().map(plist_to_json).collect()),
-        Value::Dictionary(dict) => JsonValue::Object(
-            dict.iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        _ => JsonValue::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::NumericArray))
 }
 
 fn deserialize_ax_json(value: &JsonValue) -> JsonValue {
@@ -963,4 +941,15 @@ mod tests {
             ])
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!([0, 127, 255]),
+        serde_json::json!([]),
+        true,
+    );
 }

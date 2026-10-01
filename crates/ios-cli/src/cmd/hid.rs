@@ -123,7 +123,7 @@ impl HidCmd {
                     .context("Indigo HID service is unavailable on this device")?;
                 let mut client = IndigoHidServiceClient::from_resolved_metadata(xpc, &metadata)?;
                 client.send_button(usage_page, usage_code, state).await?;
-                print_result(json_output, "button", 1, false);
+                print_result(json_output, "button", 1, false)?;
             }
             HidSub::Tap { x, y, service_id } => {
                 let coordinate = TouchCoordinate::new(x, y)?;
@@ -138,7 +138,7 @@ impl HidCmd {
                 let close_result = session.close(Duration::from_secs(5)).await;
                 operation?;
                 close_result?;
-                print_result(json_output, "tap", 2, false);
+                print_result(json_output, "tap", 2, false)?;
             }
             HidSub::Swipe {
                 from_x,
@@ -173,7 +173,7 @@ impl HidCmd {
                 let close_result = session.close(Duration::from_secs(5)).await;
                 operation?;
                 close_result?;
-                print_result(json_output, "swipe", steps + 1, false);
+                print_result(json_output, "swipe", steps + 1, false)?;
             }
             HidSub::Touch {
                 phase,
@@ -190,7 +190,7 @@ impl HidCmd {
                 let close_result = session.close(Duration::from_secs(5)).await;
                 operation?;
                 close_result?;
-                print_result(json_output, "touch", 1, false);
+                print_result(json_output, "touch", 1, false)?;
             }
             HidSub::Text { text, service_id } => {
                 let length = text.chars().count();
@@ -209,7 +209,7 @@ impl HidCmd {
                 let close_result = session.close(Duration::from_secs(5)).await;
                 operation?;
                 close_result?;
-                print_result(json_output, "text", length, true);
+                print_result(json_output, "text", length, true)?;
             }
             HidSub::Key {
                 usage,
@@ -236,7 +236,7 @@ impl HidCmd {
                 let close_result = session.close(Duration::from_secs(5)).await;
                 operation?;
                 close_result?;
-                print_result(json_output, "key", 1, false);
+                print_result(json_output, "key", 1, false)?;
             }
         }
         Ok(())
@@ -358,9 +358,9 @@ fn validate_text(value: &str) -> Result<String, String> {
     }
 }
 
-fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: bool) {
+fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: bool) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::json!({
                 "operation": operation,
@@ -370,10 +370,11 @@ fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: b
             })
         );
     } else if sensitive {
-        println!("Sent {operation} input ({reports} report units; text redacted)");
+        crate::output::outln!("Sent {operation} input ({reports} report units; text redacted)");
     } else {
-        println!("Sent {operation} input ({reports} report units)");
+        crate::output::outln!("Sent {operation} input ({reports} report units)");
     }
+    Ok(())
 }
 
 #[cfg(test)]

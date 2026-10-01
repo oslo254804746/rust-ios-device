@@ -32,7 +32,7 @@ impl DebugserverCmd {
                 let stream = connect_debugserver(&udid).await?;
                 let mut client = GdbRemoteClient::new(stream);
                 let reply = client.request(&packet).await?;
-                println!("{reply}");
+                crate::output::outln!("{reply}");
             }
         }
 

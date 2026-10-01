@@ -130,8 +130,9 @@ async fn run_capture(
         }
     }
 
+    writer.flush()?;
     if json {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "output": output.display().to_string(),
@@ -142,12 +143,12 @@ async fn run_capture(
             }))?
         );
     } else {
-        println!(
+        crate::output::outln!(
             "Saved {written} Bluetooth record(s) to {}",
             output.display()
         );
         if skipped > 0 {
-            println!("SkippedRecords: {skipped}");
+            crate::output::outln!("SkippedRecords: {skipped}");
         }
     }
 

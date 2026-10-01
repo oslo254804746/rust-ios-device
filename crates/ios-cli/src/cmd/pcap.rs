@@ -99,9 +99,9 @@ impl PcapCmd {
         if self.json {
             let summary =
                 PcapSummary::new(&self.output, written, &filter, capture_metadata.finish());
-            println!("{}", serde_json::to_string_pretty(&summary)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "Saved {written} packet(s) to {}",
                 self.output.to_string_lossy()
             );

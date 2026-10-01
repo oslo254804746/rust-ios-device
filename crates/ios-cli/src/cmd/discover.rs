@@ -57,18 +57,21 @@ impl DiscoverCmd {
                             "name": device.name,
                         }));
                     } else {
-                        println!(
+                        crate::output::outln!(
                             "{:<45} [{}]:{} {}",
-                            device.udid, device.ipv6, device.rsd_port, device.name
+                            device.udid,
+                            device.ipv6,
+                            device.rsd_port,
+                            device.name
                         );
                     }
                     found += 1;
                 }
 
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&devices)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&devices)?);
                 } else if found == 0 {
-                    println!("No mDNS devices discovered within {timeout}s.");
+                    crate::output::outln!("No mDNS devices discovered within {timeout}s.");
                 }
             }
             DiscoverSub::Mobdev2 { timeout, json } => {
@@ -99,19 +102,19 @@ fn print_bonjour_services(services: &[ios_core::BonjourService], json: bool) -> 
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&list)?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&list)?);
     } else if services.is_empty() {
-        println!("No services discovered.");
+        crate::output::outln!("No services discovered.");
     } else {
         for s in services {
-            println!(
+            crate::output::outln!(
                 "{:<60} port={} addrs={}",
                 s.instance,
                 s.port,
                 s.addresses.join(", ")
             );
             for (key, value) in &s.properties {
-                println!("  {key}={value}");
+                crate::output::outln!("  {key}={value}");
             }
         }
     }

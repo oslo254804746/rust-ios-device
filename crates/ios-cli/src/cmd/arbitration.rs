@@ -39,7 +39,7 @@ impl ArbitrationCmd {
                     .unwrap_or_else(|| "ios-cli".to_string());
                 client.check_in(&hostname, force).await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::json!({
                             "result": "success",
@@ -48,23 +48,23 @@ impl ArbitrationCmd {
                         })
                     );
                 } else {
-                    println!("Checked in device for host {hostname}");
+                    crate::output::outln!("Checked in device for host {hostname}");
                 }
             }
             ArbitrationSub::CheckOut => {
                 client.check_out().await?;
                 if json {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::json!({ "result": "success", "command": "check-out" })
                     );
                 } else {
-                    println!("Checked out device");
+                    crate::output::outln!("Checked out device");
                 }
             }
             ArbitrationSub::Version => {
                 let version = client.version().await?;
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::to_string_pretty(&plist::Value::Dictionary(version))?
                 );

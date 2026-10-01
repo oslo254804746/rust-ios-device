@@ -5,6 +5,7 @@
 //!
 //! Protocol: lockdown plist framing (4-byte BE length prefix).
 
+use crate::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -316,30 +317,7 @@ fn render_plist_value(value: &plist::Value) -> String {
 }
 
 fn plist_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(plist_to_json).collect())
-        }
-        plist::Value::Boolean(value) => serde_json::Value::Bool(*value),
-        plist::Value::Data(bytes) => {
-            serde_json::Value::Array(bytes.iter().copied().map(serde_json::Value::from).collect())
-        }
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Dictionary(dict) => serde_json::Value::Object(
-            dict.iter()
-                .map(|(key, value)| (key.clone(), plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::Value::from(*value),
-        plist::Value::String(value) => serde_json::Value::String(value.clone()),
-        plist::Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::NumericArray))
 }
 
 fn extract_mobile_gestalt_payload(
@@ -674,4 +652,15 @@ mod tests {
         assert!(message.contains("Entry not found"));
         assert!(message.contains("Diagnostics"));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!([0, 127, 255]),
+        serde_json::json!([]),
+        true,
+    );
 }

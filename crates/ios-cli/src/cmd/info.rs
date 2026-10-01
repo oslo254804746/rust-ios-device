@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
@@ -77,9 +78,9 @@ impl InfoCmd {
                         }
                     };
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&summary)?);
+                        crate::output::outln!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
-                        print_display_summary(&summary);
+                        print_display_summary(&summary)?;
                     }
                     return Ok(());
                 }
@@ -99,9 +100,12 @@ impl InfoCmd {
                         .lockdown_get_value_in_domain(args.domain.as_deref(), args.key.as_deref())
                         .await?;
                     if json {
-                        println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                        crate::output::outln!(
+                            "{}",
+                            serde_json::to_string_pretty(&plist_to_json(&value))?
+                        );
                     } else {
-                        print_value(&value);
+                        print_value(&value)?;
                     }
                     return Ok(());
                 }
@@ -113,9 +117,9 @@ impl InfoCmd {
                 .lockdown_get_value_in_domain(self.domain.as_deref(), self.key.as_deref())
                 .await?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
+                crate::output::outln!("{}", serde_json::to_string_pretty(&plist_to_json(&value))?);
             } else {
-                print_value(&value);
+                print_value(&value)?;
             }
             return Ok(());
         }
@@ -154,20 +158,20 @@ impl InfoCmd {
                     map.insert(k.clone(), jv);
                 }
             }
-            println!("{}", serde_json::to_string_pretty(&map)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&map)?);
         } else {
-            println!("DeviceName:       {}", get_str("DeviceName"));
-            println!("ProductType:      {}", get_str("ProductType"));
-            println!("ProductVersion:   {}", get_str("ProductVersion"));
-            println!("BuildVersion:     {}", get_str("BuildVersion"));
-            println!("HardwareModel:    {}", get_str("HardwareModel"));
-            println!("SerialNumber:     {}", get_str("SerialNumber"));
-            println!("UniqueDeviceID:   {}", get_str("UniqueDeviceID"));
-            println!("CPUArchitecture:  {}", get_str("CPUArchitecture"));
-            println!("DeviceColor:      {}", get_str("DeviceColor"));
-            println!("WiFiAddress:      {}", get_str("WiFiAddress"));
-            println!("BluetoothAddress: {}", get_str("BluetoothAddress"));
-            println!(
+            crate::output::outln!("DeviceName:       {}", get_str("DeviceName"));
+            crate::output::outln!("ProductType:      {}", get_str("ProductType"));
+            crate::output::outln!("ProductVersion:   {}", get_str("ProductVersion"));
+            crate::output::outln!("BuildVersion:     {}", get_str("BuildVersion"));
+            crate::output::outln!("HardwareModel:    {}", get_str("HardwareModel"));
+            crate::output::outln!("SerialNumber:     {}", get_str("SerialNumber"));
+            crate::output::outln!("UniqueDeviceID:   {}", get_str("UniqueDeviceID"));
+            crate::output::outln!("CPUArchitecture:  {}", get_str("CPUArchitecture"));
+            crate::output::outln!("DeviceColor:      {}", get_str("DeviceColor"));
+            crate::output::outln!("WiFiAddress:      {}", get_str("WiFiAddress"));
+            crate::output::outln!("BluetoothAddress: {}", get_str("BluetoothAddress"));
+            crate::output::outln!(
                 "DeveloperMode:    {}",
                 developer_mode.unwrap_or_else(|| get_bool("DeveloperModeStatus"))
             );
@@ -281,6 +285,17 @@ fn insert_string_field(
     }
 }
 
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        false,
+    );
+}
+
 fn insert_bool_field(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     output_key: &str,
@@ -329,79 +344,91 @@ fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
     }
 }
 
-fn print_display_summary(summary: &serde_json::Value) {
+fn print_display_summary(summary: &serde_json::Value) -> Result<()> {
     let Some(obj) = summary.as_object() else {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(summary).unwrap_or_else(|_| "null".into())
         );
-        return;
+        return Ok(());
     };
 
-    print_row(obj, "Source", "source");
-    print_row(obj, "IOClass", "io_class");
-    print_row(obj, "IONameMatched", "io_name");
-    print_row(obj, "External", "external");
-    print_row(obj, "Panel_ID", "panel_id");
-    print_fixed_row(obj, "AmbientBrightness", "ambient_brightness");
-    print_fixed_row(obj, "BrightnessLevel", "brightness_level");
-    print_fixed_row(obj, "DigitalDimmingLevel", "digital_dimming_level");
+    print_row(obj, "Source", "source")?;
+    print_row(obj, "IOClass", "io_class")?;
+    print_row(obj, "IONameMatched", "io_name")?;
+    print_row(obj, "External", "external")?;
+    print_row(obj, "Panel_ID", "panel_id")?;
+    print_fixed_row(obj, "AmbientBrightness", "ambient_brightness")?;
+    print_fixed_row(obj, "BrightnessLevel", "brightness_level")?;
+    print_fixed_row(obj, "DigitalDimmingLevel", "digital_dimming_level")?;
     if let Some(value) = obj.get("display_refresh") {
         let rendered = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
-        println!("DisplayRefresh:  {rendered}");
+        crate::output::outln!("DisplayRefresh:  {rendered}");
     }
     if let Some(value) = obj.get("raw") {
         let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-        println!("Raw:             {rendered}");
+        crate::output::outln!("Raw:             {rendered}");
     }
+    Ok(())
 }
 
-fn print_row(obj: &serde_json::Map<String, serde_json::Value>, label: &str, key: &str) {
+fn print_row(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    label: &str,
+    key: &str,
+) -> Result<()> {
     if let Some(value) = obj.get(key) {
-        println!("{label:<16} {}", format_json_value(value));
+        crate::output::outln!("{label:<16} {}", format_json_value(value));
     }
+    Ok(())
 }
 
-fn print_fixed_row(obj: &serde_json::Map<String, serde_json::Value>, label: &str, key: &str) {
+fn print_fixed_row(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    label: &str,
+    key: &str,
+) -> Result<()> {
     let raw_key = format!("{key}_raw");
     match (obj.get(&raw_key), obj.get(key)) {
         (Some(raw), Some(value)) => {
-            println!(
+            crate::output::outln!(
                 "{label:<16} {} ({})",
                 format_json_value(raw),
                 format_json_value(value)
             );
         }
-        (Some(raw), None) => println!("{label:<16} {}", format_json_value(raw)),
+        (Some(raw), None) => crate::output::outln!("{label:<16} {}", format_json_value(raw)),
         _ => {}
     }
+    Ok(())
 }
 
-fn print_value(value: &plist::Value) {
+fn print_value(value: &plist::Value) -> Result<()> {
     match value {
-        plist::Value::String(s) => println!("{s}"),
-        plist::Value::Boolean(v) => println!("{v}"),
+        plist::Value::String(s) => crate::output::outln!("{s}"),
+        plist::Value::Boolean(v) => crate::output::outln!("{v}"),
         plist::Value::Integer(n) => {
             if let Some(i) = n.as_signed() {
-                println!("{i}");
+                crate::output::outln!("{i}");
             } else if let Some(u) = n.as_unsigned() {
-                println!("{u}");
+                crate::output::outln!("{u}");
             }
         }
-        plist::Value::Real(v) => println!("{v}"),
-        other => println!(
+        plist::Value::Real(v) => crate::output::outln!("{v}"),
+        other => crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&plist_to_json(other)).unwrap_or_else(|_| "null".into())
         ),
     }
+    Ok(())
 }
 
 fn print_coredevice_value(value: &plist::Value, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&plist_to_json(value))?);
+        crate::output::outln!("{}", serde_json::to_string_pretty(&plist_to_json(value))?);
     } else {
         for (key, rendered) in coredevice_detail_lines(value) {
-            println!("{key}: {rendered}");
+            crate::output::outln!("{key}: {rendered}");
         }
     }
     Ok(())
@@ -450,28 +477,12 @@ fn format_json_value(value: &serde_json::Value) -> String {
 }
 
 fn plist_to_json(v: &plist::Value) -> serde_json::Value {
-    match v {
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::json!(i)
-            } else {
-                serde_json::json!(n.as_unsigned().unwrap_or(0))
-            }
-        }
-        plist::Value::Real(f) => serde_json::json!(f),
-        plist::Value::Data(d) => serde_json::Value::String(hex::encode(d)),
-        plist::Value::Array(a) => serde_json::Value::Array(a.iter().map(plist_to_json).collect()),
-        plist::Value::Dictionary(d) => {
-            let mut m = serde_json::Map::new();
-            for (k, val) in d {
-                m.insert(k.clone(), plist_to_json(val));
-            }
-            serde_json::Value::Object(m)
-        }
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(
+        v,
+        PlistJsonPolicy::new(DataEncoding::HexString)
+            .without_date_and_uid()
+            .with_zero_integer_fallback(),
+    )
 }
 
 #[cfg(test)]

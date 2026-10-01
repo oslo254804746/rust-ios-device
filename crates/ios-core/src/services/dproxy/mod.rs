@@ -1,3 +1,4 @@
+use crate::plist_json::{self, DataEncoding, PlistJsonPolicy};
 crate::redaction::error_debug!(DproxyError);
 
 use std::collections::HashMap;
@@ -757,31 +758,7 @@ fn xpc_value_to_json(value: &crate::xpc::XpcValue) -> serde_json::Value {
 }
 
 fn plist_to_json(value: plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::String(value) => serde_json::Value::String(value),
-        plist::Value::Boolean(value) => serde_json::Value::Bool(value),
-        plist::Value::Integer(value) => value
-            .as_signed()
-            .map(serde_json::Value::from)
-            .or_else(|| value.as_unsigned().map(serde_json::Value::from))
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Real(value) => serde_json::Number::from_f64(value)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex::encode(bytes)),
-        plist::Value::Array(values) => {
-            serde_json::Value::Array(values.into_iter().map(plist_to_json).collect())
-        }
-        plist::Value::Dictionary(values) => serde_json::Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, plist_to_json(value)))
-                .collect(),
-        ),
-        plist::Value::Date(value) => serde_json::Value::String(value.to_xml_format()),
-        plist::Value::Uid(value) => serde_json::Value::from(value.get()),
-        _ => serde_json::Value::Null,
-    }
+    plist_json::into_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 fn now_ms() -> u128 {
@@ -1039,4 +1016,15 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].decoded["request"], "ping");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_to_json(crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

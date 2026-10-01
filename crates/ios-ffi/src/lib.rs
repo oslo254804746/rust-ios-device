@@ -24,9 +24,9 @@
 //! }
 //! ```
 
+use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
-use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -113,43 +113,8 @@ fn ffi_u16(f: impl FnOnce() -> u16 + std::panic::UnwindSafe) -> u16 {
     std::panic::catch_unwind(f).unwrap_or(0)
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut out, "{byte:02x}").expect("writing to string cannot fail");
-    }
-    out
-}
-
 fn plist_value_to_json(value: &plist::Value) -> serde_json::Value {
-    match value {
-        plist::Value::String(s) => serde_json::Value::String(s.clone()),
-        plist::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        plist::Value::Integer(n) => {
-            if let Some(i) = n.as_signed() {
-                serde_json::json!(i)
-            } else if let Some(u) = n.as_unsigned() {
-                serde_json::json!(u)
-            } else {
-                serde_json::Value::Null
-            }
-        }
-        plist::Value::Real(f) => serde_json::json!(f),
-        plist::Value::Data(bytes) => serde_json::Value::String(hex_encode(bytes)),
-        plist::Value::Date(date) => serde_json::Value::String(date.to_xml_format()),
-        plist::Value::Uid(uid) => serde_json::Value::Number(serde_json::Number::from(uid.get())),
-        plist::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(plist_value_to_json).collect())
-        }
-        plist::Value::Dictionary(values) => {
-            let mut map = serde_json::Map::new();
-            for (key, value) in values {
-                map.insert(key.clone(), plist_value_to_json(value));
-            }
-            serde_json::Value::Object(map)
-        }
-        _ => serde_json::Value::Null,
-    }
+    plist_json::to_json(value, PlistJsonPolicy::new(DataEncoding::HexString))
 }
 
 fn encode_rsd_services_json(
@@ -871,4 +836,18 @@ mod tests {
             IOS_ERR_NULL
         );
     }
+}
+
+#[cfg(test)]
+mod plist_contract;
+
+#[cfg(test)]
+#[test]
+fn plist_json_legacy_contract() {
+    crate::plist_contract::check(
+        plist_value_to_json(&crate::plist_contract::value()),
+        serde_json::json!("007fff"),
+        serde_json::json!(""),
+        true,
+    );
 }

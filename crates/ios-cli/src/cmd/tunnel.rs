@@ -199,7 +199,7 @@ async fn run_tunnel_list(host: &str, port: u16, access: ClientAccessArgs) -> Res
     let body = tunnel_manager_request(reqwest::Method::GET, url, access).await?;
     let records = parse_tunnel_list_response(&body)?;
 
-    println!("{}", serde_json::to_string_pretty(&records)?);
+    crate::output::outln!("{}", serde_json::to_string_pretty(&records)?);
     Ok(())
 }
 
@@ -213,7 +213,7 @@ async fn run_tunnel_stop(
     let body = tunnel_manager_request(reqwest::Method::DELETE, url, access).await?;
     let response = parse_tunnel_stop_response(&body)?;
 
-    println!("{}", serde_json::to_string_pretty(&response)?);
+    crate::output::outln!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
 }
 
@@ -296,18 +296,18 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
         .ok_or_else(|| anyhow::anyhow!("tunnel started without an RSD port"))?;
 
     if script_mode {
-        println!("{server_address} {rsd_port}");
+        crate::output::outln!("{server_address} {rsd_port}");
     } else {
-        println!("Identifier: {udid}");
-        println!("Mode: {mode}");
-        println!("Protocol: tcp");
-        println!("RSD Address: {server_address}");
-        println!("RSD Port: {rsd_port}");
+        crate::output::outln!("Identifier: {udid}");
+        crate::output::outln!("Mode: {mode}");
+        crate::output::outln!("Protocol: tcp");
+        crate::output::outln!("RSD Address: {server_address}");
+        crate::output::outln!("RSD Port: {rsd_port}");
         if let Some(userspace_port) = device.userspace_port() {
-            println!("Userspace Proxy: 127.0.0.1:{userspace_port}");
+            crate::output::outln!("Userspace Proxy: 127.0.0.1:{userspace_port}");
         }
-        println!("Use the following connection option:");
-        println!("--rsd {server_address} {rsd_port}");
+        crate::output::outln!("Use the following connection option:");
+        crate::output::outln!("--rsd {server_address} {rsd_port}");
     }
     std::io::stdout().flush()?;
 

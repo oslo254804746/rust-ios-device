@@ -165,11 +165,12 @@ impl DisplayCmd {
                 let status = client.get_media_stream_server_status().await?;
                 let value = serde_json::json!({"support": xpc_value_to_json(&support), "status": xpc_value_to_json(&status)});
                 if json_output {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
+                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "Media support: {}\nMedia status: {}",
-                        value["support"], value["status"]
+                        value["support"],
+                        value["status"]
                     );
                 }
                 Ok(())
@@ -277,7 +278,7 @@ async fn capture_display(
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("capture access-unit count overflow"))?;
             if json_output {
-                println!(
+                crate::output::outln!(
                     "{}",
                     serde_json::json!({"kind": if kind == MediaKind::Video {"video"} else {"audio"}, "timestamp": unit.timestamp, "sequenceStart": unit.sequence_start, "sequenceEnd": unit.sequence_end, "ssrc": unit.ssrc, "size": unit.data.len()})
                 );
@@ -304,7 +305,7 @@ async fn capture_display(
     }
     stop_result?;
     if !json_output {
-        println!(
+        crate::output::outln!(
             "Captured {units} {} access units ({bytes} bytes)",
             if kind == MediaKind::Video {
                 "video"
@@ -503,12 +504,12 @@ impl ConfigurationCmd {
                     }
                 };
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&set_operation_json(setting, result_value))?
                     );
                 } else {
-                    println!("Set {} to {result_value}", setting_name(setting));
+                    crate::output::outln!("Set {} to {result_value}", setting_name(setting));
                 }
                 Ok(())
             }
@@ -522,7 +523,7 @@ impl OrientationCmd {
         let (mut client, _device) = connect_orientation(udid).await?;
         let state = client.rotate(direction).await?;
         if json_output {
-            println!(
+            crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "direction": direction.to_string(),
@@ -530,7 +531,7 @@ impl OrientationCmd {
                 }))?
             );
         } else {
-            print_orientation(direction, &state);
+            print_orientation(direction, &state)?;
         }
         Ok(())
     }
@@ -607,12 +608,12 @@ fn render_setting(
     json_output: bool,
 ) -> Result<()> {
     if json_output {
-        println!(
+        crate::output::outln!(
             "{}",
             serde_json::to_string_pretty(&setting_json(setting, value))?
         );
     } else {
-        println!("{}: {value}", setting_name(setting));
+        crate::output::outln!("{}: {value}", setting_name(setting));
     }
     Ok(())
 }
@@ -635,17 +636,18 @@ fn set_operation_json(
     })
 }
 
-fn print_orientation(direction: RotationDirection, state: &OrientationState) {
-    println!("Rotated {}", direction);
-    println!("orientation: {}", state.current_device_orientation);
-    println!(
+fn print_orientation(direction: RotationDirection, state: &OrientationState) -> Result<()> {
+    crate::output::outln!("Rotated {}", direction);
+    crate::output::outln!("orientation: {}", state.current_device_orientation);
+    crate::output::outln!(
         "non-flat orientation: {}",
         state.current_device_non_flat_orientation
     );
-    println!(
+    crate::output::outln!(
         "orientation locked: {}",
         state.current_device_orientation_locked
     );
+    Ok(())
 }
 
 #[cfg(test)]

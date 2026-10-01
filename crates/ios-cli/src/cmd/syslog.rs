@@ -120,11 +120,14 @@ impl SyslogCmd {
                         continue;
                     }
                     if json_output {
-                        println!("{}", serde_json::to_string(&log_entry_to_json(&entry))?);
+                        crate::output::outln!(
+                            "{}",
+                            serde_json::to_string(&log_entry_to_json(&entry))?
+                        );
                     } else if self.parse {
-                        println!("{}", format_parsed_entry(&entry));
+                        crate::output::outln!("{}", format_parsed_entry(&entry));
                     } else {
-                        print!("{line}");
+                        crate::output::out!("{line}");
                     }
                     received += 1;
                     if self.count.is_some_and(|count| received >= count) {

@@ -106,7 +106,7 @@ impl WdaCmd {
                 if json_output {
                     print_json(response)?;
                 } else if let Some(source) = response.get("value").and_then(Value::as_str) {
-                    println!("{source}");
+                    crate::output::outln!("{source}");
                 } else {
                     print_json(response)?;
                 }
@@ -123,12 +123,12 @@ impl WdaCmd {
                         .context("WDA screenshot was not valid base64")?;
                 tokio::fs::write(&output, data).await?;
                 if json_output {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({ "output": output }))?
                     );
                 } else {
-                    println!("Wrote {output}");
+                    crate::output::outln!("Wrote {output}");
                 }
             }
             WdaSub::Find {
@@ -145,7 +145,7 @@ impl WdaCmd {
                 if json_output {
                     print_json(response)?;
                 } else {
-                    println!(
+                    crate::output::outln!(
                         "{}",
                         element_id(&response).context("WDA did not return an element id")?
                     );
@@ -345,7 +345,7 @@ impl WdaHttpClient {
 }
 
 fn print_json(value: Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 

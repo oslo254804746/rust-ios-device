@@ -77,11 +77,13 @@ impl DoctorCmd {
     pub async fn run(self, json: bool) -> Result<()> {
         let report = self.inspect().await;
         if json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            println!(
+            crate::output::outln!(
                 "ios {} host diagnostics ({} / {})",
-                report.version, report.os, report.arch
+                report.version,
+                report.os,
+                report.arch
             );
             for check in &report.checks {
                 let status = match check.status {
@@ -90,9 +92,9 @@ impl DoctorCmd {
                     Status::Failed => "FAIL",
                     Status::Unknown => "?",
                 };
-                println!("[{status}] {}: {}", check.id, check.detail);
+                crate::output::outln!("[{status}] {}: {}", check.id, check.detail);
                 if let Some(hint) = check.hint {
-                    println!("       {hint}");
+                    crate::output::outln!("       {hint}");
                 }
             }
         }

@@ -58,14 +58,14 @@ impl DebugCmd {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "/path/to/local/application.app".to_string());
 
-        println!("platform select remote-ios");
-        println!("target create \"{local_target}\"");
-        println!(
+        crate::output::outln!("platform select remote-ios");
+        crate::output::outln!("target create \"{local_target}\"");
+        crate::output::outln!(
             "script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec(\"{}\"))",
             app.path
         );
-        println!("process connect connect://[{host}]:{port}");
-        println!("process launch");
+        crate::output::outln!("process connect connect://[{host}]:{port}");
+        crate::output::outln!("process launch");
 
         Ok(())
     }
