@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-boundaries-07ec897",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual protected Rust HTTP/page/browser WebSockets over owned synthetic plist peers; external Rust consumer"],
+      "required_state": ["Rust-only service injection; no device admission or external CDP library workflow certification"],
+      "tested_commit": "07ec8977fd5e8e421982348bcc79e376909d698e",
+      "date": "2026-10-01",
+      "location": "docs/validation/webinspector-boundaries-2026-10-01.md",
+      "result": "PASS",
+      "scope": "R02 module/public boundaries, retained Target/automation regressions and injected actual Rust bridge Runtime/routing/error/teardown tests; no capability maturity or F03/F04/physical-device acceptance."
+    },
+    {
       "id": "linux-backup-boundaries-a333657",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

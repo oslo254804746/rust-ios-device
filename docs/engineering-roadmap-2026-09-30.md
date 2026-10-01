@@ -102,7 +102,7 @@
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待验收：Linux HTTPS/WSS、独立凭据/CA、重定向隔离与两跳主机范围已交付；平台文件/部署/真实设备待条件 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 完成（主机边界与回归验收） |
-| R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
+| R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 完成（主机边界验收） |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 待开始 |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
@@ -1563,3 +1563,81 @@ Windows/macOS native路径、真机backup/restore、started blocking job无法�
 停止及更强deadline/cleanup ACK，仍按B03/Q02/Q03/L01保留真实条件，不由主机模拟替代。
 第三类继续 **R02 WebInspector职责与注入边界**，随后R04/A02；未推进第四类，整体目标
 active，全部31项尚未完成。收尾提交仅更新计划/质量与证据索引，不推送或发布。
+
+### 大类 3 进行中：R02 WebInspector 边界（2026-10-01）
+
+R01 文档收尾提交 `e069a46cdcd0f207c22d01cf55f2155f0c7caf5c` 后工作区 clean，
+仍在 `feat/device-service-updates-20260927`；R02 当前尚未实现提交。所需 Linux
+构建、core stream/session 和 S02 admission/lease 接口已就绪；其他平台、真机/CDP
+客户端证据仍独立保留，未降低这些条件。基线 `cargo test -p ios-core --all-features
+--locked webinspector` **20 unit PASS、1 filtered integration PASS**，未当成完整
+integration 文件；R01全量未改CLI中 `cmd::webinspector::` **28 PASS**。
+
+已将 bounded plist frame/typed decoding 移入 `wire`、monotonic deadlines 移入
+`timing`，5个既有测试随 owner 移位，**20 unit/1 filtered integration PASS**。
+`model` 保留公开 metadata/event 类型与 facade reexports；漏保留仍在 By 使用的
+Serialize import 初轮编译 FAIL，补齐后仍 **20+1 PASS**。随后将 InspectorSession
+及 Target envelope/response 状态移入 `inspector`，将 AutomationSession/By/JS 与
+元素语义移入 `automation`；三个测试移入 owner，**20+1 PASS**，多余 test import
+在后续清理。客户端 stream/cache/event routing 及4个测试移入 `client`，只将跨
+session 调用的两个私有方法设为 pub(super)，字段保留私有，facade 保留原公开路径。
+首次漏加生产使用的 WirType import 编译 FAIL，已补齐；最终 all-features 以及
+`--no-default-features --features webinspector` 均 **20 unit + 1 filtered integration
+PASS**，未改 CLI 的专项基线 **28 PASS**，core all-target/all-feature strict Clippy
+**PASS**。六个 owner 的111个原函数 body 归一空白后均与原 facade 一致，原函数名
+无遗漏；这是审查辅助，非AST证明。CLI开始将真实 device/service 连接策略与总超时
+移入 `connection`，明确返回 device guard、boxed service stream 和uses_rsd；CLI
+专项仍 **28 PASS**。该连接模块尚没有注入 factory，未宣称F03接口已就绪。
+没有新增或猜测 Apple selector、修改既有 JS 字节、权限策略或网络端点。
+
+随后将CLI的发现/选择/结果解释、shell输入、一次性命令执行和脱敏诊断分别移入
+`workflows`、`shell`、`tasks`、`diagnostics`，原四个测试随owner移动。首次漏掉
+shell模块声明及跨owner imports 编译FAIL，修正后 **28 PASS**。继续将命令grammar/
+dispatch、HTTP startup/共享state、CDP、WebDriver移入普通私有模块，各owner显式
+imports；原测试移入owner，BrowserPageSession Drop测试移入CDP而未扩大其字段
+可见性。生成拆分补丁时两次前置断言/映射失败均未应用，超过输出预算的完整补丁
+未应用，改为逐文件完整补丁。首次应用误给HTTP参数添加字段可见性、漏移Debug
+derive/imports，编译FAIL；修正后原 **28 PASS**。
+
+内部 `InspectorSource` 返回owned boxed stream和可选device guard，生产仅安装
+真实DeviceInspectorSource，四个桥接连接位置均在admission后调用；无CLI/HTTP
+mock开关。新增实际保护router/listener的合成plist测试和外部consumer，夹具初轮
+Dictionary泛型类型推断及Drop类型struct-update编译FAIL，后续修正中。未新增Apple
+selector或改变真实协议行为；夹具Runtime.syntheticFailure是测试专用错误请求。
+
+夹具修正后执行测试为 **29 PASS/2 FAIL**：Runtime已回复，但fake teardown selector
+与core现有 `_rpc_forwardDidClose:` 不符；修正夹具（未改真实协议）后专项 **31 PASS**。
+三个新增测试通过实际protected Axum listener/router和owned duplex plist peer，覆盖
+CDP/WebDriver未授权零source调用、已授权精确合成device selector传递和typed错误脱敏；CDP页面的
+发现/不暂停attach/Target嵌套Runtime回复与错误/显式teardown，以及browser flattened
+session/Runtime/sessionId保持/detach/teardown。派生计数与owned任务join确认，未将
+模拟算作真机或外部CDP客户端证据。CLI strict Clippy初轮生产构建发现test-only import
+及遗留doc comment owner，修正后 **PASS**。
+
+全feature公开consumer **7 PASS**、整个WebInspector integration **12 PASS**；最小
+`--no-default-features --features webinspector` 同两test target **6+12 PASS**。一次使用
+错误 `--test services` 命令直接FAIL且未跑测试，随后按实际target名改为webinspector。
+111个core原函数body归一空白后全部保留，CLI118个函数无遗漏，108个body一致、10个
+变动逐项审查为内部source/state/module调用；非AST证明。最初比较把结果struct和
+其他模块test routes混进baseline，修正边界后grammar、24个生产route paths、OpenedTabRow/
+LaunchResult字段均保留。没有公开字段/枚举变更，生产实际device guard保持原scope。
+
+以上为门禁前进行中记录；后续结果如下，不以历史中间状态作为当前结果。
+
+### 大类 3：R02 主机验收与收尾（2026-10-01）
+
+| 字段 | 结果 |
+| --- | --- |
+| 任务/实现提交 | R02所有模块/职责/注入及主机兼容验收；`07ec8977fd5e8e421982348bcc79e376909d698e`，23个明确相关文件，6162 insertions/5260 deletions；分支保持 `feat/device-service-updates-20260927` |
+| 实际行为 | core六个private owner和CLI十个owner/fixture分离；public facade/模型/error/常量保留；真实连接guard保持，注入接口只允许Rust内部安装owned服务；生产权限/参数/24个路由/结果字段及JS/wire语义保留 |
+| 相关检查 | CLI31 PASS；core unit20 PASS+1 filtered integration；完整WebInspector integration12 PASS；public consumer全feature7/minimal6 PASS；strict core/CLI Clippy PASS；历史FAIL及修正见前述记录 |
+| 主线命令/结果 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`，`/tmp/ios-r02-full.log`，第11节全部PASS：Rust1670/Python8 PASS、0 FAIL、2既有ignored（PBKDF2和独立S02 browser gate）；66最小feature/4组、default/full doctests7+7/3 snippets、MSRV1.80.1、C ABI/19B raw capture、3.12.13 wheel/sdist重建安装导入、38 tooling、118 inventory/实际help、38 raw、5 host/22 device NOT_RUN、4 CLI list和3 backup contracts全部PASS |
+| 受测binary | `ios`0.1.13，SHA-256 `b97a99409fe6a4d9fa598cb9d3064bbd46d3d3effb8f31b1644d515c216845c2`；raw hits/masked hits均0，owned cleanup成功 |
+| 证据/状态 | [验收索引](validation/webinspector-boundaries-2026-10-01.md)；R02完成其明确的主机module/contract/injection验收；派生协议计数与实际Rust WS交互保留，未升级能力成熟度 |
+| 真实剩余条件 | F03真实Playwright/Puppeteer通过Rust桥和F04各domain证据仍待任务实施；真机Safari/WebView/JSContext/automation/版本路由与设备期限/清理，以及平台执行各自待条件；R04输出失败、A02错误分类、L01生命周期预算未被R02替代 |
+
+最终diff及staged whitespace审查PASS，55个相关本地文档链接PASS；实现提交内容
+已核对，只留下本类文档收尾变更（计划、验收索引、能力证据、质量回顾）。早期
+3.9/3.13构建及S02独立浏览器证据仍为历史结果，此轮未重跑。第三类继续 **R04登记
+既有plist/JSON编码与输出合同，再A02错误分类**。总体目标active，未进入第四类；
+无推送、发布、参考checkout修改或实际设备操作。
