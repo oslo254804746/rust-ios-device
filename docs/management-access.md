@@ -1,10 +1,10 @@
 # Management access configuration
 
-S01 is in progress. `ios tunnel auth create|check` prepares and checks private
-scoped credentials on the host. These commands do not start a server, pair a
-device, deploy a policy or change manager admission. The current manager still
-has no authentication; HTTP/WS server and client integration, reload/revocation,
-CDP/Selenium admission and the existing TCP forwarding boundary remain pending.
+The tunnel manager requires a private scoped policy or explicit local trust.
+`ios tunnel auth create|check` prepares/checks credentials without starting a
+server or contacting a device. Start the manager with `--auth-config`; clients
+use `--token-file`. S01 remains in progress while the remaining forwarding
+boundary is audited; browser admission and protected federation are S02/S03.
 Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
 
 For Unix shells, choose two new paths in a trusted private directory:
@@ -20,6 +20,11 @@ ios tunnel auth check \
   --config ~/.config/rust-ios-device/manager/policy.json \
   --token-file ~/.config/rust-ios-device/manager/client-token \
   --permission connect --device DEVICE_UDID --port 58783
+
+ios tunnel serve --userspace \
+  --auth-config ~/.config/rust-ios-device/manager/policy.json
+
+ios tunnel list --token-file ~/.config/rust-ios-device/manager/client-token
 ```
 
 Replace `DEVICE_UDID` with the selector whose scope you intend to grant. This
@@ -56,8 +61,75 @@ default to empty/false. Empty grants deny all. Unknown fields/versions, duplicat
 credential hashes/permissions, ambiguous broad/list scopes, missing required
 device/port scopes, zero ports and overlong future expiry fail. Limits: 64 KiB
 file, 64 grants, 128 device selectors per grant (each at most 256 bytes), and
-256 ports per grant. A generated file is ready for the future admission
-integration; editing or creating one currently cannot secure a running manager.
+256 ports per grant. The server reads/validates its configured file before
+opening a listener or scanning devices. Changes on disk take effect only on a
+successful authorized reload.
+
+## Manager admission and reload
+
+Every route, including health/readiness, unknown routes, extractor rejections
+and the WebSocket handshake, requires exactly one `Authorization: Bearer TOKEN`
+header in policy mode. Missing, malformed, duplicate, invalid and expired
+credentials receive the same HTTP 401 with `WWW-Authenticate: Bearer` and a
+fixed message. Valid credentials with an insufficient scope receive HTTP 403.
+Replies are `no-store`; credential text and selectors are omitted from rejection
+diagnostics. Only private token files are accepted by CLI clients. Their HTTP
+requests disable environment proxies and redirects, and bound successful bodies
+to 1 MiB. Failure bodies are discarded without reading them into diagnostics.
+
+| Manager operation | Required permission and scope |
+| --- | --- |
+| GET `/`, `/tunnels` | list; records are filtered to allowed device selectors |
+| GET `/tunnel/:udid` | list for that exact device |
+| GET `/connect` WebSocket upgrade | connect for the exact device and nonzero port |
+| Start/delete a device tunnel | manage-tunnels for the exact device |
+| List/add/delete upstreams; shutdown; POST `/auth/reload` | manage-server |
+| Health/readiness | Any valid, unexpired grant |
+
+The monitor auto-connects only devices covered by a current connect or
+manage-tunnels grant. List, debug and server administration alone do not trigger
+device discovery. Existing tunnels outside active connect/manage-tunnels scopes
+are removed at the next monitor refresh. Roles do not imply each other.
+
+For administrative credentials, include an explicit `--permission manage-server`
+when creating the policy. `POST /auth/reload` reloads only the startup config
+path; the request cannot choose a file. A bad/missing/insecure file leaves the
+previous policy and sessions intact. Successful replacement is atomic for new
+admissions and revokes every admitted WebSocket, even if its grant is unchanged.
+New requests then use the new credentials/scopes. An admitted stream also ends
+at credential expiry; a monotonic deadline prevents clock rollback from extending
+its admitted lifetime. Clock jumps forward are checked once a second. Revocation
+drops both bridge endpoints; it does not promise a WebSocket close handshake.
+Waiting list/get/delete/start and bridge-dial operations are cancelled on
+revocation, with HTTP 403 instead of an empty success. Reload rechecks server
+authority after serialization and the private file read. Completed HTTP/device
+operations are not rolled back by a later policy change.
+
+## Local and remote transport boundary
+
+Default binding remains `127.0.0.1:49151`. Plain HTTP clients and listeners now
+require a literal loopback IP or `localhost`; `localhost` resolves to the fixed
+IPv4 loopback address in this interface. Nonloopback plaintext is rejected even
+with a policy. For remote use, keep this listener on loopback and use a protected
+host transport, such as an SSH local forward, with manager credentials still
+required. Native HTTPS/WSS, per-upstream private credentials and certificate
+acceptance remain S03 work. Current upstream calls have no credentials, so they
+cannot federate with a manager in policy mode; do not deploy that topology yet.
+
+`--local-unauthenticated` explicitly trusts every local process and conflicts
+with `--auth-config`. It is accepted only on loopback and bypasses roles/scopes;
+do not use it where local processes are untrusted. Host/Origin policies and
+proper methods for legacy GET management operations are still S02 work.
+Browsers cannot supply a custom WebSocket Authorization header; a browser
+handshake mechanism will be provided by S02. Long-lived tokens must never be
+placed in URLs.
+
+The existing userspace proxy's 20-byte IPv6/port preamble remains unauthenticated
+on loopback. Any local process able to reach that proxy can dial device ports
+without the manager's HTTP grant. Kernel TUN access follows host route/firewall
+permissions. The manager grant protects its HTTP/WebSocket requests; it does not
+claim an OS sandbox for raw TCP or kernel routes. Further forwarding-entry audit
+is still pending under S01.
 
 Private reads use [secret_file](tunnel.md): Unix requires a regular file owned
 by the effective user without group/other access, rejecting leaf symlinks and
@@ -80,3 +152,6 @@ directory, reads the generated token with a fixed bound, and checks original
 stdout/stderr before a separately masked copy. Success and a denied port are
 both captured at maximum CLI verbosity, without a default device selector. No
 real policy, credential, device or sensitive raw-output archive is touched.
+The capture also runs the production loopback manager with list/server roles
+only, which skip device discovery, and checks rejection, list, failed/successful
+reload, CLI client and shutdown responses before examining original server logs.

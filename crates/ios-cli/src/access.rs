@@ -12,6 +12,12 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod runtime;
+pub(crate) use runtime::{admission, AccessControl, ClientAccessArgs, Principal, ServerAccessArgs};
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
 const MAX_POLICY_BYTES: u64 = 64 * 1024;
 const MAX_GRANTS: usize = 64;
 const MAX_DEVICES: usize = 128;
@@ -95,6 +101,7 @@ impl ClientToken {
     }
 }
 
+#[derive(Clone)]
 struct Grant {
     digest: [u8; 32],
     scope: GrantFile,
@@ -198,13 +205,17 @@ impl Policy {
     }
 
     fn authenticate(&self, token: &ClientToken, now: u64) -> Option<&Grant> {
-        let digest = token.digest();
+        self.authenticate_digest(&token.digest(), now)
+            .map(|index| &self.grants[index])
+    }
+
+    fn authenticate_digest(&self, digest: &[u8; 32], now: u64) -> Option<usize> {
         let mut selected = None;
         // Compare every fixed-size digest; never compare the original token
         // text or reveal which credential/expiry failed in diagnostic errors.
-        for grant in &self.grants {
-            if bool::from(grant.digest.ct_eq(&digest)) && grant.scope.expires_unix > now {
-                selected = Some(grant);
+        for (index, grant) in self.grants.iter().enumerate() {
+            if bool::from(grant.digest.ct_eq(digest)) && grant.scope.expires_unix > now {
+                selected = Some(index);
             }
         }
         selected

@@ -163,12 +163,15 @@ service surface that the device exposes — not on the iOS version alone.
 ios tunnel start --userspace
 
 # Run the local tunnel manager HTTP service (go-ios compatible JSON)
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
 ```
 
 Userspace tunnels publish a local TCP proxy. Clients send a 16-byte IPv6
 address followed by a 4-byte little-endian port, then proxy traffic. Kernel
 TUN mode is also available but typically requires admin/root.
+The manager requires a scoped policy; create/check private credentials and use
+`--token-file` for clients as described in [management access](docs/management-access.md).
+Raw userspace TCP proxies and kernel routes retain the host access boundary.
 
 Inspect what the device actually exposes before assuming an implementation
 issue:

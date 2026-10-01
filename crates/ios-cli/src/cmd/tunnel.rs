@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -26,6 +26,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
+
+use crate::access::{AccessControl, ClientAccessArgs, Permission, Principal, ServerAccessArgs};
 
 const DEFAULT_AGENT_HOST: &str = "127.0.0.1";
 const DEFAULT_AGENT_PORT: u16 = 49151;
@@ -66,6 +68,8 @@ enum TunnelSub {
         port: u16,
         #[arg(long, default_value_t = DEFAULT_SCAN_INTERVAL_MS)]
         scan_interval_ms: u64,
+        #[command(flatten)]
+        access: ServerAccessArgs,
     },
     /// Stop a tunnel
     Stop {
@@ -73,6 +77,8 @@ enum TunnelSub {
         host: String,
         #[arg(long, default_value_t = DEFAULT_AGENT_PORT)]
         port: u16,
+        #[command(flatten)]
+        access: ClientAccessArgs,
     },
     /// List active tunnels
     List {
@@ -80,6 +86,8 @@ enum TunnelSub {
         host: String,
         #[arg(long, default_value_t = DEFAULT_AGENT_PORT)]
         port: u16,
+        #[command(flatten)]
+        access: ClientAccessArgs,
     },
 }
 
@@ -111,6 +119,7 @@ impl TunnelCmd {
                 host,
                 port,
                 scan_interval_ms,
+                access,
             } => {
                 let tun_mode = if userspace {
                     TunMode::Userspace
@@ -122,16 +131,17 @@ impl TunnelCmd {
                     port,
                     tun_mode,
                     Duration::from_millis(scan_interval_ms),
+                    access,
                 )
                 .await?;
             }
-            TunnelSub::Stop { host, port } => {
+            TunnelSub::Stop { host, port, access } => {
                 let udid =
                     udid.ok_or_else(|| anyhow::anyhow!("--udid required for tunnel stop"))?;
-                run_tunnel_stop(&host, port, &udid).await?;
+                run_tunnel_stop(&host, port, &udid, access).await?;
             }
-            TunnelSub::List { host, port } => {
-                run_tunnel_list(&host, port).await?;
+            TunnelSub::List { host, port, access } => {
+                run_tunnel_list(&host, port, access).await?;
             }
         }
         Ok(())
@@ -139,6 +149,13 @@ impl TunnelCmd {
 }
 
 fn manager_base_url(host: &str, port: u16) -> Result<reqwest::Url> {
+    let host = if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1".to_string()
+    } else if let Ok(address) = host.parse::<Ipv6Addr>() {
+        format!("[{address}]")
+    } else {
+        host.to_string()
+    };
     reqwest::Url::parse(&format!("http://{host}:{port}"))
         .with_context(|| format!("invalid tunnel manager address {host}:{port}"))
 }
@@ -167,44 +184,68 @@ fn parse_tunnel_stop_response(body: &str) -> Result<TunnelStopResponse> {
     serde_json::from_str(body).context("failed to parse tunnel manager stop response")
 }
 
-async fn run_tunnel_list(host: &str, port: u16) -> Result<()> {
+async fn run_tunnel_list(host: &str, port: u16, access: ClientAccessArgs) -> Result<()> {
     let url = manager_tunnels_url(host, port)?;
-    let body = tunnel_manager_request(reqwest::Method::GET, url).await?;
+    let body = tunnel_manager_request(reqwest::Method::GET, url, access).await?;
     let records = parse_tunnel_list_response(&body)?;
 
     println!("{}", serde_json::to_string_pretty(&records)?);
     Ok(())
 }
 
-async fn run_tunnel_stop(host: &str, port: u16, udid: &str) -> Result<()> {
+async fn run_tunnel_stop(
+    host: &str,
+    port: u16,
+    udid: &str,
+    access: ClientAccessArgs,
+) -> Result<()> {
     let url = manager_tunnel_url(host, port, udid)?;
-    let body = tunnel_manager_request(reqwest::Method::DELETE, url).await?;
+    let body = tunnel_manager_request(reqwest::Method::DELETE, url, access).await?;
     let response = parse_tunnel_stop_response(&body)?;
 
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
 }
 
-async fn tunnel_manager_request(method: reqwest::Method, url: String) -> Result<String> {
-    let response = reqwest::Client::builder()
+async fn tunnel_manager_request(
+    method: reqwest::Method,
+    url: String,
+    access: ClientAccessArgs,
+) -> Result<String> {
+    let url = reqwest::Url::parse(&url).context("invalid tunnel manager URL")?;
+    let header = access.header(&url).await?;
+    let mut request = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
         .build()?
-        .request(method, &url)
+        .request(method, url);
+    if let Some(header) = header {
+        request = request.header(reqwest::header::AUTHORIZATION, header);
+    }
+    let mut response = request
         .send()
         .await
-        .with_context(|| format!("failed to connect to tunnel manager at {url}"))?;
+        .context("failed to connect to tunnel manager")?;
 
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("failed to read tunnel manager response")?;
-
     if !status.is_success() {
-        anyhow::bail!("tunnel manager request to {url} failed with {status}: {body}");
+        // Never consume or include arbitrary remote failure payloads.
+        anyhow::bail!("tunnel manager request rejected: http/{}", status.as_u16());
     }
-
-    Ok(body)
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("failed to read tunnel manager response")?
+    {
+        anyhow::ensure!(
+            chunk.len() <= MAX_LIST_BYTES.saturating_sub(body.len()),
+            "tunnel manager response limit exceeded"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).context("tunnel manager response must be UTF-8")
 }
 
 pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) -> Result<()> {
@@ -270,6 +311,7 @@ struct TunnelAgentState {
 }
 
 struct TunnelAgentInner {
+    access: AccessControl,
     tun_mode: TunMode,
     tunnels: RwLock<HashMap<String, ManagedTunnel>>,
     upstreams: RwLock<BTreeSet<String>>,
@@ -407,9 +449,15 @@ impl StartTunnelQuery {
 }
 
 impl TunnelAgentState {
+    #[cfg(test)]
     fn new(tun_mode: TunMode) -> Self {
+        Self::with_access(tun_mode, AccessControl::trusted_test_local())
+    }
+
+    fn with_access(tun_mode: TunMode, access: AccessControl) -> Self {
         Self {
             inner: Arc::new(TunnelAgentInner {
+                access,
                 tun_mode,
                 tunnels: RwLock::new(HashMap::new()),
                 upstreams: RwLock::new(BTreeSet::new()),
@@ -756,6 +804,16 @@ impl TunnelAgentState {
     async fn refresh_once(&self) -> Result<()> {
         let _guard = self.inner.lifecycle_lock.lock().await;
 
+        self.inner
+            .tunnels
+            .write()
+            .await
+            .retain(|device, _| self.inner.access.permits_device(device));
+        if !self.inner.access.permits_any_device() {
+            self.mark_ready().await;
+            return Ok(());
+        }
+
         let mut mux = MuxClient::connect().await?;
         let devices = match mux.list_devices().await {
             Ok(devices) => devices,
@@ -775,6 +833,7 @@ impl TunnelAgentState {
             let mut tunnels = self.inner.tunnels.write().await;
             tunnels.retain(|udid, tunnel| {
                 tunnel.is_alive()
+                    && self.inner.access.permits_device(udid)
                     && (tunnel.device.info.device_id == 0 || attached_udids.contains(udid))
             });
         }
@@ -789,6 +848,9 @@ impl TunnelAgentState {
             .collect::<std::collections::HashSet<_>>();
 
         for device in devices {
+            if !self.inner.access.permits_device(&device.serial_number) {
+                continue;
+            }
             if existing.contains(&device.serial_number) {
                 continue;
             }
@@ -855,6 +917,9 @@ impl TunnelAgentState {
             .collect::<std::collections::HashSet<_>>();
 
         for target in discover_paired_mobdev2_devices().await? {
+            if !self.inner.access.permits_device(&target.udid) {
+                continue;
+            }
             if existing.contains(&target.udid) {
                 continue;
             }
@@ -1189,16 +1254,19 @@ impl StartTunnelResponse {
     }
 }
 
-pub async fn run_tunnel_agent(
+async fn run_tunnel_agent(
     host: &str,
     port: u16,
     tun_mode: TunMode,
     scan_interval: Duration,
+    access: ServerAccessArgs,
 ) -> Result<()> {
-    let state = TunnelAgentState::new(tun_mode);
+    anyhow::ensure!(!scan_interval.is_zero(), "scan interval must be nonzero");
+    let (address, access) = access.load(host).await?;
+    let state = TunnelAgentState::with_access(tun_mode, access);
     let app = agent_router(state.clone());
 
-    let listener = TcpListener::bind((host, port))
+    let listener = TcpListener::bind((address, port))
         .await
         .with_context(|| format!("failed to bind tunnel agent on {host}:{port}"))?;
 
@@ -1243,6 +1311,7 @@ pub async fn run_tunnel_agent(
 }
 
 fn agent_router(state: TunnelAgentState) -> Router {
+    let access = state.inner.access.clone();
     Router::new()
         .route("/", get(agent_list_tunneld))
         .route("/connect", get(agent_connect))
@@ -1255,6 +1324,7 @@ fn agent_router(state: TunnelAgentState) -> Router {
         .route("/health", get(agent_health))
         .route("/ready", get(agent_ready))
         .route("/shutdown", get(agent_shutdown))
+        .route("/auth/reload", axum::routing::post(agent_reload_policy))
         .route("/start-tunnel", get(agent_start_tunnel))
         .route("/tunnels", get(agent_list_records))
         .route(
@@ -1266,19 +1336,28 @@ fn agent_router(state: TunnelAgentState) -> Router {
             crate::http_diagnostics::ErrorShape::Manager,
             crate::http_diagnostics::rejections,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            access,
+            crate::access::admission,
+        ))
 }
 
 async fn agent_list_tunneld(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Query(query): Query<FederationQuery>,
 ) -> Result<Json<FederationListing>, Response> {
+    principal.require_permission(Permission::List)?;
     if query.hop > MAX_FEDERATION_HOPS {
         return Err(manager_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
         ));
     }
-    Ok(Json(state.list_federated(query.hop).await))
+    let mut records = principal.run(state.list_federated(query.hop)).await?;
+    principal.require_permission(Permission::List)?;
+    records.retain(|device, _| principal.allows(Permission::List, Some(device), None));
+    Ok(Json(records))
 }
 
 fn manager_error(status: StatusCode, message: &'static str) -> Response {
@@ -1304,14 +1383,22 @@ fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
         .max_message_size(MAX_WS_MESSAGE_BYTES)
 }
 
-async fn agent_list_upstreams(State(state): State<TunnelAgentState>) -> Json<Vec<String>> {
-    Json(state.inner.upstreams.read().await.iter().cloned().collect())
+async fn agent_list_upstreams(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<String>>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
+    Ok(Json(
+        state.inner.upstreams.read().await.iter().cloned().collect(),
+    ))
 }
 
 async fn agent_add_upstream(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Json(body): Json<UpstreamBody>,
 ) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
     let url = normalize_upstream_url(&body.url).map_err(|err| {
         manager_operation_error(
             StatusCode::BAD_REQUEST,
@@ -1334,8 +1421,10 @@ async fn agent_add_upstream(
 
 async fn agent_remove_upstream(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Json(body): Json<UpstreamBody>,
 ) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
     let url = normalize_upstream_url(&body.url).map_err(|err| {
         manager_operation_error(
             StatusCode::BAD_REQUEST,
@@ -1351,8 +1440,26 @@ async fn agent_remove_upstream(
 
 async fn agent_connect(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Query(query): Query<ConnectQuery>,
     ws: WebSocketUpgrade,
+) -> Result<Response, Response> {
+    principal.require(Permission::Connect, Some(&query.udid), Some(query.port))?;
+    principal
+        .run(agent_connect_authorized(
+            state,
+            query,
+            ws,
+            principal.clone(),
+        ))
+        .await?
+}
+
+async fn agent_connect_authorized(
+    state: TunnelAgentState,
+    query: ConnectQuery,
+    ws: WebSocketUpgrade,
+    principal: Principal,
 ) -> Result<Response, Response> {
     if query.hop > MAX_FEDERATION_HOPS {
         return Err(manager_error(
@@ -1392,8 +1499,13 @@ async fn agent_connect(
         })?;
         return Ok(bounded_websocket_upgrade(ws)
             .on_upgrade(move |socket| async move {
-                if let Err(err) = bridge_tcp_websocket(socket, stream).await {
-                    tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket bridge ended");
+                tokio::select! {
+                    result = bridge_tcp_websocket(socket, stream) => {
+                        if let Err(err) = result {
+                            tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket bridge ended");
+                        }
+                    }
+                    _ = principal.revoked() => tracing::debug!("tunnel agent: local WebSocket authorization revoked"),
                 }
             })
             .into_response());
@@ -1450,22 +1562,42 @@ async fn agent_connect(
     })?;
     Ok(bounded_websocket_upgrade(ws)
         .on_upgrade(move |socket| async move {
-            if let Err(err) = bridge_websockets(socket, remote).await {
-                tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: remote WebSocket bridge ended");
+            tokio::select! {
+                result = bridge_websockets(socket, remote) => {
+                    if let Err(err) = result {
+                        tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: remote WebSocket bridge ended");
+                    }
+                }
+                _ = principal.revoked() => tracing::debug!("tunnel agent: remote WebSocket authorization revoked"),
             }
         })
         .into_response())
 }
 
-async fn agent_list_records(State(state): State<TunnelAgentState>) -> Json<Vec<TunnelRecord>> {
-    Json(state.list_records().await)
+async fn agent_list_records(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<TunnelRecord>>, Response> {
+    principal.require_permission(Permission::List)?;
+    let records = principal.run(state.list_records()).await?;
+    principal.require_permission(Permission::List)?;
+    Ok(Json(
+        records
+            .into_iter()
+            .filter(|record| principal.allows(Permission::List, Some(&record.udid), None))
+            .collect(),
+    ))
 }
 
 async fn agent_get_tunnel(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
 ) -> Result<Json<TunnelRecord>, Response> {
-    state.get_record(&udid).await.map(Json).ok_or_else(|| {
+    principal.require(Permission::List, Some(&udid), None)?;
+    let record = principal.run(state.get_record(&udid)).await?;
+    principal.require(Permission::List, Some(&udid), None)?;
+    record.map(Json).ok_or_else(|| {
         crate::http_diagnostics::reviewed((
             StatusCode::NOT_FOUND,
             Json(json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() })),
@@ -1475,9 +1607,11 @@ async fn agent_get_tunnel(
 
 async fn agent_delete_tunnel(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
 ) -> Result<Json<serde_json::Value>, Response> {
-    if state.remove_tunnel(&udid).await {
+    principal.require(Permission::ManageTunnels, Some(&udid), None)?;
+    if principal.run(state.remove_tunnel(&udid)).await? {
         Ok(Json(
             json!({ "operation": "cancel", "udid": udid, "data": true }),
         ))
@@ -1493,8 +1627,10 @@ async fn agent_delete_tunnel(
 
 async fn agent_start_tunnel(
     State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
     Query(query): Query<StartTunnelQuery>,
 ) -> Result<Json<StartTunnelResponse>, Response> {
+    principal.require(Permission::ManageTunnels, Some(&query.udid), None)?;
     if let Some(message) = query.unsupported_transport_message() {
         return Err(crate::http_diagnostics::reviewed((
             StatusCode::NOT_IMPLEMENTED,
@@ -1506,9 +1642,9 @@ async fn agent_start_tunnel(
         )));
     }
 
-    state
-        .ensure_tunnel(&query.udid, query.ip.as_deref(), query.connection_type)
-        .await
+    principal
+        .run(state.ensure_tunnel(&query.udid, query.ip.as_deref(), query.connection_type))
+        .await?
         .map(StartTunnelResponse::from_record)
         .map(Json)
         .map_err(|err| {
@@ -1532,13 +1668,37 @@ async fn agent_ready(State(state): State<TunnelAgentState>) -> StatusCode {
     }
 }
 
-async fn agent_shutdown(State(state): State<TunnelAgentState>) -> Json<serde_json::Value> {
+async fn agent_shutdown(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
     state.notify_shutdown();
-    Json(json!({
+    Ok(Json(json!({
         "operation": "shutdown",
         "data": true,
         "message": "Server shutting down..."
-    }))
+    })))
+}
+
+async fn agent_reload_policy(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
+    state
+        .inner
+        .access
+        .reload(&principal)
+        .await
+        .map_err(|error| {
+            manager_operation_error(
+                StatusCode::BAD_REQUEST,
+                "manager policy reload failed",
+                error.as_ref(),
+            )
+        })?;
+    Ok(Json(json!({"operation": "reload_policy", "data": true})))
 }
 
 #[cfg(test)]
@@ -1547,6 +1707,8 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
 
     use super::*;
+
+    mod access_tests;
 
     fn fake_record(proxy_port: u16) -> TunnelRecord {
         TunnelRecord {

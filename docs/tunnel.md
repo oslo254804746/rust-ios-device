@@ -18,10 +18,15 @@ ios -u <UDID> tunnel start --userspace
 Run the tunnel manager:
 
 ```sh
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
 ```
 
-The manager exposes health, tunnel, and federation endpoints for local tooling.
+The manager requires a private scoped policy, including for health/readiness.
+`--local-unauthenticated` is an explicit alternative that trusts all local
+processes. Plain HTTP binding/client access is restricted to loopback.
+See [management access configuration](management-access.md) for credential
+creation, `--token-file` clients, scopes and reload. The manager exposes health,
+tunnel, and federation endpoints for local tooling.
 Check its CLI options with:
 
 ```sh
@@ -55,17 +60,21 @@ within one second.
 This `/connect` and hop contract is specific to this project's managers. The
 reference tunneld currently implements `/upstream` listing aggregation but has
 no matching WebSocket bridge or hop wire protocol. Upstream URLs currently use
-`http`/`ws` only. The manager API has no authentication; bind it to a trusted
-interface or use a protected host transport such as an SSH forward for remote
-federation.
+`http`/`ws` only and have no credential configuration. Incoming manager tokens
+are never reused upstream. Policy-mode managers cannot yet federate with each
+other; protected transport and per-upstream credentials are S03 work.
 
 Access-control implementation is tracked as S01–S03 in the
 [engineering roadmap](engineering-roadmap-2026-09-30.md). The first S01
 foundation adds `ios_core::secret_file::read_secret` and `write_secret_new` for
-future manager/client credentials. It does not yet change manager admission.
+manager/client credentials.
 `ios tunnel auth create|check` now provides host-only policy preparation and
 precise scope checks; see [management access configuration](management-access.md).
-Server/client authentication and policy reload are still being implemented.
+Server/client authentication, device/port scopes, expiry and POST policy reload
+are now integrated. Browser admission and legacy GET management methods remain
+S02 work. The existing loopback userspace TCP proxy does not authenticate its
+IPv6/port preamble; manager credentials do not restrict local processes' direct
+proxy access or kernel TUN routes. Further forwarding-entry audit remains open.
 The reader bounds its buffer to a caller-selected maximum of 1 MiB and wipes it
 on drop. On Unix, it requires the effective user's regular file without
 group/other permissions and rejects leaf symlinks/FIFOs. New-secret publication

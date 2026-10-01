@@ -107,7 +107,7 @@ per-file backup semantics, cleanup failures and platform acceptance conditions.
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>
 - CLI map: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md>
 - CoreDevice tunnel: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/tunnel.md>
-- Private access-policy preparation (`tunnel auth create|check`; server integration pending): <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/management-access.md>
+- Scoped manager access (`tunnel auth create|check`, `serve --auth-config`, clients `--token-file`): <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/management-access.md>
 - Troubleshooting: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/troubleshooting.md>
 
 ## License

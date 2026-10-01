@@ -591,15 +591,18 @@ Comparable upstream workflows:
 
 ```sh
 ios -u <UDID> tunnel start --userspace
-ios tunnel serve --userspace --host 127.0.0.1 --port 49151
-ios tunnel list
+ios tunnel serve --userspace --host 127.0.0.1 --port 49151 --auth-config PRIVATE_POLICY_FILE
+ios tunnel list --token-file PRIVATE_CLIENT_TOKEN_FILE
 ios -u <UDID> rsd services
 ios -u <UDID> rsd services --all --features
 ios -u <UDID> forward 1234 62078 --once
 ```
 
 Userspace tunnels expose a local TCP proxy. Kernel TUN mode may require
-administrator or root privileges. See [tunnel.md](tunnel.md) for details.
+administrator or root privileges. Manager admission is scoped and authenticated;
+plain HTTP requires loopback. See [management-access.md](management-access.md)
+for policy creation, explicit local trust and reload, and [tunnel.md](tunnel.md)
+for the raw proxy boundary.
 
 TCP dials and initial protocol setup on the tunnel/RSD/XPC paths are bounded by
 15 seconds; TCP-backed remote pairing and lockdown setup use the same bound. A

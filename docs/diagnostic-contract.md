@@ -84,6 +84,14 @@ preparation must succeed without a device. The generated token and selector are
 checked in original output and an independent masked copy; neither enters the
 report. Preparing these files is not server-admission evidence.
 
+The same raw-output gate now runs the production manager on an owned loopback
+port with only list/server grants. Its monitor skips device discovery. It checks
+unauthenticated/invalid-token/scope denials, allowed lists, malformed-policy
+reload preserving admission, successful reload, actual private-token CLI clients
+and shutdown. Original server stdout/stderr must contain the listening phase
+without fixture token/selectors/policy/body data; timeout, truncation, incomplete
+capture or a wrong HTTP/CLI contract fails. It persists only sanitized counters.
+
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.
 They are host adapter evidence, not simulated complete WebInspector workflows
@@ -109,6 +117,7 @@ and raw dependency/secret output is absent. Both child streams are discarded;
 capture is bounded RAM and the parent owns their time limit and termination.
 
 S04 evidence remains scoped to the reviewed host surfaces; future authentication
-and protocol changes must extend raw-output checks. Authentication, authorization,
-Host/Origin and protected federation transport remain S01–S03; safe error text
-does not supply those controls.
+and protocol changes must extend raw-output checks. Manager authentication and
+device/port authorization are integrated; the remaining forwarding audit,
+Host/Origin and protected federation transport keep S01–S03 in progress. Safe
+error text does not supply those controls.

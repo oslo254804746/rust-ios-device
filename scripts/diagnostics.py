@@ -3,11 +3,14 @@
 
 import argparse
 import base64
+import hashlib
+import http.client
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -154,6 +157,9 @@ def cli_cases(binary):
              ("host-validation", ["forward", "0", "62078"], 1),
              # Invalid numeric socket address fails before any device connection.
              ("usbmux-source-error", ["-vvvv", "list"], 1)]
+    cases += [("manager-explicit-access", ["-vvvv", "tunnel", "serve", "--userspace"], 1),
+              ("manager-remote-plaintext", ["-vvvv", "tunnel", "serve", "--userspace",
+                                             "--host", "0.0.0.0", "--local-unauthenticated"], 1)]
     for name, args in [("root", []), ("wifi", ["wifi", "install"]),
                        ("pair", ["pair", "supervised"]), ("prepare", ["prepare", "create-cert"]),
                        ("profiles", ["profiles", "add"]),
@@ -169,6 +175,8 @@ def cli_cases(binary):
             "invalid-port": (b"argument parsing failed", b"ValueValidation"),
             "host-validation": (b"forward failed:", b"error:"),
             "usbmux-source-error": (b"list failed:", b"usbmux error:"),
+            "manager-explicit-access": (b"tunnel failed:", b"error:"),
+            "manager-remote-plaintext": (b"tunnel failed:", b"error:"),
         }.get(name, (b"Usage:",))
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
         report["passed"] = report["passed"] and report["contract"]
@@ -229,7 +237,113 @@ def credential_cases(binary, env, variants, device):
             report["contract"] = contract
             report["passed"] = report["passed"] and contract
             reports[name] = report
+        reports.update(manager_cases(binary, env, checked_variants, device, token, Path(directory)))
     return reports
+
+
+def manager_cases(binary, env, variants, device, token, directory):
+    """Capture the actual authenticated manager without any device permission.
+
+    Only list/server roles are granted; its monitor skips discovery entirely.
+    Own the bounded CLI process, private fixture files and loopback requests.
+    Neither request headers nor raw stdout/stderr are archived or reported.
+    """
+    config = directory / "live-policy.json"
+    variants = set(variants)
+    for secret in (b"f" * 64, b"synthetic-denied-device", b"synthetic-invalid-policy", b"synthetic-invalid-body"):
+        variants.update(secret_variants(secret))
+    policy = {"version": 1, "grants": [{
+        "token_sha256": hashlib.sha256(token).hexdigest(),
+        "expires_unix": int(time.time()) + 60,
+        "permissions": ["list", "manage_server"], "devices": [device]}]}
+    with os.fdopen(os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+        file.write(json.dumps(policy).encode())
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    results = []
+    worker = threading.Thread(target=lambda: results.append(capture(
+        [str(binary), "-vvvv", "tunnel", "serve", "--userspace", "--host", "127.0.0.1",
+         "--port", str(port), "--auth-config", str(config)], env=env, timeout=12)), daemon=True)
+    worker.start()
+    checks = {}
+    client_reports = {}
+
+    def request(method, path, *, authorized=True, invalid=False, body=None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
+        try:
+            fields = dict(headers or {})
+            if authorized:
+                fields["Authorization"] = "Bearer " + ("f" * 64 if invalid else token.decode())
+            connection.request(method, path, body=body, headers=fields)
+            response = connection.getresponse()
+            data = response.read(4097)
+            if len(data) > 4096 or raw_hits(data, variants):
+                raise ValueError("manager diagnostic reply contract failed")
+            return response.status, data
+        finally:
+            connection.close()
+
+    try:
+        deadline = time.monotonic() + 5
+        while worker.is_alive() and time.monotonic() < deadline:
+            try:
+                status, _ = request("GET", "/ready")
+                if status == 200:
+                    checks["ready"] = True
+                    break
+            except (OSError, http.client.HTTPException, ValueError):
+                pass
+            time.sleep(0.02)
+        if not checks.get("ready"):
+            raise ValueError("owned manager did not become ready")
+        for name, method, path in [
+            ("list", "GET", "/tunnels"), ("connect", "GET", "/connect?port=invalid-secret"),
+            ("admin", "POST", "/upstream"), ("reload", "POST", "/auth/reload")]:
+            status, _ = request(method, path, authorized=False, body=b"synthetic-invalid-body")
+            checks["unauthenticated-" + name] = status == 401
+        checks["invalid-token"] = request("GET", "/tunnels", invalid=True)[0] == 401
+        status, body = request("GET", "/tunnels")
+        checks["authorized-list"] = status == 200 and json.loads(body) == []
+        for name, args, code in [
+            ("manager-client-list", ["tunnel", "list"], 0),
+            ("manager-client-denied-stop", ["--udid", device, "tunnel", "stop"], 1)]:
+            captured = capture([str(binary), "-vvvv"] + args + ["--port", str(port),
+                "--token-file", str(directory / "client-token")], env=env)
+            checked = assess(captured, variants, code)
+            if code == 0:
+                try:
+                    contract = json.loads(captured.stdout) == []
+                except (ValueError, TypeError):
+                    contract = False
+            else:
+                contract = b"tunnel failed:" in captured.stderr and b"error:" in captured.stderr
+            checked["contract"] = contract
+            checked["passed"] = checked["passed"] and contract
+            client_reports[name] = checked
+        denied, _ = request("GET", "/connect?udid=synthetic-denied-device&port=22", headers={
+            "Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Key": base64.b64encode(b"owned-16byte-key!").decode()})
+        checks["denied-connect"] = denied == 403
+        config.write_bytes(b"synthetic-invalid-policy")
+        checks["failed-reload"] = request("POST", "/auth/reload")[0] == 400
+        checks["old-policy-survives"] = request("GET", "/tunnels")[0] == 200
+        config.write_bytes(json.dumps(policy).encode())
+        status, body = request("POST", "/auth/reload")
+        checks["authorized-reload"] = status == 200 and json.loads(body).get("data") is True
+        status, body = request("GET", "/shutdown")
+        checks["authorized-shutdown"] = status == 200 and json.loads(body).get("data") is True
+    except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError):
+        checks["fixture-contract"] = False
+    worker.join(timeout=15)
+    if not results or worker.is_alive():
+        return {"manager-live": {"passed": False, "reason": "owned manager capture incomplete"}}
+    result = results[0]
+    report = assess(result, variants, 0)
+    report["http_checks"] = checks
+    report["contract"] = bool(checks) and all(checks.values()) and b"tunnel agent listening" in result.stderr
+    report["passed"] = report["passed"] and report["contract"]
+    return dict(client_reports, **{"manager-live": report})
 
 
 def main():
