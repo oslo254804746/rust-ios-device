@@ -86,3 +86,45 @@ backup contracts. Accepted ios 0.1.13 binary SHA-256:
 The source/context diff and whitespace were reviewed before the focused commit.
 This host slice is accepted; A02, probe tracking, frontend machine fields,
 stream/partial semantics and L01 device cleanup remain in progress.
+
+## WebInspector startup source retention
+
+Implementation `c01244f221189f0a77b1c2debb792f45ec7b151a`, ten related code/contract
+files. The additive `start_preserving_errors` shares the original single-deadline
+report/event algorithm and retains IO/Timeout. Existing `start` retains its
+legacy phase-specific Disabled mapping; the exhaustive error enum is unchanged.
+Eight CLI/CDP/WebDriver startup calls use the new API. Original failure exits,
+HTTP statuses/body shapes and successful frames/output remain unchanged;
+safe diagnostic categories/correlation can reflect the restored source.
+
+Four old real-duplex failure characterizations passed before changing the
+startup algorithm (`/tmp/ios-a02-startup-legacy.log`). Final focused `start_`
+filter passed 19 unit plus seven selected integration cases (including ten
+new Core cases and one external consumer), not all integration targets.
+Precise Core WebInspector filter passed 30 unit cases; its integration target
+passed 12. The minimal WebInspector-feature consumer passed ten cases and
+all-feature consumer eleven. CLI WebInspector passed 34, including actual
+protected CDP/WebDriver startup closed-stream failures with the same 500/
+unknown-error envelope and safe IO kind. Original successful bridge, admission
+and revocation fixtures remain included. All handles reached terminal exit 0.
+Initial new-fixture compile failures were corrected for explicit plist iterator
+types and a Drop owner's fields; they are not passing evidence.
+
+Full split gate `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` passed: **1720 Rust, eight
+Python, zero FAIL, two existing ignored** (`/tmp/ios-a02-startup-full.log`,
+terminal exit 0). Other gate scopes match the preceding slice (66 features/four
+groups, 7+7 doctests/three snippets, strict Clippy/MSRV, C ABI/19-byte capture,
+3.12 wheel/sdist, 41 tooling, 118 help, 38 raw, five host/22 device NOT_RUN,
+eight CLI/three backup contracts). Accepted ios 0.1.13 SHA-256:
+`7f19106fe92c32b658cd64d986b2c3434815eff1830a5df3f703a06511412ae0`.
+
+Diff review confirmed the old algorithm body only parameterizes the error
+mapper and keeps the old error declaration; this is not a general ABI proof.
+83 changed local Markdown links and whitespace passed before the implementation
+commit. EOF remains generic IO; NotAvailable automation state is a valid startup
+state, not inferred Unsupported/Disabled. Core elapsed timers still become its
+existing Timeout(Duration); original Tokio sources are retained only where
+the preceding CLI slice states so. No device cleanup/retry acknowledgement is
+claimed. Probe tracking, Ctrl+C types, frontend machine fields and stream/partial
+semantics remain A02 work. No device operations or maturity upgrades occurred.

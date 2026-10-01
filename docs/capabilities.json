@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-startup-sources-c01244f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex startup failure/success/protocol frames, external exhaustive Rust consumer, actual protected CDP/WebDriver HTTP routers"],
+      "required_state": ["Host-only additive startup API and adapter diagnostics; no device setting or lifecycle certification"],
+      "tested_commit": "c01244f221189f0a77b1c2debb792f45ec7b151a",
+      "date": "2026-10-01",
+      "location": "docs/validation/error-classes-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 startup IO/Timeout retention with legacy start/error enum and existing adapter statuses/shapes retained. Machine fields, probe tracking, stream/partial and L01 cleanup remain pending; no capability maturity upgrade."
+    },
+    {
       "id": "linux-webinspector-timeout-sources-7fd9707",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

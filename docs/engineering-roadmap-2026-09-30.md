@@ -1859,6 +1859,60 @@ CLI/HTTP/C/Python字段、stderr/stream/partial与probe状态未完成。完整g
 历史改写。文档收尾后继续A02 Core startup source与机器边界；第三类/总体目标active，
 第四类尚未开始。上段“完整gate待执行”保留为启动历史，以本条真实结果为准。
 
+### 大类 3 进行中：A02 WebInspector startup typed source（2026-10-01）
+
+deadline source实现 `7fd97077ad67b474191a2ec64112a98c371fc980` 与文档收尾
+`aa2ba17da66439a67eafb875cc5fc0dc7caa1047` 已核对，收尾后clean。继续A02，先在
+未修改startup算法的状态登记4条legacy真实duplex失败：closed write、report后EOF、
+idle均Disabled，blocked report write仍Timeout；专项 **4 PASS**
+（`/tmp/ios-a02-startup-legacy.log`，terminal exit0）。这不是device setting证据。
+
+当前未提交：新增附加 `WebInspectorClient::start_preserving_errors`，共用原单deadline/
+report/event算法，identity映射保留typed IO/Timeout；旧start仍保留原阶段性Disabled
+映射、原public enum/fields不变。CLI/WebDriver/CDP八处startup选择新入口；成功wire/
+output、failure exit/status/JSON shape保留，自动脱敏diagnostic的category/correlation
+会因原始source恢复而变化，已安排迁移说明。新增4类对应source失败、两组旧/新健康
+与malformed状态、下游exhaustive consumer，以及实际protected CDP/WebDriver startup
+closed-stream失败回归；待结果。两次初始新测试compile FAIL仅为plist::Dictionary
+FromIterator中的泛型.into推断，已明确String keys/Value::String后再执行，未计PASS。
+相关专项、完整第11节、diff审查/聚焦实现与文档收尾仍待完成。原Core API尚可产生
+Disabled，并非已恢复所有upstream strings/取消/probe/stream信息；A02/目标active。
+
+startup专项最终 **19 unit+7 selected integration PASS**
+（`/tmp/ios-a02-startup-final-focused.log`，其中本次10个core startup/1个public用例，
+其余原start相关回归）；更精确WebInspector owner **30 unit PASS**、协议集成
+**12 PASS**（`/tmp/ios-a02-startup-core-web.log`、
+`/tmp/ios-a02-startup-wire-regressions.log`）。真实外部consumer仅webinspector feature
+**10 PASS**、all features **11 PASS**；minimal既有warnings保留。CLI全WebInspector
+**34 PASS**（`/tmp/ios-a02-startup-cli-fixed.log`），新增实际CDP/WebDriver HTTPclosed
+startup保持500/unknown error并可见安全IO kind，含原成功/准入/撤销/桥回归。上述
+handles均terminal exit0。CLI测试首次compile FAIL为有Drop的owner禁止struct update
+move，改为明确所有fixture字段，未修改production ownership。源码检查确认旧startup
+算法body只把mapper换成参数，error declaration未改；这是审查辅助，不是普遍ABI
+或真机证明。完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` 已启动
+（`/tmp/ios-a02-startup-full.log`）；尚未接受完整gate/实现提交。
+
+### 大类 3：A02 startup source 验收（2026-10-01，主任务进行中）
+
+实现 **`c01244f221189f0a77b1c2debb792f45ec7b151a`**，十个明确相关code/contract
+文件；提交后只留本计划。完整第11节 **PASS**，
+`/tmp/ios-a02-startup-full.log`、terminal exit0，专项结果见上条和
+[验收索引](validation/error-classes-2026-10-01.md)。质量和Q01单项host evidence同步，
+不升级WebInspector/CDP/WebDriver成熟度。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1720 Rust/8 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist PASS |
+| 工具/进程 | 41 tooling、118 help、38 raw、5 host/22 device NOT_RUN、8 CLI/3 backup合同PASS；owned cleanup/no raw secret hits |
+| 二进制 | ios0.1.13 SHA-256 `7f19106fe92c32b658cd64d986b2c3434815eff1830a5df3f703a06511412ae0` |
+| 审查/迁移 | 原start算法仅参数化mapper，enum不变；八处CLI adapters选择附加API；safe IO/Timeout source category/correlation变化，成功output与原failure exit/status/body形状保留；83 changed local links/whitespace PASS，详见error/public contract、usage/CHANGELOG |
+| 真实剩余 | 原start仍可Disabled；其他flattened strings/Ctrl+C typed取消/probe owner/CLI HTTP Python C machine字段/stderr stream partial仍待实施；L01设备cleanup ACK/期限、真机及平台workflow待相应条件 |
+
+该slice主机已验收，不宣称A02/第三类完成；无真机、配对、DDI/TSS/恢复擦除、推送/
+发布/历史改写。文档收尾核对后继续A02 CLI可编程错误输出；总体目标active，第四类
+尚未开始。前述pending主线以本条实际terminal结果为准。
+
 剩余：最终分类专项/最小feature与public consumer验证，审查所有类型/状态来源；
 补充service missing/metadata missing/unprobed/explicit unsupported的查询合同，CLI
 stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；
