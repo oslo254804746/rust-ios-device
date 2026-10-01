@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [S01 manager admission gate](validation/manager-access-2026-10-01.md), `318dab8`, 1612 Rust/eight Python, 20 raw CLI/service cases; prior preparation/S04 evidence retained | Other forwarding/browser/remote controls, platform and physical device workflows remain unfinished |
+| Host build/tests | [S01 forwarding boundary gate](validation/forwarding-boundary-2026-10-01.md), `e6ddf5c`, 1616 Rust/eight Python, 24 raw CLI/service cases; prior admission/preparation/S04 evidence retained | Debug admission, browser/remote controls, platform and physical device workflows remain unfinished |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

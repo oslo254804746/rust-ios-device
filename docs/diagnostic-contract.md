@@ -91,6 +91,9 @@ reload preserving admission, successful reload, actual private-token CLI clients
 and shutdown. Original server stdout/stderr must contain the listening phase
 without fixture token/selectors/policy/body data; timeout, truncation, incomplete
 capture or a wrong HTTP/CLI contract fails. It persists only sanitized counters.
+Four additional maximum-verbosity CLI captures now reject nonloopback forward,
+WDA proxy, dproxy and raw screenshot-stream options before device/service access;
+their runtime error phase and original secret variants are checked in the gate.
 
 Local HTTP/WebSocket fixtures test the production manager, WebDriver and CDP
 failure-formatting functions with synthetic source chains/device error data.

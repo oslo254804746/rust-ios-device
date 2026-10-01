@@ -97,7 +97,7 @@ B04 保留平台和 registry 发布条件。接续第二类，实际证据见第
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 进行中：有界诊断捕获基础已交付；完整工作流与真机待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
 | Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
-| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager/CLI 认证、设备/端口 scope、expiry/reload 已交付；其他桥与 TCP 边界验收仍待 |
+| S01 | 管理器认证与设备、端口授权 | P1 | 无 | 进行中：manager 认证/scope/reload、raw listener loopback 审查已交付；其他客户端/调试桥及平台验收仍待 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待开始 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待开始 |
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
@@ -1065,3 +1065,40 @@ dproxy/截图等额外监听边界审查与可执行限制；userspace 20-byte p
 
 实现提交仅 13 个相关文件，提交后主工作区干净；本条、证据索引和质量记录随后
 单独收尾提交。无设备配对/DDI/TSS/擦除刷机、推送发布、历史或参考 checkout 操作。
+
+### 大类 2 进度：S01 原生转发监听边界（2026-10-01，仍进行中）
+
+实现提交：`e6ddf5c2bbe7a12142dfa4dfc05b6afa1133a925`。现存 userspace proxy 审查、
+迁移与各入口边界见[管理访问](management-access.md)和
+[监听验收证据](validation/forwarding-boundary-2026-10-01.md)。
+
+- 复用 literal loopback/localhost 校验。forward 在设备解析前、dproxy 在服务连接/
+  capture 创建前、截图 stream 在 bind/capture 前拒绝非 loopback；tuple bind 同时
+  避免 IPv6 host:port 拼接错误。runwda 在测试服务/WDA 启动前验证 loopback 与两端
+  非零 port；之后仍复用 forward。CLI help 明示 raw TCP/stream 的本地主机信任。
+- 源码审查确认 userspace TUN 固定 `127.0.0.1:0`，20-byte IPv6/LE port 无凭据；
+  drop abort listener/packet tasks。kernel TUN 遵循 OS 路由/接口/防火墙。列明所有
+  原生入口，明确本地进程能绕过 manager grant，保留现有原生 wire format，不能
+  宣称 token 对所有转发隔离。受保护 host transport 用于远端原生客户端路径。
+- 四项有意义的 command/run 回归确认拒绝来自前置配置，而不是 usbmux 失败；
+  runwda 额外测两种零 port。raw gate 新增四个真实 CLI 最大 verbosity 拒绝，
+  未到设备/服务操作，24 例原始/独立副本均零秘密命中、正确非零/阶段，无丢失。
+- 中英文 README 与 usage/tunnel/access/CHANGELOG 同步；修正中文 manager 示例
+  需要 auth-config。此安全迁移不改变服务/20-byte 私有前导；不替代真实设备兼容。
+
+相关 `cargo test -p ios-cli --locked nonloopback --no-fail-fast` 3 PASS 和
+`cargo test -p ios-cli --locked invalid_bind_and_ports_fail_before_wda_device_startup`
+1 PASS；严格 CLI Clippy、24 raw captures PASS。随后 `python3 scripts/validate.py
+full --python /home/oslo/projects/rust-ios-device/.venv/bin/python` 全部 PASS，日志
+`/tmp/ios-s01-listener-full.log`：Rust **1616 PASS、0 FAIL、1 既有 ignored**，Python
+8 PASS；66 features/四组、7+7 doctests/三个示例、C ABI/19-byte capture、wheel/sdist
+rebuild/install/import、17 tools、118 inventory/实际帮助均 PASS；actionlint、diff/
+staged diff --check PASS。CLI SHA-256
+`728de4bcd69da6687922252fa924f2c04d3b9dafbe829b8c8493d3d255e053e1`。
+
+S01 仍进行中：doctor 等客户端凭据接入、CDP/Selenium admission 与 browser 合同
+尚待；macOS/Windows 私密文件/ACL 和真实设备转发待条件。S02 Host/Origin/票据/
+GET 迁移、S03 每上游凭据及受保护联邦仍未交付。截图完整 F05 入口须复用届时
+安全合同，当前 raw loopback stream 不算该工作流完成。实现仅 12 个相关文件，
+提交后工作区干净，随后本记录/证据另做文档收尾；目标和第二类持续推进，无设备
+操作、推送、发布、参考变更或历史改写。
