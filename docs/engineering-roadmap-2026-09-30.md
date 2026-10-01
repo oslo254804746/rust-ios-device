@@ -2050,3 +2050,65 @@ quality/Q01单项host evidence同步，无成熟度升级。
 stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；
 修正可执行的source flattening而不破坏已发布variants；完整第11节gate、diff与阶段
 实现/文档提交。A02/第三类进行中，总体目标active；第四类尚未开始。
+
+### 大类 3 进行中：A02 Python error metadata（2026-10-01）
+
+本轮继续时branch `feat/device-service-updates-20260927`，HEAD文档收尾
+`364cdff64f5ea9ab396449311f8d8eff77912111`；仅 `crates/ios-py/src/lib.rs` 有上一回合
+开始的相关未提交改动，未发现无关tracked变更。当前新增Python内建异常上的附加
+`ios_error_schema_version`/`ios_error_class`/`ios_error_phase`/`ios_error_effects`：
+device list和tunnel启动保留RuntimeError及原安全args，typed class、effects unknown；
+invalid mode保留ValueError/原args且在设备调用前InvalidInput/not_started；无userspace
+proxy保留原RuntimeError，Precondition/not_started。Rust-only GIL参数不添加Python
+公开参数；metadata赋值失败继续返回异常并挂安全原exception为cause。
+
+新增四个host回归：原safe args/typed Rust source、输入/proxy无资源保留、明确取消与
+opaque文字/EINTR区分、metadata assignment failure仍失败。首次专项compile FAIL
+（`/tmp/ios-a02-python-errors-host.log`）为abi3下PyString没有to_str方法，已改同文件
+既有to_string用法，未计PASS。修正后的split host tests、installed wheel/sdist和
+3.9/3.13签名/实际host失败、完整第11节gate、diff和聚焦实现/文档收尾待完成。
+此次不把Python argument extraction/callback/分配异常算已全面映射；runtime初始化
+和其他错误边界仍需审查。HTTP/C、probe owner、stream/partial及真机/L01条件保留，
+A02/第三类/总体目标active，尚未开始第四类。
+
+修正后的split `python3 scripts/validate.py python-host --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **12 PASS**（原8+新增4，
+`/tmp/ios-a02-python-errors-host-fixed.log`，terminal exit0）。新增installed smoke以
+owned subprocess/deadline和唯一loopback端点验证invalid-mode零接入、实际malformed
+ListDevices reply、原signature与字段/脱敏。首轮package **FAIL**（
+`/tmp/ios-a02-python-errors-package.log`，terminal exit1）：fixture错误假定diagnostic
+绕过原CoreError::Mux wrapper直接以protocol error开头，已只检查保持不变的operation
+prefix及独立typed字段；不改变production映射、不靠消息推断class。修正package、
+最低/较新Python、完整主线和提交仍待执行。
+
+修正后的 `validate.py python-package` **PASS**，3.12 wheel/sdist分别重建、实际
+安装后执行更新smoke（`/tmp/ios-a02-python-errors-package-fixed.log`，terminal exit0）。
+按AGENTS.MD在 `crates/ios-py` 运行锁定解释器的 `uvx --from 'maturin>=1.5,<2'
+maturin develop --locked` 及本地editable安装smoke，各PASS；同一新abi3 wheel
+`/tmp/ios-a02-python-errors-wheel-8dbd6wxf` 用 `artifacts.py python --directory ...
+--python /home/oslo/.local/bin/python3.9`/`python3.13` 分别新venv安装，3.9.25与
+3.13.15均PASS（`/tmp/ios-a02-python-errors-py39.log`、
+`/tmp/ios-a02-python-errors-py313.log`，terminal exit0），各覆盖公开signature、
+invalid mode/零endpoint接入、真实owned ListDevices malformed失败的typed字段与
+原始secret检查。Changed local links **77 PASS**，diff whitespace PASS。
+本次改动没有运行S02独立浏览器gate；完整第11节已安排执行，尚未接受主线/提交。
+
+### 大类 3：A02 Python metadata 验收（2026-10-01，主任务进行中）
+
+实现 **`465b3208f9fd65ee4a106d9785872315c50648ff`**，六个明确相关code/tool/contract
+文件；提交后只留本计划。完整第11节 **PASS**（
+`/tmp/ios-a02-python-errors-full.log`，handle terminal exit0）；前述compile/package
+fixture FAIL保留为历史，最终证据见[验收索引](validation/python-errors-2026-10-01.md)。
+quality及Q01单项host evidence同步，无设备成熟度升级。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1732 Rust/12 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist重建安装PASS |
+| 包/进程 | 新abi3 wheel分别在3.9.25/3.13.15安装并执行同一smoke，editable develop/3.12 smoke PASS；invalid-mode owned trap零接入、唯一owned malformed ListDevices失败，fields/signature/原始secret检查PASS；46 tooling/118 help/38 raw/5 host/22 device NOT_RUN/15 CLI/3 backup合同PASS |
+| 二进制 | ios0.1.13 SHA-256 `7be336add56789ec4753be95de47d8f9964b9b9d59350fb310fef1ad23c9a053`，未改CLI产品代码 |
+| 审查/迁移 | 原RuntimeError/ValueError safe args与public signature保留；附加metadata v1可扩展字段/codes需fallback；操作effects unknown，mode/proxy拒绝not_started；native raw source不作Python cause；metadata赋值失败仍失败并保留安全cause；77 local links/whitespace PASS |
+| 真实剩余 | Python argument extraction/interpreter/allocation/callback/runtime-initialization边界尚待审查；HTTP/C映射、RSD probe owner、其他flattened source与普通stderr/stream/partial仍待实施；真机/跨平台和L01有序设备cleanup待相应条件 |
+
+该slice主机验收完成，A02/第三类未完成。无实际设备、配对、DDI/TSS/擦除恢复、
+推送/发布/历史改写；文档收尾核对后继续A02 C binding mapping，HTTP等独立范围仍
+保留。总体目标active，第四类尚未开始；前述pending full以本条terminal结果为准。

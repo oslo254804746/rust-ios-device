@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-python-error-metadata-465b320",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.9.25/3.12.13/3.13.15 installed bindings",
+      "device": null,
+      "ios": null,
+      "transport": ["Python built-in exceptions and native typed sources; installed wheels/sdist over owned malformed ListDevices peer and invalid-mode endpoint trap"],
+      "required_state": ["Host-only factory/proxy error metadata; no physical tunnel or Apple cleanup certification"],
+      "tested_commit": "465b3208f9fd65ee4a106d9785872315c50648ff",
+      "date": "2026-10-01",
+      "location": "docs/validation/python-errors-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 additive Python schema/class/phase/effects with original RuntimeError/ValueError args and signatures retained. Interpreter/callback/runtime boundaries, HTTP/C, probe, stream/partial and L01 lifecycle acceptance remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-caller-cancellation-ace87c1",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

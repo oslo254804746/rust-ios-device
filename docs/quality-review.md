@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [A02 CLI machine/cancellation gate](validation/cli-machine-errors-2026-10-01.md), latest `ace87c1`, 1732 Rust/eight Python, 46 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; C signatures and Python 3.12 wheel/sdist; prior Rust/source, A01 3.9/3.13 and TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 Python error metadata gate](validation/python-errors-2026-10-01.md), latest `465b320`, 1732 Rust/12 Python, 46 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; C signatures, Python 3.12 wheel/sdist and new 3.9/3.13 installed-wheel smoke; prior Rust/source, CLI/cancellation and TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |
