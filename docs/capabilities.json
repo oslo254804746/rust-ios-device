@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-caller-cancellation-ace87c1",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Typed local cancellation/source contexts, owned pending futures and actual CLI SIGINT blocked at an owned ListDevices peer"],
+      "required_state": ["Local cancellation only; no pairing, device service or Apple cleanup acknowledgement"],
+      "tested_commit": "ace87c1d9f2276a78eb7518c6a8d2cb3ff5b54e6",
+      "date": "2026-10-01",
+      "location": "docs/validation/cli-machine-errors-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 observed cancellation marker and WebInspector launch source/machine class, preserving plain EINTR, signal failures, original exits and unknown effects. Binding/probe/stream and L01 device lifecycle acceptance remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-cli-machine-failures-70108b7",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

@@ -62,3 +62,46 @@ remain work. Unknown effects imply no rollback/retry/cleanup acknowledgement;
 L01 retains orderly device lifecycle acceptance. No physical device, pairing,
 DDI/TSS/erase/restore, maturity upgrade, push, publication, history rewrite or
 reference-checkout mutation occurred.
+
+## Caller-observed cancellation
+
+Implementation `ace87c1d9f2276a78eb7518c6a8d2cb3ff5b54e6`, eleven related files.
+The additive private-fields OperationCancelled marker records local cancellation
+and classifies through context or an explicit IO payload. Plain EINTR remains IO;
+existing CoreError variants stay unchanged. WebInspector launch keeps its original
+context/exit and caller-owned pinned future, but supplies the marker after a
+successful Ctrl+C signal. Signal failure remains its original IO and outer timeout
+retains Elapsed. JSON final class is consequently Cancelled, with effects unknown.
+
+Final classifications passed twelve cases; initial cancellation filter passed
+five unit plus one selected public integration. Minimal/default external consumer
+passed nine before the Debug fix; final all-feature consumer passed twelve,
+including fixed Debug and original exhaustive matches. CLI WebInspector passed
+38 (original 34 plus four owned-pending/ready-signal/real timer/result cases).
+Diagnostic safety tools passed seven and existing compatibility validators eight.
+Initial consumer compile failure was corrected to test source absence without
+trait-object equality. The first full gate failed the repository's safe-Debug
+source check. The marker now renders only a fixed type name, and the unchanged
+check plus the revised full gate passed. The failed gate is not commit evidence.
+
+The actual CLI signal fixture owns the only usbmux endpoint, accepts one bounded
+ListDevices request, withholds its reply, then sends SIGINT only to its owned
+CLI child. It observes exit 1, a Cancelled/unknown-effects JSON error and peer
+EOF; no pair record, device service or private protocol response is supplied.
+Final actual CLI contracts passed **15**, preserving the preceding fourteen,
+with bounded raw capture, complete owned cleanup and no original secret hits.
+This validates the host signal/socket release path before device admission,
+not physical cancellation or Apple teardown acknowledgement.
+
+`python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` passed **1732 Rust, eight
+Python, zero FAIL, two existing ignored**
+(`/tmp/ios-a02-cancellation-final-full.log`, terminal exit 0). Other final gate
+scopes are 66 features/four groups, 7+7 doctests/three snippets, check/strict
+Clippy/MSRV, C ABI/19-byte capture, 3.12 wheel/sdist, 46 tooling, 118 help, 38 raw,
+five host/22 device NOT_RUN, 15 CLI/three backup contracts. Accepted ios 0.1.13
+SHA-256: `7be336add56789ec4753be95de47d8f9964b9b9d59350fb310fef1ad23c9a053`.
+Original variants and caller ownership/selection/output diff were reviewed;
+76 local links and whitespace passed before commit. This is not a general ABI
+or device proof. HTTP/C/Python mappings, probe observations, other lost source
+types, stderr/stream/partial semantics and L01 device cleanup remain pending.

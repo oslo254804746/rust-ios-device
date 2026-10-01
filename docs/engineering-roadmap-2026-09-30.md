@@ -1981,6 +1981,70 @@ safety valve的cycle计数回归（避免regression本身hang）与24/40层guard
 推送/发布/历史改写。文档收尾核对后继续A02取消类型/绑定入口；总体目标active，
 第四类尚未开始。首轮1724结果保留为修正前历史，不替代本条1726最终证据。
 
+### 大类 3 进行中：A02 caller-observed cancellation（2026-10-01）
+
+CLI machine实现 `70108b76ce12f5e8d726cb920c017f91c496c3c6` 与文档收尾
+`f2ef3653d8d5e7437386170c2f557e81d65e4ffa` 已核对，收尾后clean。继续A02，当前
+未提交：附加private-fields `OperationCancelled` Rust marker/constructor/root reexport，
+classifier识别明确本地取消类型，plain EINTR仍Io；原CoreError variants不变。
+WebInspector launch原Ctrl+C成功后的字符串error改为marker+原context，失败signal仍
+保留IO，elapsed source仍保留。私有select helper接收caller-owned pinned future，
+production仍传真实tokio Ctrl+C，原unbiased选择/deadline/owner作用域和output代码保留。
+
+新增typed marker/24 contexts/explicit IO payload与EINTR negative、最小下游consumer，
+CLI owned pending future的ready cancellation、failed signal、真实20ms elapsed、成功
+结果测试；其中signal fixture是Rust-owned ready future，不是真实OS Ctrl+C或device
+cleanup ACK。首次Core专项compile FAIL为外部consumer对Option<dyn Error>错误使用
+assert_eq，已改is_none；修正专项/CLI专项、完整第11节、diff/聚焦实现与文档收尾
+待结果。绑定字段、probe owner、stream/partial和L01有序设备清理仍待推进；目标active。
+
+修正后Core cancellation filter **5 unit+1 public integration PASS**（其他targets
+filtered，`/tmp/ios-a02-cancellation-core-fixed.log`）；精确typed classification专项
+**12 PASS**（`/tmp/ios-a02-cancellation-classifications.log`）；默认最小features外部
+consumer **9 PASS**（`/tmp/ios-a02-cancellation-public-minimal.log`，既有warnings不作为
+strict minimal认证）。CLI全WebInspector **38 PASS**，含原34+新4（
+`/tmp/ios-a02-cancellation-cli.log`）。上述handles均terminal exit0。marker、分类、
+WebInspector source/CLI机器class迁移已写入error/public contract与CHANGELOG；无source
+文本匹配。完整第11节已启动（`/tmp/ios-a02-cancellation-full.log`），待结果/diff/提交。
+
+该完整gate **FAIL**（terminal exit1）：Rust/Python、check/Clippy/MSRV、feature/docs/C ABI/
+wheel/sdist通过，tooling `test_owned_rust_error_debug_does_not_regress_to_payload_derivation`
+拒绝新增OperationCancelled的derive Debug。marker目前只有private unit字段，但项目
+owned-error规则要求安全Debug；已改固定类型名的显式Debug，新增public consumer断言，
+保持该检查原规则不变。该FAIL不作为实现提交证据；安全检查专项和修改后的主线待
+运行，目标active。
+
+修正Debug后的diagnostic safety工具专项 **7 PASS**，all-features外部consumer
+**12 PASS**（`/tmp/ios-a02-cancellation-safe-debug.log`、
+`/tmp/ios-a02-cancellation-public-final.log`，terminal exit0）。新增实际CLI SIGINT
+fixture：owned wrapper启动实际ios，唯一owned mux peer收取完整ListDevices后不回复，
+只向自己的child发送SIGINT；观察exit1、JSON cancelled/effects unknown、peer EOF，
+不能推进到pair-record/device service。最终binary重新build后，实际CLI合同
+**15 PASS**（原14+new signal，`/tmp/ios-a02-cancel-actual-cli.log`），handle terminal
+exit0、无原始secret hits、owned cleanup完成。该实际OS signal证明限定在host probe
+等待阶段，不是真机或Apple teardown ACK。兼容validator原8测试仍PASS。
+修改后的完整第11节仍待运行/结果、diff和提交；A02/目标active。
+
+### 大类 3：A02 observed cancellation 验收（2026-10-01，主任务进行中）
+
+实现 **`ace87c1d9f2276a78eb7518c6a8d2cb3ff5b54e6`**，十一个明确相关code/tool/
+contract文件，提交后只留本计划。修正后的完整第11节 **PASS**，
+`/tmp/ios-a02-cancellation-final-full.log`，handle terminal exit0；前述safe Debug gate
+FAIL保留为历史，不当通过证据。[验收索引](validation/cli-machine-errors-2026-10-01.md)、
+quality/Q01单项host evidence同步，无成熟度升级。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1732 Rust/8 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist重建安装PASS |
+| 工具/进程 | 46 tooling、118 help、38 raw、5 host/22 device NOT_RUN、15实际CLI/3 backup合同PASS；实际SIGINT只阻塞于唯一owned ListDevices endpoint，exit1/Cancelled/unknown effects/EOF，无pair或device service；owned cleanup与原始secret检查PASS |
+| 二进制 | ios0.1.13 SHA-256 `7be336add56789ec4753be95de47d8f9964b9b9d59350fb310fef1ad23c9a053` |
+| 审查/迁移 | 附加private-fields marker/显式fixed Debug、原CoreError variants不变；select原caller-owned pin/signal/budget/unbiased/成功输出保留；JSON class Unknown→Cancelled对应确实观察到signal，不宣称cleanup ACK；76 local links/whitespace PASS |
+| 真实剩余 | HTTP/C/Python机器映射、RSD probe owner、其他flattened strings和普通stderr/stream/partial仍待实施；真实设备取消/有序cleanup与跨平台workflow待L01/相应条件；JS shell/其他服务取消路径不自动算本slice验收 |
+
+该slice主机验收完成，A02/第三类未完成。无实际设备、配对、DDI/TSS/擦除恢复、
+推送/发布/历史改写；文档收尾核对后继续A02 Python/C binding mapping。总体目标active，
+第四类尚未开始。
+
 剩余：最终分类专项/最小feature与public consumer验证，审查所有类型/状态来源；
 补充service missing/metadata missing/unprobed/explicit unsupported的查询合同，CLI
 stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；
