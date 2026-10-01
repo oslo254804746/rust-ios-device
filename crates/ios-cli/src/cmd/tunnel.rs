@@ -27,13 +27,15 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
-use crate::access::{AccessControl, ClientAccessArgs, Permission, Principal, ServerAccessArgs};
+use crate::access::{
+    normalize_upstream_url, AccessControl, ClientAccessArgs, Permission, Principal,
+    ServerAccessArgs, UpstreamArgs, Upstreams,
+};
 
 const DEFAULT_AGENT_HOST: &str = "127.0.0.1";
 const DEFAULT_AGENT_PORT: u16 = 49151;
 const DEFAULT_SCAN_INTERVAL_MS: u64 = 2_000;
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_LIST_BYTES: usize = 1024 * 1024;
@@ -72,6 +74,8 @@ enum TunnelSub {
         access: ServerAccessArgs,
         #[command(flatten)]
         boundary: crate::access::HttpBoundaryArgs,
+        #[command(flatten)]
+        upstreams: UpstreamArgs,
     },
     /// Stop a tunnel
     Stop {
@@ -123,6 +127,7 @@ impl TunnelCmd {
                 scan_interval_ms,
                 access,
                 boundary,
+                upstreams,
             } => {
                 let tun_mode = if userspace {
                     TunMode::Userspace
@@ -136,6 +141,7 @@ impl TunnelCmd {
                     Duration::from_millis(scan_interval_ms),
                     access,
                     boundary,
+                    upstreams,
                 )
                 .await?;
             }
@@ -319,6 +325,7 @@ struct TunnelAgentInner {
     tun_mode: TunMode,
     tunnels: RwLock<HashMap<String, ManagedTunnel>>,
     upstreams: RwLock<BTreeSet<String>>,
+    upstream_access: Upstreams,
     failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
     ready: RwLock<bool>,
     lifecycle_lock: Mutex<()>,
@@ -458,13 +465,23 @@ impl TunnelAgentState {
         Self::with_access(tun_mode, AccessControl::trusted_test_local())
     }
 
+    #[cfg(test)]
     fn with_access(tun_mode: TunMode, access: AccessControl) -> Self {
+        Self::with_upstreams(tun_mode, access, Upstreams::default())
+    }
+
+    fn with_upstreams(
+        tun_mode: TunMode,
+        access: AccessControl,
+        upstream_access: Upstreams,
+    ) -> Self {
         Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
                 tun_mode,
                 tunnels: RwLock::new(HashMap::new()),
-                upstreams: RwLock::new(BTreeSet::new()),
+                upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
+                upstream_access,
                 failed_attempts: RwLock::new(HashMap::new()),
                 ready: RwLock::new(false),
                 lifecycle_lock: Mutex::new(()),
@@ -507,10 +524,10 @@ impl TunnelAgentState {
         grouped
     }
 
-    async fn list_federated(&self, hop: u8) -> FederationListing {
+    async fn list_federated(&self, hop: u8) -> Result<FederationListing> {
         let mut grouped = self.list_tunneld_view().await;
         if hop >= MAX_FEDERATION_HOPS {
-            return grouped;
+            return Ok(grouped);
         }
 
         let upstreams = self
@@ -521,40 +538,22 @@ impl TunnelAgentState {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
-        let client = match reqwest::Client::builder()
-            .timeout(UPSTREAM_FETCH_TIMEOUT)
-            .build()
-        {
-            Ok(client) => client,
-            Err(err) => {
-                tracing::warn!(error = %ios_core::redaction::diagnostic_error(&err), "tunnel agent: cannot create federation client");
-                return grouped;
-            }
-        };
-        let results = futures_util::future::join_all(
-            upstreams
-                .iter()
-                .map(|upstream| fetch_upstream_listing(&client, upstream, hop + 1)),
-        )
+        let results = futures_util::future::join_all(upstreams.iter().map(|upstream| {
+            fetch_upstream_listing(&self.inner.upstream_access, upstream, hop + 1)
+        }))
         .await;
         for (upstream, result) in upstreams.into_iter().zip(results) {
-            match result {
-                Ok(listing) => {
-                    for (udid, entries) in listing {
-                        for mut entry in entries {
-                            if let Some(object) = entry.as_object_mut() {
-                                object.insert("upstream".into(), json!(upstream));
-                                grouped.entry(udid.clone()).or_default().push(entry);
-                            }
-                        }
+            let listing = result.context("federation upstream failed")?;
+            for (udid, entries) in listing {
+                for mut entry in entries {
+                    if let Some(object) = entry.as_object_mut() {
+                        object.insert("upstream".into(), json!(upstream));
+                        grouped.entry(udid.clone()).or_default().push(entry);
                     }
-                }
-                Err(err) => {
-                    tracing::debug!(upstream = %ios_core::redaction::diagnostic_id(&upstream), error = %crate::output::error_message(&err), "tunnel agent: upstream unavailable")
                 }
             }
         }
-        grouped
+        Ok(grouped)
     }
 
     async fn remote_target(&self, query: &ConnectQuery) -> Result<Option<RemoteTarget>> {
@@ -572,9 +571,6 @@ impl TunnelAgentState {
         if let Some(requested) = &query.upstream {
             anyhow::ensure!(upstreams.contains(requested), "upstream is not registered");
         }
-        let client = reqwest::Client::builder()
-            .timeout(UPSTREAM_FETCH_TIMEOUT)
-            .build()?;
         let candidates = upstreams
             .into_iter()
             .filter(|upstream| {
@@ -584,20 +580,12 @@ impl TunnelAgentState {
                     .map_or(true, |wanted| wanted == upstream)
             })
             .collect::<Vec<_>>();
-        let results = futures_util::future::join_all(
-            candidates
-                .iter()
-                .map(|upstream| fetch_upstream_listing(&client, upstream, query.hop + 1)),
-        )
+        let results = futures_util::future::join_all(candidates.iter().map(|upstream| {
+            fetch_upstream_listing(&self.inner.upstream_access, upstream, query.hop + 1)
+        }))
         .await;
         for (upstream, result) in candidates.into_iter().zip(results) {
-            let listing = match result {
-                Ok(listing) => listing,
-                Err(err) => {
-                    tracing::debug!(upstream = %ios_core::redaction::diagnostic_id(&upstream), error = %crate::output::error_message(&err), "tunnel agent: upstream unavailable");
-                    continue;
-                }
-            };
+            let listing = result.context("target upstream failed")?;
             if let Some(entries) = listing.get(&query.udid) {
                 if let Some(entry) = entries.iter().find(|entry| {
                     query.interface.as_ref().map_or(true, |interface| {
@@ -980,48 +968,22 @@ impl TunnelAgentState {
     }
 }
 
-fn normalize_upstream_url(raw: &str) -> Result<String> {
-    let url = reqwest::Url::parse(raw).context("invalid upstream URL")?;
-    anyhow::ensure!(url.scheme() == "http", "upstream must use http");
-    anyhow::ensure!(url.host().is_some(), "upstream URL has no host");
-    anyhow::ensure!(
-        url.username().is_empty() && url.password().is_none(),
-        "upstream URL must not contain credentials"
-    );
-    anyhow::ensure!(
-        url.query().is_none() && url.fragment().is_none(),
-        "upstream URL must not contain a query or fragment"
-    );
-    anyhow::ensure!(
-        url.path() == "/",
-        "upstream URL must point to the manager root"
-    );
-    Ok(url.to_string())
-}
-
 async fn fetch_upstream_listing(
-    client: &reqwest::Client,
+    access: &Upstreams,
     upstream: &str,
     hop: u8,
 ) -> Result<FederationListing> {
-    let mut url = reqwest::Url::parse(upstream)?;
-    url.query_pairs_mut().append_pair("hop", &hop.to_string());
-    let mut response = client.get(url).send().await?.error_for_status()?;
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        anyhow::ensure!(
-            body.len().saturating_add(chunk.len()) <= MAX_LIST_BYTES,
-            "upstream listing exceeds {} bytes",
-            MAX_LIST_BYTES
-        );
-        body.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&body).context("invalid upstream tunnel listing")
+    let listing = access
+        .client(upstream)?
+        .listing(hop, MAX_LIST_BYTES)
+        .await?;
+    serde_json::from_value(listing).context("invalid upstream tunnel listing")
 }
 
 fn remote_connect_url(target: &RemoteTarget, query: &ConnectQuery) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(&target.upstream)?;
-    url.set_scheme("ws")
+    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+    url.set_scheme(scheme)
         .map_err(|_| anyhow::anyhow!("cannot use upstream URL for WebSocket"))?;
     url.set_path("/connect");
     url.query_pairs_mut()
@@ -1265,11 +1227,13 @@ async fn run_tunnel_agent(
     scan_interval: Duration,
     access: ServerAccessArgs,
     boundary: crate::access::HttpBoundaryArgs,
+    upstreams: UpstreamArgs,
 ) -> Result<()> {
     anyhow::ensure!(!scan_interval.is_zero(), "scan interval must be nonzero");
     let boundary = boundary.validate()?;
     let (address, access) = access.load(host).await?;
-    let state = TunnelAgentState::with_access(tun_mode, access);
+    let upstreams = upstreams.load().await?;
+    let state = TunnelAgentState::with_upstreams(tun_mode, access, upstreams);
 
     let listener = TcpListener::bind((address, port))
         .await
@@ -1371,7 +1335,16 @@ async fn agent_list_tunneld(
             "federation hop budget exceeded",
         ));
     }
-    let mut records = principal.run(state.list_federated(query.hop)).await?;
+    let mut records = principal
+        .run(state.list_federated(query.hop))
+        .await?
+        .map_err(|error| {
+            manager_operation_error(
+                StatusCode::BAD_GATEWAY,
+                "federation listing failed",
+                error.as_ref(),
+            )
+        })?;
     principal.require_permission(Permission::List)?;
     records.retain(|device, _| principal.allows(Permission::List, Some(device), None));
     Ok(Json(records))
@@ -1533,12 +1506,20 @@ async fn agent_connect_authorized(
             "federation hop budget exceeded",
         ));
     }
+    if let Some(upstream) = &query.upstream {
+        if !state.inner.upstreams.read().await.contains(upstream) {
+            return Err(manager_error(
+                StatusCode::BAD_REQUEST,
+                "upstream is not registered",
+            ));
+        }
+    }
     let target = state
         .remote_target(&query)
         .await
         .map_err(|err| {
             manager_operation_error(
-                StatusCode::BAD_REQUEST,
+                StatusCode::BAD_GATEWAY,
                 "target selection failed",
                 err.as_ref(),
             )
@@ -1551,16 +1532,35 @@ async fn agent_connect_authorized(
             err.as_ref(),
         )
     })?;
+    let client = state
+        .inner
+        .upstream_access
+        .client(&target.upstream)
+        .map_err(|error| {
+            manager_operation_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream transport configuration failed",
+                error.as_ref(),
+            )
+        })?;
+    let request = client.websocket_request(&url).map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream authentication configuration failed",
+            error.as_ref(),
+        )
+    })?;
     let (remote, _) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(
-            url.as_str(),
+        tokio_tungstenite::connect_async_tls_with_config(
+            request,
             Some(tungstenite::protocol::WebSocketConfig {
                 max_message_size: Some(MAX_WS_MESSAGE_BYTES),
                 max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
                 ..Default::default()
             }),
             false,
+            Some(client.connector()),
         ),
     )
     .await
@@ -1768,6 +1768,7 @@ mod tests {
     mod access_tests;
     mod browser_tests;
     mod method_tests;
+    mod upstream_tests;
 
     fn fake_record(proxy_port: u16) -> TunnelRecord {
         TunnelRecord {
@@ -2437,9 +2438,10 @@ mod tests {
     fn upstream_url_rejects_credentials_and_non_root_paths() {
         assert!(normalize_upstream_url("http://user:pass@localhost:49151/").is_err());
         assert!(normalize_upstream_url("http://localhost:49151/other").is_err());
+        assert!(normalize_upstream_url("http://localhost:49151").is_err());
         assert_eq!(
-            normalize_upstream_url("http://localhost:49151").unwrap(),
-            "http://localhost:49151/"
+            normalize_upstream_url("http://127.0.0.1:49151").unwrap(),
+            "http://127.0.0.1:49151/"
         );
     }
 

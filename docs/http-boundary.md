@@ -154,7 +154,8 @@ Short-lived tickets necessarily enter handshake URLs and may appear in browser
 developer tools or a forwarding server's access logs. Disable URL/header/frame
 logging on the controlled UI and protected forwarder. The CLI's reviewed logging
 filter does not enable dependency handshake/frame logging. This scheme does not
-provide TLS: an HTTPS UI may require a protected WSS transport (S03), and browser
+provide listener TLS: an HTTPS UI may require a protected WSS transport as
+described in [protected federation](protected-federation.md), and browser
 mixed-content/local-network policy may reject a plaintext local connection.
 
 The explicit [browser gate](validation/browser-access-2026-10-01.md) uses actual

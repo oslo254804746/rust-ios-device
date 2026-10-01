@@ -594,7 +594,9 @@ Local metadata is adapter information, not device readiness. See
 transport boundaries. See [HTTP boundaries](http-boundary.md) for exact settings
 and POST management migration. Controlled CDP browser clients use scoped
 single-use handshake tickets; Selenium browser HTTP uses the bearer header.
-Protected federation remains S03 work, and client/device workflow acceptance
+Manager federation uses independently configured credentials and verified
+HTTPS/WSS, or a separately protected literal-loopback host forward; see
+[protected federation](protected-federation.md). Client/device workflow acceptance
 remains separate from host access-control tests.
 
 Comparable upstream workflows:

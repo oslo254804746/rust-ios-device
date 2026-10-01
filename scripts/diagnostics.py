@@ -174,6 +174,8 @@ def cli_cases(binary):
             "--local-unauthenticated"], 1))
     cases.append(("manager-invalid-boundary", ["-vvvv", "tunnel", "serve", "--userspace",
         "--local-unauthenticated", "--allow-origin", "https://" + value + "/path"], 1))
+    cases.append(("manager-invalid-upstreams", ["-vvvv", "tunnel", "serve", "--userspace",
+        "--local-unauthenticated", "--upstream-config", "synthetic-private-upstreams-" + value], 1))
     for name, args in [
         ("forward", ["forward", "1234", "62078"]),
         ("runwda", ["runwda", "com.synthetic.wda.xctrunner"]),
@@ -201,6 +203,7 @@ def cli_cases(binary):
             "manager-explicit-access": (b"tunnel failed:", b"error:"),
             "manager-remote-plaintext": (b"tunnel failed:", b"error:"),
             "manager-invalid-boundary": (b"tunnel failed:", b"error:"),
+            "manager-invalid-upstreams": (b"tunnel failed:", b"error:"),
         }.get(name, (b"Usage:",))
         if name.startswith("local-bind-"):
             required = ((name.removeprefix("local-bind-") + " failed:").encode(), b"error:")
@@ -209,6 +212,8 @@ def cli_cases(binary):
         report["contract"] = all(marker in result.stdout + result.stderr for marker in required)
         if name.startswith("debug-no-selector-"):
             report["contract"] = report["contract"] and b"usbmux" not in result.stderr
+        if name == "manager-invalid-upstreams":
+            report["contract"] = report["contract"] and b"tunnel agent listening" not in result.stdout + result.stderr and b"usbmux" not in result.stderr
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report
     reports.update(credential_cases(binary, env, variants, value))

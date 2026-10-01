@@ -20,9 +20,13 @@ pub(crate) use runtime::{
     ServerAccessArgs,
 };
 mod tickets;
+mod upstream;
+pub(crate) use upstream::{normalize_upstream_url, UpstreamArgs, Upstreams};
 
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+pub(crate) mod test_tls_material;
 
 const MAX_POLICY_BYTES: u64 = 64 * 1024;
 const MAX_GRANTS: usize = 64;

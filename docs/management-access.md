@@ -7,7 +7,8 @@ server or contacting a device. Start the manager with `--auth-config`; clients
 use `--token-file`. Raw forwarding listeners have been audited and restricted
 to loopback. Native debug admission shares the policy mechanism; controlled
 browser clients use the [HTTP/CORS/ticket contract](http-boundary.md).
-Protected federation remains S03 work.
+Per-upstream credentials and verified HTTPS/WSS use the
+[protected federation contract](protected-federation.md).
 Track acceptance in the [roadmap](engineering-roadmap-2026-09-30.md).
 
 For Unix shells, choose two new paths in a trusted private directory:
@@ -178,9 +179,11 @@ require a literal loopback IP or `localhost`; `localhost` resolves to the fixed
 IPv4 loopback address in this interface. Nonloopback plaintext is rejected even
 with a policy. For remote use, keep this listener on loopback and use a protected
 host transport, such as an SSH local forward, with manager credentials still
-required. Native HTTPS/WSS, per-upstream private credentials and certificate
-acceptance remain S03 work. Current upstream calls have no credentials, so they
-cannot federate with a manager in policy mode; do not deploy that topology yet.
+required. Upstream HTTPS/WSS now verifies certificates and uses independently
+configured private credentials. Direct plaintext upstreams require literal
+loopback; remote/DNS HTTP fails. Configure `--upstream-config` before federation
+with a protected manager. See [protected federation](protected-federation.md)
+for CA trust, restart, redirects, cross-hop isolation and deployment conditions.
 
 `--local-unauthenticated` explicitly trusts every local process and conflicts
 with `--auth-config`. It is accepted only on loopback and bypasses roles/scopes;

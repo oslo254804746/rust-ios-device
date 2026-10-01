@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manager. Authenticate HTTP/WebSocket requests, filter device lists, authorize
   device/port operations, and revoke streams at expiry or successful policy
   reload. Private-file CLI credentials disable proxies/redirects and bound
-  response bodies. Protected federation remains pending.
+  response bodies. Platform/device acceptance remains separate.
 - Restrict raw forward/WDA/dproxy/screenshot-stream listeners to loopback before
   device access; validate WDA proxy ports before startup. Raw userspace proxy
   and kernel routes retain their documented host trust boundary.
@@ -34,12 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enforce actual-listener Host and exact allowed Origin on manager/CDP/Selenium,
   reject proxy authority spoofing and require explicit debug device selection
   before global discovery. Move shutdown/start-tunnel to POST; legacy GET/HEAD
-  give a read-only notice until 2026-11-01 UTC and 410 thereafter. Protected
-  federation remains pending.
+  give a read-only notice until 2026-11-01 UTC and 410 thereafter.
 - Add scoped browser bootstrap with approved-origin CORS and bounded, 30-second,
   single-use WebSocket tickets for the manager/CDP. Bind handshakes to Origin and
   complete targets; reject replay/ambiguity and revoke pending tickets/streams
   on policy replacement. Native bearer clients keep their existing contract.
+- Add private per-upstream credential/CA configuration before manager startup,
+  verified HTTPS/WSS federation and literal-loopback plaintext limits. Disable
+  HTTP proxies/redirects, isolate every next-hop credential and report failed
+  aggregate/target requests explicitly instead of a successful empty listing.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.
