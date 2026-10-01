@@ -122,7 +122,7 @@ fn ios_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn list_devices(py: Python<'_>) -> PyResult<PyObject> {
     let devices = py
         .allow_threads(|| RUNTIME.block_on(ios_core::list_devices()))
-        .map_err(|e| operation_error("list devices", &e))?;
+        .map_err(|e| operation_error(py, "list devices", &e))?;
 
     let list = PyList::empty_bound(py);
     for d in devices {
@@ -155,7 +155,7 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     let udid = udid.to_string();
     let device = py
         .allow_threads(|| RUNTIME.block_on(ios_core::connect(&udid, opts)))
-        .map_err(|e| operation_error("start tunnel", &e))?;
+        .map_err(|e| operation_error(py, "start tunnel", &e))?;
 
     let server_address = device.server_address().unwrap_or("").to_string();
     let rsd_port = device.rsd_port().unwrap_or(0);
@@ -198,20 +198,62 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     })
 }
 
-fn operation_error(phase: &'static str, error: &(dyn std::error::Error + 'static)) -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(format!(
+fn exception_with_metadata(
+    py: Python<'_>,
+    error: PyErr,
+    class: ios_core::ErrorClass,
+    phase: &'static str,
+    effects: &'static str,
+) -> PyErr {
+    let attach = || -> PyResult<()> {
+        let value = error.value_bound(py);
+        value.setattr("ios_error_schema_version", 1)?;
+        value.setattr("ios_error_class", class.as_str())?;
+        value.setattr("ios_error_phase", phase)?;
+        value.setattr("ios_error_effects", effects)
+    };
+    match attach() {
+        Ok(()) => error,
+        Err(metadata_error) => {
+            // A metadata allocation/assignment failure remains an exception;
+            // its cause contains only the original safe Python exception.
+            metadata_error.set_cause(py, Some(error));
+            metadata_error
+        }
+    }
+}
+
+fn operation_error(
+    py: Python<'_>,
+    phase: &'static str,
+    error: &(dyn std::error::Error + 'static),
+) -> PyErr {
+    let exception = pyo3::exceptions::PyRuntimeError::new_err(format!(
         "{phase} failed: {}",
         ios_core::redaction::diagnostic_error(error)
-    ))
+    ));
+    exception_with_metadata(
+        py,
+        exception,
+        ios_core::classify_error(error),
+        phase,
+        "unknown",
+    )
 }
 
 fn parse_tunnel_mode(mode: &str) -> PyResult<ios_core::TunMode> {
     match mode {
         "userspace" => Ok(ios_core::TunMode::Userspace),
         "kernel" => Ok(ios_core::TunMode::Kernel),
-        _ => Err(PyValueError::new_err(
-            "invalid tunnel mode; expected \"userspace\" or \"kernel\"",
-        )),
+        _ => Err(Python::with_gil(|py| {
+            exception_with_metadata(
+                py,
+                PyValueError::new_err("invalid tunnel mode; expected \"userspace\" or \"kernel\""),
+                ios_core::ErrorClass::InvalidInput,
+                "tunnel mode",
+                "not_started",
+            )
+        })),
     }
 }
 
@@ -329,10 +371,16 @@ impl Tunnel {
 
     /// Create a context manager that patches asyncio.open_connection so
     /// asyncio-based libraries can use this userspace tunnel transparently.
-    fn asyncio_proxy(&self) -> PyResult<AsyncioProxyPatch> {
+    fn asyncio_proxy(&self, py: Python<'_>) -> PyResult<AsyncioProxyPatch> {
         let proxy_port = self.userspace_port.ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "userspace proxy is unavailable for this tunnel; start_tunnel(..., mode='userspace') is required",
+            exception_with_metadata(
+                py,
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "userspace proxy is unavailable for this tunnel; start_tunnel(..., mode='userspace') is required",
+                ),
+                ios_core::ErrorClass::Precondition,
+                "asyncio proxy",
+                "not_started",
             )
         })?;
 
@@ -453,6 +501,167 @@ impl Drop for AsyncioProxyPatch {
 mod tests {
     use super::*;
 
+    fn metadata(py: Python<'_>, error: &PyErr) -> (u8, String, String, String) {
+        let value = error.value_bound(py);
+        (
+            value
+                .getattr("ios_error_schema_version")
+                .unwrap()
+                .extract()
+                .unwrap(),
+            value.getattr("ios_error_class").unwrap().extract().unwrap(),
+            value.getattr("ios_error_phase").unwrap().extract().unwrap(),
+            value
+                .getattr("ios_error_effects")
+                .unwrap()
+                .extract()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn python_core_error_metadata_keeps_safe_args_and_original_rust_source() {
+        pyo3::prepare_freethreaded_python();
+        let secret = "synthetic-private-python-source";
+        let raw =
+            ios_core::CoreError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, secret));
+        Python::with_gil(|py| {
+            let error = operation_error(py, "list devices", &raw);
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert_eq!(
+                metadata(py, &error),
+                (1, "timeout".into(), "list devices".into(), "unknown".into())
+            );
+            let expected = format!(
+                "list devices failed: {}",
+                ios_core::redaction::diagnostic_error(&raw)
+            );
+            assert_eq!(
+                error
+                    .value_bound(py)
+                    .getattr("args")
+                    .unwrap()
+                    .extract::<(String,)>()
+                    .unwrap(),
+                (expected,)
+            );
+            assert!(
+                !format!("{} {error:?}", error.value_bound(py).str().unwrap()).contains(secret)
+            );
+            assert!(error.cause(py).is_none());
+        });
+        let source = std::error::Error::source(&raw)
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(source.to_string(), secret);
+    }
+
+    #[test]
+    fn python_input_and_proxy_precondition_metadata_keep_builtin_errors() {
+        pyo3::prepare_freethreaded_python();
+        let secret = "synthetic-private-python-input";
+        let tunnel = Tunnel {
+            server_address: secret.into(),
+            rsd_port: 1234,
+            userspace_port: None,
+            services: vec![],
+            service_ports: BTreeMap::new(),
+            service_features: BTreeMap::new(),
+            _state: Arc::new(Mutex::new(TunnelState {
+                device: None,
+                retained_patches: 0,
+                close_requested: false,
+            })),
+        };
+        Python::with_gil(|py| {
+            let error = parse_tunnel_mode(secret).unwrap_err();
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                metadata(py, &error),
+                (
+                    1,
+                    "invalid_input".into(),
+                    "tunnel mode".into(),
+                    "not_started".into()
+                )
+            );
+            assert_eq!(
+                error
+                    .value_bound(py)
+                    .getattr("args")
+                    .unwrap()
+                    .extract::<(String,)>()
+                    .unwrap(),
+                ("invalid tunnel mode; expected \"userspace\" or \"kernel\"".into(),)
+            );
+            let error = tunnel.asyncio_proxy(py).err().unwrap();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert_eq!(
+                metadata(py, &error),
+                (
+                    1,
+                    "precondition".into(),
+                    "asyncio proxy".into(),
+                    "not_started".into()
+                )
+            );
+            assert!(!format!("{error} {error:?}").contains(secret));
+        });
+        assert_eq!(tunnel._state.lock().unwrap().retained_patches, 0);
+    }
+
+    #[test]
+    fn python_error_metadata_distinguishes_observed_cancel_and_opaque_text() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let cases: [(Box<dyn std::error::Error>, &str); 3] = [
+                (
+                    Box::new(ios_core::CoreError::Other(
+                        "permission denied timeout cancelled".into(),
+                    )),
+                    "unknown",
+                ),
+                (Box::new(ios_core::OperationCancelled::new()), "cancelled"),
+                (
+                    Box::new(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                    "io",
+                ),
+            ];
+            for (raw, class) in cases {
+                let error = operation_error(py, "start tunnel", raw.as_ref());
+                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                assert_eq!(
+                    metadata(py, &error),
+                    (1, class.into(), "start tunnel".into(), "unknown".into())
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn metadata_assignment_failure_returns_an_exception_with_safe_original_cause() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let module = PyModule::from_code_bound(py, "class RejectMetadata(RuntimeError):\n    def __setattr__(self, name, value):\n        raise MemoryError('metadata allocation failed')\nerror = RejectMetadata('safe original failure')\n", "metadata_fixture.py", "metadata_fixture").unwrap();
+            let original = PyErr::from_value_bound(module.getattr("error").unwrap());
+            let error = exception_with_metadata(
+                py,
+                original,
+                ios_core::ErrorClass::Unknown,
+                "list devices",
+                "unknown",
+            );
+            assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
+            let cause = error.cause(py).unwrap();
+            assert_eq!(
+                cause.value_bound(py).str().unwrap().to_string(),
+                "safe original failure"
+            );
+        });
+    }
+
     #[test]
     fn python_exception_hides_protocol_data_and_invalid_argument_values() {
         pyo3::prepare_freethreaded_python();
@@ -460,7 +669,7 @@ mod tests {
         let raw = ios_core::CoreError::Protocol(secret.into());
         assert!(raw.to_string().contains(secret));
         Python::with_gil(|py| {
-            let error = operation_error("start tunnel", &raw);
+            let error = operation_error(py, "start tunnel", &raw);
             assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
             let rendered = error.value_bound(py).str().unwrap().to_string();
             assert!(rendered.contains("start tunnel failed: protocol error:"));
@@ -490,9 +699,9 @@ mod tests {
         };
         assert!(!tunnel.__repr__().contains(secret));
         assert!(tunnel.__repr__().contains("id:"));
-        let patch = tunnel.asyncio_proxy().unwrap();
-        assert!(!patch.__repr__().contains(secret));
         Python::with_gil(|py| {
+            let patch = tunnel.asyncio_proxy(py).unwrap();
+            assert!(!patch.__repr__().contains(secret));
             let info = tunnel.connect_info(py).unwrap();
             assert_eq!(
                 info.bind(py)

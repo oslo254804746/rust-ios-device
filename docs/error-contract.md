@@ -1,8 +1,9 @@
 # Error and machine-output contract
 
-A02 is in progress. Additive Rust classification and opt-in final CLI machine
-errors are implemented; the roadmap keeps HTTP/C/Python mappings, stream semantics,
-probe observations and remaining information-loss fixes pending. R04's accepted
+A02 is in progress. Additive Rust classification, opt-in final CLI machine
+errors and Python factory/proxy metadata are implemented; the roadmap keeps
+HTTP/C mappings, remaining Python boundaries, stream semantics, probe observations
+and remaining information-loss fixes pending. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
 
 ## Rust classification
@@ -136,8 +137,8 @@ reporting remains best effort after failure: a closed stderr retains the origina
 nonzero status and may prevent delivery of the envelope. Ordinary progress,
 tracing and stream callbacks may still emit other stderr records; this option
 does not yet make the entire stderr stream JSON. Partial stdout may already
-exist. No new machine fields are added to existing HTTP, Python exceptions or
-C statuses; those adapters remain pending A02 work with additive contracts.
+exist. Existing HTTP and C statuses retain their shapes; those adapters remain
+pending A02 work with additive contracts. Python metadata is described below.
 
 Both the human confirmation hint and machine field now inspect at most 32
 sources, matching the classifier's bounded interpretation. Normal guard errors
@@ -154,3 +155,36 @@ status, and JSON commands that currently emit human status text remain under
 review. A partial stream or an output error can follow completed operations;
 no rollback, automatic retry or device cleanup acknowledgement is promised.
 L01 retains the stronger lifecycle/deadline acceptance.
+
+## Python exceptions
+
+The existing RuntimeError from `ios_rs.list_devices()` and `start_tunnel()`
+retains its safe single-string `args`, with category selected from the native
+typed error before converting to Python. Invalid tunnel mode keeps ValueError
+and its exact message; `Tunnel.asyncio_proxy()` without a userspace proxy keeps
+its existing RuntimeError. These errors gain four additive attributes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `ios_error_schema_version` | Integer `1`; allow future versions and additional attributes |
+| `ios_error_class` | Stable ErrorClass code; consumers need a fallback for unknown/future codes |
+| `ios_error_phase` | Fixed `list devices`, `start tunnel`, `tunnel mode` or `asyncio proxy`, without user values |
+| `ios_error_effects` | `unknown` for native operations; `not_started` for rejected mode or unavailable proxy before that operation |
+
+No public factory/method parameter is added. Existing `except RuntimeError` and
+`except ValueError` callers keep working; callers can select a category by
+attribute instead of parsing diagnostic text. Invalid mode fails before runtime
+initialization or device discovery. A proxy precondition failure does not retain
+an asyncio patch. Unknown effects never grant retry, rollback or cleanup safety.
+Original Rust sources remain available to native callers before this conversion;
+they are not exported as unsafe Python causes or diagnostic payloads.
+
+If metadata allocation/assignment fails, that Python exception is returned with
+the original safe Python exception as its cause. The operation remains failed;
+complete metadata delivery is not promised under allocation failure. Python
+argument extraction errors, interpreter/allocation errors, callback exceptions
+and the existing runtime-initialization panic boundary are outside this mapped
+profile and still need their own review. Absence of attributes does not mean
+success or an unknown side effect was rolled back. The host tests and installed
+owned ListDevices peer certify this boundary, not physical tunnel startup or
+Apple teardown.

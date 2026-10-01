@@ -131,6 +131,33 @@ not capture a full sysdiagnose.
 | `Tunnel.asyncio_proxy()` | Context manager that patches `asyncio.open_connection`. |
 | `Tunnel.close()` | Requests closure; installed asyncio patches retain the resource until restored. |
 
+## Error handling
+
+Device-list/tunnel operation failures keep `RuntimeError` and their safe message.
+Invalid tunnel mode keeps `ValueError`. Requesting `asyncio_proxy()` without a
+userspace proxy keeps `RuntimeError`. These exceptions also expose
+`ios_error_schema_version` (integer `1`), `ios_error_class` (stable category),
+`ios_error_phase` (fixed operation name) and `ios_error_effects`.
+
+```python
+try:
+    devices = ios_rs.list_devices()
+except RuntimeError as error:
+    if getattr(error, "ios_error_schema_version", None) == 1:
+        category = error.ios_error_class
+        # Handle a known category; keep a fallback for future/unknown codes.
+        print(category, error.ios_error_effects)
+    raise
+```
+
+Operation effects are `unknown`; input/proxy rejection before the corresponding
+operation is `not_started`. A category alone does not make retry safe or confirm
+device cleanup. Existing exception `args` and signatures remain unchanged.
+Interpreter/argument/callback and runtime-initialization errors are outside this
+mapped profile. Metadata allocation failure remains an exception with the
+original safe exception as its cause. See the full
+[error contract](../../docs/error-contract.md) for fields and remaining limits.
+
 ## Requirements
 
 - A trusted iOS device connected via USB.

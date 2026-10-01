@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add versioned error category/phase/effect attributes to Python native factory,
+  invalid-mode and unavailable-proxy exceptions. Preserve built-in exception
+  types, safe args and public signatures; verify installed bindings against
+  owned bounded host replies without device operations.
+
 - Add a Rust `OperationCancelled` marker for observed local cancellation and
   retain it through WebInspector launch's Ctrl+C context. Machine failures can
   classify cancellation while plain EINTR and failed signal registration keep

@@ -158,9 +158,14 @@ own nested installation, with the last restore reinstating original
 coordinated by the embedding application; it is not a concurrent per-task
 network context or a generalized async SDK. Repeated Python close/restore and
 patch ownership have host tests, not a promise of a timely Apple teardown ACK.
-Operation failures currently use safe RuntimeError and invalid tunnel mode uses
-ValueError. A02/A03 evolve typed classification without requiring callers to
-parse natural-language error messages or exposing credentials in diagnostics.
+Native factory failures keep safe RuntimeError, invalid tunnel mode keeps
+ValueError, and unavailable asyncio proxy keeps RuntimeError, including their
+existing single-string args. Additive `ios_error_schema_version` (1),
+`ios_error_class`, `ios_error_phase` and `ios_error_effects` attributes provide
+typed classification and explicit effect uncertainty without changing public
+signatures. Consumers allow future codes/attributes and retain a fallback for
+exceptions outside this profile. The [error contract](error-contract.md) records
+allocation/callback/runtime boundaries, safe causes and host-only acceptance.
 
 ## Versions, migrations and checks
 
@@ -190,7 +195,10 @@ retain private-module encapsulation. `validate.py compatibility` exercises the
 actual CLI against bounded owned USB/Network/empty fake-usbmux responses in JSON
 and human mode; only safe counters are printed. Linked C smoke checks all 14
 public function signatures plus statuses/layout/null/UTF-8 ownership failures.
-Installed Python smoke checks factories/signatures and patch/resource exposure.
+Installed Python smoke checks factories/signatures and patch/resource exposure,
+invalid mode with an owned endpoint trap and a real malformed owned ListDevices
+reply. Its child/peer deadlines and bounded request permit no device-service
+routing; this is host evidence, not an actual device workflow.
 These are representative regression profiles, not an exhaustive semver checker
 or ABI proof across all architectures. Platform release checks, A02/L01 and
 representative device evidence remain required before 1.0 readiness.
