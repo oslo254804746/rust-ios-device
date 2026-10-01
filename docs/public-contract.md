@@ -53,6 +53,12 @@ source-compatible change with a machine-output-compatible one. Advanced
 protocol APIs remain experimental; changed private-protocol behavior needs
 protocol evidence and scoped fixtures, not just a method signature.
 
+The additive Rust `ErrorClass`/`classify_error` and RSD feature-evidence APIs
+retain existing exhaustive CoreError matches, descriptor fields and permissive
+checks. Their [contract](error-contract.md) keeps typed category, successful
+directory evidence and unknown probe state separate; it does not certify new
+machine fields in the existing CLI/HTTP/C/Python interfaces.
+
 ## CLI and JSON
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation

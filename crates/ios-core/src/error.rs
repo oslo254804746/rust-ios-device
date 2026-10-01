@@ -1,5 +1,8 @@
 use crate::lockdown::pair_record::PairRecordError;
 
+mod classification;
+pub use classification::{classify_error, ErrorClass};
+
 /// Aggregated error type for ios-core operations.
 #[derive(thiserror::Error)]
 pub enum CoreError {
@@ -25,6 +28,14 @@ pub enum CoreError {
     Unsupported(String),
     #[error("{0}")]
     Other(String),
+}
+
+impl CoreError {
+    /// Classify the typed error/source chain without reading diagnostic text.
+    /// This does not assert retry safety, rollback or cleanup acknowledgement.
+    pub fn class(&self) -> ErrorClass {
+        classify_error(self)
+    }
 }
 
 // Error fields and sources remain available to explicit callers. Debug is a

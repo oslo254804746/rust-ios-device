@@ -30,6 +30,30 @@ use crate::xpc::XpcError;
 
 pub const RSD_PORT: u16 = 58783;
 
+/// Evidence in a successfully obtained RSD directory. This does not describe
+/// an unattempted/failed probe, nor certify an operation on a physical device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RsdFeatureEvidence {
+    Advertised,
+    NotAdvertised,
+    /// The historical descriptor has no usable capability list. An omitted
+    /// list and an explicitly empty list cannot be distinguished by this type.
+    MetadataUnavailable,
+    ServiceMissing,
+}
+
+fn feature_evidence(features: &[String], feature: &str) -> RsdFeatureEvidence {
+    if features.is_empty() {
+        RsdFeatureEvidence::MetadataUnavailable
+    } else if features.iter().any(|item| item == feature) {
+        RsdFeatureEvidence::Advertised
+    } else {
+        RsdFeatureEvidence::NotAdvertised
+    }
+}
+
 /// A discovered iOS 17+ service and its advertised capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceDescriptor {
@@ -56,6 +80,12 @@ impl ServiceDescriptor {
     pub fn supports_feature(&self, feature: &str) -> bool {
         self.features.is_empty() || self.features.iter().any(|item| item == feature)
     }
+
+    /// Report capability evidence separately from the permissive legacy check.
+    /// NotAdvertised is an observation, not a device-side unsupported reply.
+    pub fn feature_evidence(&self, feature: &str) -> RsdFeatureEvidence {
+        feature_evidence(&self.features, feature)
+    }
 }
 
 /// Result of the RSD handshake.
@@ -66,6 +96,20 @@ pub struct RsdHandshake {
 }
 
 impl RsdHandshake {
+    /// Query an exact service entry in this successful directory snapshot.
+    pub fn feature_evidence(&self, service: &str, feature: &str) -> RsdFeatureEvidence {
+        self.get_service_features(service)
+            .map(|features| feature_evidence(features, feature))
+            .unwrap_or(RsdFeatureEvidence::ServiceMissing)
+    }
+
+    /// Query with the existing canonical-then-`.shim.remote` resolution order.
+    pub fn resolved_feature_evidence(&self, service: &str, feature: &str) -> RsdFeatureEvidence {
+        self.get_resolved_service_features(service)
+            .map(|features| feature_evidence(features, feature))
+            .unwrap_or(RsdFeatureEvidence::ServiceMissing)
+    }
+
     /// Look up a service port, with automatic `.shim.remote` fallback.
     pub fn get_port(&self, service: &str) -> Option<u16> {
         if let Some(s) = self.services.get(service) {

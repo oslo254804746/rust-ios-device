@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add non-exhaustive Rust error categories from typed sources and additive RSD
+  feature-evidence queries. Preserve existing error variants/source chains and
+  permissive metadata checks; [binding/output mappings](docs/error-contract.md)
+  remain under implementation.
+
 - Add explicit shared plist-to-JSON policies for historical byte-array,
   hexadecimal and tagged base64 output, with borrowed and owned iterative
   traversal. Preserve per-command Date/Uid behavior and separate MDM redaction.

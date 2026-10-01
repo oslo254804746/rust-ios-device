@@ -92,6 +92,97 @@ fn event_id(event: DeviceEvent) -> u32 {
 }
 
 #[test]
+fn public_error_classes_preserve_existing_exhaustive_core_matches() {
+    use ios_core::{classify_error, ErrorClass};
+    let error = CoreError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+    assert_eq!(error_family(&error), "io");
+    assert_eq!(error.class(), ErrorClass::Timeout);
+    assert_eq!(classify_error(&error).as_str(), "timeout");
+    let code = match error.class() {
+        ErrorClass::Timeout => "wait budget",
+        _ => "other or future category",
+    };
+    assert_eq!(code, "wait budget");
+    let error = CoreError::Xpc(ios_core::XpcError::ServiceNotFound(
+        "synthetic service".into(),
+    ));
+    assert_eq!(error_family(&error), "xpc");
+    assert_eq!(classify_error(&error), ErrorClass::ServiceMissing);
+    assert_eq!(
+        serde_json::to_value(error.class()).unwrap(),
+        "service_missing"
+    );
+}
+
+#[test]
+fn public_rsd_evidence_keeps_unknown_metadata_distinct_from_missing_service() {
+    use ios_core::RsdFeatureEvidence as Evidence;
+    let legacy = ServiceDescriptor::new(1234);
+    assert!(legacy.supports_feature("requested"));
+    assert_eq!(
+        legacy.feature_evidence("requested"),
+        Evidence::MetadataUnavailable
+    );
+    let directory = RsdHandshake {
+        udid: "synthetic-device".into(),
+        services: HashMap::from([
+            ("legacy".into(), legacy),
+            (
+                "modern".into(),
+                ServiceDescriptor {
+                    port: 2345,
+                    features: vec!["requested".into()],
+                },
+            ),
+            ("modern.shim.remote".into(), ServiceDescriptor::new(3456)),
+            (
+                "shim-only.shim.remote".into(),
+                ServiceDescriptor {
+                    port: 4567,
+                    features: vec!["requested".into()],
+                },
+            ),
+        ]),
+    };
+    assert_eq!(
+        directory.feature_evidence("missing", "requested"),
+        Evidence::ServiceMissing
+    );
+    assert_eq!(
+        directory.feature_evidence("legacy", "requested"),
+        Evidence::MetadataUnavailable
+    );
+    assert_eq!(
+        directory.supports_feature("legacy", "requested"),
+        Some(true)
+    );
+    assert_eq!(
+        directory.feature_evidence("modern", "requested"),
+        Evidence::Advertised
+    );
+    assert_eq!(
+        directory.feature_evidence("modern", "other"),
+        Evidence::NotAdvertised
+    );
+    assert_eq!(
+        directory.resolved_feature_evidence("modern", "requested"),
+        Evidence::Advertised
+    );
+    assert_eq!(
+        directory.feature_evidence("shim-only", "requested"),
+        Evidence::ServiceMissing
+    );
+    assert_eq!(
+        directory.resolved_feature_evidence("shim-only", "requested"),
+        Evidence::Advertised
+    );
+    assert_eq!(
+        serde_json::to_value(Evidence::MetadataUnavailable).unwrap(),
+        "metadata_unavailable"
+    );
+}
+
+#[test]
 fn public_plist_conversion_policies_select_historical_data_formats() {
     use ios_core::plist_json::{into_json, to_json, DataEncoding, PlistJsonPolicy};
     let value = plist::Value::Dictionary(plist::Dictionary::from_iter([

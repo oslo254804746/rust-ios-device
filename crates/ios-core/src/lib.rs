@@ -102,7 +102,7 @@ pub use device::{
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
 pub use discovery::{DeviceEvent, DeviceInfo};
-pub use error::CoreError;
+pub use error::{classify_error, CoreError, ErrorClass};
 pub use lockdown::{
     default_pair_record_path, handshake_only_service_tls, recv_lockdown, send_lockdown,
     start_lockdown_session, start_service, strip_service_tls, wrap_service_tls, GetValueRequest,
@@ -228,7 +228,7 @@ pub use xpc::message::{
     decode_message as decode_xpc_message, encode_message as encode_xpc_message, XpcMessage,
     XpcValue,
 };
-pub use xpc::rsd::{RsdHandshake, ServiceDescriptor, RSD_PORT};
+pub use xpc::rsd::{RsdFeatureEvidence, RsdHandshake, ServiceDescriptor, RSD_PORT};
 pub use xpc::XpcError;
 
 /// List all currently connected iOS devices (via usbmuxd).
