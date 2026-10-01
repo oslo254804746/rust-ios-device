@@ -41,6 +41,67 @@ fn mode_name(mode: TunMode) -> &'static str {
 }
 
 #[test]
+fn backup_facade_types_functions_and_client_methods_remain_public() {
+    use ios_core::backup2::{
+        BackupDirectoryLayout, BackupOptions, BackupResult, Mobilebackup2Client, RestoreOptions,
+        RestoreResult, VersionExchange,
+    };
+    let layout = BackupDirectoryLayout {
+        root: "synthetic-backup".into(),
+        device_directory: "synthetic-backup/source".into(),
+        target_identifier: "source".into(),
+    };
+    let version = VersionExchange {
+        device_link_version: 300,
+        protocol_version: 2.1,
+        local_versions: vec![2.0, 2.1],
+    };
+    let _: BackupResult = BackupResult {
+        layout: layout.clone(),
+        device_link_version: version.device_link_version,
+        protocol_version: version.protocol_version,
+    };
+    let _: RestoreResult = RestoreResult {
+        layout: layout.clone(),
+        device_link_version: 300,
+        protocol_version: 2.1,
+    };
+    let restore = RestoreOptions {
+        system: false,
+        reboot: true,
+        copy: false,
+        settings: true,
+        remove: false,
+        password: None,
+        source_identifier: None,
+    };
+    let options = BackupOptions {
+        filter: None,
+        patch_manifest: false,
+        password: None,
+    };
+    assert_eq!(ios_core::backup2::BackupSelection::NAMES.len(), 6);
+    let _initialize = ios_core::backup2::initialize_backup_directory;
+    let _encrypted = ios_core::services::backup2::backup_is_encrypted;
+    let (stream, _peer) = tokio::io::duplex(64);
+    let mut client = Mobilebackup2Client::new(stream);
+    let info = plist::Dictionary::new();
+    // Type-check method paths without polling or touching a device/filesystem.
+    drop(client.version_exchange());
+    drop(client.backup_with_options(&layout.root, "source", false, &info, options));
+    drop(client.restore(&layout.root, "source", restore));
+    drop(client.info(&layout.root, "source", None));
+    drop(client.list(&layout.root, "source", None));
+    #[cfg(feature = "backup2-manifest")]
+    {
+        let _list = ios_core::backup2::list_backup_entries;
+        let _patch = ios_core::backup2::patch_backup_directory;
+        let _unback = ios_core::backup2::unback_backup;
+        let _extract = ios_core::backup2::extract_backup_file;
+    }
+}
+
+#[test]
 fn published_struct_literals_and_root_paths_remain_usable() {
     let options = ConnectOptions {
         tun_mode: TunMode::Userspace,

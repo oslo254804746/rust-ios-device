@@ -23,15 +23,16 @@ use zeroize::Zeroizing;
 use crate::proto::nskeyedarchiver::{unarchive, ArchiveValue};
 
 use super::crypto::{expected_payload_ciphertext_len, BackupCrypto, CryptoError};
-#[cfg(test)]
-use super::mbdb::MbdbRecord;
-use super::mbdb::{MbdbError, MbdbManifest};
-use super::{
+use super::host_fs::{
     canonical_backup_root, create_dir_all_no_symlink, ensure_backup_directory,
     ensure_no_symlink_components_at_root, manifest_relative_path_string, open_file_for_read,
     open_file_for_write, read_backup_dictionary, sanitize_relative_path, symlink_path_error,
-    validate_backup_identifier, BackupFilter, Mobilebackup2Error,
+    validate_backup_identifier,
 };
+#[cfg(test)]
+use super::mbdb::MbdbRecord;
+use super::mbdb::{MbdbError, MbdbManifest};
+use super::{BackupFilter, Mobilebackup2Error};
 
 const MAX_MANIFEST_ROWS: usize = 1_000_000;
 const MAX_MANIFEST_DB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -557,7 +558,7 @@ fn safe_device_directory(
 
 fn safe_file(directory: &Path, name: &str) -> Result<PathBuf, Mobilebackup2Error> {
     let path = directory.join(name);
-    super::reject_symlink_components(&path)?;
+    super::host_fs::reject_symlink_components(&path)?;
     let metadata = fs::symlink_metadata(&path)?;
     if metadata.file_type().is_symlink() {
         return Err(symlink_path_error(&path));
@@ -653,7 +654,7 @@ fn replace_file_atomically(temporary: &Path, destination: &Path) -> Result<(), M
     // The temporary file is created in the destination directory and has already been synced by
     // the crypto writer. Unix rename atomically replaces the old file; Windows needs
     // MoveFileEx(REPLACE_EXISTING), provided by the shared helper with the official constants.
-    super::reject_symlink_components(destination)?;
+    super::host_fs::reject_symlink_components(destination)?;
     crate::fs_replace::move_file_replace(temporary, destination)?;
     // A directory fsync failure occurs after the atomic replacement and must not be reported as
     // a failed transaction: callers cannot safely roll the replacement back at that point.
@@ -1120,7 +1121,7 @@ fn validate_domain(domain: &str) -> Result<String, Mobilebackup2Error> {
             "Manifest.db domain must be one path component: {domain:?}"
         )));
     }
-    if super::has_windows_drive_prefix(domain) {
+    if super::host_fs::has_windows_drive_prefix(domain) {
         return Err(Mobilebackup2Error::Protocol(format!(
             "Manifest.db domain has a platform path prefix: {domain:?}"
         )));
@@ -1521,7 +1522,7 @@ fn prepare_output_directory(
                     path.display()
                 )));
             }
-            super::ensure_tree_has_no_symlinks(&path)?;
+            super::host_fs::ensure_tree_has_no_symlinks(&path)?;
             fs::remove_dir_all(&path)?;
         }
         let path = create_dir_all_no_symlink(root, &relative)?;
@@ -1529,8 +1530,8 @@ fn prepare_output_directory(
         Ok(path)
     } else {
         fs::create_dir_all(&path)?;
-        super::reject_symlink_components(&path)?;
-        let path = super::canonicalize_simplified(&path)?;
+        super::host_fs::reject_symlink_components(&path)?;
+        let path = super::host_fs::canonicalize_simplified(&path)?;
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.is_dir() {
             return Err(Mobilebackup2Error::Protocol(format!(
@@ -1549,8 +1550,8 @@ fn prepare_explicit_parent(
 ) -> Result<PathBuf, Mobilebackup2Error> {
     reject_output_path(path)?;
     fs::create_dir_all(path)?;
-    super::reject_symlink_components(path)?;
-    let canonical = super::canonicalize_simplified(path)?;
+    super::host_fs::reject_symlink_components(path)?;
+    let canonical = super::host_fs::canonicalize_simplified(path)?;
     if !canonical.is_dir() {
         return Err(Mobilebackup2Error::Protocol(format!(
             "output parent is not a directory: {}",
@@ -1567,7 +1568,7 @@ fn reject_output_path(path: &Path) -> Result<(), Mobilebackup2Error> {
             "output path must not be empty".into(),
         ));
     }
-    super::reject_symlink_components(path)
+    super::host_fs::reject_symlink_components(path)
 }
 
 fn reject_output_overlap(path: &Path, source_directory: &Path) -> Result<(), Mobilebackup2Error> {
@@ -2057,7 +2058,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
-        super::super::canonicalize_simplified(&std::env::temp_dir())
+        super::super::host_fs::canonicalize_simplified(&std::env::temp_dir())
             .expect("canonical temp directory")
             .join(format!(
                 "ios-core-backup2-manifest-{}-{label}-{nonce}",

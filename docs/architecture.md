@@ -70,6 +70,30 @@ control messages, userspace routing headers/RSD bootstrap, direct IPv6 endpoint
 selection and bounded TCP lockdown byte exchange. Kernel TUN creation and Apple
 service lifecycles still require their platform and physical-device evidence.
 
+## Backup boundaries
+
+`services::backup2` keeps the existing public client, options, result types and
+function reexports. Its private modules consume explicit streams, values or
+owned layouts; moving a file does not publish new protocol behavior.
+
+| Owner | Internal boundary |
+| --- | --- |
+| `protocol` | Exact request shapes, bounded framing, numeric decoding and diagnostic redaction; no filesystem or connection ownership. |
+| `filter` | Bounded presets/regex predicates shared by receive-time and manifest selection. |
+| `host_fs` | Root/path/symlink policy, metadata limits, staged files, disk operations and typed blocking workers; returns completed path changes for placeholder tracking. |
+| `manifest` / `crypto` / `mbdb` | Feature-gated local index, keybag and legacy-index operations using the shared path policy. Public synchronous functions remain synchronous. |
+| `session` | DeviceLink negotiation, transfer accounting, status order, placeholder tracking and best-effort disconnect; invokes host work off the async worker thread. |
+
+Core and CLI await owned blocking jobs for normal metadata/path/commit/copy/
+rename/remove/list work. Upload/download bytes continue through Tokio file I/O
+and bounded buffers. Dropping a worker future does not stop a started blocking
+job or undo its completed filesystem effects. A staged-file guard still drops
+after the file handle and removes its own temporary on interrupted transfer;
+its drop fallback may perform synchronous cleanup. L01 retains stronger deadline,
+cancellation and physical-device cleanup acceptance. Existing transfer and
+metadata budgets are unchanged. CLI local operations retain their result formats
+and return output errors; see [backup output contracts](backup-contract.md).
+
 ## Feature flags
 
 `ios-core` keeps most service implementations behind feature flags. Examples include `afc`, `apps`, `syslog`, `screenshot`, `dtx`, `instruments`, `testmanager`, `debugserver`, `imagemounter`, `pcap`, `webinspector`, `fileservice`, and `deviceinfo`.

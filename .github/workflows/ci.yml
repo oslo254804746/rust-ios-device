@@ -43,6 +43,7 @@ jobs:
       - run: python scripts/validate.py diagnostics
       - run: python scripts/validate.py regression
       - run: python scripts/validate.py compatibility
+      - run: python scripts/validate.py backup-contracts
 
   feature-check:
     runs-on: ubuntu-latest

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Separate backup wire, filtering, host filesystem and session responsibilities
+  behind the existing public facade; use owned blocking disk operations in
+  async backup callers and add actual local CLI output/failure fixtures.
+
 - Replace device text inclusion with explicit private module boundaries for
   discovery, strategy selection, lockdown, tunnel activation, RSD and service
   routing while preserving the public connection paths and wire behavior.
@@ -70,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for CoreDevice camera/microphone conflicts (9022).
 
 ### Fixed
+
+- Preserve exact filtered-file destinations after device move/copy so placeholder
+  cleanup does not append a file-invalid trailing separator. Backup output
+  failures now return exit 1 instead of a possible println panic/exit 101;
+  [migration and partial-result rules](docs/backup-contract.md) retain success formats.
 
 - Read canonical usbmux `ProductID` for listing and attach events, while
   retaining the previously accepted `ProductId` alias and zero for missing
