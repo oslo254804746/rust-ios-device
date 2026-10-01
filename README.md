@@ -55,6 +55,9 @@ Detailed docs live in [`docs/`](docs/): [architecture](docs/architecture.md),
 [python binding](docs/python-binding.md),
 [troubleshooting](docs/troubleshooting.md), and
 [host output/cancellation contracts](docs/output-contract.md).
+The [public compatibility rules](docs/public-contract.md) define maintained
+candidate Rust/CLI/C/Python interfaces and migrations; host compatibility
+fixtures do not certify a stable device workflow.
 
 ## Install
 

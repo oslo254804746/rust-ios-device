@@ -165,7 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=["full", "quick", "fmt", "check", "lint",
         "rust-tests", "python-host", "msrv", "features", "docs", "ffi", "python-package",
-        "tooling-tests", "capabilities", "diagnostics", "regression"])
+        "tooling-tests", "capabilities", "diagnostics", "regression", "compatibility"])
     parser.add_argument("--package", choices=["ios-core", "ios-cli", "ios-ffi"],
                         help="package to test in quick mode")
     parser.add_argument("--python", default=os.environ.get("PYO3_PYTHON", sys.executable))
@@ -192,6 +192,8 @@ def main():
             "scripts/diagnostics.py", "--build-cli"]),
         "regression": lambda: run("host workflow evidence and cleanup", [sys.executable,
             "scripts/regression.py"]),
+        "compatibility": lambda: run("public CLI compatibility fixtures", [sys.executable,
+            "scripts/compatibility.py"]),
         "tooling-tests": lambda: run("validation failure paths", [sys.executable, "-m",
             "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]),
         "python-package": lambda: python_package(args.python),
@@ -199,7 +201,7 @@ def main():
             args.package or "ios-core", "--all-features", "--locked"]),
     }
     scopes = ["fmt", "check", "lint", "rust-tests", "python-host", "msrv", "features",
-              "docs", "ffi", "python-package", "tooling-tests", "capabilities", "diagnostics", "regression"] if args.scope == "full" else [args.scope]
+              "docs", "ffi", "python-package", "tooling-tests", "capabilities", "diagnostics", "regression", "compatibility"] if args.scope == "full" else [args.scope]
     for scope in scopes:
         actions[scope]()
     print(f"[PASS] validation/{args.scope}", flush=True)

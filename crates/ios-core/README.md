@@ -103,6 +103,9 @@ the matching feature.
 
 ## Documentation
 
+- [Public compatibility rules](../../docs/public-contract.md) describe maintained
+  candidate root paths, public fields/enums and feature aliases; device maturity
+  remains in the capability catalog.
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - API docs: <https://docs.rs/ios-core>
 - Feature flags: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/features.md>

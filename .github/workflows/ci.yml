@@ -42,6 +42,7 @@ jobs:
       - run: python scripts/validate.py capabilities
       - run: python scripts/validate.py diagnostics
       - run: python scripts/validate.py regression
+      - run: python scripts/validate.py compatibility
 
   feature-check:
     runs-on: ubuntu-latest

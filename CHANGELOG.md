@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add maintained compatibility candidate profiles, external Rust consumer
+  fixtures, actual CLI list fixtures and expanded C/Python signature checks.
 - Add a Linux host regression evidence runner with bounded raw capture, exact
   synthetic argv checks, owned agent cleanup and artifact allowlists; keep
   representative device/Windows fixture cases explicitly NOT_RUN.
@@ -65,6 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Read canonical usbmux `ProductID` for listing and attach events, while
+  retaining the previously accepted `ProductId` alias and zero for missing
+  metadata. CLI JSON fields and types remain unchanged.
 - Restrict every CLI verbosity to reviewed project log targets, preventing
   dependency handshake/frame/close logging from exposing identifiers, headers
   or device data. Verify with a real loopback WebSocket exchange and raw control.

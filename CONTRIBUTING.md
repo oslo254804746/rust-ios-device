@@ -36,6 +36,9 @@ separate required checks. CI uses the same entry point.
 ## Contribution guidelines
 
 - Keep changes focused. Avoid broad refactors mixed with behavior changes.
+- Review the [public compatibility rules](docs/public-contract.md) for Rust
+  fields/enum variants, CLI/JSON, C ABI and Python signatures. Preserve the
+  representative downstream fixtures or document an explicit migration.
 - Do not commit pair records, certificates, private keys, device backups, UDIDs from personal devices, logs with personal data, or local machine paths.
 - Add or update tests for protocol parsing, command-line argument parsing, and service behavior when practical.
 - For real-device changes, include the host OS, iOS version range, connection type, and whether the device was trusted, supervised, or in Developer Mode.

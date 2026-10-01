@@ -103,6 +103,8 @@ can finish. See the [host output contract](../../docs/output-contract.md) for
 per-file backup semantics, cleanup failures and platform acceptance conditions.
 
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
+- [Public compatibility rules](../../docs/public-contract.md) govern arguments,
+  result shapes, exits and explicit migrations.
 - API docs: <https://docs.rs/ios-cli>
 - Usage guide: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/usage.md>
 - CLI map: <https://github.com/oslo254804746/rust-ios-device/blob/master/docs/cli-map.md>

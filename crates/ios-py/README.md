@@ -129,7 +129,7 @@ not capture a full sysdiagnose.
 | `Tunnel.service_features` | Dict mapping every RSD service to advertised capability identifiers; an empty list means metadata was not advertised. |
 | `Tunnel.connect_info()` | Dict summarizing connection parameters. |
 | `Tunnel.asyncio_proxy()` | Context manager that patches `asyncio.open_connection`. |
-| `Tunnel.close()` | Tears down the tunnel. |
+| `Tunnel.close()` | Requests closure; installed asyncio patches retain the resource until restored. |
 
 ## Requirements
 
@@ -139,6 +139,9 @@ not capture a full sysdiagnose.
 
 ## Links
 
+- [Public compatibility rules](../../docs/public-contract.md) govern factory
+  signatures, attributes, exceptions and patch ownership; SDK/device workflow
+  coverage remains separately tracked.
 - Source: <https://github.com/oslo254804746/rust-ios-device>
 - Rust crate: <https://crates.io/crates/ios-core>
 - Issues: <https://github.com/oslo254804746/rust-ios-device/issues>

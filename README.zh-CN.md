@@ -49,6 +49,8 @@ usbmuxd、lockdown、CoreDevice/RemoteXPC 与常见 Apple 设备服务与设备�
 [隧道](docs/tunnel.md)、[协议](docs/protocol.md)、
 [Python 绑定](docs/python-binding.md)、[故障排查](docs/troubleshooting.md)、
 [宿主输出与取消合同](docs/output-contract.md)。
+[公共兼容规则](docs/public-contract.md) 定义 Rust/CLI/C/Python 的维护候选接口和
+迁移方式；主机兼容 fixture 不代表稳定真机工作流已认证。
 
 ## 安装
 

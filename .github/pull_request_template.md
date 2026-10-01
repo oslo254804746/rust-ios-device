@@ -1,6 +1,8 @@
 ## Summary
 
 Task IDs / public behavior / migration:
+Affected Rust source paths/fields/enums, CLI/JSON shape, C ABI or Python signatures:
+Compatibility profile, old/new usage, ownership/error/cancellation changes:
 
 ## Testing
 

@@ -96,6 +96,9 @@ and `dl`.
 
 ## Documentation
 
+- [Public compatibility rules](../../docs/public-contract.md) preserve existing
+  signatures, layouts and ownership. Close frees a non-NULL C handle; clear the
+  caller pointer before any later use or cleanup.
 - Repository: <https://github.com/oslo254804746/rust-ios-device>
 - Header: [`crates/ios-ffi/include/ios_rs.h`](https://github.com/oslo254804746/rust-ios-device/blob/master/crates/ios-ffi/include/ios_rs.h)
 - High-level API reference: <https://docs.rs/ios-core>

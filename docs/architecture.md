@@ -9,6 +9,10 @@ Note: Internal modules (`proto`, `mux`, `lockdown`, `xpc`, `tunnel`,
 re-exported at the `ios_core` crate root. The paths below describe internal
 organization for contributors.
 
+[Public compatibility rules](public-contract.md) govern source paths, struct/
+enum evolution, command results and bindings. Internal file moves retain their
+published reexports and are reviewed separately from behavior changes.
+
 ## Layers
 
 `ios_core::proto` contains wire formats and codecs. It does not own device connections.

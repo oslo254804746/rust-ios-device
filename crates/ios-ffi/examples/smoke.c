@@ -5,6 +5,11 @@
 #include <stdio.h>
 
 _Static_assert(IOS_TUN_USERSPACE == 0 && IOS_TUN_KERNEL == 1, "mode ABI");
+_Static_assert(sizeof(IosTunMode) == sizeof(int), "mode layout ABI");
+_Static_assert(IOS_SUCCESS == 0 && IOS_ERR_NULL == 1 && IOS_ERR_UTF8 == 2 &&
+               IOS_ERR_CORE == 3 && IOS_ERR_ALLOC == 4 && IOS_ERR_STATE == 5 &&
+               IOS_ERR_RUNTIME == 6 && IOS_ERR_PANIC == 7 &&
+               IOS_ERR_BUFFER_TOO_SMALL == 8, "status ABI");
 _Static_assert(offsetof(IosDevice, udid) == 0, "device layout");
 _Static_assert(offsetof(IosDevice, device_id) == sizeof(char *), "device layout");
 _Static_assert(offsetof(IosDevice, connection_type) ==
@@ -12,6 +17,25 @@ _Static_assert(offsetof(IosDevice, connection_type) ==
                 _Alignof(char *)) * _Alignof(char *), "device layout");
 
 int main(void) {
+    /* Assign every public entry to its existing C signature. Strict warnings
+       reject a header change; linking exercises the exported symbol names. */
+    void (*runtime_fn)(void) = ios_runtime_init;
+    int (*list_fn)(IosDevice **, size_t *) = ios_list_devices;
+    void (*free_devices_fn)(IosDevice *, size_t) = ios_free_devices;
+    int (*open_fn)(const char *, IosDeviceHandle **) = ios_device_open;
+    void (*close_device_fn)(IosDeviceHandle *) = ios_device_close;
+    int (*version_fn)(const IosDeviceHandle *, char **) = ios_get_product_version;
+    int (*value_fn)(const IosDeviceHandle *, const char *, char **) = ios_get_lockdown_value_json;
+    void (*free_string_fn)(char *) = ios_free_string;
+    int (*start_fn)(const char *, IosTunMode, IosTunnel **) = ios_start_tunnel;
+    void (*close_tunnel_fn)(IosTunnel *) = ios_tunnel_close;
+    int (*address_fn)(const IosTunnel *, char *, size_t) = ios_tunnel_server_address;
+    uint16_t (*rsd_fn)(const IosTunnel *) = ios_tunnel_rsd_port;
+    uint16_t (*proxy_fn)(const IosTunnel *) = ios_tunnel_userspace_port;
+    int (*services_fn)(const IosTunnel *, char **) = ios_tunnel_rsd_services_json;
+    assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
+           version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
+           address_fn && rsd_fn && proxy_fn && services_fn);
     IosDevice *devices = NULL;
     size_t count = 99;
     IosDeviceHandle *device = NULL;
