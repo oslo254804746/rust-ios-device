@@ -329,6 +329,24 @@ def manager_cases(binary, env, variants, device, token, directory):
             checked["contract"] = contract
             checked["passed"] = checked["passed"] and contract
             client_reports[name] = checked
+        for name, token_path, expected_status in [
+            ("doctor-manager-auth", directory / "client-token", "ok"),
+            ("doctor-manager-missing-token", directory / "missing-token", "failed")]:
+            captured = capture([str(binary), "-vvvv", "doctor", "--timeout", "1",
+                "--tunnel-port", str(port), "--token-file", str(token_path)], env=env)
+            # usbmux is intentionally unavailable: the overall doctor fails,
+            # while its manager check must independently show the right result.
+            checked = assess(captured, variants, 1)
+            try:
+                doctor = json.loads(captured.stdout)
+                manager = [entry for entry in doctor["checks"] if entry["id"] == "tunnel_manager"]
+                contract = len(manager) == 1 and manager[0]["status"] == expected_status
+                contract = contract and doctor.get("scope") == "host"
+            except (ValueError, TypeError, KeyError, AttributeError):
+                contract = False
+            checked["contract"] = contract
+            checked["passed"] = checked["passed"] and contract
+            client_reports[name] = checked
         denied, _ = request("GET", "/connect?udid=synthetic-denied-device&port=22", headers={
             "Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13",
             "Sec-WebSocket-Key": base64.b64encode(b"owned-16byte-key!").decode()})

@@ -17,6 +17,8 @@ pub struct DoctorCmd {
     /// Port of the optional tunnel manager on 127.0.0.1
     #[arg(long, default_value_t = 49151, value_parser = clap::value_parser!(u16).range(1..))]
     tunnel_port: u16,
+    #[command(flatten)]
+    access: crate::access::ClientAccessArgs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -108,8 +110,12 @@ impl DoctorCmd {
             bounded(
                 "tunnel_manager",
                 deadline,
-                Status::Warning,
-                probe_manager(self.tunnel_port)
+                if self.access.has_token() {
+                    Status::Failed
+                } else {
+                    Status::Warning
+                },
+                probe_manager(self.tunnel_port, &self.access)
             ),
             bounded("kernel_tun", deadline, Status::Warning, probe_kernel_tun()),
         );
@@ -240,7 +246,23 @@ async fn probe_kernel_tun() -> Check {
     }
 }
 
-async fn probe_manager(port: u16) -> Check {
+async fn probe_manager(port: u16, access: &crate::access::ClientAccessArgs) -> Check {
+    let url =
+        reqwest::Url::parse(&format!("http://127.0.0.1:{port}/")).expect("literal loopback URL");
+    let authorization = match access.header(&url).await {
+        Ok(header) => header,
+        Err(error) => return Check::new(
+            "tunnel_manager",
+            Status::Failed,
+            format!(
+                "The private manager credential could not be read: {}",
+                crate::output::error_message(&error)
+            ),
+        )
+        .hint(
+            "Provide a private --token-file with list permission for the intended device scope.",
+        ),
+    };
     // Bypass environment proxies and redirects: this probe must stay on loopback.
     let client = match reqwest::Client::builder()
         .no_proxy()
@@ -256,16 +278,25 @@ async fn probe_manager(port: u16) -> Check {
             )
         }
     };
-    let mut response = match client.get(format!("http://127.0.0.1:{port}/")).send().await {
+    let mut request = client.get(url);
+    if let Some(header) = authorization {
+        request = request.header(reqwest::header::AUTHORIZATION, header);
+    }
+    let mut response = match request.send().await {
         Ok(response) if response.status().is_success() => response,
-        _ => {
-            return Check::new(
-                "tunnel_manager",
-                Status::Warning,
-                "No successful response from the optional loopback tunnel manager.",
-            )
-            .hint("Start ios tunnel serve if shared tunnels are needed, or select --tunnel-port.")
+        Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
+            return Check::new("tunnel_manager", if access.has_token() { Status::Failed } else { Status::Warning },
+                "The manager requires a valid credential with list permission.")
+                .hint("Provide a private --token-file matching the manager policy and selected device scope.");
         }
+        _ => return Check::new(
+            "tunnel_manager",
+            Status::Warning,
+            "No successful response from the optional loopback tunnel manager.",
+        )
+        .hint(
+            "Start ios tunnel serve --auth-config PRIVATE_POLICY_FILE, or select --tunnel-port.",
+        ),
     };
     let mut body = Vec::new();
     loop {
@@ -345,6 +376,81 @@ async fn probe_mdns(window: Duration) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    fn access_options(path: Option<&std::path::Path>) -> crate::access::ClientAccessArgs {
+        let mut args = vec![std::ffi::OsString::from("ios"), "doctor".into()];
+        if let Some(path) = path {
+            args.extend(["--token-file".into(), path.as_os_str().to_owned()]);
+        }
+        let crate::Commands::Doctor(command) = crate::Cli::try_parse_from(args).unwrap().command
+        else {
+            panic!("doctor command");
+        };
+        command.access
+    }
+
+    #[tokio::test]
+    async fn private_manager_credentials_report_admission_and_fail_without_leaking_remote_errors() {
+        use crate::access::test_support::{grant, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            response::IntoResponse,
+            routing::get,
+            Router,
+        };
+        let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![crate::access::Permission::List])]);
+        for scope_denied in [false, true] {
+            let app = Router::new().route("/", get(move |headers: HeaderMap| async move {
+                if !headers.get("authorization").is_some_and(|value| value.as_bytes() == format!("Bearer {TOKEN}").as_bytes()) {
+                    return (StatusCode::UNAUTHORIZED, "synthetic-private-remote-error").into_response();
+                }
+                if scope_denied { return (StatusCode::FORBIDDEN, "synthetic-private-remote-error").into_response(); }
+                axum::Json(serde_json::json!({DEVICE: [{"tunnel-address": "fd00::1234", "tunnel-port": 12345}]})).into_response()
+            }));
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let no_token = probe_manager(port, &access_options(None)).await;
+            assert_eq!(no_token.status, Status::Warning);
+            let valid = probe_manager(port, &access_options(Some(&fixture.token_path))).await;
+            assert_eq!(
+                valid.status,
+                if scope_denied {
+                    Status::Failed
+                } else {
+                    Status::Ok
+                }
+            );
+            let diagnostic = serde_json::to_string(&valid).unwrap();
+            for secret in [
+                TOKEN,
+                DEVICE,
+                "fd00::1234",
+                "synthetic-private-remote-error",
+            ] {
+                assert!(!diagnostic.contains(secret));
+            }
+            ios_core::secret_file::write_secret(&fixture.token_path, REPLACEMENT.as_bytes())
+                .unwrap();
+            let invalid = probe_manager(port, &access_options(Some(&fixture.token_path))).await;
+            assert_eq!(invalid.status, Status::Failed);
+            assert!(!serde_json::to_string(&invalid)
+                .unwrap()
+                .contains("synthetic-private-remote-error"));
+            ios_core::secret_file::write_secret(&fixture.token_path, TOKEN.as_bytes()).unwrap();
+            server.abort();
+            let _ = server.await;
+        }
+        let missing = fixture.token_path.with_file_name("missing-token");
+        let failed = probe_manager(1, &access_options(Some(&missing))).await;
+        assert_eq!(failed.status, Status::Failed);
+        assert!(failed.detail.contains("could not be read"));
+    }
 
     #[tokio::test]
     async fn stalled_probe_becomes_report_entry() {
@@ -426,7 +532,7 @@ mod tests {
                 "tunnel_manager",
                 Duration::from_secs(3),
                 Status::Failed,
-                probe_manager(port),
+                probe_manager(port, &access_options(None)),
             )
             .await;
             server.abort();

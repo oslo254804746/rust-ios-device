@@ -26,6 +26,7 @@ ios tunnel serve --userspace \
   --auth-config ~/.config/rust-ios-device/manager/policy.json
 
 ios tunnel list --token-file ~/.config/rust-ios-device/manager/client-token
+ios doctor --token-file ~/.config/rust-ios-device/manager/client-token
 ```
 
 Replace `DEVICE_UDID` with the selector whose scope you intend to grant. This
@@ -77,6 +78,10 @@ Replies are `no-store`; credential text and selectors are omitted from rejection
 diagnostics. Only private token files are accepted by CLI clients. Their HTTP
 requests disable environment proxies and redirects, and bound successful bodies
 to 1 MiB. Failure bodies are discarded without reading them into diagnostics.
+The host doctor uses the same private token reader and scoped list endpoint.
+Omitting credentials leaves the optional protected manager as a warning;
+explicit unreadable/rejected credentials or denied list permission are a failed
+check. Other host probes retain their separate results.
 
 | Manager operation | Required permission and scope |
 | --- | --- |

@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restrict raw forward/WDA/dproxy/screenshot-stream listeners to loopback before
   device access; validate WDA proxy ports before startup. Raw userspace proxy
   and kernel routes retain their documented host trust boundary.
+- Let the host doctor read private manager credentials with `--token-file`;
+  explicit credential read failures and authentication/scope refusals now fail
+  its manager check without including remote error bodies or secrets.
 - Added a maintained capability/evidence inventory for CLI, Rust service families
   and binding/workflow boundaries, with CI checks for drift and unsupported
   maturity claims.

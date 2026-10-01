@@ -9,6 +9,7 @@ human-readable output. It does not require a device or create a pairing:
 ios doctor
 ios --no-json doctor --mdns --timeout 5
 ios doctor --tunnel-port 49151
+ios doctor --tunnel-port 49151 --token-file PRIVATE_CLIENT_TOKEN_FILE
 ```
 
 The report checks usbmuxd enumeration, IPv6 loopback sockets, Linux TUN presence,
@@ -17,6 +18,11 @@ compiled userspace tunnel support, and the optional loopback tunnel manager.
 bounded by `--timeout` (1–60 seconds); Bonjour has an additional one-second
 setup/cleanup allowance. The optional Bonjour phase runs after the other probes.
 The manager probe bypasses HTTP proxies and redirects and caps responses at 1 MiB.
+Use a private `--token-file` with scoped list permission for a policy-mode
+manager. Without a token, a protected optional manager produces a warning and
+hint. An explicitly supplied unreadable credential or HTTP 401/403 is a failed
+check, causing exit 1; the remote error body and credential are omitted from
+reports. Private-file read errors retain a safe error category/correlation.
 
 Exit status is 1 when a required check fails (including unavailable usbmuxd).
 Warnings, an absent optional tunnel manager, and unknown checks do not cause a

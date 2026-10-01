@@ -65,7 +65,11 @@ pub(crate) struct ClientAccessArgs {
 }
 
 impl ClientAccessArgs {
-    pub(crate) async fn header(self, url: &reqwest::Url) -> Result<Option<HeaderValue>> {
+    pub(crate) fn has_token(&self) -> bool {
+        self.token_file.is_some()
+    }
+
+    pub(crate) async fn header(&self, url: &reqwest::Url) -> Result<Option<HeaderValue>> {
         anyhow::ensure!(
             url.scheme() == "http"
                 && url.username().is_empty()
@@ -75,7 +79,7 @@ impl ClientAccessArgs {
                     .is_some_and(|host| loopback_address(host).is_ok()),
             "plaintext manager client requires a loopback URL without userinfo"
         );
-        let Some(path) = self.token_file else {
+        let Some(path) = self.token_file.clone() else {
             return Ok(None);
         };
         let token = tokio::task::spawn_blocking(move || ClientToken::from_file(&path))
