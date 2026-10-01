@@ -13,12 +13,12 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [Q02 regression gate](validation/regression-runner-2026-10-01.md), `e9cc536`, 1651 Rust/eight Python, 34 tooling tests, 38 raw CLI/service cases and five regression host cases; prior TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; device adapters/fixtures, Windows process tree/ACL/UNC, F05 entries, deployed transport, orderly Apple cleanup and other platforms remain unfinished |
+| Host build/tests | [A01 compatibility gate](validation/public-contract-2026-10-01.md), `076e909`, 1658 Rust/eight Python, 34 tooling tests, 38 raw cases, five regression host cases/four CLI list contracts; C signatures and Python 3.9/3.12/3.13 imports; prior TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |
 | Resource release and bounded long-run checks | Debug host revocation/ownership fixtures PASS; bounded long-run NOT_RUN | Orderly device cleanup, L02/L03 fixtures and L04 sampling |
-| Public compatibility contract | Pending | A01/A02 Rust/CLI/C/Python ownership, errors, cancellation and migration |
+| Public compatibility contract | A01 candidate profiles, source/CLI/C/Python fixtures and migration policy accepted | A02 classification, L01 cancellation, A03 SDK resources and cross-platform/1.0 workflow evidence remain pending |
 | 1.0 candidate workflow matrix | NOT_RUN | Cross-platform/device automation and long-run evidence |
 
 Each review must record tested commits, host/device/iOS/transport/state, exact

@@ -105,7 +105,7 @@
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 待开始 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 待开始 |
-| A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 待开始 |
+| A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 待开始 |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 待开始 |
@@ -1381,3 +1381,59 @@ report0600、只有 allowlisted report。证据在 checkout 外，不加入 Git�
 兼容合同、R01–R03 模块边界，再 R04/A02**：依赖的是已就绪 Linux 构建/路径/安全
 接口，不把未有的 Windows/真机证据当作已就绪。没有设备操作、推送、发布、参考
 checkout 修改或历史改写。
+
+### 大类 3 进度：A01 公共兼容合同与真实下游检查（2026-10-01）
+
+聚焦修复提交：`8d07bc977a8c8510085e783a3f6b7cb39ec83c5b`；
+合同/fixture 实现提交：`076e9097afe763456f0b063edd96d1b4bc9e2397`。
+[候选接口与迁移规则](public-contract.md)、[验收证据](validation/public-contract-2026-10-01.md)。
+
+- 定义 Rust root/public module、CLI 参数/JSON、C ABI 与 Python factory/metadata/
+  patch 候选 profiles，和 patch/minor、废弃/alias/versioned replacement、发布版本
+  一致性规则。候选合同与 Q01 的实验/真实设备成熟度分开，未认证 stable workflow。
+  现有 public struct literals、exhaustive enums 加字段/分支或 retroactive
+  `non_exhaustive` 的破坏性明确登记，不为重构修改其现有封装。新类型从初版使用
+  私有字段/constructor/builder、可扩展枚举等约定，A02优先 additive分类方法。
+- 新增外部 integration consumer：真实 root imports、现有字段literal/exhaustive
+  `CoreError`/`TunMode`/`DeviceEvent`、metadata absent vs unadvertised、codec roundtrip、
+  未poll async signatures 与 service alias typeidentity；默认4/别名5/full5 tests。
+  没有 poll 设备future、扩大private模块可见性或新增设备操作。
+- 四项实际 CLI 经 owned fake usbmux 验 USB/Network 两设备与 empty 列表的 JSON/
+  human合同、无混入stderr、准确exit/raw scan；request仅ListDevices，原始数据RAM，
+  bounded frames/socket/capture、只输出安全计数。接入 full 与 Linux CI check。
+- 此fixture复现 `ProductID` 被PascalCase当作 `ProductId` 的已有解码问题，原
+  `product_id`总落为0。只读 go-ios 类型确认后独立修复 canonical key+legacyalias，
+  listing/attach/missing两项unit回归。JSON字段/type和missing0不变，实际值修复
+  有迁移说明；没有把源码fixture当作真实usb设备观测。
+- C smoke对14个公开函数进行原有 typed pointer赋值/link，固定status0–8、mode
+  和layout，继续null/UTF8/outputreset/free回归；不改ABI。Python installed smoke
+  验factory参数名/order/default、list无参、公开patch/metadata和禁止直接构造。
+  实测发现restore_all为内部方法，未为测试新增导出；合同按实际install/restore。
+  说明C非NULLclose后pointer不能重复使用、Python安装patch可延后释放、无Apple ACK。
+- 中英文根README、四crateREADME、architecture/build/contribution/PRtemplate与
+  CHANGELOG同步。既有0.1.13不重发；实际unused一致版本仍属D02后续，不能自动发布。
+
+相关检查：默认consumer **4 PASS**；`cargo test -p ios-core --locked
+--no-default-features --features icon_service,screen_capture --test public_contract`
+**5 PASS**；mux protocol filter **4 PASS**（其中两个新增）、strict core Clippy PASS。
+`validate.py ffi`/`python-package`/`tooling-tests`/`compatibility`均PASS；Python3.12
+wheel/sdist构建安装新signature smoke通过，独立candidate wheel实际安装到
+**3.9.25/3.13.15**并执行同一smoke，均PASS。第一轮Python检查因误把内部restore_all
+列为导出而FAIL，纠正测试/公开合同后重新构建安装PASS，不隐瞒此迭代。
+
+随后完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，日志
+`/tmp/ios-a01-contract-full.log`：Rust **1658 PASS、0 FAIL、2 ignored**（既有PBKDF2/
+显式browser gate，browser此项未重跑），Python **8 PASS**；66feature/四组、7+7doctests/
+三个snippets、C ABI/19byte capture、wheel/sdist rebuild/install/import、34tools、118
+inventory/实际help、38 raw CLI/service captures、Q02五host/22NOT_RUN、新CLI四项
+compatibility均PASS；actionlint、diff/staged和local links PASS。Binary SHA-256：
+`f488aab365eb475ce915cef85d1ea9b35358269908482e68a2e0edd9043cd5c1`。
+
+1个协议修复文件先提交，18个相关合同/fixture/doc文件随后聚焦提交；工作区干净，
+clean `076e909` 再跑CLI compatibility四项PASS。本记录/证据/质量另行文档收尾。
+A01的规则和代表性主机验收完成，不替代A02错误分类、L01取消/期限、A03 SDK资源
+扩展或D02跨平台/真机1.0准备。ProductID真机仍无新观测，B03/B04/Q03平台条件
+继续保留。第三类保持进行中，接着 **R03普通模块与职责边界**，再完成R01/R02及
+R04/A02；依赖所需Linux接口/构建/候选合同已就绪。目标active，没有真机/配对/
+DDI/TSS/刷机擦除、推送发布、参考checkout修改或历史改写。
