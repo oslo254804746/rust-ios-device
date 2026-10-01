@@ -103,7 +103,7 @@
 | S04 | 统一敏感字段和日志脱敏 | P1 | 无 | 完成：自有输出边界及 CLI 依赖日志来源已验收；新增接口继续沿用 |
 | R01 | 拆分备份协议、路径与会话职责 | P2 | B03、Q03 | 待开始 |
 | R02 | 拆分 WebInspector 命令与服务职责 | P2 | B03 | 待开始 |
-| R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 待开始 |
+| R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 待开始 |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 待开始 |
@@ -1437,3 +1437,52 @@ A01的规则和代表性主机验收完成，不替代A02错误分类、L01取�
 继续保留。第三类保持进行中，接着 **R03普通模块与职责边界**，再完成R01/R02及
 R04/A02；依赖所需Linux接口/构建/候选合同已就绪。目标active，没有真机/配对/
 DDI/TSS/刷机擦除、推送发布、参考checkout修改或历史改写。
+
+### 大类 3 进度：R03 device 普通模块与明确边界（2026-10-01）
+
+实现提交：`f9b96f927431d1e099e121c7347d4a2df7dd5c69`，17 个相关文件；
+[结构说明](architecture.md)、[验收证据](validation/device-boundaries-2026-10-01.md)。
+
+- 移除 device 全部 `include!`，公共类型继续定义在 facade，四个连接入口和配对
+  发现函数明确 reexport；crate-root 与 `ios_core::device::*` 路径均保持可用。
+  root 不再供给连接实现隐式 imports、协议常量或辅助函数。
+- `connection` 只选择 USB/TCP/direct RSD/RemotePairing 策略；`lockdown_transport`
+  管 pair record、拨号、session/service 与 plain/TLS CoreDeviceProxy stream。
+  将原在 RSD 文件中的代理包装归回 lockdown，发现函数归到 `discovery_match`。
+- `service_routing` 用 RSD directory/请求名返回实际 descriptor 的 name/port/features，
+  或在传入 stream 上执行有界 check-in；`rsd_connect` 只负责 optional handshake。
+  隧道 activation 使用既有 `TunnelConnection`/authenticated stream/TunMode 输入，
+  endpoint 管 direct/userspace socket；RemotePairing 的 credentials/pairing/codecs
+  留在策略内，沿用窄可见性。时间预算、重试、字段与协议分支未改。
+- 将测试放到职责所有者，未为旧测试扩大 nested helper 到 crate/public 可见性。
+  公共 consumer 追加所有连接 root/device 路径与 mdns 发现签名，future 不 poll。
+  新 TCP fixture 只用 owned loopback listener，确认 pair-record flag 的两种取值
+  都保持双向字节流、不进入 usbmux 配对记录读取。
+- diff 审查：原 47 个 device 测试按函数名全部保留且 PASS；移位函数体比对在
+  whitespace 与同值发现 timeout 常量引用改名归一后保留 174 个函数体，新增的
+  只有 TCP fixture 和一个分组测试临时目录 helper 副本。此比对是源码审查辅助，
+  不代替执行测试或真实设备证据。架构/CHANGELOG 同步。
+
+相关检查：`cargo test -p ios-core --all-features --locked device::` **58 PASS**，
+其中 device **48**、substring filter 同时匹配已有 coredevice **10**；重构前分别
+47/10。`--no-default-features` device **17 PASS**；再加 `--features tunnel` **37 PASS**；
+外部 public_contract 默认 **4**/full **5 PASS**。默认 unused metadata import 与
+tunnel-only unused strategy import 在迭代中修正；最小 feature 中已有 dead-code
+警告保存在 feature logs，未宣称所有最小组合严格 Clippy 零警告。
+
+随后完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` PASS，日志
+`/tmp/ios-r03-modules-full.log`：Rust **1659 PASS、0 FAIL、2 ignored**，Python **8 PASS**；
+66 feature/四组、7+7doctests/三个 snippets、MSRV/strict full Clippy、C ABI/19byte
+raw capture、Python3.12 wheel/sdist 重建安装、34 tools、118 inventory/实际help、
+38 raw captures、Q02五host/22NOT_RUN、四CLI list contracts 均PASS。二项 ignored
+仍为 PBKDF2/显式 browser probe，未在本项重跑；A01 的3.9/3.13与S02/S03浏览器
+证据保留为原提交证据。Binary SHA-256：
+`53e4262f881accee53e2b9d893d5108a59d2cbd554242eb758c4655954068953`。
+
+相关源码/文档聚焦提交，提交后工作区干净，再做本记录/证据/质量/索引收尾。
+R03 以计划明确的普通模块、既有主机路径回归、公共兼容和最小 feature 条件完成；
+没有以 IPv6 endpoint 选择代替真实 kernel TUN 创建，或以合成 check-in/TLV 代替
+Apple 配对/服务生命周期。真实平台/设备条件继续由 B03/Q02/S01/L01 等对应任务
+保持待条件/待验收。第三类继续 **R01 备份协议/路径/过滤/会话与清理边界**，随后
+R02、R04/A02；整体目标 active，第三类尚未全部完成。

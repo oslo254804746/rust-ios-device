@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-device-boundaries-f9b96f9",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Synthetic USB selection and pairing codecs; owned TCP/userspace proxy; direct IPv6 endpoint selection"],
+      "required_state": ["Host fixtures and external unpolled Rust consumer; no physical device or kernel TUN creation"],
+      "tested_commit": "f9b96f927431d1e099e121c7347d4a2df7dd5c69",
+      "date": "2026-10-01",
+      "location": "docs/validation/device-boundaries-2026-10-01.md",
+      "result": "PASS",
+      "scope": "R03 device module boundaries, existing host routing regressions and public paths/minimal features; no capability maturity or physical lifecycle acceptance."
+    },
+    {
       "id": "linux-public-contract-076e909",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Python 3.9.25/3.12.13/3.13.15 installed artifacts",
