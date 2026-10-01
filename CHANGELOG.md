@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a caller-thread C error-category getter with borrowed static codes.
+  Preserve the original 14 symbols, numeric statuses and layouts; classify
+  native sources before conversion and retain runtime IO failures. Verify the
+  linked header against an owned malformed ListDevices reply.
+
 - Add versioned error category/phase/effect attributes to Python native factory,
   invalid-mode and unavailable-proxy exceptions. Preserve built-in exception
   types, safe args and public signatures; verify installed bindings against

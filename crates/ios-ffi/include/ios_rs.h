@@ -58,9 +58,29 @@ typedef struct IosDeviceHandle IosDeviceHandle;
 
 /**
  * Initialize the ios-rs async runtime.
- * Must be called once before any other function (idempotent).
+ * Initialize before device/tunnel operations (idempotent). The error-class
+ * getter does not require runtime initialization.
  */
 void ios_runtime_init(void);
+
+/**
+ * Stable typed category of this caller OS thread's last int-status operation.
+ *
+ * Returns a borrowed static NUL-terminated string, valid while the library is
+ * loaded. Never free or modify it. "none" means no int-status operation on this
+ * thread yet, or its last one succeeded. Every int-status call replaces that
+ * thread's category; runtime init, void cleanup, uint16_t port queries and this
+ * getter do not change it. Read it on the same thread after the operation.
+ *
+ * Categories: timeout, cancelled, disconnected, service_missing,
+ * permission_denied, protocol, invalid_input, unsupported, device_not_found,
+ * not_found, resource_limit, conflict, precondition, service_failure, io,
+ * unknown. Retain a fallback for future codes. Native typed sources are
+ * classified before status conversion; lost/unrecognized sources stay unknown.
+ * A category alone does not identify a disconnected object, grant safe retry
+ * or acknowledge device cleanup. Existing numeric status values are unchanged.
+ */
+const char *ios_last_error_class(void);
 
 /* ── Device listing ─────────────────────────────────────────────────────────── */
 

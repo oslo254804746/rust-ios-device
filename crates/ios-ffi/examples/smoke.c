@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 _Static_assert(IOS_TUN_USERSPACE == 0 && IOS_TUN_KERNEL == 1, "mode ABI");
 _Static_assert(sizeof(IosTunMode) == sizeof(int), "mode layout ABI");
@@ -16,10 +17,11 @@ _Static_assert(offsetof(IosDevice, connection_type) ==
                ((sizeof(char *) + sizeof(uint32_t) + _Alignof(char *) - 1) /
                 _Alignof(char *)) * _Alignof(char *), "device layout");
 
-int main(void) {
+int main(int argc, char **argv) {
     /* Assign every public entry to its existing C signature. Strict warnings
        reject a header change; linking exercises the exported symbol names. */
     void (*runtime_fn)(void) = ios_runtime_init;
+    const char *(*class_fn)(void) = ios_last_error_class;
     int (*list_fn)(IosDevice **, size_t *) = ios_list_devices;
     void (*free_devices_fn)(IosDevice *, size_t) = ios_free_devices;
     int (*open_fn)(const char *, IosDeviceHandle **) = ios_device_open;
@@ -35,7 +37,8 @@ int main(void) {
     int (*services_fn)(const IosTunnel *, char **) = ios_tunnel_rsd_services_json;
     assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
            version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
-           address_fn && rsd_fn && proxy_fn && services_fn);
+           address_fn && rsd_fn && proxy_fn && services_fn && class_fn);
+    assert(strcmp(class_fn(), "none") == 0);
     IosDevice *devices = NULL;
     size_t count = 99;
     IosDeviceHandle *device = NULL;
@@ -44,7 +47,26 @@ int main(void) {
     char address[46] = {0};
     ios_runtime_init();
     ios_runtime_init();
+    assert(strcmp(class_fn(), "none") == 0);
+    if (argc == 2 && strcmp(argv[1], "--owned-list-error") == 0) {
+        /* The validation runner supplies the sole owned ListDevices endpoint;
+           malformed response can never route a device service. */
+        assert(ios_list_devices(&devices, &count) == IOS_ERR_CORE);
+        assert(devices == NULL && count == 0);
+        const char *saved_class = class_fn();
+        assert(strcmp(saved_class, "protocol") == 0);
+        ios_free_devices(NULL, 0);
+        assert(ios_tunnel_rsd_port(NULL) == 0);
+        assert(strcmp(class_fn(), "protocol") == 0);
+        assert(ios_list_devices(NULL, &count) == IOS_ERR_NULL && count == 0);
+        assert(strcmp(class_fn(), "invalid_input") == 0);
+        assert(strcmp(saved_class, "protocol") == 0);
+        puts("C ABI owned error passed");
+        return 0;
+    }
+    if (argc != 1) return 2;
     assert(ios_list_devices(NULL, &count) == IOS_ERR_NULL && count == 0);
+    assert(strcmp(class_fn(), "invalid_input") == 0);
     assert(ios_list_devices(&devices, NULL) == IOS_ERR_NULL && devices == NULL);
     assert(ios_device_open(NULL, &device) == IOS_ERR_NULL && device == NULL);
     assert(ios_device_open("\xff", &device) == IOS_ERR_UTF8 && device == NULL);
@@ -61,6 +83,7 @@ int main(void) {
     ios_free_string(NULL);
     ios_device_close(NULL);
     ios_tunnel_close(NULL);
+    assert(strcmp(class_fn(), "invalid_input") == 0);
     puts("C ABI smoke passed");
     return 0;
 }

@@ -65,6 +65,30 @@ outputs and safe NULL cleanup. Integer results use `IOS_SUCCESS` and the
 `IOS_ERR_*` constants in the header. Non-NULL handles and strings must be freed
 exactly once; clearing a caller variable does not make a freed pointer reusable.
 
+`ios_last_error_class()` returns the stable typed category of the caller OS
+thread's last int-status operation. The borrowed static NUL-terminated string
+must never be modified or freed and stays valid while the library is loaded.
+Read it on the same thread before another int-status operation. A successful
+status clears to `none`; void initialization/cleanup, uint16_t port queries and
+the getter do not replace it. The getter needs no runtime initialization.
+
+```c
+int status = ios_list_devices(&devices, &count);
+if (status != IOS_SUCCESS) {
+    /* Inspect a stable category, with a fallback for future codes. */
+    fprintf(stderr, "device listing failed (%s)\n", ios_last_error_class());
+    return 1;
+}
+```
+
+Original statuses, signatures and layouts stay available. Runtime/native typed
+sources supply the category before conversion; lost information stays `unknown`.
+`IOS_ERR_ALLOC` can also represent embedded NUL and does not prove memory
+exhaustion. Category/status alone grants no safe retry, partial-result rollback
+or device cleanup acknowledgement. The linked C smoke also uses an owned
+malformed ListDevices peer; no pairing or device service is routed. See the
+[error contract](../../docs/error-contract.md) for exact mappings and limits.
+
 ## Linking
 
 A minimal CMake snippet:

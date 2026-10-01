@@ -140,6 +140,15 @@ Calls are synchronous and may use the shared runtime; no interruptible C call,
 thread-safe handle mutation or orderly Apple teardown guarantee is added by this
 policy. A03/L01 must explicitly design and verify those extended contracts.
 
+The additive `const char *ios_last_error_class(void)` returns a borrowed static
+category for the caller OS thread's last int-status operation, without changing
+existing symbols or status values. Never free/modify that pointer. Success
+clears to `none`; void initialization/cleanup, uint16_t ports and the getter do
+not replace the observation. Typed native sources are classified before numeric
+conversion; opaque/lost sources stay unknown. Read it on the same thread and
+keep a fallback for future codes. The [error contract](error-contract.md) records
+the precise lifetime, status mappings and partial/cleanup boundaries.
+
 ## Python API and ownership
 
 Preserve module/distribution names (`ios_rs` / `rust-ios-device-tunnel`), factories,
@@ -193,8 +202,9 @@ unpolled async signatures and feature alias identity. It runs at default/full
 features; targeted alias mode also runs explicitly. Existing compile_fail docs
 retain private-module encapsulation. `validate.py compatibility` exercises the
 actual CLI against bounded owned USB/Network/empty fake-usbmux responses in JSON
-and human mode; only safe counters are printed. Linked C smoke checks all 14
-public function signatures plus statuses/layout/null/UTF-8 ownership failures.
+and human mode; only safe counters are printed. Linked C smoke checks the original
+14 signatures plus the additive category getter, statuses/layout/null/UTF-8
+ownership failures and an owned malformed ListDevices typed failure.
 Installed Python smoke checks factories/signatures and patch/resource exposure,
 invalid mode with an owned endpoint trap and a real malformed owned ListDevices
 reply. Its child/peer deadlines and bounded request permit no device-service

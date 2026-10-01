@@ -25,6 +25,8 @@
 //! ```
 
 use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
+use ios_core::ErrorClass;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -32,8 +34,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::runtime::Runtime;
 
-static RUNTIME: LazyLock<Result<Runtime, String>> =
-    LazyLock::new(|| Runtime::new().map_err(|err| err.to_string()));
+static RUNTIME: LazyLock<std::io::Result<Runtime>> = LazyLock::new(Runtime::new);
+
+thread_local! {
+    static LAST_ERROR_CLASS: Cell<Option<ErrorClass>> = const { Cell::new(None) };
+}
 
 // ── Types exported to C ───────────────────────────────────────────────────────
 
@@ -87,22 +92,74 @@ const IOS_ERR_BUFFER_TOO_SMALL: c_int = 8;
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
 /// Initialize the ios-rs async runtime.
-/// Must be called once before any other function.
+/// Initialize before device/tunnel operations; the error-class getter needs no runtime.
 /// Safe to call multiple times (idempotent).
 #[no_mangle]
 pub extern "C" fn ios_runtime_init() {
     LazyLock::force(&RUNTIME);
 }
 
+/// Stable typed category of this caller thread's last int-status operation.
+///
+/// Returns a borrowed static NUL-terminated string; never free or modify it.
+/// "none" means no int-status call on this thread yet, or its last one succeeded.
+/// Void/port/getter calls do not change it. A category alone grants no retry or
+/// cleanup guarantee. The pointer remains valid while the library is loaded.
+#[no_mangle]
+pub extern "C" fn ios_last_error_class() -> *const c_char {
+    LAST_ERROR_CLASS.with(|state| {
+        let code = match state.get() {
+            None => c"none",
+            Some(ErrorClass::Timeout) => c"timeout",
+            Some(ErrorClass::Cancelled) => c"cancelled",
+            Some(ErrorClass::Disconnected) => c"disconnected",
+            Some(ErrorClass::ServiceMissing) => c"service_missing",
+            Some(ErrorClass::PermissionDenied) => c"permission_denied",
+            Some(ErrorClass::Protocol) => c"protocol",
+            Some(ErrorClass::InvalidInput) => c"invalid_input",
+            Some(ErrorClass::Unsupported) => c"unsupported",
+            Some(ErrorClass::DeviceNotFound) => c"device_not_found",
+            Some(ErrorClass::NotFound) => c"not_found",
+            Some(ErrorClass::ResourceLimit) => c"resource_limit",
+            Some(ErrorClass::Conflict) => c"conflict",
+            Some(ErrorClass::Precondition) => c"precondition",
+            Some(ErrorClass::ServiceFailure) => c"service_failure",
+            Some(ErrorClass::Io) => c"io",
+            Some(_) => c"unknown",
+        };
+        code.as_ptr()
+    })
+}
+
+fn error_status(code: c_int, error: &(dyn std::error::Error + 'static)) -> c_int {
+    LAST_ERROR_CLASS.with(|state| state.set(Some(ios_core::classify_error(error))));
+    code
+}
+
 fn runtime() -> Result<&'static Runtime, c_int> {
-    RUNTIME.as_ref().map_err(|_| IOS_ERR_RUNTIME)
+    RUNTIME
+        .as_ref()
+        .map_err(|error| error_status(IOS_ERR_RUNTIME, error))
 }
 
 fn ffi_status(f: impl FnOnce() -> c_int + std::panic::UnwindSafe) -> c_int {
-    match std::panic::catch_unwind(f) {
-        Ok(code) => code,
-        Err(_) => IOS_ERR_PANIC,
-    }
+    LAST_ERROR_CLASS.with(|state| state.set(None));
+    let code = std::panic::catch_unwind(f).unwrap_or(IOS_ERR_PANIC);
+    LAST_ERROR_CLASS.with(|state| {
+        if code == IOS_SUCCESS {
+            state.set(None);
+        } else if code == IOS_ERR_PANIC || state.get().is_none() {
+            state.set(Some(match code {
+                IOS_ERR_NULL | IOS_ERR_UTF8 => ErrorClass::InvalidInput,
+                IOS_ERR_STATE => ErrorClass::Precondition,
+                IOS_ERR_BUFFER_TOO_SMALL => ErrorClass::ResourceLimit,
+                // IOS_ERR_ALLOC also represents an embedded NUL, not a proven
+                // memory limit. Keep lost/unrecognized information unknown.
+                _ => ErrorClass::Unknown,
+            }));
+        }
+    });
+    code
 }
 
 fn ffi_void(f: impl FnOnce() + std::panic::UnwindSafe) {
@@ -226,7 +283,7 @@ pub unsafe extern "C" fn ios_list_devices(
         };
         let result = runtime.block_on(ios_core::list_devices());
         match result {
-            Err(_) => IOS_ERR_CORE,
+            Err(error) => error_status(IOS_ERR_CORE, &error),
             Ok(devs) => {
                 let count = devs.len();
                 let mut c_devs: Vec<IosDevice> = Vec::with_capacity(count);
@@ -326,7 +383,7 @@ pub unsafe extern "C" fn ios_device_open(
                 *out = Box::into_raw(handle);
                 IOS_SUCCESS
             }
-            Err(_) => IOS_ERR_CORE,
+            Err(error) => error_status(IOS_ERR_CORE, &error),
         }
     })
 }
@@ -377,7 +434,7 @@ pub unsafe extern "C" fn ios_get_product_version(
         };
         let version = match runtime.block_on(device.product_version()) {
             Ok(version) => version.to_string(),
-            Err(_) => return IOS_ERR_CORE,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
         };
         write_owned_c_string(out, version)
     })
@@ -420,12 +477,12 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
         };
         let plist_value = match runtime.block_on(device.lockdown_get_value(key_owned.as_deref())) {
             Ok(value) => value,
-            Err(_) => return IOS_ERR_CORE,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
         };
         let json = plist_value_to_json(&plist_value);
         let json_text = match serde_json::to_string(&json) {
             Ok(text) => text,
-            Err(_) => return IOS_ERR_CORE,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
         };
         write_owned_c_string(out, json_text)
     })
@@ -492,14 +549,14 @@ pub unsafe extern "C" fn ios_start_tunnel(
             Err(code) => return code,
         };
         match runtime.block_on(ios_core::connect(&udid_str, opts)) {
-            Err(_) => IOS_ERR_CORE,
+            Err(error) => error_status(IOS_ERR_CORE, &error),
             Ok(device) => {
                 let server_address = device.server_address().unwrap_or("").to_string();
                 let rsd_port = device.rsd_port().unwrap_or(0);
                 let userspace_port = device.userspace_port().unwrap_or(0);
                 let rsd_services_json = match encode_rsd_services_json(device.rsd()) {
                     Ok(json) => json,
-                    Err(_) => return IOS_ERR_CORE,
+                    Err(error) => return error_status(IOS_ERR_CORE, &error),
                 };
                 let tunnel = Box::new(IosTunnel {
                     server_address,
@@ -634,6 +691,187 @@ pub unsafe extern "C" fn ios_tunnel_rsd_services_json(
 mod tests {
     use super::*;
 
+    fn last_class() -> &'static str {
+        unsafe { CStr::from_ptr(ios_last_error_class()) }
+            .to_str()
+            .unwrap()
+    }
+
+    #[test]
+    fn ffi_category_preserves_typed_sources_and_status_without_prose_lookup() {
+        let secret = "synthetic-ffi-private-native-source";
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, secret);
+        for status in [IOS_ERR_CORE, IOS_ERR_RUNTIME] {
+            assert_eq!(
+                ffi_status(std::panic::AssertUnwindSafe(|| error_status(status, &io))),
+                status
+            );
+            assert_eq!(last_class(), "timeout");
+        }
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(io.to_string(), secret);
+        let cases: [(Box<dyn std::error::Error>, &str); 3] = [
+            (Box::new(ios_core::OperationCancelled::new()), "cancelled"),
+            (
+                Box::new(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                "io",
+            ),
+            (
+                Box::new(ios_core::CoreError::Other(
+                    "permission denied timeout cancelled".into(),
+                )),
+                "unknown",
+            ),
+        ];
+        for (error, class) in cases {
+            assert_eq!(
+                ffi_status(std::panic::AssertUnwindSafe(|| error_status(
+                    IOS_ERR_CORE,
+                    error.as_ref()
+                ))),
+                IOS_ERR_CORE
+            );
+            assert_eq!(last_class(), class);
+        }
+    }
+
+    #[test]
+    fn ffi_category_tracks_status_success_without_void_or_port_reset() {
+        let mut output = 1usize as *mut c_char;
+        assert_eq!(
+            unsafe { ios_get_product_version(std::ptr::null(), &mut output) },
+            IOS_ERR_NULL
+        );
+        assert!(output.is_null());
+        assert_eq!(last_class(), "invalid_input");
+        let saved = ios_last_error_class();
+        unsafe {
+            ios_free_string(std::ptr::null_mut());
+            ios_free_devices(std::ptr::null_mut(), 0);
+            ios_device_close(std::ptr::null_mut());
+            ios_tunnel_close(std::ptr::null_mut());
+            assert_eq!(ios_tunnel_rsd_port(std::ptr::null()), 0);
+            assert_eq!(ios_tunnel_userspace_port(std::ptr::null()), 0);
+        }
+        assert_eq!(last_class(), "invalid_input");
+
+        let handle = IosDeviceHandle {
+            _device: Mutex::new(None),
+        };
+        assert_eq!(
+            unsafe { ios_get_product_version(&handle, &mut output) },
+            IOS_ERR_STATE
+        );
+        assert_eq!(last_class(), "precondition");
+        let tunnel = IosTunnel {
+            server_address: "fd00::8".into(),
+            rsd_port: 1234,
+            userspace_port: 4321,
+            rsd_services_json: "embedded\0NUL".into(),
+            _device: Mutex::new(None),
+        };
+        assert_eq!(
+            unsafe { ios_tunnel_rsd_services_json(&tunnel, &mut output) },
+            IOS_ERR_ALLOC
+        );
+        assert!(output.is_null());
+        assert_eq!(
+            last_class(),
+            "unknown",
+            "ALLOC does not prove allocation exhaustion"
+        );
+        let mut small = [0; 1];
+        assert_eq!(
+            unsafe { ios_tunnel_server_address(&tunnel, small.as_mut_ptr(), small.len()) },
+            IOS_ERR_BUFFER_TOO_SMALL
+        );
+        assert_eq!(last_class(), "resource_limit");
+        let mut enough = [0; 46];
+        assert_eq!(
+            unsafe { ios_tunnel_server_address(&tunnel, enough.as_mut_ptr(), enough.len()) },
+            IOS_SUCCESS
+        );
+        assert_eq!(last_class(), "none");
+        assert_eq!(
+            unsafe { CStr::from_ptr(saved) }.to_str().unwrap(),
+            "invalid_input",
+            "borrowed code remains valid after later calls"
+        );
+    }
+
+    #[test]
+    fn ffi_category_is_caller_thread_local() {
+        ffi_status(|| {
+            error_status(
+                IOS_ERR_CORE,
+                &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            )
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::InvalidInput,
+        ]
+        .into_iter()
+        .map(|kind| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let initial = last_class();
+                let status = ffi_status(|| error_status(IOS_ERR_CORE, &std::io::Error::from(kind)));
+                barrier.wait();
+                let observed = last_class();
+                barrier.wait();
+                let success = ffi_status(|| IOS_SUCCESS);
+                (initial, status, observed, success, last_class())
+            })
+        })
+        .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                ("none", IOS_ERR_CORE, "timeout", IOS_SUCCESS, "none"),
+                ("none", IOS_ERR_CORE, "invalid_input", IOS_SUCCESS, "none")
+            ]
+        );
+        assert_eq!(last_class(), "permission_denied");
+    }
+
+    #[test]
+    fn ffi_category_codes_match_rust_and_borrow_static_strings() {
+        let classes = [
+            ErrorClass::Timeout,
+            ErrorClass::Cancelled,
+            ErrorClass::Disconnected,
+            ErrorClass::ServiceMissing,
+            ErrorClass::PermissionDenied,
+            ErrorClass::Protocol,
+            ErrorClass::InvalidInput,
+            ErrorClass::Unsupported,
+            ErrorClass::DeviceNotFound,
+            ErrorClass::NotFound,
+            ErrorClass::ResourceLimit,
+            ErrorClass::Conflict,
+            ErrorClass::Precondition,
+            ErrorClass::ServiceFailure,
+            ErrorClass::Io,
+            ErrorClass::Unknown,
+        ];
+        for class in classes {
+            LAST_ERROR_CLASS.with(|state| state.set(Some(class)));
+            let saved = ios_last_error_class();
+            assert_eq!(last_class(), class.as_str());
+            ffi_status(|| IOS_SUCCESS);
+            assert_eq!(
+                unsafe { CStr::from_ptr(saved) }.to_str().unwrap(),
+                class.as_str()
+            );
+        }
+    }
+
     #[test]
     fn plist_value_to_json_encodes_data_as_hex() {
         let value = plist::Value::Data(vec![0x00, 0xAB, 0xCD]);
@@ -694,9 +932,13 @@ mod tests {
 
     #[test]
     fn ffi_status_converts_panics_to_status_code() {
-        let code = ffi_status(|| panic!("ffi panic boundary"));
+        let code = ffi_status(|| {
+            error_status(IOS_ERR_CORE, &ios_core::OperationCancelled::new());
+            panic!("ffi panic boundary")
+        });
 
         assert_eq!(code, IOS_ERR_PANIC);
+        assert_eq!(last_class(), "unknown");
     }
 
     #[test]

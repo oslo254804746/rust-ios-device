@@ -1,8 +1,9 @@
 # Error and machine-output contract
 
 A02 is in progress. Additive Rust classification, opt-in final CLI machine
-errors and Python factory/proxy metadata are implemented; the roadmap keeps
-HTTP/C mappings, remaining Python boundaries, stream semantics, probe observations
+errors, Python factory/proxy metadata and caller-thread C categories are
+implemented; the roadmap keeps
+HTTP mappings, remaining Python/C boundaries, stream semantics, probe observations
 and remaining information-loss fixes pending. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
 
@@ -137,8 +138,8 @@ reporting remains best effort after failure: a closed stderr retains the origina
 nonzero status and may prevent delivery of the envelope. Ordinary progress,
 tracing and stream callbacks may still emit other stderr records; this option
 does not yet make the entire stderr stream JSON. Partial stdout may already
-exist. Existing HTTP and C statuses retain their shapes; those adapters remain
-pending A02 work with additive contracts. Python metadata is described below.
+exist. Existing HTTP and C statuses retain their shapes. HTTP mappings remain
+pending A02 work; additive C/Python category queries are described below.
 
 Both the human confirmation hint and machine field now inspect at most 32
 sources, matching the classifier's bounded interpretation. Normal guard errors
@@ -188,3 +189,37 @@ profile and still need their own review. Absence of attributes does not mean
 success or an unknown side effect was rolled back. The host tests and installed
 owned ListDevices peer certify this boundary, not physical tunnel startup or
 Apple teardown.
+
+## C status categories
+
+`ios_last_error_class(void)` is an additive symbol returning the stable ErrorClass
+code of the calling OS thread's last function returning an int status. The
+borrowed NUL-terminated string is static while the library remains loaded;
+never modify it or pass it to `ios_free_string`. Read it on the same OS thread
+as the operation, before another int-status call replaces the observation.
+Each such call resets its prior category before work, records the native typed
+source on failure, and clears it to `none` on success. `none` also describes a
+thread before its first int-status call. Runtime initialization, void cleanup,
+uint16_t port queries and the getter itself do not replace it. The getter does
+not initialize or require the Tokio runtime.
+
+The existing fourteen symbols/signatures, statuses 0–8, mode discriminants and
+IosDevice layout remain unchanged. Core/serialization errors are classified
+before status conversion. Runtime initialization retains its original IO error
+instead of a String and still returns status 6 on failure. NULL/UTF-8 rejection
+gives `invalid_input`, unavailable/poisoned handle state gives `precondition`,
+and a too-small caller buffer gives `resource_limit`. The existing ALLOC status
+also represents an embedded NUL, so it does not prove exhausted memory and
+falls back to `unknown`. Captured int-call panic status 7 replaces any earlier
+category with `unknown`; no panic message is returned by this getter. Remaining
+opaque sources stay unknown. Consumers must retain a future-code fallback.
+
+This query adds no interruptible C call, concurrent handle-mutation guarantee,
+automatic retry or Apple cleanup acknowledgement. A `disconnected` IO class
+does not identify which object disconnected. `none` describes a successful
+numeric status, not a certificate of device cleanup or absence of partial
+effects. It does not correct existing filtering of malformed device records,
+void cleanup reporting or port-zero ambiguity; these remain separate review
+boundaries. The owned linked-C malformed ListDevices fixture validates a real
+library call, not device connection/query/tunnel acceptance. Native source
+details are not exported as an unsafe C string.
