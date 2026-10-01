@@ -1913,6 +1913,74 @@ move，改为明确所有fixture字段，未修改production ownership。源码�
 发布/历史改写。文档收尾核对后继续A02 CLI可编程错误输出；总体目标active，第四类
 尚未开始。前述pending主线以本条实际terminal结果为准。
 
+### 大类 3 进行中：A02 opt-in CLI machine failures（2026-10-01）
+
+startup实现 `c01244f221189f0a77b1c2debb792f45ec7b151a` 与文档收尾
+`4683aa59e7cd0291d138244bfd7d6b45dc571283` 已核对，收尾后clean。继续A02，当前
+未提交：附加global `--error-format=human|json`，默认human保留原final stderr/exit；
+JSON v1只用于final failure stderr，含typed class、canonical/fixed phase、安全diagnostic、
+exit_code、typed force confirmation_required、effects（operation unknown/input not_started）。
+不修改stdout success格式、不承诺stream没有progress或cleanup ACK、不猜flattened
+strings类别。Help/version成功仍走原Clap输出，输出失败保留exit1。
+
+首次格式recovery专项 **1 PASS**（`/tmp/ios-a02-cli-error-recovery.log`，terminal exit0），
+覆盖parser error、missing command、invalid mode、literal --分隔和子命令后的global选择；
+只用同一Clap parser的ignore_errors收回已识别format，不扫描argv值/自然语言；应将
+format放在错误参数之前，未识别/invalid format安全回落human。新增原源保留/原human
+bytes、typed force/opaque unknown、input脱敏测试，machine_ filter已terminal exit0；
+精确output专项待结果。实际CLI fixture新增带mode成功list、真实malformed plist reply、
+human/JSON非法端口；拥有唯一usbmux endpoint/原始capture，待新binary执行。原8个
+输出合同保留。机器validator新增wrong exit/混入文本/字段类型/原始secret负例，待结果。
+CLI machine slice专项、完整第11节、diff审查和聚焦实现/文档收尾尚待完成；HTTP/C/
+Python机器映射、Ctrl+C/probe owner和stderr/stream/partial仍待各自推进；A02/目标active。
+
+最终CLI output专项 **11 PASS**（含原8条与新3条；
+`/tmp/ios-a02-cli-output-unit.log`），machine filter **3 PASS**；strict CLI Clippy
+**PASS**（`/tmp/ios-a02-machine-clippy.log`）。新增help/version格式recovery回归首次
+**FAIL**：Clap DisplayHelp提前返回没有matches，已只对recovery parser递归禁用
+help/version/display，主parser成功help照旧；最终selection **1 PASS**
+（`/tmp/ios-a02-machine-selection-fixed.log`，另含nested help）。工具negative **8 PASS**
+（原3+新5，`/tmp/ios-a02-machine-validator-final.log`），确保exit0、wrong class/status、
+stdout/诊断混入、bad字段类型/原始secret无法PASS。上述handles均terminal exit0。
+
+最终明确新binary build PASS后，实际 `python3 scripts/compatibility.py` **14 PASS**
+（`/tmp/ios-a02-machine-actual-final.log`）：原8不变，新malformed真实plist、input
+human/JSON、mode下正常list以及closed help/version JSON failure；所有owned cleanup
+完成、0 raw secret hits，argument trap 0设备dial，ListDevices服务不路由设备操作。
+之前12 PASS是未加入closed JSON help的历史subset，不当最终14证据。完整第11节
+`python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`
+已启动（`/tmp/ios-a02-cli-machine-full.log`），尚未接受完整gate或提交。合同/usage/
+CLI README/public contract/CHANGELOG同步，machine schema为新opt-in可扩展v1。
+
+首轮完整machine gate **PASS**（`/tmp/ios-a02-cli-machine-full.log`，terminal exit0）：
+1724 Rust/8 Python、0 FAIL、2既有ignored；46 tooling/14实际CLI合同，其余主线保留。
+该结果对应最终审查前版本，**不是后续修正后的提交证据**。审查发现旧human force
+hint `.chain().any` 和新machine guard lookup无界；已共用32-source helper，补充有512
+safety valve的cycle计数回归（避免regression本身hang）与24/40层guard contexts，
+诊断/fields在bound内一致，不把false当已确认。合同记录原可能无界scan→有界hint
+及deep unknown迁移；设备confirmation判断未改。新增专项与修改后的完整gate待结果，
+未提交；A02/目标active，HTTP/C/Python/probe/cancel/stream真实剩余不变。
+
+### 大类 3：A02 CLI machine failure 验收（2026-10-01，主任务进行中）
+
+实现 **`70108b76ce12f5e8d726cb920c017f91c496c3c6`**，九个明确code/tool/contract文件；
+提交后只留本计划。bounded修正后的output **13 PASS**，修改后完整第11节 **PASS**
+（`/tmp/ios-a02-cli-machine-bounded-full.log`，terminal exit0）。
+[验收索引](validation/cli-machine-errors-2026-10-01.md)及quality/Q01单项host evidence
+同步，无成熟度升级。
+
+| 字段 | 实际记录 |
+| --- | --- |
+| 主线 | `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`；1726 Rust/8 Python PASS、0 FAIL、2既有ignored；66 features/4 groups、7+7 docs/3 snippets、check/严格Clippy/MSRV、C ABI/19B raw、3.12 wheel/sdist重建安装PASS |
+| 工具/进程 | 46 tooling、118 help、38 raw、5 host/22 device NOT_RUN、14实际CLI/3 backup合同PASS；bounded owned cleanup/no原始secret hits，input trap 0设备dial；list只请求ListDevices |
+| 二进制 | ios0.1.13 SHA-256 `09198cbdcac76a953bb4eb5517c9e532e5ab8ec4ecae447dd317239b77d44b33` |
+| 审查/迁移 | 新opt-in extensible JSON v1，原stdout success/human final/exit1/2保留；主parser未使用ignore_errors，recovery才禁用早display；human/machine guard共用32-source，深于bound不观察hint/guard而非授权；90 changed local links/whitespace PASS |
+| 真实剩余 | machine option只转换final failure，普通stderr progress/tracing/stream仍可能混入；HTTP/Python/C字段、Ctrl+C typed取消、RSD probe owner和flattened strings待推进；partial stdout/effects unknown不承诺retry/rollback；L01cleanup/平台/真机workflow待各自条件 |
+
+该slice主机验收完成，A02/第三类未完成；无实际设备操作、配对、DDI/TSS/擦除恢复、
+推送/发布/历史改写。文档收尾核对后继续A02取消类型/绑定入口；总体目标active，
+第四类尚未开始。首轮1724结果保留为修正前历史，不替代本条1726最终证据。
+
 剩余：最终分类专项/最小feature与public consumer验证，审查所有类型/状态来源；
 补充service missing/metadata missing/unprobed/explicit unsupported的查询合同，CLI
 stderr/stream/partial-failure清理及opt-in机器error、HTTP/C/Python映射与真实失败fixture；

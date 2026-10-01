@@ -1,8 +1,8 @@
 # Error and machine-output contract
 
-A02 is in progress. Its first additive Rust classifier is implemented; the
-roadmap records this slice's validation and keeps CLI/HTTP/C/Python mappings, stream
-semantics and upstream information-loss fixes pending. R04's accepted
+A02 is in progress. Additive Rust classification and opt-in final CLI machine
+errors are implemented; the roadmap keeps HTTP/C/Python mappings, stream semantics,
+probe observations and remaining information-loss fixes pending. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
 
 ## Rust classification

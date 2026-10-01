@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-machine-failures-70108b7",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual CLI over owned ListDevices success/malformed replies; owned argument endpoint trap and closed output groups; typed/cyclic errors"],
+      "required_state": ["Host-only opt-in final CLI errors; no complete stderr stream or physical device certification"],
+      "tested_commit": "70108b76ce12f5e8d726cb920c017f91c496c3c6",
+      "date": "2026-10-01",
+      "location": "docs/validation/cli-machine-errors-2026-10-01.md",
+      "result": "PASS",
+      "scope": "A02 opt-in JSON final failures, typed category/phase/original exits and bounded confirmation observations. Existing success/default human output retained; HTTP/C/Python, probe, cancel, stderr/stream/partial and L01 cleanup remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-webinspector-startup-sources-c01244f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
