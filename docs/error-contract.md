@@ -386,6 +386,54 @@ These host faults do not prove physical installation, encrypted-payload support,
 cleanup, stream reuse or new decompression/resource budgets. Other A02 source,
 JSON/callback/binding work and L01/L03/L04/Q04 conditions remain pending.
 
+## Deactivation fallback and activation HTTP sources
+
+`ConnectedDevice::deactivate` attempts mobileactivationd and, on failure, one
+legacy lockdown fallback as before. Both failed attempts now return existing
+CoreError::Io with additive private-field `DeactivationFallbackError`, exported
+at root and device with feature mobileactivation. Borrow the observation through
+the IO payload's `get_ref().downcast_ref::<DeactivationFallbackError>()`.
+`service_error()` and `fallback_error()` retain their original CoreError objects;
+`service_class()` and `fallback_class()` are bounded classifications taken before
+wrapping. Its standard source is the final fallback error. The final category
+controls classification even when unknown; an earlier precise failure cannot
+override it or turn opaque Other text into a guessed category. Safe Debug shows
+categories, not payloads. Explicit Display/source access can expose private data.
+
+Modern service errors use the existing source-preserving activation adapter.
+Combined failure previously became Other(String); a failure establishing the
+fallback connection previously dropped the earlier cause. Both now retain the
+two observations. Primary success still skips fallback construction, successful
+fallback still returns success without an earlier-failure observation, and no
+additional retry is introduced. Returned variants/Display and safe correlation
+can change. No success or category certifies rollback, stream reuse or cleanup.
+
+ActivationHttpClient preserves original reqwest errors from build/send/chunk
+through private fixed-phase IO payloads. Native timeout/builder flags and typed
+underlying sources participate in classification; otherwise the IO fallback
+applies. Endpoint parse errors keep their original source; HTTPS, credentials
+and missing custom-endpoint opt-in remain typed local InvalidInput rejections.
+These seven former Http-string paths migrate to MobileActivationError::Io:
+native request timeout changes service_failure to timeout, endpoint rejection
+changes service_failure to invalid_input, and other HTTP causes use their typed
+chain. Status and request/response body-budget rejections remain Http/service_failure.
+Client Debug hashes both URLs; original Rust cause access can reveal private
+queries. Existing HTTPS verification, exact official endpoints, explicit custom
+opt-in, redirect policy, timeout values, body limits, wire headers and success
+response fields remain unchanged.
+
+Owned loopback fixtures cover refusal, stalled TLS handshake, verified HTTPS
+body truncation/timeout, complete response/status rejection, and rejection of
+an untrusted test certificate. Positive TLS fixtures install an ephemeral root
+only in the private test client, with verification enabled; they do not add a
+production custom-CA interface. Interrupted response reads return no successful
+ActivationHttpResponse; a request may already have been sent and remote effects
+remain unknown. Partial read-buffer zeroization, borrowed-client invalidation,
+ordered cleanup and real Apple/device acceptance remain separate A02/L01/L03
+conditions. The production CLI renderer retains exit 1, activation phase and
+unknown effects, and hides private fixture values. Host tests do not execute
+paired ConnectedDevice routing, TLS lockdown setup or physical deactivation.
+
 ## Symbols, activation and pasteboard sources
 
 The following adapters preserve original typed causes instead of formatting

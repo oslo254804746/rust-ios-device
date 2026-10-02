@@ -648,6 +648,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_activation_http_input_and_native_timeout_reach_safe_cli_envelope() {
+        use ios_core::mobileactivation::{
+            ActivationHttpClient, MobileActivationError, DRM_HANDSHAKE_URL,
+        };
+        let input = ActivationHttpClient::with_endpoints(
+            "https://owned-private:owned-private@example.invalid",
+            DRM_HANDSHAKE_URL,
+            true,
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_failure(&anyhow::Error::new(input), "invalid_input");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "https://{}/owned-private?token=owned-private",
+            listener.local_addr().unwrap()
+        );
+        let peer = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = ActivationHttpClient::with_endpoints(
+            &endpoint,
+            &endpoint,
+            true,
+            std::time::Duration::from_millis(100),
+        )
+        .unwrap();
+        let result = with_deadline_and_signal_at(
+            client.post_drm_handshake(&plist::Dictionary::new()),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            "DRM handshake",
+            std::future::pending(),
+        )
+        .await;
+        peer.abort();
+        assert!(peer.await.unwrap_err().is_cancelled());
+        let error = result.unwrap_err();
+        let original = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<MobileActivationError>())
+            .unwrap();
+        let MobileActivationError::Io(io) = original else {
+            panic!("HTTP native error discarded");
+        };
+        assert!(std::error::Error::source(io).is_some());
+        assert_failure(&error, "timeout");
+    }
+
+    #[tokio::test]
     async fn record_deadline_wrapper_keeps_typed_core_errors_and_native_sources() {
         for (source, class) in [
             (

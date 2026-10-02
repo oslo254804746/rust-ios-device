@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve both failed deactivation attempts in a borrowed Rust observation,
+  including lockdown connection failure, and classify by the final cause.
+  Retain native activation HTTP/URL sources, classify rejected endpoint input
+  as invalid input, and hash endpoint URLs in client Debug. Document returned
+  variant and diagnostic migration with unchanged fallback and HTTPS policy.
+  Keep capability inventory paths correct for flat service entries with
+  same-name submodule directories.
+
 - Preserve remote-symbols H2/XPC, modern activation-record and pasteboard
   snapshot-connection causes through existing error variants. Keep native
   classes, activation deadline/observed-cancellation sources and safe CLI

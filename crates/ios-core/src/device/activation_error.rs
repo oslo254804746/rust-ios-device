@@ -1,4 +1,4 @@
-//! Preserve the modern record-application cause under the existing CoreError.
+//! Preserve modern activation/deactivation causes under the existing CoreError.
 
 use crate::mobileactivation::MobileActivationError;
 use crate::CoreError;

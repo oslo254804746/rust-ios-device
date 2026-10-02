@@ -137,6 +137,26 @@ fields. Activation's existing deadline and observed Ctrl-C failure now classify
 as timeout/cancelled; effects stay unknown. See the [error contract](error-contract.md)
 for scope, partial-file behavior and host versus device evidence.
 
+`ConnectedDevice::deactivate` now retains both failed attempts through existing
+`CoreError::Io`. With `mobileactivation`, additive root/device
+`DeactivationFallbackError` has private fields and borrowed cause/category
+getters. Obtain it from the IO custom payload using `get_ref().downcast_ref()`;
+its standard source is the final lockdown failure. The final category, including
+unknown, controls classification. Earlier failure remains separately observable.
+This replaces a combined Other string and also preserves the first failure
+when lockdown connection establishment fails. Primary success skips fallback;
+fallback success remains successful. No new retry or device cleanup guarantee.
+
+Activation HTTP native builder/send/body errors and endpoint rejections now use
+existing `MobileActivationError::Io` instead of `Http(String)`. Inspect typed
+sources/classification rather than old Http matches or text; endpoint validation
+becomes invalid input, native timeouts become timeout, and other native HTTP
+causes use the existing typed-chain/IO fallback policy. Status/body-budget
+rejections still use Http. Client Debug hashes URLs; explicit original sources
+can contain private URLs. Public signatures/enums, HTTPS verification, opt-in,
+redirect policy, budgets and success response shapes remain. The
+[error contract](error-contract.md) records host fixture and partial-effect scope.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

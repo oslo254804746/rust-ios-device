@@ -94,6 +94,8 @@ pub(crate) mod xpc;
 pub use credentials::{PersistedCredentials, RemotePairingRecord};
 #[cfg(feature = "mdns")]
 pub use device::discover_paired_mobdev2_devices;
+#[cfg(feature = "mobileactivation")]
+pub use device::DeactivationFallbackError;
 pub use device::{
     connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
     ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason,

@@ -138,6 +138,12 @@ macro_rules! typed_class {
 use typed_class;
 
 fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
+    #[cfg(feature = "mobileactivation")]
+    if let Some(error) = error.downcast_ref::<crate::DeactivationFallbackError>() {
+        // The earlier failure remains separately observable. A wrapper must not
+        // replace an opaque final cause's Unknown with generic IO.
+        return Some(error.fallback_class());
+    }
     if error.is::<super::OperationCancelled>() {
         return Some(ErrorClass::Cancelled);
     }

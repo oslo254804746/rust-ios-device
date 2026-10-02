@@ -106,6 +106,10 @@ impl std::fmt::Debug for LockdownTransport {
 
 #[cfg(feature = "mobileactivation")]
 mod activation_error;
+#[cfg(feature = "mobileactivation")]
+mod deactivation_error;
+#[cfg(feature = "mobileactivation")]
+pub use deactivation_error::DeactivationFallbackError;
 mod connected;
 mod connection;
 mod lockdown_transport;

@@ -1,7 +1,10 @@
 """Evidence-policy checks: inventory changes cannot invent maturity."""
 import copy
 import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import capabilities
 
@@ -39,6 +42,33 @@ class CapabilityPolicyTests(unittest.TestCase):
         self.catalog["evidence"].append(copy.deepcopy(self.catalog["evidence"][0]))
         with self.assertRaisesRegex(ValueError, "duplicate evidence"):
             capabilities.validate(self.catalog)
+
+    def test_flat_service_with_submodules_keeps_actual_entry_path(self):
+        with tempfile.TemporaryDirectory(prefix="ios-inventory-entry-") as directory:
+            root = Path(directory)
+            cli = root / "crates/ios-cli/src"
+            cli.mkdir(parents=True)
+            (cli / "main.rs").write_text(
+                "enum Commands {\n    List(cmd::list::ListArgs),\n}\n",
+                encoding="utf-8",
+            )
+            services = root / "crates/ios-core/src/services"
+            services.mkdir(parents=True)
+            (services / "mod.rs").write_text(
+                "pub mod flat;\npub mod nested;\n", encoding="utf-8",
+            )
+            (services / "flat.rs").write_text("mod helper;\n", encoding="utf-8")
+            (services / "flat").mkdir()
+            (services / "flat/helper.rs").write_text("", encoding="utf-8")
+            (services / "nested").mkdir()
+            (services / "nested/mod.rs").write_text("", encoding="utf-8")
+            with patch.object(capabilities, "ROOT", root):
+                commands, actual = capabilities.source_inventory()
+            self.assertEqual(commands, {"cli:list": "crates/ios-cli/src/cmd/list.rs"})
+            self.assertEqual(actual, {
+                "service:flat": "crates/ios-core/src/services/flat.rs",
+                "service:nested": "crates/ios-core/src/services/nested/mod.rs",
+            })
 
 
 if __name__ == "__main__":

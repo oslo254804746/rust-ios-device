@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use zeroize::Zeroize;
 
+mod http_error;
+
 pub const SERVICE_NAME: &str = "com.apple.mobileactivationd";
 pub const ACTIVATION_URL: &str = "https://albert.apple.com/deviceservices/deviceActivation";
 pub const DRM_HANDSHAKE_URL: &str = "https://albert.apple.com/deviceservices/drmHandshake";
@@ -70,6 +72,9 @@ pub fn has_legacy_activation_wrapper(bytes: &[u8]) -> bool {
         .iter()
         .any(|key| root.contains_key(key))
 }
+
+#[cfg(test)]
+mod http_source_contract_tests;
 
 service_error!(MobileActivationError, between {
     /// The operation exceeded its configured deadline.
@@ -546,6 +551,9 @@ impl ActivationHttpResponse {
 /// The default constructor accepts only the official Apple host. Custom
 /// endpoints remain HTTPS-only and require an explicit unsafe opt-in; TLS
 /// certificate verification is never disabled and redirects are rejected.
+/// Native HTTP failures retain their reqwest source under the existing IO
+/// variant; rejected endpoint input uses InvalidInput. Debug hashes URLs,
+/// while explicit source inspection can still reveal a private endpoint URL.
 #[derive(Clone)]
 pub struct ActivationHttpClient {
     client: reqwest::Client,
@@ -558,8 +566,14 @@ impl std::fmt::Debug for ActivationHttpClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ActivationHttpClient")
-            .field("activation_url", &self.activation_url)
-            .field("drm_handshake_url", &self.drm_handshake_url)
+            .field(
+                "activation_url",
+                &crate::redaction::diagnostic_id(&self.activation_url),
+            )
+            .field(
+                "drm_handshake_url",
+                &crate::redaction::diagnostic_id(&self.drm_handshake_url),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -583,7 +597,7 @@ impl ActivationHttpClient {
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?;
+            .map_err(|error| http_error::retain("build activation HTTP client", error))?;
         Ok(Self {
             client,
             activation_url: activation_url.to_owned(),
@@ -671,7 +685,7 @@ impl ActivationHttpClient {
             .body(body)
             .send()
             .await
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?;
+            .map_err(|error| http_error::retain("send activation HTTP request", error))?;
         let status = response.status();
         let content_length = response.content_length();
         if content_length.is_some_and(|length| length > MAX_HTTP_BODY_SIZE as u64) {
@@ -703,7 +717,7 @@ impl ActivationHttpClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|error| MobileActivationError::Http(error.to_string()))?
+            .map_err(|error| http_error::retain("read activation HTTP body", error))?
         {
             if bytes.len().saturating_add(chunk.len()) > MAX_HTTP_BODY_SIZE {
                 return Err(MobileActivationError::Http(format!(
@@ -751,20 +765,20 @@ fn validate_endpoint(
     unsafe_custom_server: bool,
 ) -> Result<(), MobileActivationError> {
     let parsed = reqwest::Url::parse(url)
-        .map_err(|error| MobileActivationError::Http(format!("invalid endpoint URL: {error}")))?;
+        .map_err(|error| http_error::input(http_error::EndpointInputError::Url(Box::new(error))))?;
     if parsed.scheme() != "https" {
-        return Err(MobileActivationError::Http(
-            "activation endpoints must use HTTPS".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::HttpsRequired,
         ));
     }
     if parsed.username() != "" || parsed.password().is_some() {
-        return Err(MobileActivationError::Http(
-            "activation endpoint must not contain user credentials".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::Credentials,
         ));
     }
     if !unsafe_custom_server && url != official_url {
-        return Err(MobileActivationError::Http(
-            "non-official activation endpoint requires explicit unsafe opt-in".into(),
+        return Err(http_error::input(
+            http_error::EndpointInputError::CustomOptIn,
         ));
     }
     Ok(())

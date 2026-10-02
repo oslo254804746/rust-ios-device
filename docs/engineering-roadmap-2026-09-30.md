@@ -3042,3 +3042,60 @@ deactivation combinedfallback与activation HTTP errors仍flattened；需保留ty
 原始来源/前后失败观察、合理class与兼容迁移。其他source/JSON/callback/binding、
 L01/L03/A03、平台/真机/有序cleanup条件继续；无maturity升级、设备操作、推送/
 发布、历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 deactivation/HTTP 来源（2026-10-02）
+
+上一service boundary实现 `817da67`、文档 `d23a052` 已核对，当前分支
+`feat/device-service-updates-20260927`；无其他运行任务或无关变更。ConnectedDevice
+deactivate保持原一次fallback，modernservice映射保留原MobileActivationError；两次
+失败经既有CoreIo/additive private-field DeactivationFallbackError保存两个CoreError，
+包括fallback connection failure。borrowed getters与分类snapshots root/device公开；
+source为最终failure，classifier采用其原class，opaqueUnknown不受第一failure覆盖。
+fallbacksuccess仍Ok、primarysuccess不构造fallback，无新增retry。HTTP三处reqwest
+flatten改nativeIo/privatefixedphases，四endpointrejections改typedInput/原URLparse
+source，clientDebughashURL；原enum/signatures/HTTPSverification/optin/redirect/budgets/
+wire/success保留，returnedvariant/Display/classes/correlation迁移写入合同。
+
+14新增tests：coredeactivation4、HTTP8、externalpublic1、CLI1。真实modernservice
+及legacyframe closedduplex、ownedTCPdial两cause，finaltyped/unknown、exactonce
+fallback；HTTPSownedhandshakestall/refusal/realbuilder、本地ephemeralCA verifiedTLS
+bodytruncation/bodytimeout/success/403及publicconstructor默认roots拒绝untrustedcert。
+positiveTLS仅testprivateclient添加root，未关闭verification或新增生产CA接口。
+CLI实际deadline helper保留publicHTTPnative error并渲染safeenvelope；非paired
+ConnectedDevice/Lockdownsession/Appleendpoint/physicaldeactivation，不认证cleanup。
+
+真实beforefix HTTP0PASS/2FAIL `/tmp/ios-a02-activation-http-before.log` terminal101：
+timeout被HttpString归ServiceFailure、clientDebug泄漏query。新增deactivationfixture
+初编译E0599误用不存在LockdownClient::new，改调用实际legacyframewriter而不新增
+生产constructor；随后E0283 ambiguousDictionarykeys改明确str，原日志
+`/tmp/ios-a02-deactivation-host.log`、`/tmp/ios-a02-deactivation-host-final.log` 保留。
+首strictClippy items_after_test_module失败，移动测试至末尾而不allowlint：
+`/tmp/ios-a02-deactivation-http-clippy.log`。产品语义未为fixture弱化。
+
+专项最终：deactivation全feature/minimal各4、HTTPservice全feature30/minimal26、
+externalpublic15、CLIactivation12 PASS；日志 `/tmp/ios-a02-deactivation-host-final2.log`、
+`/tmp/ios-a02-deactivation-minimal.log`、`/tmp/ios-a02-activation-http-core-final.log`、
+`/tmp/ios-a02-activation-http-minimal.log`、`/tmp/ios-a02-deactivation-http-public.log`、
+`/tmp/ios-a02-deactivation-http-cli.log` terminal0。TLS四tests仅tunnelfeature下运行；
+最小feature仍运行四HTTP tests。strictfinal及第11节full结果、审查/提交/收尾待完成。
+第三类/总体goal active，第四类未开始；其他A02/source/JSON/bindings与L01/L03/
+Q02/Q04/A03及平台/真机条件保留。HTTPbodybudget/status仍HttpServiceFailure，partial
+readbufferzeroization有待L03，无devicecleanup/reuse认证或推送/发布/reference修改。
+
+strictfinal已terminal0；首次full `/tmp/ios-a02-deactivation-http-full.log` terminal1，
+fmt/check/workspaceClippy、1831Rust/13Python、MSRV、66features/4groups、docs/C ABI/
+3.12wheel/sdist与52tools已PASS，随后catalog失败：旧source_inventory仅凭同名目录
+推断mod.rs，误判仍有效的mobileactivation.rs。新增owned临时source-tree回归0PASS/
+1FAIL `/tmp/ios-a02-service-inventory-before.log` terminal1；修复检查实际.rs入口再选
+mod.rs，不调整原inventory记录、公开Rust入口或maturity。toolfixture增加至53，
+专项及完整重跑 `/tmp/ios-a02-deactivation-http-full-final.log` 结果/提交/收尾待完成。
+
+最终完整重跑terminal0：1831Rust/13Python、0FAIL/2既有ignored，fmt/check/workspace
+strictClippy/MSRV、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/
+checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、
+15CLI/3backup均PASS。专项tools `/tmp/ios-a02-deactivation-http-tooling.log` 与实际
+CLIinventory `/tmp/ios-a02-deactivation-http-inventory.log` terminal0。diff审查确认
+无wirekeys/selector/requests/路由/fallbackschedule或HTTPSverification修改；原exhaustive
+errorvariants保留，borrowedsource/snapshot与本地input/nativeHTTP分类迁移明确。
+将按17个相关文件本地实现提交，精确hash/索引/收尾待下一记录。未额外Chromium/
+installed3.9/3.13重跑，无paired/physical/remotecleanup/reuse证明，总体scope未缩减。

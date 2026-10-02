@@ -270,6 +270,11 @@ impl ConnectedDevice {
     }
 
     /// Deactivate through mobileactivationd, falling back to legacy lockdown.
+    ///
+    /// If both attempts fail, the returned `CoreError::Io` retains a
+    /// [`super::DeactivationFallbackError`] payload with borrowed causes and
+    /// the final fallback's category. Success does not expose an earlier
+    /// failure. Neither classification nor a retained cause authorizes retry.
     #[cfg(feature = "mobileactivation")]
     pub async fn deactivate(&self) -> Result<(), CoreError> {
         let service_result = async {
@@ -281,20 +286,13 @@ impl ConnectedDevice {
                 .deactivate()
                 .await
                 .map(|_| ())
-                .map_err(|error| CoreError::Other(format!("mobile activation: {error}")))
-        }
-        .await;
-        if service_result.is_ok() {
-            return service_result;
-        }
-
-        let service_error = service_result.expect_err("checked above");
-        let mut lockdown = self.lockdown_client().await?;
-        lockdown.deactivate().await.map_err(|fallback_error| {
-            CoreError::Other(format!(
-                "mobileactivationd deactivation failed ({service_error}); lockdown fallback failed ({fallback_error})"
-            ))
+                .map_err(super::activation_error::service_error)
+        };
+        super::deactivation_error::deactivate_with_fallback(service_result, || async {
+            let mut lockdown = self.lockdown_client().await?;
+            lockdown.deactivate().await.map_err(CoreError::from)
         })
+        .await
     }
 
     /// Record the legacy iTunes activation marker in lockdown.

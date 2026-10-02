@@ -24,8 +24,11 @@ def source_inventory():
     source = (ROOT / "crates/ios-core/src/services/mod.rs").read_text()
     for module in re.findall(r"(?m)^pub mod (\w+);$", source):
         path = ROOT / f"crates/ios-core/src/services/{module}"
-        services["service:" + module] = str((path / "mod.rs" if path.is_dir() else
-                                             path.with_suffix(".rs")).relative_to(ROOT))
+        # A flat service entry may also own a same-name submodule directory.
+        entry = path.with_suffix(".rs")
+        if not entry.is_file():
+            entry = path / "mod.rs"
+        services["service:" + module] = str(entry.relative_to(ROOT))
     if not commands or not services:
         raise ValueError("source inventory is empty; update parser for new declaration syntax")
     return commands, services

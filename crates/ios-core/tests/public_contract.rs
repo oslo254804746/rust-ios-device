@@ -8,6 +8,18 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "mobileactivation")]
+#[test]
+fn deactivation_fallback_observation_is_public_borrowed_and_thread_safe() {
+    use ios_core::{DeactivationFallbackError, ErrorClass};
+    fn assert_error<T: std::error::Error + Send + Sync + 'static>() {}
+    assert_error::<DeactivationFallbackError>();
+    let _: fn(&DeactivationFallbackError) -> &CoreError = DeactivationFallbackError::service_error;
+    let _: fn(&DeactivationFallbackError) -> &CoreError = DeactivationFallbackError::fallback_error;
+    let _: fn(&DeactivationFallbackError) -> ErrorClass = DeactivationFallbackError::service_class;
+    let _: fn(&DeactivationFallbackError) -> ErrorClass = DeactivationFallbackError::fallback_class;
+}
+
 // These enums are currently exhaustive. Adding a variant/non_exhaustive is a
 // downstream source change, even if every in-workspace caller still compiles.
 fn error_family(error: &CoreError) -> &'static str {
