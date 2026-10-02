@@ -3099,3 +3099,39 @@ CLIinventory `/tmp/ios-a02-deactivation-http-inventory.log` terminal0。diff审�
 errorvariants保留，borrowedsource/snapshot与本地input/nativeHTTP分类迁移明确。
 将按17个相关文件本地实现提交，精确hash/索引/收尾待下一记录。未额外Chromium/
 installed3.9/3.13重跑，无paired/physical/remotecleanup/reuse证明，总体scope未缩减。
+
+### 大类 3：A02 deactivation/HTTP 来源主机验收与交付（2026-10-02）
+
+实现 `87e2b4789d1334ffe44e7b666d17c01eff8d949a`（17个相关文件），完整门禁通过后
+聚焦本地提交。moderndeactivation保留原service来源；两次失败通过既有CoreIo/
+publicprivate-field DeactivationFallbackError保存两个原CoreError、借用getter与分类
+snapshot，最终fallbackcategory优先包括Unknown。nativeHTTP/URLparse来源保留，
+endpointguards归Input、clientDebughashURL；原enum/signatures/一次fallback与HTTPS/
+wire/success不改，returnedvariant/Display/classes/correlation迁移已记录。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/CLI/public | deactivation all-feature/minimal各4、HTTPservice all-feature30/minimal26、externalpublic15、CLIactivation12 PASS，相关日志见前一记录，terminal0 |
+| strict Clippy / tools | core/CLI strict final PASS；53tooltests/actualCLI118inventory PASS，clippy-final/tooling/inventory.log terminal0；full workspace strict PASS |
+| 第11节完整主线 | 最终full `/tmp/ios-a02-deactivation-http-full-final.log` terminal0；1831Rust/13Python、0FAIL、2既有ignored |
+| 完整其余gate | fmt/check/MSRV、66featurebuilds/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 新增14Rust+1tooltest；actualmodernservice/legacyframe与ownedTCPdial、dualcauses/finalunknown、verifiedlocalTLSbodyfaults/success/defaultrootsreject、CLIdeadline/safeenvelope和flatentryscanner。非pairedConnectedDevice/Lockdownsession/Appleendpoint/physicalcleanup/reuse；无额外Chromium/installed3.9/3.13重跑 |
+
+HTTPbeforefix0PASS/2FAIL、fixtureE0599/E0283、strictClippytestmoduleordering，以及
+首次fullcatalogsource-drift与ownedscanner0PASS/1FAIL均保留原日志；后者只修复实际
+.rs入口识别，不改旧118capabilityrecords或maturity。精确证据与兼容/host边界见
+[专题证据](validation/deactivation-http-sources-2026-10-02.md)，ios0.1.13 SHA256
+`a0f1202357c39346e8e858dd39eb20e150ab6d5d37b46df52542ad38fd4f6547`。
+
+文档收尾catalog118records/110localMarkdownlinks（6个changedMarkdownfiles）/
+whitespace PASS；日志 `/tmp/ios-a02-deactivation-http-docs-links.log`，baseline
+`d23a052` 含实现及收尾改动。准确implementationhash/host条件/后续待验收写入
+catalog/quality/roadmap/专题证据，未升级maturity。
+
+本slice主机验收；A02/第三类/总体goal active，第四类未开始。下一已确认lossy
+paths：discovery与direct/remotepairing spawn_blocking JoinError、directTLS-PSK
+connect、localcredentialhex/identity与remoteTLVbase64。须按原typed/native原因保留
+source/class，明确input/protocol/unsupported及opaqueunknown，保持原requests/路由/
+重试/信任政策；尚未作为PASS。其他A02HTTPbody-budget/status、JSON/callback/binding，
+L01/L03/A03与平台/真机/有序cleanup条件继续；无设备操作、推送/发布、历史改写/
+referencecheckout修改。文档收尾检查后继续。

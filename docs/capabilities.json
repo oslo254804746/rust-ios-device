@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-deactivation-http-sources-87e2b47",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned modern-service/legacy-frame and fallback dial faults; dual-cause/final-category observations; public HTTPS dial/default-trust failure and test-CA verified body faults/success; actual CLI deadline and safe renderer"],
+      "required_state": ["Host source/output/local ownership only; no paired ConnectedDevice/lockdown session, Apple endpoint, physical deactivation, stream reuse or device cleanup certification; positive TLS CA is test-only"],
+      "tested_commit": "87e2b4789d1334ffe44e7b666d17c01eff8d949a",
+      "date": "2026-10-02",
+      "location": "docs/validation/deactivation-http-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 deactivation retains both original CoreError objects and final category, including unknown, with unchanged one-fallback schedule. Activation HTTP/URL sources survive existing Io; local endpoint inputs become invalid_input and client Debug hides URLs. Inventory accepts flat entries with submodule directories. Variant migration documented; other A02/lifecycle/platform/device conditions remain, no maturity upgrade."
+    },
+    {
       "id": "linux-service-boundary-sources-817da67",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
