@@ -8,6 +8,10 @@
 
 #[cfg(feature = "tunnel")]
 pub mod client;
+#[cfg(all(test, feature = "tunnel"))]
+mod error_contract_tests;
+#[cfg(feature = "tunnel")]
+mod error_mapping;
 #[cfg(any(
     feature = "tunnel",
     feature = "dproxy",

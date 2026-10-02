@@ -76,6 +76,16 @@ public error enums. Migrate by inspecting class/source; local missing-feature
 prerequisites remain Unsupported. See the [error contract](error-contract.md)
 for initial/latest observation, discovery and screenshot fallback boundaries.
 
+H2 failures in RSD/RemoteXPC setup, bootstrap and message/transfer IO now reach
+the existing XpcError::Io variant with their original H2/transport source and
+fixed context. Native IO kinds retain their class; typed H2 protocol failures
+use InvalidData. This changes the former Tls return variant, Display prefix and
+diagnostic correlation without adding public variants/signatures. Migrate by
+inspecting class/source rather than Tls text; protocol/input failures whose
+sources were already strings retain their existing representation. The
+[error contract](error-contract.md) records local host/drop evidence and remaining
+partial-operation/lifecycle limits.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

@@ -10,9 +10,11 @@ and remaining information-loss fixes pending. R04's accepted
 ## Rust classification
 
 `ios_core::{classify_error, ErrorClass}` and `CoreError::class()` inspect typed
-errors and their original sources. Existing public error variants, fields,
-Display and source chains remain unchanged, including exhaustive CoreError
-matches. ErrorClass is a new non-exhaustive enum, serializes to a snake_case
+errors and their original sources. Existing public error enum definitions and
+fields remain unchanged, including exhaustive CoreError matches. The explicit
+migrations below describe returned-variant, Display and source-chain changes
+where adapters previously discarded typed failures. ErrorClass is a new
+non-exhaustive enum, serializes to a snake_case
 string, and exposes the same stable code through `as_str()`. Callers must keep
 a fallback for future categories. Human diagnostic text is not a classifier.
 
@@ -122,8 +124,9 @@ cleanup. Later service calls now retain their retry failure independently, as
 described below; this getter does not become a mutable latest-probe report.
 
 The private userspace-proxy dial adapter now retains native IO instead of
-flattening it to XpcError::Tls text. Some deeper RSD/H2 adapters still flatten
-sources before they reach this owner; the observation cannot recover those.
+flattening it to XpcError::Tls text. RSD/H2 bootstrap and read/write adapters
+also retain their typed sources as described below; the observation cannot
+recover information already discarded by other adapters.
 Existing public error enum definitions, retry counts, deadlines, bootstrap
 frames and permissive feature rules remain unchanged. Read the initial state before interpreting a missing directory;
 `rsd() == None` alone continues to conflate skipped and failed initial discovery.
@@ -152,8 +155,28 @@ signatures, successful frames/output, initial observations and cache behavior
 are unchanged; returned failure variants and safe diagnostic correlation can
 change. CLI screenshot fallback accepts the same specific missing service names
 through the typed variant, retaining its legacy compatibility cases. XPC service
-reconnector dials also retain native IO instead of a TLS string. Inner H2/RSD
-source conversions and stronger lifecycle/reconnection guarantees remain work.
+reconnector dials also retain native IO instead of a TLS string. Stronger
+lifecycle/reconnection guarantees remain work.
+
+RSD and RemoteXPC H2 setup, bootstrap, header/body reads, message writes and
+cryptex transfer writes now wrap the original H2Error in the existing
+`XpcError::Io` variant instead of formatting it into `Tls(String)`. A private
+error payload preserves the fixed operation context and original source chain.
+Native IO kinds remain intact; H2 protocol failures use InvalidData and retain
+their typed protocol source. The wrapper's Debug exposes only fixed context;
+explicit Display/source access still requires the diagnostic redaction policy.
+
+Migrate callers matching every H2 failure as Tls or parsing Display: inspect
+class/source and retain a fallback. Native timeout, permission and disconnect
+failures can now report their actual category instead of protocol; Display gains
+the existing IO variant's prefix, and safe diagnostic correlation can change.
+Protocol/input strings that have no original source remain their existing Tls
+variant. Public enums/signatures, wire frames, retry counts/budgets and pending
+memory limits are unchanged. Host faults cover setup, bootstrap/write, header
+and partial-body reads through all three connection receive methods, plus a
+public XpcClient consumer. They establish local transport drop and retained
+sources, without certifying safe reuse/retry after a partial operation or device
+cleanup. Other lossy adapters and stream/binding boundaries remain pending.
 
 ## Machine output and partial results
 

@@ -6,6 +6,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+use crate::xpc::error_mapping::h2_error;
 use crate::xpc::h2_raw::H2Framer;
 use crate::xpc::message::{flags, XpcMessage, XpcValue};
 use crate::xpc::rsd::{initialize_xpc_connection_on_framer, XpcConnection};
@@ -64,7 +65,7 @@ impl XpcClient {
         let stream: DynStream = Box::new(stream);
         let mut framer = H2Framer::connect(stream)
             .await
-            .map_err(|e| XpcError::Tls(format!("H2: {e}")))?;
+            .map_err(|e| h2_error("H2: ", e))?;
         initialize_xpc_connection_on_framer(&mut framer).await?;
         Ok(Self {
             inner: XpcConnection::new(framer),
@@ -208,7 +209,7 @@ impl XpcClient {
         framer
             .write_stream(stream_id, &preamble)
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+            .map_err(|e| h2_error("", e))?;
         let mut remaining = size;
         let mut chunk = vec![0u8; 64 * 1024];
         while remaining > 0 {
@@ -217,7 +218,7 @@ impl XpcClient {
             framer
                 .write_stream(stream_id, &chunk[..amount])
                 .await
-                .map_err(|e| XpcError::Tls(e.to_string()))?;
+                .map_err(|e| h2_error("", e))?;
             remaining -= amount as u64;
         }
         if reader.read(&mut chunk[..1]).await? != 0 {
@@ -226,7 +227,7 @@ impl XpcClient {
         framer
             .finish_stream(stream_id)
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))
+            .map_err(|e| h2_error("", e))
     }
 
     /// Receive the next XPC message.

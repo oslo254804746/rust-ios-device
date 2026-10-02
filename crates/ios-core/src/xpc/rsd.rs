@@ -20,6 +20,8 @@ use bytes::{Bytes, BytesMut};
 use tokio::net::TcpStream;
 
 #[cfg(feature = "tunnel")]
+use crate::xpc::error_mapping::h2_error;
+#[cfg(feature = "tunnel")]
 use crate::xpc::h2_raw::{H2Error, H2Framer, MAX_BUFFERED_BYTES_PER_STREAM, MAX_FRAME_PAYLOAD};
 #[cfg(feature = "tunnel")]
 use crate::xpc::message::{
@@ -235,17 +237,17 @@ where
                     let mut framer = if matches!(mode, HandshakeMode::Active) {
                         let mut framer = H2Framer::begin_connect(stream)
                             .await
-                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?;
+                            .map_err(|err| h2_error("RSD H2: ", err))?;
                         queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
                         framer
                             .finish_connect()
                             .await
-                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?;
+                            .map_err(|err| h2_error("RSD H2: ", err))?;
                         framer
                     } else {
                         H2Framer::connect(stream)
                             .await
-                            .map_err(|err| XpcError::Tls(format!("RSD H2: {err}")))?
+                            .map_err(|err| h2_error("RSD H2: ", err))?
                     };
                     match mode {
                         HandshakeMode::Active => {
@@ -311,7 +313,7 @@ where
     framer
         .write_client_server(&message)
         .await
-        .map_err(|err| XpcError::Tls(format!("RSD host handshake: {err}")))
+        .map_err(|err| h2_error("RSD host handshake: ", err))
 }
 
 #[cfg(feature = "tunnel")]
@@ -372,7 +374,7 @@ where
     framer
         .write_client_server(&msg1)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 1: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 1: ", e))?;
     discard_xpc_on_client_server(framer).await?;
 
     let msg3 = encode_message(&XpcMessage {
@@ -385,11 +387,11 @@ where
         // bootstrap message (the order used by pymobiledevice3).
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init open stream 3: {e}")))?;
+        .map_err(|e| h2_error("xpc init open stream 3: ", e))?;
     framer
         .write_client_server(&msg3)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 2: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 2: ", e))?;
     discard_xpc_on_client_server(framer).await?;
 
     let msg2 = encode_message(&XpcMessage {
@@ -400,7 +402,7 @@ where
     framer
         .write_server_client(&msg2)
         .await
-        .map_err(|e| XpcError::Tls(format!("xpc init write 3: {e}")))?;
+        .map_err(|e| h2_error("xpc init write 3: ", e))?;
     discard_xpc_on_server_client(framer).await?;
 
     Ok(())
@@ -425,7 +427,7 @@ where
     framer
         .write_client_server(&msg1)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 1: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 1: ", e))?;
 
     // Open stream 3 before the terminating stream-1 bootstrap message. This
     // ordering is significant to remoted and matches RemoteXPC clients:
@@ -433,7 +435,7 @@ where
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap open stream 3: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap open stream 3: ", e))?;
 
     let msg2 = encode_message(&XpcMessage {
         flags: flags::ALWAYS_SET | 0x200,
@@ -443,7 +445,7 @@ where
     framer
         .write_client_server(&msg2)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 2: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 2: ", e))?;
 
     let msg3 = encode_message(&XpcMessage {
         flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
@@ -453,7 +455,7 @@ where
     framer
         .write_server_client(&msg3)
         .await
-        .map_err(|e| XpcError::Tls(format!("rsd bootstrap write 3: {e}")))?;
+        .map_err(|e| h2_error("rsd bootstrap write 3: ", e))?;
 
     Ok(())
 }
@@ -552,7 +554,7 @@ where
     let header = framer
         .read_client_server(24)
         .await
-        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
+        .map_err(|e| h2_error("read header: ", e))?;
     let declared_body_len = u64::from_le_bytes(
         header[8..16]
             .try_into()
@@ -568,7 +570,7 @@ where
     let body = if body_len > 0 {
         read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, body_len)
             .await
-            .map_err(|e| XpcError::Tls(format!("read body: {e}")))?
+            .map_err(|e| h2_error("read body: ", e))?
     } else {
         Bytes::new()
     };
@@ -585,7 +587,7 @@ where
     let header = framer
         .read_server_client(24)
         .await
-        .map_err(|e| XpcError::Tls(format!("read header: {e}")))?;
+        .map_err(|e| h2_error("read header: ", e))?;
     let declared_body_len = u64::from_le_bytes(
         header[8..16]
             .try_into()
@@ -601,7 +603,7 @@ where
     let body = if body_len > 0 {
         read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, body_len)
             .await
-            .map_err(|e| XpcError::Tls(format!("read body: {e}")))?
+            .map_err(|e| h2_error("read body: ", e))?
     } else {
         Bytes::new()
     };
@@ -1033,7 +1035,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         self.framer
             .write_client_server(&bytes)
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+            .map_err(|e| h2_error("", e))?;
         Ok(id)
     }
 
@@ -1064,7 +1066,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .framer
             .buffer_next_data_stream()
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+            .map_err(|e| h2_error("", e))?;
         self.recv_fresh_on_stream(stream_id).await
     }
 
@@ -1110,7 +1112,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .framer
             .read_stream(stream_id, 24)
             .await
-            .map_err(|e| XpcError::Tls(e.to_string()))?;
+            .map_err(|e| h2_error("", e))?;
         let declared_body_len = u64::from_le_bytes(
             header[8..16]
                 .try_into()
@@ -1127,7 +1129,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         let body = if body_len > 0 {
             read_xpc_body_in_chunks(&mut self.framer, stream_id, body_len)
                 .await
-                .map_err(|e| XpcError::Tls(e.to_string()))?
+                .map_err(|e| h2_error("", e))?
         } else {
             Bytes::new()
         };

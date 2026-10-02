@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve typed H2/transport sources through RSD and RemoteXPC setup, bootstrap,
+  header/body reads, message writes and cryptex transfer writes. Use the existing
+  IO error variant, retain native kinds and fixed context, and document migration
+  from TLS strings with scoped host faults and an external XpcClient consumer.
+
 - Retain the final on-demand RSD probe error after the existing retry schedule,
   and classify missing entries in a successful directory as service missing.
   Preserve initial snapshots/cache, successful routing and service-specific

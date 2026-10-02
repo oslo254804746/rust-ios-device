@@ -131,6 +131,41 @@ fn event_id(event: DeviceEvent) -> u32 {
     }
 }
 
+#[cfg(feature = "tunnel")]
+#[tokio::test]
+async fn public_xpc_client_retains_native_h2_failure_in_existing_error_enum() {
+    use ios_core::{classify_error, ErrorClass, XpcClient, XpcError};
+    use std::error::Error;
+    use std::io::ErrorKind;
+
+    let (stream, peer) = tokio::io::duplex(64);
+    drop(peer);
+    let error = match XpcClient::connect_stream(stream).await {
+        Err(error) => error,
+        Ok(_) => panic!("closed transport connected"),
+    };
+    // The existing exhaustive error enum is unchanged. The native IO source
+    // crosses the public root API instead of becoming a TLS/protocol string.
+    match &error {
+        XpcError::Io(outer) => assert_eq!(outer.kind(), ErrorKind::BrokenPipe),
+        XpcError::NotConnected | XpcError::ServiceNotFound(_) | XpcError::Tls(_) => {
+            panic!("native H2 failure flattened")
+        }
+    }
+    assert_eq!(classify_error(&error), ErrorClass::Disconnected);
+    let mut current: Option<&(dyn Error + 'static)> = error.source();
+    let mut io_sources = 0;
+    for _ in 0..32 {
+        let Some(source) = current else { break };
+        if let Some(io) = source.downcast_ref::<std::io::Error>() {
+            assert_eq!(io.kind(), ErrorKind::BrokenPipe);
+            io_sources += 1;
+        }
+        current = source.source();
+    }
+    assert_eq!(io_sources, 2, "outer adapter and original transport IO");
+}
+
 #[test]
 fn public_error_classes_preserve_existing_exhaustive_core_matches() {
     use ios_core::{classify_error, ErrorClass};
