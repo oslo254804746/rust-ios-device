@@ -26,6 +26,38 @@ fn error_family(error: &CoreError) -> &'static str {
     }
 }
 
+#[cfg(feature = "apps")]
+#[tokio::test]
+async fn checked_install_observer_is_additive_and_keeps_error_enum_exhaustive() {
+    use ios_core::apps::{
+        install_ipa, install_ipa_with_checked_progress, CheckedProgressCallback, ZipConduitError,
+    };
+    fn family(error: &ZipConduitError) -> &'static str {
+        match error {
+            ZipConduitError::Io(_) => "io",
+            ZipConduitError::Plist(_) => "plist",
+            ZipConduitError::Protocol(_) => "protocol",
+            ZipConduitError::Zip(_) => "zip",
+            ZipConduitError::Install(_) => "install",
+        }
+    }
+    let path = std::env::temp_dir().join(format!("ios-uncreated-{}.ipa", uuid::Uuid::new_v4()));
+    let (mut stream, _peer) = tokio::io::duplex(64);
+    let callback: ios_core::apps::zipconduit::ProgressCallback = Box::new(|_, _| {});
+    let old = install_ipa(&mut stream, &path, Some(callback));
+    drop(old);
+    let callback: CheckedProgressCallback =
+        Box::new(|_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+    let error = install_ipa_with_checked_progress(&mut stream, &path, Some(callback))
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    let ZipConduitError::Io(native) = error else {
+        panic!("local source lost");
+    };
+    assert_eq!(native.kind(), std::io::ErrorKind::NotFound);
+}
+
 #[cfg(feature = "webinspector")]
 #[test]
 fn webinspector_facade_models_clients_and_sessions_remain_public() {

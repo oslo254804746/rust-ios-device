@@ -105,6 +105,16 @@ exact fields, signal-request counts, output/cleanup uncertainty and host scope.
 Named typed appservice misses retain existing fallback behavior; native failure
 sources now survive DTX/deadline/prerequisite contexts without new enum variants.
 
+Streaming install adds `apps::install_ipa_with_checked_progress` and
+`CheckedProgressCallback`, retaining the old function/void callback and exhaustive
+error enum. Observer IO failure preserves its source and returns before reading
+later replies. CLI startup/progress stderr now checks write/flush and returns
+through the safe failure path; previous progress bytes and success JSON are
+preserved. Migrate fallible Rust observers to the additive entry. A partial
+stderr stream or absent success result can follow payload transfer; do not retry
+or reuse a failed connection from the error alone. The [error contract](error-contract.md)
+records native classes, borrowed-stream lifetime and host versus device scope.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

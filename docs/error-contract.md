@@ -301,7 +301,7 @@ followed by a flush error. Result data intentionally includes requested paths,
 bundle identifiers and process names; it is distinct from safe diagnostics.
 Install/upgrade can succeed on the device before later cleanup/output failure,
 so absence of a success record does not establish absence of device effects.
-Streaming-install stderr callbacks remain a separate pending IO boundary.
+Streaming-install stderr uses the checked observer contract below.
 
 Application fallback accepts the existing typed ServiceNotFound only for the
 canonical appservice and its shim, retaining old Unsupported compatibility
@@ -315,6 +315,40 @@ correlation can change. The output/ordered-call fixtures use owned callbacks;
 they do not certify physical mutation, DTX fallback or complete CLI service
 startup workflows. Other JSON commands, callbacks and binding/lifecycle boundaries
 remain pending.
+
+`apps::install_ipa_with_checked_progress` adds an optional
+`CheckedProgressCallback` returning `io::Result<()>`. A callback error immediately
+returns the existing `ZipConduitError::Io` with the original IO source and native
+class, without reading another reply or reporting completion. The old
+`install_ipa` and void `zipconduit::ProgressCallback` keep their signatures and
+callback/completion behavior through the same transfer implementation. Error
+enums, requests, progress fields, remote-error precedence and successful
+transfer bytes are unchanged. Completion replies do not invoke either observer.
+This API accepts returned observer errors; it does not catch callback panics.
+
+CLI streaming install now checks the existing startup stderr line and each
+progress write/flush. Progress stays stderr text with the same diagnostic ID
+projection; global JSON success output keeps its versioned install result on
+stdout. Startup output failure returns before payload transfer but after service
+connection. Progress observer failure occurs after payload transfer and can
+leave earlier lines or a partial last line; even a full line can precede a flush
+error. No success stdout result is emitted on these failures. Final errors follow
+the safe CLI exit-1 path, phase apps, with the native class and unknown effects.
+Final stderr reporting remains best effort if stderr itself is unavailable.
+A BrokenPipe/disconnected category for output does not identify a disconnected
+device and supplies no retry/rollback authority.
+
+After observer failure, discard the service connection. The core API borrows
+its stream and does not close/join it; CLI dispatch returns through its existing
+owner-drop path. Neither path certifies cancellation completion or Apple cleanup.
+Owned tiny-IPAs/services drive the entire public install function, showing no
+later completion read after callback failure, unchanged legacy/checked/no-observer
+transfer bytes and completion behavior, and original remote/plist/IO failures
+after progress. CLI writer fixtures exercise the shared checked writer and actual
+safe error renderer; an external consumer keeps exhaustive error matching and
+old/new callback signatures. These are host source/output/transfer fixtures,
+not a paired-TLS CLI process or physical installation/teardown. Other callbacks,
+JSON commands, bindings, ZIP string adapters and L01/L03 remain pending.
 
 ## Python exceptions
 

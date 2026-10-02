@@ -34,6 +34,9 @@ pub enum ZipConduitError {
 /// Progress callback for installation status.
 pub type ProgressCallback = Box<dyn Fn(u32, &str) + Send>;
 
+/// Progress observer that can stop the operation with its original IO error.
+pub type CheckedProgressCallback = Box<dyn Fn(u32, &str) -> std::io::Result<()> + Send>;
+
 /// Install an IPA via Streaming Zip Conduit.
 ///
 /// `stream` must be an already-connected streaming_zip_conduit service connection.
@@ -43,6 +46,31 @@ pub async fn install_ipa<S>(
     stream: &mut S,
     ipa_path: &Path,
     progress: Option<ProgressCallback>,
+) -> Result<(), ZipConduitError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let checked = progress.map(|callback| {
+        Box::new(move |percent, status: &str| {
+            callback(percent, status);
+            Ok(())
+        }) as CheckedProgressCallback
+    });
+    install_ipa_with_checked_progress(stream, ipa_path, checked).await
+}
+
+/// Install using a fallible progress observer, retaining the legacy wire flow.
+///
+/// Observer failure returns immediately as ZipConduitError::Io with its original
+/// source, without reading another reply or reporting success. Payload transfer
+/// precedes progress replies: failure does not imply rollback or no device effects.
+/// Discard the service connection after observer failure; this borrowed-stream
+/// API does not close/join it or establish reuse, cancellation or Apple cleanup.
+/// Completion replies do not invoke the observer, matching the legacy callback.
+pub async fn install_ipa_with_checked_progress<S>(
+    stream: &mut S,
+    ipa_path: &Path,
+    progress: Option<CheckedProgressCallback>,
 ) -> Result<(), ZipConduitError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -145,11 +173,14 @@ where
             }
 
             if let Some(ref cb) = progress {
-                cb(percent, status);
+                cb(percent, status)?;
             }
         }
     }
 }
+
+#[cfg(test)]
+mod progress_contract_tests;
 
 // ── ZIP entry types ─────────────────────────────────────────────────────────
 

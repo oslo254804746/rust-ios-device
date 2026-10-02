@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::cmd::connect::{connect_by_ios_major, userspace_options};
 
 mod mutation_output;
+mod streaming_install;
 use mutation_output::Mutation;
 
 #[derive(clap::Args)]
@@ -278,16 +279,13 @@ impl AppsCmd {
                             .context("failed to connect streaming_zip_conduit RSD service")?
                     };
 
-                    eprintln!("Installing via streaming zip conduit...");
-                    ios_core::apps::install_ipa(
+                    crate::output::write_error_line(format_args!(
+                        "Installing via streaming zip conduit..."
+                    ))?;
+                    ios_core::apps::install_ipa_with_checked_progress(
                         &mut stream,
                         source_path,
-                        Some(Box::new(|percent, status| {
-                            eprintln!(
-                                "  [{percent}%] status={}",
-                                ios_core::redaction::diagnostic_id(status)
-                            );
-                        })),
+                        Some(Box::new(streaming_install::write_progress)),
                     )
                     .await
                     .context("streaming zip conduit install failed")?;

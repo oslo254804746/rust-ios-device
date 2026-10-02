@@ -374,10 +374,16 @@ fn write_line_to(
 
 /// Error reporting uses stderr and never turns an existing failure into a panic.
 pub(crate) fn write_error_line(arguments: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-    use std::io::Write;
     let stderr = std::io::stderr();
     let mut writer = stderr.lock();
-    write_line_to(&mut writer, arguments)?;
+    write_error_line_to(&mut writer, arguments)
+}
+
+pub(crate) fn write_error_line_to(
+    writer: &mut impl std::io::Write,
+    arguments: std::fmt::Arguments<'_>,
+) -> std::io::Result<()> {
+    write_line_to(writer, arguments)?;
     writer.flush()
 }
 

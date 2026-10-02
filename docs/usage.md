@@ -217,6 +217,12 @@ progress does not authorize retrying signals. No matches returns a complete
 zero-count summary. The [error/partial-result contract](error-contract.md)
 documents the fields and output/cleanup limits.
 
+Streaming install progress remains safe stderr text. Startup/progress write or
+flush failures now return exit 1 without a success stdout result, preserving
+earlier progress where written. Progress failure can happen after IPA transfer;
+absence of a result does not prove that installation had no device effects.
+See the [error contract](error-contract.md) before retrying or reusing a service.
+
 `apps list --coredevice`, `apps processes`, `apps launch`, `apps roots`,
 `apps spawn`, and `apps monitor` use newer app service paths. `apps icons` uses
 the independent CoreDevice `iconservice` on iOS 17+ and the legacy SpringBoard

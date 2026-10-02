@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add fallible streaming-install progress observers, preserving native IO
+  sources and stopping before later replies on failure. CLI startup/progress
+  stderr writes and flushes are checked, with existing safe progress bytes and
+  success JSON preserved; legacy callbacks and wire flow remain available.
+
 - Add checked C runtime initialization and consuming cleanup statuses, clearing
   accepted caller pointers before release and preserving legacy void categories.
   Report cached native initialization errors, poisoned state and caught unwinds;
