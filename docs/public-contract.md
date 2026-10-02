@@ -59,6 +59,15 @@ checks. Their [contract](error-contract.md) keeps typed category, successful
 directory evidence and unknown probe state separate; it does not certify new
 machine fields in the existing CLI/HTTP/C/Python interfaces.
 
+`ConnectedDevice::initial_rsd_probe()` additively borrows an immutable historical
+observation. New private-field `InitialRsdProbe` and non-exhaustive state/skip
+enums are exported at root and `device`; old public fields, error variants and
+optional directory getters remain. The probe owner retains failures instead of
+silently treating them as unattempted; private proxy dials now retain typed IO.
+Later on-demand retries do not update this initial snapshot or legacy cache.
+See the [error contract](error-contract.md) for exact states, sensitive explicit
+source access and remaining inner-adapter/lifecycle boundaries.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

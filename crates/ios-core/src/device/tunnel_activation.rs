@@ -73,12 +73,14 @@ impl TunnelConnection {
     fn into_device(
         self,
         handle: TunnelHandle,
-        rsd: Option<crate::xpc::rsd::RsdHandshake>,
+        probe: super::rsd_observation::RsdProbeOutcome,
     ) -> ConnectedDevice {
+        let (rsd, initial_rsd_probe) = probe.into_parts();
         ConnectedDevice {
             info: self.info,
             tunnel: Some(Arc::new(handle)),
             rsd,
+            initial_rsd_probe,
             pair_record: self.pair_record,
             lockdown_transport: self.lockdown_transport,
         }
@@ -180,6 +182,83 @@ where
                 .await;
                 Ok(connection.into_device(handle, rsd))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::{InitialRsdProbeState, RsdHandshake};
+
+    #[test]
+    fn established_device_keeps_initial_failure_and_success_with_legacy_cache() {
+        let outcomes = [
+            super::super::rsd_observation::RsdProbeOutcome::Completed(Err(CoreError::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "synthetic-private-probe-failure",
+                ),
+            ))),
+            super::super::rsd_observation::RsdProbeOutcome::Completed(Ok(RsdHandshake {
+                udid: "synthetic-initial-directory".into(),
+                services: std::collections::HashMap::new(),
+            })),
+        ];
+        for (probe, expected) in outcomes.into_iter().zip([
+            InitialRsdProbeState::Failed,
+            InitialRsdProbeState::Available,
+        ]) {
+            let info = DeviceInfo {
+                udid: "synthetic-private-owned-tunnel".into(),
+                device_id: 0,
+                connection_type: "Network".into(),
+                product_id: 0,
+            };
+            let connection = TunnelConnection::new(
+                info.clone(),
+                None,
+                LockdownTransport::Tcp {
+                    host: String::new(),
+                },
+                "owned-fixture",
+            );
+            // Only a local cancellation channel: no TUN, forwarding task or IO.
+            let (handle, receiver) = TunnelHandle::new(
+                info.udid,
+                crate::TunnelInfo {
+                    server_address: "fd00::1".into(),
+                    server_rsd_port: 58783,
+                    client_address: "fd00::2".into(),
+                    client_mtu: 1280,
+                },
+                None,
+            );
+            let device = connection.into_device(handle, probe);
+            assert_eq!(device.initial_rsd_probe().state(), expected);
+            if expected == InitialRsdProbeState::Failed {
+                assert!(device.rsd().is_none());
+                assert_eq!(
+                    device.initial_rsd_probe().error_class(),
+                    Some(crate::ErrorClass::Timeout)
+                );
+                let CoreError::Io(error) = device.initial_rsd_probe().error().unwrap() else {
+                    panic!("typed error lost")
+                };
+                assert_eq!(error.to_string(), "synthetic-private-probe-failure");
+                assert!(!format!("{:?}", device.initial_rsd_probe()).contains("synthetic-private"));
+            } else {
+                assert_eq!(device.rsd().unwrap().udid, "synthetic-initial-directory");
+                assert!(device.initial_rsd_probe().error().is_none());
+            }
+            assert_eq!(
+                device.into_rsd().is_some(),
+                expected == InitialRsdProbeState::Available
+            );
+            assert!(
+                receiver.has_changed().is_err(),
+                "consuming the device still drops its local handle"
+            );
         }
     }
 }

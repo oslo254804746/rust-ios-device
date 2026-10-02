@@ -169,6 +169,20 @@ fn public_cancellation_marker_is_additive_and_distinct_from_plain_interrupted_io
 #[test]
 fn public_rsd_evidence_keeps_unknown_metadata_distinct_from_missing_service() {
     use ios_core::RsdFeatureEvidence as Evidence;
+    // The new observation is borrowed and the legacy directory getter remains.
+    let _read: fn(
+        &ios_core::ConnectedDevice,
+    ) -> (&ios_core::InitialRsdProbe, Option<&RsdHandshake>) =
+        |device| (device.initial_rsd_probe(), device.rsd());
+    let state: ios_core::device::InitialRsdProbeState =
+        ios_core::InitialRsdProbeState::NotAttempted;
+    assert_eq!(serde_json::to_value(state).unwrap(), "not_attempted");
+    let _future_state = match state {
+        ios_core::InitialRsdProbeState::NotAttempted => "no initial request",
+        ios_core::InitialRsdProbeState::Available => "initial directory",
+        ios_core::InitialRsdProbeState::Failed => "initial failure",
+        _ => "future observation",
+    };
     let legacy = ServiceDescriptor::new(1234);
     assert!(legacy.supports_feature("requested"));
     assert_eq!(

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a borrowed initial RSD probe observation distinguishing skipped, available
+  and failed discovery, with skip reasons and retained owner errors. Preserve
+  legacy optional directories and retries; retain native userspace-proxy dial
+  failures and keep later retry observations explicitly separate.
+
 - Add versioned typed error headers to protected manager/CDP/WebDriver router
   failures while retaining existing HTTP statuses and JSON bodies. Keep unknown
   sources explicit and effect uncertainty unchanged; expose fixed headers only

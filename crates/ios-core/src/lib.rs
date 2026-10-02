@@ -96,8 +96,8 @@ pub use credentials::{PersistedCredentials, RemotePairingRecord};
 pub use device::discover_paired_mobdev2_devices;
 pub use device::{
     connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
-    ConnectOptions, ConnectedDevice, InternationalConfiguration, PairedMobdev2Device,
-    ServiceStream,
+    ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason,
+    InitialRsdProbeState, InternationalConfiguration, PairedMobdev2Device, ServiceStream,
 };
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};

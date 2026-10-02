@@ -63,6 +63,7 @@ pub struct ConnectedDevice {
     pub(crate) tunnel: Option<Arc<TunnelHandle>>,
     /// RSD service directory (only available after tunnel is up on iOS 17+)
     pub(crate) rsd: Option<RsdHandshake>,
+    initial_rsd_probe: InitialRsdProbe,
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
 }
@@ -106,8 +107,11 @@ impl std::fmt::Debug for LockdownTransport {
 mod connected;
 mod connection;
 mod lockdown_transport;
+mod rsd_observation;
 mod service_routing;
 mod support;
+
+pub use rsd_observation::{InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState};
 
 pub use connection::{
     connect, connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,

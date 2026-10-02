@@ -104,10 +104,28 @@ omitted list from a deliberately empty list. The old `supports_feature` keeps
 its permissive behavior. NotAdvertised is not an explicit device-side
 unsupported response; Unsupported errors remain a separate typed outcome.
 
-An unattempted versus failed probe still needs an owner-maintained observation.
-`ConnectedDevice::rsd() == None` currently includes skipped and failed discovery;
-it cannot truthfully be relabelled as an unattempted probe. An empty feature list
-retains its documented permissive legacy behavior; it is not a deny-all list.
+`ConnectedDevice::initial_rsd_probe()` now borrows the connection owner's initial
+observation without IO or retry. Its extensible state is `not_attempted`,
+`available` or `failed`. Unattempted probes distinguish `tunnel_skipped` from
+`direct_probe_feature_unavailable`; failures retain the CoreError reaching the
+owner and offer an optional typed error class. Debug prints only fixed state,
+skip reason and class, while explicit Rust callers can inspect the original
+error/source. Diagnostic reporting must still follow the redaction policy.
+
+`rsd()`/`into_rsd()` retain their legacy optional initial directory. A successful
+directory can independently report ServiceMissing or MetadataUnavailable;
+neither a skipped probe nor a failed request is an explicit device-side
+unsupported response. Empty feature lists retain their permissive legacy
+behavior. The added observation is historical: later on-demand retries do not
+update it or the old cache, and it cannot certify current reachability or device
+cleanup. Those later owner observations remain pending work.
+
+The private userspace-proxy dial adapter now retains native IO instead of
+flattening it to XpcError::Tls text. Some deeper RSD/H2 adapters still flatten
+sources before they reach this owner; the observation cannot recover those.
+Existing public error enum definitions, retry counts, deadlines, bootstrap
+frames and permissive feature rules remain unchanged. Read the initial state before interpreting a missing directory;
+`rsd() == None` alone continues to conflate skipped and failed initial discovery.
 
 ## Machine output and partial results
 

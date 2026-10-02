@@ -2,7 +2,10 @@
 
 #[cfg(feature = "tunnel")]
 use super::tunnel_activation::{activate_tunnel, TunnelConnection};
-use super::{ConnectOptions, ConnectedDevice, LockdownTransport, ServiceStream};
+use super::{
+    ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
+    ServiceStream,
+};
 use crate::discovery::DeviceInfo;
 use crate::error::CoreError;
 use crate::lockdown::pair_record::PairRecord;
@@ -97,6 +100,7 @@ pub(super) async fn connect_via_lockdown_transport(
             info,
             tunnel: None,
             rsd: None,
+            initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport,
         });
@@ -214,6 +218,51 @@ impl AsyncWrite for ProxyStream {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn actual_skip_tunnel_connection_reports_an_unattempted_initial_probe() {
+        let credentials = Arc::new(PairRecord {
+            device_certificate: vec![],
+            host_certificate: vec![],
+            host_private_key: zeroize::Zeroizing::new(vec![]),
+            root_certificate: vec![],
+            host_id: "owned-unusable-fixture".into(),
+            system_buid: "owned-unusable-fixture".into(),
+            wifi_mac_address: None,
+        });
+        let device = connect_via_lockdown_transport(
+            DeviceInfo {
+                udid: "synthetic-private-skipped-probe-device".into(),
+                device_id: 0,
+                connection_type: "Network".into(),
+                product_id: 0,
+            },
+            credentials,
+            LockdownTransport::Tcp {
+                host: String::new(),
+            },
+            ConnectOptions {
+                skip_tunnel: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let observation = device.initial_rsd_probe();
+        assert_eq!(
+            observation.state(),
+            super::super::InitialRsdProbeState::NotAttempted
+        );
+        assert_eq!(
+            observation.skip_reason(),
+            Some(InitialRsdProbeSkipReason::TunnelSkipped)
+        );
+        assert!(observation.error().is_none());
+        assert!(device.rsd().is_none());
+        assert!(device.tunnel_handle().is_none());
+        assert!(!format!("{observation:?} {observation:#?}").contains("synthetic-private"));
+        assert!(device.into_rsd().is_none());
+    }
 
     #[tokio::test]
     async fn tcp_lockdown_dial_preserves_bytes_without_usbmux_pair_record_reads() {

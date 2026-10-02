@@ -39,6 +39,13 @@ impl ConnectedDevice {
         self.rsd.as_ref()
     }
 
+    /// Historical optional probe performed during connection establishment.
+    /// Reading this performs no IO and never retries. Later on-demand service
+    /// discovery does not update this initial observation or the legacy cache.
+    pub fn initial_rsd_probe(&self) -> &super::InitialRsdProbe {
+        &self.initial_rsd_probe
+    }
+
     /// Take ownership of the RSD handshake, consuming it from the device.
     pub fn into_rsd(self) -> Option<RsdHandshake> {
         self.rsd
@@ -450,7 +457,8 @@ impl ConnectedDevice {
         Ok(match self.userspace_port() {
             Some(proxy_port) => attempt_rsd_via_proxy(proxy_port, server_addr, rsd_port).await,
             None => attempt_rsd(server_addr, rsd_port).await,
-        })
+        }
+        .into_directory())
     }
 
     #[cfg(feature = "tunnel")]

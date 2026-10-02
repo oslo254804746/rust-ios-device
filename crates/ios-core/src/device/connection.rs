@@ -8,7 +8,9 @@ use super::tunnel_connect::{
     connect_via_direct_rsd_target, connect_via_remote_pairing_target, discover_direct_rsd_targets,
     discover_remote_pairing_targets,
 };
-use super::{ConnectOptions, ConnectedDevice, LockdownTransport};
+use super::{
+    ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
+};
 use crate::discovery::DeviceInfo;
 use crate::error::CoreError;
 use crate::mux::MuxClient;
@@ -67,6 +69,7 @@ pub async fn connect_direct_usb_tunnel(
             info,
             tunnel: None,
             rsd: None,
+            initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport,
         });
@@ -139,6 +142,7 @@ pub async fn connect_remote_pairing_tunnel(
             info,
             tunnel: None,
             rsd: None,
+            initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport: LockdownTransport::Tcp {
                 host: host.unwrap_or_default().to_string(),
