@@ -86,6 +86,14 @@ sources were already strings retain their existing representation. The
 [error contract](error-contract.md) records local host/drop evidence and remaining
 partial-operation/lifecycle limits.
 
+Syslog keeps its NDJSON fields and human bytes, but relay read/EOF failures now
+exit 1 through the final safe error path instead of returning success. Prior
+complete records remain available; incomplete relay messages are not emitted,
+and an output failure may leave a partial final JSON record. Record write/flush
+and stderr progress failures are checked. Matching-count and chosen capture-time
+stops remain successful. See the [error contract](error-contract.md) for native
+classes, partial-result migration and local drop versus device cleanup evidence.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

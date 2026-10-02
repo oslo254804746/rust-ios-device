@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Return syslog relay read/EOF failures through the safe CLI failure path with
+  exit 1 and retained native sources, preserving prior records and successful
+  count/capture-time stops. Keep NDJSON/human bytes, check record write/flush and
+  stderr progress IO, and document partial-result migration with owned streams.
+
 - Preserve typed H2/transport sources through RSD and RemoteXPC setup, bootstrap,
   header/body reads, message writes and cryptex transfer writes. Use the existing
   IO error variant, retain native kinds and fixed context, and document migration

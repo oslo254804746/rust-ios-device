@@ -227,6 +227,34 @@ review. A partial stream or an output error can follow completed operations;
 no rollback, automatic retry or device cleanup acknowledgement is promised.
 L01 retains the stronger lifecycle/deadline acceptance.
 
+`ios syslog` success stdout is newline-delimited JSON by default: one compact
+object per matching relay message, retaining the existing parsed/raw fields.
+Embedded newlines and quotes are escaped inside that object. `--no-json` retains
+raw bytes; `--parse` retains its formatted line and added newline, including
+existing extra newlines when the raw message already ends with one. Each emitted
+record now checks both write and flush. An output failure can leave a partial
+final record, so consumers must validate framing and inspect the process status.
+
+Relay read errors, including EOF before a chosen stopping condition, now return
+through the normal final CLI failure path with exit 1, rather than printing a
+stream diagnostic and returning exit 0. Native IO/source/class are preserved;
+UnexpectedEof remains `io` under the classifier's existing rule. Unterminated
+relay messages are not emitted, and previously emitted records remain stdout.
+The final failure uses safe human text or the opt-in JSON stderr envelope with
+phase `syslog` and effects `unknown`. The existing streaming progress line stays
+on stderr; its write/flush now returns IO failure instead of panicking.
+
+The existing `--count` matching-record cap and user-selected `--timeout` capture
+window still end successfully. That window starts after service setup; its
+expiry is a chosen collection stop, distinct from a native reader TimedOut.
+An unbounded listener gains no new idle timeout. Controlled host readers/outputs
+exercise partial JSON, EOF, native failures, count/filter stops and output/flush
+failure; an owned idle duplex observes capture expiry and peer EOF. This proves
+local stream drop, without certifying physical relay/signal behavior, connection
+reuse, rollback or device cleanup. Migrate scripts that relied on relay failure
+as exit 0 to preserve valid prior records and handle the nonzero result. Other
+streams, JSON mutation statuses and binding/lifecycle boundaries remain pending.
+
 ## Python exceptions
 
 The existing RuntimeError from `ios_rs.list_devices()` and `start_tunnel()`

@@ -434,6 +434,16 @@ common `Name(Library)` sender annotation; an exact annotated name remains
 accepted. `--filter`, regex, PID, count, timeout, parsed text, and JSON output
 continue to apply after decoding and parsing.
 
+JSON syslog output is one compact object per matching message followed by a
+newline. Use `--no-json` for raw logs or add `--parse` for formatted text.
+`--count N` stops at the matching-record cap; `--timeout SECONDS` is a chosen
+capture window after connection/service setup, and expiry is successful. A relay
+read error or EOF now exits 1 while retaining earlier stdout records. Output or
+flush failure also exits 1 and may leave an incomplete final JSON record.
+`--error-format=json` places the safe final failure on stderr; the streaming
+progress line is still stderr text. See the [error/partial-result
+contract](error-contract.md) before treating a partial stream as complete.
+
 `os-trace stream` (also available as `os-trace live`) performs the binary
 `StartActivity` handshake and emits one structured record per line. Filters
 for PID, process, level, subsystem, category, message inclusion, message
