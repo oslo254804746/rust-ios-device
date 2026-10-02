@@ -114,9 +114,14 @@ links across six changed Markdown files, and whitespace PASS. Link log:
 `/tmp/ios-a02-pairing-sources-docs-links.log`; baseline `a36853b` includes the
 implementation and documentation changes.
 
-A02/class 3/overall goal remain active; class 4 has not started. Inner credential
-slice, HKDF, cipher key-init/seal/open and signature-validation adapters still
-discard some native sources. Other A02 JSON/stream/callback/binding boundaries,
+A02/class 3/overall goal remain active; class 4 has not started. At this checkpoint,
+inner credential slice, HKDF, cipher key-init/seal/open and OPACK adapters still
+discarded native sources. Subsequent source review corrected the earlier
+signature-validation hypothesis: signing is infallible and SRP proof returns
+bool here; the pairing module/type itself is tunnel-gated. The
+[inner-source follow-up](inner-pairing-sources-2026-10-02.md) retains these seven
+adapters while the public manual-pairing transport still flattens four inner
+causes. Other A02 JSON/stream/callback/binding boundaries,
 L01/L03/A03 and platform/device acceptance remain. Error classification does
 not authorize retry or prove remote cleanup, client invalidation or reuse; outer
 cancellation still does not stop already-running blocking work. No capability

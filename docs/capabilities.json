@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-inner-pairing-sources-9fa4ff7",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual in-memory private-seed/M6 authentication/OPACK rejection; native HKDF/key-init and bounded-buffer AEAD adapter errors; independent HKDF vectors and authenticated M5 success; nested credential sources"],
+      "required_state": ["Inner host source/codec/local ownership only; no real credential directory, device pairing/trust change, full manual-pairing transport source retention, fixed32 HKDF/key-init or Vec-encrypt failure injection, reuse or remote cleanup certification"],
+      "tested_commit": "9fa4ff78be9b30199188250ab63abb1869add4f6",
+      "date": "2026-10-02",
+      "location": "docs/validation/inner-pairing-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 seven inner pairing adapters retain native errors through existing Io/fixed context: local lengths invalid_input, received authentication protocol, opaque encryption unknown and OPACK original class. Same-version HKDF std supplies Error; parameters/wire/signing/trust unchanged. Internal variant migration documented; outer transport/default lockdown/other sources/streams/bindings/lifecycle/platform/device conditions remain, no maturity upgrade."
+    },
+    {
       "id": "linux-pairing-native-sources-98aeccb",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

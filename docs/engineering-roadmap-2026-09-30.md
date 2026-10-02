@@ -3291,3 +3291,36 @@ snippets、C ABI/ownedmalformed/checkedListDevices、3.12wheel/sdist安装、53t
 既有PBKDF2/browser ignored保留，无额外Chromium或installed3.9/3.13重跑。
 八个相关文件diff/whitespace审查完成，准备本地聚焦实现提交，再准确hash文档收尾；
 不升级maturity，不结束A02/第三类/总体goal。
+
+### 大类 3：A02 inner pairing 原生来源主机验收与交付（2026-10-02）
+
+实现 `9fa4ff78be9b30199188250ab63abb1869add4f6`（八个相关文件），首次完整门禁
+通过后本地聚焦提交。七个adapter保留原seed/HKDF/keyinit/AEAD/OPACKcause，
+分类localInput/remoteProtocol/opaqueUnknown与nativeOPACK，nestedcredential检验
+完整TryFromSliceError；HKDF同版本stdfeature不改版本/lockfile/servicefeatures。
+原types、params、signing、wire、成功与trust不变，内层变体/Display/correlation
+迁移已记录。Protocol旧variant保留并仅对已无producer的该项作说明性allow。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/public | pairing full/minimal各16、tunnel full17/minimal15、existing external full15/minimal10/default9 PASS；日志见前条最终专项记录，terminal0 |
+| strict Clippy | core/CLI及full workspace all-target/all-feature PASS，terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-inner-pairing-full.log` terminal0，1845Rust/13Python、0FAIL、2既有ignored |
+| 其余完整gate | fmt/check/MSRV1.80、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 5新增innerfixtures与nestedcredential强化；actualseed/M6/OPACK failures、nativecryptoadapter、independentHKDF/M5signaturesuccess；非fixed32HKDF/keyinit/Vecencrypt failure injection、完整manualpairing/device/remoteACK/reuse |
+
+beforefix0PASS/3FAIL与错误externalfixture E0603均保留原日志；后者撤回无效
+privateimport，在内部保留enum/Error/Send/Sync检查，既有externalconsumer通过，
+未扩API或弱化门禁。cfg(tunnel)与原signatureloss假设经源码校正。证据见
+[专题记录](validation/inner-pairing-sources-2026-10-02.md)，ios0.1.13 SHA256
+`f7ba544e466b1c089bd86caeb652af0a02b3db99ae58f623a9b32dad1097dc3c`。
+catalog/quality/先前专题scope同步，未升级maturity。文档收尾catalog118records、
+117localMarkdownlinks（7个changedMarkdownfiles，baseline a256d37）及whitespace
+PASS；日志 `/tmp/ios-a02-inner-pairing-docs-catalog.log` 和
+`/tmp/ios-a02-inner-pairing-docs-links.log`。full后无source变化，收尾聚焦提交待完成。
+
+本slice主机验收；A02/第三类/总体goal active，第四类未开始，全部31scope保持。
+下一优先pairing_transport四innerCrypto stringify与RSD/H2/XPC/bootstrap/AEAD/JSON
+来源，然后defaultlockdown plist/PEM/rustls/version/PairRecord来源，保持wire与
+TLS/trust政策，未列为当前PASS。其他A02/output/streams/binding与L01/L03/A03及
+platform/device条件继续；未推送/发布、改写history、操作设备或修改reference。
