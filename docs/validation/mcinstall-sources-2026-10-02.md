@@ -97,8 +97,10 @@ Logs: `/tmp/ios-a02-mcinstall-docs-catalog.log` and
 `/tmp/ios-a02-mcinstall-docs-links.log`. Documentation changes do not alter source
 or the accepted full gate.
 
-A02/class 3/overall goal remain active; class 4 has not started. Base mux/archive
-native sources, integer conversions/typed guards/created outcomes, other
+A02/class 3/overall goal remain active; class 4 has not started. Subsequent
+[usbmux source coverage](usbmux-sources-2026-10-02.md) addresses base codec/TCP
+adapters; this page retains the MCInstall gate counts above. Archive native
+sources, integer conversions/typed guards/created outcomes, other
 stream/JSON/callback/binding and L01/L03/A03/platform/device conditions remain.
 All 31 tasks/subtasks and maturity remain. No push/publication, history rewrite
 or reference checkout changes.

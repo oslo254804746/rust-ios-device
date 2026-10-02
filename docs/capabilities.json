@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-usbmux-sources-f8d8905",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual serializer/XML/schema/closed-write/truncated-read failures; owned TCP refusal with native OS code, real Elapsed with controlled connector; complete public read_buid fault/success over owned TCP and external root constructor type check"],
+      "required_state": ["Host protocol/source/local shutdown/join/drop only; public client constructed privately from owned endpoint, root connect not polled; no physical usbmux/device/Apple or real credential operation, production ten-second black-hole injection, remote cleanup, reuse or safe retry certification"],
+      "tested_commit": "f8d890522798a444dde7dd600e954f4010f459c4",
+      "date": "2026-10-02",
+      "location": "docs/validation/usbmux-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 four usbmux native adapters retain original plist, connector IO/OS code and Elapsed through existing IO/fixed context. Local input/received protocol/native IO/timeout roles and Protocol-to-Io/fixed TCP Display migration documented. Public types/signatures/features, framing/limits/guards/tags/request fields/TCP timeout/Unix policy and successful flow preserved. Archive/integer/guard/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-mcinstall-sources-f1f9d37",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

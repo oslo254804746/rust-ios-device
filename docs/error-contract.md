@@ -593,6 +593,29 @@ has subsequent coverage below; other sources/streams/bindings and L01/L03/A03
 remain. Evidence:
 [supervised pairing source validation](validation/supervised-pairing-sources-2026-10-02.md).
 
+## usbmux native codec, connection and deadline sources
+
+Request serialization and received plist XML/schema faults retain original
+plist::Error through existing MuxError::Io and private fixed context. Local
+encoding is invalid_input; received codec failures remain protocol. TCP
+connector failure retains native IO kind/object/source OS code; deadline expiry
+retains the actual Tokio Elapsed as timeout. ConnectionRefused remains generic
+io, and UnexpectedEof is not inferred to be device disconnect. CoreError::Mux
+keeps the nested typed chain. All three MuxError variants and root client APIs stay.
+
+Affected codec Protocol matches become Io; request encoding category changes
+to invalid_input. TCP phase text is fixed, replacing interpolated endpoint/
+duration messages. Display prefixes and safe correlations can change; use
+kind/class/source observations. Context/outer Debug omit private payloads;
+explicit native Display/source access remains private data. Wire framing,
+receive bounds, created length guards, tags, request fields, flush, ten-second
+TCP timeout and Unix policy remain. Owned codec/TCP/Elapsed and public BUID
+fault/success fixtures establish host evidence only; external root connect is
+type-checked without polling. They do not certify physical devices, production
+network black holes, cleanup/reuse or safe retry. Archive/integer/guard/stream/
+binding and lifecycle work remain. Evidence:
+[usbmux source validation](validation/usbmux-sources-2026-10-02.md).
+
 ## MCInstall native sources and explicit P12 outcomes
 
 Five OpenSSL adapters retain original ErrorStack objects under existing

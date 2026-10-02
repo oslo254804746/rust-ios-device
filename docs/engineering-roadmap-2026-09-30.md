@@ -3564,3 +3564,53 @@ A02/第三类/总体 goal active，第四类未开始，全部 31 任务/子任�
 接续 base mux/archive native sources、codec integer/typed guards/created outcomes，
 其他 stream/JSON/callback/binding、L01/L03/A03/platform/device 条件仍待。
 未操作真实 credentials/设备/Apple，未 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 usbmux 原生 codec/TCP/deadline 来源主机交付（2026-10-02）
+
+接续 clean HEAD `adb95d9986d7f1e15400ea8235ed9d1064f855c7`，MCInstall 实现和
+文档已完成。实现 `f8d890522798a444dde7dd600e954f4010f459c4`，五个相关源文件，
+首次完整门禁后聚焦本地提交；有实际进展，未触发阻塞审计。
+
+四个 native flattening adapters 保留原对象：request plist Input、received
+plist XML/schema Proto、TCP connector 原 IO.kind/object/source OS code、deadline
+原 Tokio Elapsed/Timeout，使用现有 MuxError::Io/std IO 和 private fixed context。
+ConnectionRefused 仍 Io，UnexpectedEof 不猜作 Disconnected。三 error variants、
+root MuxClient signatures/features 与 CoreError::Mux chain 保持。Protocol-to-Io、
+send category Proto-to-Input、TCP fixed phase 替代 endpoint/duration prose 的
+Display/correlation 迁移明确；raw native access 为私有数据，Debug 无 payload。
+
+Production comparison 剔除四 adapters/private unused 参数/trailing whitespace
+后一致：wire framing/limits/guards/tags/request fields/flush、10s TCP timeout、
+Unix policy 和成功流程保持，无新 dependencies/CLI-schema/binding/retry/lifecycle。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core / external | mux minimal/full 15/15 PASS；root all/minimal 20/11 PASS，terminal 0 |
+| strict Clippy / comparison | core/CLI 和 full workspace PASS；production comparison PASS |
+| 第 11 节完整主线 | 首次 `/tmp/ios-a02-mux-full.log` terminal 0，1889 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 full gate | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 五新增 internal、一 external type check、两既有 TCP fixtures 加 native assertions；actual serializer/XML/schema/closed write/truncated header/body/owned TCP refusal+OS code/Elapsed；public BUID owned TCP fault/success+shutdown/join/drop。非 physical daemon/device/production10s blackhole/cleanup/reuse/retry，root connect 未 poll |
+
+Final before-fix 9 PASS/6 FAIL，`/tmp/ios-a02-mux-before-final.log` terminal 101。
+更早 before.log 的 peer 错误期待 BundleID，改为原 serialized BundleId 后 final
+重跑；没有改变 production wire。第一次比较 helper 的 test module 边界 trailing
+whitespace 差异经 normalization 解决，无 production edit。失败记录不冒充 PASS。
+准确专项日志和边界见[专题证据](validation/usbmux-sources-2026-10-02.md)。
+
+ios0.1.13 debug binary SHA256
+`d8d7bba5fba587cb929bfcfa07e022212398d1b24086d93ce88b8768a8b4686a`。
+full 前源码冻结、之后不变；无 storage failure/cleanup，可用约 26GiB 至 24GiB。
+没有额外 Chromium/installed3.9/3.13 重跑；catalog/quality/error contract 和历史
+MCInstall follow-up 同步，maturity 不变，文档收尾另记录。
+
+文档收尾：118 catalog records、五个 changed Markdown files 的 98 local links
+（baseline `adb95d9`）及 whitespace PASS；日志
+`/tmp/ios-a02-mux-docs-catalog.log`、`/tmp/ios-a02-mux-docs-links.log`。
+源码不变，准备独立聚焦文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，全部 31 任务/子任务 scope 保持。
+下一确认的 native loss 是 private NSKeyedArchiver plist 及 backup metadata adapter；
+DTX/instruments 原 raw/optional fallback 为另一 behavior contract，未静默改动。
+codec integer/typed guards/created outcomes、其他 stream/JSON/callback/binding、
+L01/L03/A03/platform/device 条件保留。未操作真实 credentials/设备/Apple，未
+push/publish/history rewrite/reference 编辑。
