@@ -21,6 +21,70 @@ fn root_mux_constructor_keeps_its_typed_error_future() {
     signature(ios_core::MuxClient::connect());
 }
 
+#[cfg(feature = "backup2-manifest")]
+#[test]
+fn root_backup_metadata_error_keeps_exhaustive_family_and_native_sqlite_source() {
+    use ios_core::{
+        backup2::{list_backup_entries, Mobilebackup2Error},
+        classify_error, ErrorClass,
+    };
+    use std::error::Error;
+    fn family(error: &Mobilebackup2Error) -> &'static str {
+        match error {
+            Mobilebackup2Error::DeviceLink(_) => "device-link",
+            Mobilebackup2Error::Io(_) => "io",
+            Mobilebackup2Error::Plist(_) => "plist",
+            Mobilebackup2Error::Protocol(_) => "protocol",
+        }
+    }
+    fn assert_error<E: Error + Send + Sync + 'static>() {}
+    assert_error::<Mobilebackup2Error>();
+    struct OwnedDirectory(std::path::PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = OwnedDirectory(
+        std::env::temp_dir().join(format!("ios-public-backup-{}", uuid::Uuid::new_v4())),
+    );
+    let device = root.0.join("owned-device");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(device.join("Info.plist"), b"owned-info").unwrap();
+    std::fs::write(device.join("Status.plist"), b"owned-status").unwrap();
+    plist::to_file_xml(
+        device.join("Manifest.plist"),
+        &plist::Dictionary::from_iter([
+            ("IsEncrypted", plist::Value::Boolean(false)),
+            (
+                "Lockdown",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ProductVersion",
+                    "17.0",
+                )])),
+            ),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(device.join("Manifest.db"), b"owned-private not a database").unwrap();
+    let error = list_backup_entries(&root.0, "owned-device", None).unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+    let Mobilebackup2Error::Io(source) = &error else {
+        unreachable!()
+    };
+    let original = source
+        .source()
+        .unwrap()
+        .downcast_ref::<rusqlite::Error>()
+        .unwrap();
+    assert_eq!(
+        original.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::NotADatabase)
+    );
+    assert!(!format!("{error:?} {:?}", source.get_ref()).contains("owned-private"));
+}
+
 #[tokio::test]
 async fn default_lockdown_root_api_retains_sources_and_exhaustive_errors() {
     use ios_core::{

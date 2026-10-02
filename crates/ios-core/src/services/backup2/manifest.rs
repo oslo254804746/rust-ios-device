@@ -137,12 +137,10 @@ pub fn patch_backup_directory(
         return patch_mbdb_backup_directory(&device_directory, &manifest, filter);
     }
     let (rows, row_ids, allowed_ids) = collect_manifest_rows(&manifest.source_path, filter)?;
-    let entries_seen = u64::try_from(rows.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.db row count does not fit in u64".into())
-    })?;
-    let entries_kept = u64::try_from(allowed_ids.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.db row count does not fit in u64".into())
-    })?;
+    let entries_seen = u64::try_from(rows.len())
+        .map_err(|error| protocol_source("convert Manifest.db row count", error))?;
+    let entries_kept = u64::try_from(allowed_ids.len())
+        .map_err(|error| protocol_source("convert retained Manifest.db row count", error))?;
     let entries_removed = entries_seen.saturating_sub(entries_kept);
 
     // Validate the complete payload tree before creating any replacement. In particular, a
@@ -192,17 +190,15 @@ fn patch_mbdb_backup_directory(
         Mobilebackup2Error::Protocol("legacy manifest workspace has no parsed Manifest.mbdb".into())
     })?;
     let entries = load_mbdb_entries(mbdb, manifest.crypto.is_some())?;
-    let entries_seen = u64::try_from(entries.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
-    })?;
+    let entries_seen = u64::try_from(entries.len())
+        .map_err(|error| protocol_source("convert Manifest.mbdb record count", error))?;
     let allowed_ids: HashSet<String> = entries
         .iter()
         .filter(|entry| filter.matches_manifest_entry(&entry.domain, &entry.relative_path))
         .map(|entry| entry.file_id.clone())
         .collect();
-    let entries_kept = u64::try_from(allowed_ids.len()).map_err(|_| {
-        Mobilebackup2Error::Protocol("Manifest.mbdb record count does not fit in u64".into())
-    })?;
+    let entries_kept = u64::try_from(allowed_ids.len())
+        .map_err(|error| protocol_source("convert retained Manifest.mbdb record count", error))?;
     let entries_removed = entries_seen.saturating_sub(entries_kept);
 
     validate_payload_tree(device_directory)?;
@@ -528,12 +524,37 @@ fn manifest_is_encrypted(manifest: &plist::Dictionary) -> bool {
         .unwrap_or(false)
 }
 
+fn retained_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Mobilebackup2Error {
+    Mobilebackup2Error::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn protocol_source(
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Mobilebackup2Error {
+    retained_error(std::io::ErrorKind::InvalidData, phase, source)
+}
+
 fn crypto_error(error: CryptoError) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(error.to_string())
+    let kind = match &error {
+        CryptoError::Io(native) => native.kind(),
+        CryptoError::Crypto => std::io::ErrorKind::Other,
+        // InvalidPassword also represents an invalid wrapped key: do not infer
+        // permission denial or distinguish causes the backend did not expose.
+        CryptoError::Keybag(_)
+        | CryptoError::Manifest(_)
+        | CryptoError::Payload(_)
+        | CryptoError::InvalidPassword => std::io::ErrorKind::InvalidData,
+    };
+    retained_error(kind, "process encrypted backup material", error)
 }
 
 fn mbdb_error(error: MbdbError) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(format!("Manifest.mbdb is malformed: {error}"))
+    protocol_source("process Manifest.mbdb index", error)
 }
 
 fn safe_device_directory(
@@ -595,9 +616,8 @@ fn read_bounded_file(
             length
         )));
     }
-    let capacity = usize::try_from(length).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!("{description} length does not fit in host memory"))
-    })?;
+    let capacity = usize::try_from(length)
+        .map_err(|error| protocol_source("convert backup file allocation length", error))?;
     let mut bytes = Vec::with_capacity(capacity);
     file.read_to_end(&mut bytes)?;
     if bytes.len() as u64 != length {
@@ -856,24 +876,27 @@ fn load_manifest_entries(
                 archive.len()
             )));
         }
-        total_archive_bytes = total_archive_bytes
-            .checked_add(u64::try_from(archive.len()).map_err(|_| {
-                Mobilebackup2Error::Protocol("Manifest.db archive length does not fit u64".into())
-            })?)
-            .ok_or_else(|| {
-                Mobilebackup2Error::Protocol(
-                    "Manifest.db metadata archive byte count overflow".into(),
-                )
-            })?;
+        total_archive_bytes =
+            total_archive_bytes
+                .checked_add(u64::try_from(archive.len()).map_err(|error| {
+                    protocol_source("convert Manifest.db archive length", error)
+                })?)
+                .ok_or_else(|| {
+                    Mobilebackup2Error::Protocol(
+                        "Manifest.db metadata archive byte count overflow".into(),
+                    )
+                })?;
         if total_archive_bytes > MAX_TOTAL_ARCHIVE_BYTES {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db metadata archives exceed {MAX_TOTAL_ARCHIVE_BYTES} bytes"
             )));
         }
         let value = unarchive(&archive).map_err(|error| {
-            Mobilebackup2Error::Protocol(format!(
-                "cannot decode Manifest.db metadata for {file_id}: {error}"
-            ))
+            retained_error(
+                std::io::ErrorKind::Other,
+                "decode Manifest.db metadata archive",
+                error,
+            )
         })?;
         let dictionary = value.as_dict().ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!(
@@ -883,11 +906,8 @@ fn load_manifest_entries(
         let mode = archive_integer(dictionary, "Mode")?.ok_or_else(|| {
             Mobilebackup2Error::Protocol(format!("Manifest.db metadata for {file_id} has no Mode"))
         })?;
-        let mode = u32::try_from(mode).map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "Manifest.db metadata Mode for {file_id} is outside u32"
-            ))
-        })?;
+        let mode = u32::try_from(mode)
+            .map_err(|error| protocol_source("convert Manifest.db metadata Mode", error))?;
         let file_type = mode & MODE_TYPE_MASK;
         if !matches!(
             file_type,
@@ -898,11 +918,8 @@ fn load_manifest_entries(
             )));
         }
         let size = archive_integer(dictionary, "Size")?.unwrap_or(0);
-        let size = u64::try_from(size).map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "Manifest.db metadata Size for {file_id} is negative"
-            ))
-        })?;
+        let size = u64::try_from(size)
+            .map_err(|error| protocol_source("convert Manifest.db metadata Size", error))?;
         if size > MAX_SINGLE_ENTRY_BYTES {
             return Err(Mobilebackup2Error::Protocol(format!(
                 "Manifest.db entry {file_id} is too large ({} bytes; max {MAX_SINGLE_ENTRY_BYTES})",
@@ -1084,11 +1101,8 @@ fn archive_integer(
 }
 
 fn validate_file_id(file_id: &str) -> Result<(), Mobilebackup2Error> {
-    validate_backup_identifier(file_id).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "Manifest.db fileID must be one safe path component: {file_id:?}"
-        ))
-    })
+    validate_backup_identifier(file_id)
+        .map_err(|error| protocol_source("validate Manifest.db fileID path component", error))
 }
 
 fn check_manifest_text_length(length: i64, field: &str) -> Result<(), Mobilebackup2Error> {
@@ -1594,9 +1608,8 @@ fn extract_entries(
 ) -> Result<ExtractionResult, Mobilebackup2Error> {
     let mut result = ExtractionResult {
         output_directory: output_directory.to_path_buf(),
-        entries_seen: u64::try_from(entries.len()).map_err(|_| {
-            Mobilebackup2Error::Protocol("Manifest.db entry count does not fit in u64".into())
-        })?,
+        entries_seen: u64::try_from(entries.len())
+            .map_err(|error| protocol_source("convert extracted Manifest.db entry count", error))?,
         files_extracted: 0,
         bytes_extracted: 0,
     };
@@ -1645,12 +1658,14 @@ fn extract_entry_to(
         Some(path) => path.to_path_buf(),
         None => output_path(output_directory, entry)?,
     };
-    let relative = destination.strip_prefix(output_directory).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "extraction destination is outside output directory: {}",
-            destination.display()
-        ))
-    })?;
+    let relative = destination
+        .strip_prefix(output_directory)
+        .map_err(|error| {
+            protocol_source(
+                "validate extraction destination within output directory",
+                error,
+            )
+        })?;
     ensure_no_symlink_components_at_root(output_directory, relative)?;
     let file_type = entry.mode & MODE_TYPE_MASK;
     match file_type {
@@ -1754,17 +1769,15 @@ fn copy_bounded_no_accounting<R: Read, W: Write>(
     let mut buffer = [0u8; 128 * 1024];
     let mut copied = 0u64;
     while remaining > 0 {
-        let request = usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| {
-            Mobilebackup2Error::Protocol("file transfer chunk does not fit usize".into())
-        })?;
+        let request = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|error| protocol_source("convert backup file transfer chunk length", error))?;
         let count = source.read(&mut buffer[..request])?;
         if count == 0 {
             break;
         }
         destination.write_all(&buffer[..count])?;
-        let count = u64::try_from(count).map_err(|_| {
-            Mobilebackup2Error::Protocol("file transfer count does not fit u64".into())
-        })?;
+        let count = u64::try_from(count)
+            .map_err(|error| protocol_source("convert backup file transfer count", error))?;
         remaining -= count;
         copied = copied.checked_add(count).ok_or_else(|| {
             Mobilebackup2Error::Protocol("file transfer byte count overflow".into())
@@ -1834,11 +1847,9 @@ fn is_modern_storage(version: &str) -> Result<bool, Mobilebackup2Error> {
                 "invalid ProductVersion component {component:?}"
             )));
         }
-        digits.parse::<u64>().map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "ProductVersion component {component:?} is too large"
-            ))
-        })
+        digits
+            .parse::<u64>()
+            .map_err(|error| protocol_source("parse backup ProductVersion component", error))
     };
     let mut components = version.split('.');
     let major = components
@@ -1898,9 +1909,8 @@ fn extract_symlink(
                 "symlink target exceeds safety limit".into(),
             ));
         }
-        let size = u64::try_from(target.len()).map_err(|_| {
-            Mobilebackup2Error::Protocol("symlink target length does not fit u64".into())
-        })?;
+        let size = u64::try_from(target.len())
+            .map_err(|error| protocol_source("convert backup symlink target length", error))?;
         (target, size)
     } else {
         let stored = stored_payload_path(source_directory, &entry.file_id, modern)?;
@@ -1957,19 +1967,18 @@ fn extract_symlink(
             "symlink target exceeds safety limit".into(),
         ));
     }
-    let target = String::from_utf8(target).map_err(|error| {
-        Mobilebackup2Error::Protocol(format!("symlink target is not UTF-8: {error}"))
-    })?;
+    let target = String::from_utf8(target)
+        .map_err(|error| protocol_source("decode backup symlink target UTF-8", error))?;
     let clean_target = normalize_symlink_target(&target)?;
     let parent = destination
         .parent()
         .ok_or_else(|| Mobilebackup2Error::Protocol("symlink destination has no parent".into()))?;
     let target_path = parent.join(&clean_target);
-    let target_relative = target_path.strip_prefix(output_directory).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "symlink target escapes output directory: {target:?}"
-        ))
-    })?;
+    let target_relative = target_path
+        .strip_prefix(output_directory)
+        .map_err(|error| {
+            protocol_source("validate symlink target within output directory", error)
+        })?;
     ensure_no_symlink_components_at_root(output_directory, target_relative)?;
     if fs::symlink_metadata(destination).is_ok() {
         return Err(Mobilebackup2Error::Protocol(format!(
@@ -2037,8 +2046,17 @@ fn set_permissions(path: &Path, mode: u32) -> Result<(), Mobilebackup2Error> {
 }
 
 fn sqlite_error(error: rusqlite::Error) -> Mobilebackup2Error {
-    Mobilebackup2Error::Protocol(format!("Manifest.db SQLite error: {error}"))
+    let kind = match &error {
+        rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..)
+        | rusqlite::Error::Utf8Error(_) => std::io::ErrorKind::InvalidData,
+        _ => std::io::ErrorKind::Other,
+    };
+    retained_error(kind, "process Manifest.db SQLite operation", error)
 }
+
+#[cfg(test)]
+mod source_contract_tests;
 
 #[cfg(test)]
 mod tests {

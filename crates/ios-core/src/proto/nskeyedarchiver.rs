@@ -32,7 +32,7 @@ pub enum ArchiveValue {
 #[derive(thiserror::Error)]
 pub enum ArchiveError {
     #[error("plist error: {0}")]
-    Plist(String),
+    Plist(#[source] plist::Error),
     #[error("invalid archive: {0}")]
     Invalid(String),
     #[error("archive nesting exceeds {0} levels (cycle or hostile input?)")]
@@ -50,8 +50,7 @@ const MAX_ARCHIVE_DEPTH: usize = 64;
 ///
 /// Returns the root object as an `ArchiveValue`.
 pub fn unarchive(data: &[u8]) -> Result<ArchiveValue, ArchiveError> {
-    let plist: plist::Value =
-        plist::from_bytes(data).map_err(|e| ArchiveError::Plist(e.to_string()))?;
+    let plist: plist::Value = plist::from_bytes(data).map_err(ArchiveError::Plist)?;
 
     let root_dict = plist
         .as_dictionary()
@@ -354,6 +353,16 @@ impl ArchiveValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_unarchive_plist_failure_retains_native_source_and_safe_debug() {
+        use std::error::Error;
+        let error = unarchive(b"<plist><dict>owned-private").unwrap_err();
+        assert!(matches!(error, ArchiveError::Plist(_)));
+        assert!(error.source().unwrap().is::<plist::Error>());
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(!format!("{error:?}").contains("owned-private"));
+    }
 
     #[test]
     fn test_unarchive_null_string() {

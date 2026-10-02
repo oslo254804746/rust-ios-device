@@ -15,6 +15,26 @@ macro_rules! protocol_class {
 }
 
 pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
+    #[cfg(feature = "backup2-manifest")]
+    if let Some(rusqlite::Error::SqliteFailure(native, _)) = error.downcast_ref::<rusqlite::Error>()
+    {
+        use rusqlite::ErrorCode as Code;
+        return match native.code {
+            Code::PermissionDenied | Code::AuthorizationForStatementDenied => {
+                Some(ErrorClass::PermissionDenied)
+            }
+            Code::DatabaseBusy | Code::DatabaseLocked | Code::ConstraintViolation => {
+                Some(ErrorClass::Conflict)
+            }
+            Code::OutOfMemory | Code::DiskFull | Code::TooBig => Some(ErrorClass::ResourceLimit),
+            Code::ReadOnly => Some(ErrorClass::Precondition),
+            Code::DatabaseCorrupt | Code::NotADatabase => Some(ErrorClass::Protocol),
+            Code::SystemIoFailure => Some(ErrorClass::Io),
+            // CannotOpen does not establish NotFound/permission; interruption
+            // does not acknowledge caller cancellation. Preserve unknown codes.
+            _ => None,
+        };
+    }
     protocol_class!(error, crate::device_link::DeviceLinkError);
     protocol_class!(error, crate::backup2::Mobilebackup2Error);
     {
