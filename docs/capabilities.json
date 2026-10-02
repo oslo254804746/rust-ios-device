@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-manual-pairing-sources-d694cfa",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned H2 write/header/body/decode/bootstrap faults; actual unlock RPC bounded request/response, AEAD/JSON faults and key/optional success; actual RSD refusal/Elapsed and inner M6/seed/SRP adapter errors; public root future type check"],
+      "required_state": ["Host stage/source/codec/local drop/join only; no full public SRP handshake/device/trust operation, real credential directory, every-stage/huge encoder/Vec-encryption/15s dial fault injection, reuse or remote cleanup certification"],
+      "tested_commit": "d694cfafa392c3e465bef6bc2eb5e570bbbcaf75",
+      "date": "2026-10-02",
+      "location": "docs/validation/manual-pairing-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 sixteen manual-pairing native adapters plus one Elapsed retain original sources/kinds through existing public Io/fixed context and bounded snapshots, including four inner pairing chains. Received authentication/JSON/header is protocol; opaque crypto stays unknown and named XPC classes remain. Short header checked; existing String budget guards preserved. Public variants/signatures/wire/crypto/trust/limits/retry/success unchanged; other sources/streams/bindings/lifecycle/platform/device work remains, no maturity upgrade."
+    },
+    {
       "id": "linux-inner-pairing-sources-9fa4ff7",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

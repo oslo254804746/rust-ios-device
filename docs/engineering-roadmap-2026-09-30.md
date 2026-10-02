@@ -3375,3 +3375,34 @@ snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist安装、53tools�
 此前beforefix4FAIL保留，无额外Chromium或installed3.9/3.13重跑。八文件actualdiff/
 whitespace审查完成；代码无依赖/feature/binding/CLI-schema变化，准备聚焦本地
 实现提交和准确hash文档收尾；A02/第三类/总体goal继续，不升级maturity。
+
+### 大类 3：A02 manual-pairing transport 主机验收与交付（2026-10-02）
+
+实现 `d694cfafa392c3e465bef6bc2eb5e570bbbcaf75`（八个相关文件），首次完整门禁
+通过后本地聚焦提交。16native+1Elapsedadapters保留原XPC/H2/Pairing/slice/AEAD/
+JSON/Elapsed、nativekind和boundedcategory，包括四innernativechain；knownremote
+Proto、opaqueUnknown与namedXPC classes明确。shortheader不再panic，原String
+budgetguard保留。public9variant/rootfuture/fields/wire/crypto/bootstrap/trust/
+15sdial/retry/success不变，返回variant/Display/correlation迁移已记录。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/public | full/minimal tunnel,mdns各18 PASS；externalroot full16/minimal11 PASS，terminal0，日志见前条记录 |
+| strict Clippy | core/CLI及full workspace all-target/all-feature PASS terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-manual-pairing-full.log` terminal0，1854Rust/13Python、0FAIL、2既有ignored |
+| 其余完整gate | fmt/check/MSRV1.80、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 8新增core+1externalconsumer；actualclosedH2/send/header/body/decode/bootstrap/unlock/RSD、innerErroradapters/nativekinds/shortheader/realElapsed；RPC验证msg5/seq9/plaintext、AEAD/JSONfault与key/optionalsuccess+shutdown/join/drop；非entireSRP/device/allstage/encoder-size/Vecencrypt/network15s timeout fault/remoteACK/reuse |
+
+beforefix0PASS/4FAIL（含原shortheaderpanic）原日志保留；安全scopedcargo clean移除
+34.1GiB generatedcache、恢复58GiB并保留source/reference/证据，full未storage失败。
+准确证据见[专题记录](validation/manual-pairing-sources-2026-10-02.md)，ios0.1.13
+SHA256 `fa4e97f1b3447e6584ad452dc259efd9f1a300c2eaf59bd443dff1f7b7c658c0`。
+catalog/quality/先前topic的历史边界同步，未升级maturity。文档收尾catalog118records、
+123localMarkdownlinks（8个changedMarkdownfiles，baseline94373c1）与whitespace
+PASS；日志 `/tmp/ios-a02-manual-pairing-docs-catalog.log` 与
+`/tmp/ios-a02-manual-pairing-docs-links.log`。full后source未改，收尾聚焦提交待完成。
+
+本slice主机验收；A02/第三类/总体goal active，第四类未开始，完整31scope保持。
+下一defaultlockdown plist/PEM/rustls/version/PairRecord source；也需继续codec
+integer/guard legacystrings、createdoutcomes、streams/JSON/callback/binding与
+L01/L03/A03/platform/device条件。无推送/发布、history rewrite、设备或reference操作。

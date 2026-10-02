@@ -28,10 +28,13 @@ The module and type exist only with tunnel, so the classifier's existing gate
 is correct; it was not removed. Default builds do not have this type. Ed25519
 signing here is infallible and SRP proof verification returns bool; the prior
 signature-source hypothesis was incorrect. The actual extra loss was OPACK.
-The separate public manual-pairing transport still flattens four inner errors
-into PairingTransportError::Crypto(String), including M6. This slice does not
+At this checkpoint, the separate public manual-pairing transport still flattened
+four inner errors into PairingTransportError::Crypto(String), including M6. This slice does not
 claim native categories survive that full handshake; those outer adapters are
-next work, followed by default-profile lockdown sources.
+next work, followed by default-profile lockdown sources. The subsequent
+[manual transport follow-up](manual-pairing-sources-2026-10-02.md) retains those
+four outer chains and other native transport/codec errors; full device pairing
+and remaining default/codec/lifecycle conditions still require separate evidence.
 
 | Check | Result |
 | --- | --- |
@@ -86,9 +89,11 @@ links across seven changed Markdown files, and whitespace PASS. Logs:
 implementation and documentation follow-up. Source remained unchanged after
 the full gate.
 
-A02/class 3/overall goal remain active; class 4 has not started. Outer manual
-pairing RSD/H2/XPC/bootstrap/crypto/JSON and default lockdown PEM/TLS/plist/version/
-pair-record sources still need retention. Other A02 stream/output/binding,
+A02/class 3/overall goal remain active; class 4 has not started. At this checkpoint,
+outer manual pairing RSD/H2/XPC/bootstrap/crypto/JSON needed retention; the
+subsequent transport evidence above records that follow-up. Default lockdown
+PEM/TLS/plist/version/pair-record and other codec/legacy sources remain.
+Other A02 stream/output/binding,
 L01/L03/A03 and platform/device conditions remain. Classification does not
 authorize retry or prove cleanup, invalidation/reuse or cancellation of running
 blocking work. No maturity upgrade, push/publication, history rewrite or
