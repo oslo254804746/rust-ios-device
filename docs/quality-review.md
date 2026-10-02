@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [A02 initial RSD owner gate](validation/initial-rsd-probe-2026-10-02.md), latest `b2c0026`, 1747 Rust/12 Python, 49 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; owned RSD/connection observations, C failure and Python 3.12 wheel/sdist; preceding Chromium, Python 3.9/3.13, Rust/source, CLI/cancellation and TLS evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 Python runtime gate](validation/python-runtime-errors-2026-10-02.md), latest `b064539`, 1747 Rust/13 Python, 49 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; runtime error fixture and one installed wheel on 3.9/3.12/3.13, 3.12 sdist; preceding RSD, Chromium, C, Rust/source, CLI/cancellation and TLS evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

@@ -2347,3 +2347,76 @@ safe typed metadata与真实打包验收，未授权任何实际设备操作。�
 本initial-probe文档收尾四文件的70 local links、`python3 scripts/capabilities.py`
 与whitespace检查PASS；实现提交范围已核对，剩余只有本类文档。总体目标active，
 本轮为真实实现/主线通过的progress，不能据此完成A02或31项总体目标。
+
+### 大类 3 进行中：A02 Python runtime initialization（2026-10-02）
+
+RSD实现 `b2c002629b17fed302b087462eb0a955fdd23f4e` / 文档收尾
+`6f162c490d5e32de70c7b64ed9d6c4eeea89c96a` 已核对，收尾后clean。继续独立
+host错误边界，当前未提交：Python LazyLock保存原 `io::Result<Runtime>`，普通IO
+失败不进入expect/panic/poison路径、不调用device operation；runtime初始化及blocking
+work仍在allow_threads内，invalid mode先拒绝。新固定phase `initialize runtime`，
+native class、安全builtin RuntimeError和unknown effects，原signature/成功/native
+operation args保持；异常初始化路径从panic变RuntimeError的迁移已写入专题合同。
+真实thread/memory耗尽未诱导，其他runtime internal panic/interpreter/callback仍pending。
+
+首轮split python-host **12 PASS**（`/tmp/ios-a02-python-runtime-host-first.log`，
+terminal exit0）；新增cached failed initialization fixture：两次调用只初始化一次，
+操作counter为0，原IO和safe Python type/args/metadata保留，正常runtime仍执行并保留
+native failure；最终split **13 PASS、0 FAIL/ignored**（`-host-final.log`，terminal
+exit0）。两次patch错误（invalid hunk/缺exact context）均未部分写入，核对后修正。
+AGENTS要求的maturin develop、3.12 wheel/sdist、3.9/3.13安装、strict Clippy/第11节/
+diff/提交仍待完成。A02/第三类/总体目标active，不操作实际设备或reference checkout。
+
+editable `uvx --from 'maturin>=1.5,<2' maturin develop --locked` 与installed smoke
+PASS（`-develop.log` / `-develop-smoke.log`）；3.12 `python-package` wheel/sdist
+安装/接口PASS（`-package.log`），strict package Clippy PASS（`-clippy.log`），
+均terminal exit0，82 changed local links/diff通过。首次3.9 artifact命令FAIL：引用
+验证入口结束时已清理的临时run目录，未安装，3.13的&&后续未执行；log
+`/tmp/ios-a02-python-runtime-py39.log`。新建本轮owned目录并构建一个abi3 wheel，
+依次3.9/3.12/3.13安装验证；不重用已删除路径、不把该失败算通过。主线/实现与
+文档提交仍待完成，其他条件保留，总体目标active。
+
+新owned abi3 wheel目录 `/tmp/ios-a02-python-runtime-wheel-p1qwwo9j`，同一wheel
+分别在3.9.25 / 3.12.13 / 3.13.15独立安装与实际binding smoke **PASS**，terminal
+exit0；logs `-py39-accepted.log` / `-py312-accepted.log` / `-py313-accepted.log`，
+build `-wheel-build.log`，未把前一临时目录缺失FAIL改写为成功。第11节full已启动，
+log `/tmp/ios-a02-python-runtime-full.log`，尚待最终结果/提交；运行期间不改产品。
+
+### 大类 3：A02 Python runtime IO 边界主机验收与交付（2026-10-02）
+
+实现提交：`b064539f4e49830cad6b0c62a6efd9de21448529`（4个相关文件）。证据：
+[Python runtime错误验收](validation/python-runtime-errors-2026-10-02.md)。普通
+Runtime初始化IO失败由LazyLock保存原result、不进入expect/panic/poison路径、不
+调用device operation；GIL释放和无效mode优先拒绝保持。返回safe RuntimeError的
+typed class/固定initialize runtime phase/unknown effects，原signature/成功及native
+operation args保持。异常初始化路径的exception-type变更有明确迁移/release记录。
+
+split host **13 PASS**；strict package Clippy、AGENTS要求的maturin develop与
+editable installed smoke、3.12wheel/sdist PASS；同一新abi3 wheel在3.9.25 / 3.12.13 /
+3.13.15独立安装/实际binding smoke PASS，所有handles terminal exit0。controlled
+failed initialization只构造owned typed IO：两次调用仅初始化一次、operation为0，
+original source/safe type/args/metadata保留；真实current-thread runtime的owned
+future/native error也通过。未诱导真实thread/memory耗尽，不把模拟当该真实失败
+cleanup或设备startup证据。首次3.9引用已被工具清理的temp目录FAIL、&&后的3.13
+未执行；新owned目录后通过，保留失败log；两次无写入patch错误同样记录。
+
+第11节完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，
+`/tmp/ios-a02-python-runtime-full.log`，terminal exit0；**1747 Rust/13 Python、
+0 FAIL、2既有ignored**。fmt/check/strict Clippy/MSRV、66features/4groups、7+7
+doctests/3downstream snippets、C19B ABI raw+25B ownedfailure、3.12wheel/sdist、
+49tooling、118help、38raw、5host/22real-device NOT_RUN、15CLI/3backup通过。
+受测ios0.1.13 SHA-256仍为
+`29cb95dfa5729d22c7480db4500f08261fb69ce8af3f5ea9a468e9e48d98d90d`。
+实现/专题文档diff和82changed local links已审查；只更新能力host证据/质量指标。
+
+本普通runtime IO边界验收；A02/第三类/总体目标保持active。其他runtime内panic/
+Python interpreter/allocation/argument/callback、C filtering/void/port、后续RSD
+probe/inner source与stderr/stream/partial继续；L01/平台/真机条件保留。下一独立
+host范围审查C list不可编码记录的显式结果/兼容迁移，先保留旧ABI与历史记录并
+核对owned fixture可执行证据，不凭partial/empty success完成。未推送/发布/改写
+历史/修改reference checkout或操作实际设备，四文件文档收尾后继续。
+
+本runtime文档收尾四文件的71 local links、`python3 scripts/capabilities.py` /
+whitespace PASS；实现提交内容已核对，剩余只有本类文档。总体目标active，本轮
+三个已验收独立slice均为实际progress，不能据此完成第三类或31项总体目标。
