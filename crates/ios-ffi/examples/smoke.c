@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
     void (*runtime_fn)(void) = ios_runtime_init;
     const char *(*class_fn)(void) = ios_last_error_class;
     int (*list_fn)(IosDevice **, size_t *) = ios_list_devices;
+    int (*checked_list_fn)(IosDevice **, size_t *) = ios_list_devices_checked;
     void (*free_devices_fn)(IosDevice *, size_t) = ios_free_devices;
     int (*open_fn)(const char *, IosDeviceHandle **) = ios_device_open;
     void (*close_device_fn)(IosDeviceHandle *) = ios_device_close;
@@ -37,7 +38,7 @@ int main(int argc, char **argv) {
     int (*services_fn)(const IosTunnel *, char **) = ios_tunnel_rsd_services_json;
     assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
            version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
-           address_fn && rsd_fn && proxy_fn && services_fn && class_fn);
+           address_fn && rsd_fn && proxy_fn && services_fn && class_fn && checked_list_fn);
     assert(strcmp(class_fn(), "none") == 0);
     IosDevice *devices = NULL;
     size_t count = 99;
@@ -64,10 +65,36 @@ int main(int argc, char **argv) {
         puts("C ABI owned error passed");
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "--owned-checked-list") == 0) {
+        /* Only owned ListDevices replies, including valid binary-plist NULs. */
+        assert(checked_list_fn(&devices, &count) == IOS_ERR_CORE);
+        assert(devices == NULL && count == 0 && strcmp(class_fn(), "protocol") == 0);
+        assert(list_fn(&devices, &count) == IOS_SUCCESS);
+        assert(count == 2 && strcmp(class_fn(), "none") == 0);
+        assert(devices[0].device_id == 42 && devices[1].device_id == 45);
+        assert(strcmp(devices[0].udid, "owned-valid-before") == 0);
+        assert(strcmp(devices[1].connection_type, "Network") == 0);
+        free_devices_fn(devices, count);
+        devices = NULL;
+        assert(checked_list_fn(&devices, &count) == IOS_ERR_CORE);
+        assert(devices == NULL && count == 0 && strcmp(class_fn(), "protocol") == 0);
+        assert(checked_list_fn(&devices, &count) == IOS_SUCCESS);
+        assert(count == 2 && strcmp(class_fn(), "none") == 0);
+        assert(devices[0].device_id == 42 && devices[1].device_id == 45);
+        free_devices_fn(devices, count);
+        devices = NULL;
+        assert(checked_list_fn(&devices, &count) == IOS_SUCCESS);
+        assert(count == 0 && strcmp(class_fn(), "none") == 0);
+        free_devices_fn(devices, count);
+        puts("C ABI checked list passed");
+        return 0;
+    }
     if (argc != 1) return 2;
     assert(ios_list_devices(NULL, &count) == IOS_ERR_NULL && count == 0);
     assert(strcmp(class_fn(), "invalid_input") == 0);
     assert(ios_list_devices(&devices, NULL) == IOS_ERR_NULL && devices == NULL);
+    assert(ios_list_devices_checked(NULL, &count) == IOS_ERR_NULL && count == 0);
+    assert(ios_list_devices_checked(&devices, NULL) == IOS_ERR_NULL && devices == NULL);
     assert(ios_device_open(NULL, &device) == IOS_ERR_NULL && device == NULL);
     assert(ios_device_open("\xff", &device) == IOS_ERR_UTF8 && device == NULL);
     assert(ios_device_open("synthetic-ffi-credential-UDID\xff", &device) == IOS_ERR_UTF8 && device == NULL);

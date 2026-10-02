@@ -73,7 +73,7 @@ status clears to `none`; void initialization/cleanup, uint16_t port queries and
 the getter do not replace it. The getter needs no runtime initialization.
 
 ```c
-int status = ios_list_devices(&devices, &count);
+int status = ios_list_devices_checked(&devices, &count);
 if (status != IOS_SUCCESS) {
     /* Inspect a stable category, with a fallback for future codes. */
     fprintf(stderr, "device listing failed (%s)\n", ios_last_error_class());
@@ -88,6 +88,16 @@ exhaustion. Category/status alone grants no safe retry, partial-result rollback
 or device cleanup acknowledgement. The linked C smoke also uses an owned
 malformed ListDevices peer; no pairing or device service is routed. See the
 [error contract](../../docs/error-contract.md) for exact mappings and limits.
+
+Use `ios_list_devices_checked` when the caller needs to detect unencodable
+received records. An embedded NUL in a UDID or connection type returns
+`IOS_ERR_CORE` and class `protocol`, clears outputs to NULL/0, and returns no
+partial array. Valid and empty lists use the existing layout and
+`ios_free_devices` ownership. The original `ios_list_devices` still skips such
+records for compatibility. The checked call verifies C string encoding of the
+received list; it does not certify completeness of discovery upstream. The
+linked smoke checks both calls over five owned binary-plist replies, with
+valid, unencodable and empty input.
 
 ## Linking
 

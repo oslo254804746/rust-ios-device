@@ -168,6 +168,14 @@ conversion; opaque/lost sources stay unknown. Read it on the same thread and
 keep a fallback for future codes. The [error contract](error-contract.md) records
 the precise lifetime, status mappings and partial/cleanup boundaries.
 
+The additive `ios_list_devices_checked` uses the same output layout and free
+function. It rejects an embedded NUL in any received UDID or connection type
+with `IOS_ERR_CORE`/`protocol` and NULL/0 outputs, returning no partial array.
+Valid and empty inputs succeed. The old listing symbol retains its historical
+skip behavior; callers requiring detectable encoding failures migrate to the
+checked symbol and inspect the returned status/class. This validates the
+received list's C projection, without certifying upstream discovery completeness.
+
 ## Python API and ownership
 
 Preserve module/distribution names (`ios_rs` / `rust-ios-device-tunnel`), factories,

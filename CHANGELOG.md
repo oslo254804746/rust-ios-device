@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `ios_list_devices_checked` to reject unencodable received C device records
+  with `IOS_ERR_CORE`/`protocol`, cleared outputs and no partial array. Preserve
+  the original listing symbol's skip behavior and existing layout/free contract;
+  migrate listing examples and validate both entries over owned binary plists.
+
 - Return typed safe Python RuntimeError for ordinary runtime-initialization IO
   failure, replacing the expect/panic path while retaining released-GIL work,
   signatures and existing operation errors. Cache the original failed result

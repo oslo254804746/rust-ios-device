@@ -144,11 +144,15 @@ def ffi(build_directory=None):
     if not report["passed"]:
         raise RuntimeError("C ABI raw diagnostic capture failed")
     print("[PASS] C ABI raw diagnostic capture; " + json.dumps(report), flush=True)
-    from ffi_contracts import malformed_list_error
+    from ffi_contracts import malformed_list_error, checked_list_projection
     report = malformed_list_error(output, env=env)
     if not report["passed"]:
         raise RuntimeError("C ABI owned ListDevices error contract failed")
     print("[PASS] C ABI owned typed failure; " + json.dumps(report), flush=True)
+    report = checked_list_projection(output, env=env)
+    if not report["passed"]:
+        raise RuntimeError("C ABI checked ListDevices projection contract failed")
+    print("[PASS] C ABI checked ListDevices projection; " + json.dumps(report), flush=True)
 
 
 def python_package(interpreter):

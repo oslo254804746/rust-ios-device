@@ -14,7 +14,7 @@
 //!     ios_runtime_init();
 //!     IosDevice *devices = NULL;
 //!     size_t count = 0;
-//!     int status = ios_list_devices(&devices, &count);
+//!     int status = ios_list_devices_checked(&devices, &count);
 //!     if (status != IOS_SUCCESS) return 1;
 //!     if (count == 0) puts("no device found");
 //!     for (size_t i = 0; i < count; ++i)
@@ -233,6 +233,46 @@ fn ios_devices_into_raw(devices: Vec<IosDevice>) -> (*mut IosDevice, usize) {
     (ptr, count)
 }
 
+#[derive(Clone, Copy)]
+enum ListProjection {
+    LegacySkip,
+    Checked,
+}
+
+struct OwnedCDevice {
+    udid: CString,
+    device_id: u32,
+    connection_type: CString,
+}
+
+fn project_device_list(
+    devices: Vec<ios_core::DeviceInfo>,
+    projection: ListProjection,
+) -> Result<Vec<OwnedCDevice>, std::io::Error> {
+    let mut projected = Vec::with_capacity(devices.len());
+    for device in devices {
+        let convert = || -> Result<OwnedCDevice, std::ffi::NulError> {
+            Ok(OwnedCDevice {
+                udid: CString::new(device.udid)?,
+                device_id: device.device_id,
+                connection_type: CString::new(device.connection_type)?,
+            })
+        };
+        match convert() {
+            Ok(row) => projected.push(row),
+            Err(error) => match projection {
+                ListProjection::LegacySkip => continue,
+                ListProjection::Checked => {
+                    // Received device data cannot be represented by this ABI.
+                    // All prepared strings still have Rust ownership here.
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+                }
+            },
+        }
+    }
+    Ok(projected)
+}
+
 fn validate_device_list_outputs(
     devices_out: *mut *mut IosDevice,
     count_out: *mut usize,
@@ -267,6 +307,29 @@ pub unsafe extern "C" fn ios_list_devices(
     devices_out: *mut *mut IosDevice,
     count_out: *mut usize,
 ) -> c_int {
+    list_devices_with_projection(devices_out, count_out, ListProjection::LegacySkip)
+}
+
+/// List received device records without silently skipping C encoding failures.
+/// Returns IOS_ERR_CORE/Protocol and cleared outputs if a record contains NUL.
+/// Uses the existing array layout and ios_free_devices ownership on success.
+/// This validates the C projection, not completeness of discovery upstream.
+///
+/// # Safety
+/// Caller must provide valid output pointers, as for ios_list_devices.
+#[no_mangle]
+pub unsafe extern "C" fn ios_list_devices_checked(
+    devices_out: *mut *mut IosDevice,
+    count_out: *mut usize,
+) -> c_int {
+    list_devices_with_projection(devices_out, count_out, ListProjection::Checked)
+}
+
+unsafe fn list_devices_with_projection(
+    devices_out: *mut *mut IosDevice,
+    count_out: *mut usize,
+    projection: ListProjection,
+) -> c_int {
     ffi_status(|| {
         if !devices_out.is_null() {
             *devices_out = std::ptr::null_mut();
@@ -285,25 +348,17 @@ pub unsafe extern "C" fn ios_list_devices(
         match result {
             Err(error) => error_status(IOS_ERR_CORE, &error),
             Ok(devs) => {
-                let count = devs.len();
-                let mut c_devs: Vec<IosDevice> = Vec::with_capacity(count);
-                for d in devs {
-                    let udid = match CString::new(d.udid) {
-                        Ok(s) => s.into_raw(),
-                        Err(_) => continue, // skip devices with invalid UDIDs
-                    };
-                    let connection_type = match CString::new(d.connection_type) {
-                        Ok(s) => s.into_raw(),
-                        Err(_) => {
-                            // Free the already-allocated udid before skipping
-                            drop(CString::from_raw(udid));
-                            continue;
-                        }
-                    };
+                let rows = match project_device_list(devs, projection) {
+                    Ok(rows) => rows,
+                    Err(error) => return error_status(IOS_ERR_CORE, &error),
+                };
+                // Reserve before any CString loses Rust ownership.
+                let mut c_devs = Vec::with_capacity(rows.len());
+                for row in rows {
                     c_devs.push(IosDevice {
-                        udid,
-                        device_id: d.device_id,
-                        connection_type,
+                        udid: row.udid.into_raw(),
+                        device_id: row.device_id,
+                        connection_type: row.connection_type.into_raw(),
                     });
                 }
                 let (ptr, actual_count) = ios_devices_into_raw(c_devs);
@@ -695,6 +750,76 @@ mod tests {
         unsafe { CStr::from_ptr(ios_last_error_class()) }
             .to_str()
             .unwrap()
+    }
+
+    #[test]
+    fn checked_list_projection_rejects_nul_while_legacy_keeps_valid_rows() {
+        fn row(id: u32, udid: &str, connection_type: &str) -> ios_core::DeviceInfo {
+            ios_core::DeviceInfo {
+                device_id: id,
+                udid: udid.into(),
+                connection_type: connection_type.into(),
+                product_id: 0,
+            }
+        }
+        for bad in [
+            row(2, "private\0invalid-device", "USB"),
+            row(2, "private-invalid-type", "private\0invalid-type"),
+        ] {
+            let input = vec![
+                row(1, "owned-valid-before", "USB"),
+                bad,
+                row(3, "owned-valid-after", "Network"),
+            ];
+            let legacy = project_device_list(input.clone(), ListProjection::LegacySkip).unwrap();
+            assert_eq!(legacy.len(), 2);
+            assert_eq!(legacy[0].udid.to_bytes(), b"owned-valid-before");
+            assert_eq!(legacy[1].device_id, 3);
+            let error = match project_device_list(input, ListProjection::Checked) {
+                Err(error) => error,
+                Ok(_) => panic!("unencodable row was silently accepted"),
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert_eq!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<std::ffi::NulError>()
+                    .unwrap()
+                    .nul_position(),
+                7
+            );
+            assert_eq!(error_status(IOS_ERR_CORE, &error), IOS_ERR_CORE);
+            assert_eq!(last_class(), "protocol");
+        }
+        for projection in [ListProjection::LegacySkip, ListProjection::Checked] {
+            assert!(project_device_list(vec![], projection).unwrap().is_empty());
+            let rows =
+                project_device_list(vec![row(42, "owned-Unicode-设备", "Network")], projection)
+                    .unwrap();
+            assert_eq!(rows[0].udid.to_bytes(), "owned-Unicode-设备".as_bytes());
+            assert_eq!(rows[0].connection_type.to_bytes(), b"Network");
+        }
+    }
+
+    #[test]
+    fn checked_list_null_outputs_fail_before_runtime_or_device_work() {
+        unsafe {
+            let mut devices = std::ptr::NonNull::<IosDevice>::dangling().as_ptr();
+            let mut count = 99;
+            assert_eq!(
+                ios_list_devices_checked(std::ptr::null_mut(), &mut count),
+                IOS_ERR_NULL
+            );
+            assert_eq!(count, 0);
+            assert_eq!(last_class(), "invalid_input");
+            assert_eq!(
+                ios_list_devices_checked(&mut devices, std::ptr::null_mut()),
+                IOS_ERR_NULL
+            );
+            assert!(devices.is_null());
+            assert_eq!(last_class(), "invalid_input");
+        }
     }
 
     #[test]

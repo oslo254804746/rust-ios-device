@@ -5,9 +5,10 @@ int main(void) {
     IosDevice *devices = NULL;
     size_t count = 0;
     ios_runtime_init();
-    int status = ios_list_devices(&devices, &count);
+    int status = ios_list_devices_checked(&devices, &count);
     if (status != IOS_SUCCESS) {
-        fprintf(stderr, "device listing failed (status %d)\n", status);
+        fprintf(stderr, "device listing failed (status %d, class %s)\n",
+                status, ios_last_error_class());
         return 1;
     }
     if (count == 0) puts("no device found");

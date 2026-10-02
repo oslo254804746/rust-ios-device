@@ -247,11 +247,25 @@ This query adds no interruptible C call, concurrent handle-mutation guarantee,
 automatic retry or Apple cleanup acknowledgement. A `disconnected` IO class
 does not identify which object disconnected. `none` describes a successful
 numeric status, not a certificate of device cleanup or absence of partial
-effects. It does not correct existing filtering of malformed device records,
-void cleanup reporting or port-zero ambiguity; these remain separate review
+effects. Void cleanup reporting and port-zero ambiguity remain separate review
 boundaries. The owned linked-C malformed ListDevices fixture validates a real
 library call, not device connection/query/tunnel acceptance. Native source
 details are not exported as an unsafe C string.
+
+`ios_list_devices_checked` is an additive int-status entry using the existing
+IosDevice array layout and `ios_free_devices` ownership. If any received UDID
+or connection type contains an embedded NUL, it returns `IOS_ERR_CORE` with
+class `protocol`, clears outputs to NULL/0, and exposes no partial array. Native
+IO/discovery errors retain their existing status/class mapping. Valid and empty
+lists succeed and clear the caller's category to `none`.
+
+The original `ios_list_devices` retains its historical behavior of skipping
+unencodable records and returning the remaining rows, potentially an empty
+success. Migrate to the checked symbol to detect these projection failures;
+existing callers need no signature/layout change. Checking C encoding does not
+prove completeness of the upstream discovery result or current reachability.
+Controlled binary-plist peers exercise both real C entries and free successful
+arrays. No device service, pairing, or Apple cleanup is certified by this check.
 
 ## Protected HTTP responses
 

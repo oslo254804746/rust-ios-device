@@ -90,13 +90,29 @@ const char *ios_last_error_class(void);
  * On success: *devices_out points to a heap-allocated IosDevice array of
  * *count_out elements, returns 0.
  * On error: returns non-zero; non-null outputs are cleared to NULL/0.
+ * Historical behavior skips records with an embedded NUL in either string.
+ * Use ios_list_devices_checked to detect these encoding failures.
  *
  * Free with: ios_free_devices(*devices_out, *count_out);
  */
 int ios_list_devices(IosDevice **devices_out, size_t *count_out);
 
 /**
- * Free a device list returned by ios_list_devices().
+ * List received device records without skipping C encoding failures.
+ *
+ * If a received UDID or connection type contains an embedded NUL, returns
+ * IOS_ERR_CORE with error class "protocol", and clears outputs to NULL/0.
+ * No partial array is returned. Successful empty input remains a valid empty
+ * list. Free successful results with ios_free_devices, using the same layout.
+ * This checks C projection, not completeness of upstream discovery.
+ *
+ * ios_list_devices retains its historical skip behavior for compatibility;
+ * callers requiring detectable encoding failures should use this entry.
+ */
+int ios_list_devices_checked(IosDevice **devices_out, size_t *count_out);
+
+/**
+ * Free a device list returned by either listing function, with its returned count.
  */
 void ios_free_devices(IosDevice *devices, size_t count);
 
