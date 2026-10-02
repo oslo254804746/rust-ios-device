@@ -137,6 +137,60 @@ async fn supervised_pairing_root_api_keeps_native_sources_and_record_fields() {
     drop(peer);
 }
 
+#[cfg(feature = "mcinstall")]
+#[tokio::test]
+async fn mcinstall_root_error_family_and_feature_decisions_remain_observable() {
+    use ios_core::{
+        classify_error,
+        mcinstall::{McInstallClient, McInstallError},
+        ErrorClass,
+    };
+    use std::{error::Error, io};
+    fn family(error: &McInstallError) -> &'static str {
+        match error {
+            McInstallError::Io(_) => "io",
+            McInstallError::Plist(_) => "plist",
+            McInstallError::Protocol(_) => "protocol",
+            McInstallError::Crypto(_) => "crypto",
+            McInstallError::PasscodeSet => "passcode",
+        }
+    }
+    fn assert_error<E: Error + Send + Sync + 'static>() {}
+    assert_error::<McInstallError>();
+    let (stream, peer) = tokio::io::duplex(64);
+    let mut client = McInstallClient::new(stream);
+    let error = client
+        .escalate_with_p12(b"owned-private invalid DER", "owned-password")
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    let McInstallError::Io(source) = &error else {
+        unreachable!()
+    };
+    #[cfg(feature = "supervised-pair")]
+    {
+        assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(classify_error(&error), ErrorClass::InvalidInput);
+        assert!(source.source().unwrap().is::<openssl::error::ErrorStack>());
+    }
+    #[cfg(not(feature = "supervised-pair"))]
+    {
+        assert_eq!(source.kind(), io::ErrorKind::Other);
+        assert_eq!(classify_error(&error), ErrorClass::Unsupported);
+        assert!(source.source().unwrap().is::<CoreError>());
+    }
+    assert!(!format!("{error:?} {:?}", source.get_ref()).contains("owned-private"));
+    assert_eq!(
+        family(&McInstallError::Crypto("owned-private".into())),
+        "crypto"
+    );
+    assert_eq!(
+        classify_error(&McInstallError::PasscodeSet),
+        ErrorClass::Precondition
+    );
+    drop(peer);
+}
+
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 #[test]
 fn manual_pairing_root_api_preserves_its_exhaustive_error_and_future() {

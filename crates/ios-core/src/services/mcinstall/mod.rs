@@ -15,6 +15,14 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.MCInstall";
 
+fn retain_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> McInstallError {
+    McInstallError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
 service_error!(
     McInstallError,
     #[error("crypto error: {0}")]
@@ -215,8 +223,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         #[cfg(not(feature = "supervised-pair"))]
         {
             let _ = (payload, p12_bytes, password);
-            Err(McInstallError::Crypto(
-                "silent profile installation requires ios-core feature 'supervised-pair'".into(),
+            Err(retain_error(
+                std::io::ErrorKind::Other,
+                "admit MCInstall silent profile installation",
+                crate::CoreError::Unsupported(
+                    "silent profile installation requires ios-core feature 'supervised-pair'"
+                        .into(),
+                ),
             ))
         }
 
@@ -236,8 +249,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
 
     pub async fn remove_profile(&mut self, identifier: &str) -> Result<(), McInstallError> {
         let profile_identifier = match self.get_profile_list_raw().await {
-            Ok(value) => build_remove_profile_identifier(&value, identifier)
-                .map_err(|err| McInstallError::Protocol(err.to_string()))?
+            Ok(value) => build_remove_profile_identifier(&value, identifier)?
                 .unwrap_or_else(|| plist::Value::String(identifier.to_string())),
             Err(_) => plist::Value::String(identifier.to_string()),
         };
@@ -336,8 +348,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
         #[cfg(not(feature = "supervised-pair"))]
         {
             let _ = (p12_bytes, password);
-            Err(McInstallError::Crypto(
-                "MCInstall P12 escalation requires ios-core feature 'supervised-pair'".into(),
+            Err(retain_error(
+                std::io::ErrorKind::Other,
+                "admit MCInstall P12 escalation",
+                crate::CoreError::Unsupported(
+                    "MCInstall P12 escalation requires ios-core feature 'supervised-pair'".into(),
+                ),
             ))
         }
 
@@ -385,17 +401,44 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
 
     #[cfg(feature = "supervised-pair")]
     async fn escalate(&mut self, p12_bytes: &[u8], password: &str) -> Result<(), McInstallError> {
-        let pkcs12 =
-            Pkcs12::from_der(p12_bytes).map_err(|err| McInstallError::Crypto(err.to_string()))?;
-        let parsed = pkcs12
-            .parse2(password)
-            .map_err(|err| McInstallError::Crypto(err.to_string()))?;
-        let cert = parsed
-            .cert
-            .ok_or_else(|| McInstallError::Crypto("P12 missing certificate".into()))?;
-        let pkey = parsed
-            .pkey
-            .ok_or_else(|| McInstallError::Crypto("P12 missing private key".into()))?;
+        let pkcs12 = Pkcs12::from_der(p12_bytes).map_err(|error| {
+            retain_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse MCInstall PKCS12 DER",
+                error,
+            )
+        })?;
+        // The dependency unwraps CString construction. Preserve its native
+        // input error before parse2 can panic; valid passwords need no copy.
+        if password.as_bytes().contains(&0) {
+            std::ffi::CString::new(password).map_err(|error| {
+                retain_error(
+                    std::io::ErrorKind::InvalidInput,
+                    "validate MCInstall PKCS12 password",
+                    error,
+                )
+            })?;
+        }
+        let parsed = pkcs12.parse2(password).map_err(|error| {
+            retain_error(
+                std::io::ErrorKind::InvalidInput,
+                "unlock MCInstall PKCS12",
+                error,
+            )
+        })?;
+        // These are observed missing fields, not discarded backend errors.
+        let cert = parsed.cert.ok_or_else(|| {
+            McInstallError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "MCInstall P12 missing certificate",
+            ))
+        })?;
+        let pkey = parsed.pkey.ok_or_else(|| {
+            McInstallError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "MCInstall P12 missing private key",
+            ))
+        })?;
 
         let mut request = plist::Value::Dictionary(plist::Dictionary::from_iter([
             (
@@ -404,10 +447,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
             ),
             (
                 "SupervisorCertificate".to_string(),
-                plist::Value::Data(
-                    cert.to_der()
-                        .map_err(|err| McInstallError::Crypto(err.to_string()))?,
-                ),
+                plist::Value::Data(cert.to_der().map_err(|error| {
+                    retain_error(
+                        std::io::ErrorKind::Other,
+                        "encode MCInstall supervisor certificate DER",
+                        error,
+                    )
+                })?),
             ),
         ]));
         let send_result = send_plist(&mut self.stream, &request).await;
@@ -439,11 +485,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> McInstallClient<S> {
             }
         };
         zeroize_sensitive_dictionary(&mut response);
-        let certs = Stack::new().map_err(|err| McInstallError::Crypto(err.to_string()))?;
+        let certs = Stack::new().map_err(|error| {
+            retain_error(
+                std::io::ErrorKind::Other,
+                "allocate MCInstall signing certificates",
+                error,
+            )
+        })?;
         let signed_request = Zeroizing::new(
             Pkcs7::sign(&cert, &pkey, &certs, &challenge, Pkcs7Flags::BINARY)
                 .and_then(|pkcs7| pkcs7.to_der())
-                .map_err(|err| McInstallError::Crypto(err.to_string()))?,
+                .map_err(|error| {
+                    retain_error(std::io::ErrorKind::Other, "sign MCInstall challenge", error)
+                })?,
         );
 
         let response_request = plist::Dictionary::from_iter([
@@ -1229,6 +1283,9 @@ async fn recv_plist<S: AsyncRead + Unpin>(
     let buf = Zeroizing::new(encoded);
     Ok(plist::from_bytes(&buf)?)
 }
+
+#[cfg(test)]
+mod source_contract_tests;
 
 #[cfg(test)]
 mod tests {
