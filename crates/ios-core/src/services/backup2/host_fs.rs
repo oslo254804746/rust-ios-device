@@ -23,6 +23,14 @@ const INCREMENTAL_BACKUP_REQUIRED_FILES: &[&str] = &["Manifest.plist", "Status.p
 // This is the Apple Core Data / NSDate epoch offset (seconds between Unix epoch and Apple epoch)
 const APPLE_EPOCH_OFFSET: Duration = Duration::from_secs(978_307_200);
 
+fn native_error(
+    kind: ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Mobilebackup2Error {
+    Mobilebackup2Error::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
 pub(super) fn cleanup_discarded_files(
     layout: &BackupDirectoryLayout,
     paths: &[PathBuf],
@@ -244,7 +252,7 @@ where
 {
     tokio::task::spawn_blocking(op)
         .await
-        .map_err(|err| Mobilebackup2Error::Io(std::io::Error::other(err)))?
+        .map_err(|error| native_error(ErrorKind::Other, "run backup host filesystem task", error))?
 }
 
 /// Own the layout across a host filesystem step off the async worker thread.
@@ -290,10 +298,11 @@ pub(super) fn ensure_backup_directory(
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Err(Mobilebackup2Error::Protocol(format!(
-                    "backup directory missing required file {}",
-                    path.display()
-                )));
+                return Err(native_error(
+                    error.kind(),
+                    "inspect required backup metadata file",
+                    error,
+                ));
             }
             Err(error) => return Err(error.into()),
         };
@@ -785,12 +794,7 @@ pub(super) fn layout_relative_path(
 ) -> Result<PathBuf, Mobilebackup2Error> {
     path.strip_prefix(&layout.root)
         .map(PathBuf::from)
-        .map_err(|_| {
-            Mobilebackup2Error::Protocol(format!(
-                "backup path is outside backup root: {}",
-                path.display()
-            ))
-        })
+        .map_err(|error| native_error(ErrorKind::InvalidData, "resolve backup layout path", error))
 }
 
 pub(super) fn create_layout_directory(
@@ -977,17 +981,19 @@ pub(super) fn commit_uploaded_file(
 }
 
 pub(super) fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobilebackup2Error> {
-    let src_relative = src.strip_prefix(root).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "backup copy source is outside backup root: {}",
-            src.display()
-        ))
+    let src_relative = src.strip_prefix(root).map_err(|error| {
+        native_error(
+            ErrorKind::InvalidData,
+            "resolve backup copy source path",
+            error,
+        )
     })?;
-    let dst_relative = dst.strip_prefix(root).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "backup copy destination is outside backup root: {}",
-            dst.display()
-        ))
+    let dst_relative = dst.strip_prefix(root).map_err(|error| {
+        native_error(
+            ErrorKind::InvalidData,
+            "resolve backup copy destination path",
+            error,
+        )
     })?;
     ensure_no_symlink_components_at_root(root, src_relative)?;
     ensure_no_symlink_components_at_root(root, dst_relative)?;
@@ -1009,11 +1015,12 @@ pub(super) fn copy_item(root: &Path, src: &Path, dst: &Path) -> Result<(), Mobil
         }
     } else if source_metadata.is_file() {
         if let Some(parent) = dst.parent() {
-            let parent_relative = parent.strip_prefix(root).map_err(|_| {
-                Mobilebackup2Error::Protocol(format!(
-                    "backup copy destination parent is outside backup root: {}",
-                    parent.display()
-                ))
+            let parent_relative = parent.strip_prefix(root).map_err(|error| {
+                native_error(
+                    ErrorKind::InvalidData,
+                    "resolve backup copy parent path",
+                    error,
+                )
             })?;
             create_dir_all_no_symlink(root, parent_relative)?;
         }
@@ -1038,11 +1045,12 @@ pub(super) fn contents_of_directory(
     root: &Path,
     path: &Path,
 ) -> Result<plist::Dictionary, Mobilebackup2Error> {
-    let relative = path.strip_prefix(root).map_err(|_| {
-        Mobilebackup2Error::Protocol(format!(
-            "backup directory is outside backup root: {}",
-            path.display()
-        ))
+    let relative = path.strip_prefix(root).map_err(|error| {
+        native_error(
+            ErrorKind::InvalidData,
+            "resolve backup directory listing path",
+            error,
+        )
     })?;
     ensure_no_symlink_components_at_root(root, relative)?;
     let metadata = fs::symlink_metadata(path)?;
@@ -1203,6 +1211,92 @@ pub(super) fn available_space(path: &Path) -> Result<u64, Mobilebackup2Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+
+    struct OwnedDirectory(PathBuf);
+
+    impl OwnedDirectory {
+        fn new() -> Self {
+            let root = test_temp_dir().join(format!("ios-backup-host-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+    }
+
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn source_of<'a, E: Error + 'static>(error: &'a (dyn Error + 'static)) -> &'a E {
+        let mut current = Some(error);
+        for _ in 0..32 {
+            let Some(source) = current else { break };
+            if let Some(native) = source.downcast_ref::<E>() {
+                return native;
+            }
+            current = source.source();
+        }
+        panic!("expected original typed cause");
+    }
+
+    #[test]
+    fn outside_backup_paths_keep_native_prefix_failure_without_side_effects() {
+        let fixture = OwnedDirectory::new();
+        let root = fixture.0.join("root");
+        fs::create_dir(&root).unwrap();
+        let layout = BackupDirectoryLayout {
+            root: root.clone(),
+            device_directory: root.join("owned-device"),
+            target_identifier: "owned-device".into(),
+        };
+        let inside = root.join("source");
+        let outside = fixture.0.join("owned-private-outside");
+        for error in [
+            layout_relative_path(&layout, &outside).unwrap_err(),
+            copy_item(&root, &outside, &inside).unwrap_err(),
+            copy_item(&root, &inside, &outside).unwrap_err(),
+            contents_of_directory(&root, &outside).unwrap_err(),
+        ] {
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            source_of::<std::path::StripPrefixError>(&error);
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+        assert!(!inside.exists());
+        assert!(!outside.exists());
+        assert_eq!(
+            layout_relative_path(&layout, &inside).unwrap(),
+            Path::new("source")
+        );
+    }
+
+    #[test]
+    fn required_backup_files_keep_native_not_found_and_original_os_code() {
+        let fixture = OwnedDirectory::new();
+        let device = fixture.0.join("owned-private-device");
+        fs::create_dir(&device).unwrap();
+        for name in ["Info.plist", "Manifest.plist", "Status.plist"] {
+            fs::write(device.join(name), b"owned metadata").unwrap();
+        }
+        ensure_backup_directory(&fixture.0, "owned-private-device").unwrap();
+        for name in ["Info.plist", "Manifest.plist", "Status.plist"] {
+            let path = device.join(name);
+            fs::remove_file(&path).unwrap();
+            let original = fs::symlink_metadata(&path).unwrap_err();
+            let error = ensure_backup_directory(&fixture.0, "owned-private-device").unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::NotFound);
+            let Mobilebackup2Error::Io(outer) = &error else {
+                panic!("native filesystem cause lost");
+            };
+            assert_eq!(outer.kind(), ErrorKind::NotFound);
+            let native = source_of::<std::io::Error>(outer.source().unwrap());
+            assert_eq!(native.raw_os_error(), original.raw_os_error());
+            assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+            fs::write(path, b"owned metadata").unwrap();
+        }
+        ensure_backup_directory(&fixture.0, "owned-private-device").unwrap();
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn host_work_does_not_block_timer_progress_on_single_thread_runtime() {
@@ -1246,13 +1340,12 @@ mod tests {
         let error = run_blocking::<(), _>(|| panic!("synthetic host worker failure"))
             .await
             .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Unknown);
         let Mobilebackup2Error::Io(error) = error else {
             panic!("expected join failure wrapped in IO");
         };
-        assert!(error
-            .get_ref()
-            .and_then(|source| source.downcast_ref::<tokio::task::JoinError>())
-            .is_some_and(tokio::task::JoinError::is_panic));
+        assert!(source_of::<tokio::task::JoinError>(&error).is_panic());
+        assert!(!format!("{:?}", error.get_ref()).contains("synthetic host worker failure"));
     }
 
     fn test_temp_dir() -> PathBuf {

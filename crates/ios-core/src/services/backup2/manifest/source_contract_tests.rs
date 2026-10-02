@@ -115,7 +115,9 @@ fn actual_public_metadata_errors_keep_archive_chain_and_depth_category_without_o
                 assert!(archive.source().unwrap().is::<plist::Error>());
             }
             ArchiveError::TooDeep(depth) => assert_eq!(*depth, 64),
-            ArchiveError::Invalid(_) => panic!("fixture did not reach intended archive failure"),
+            ArchiveError::Invalid(_) | ArchiveError::Integer(_) => {
+                panic!("fixture did not reach intended archive failure")
+            }
         }
         let output = fixture.root.join("owned-output");
         let error =
@@ -297,6 +299,37 @@ fn actual_metadata_integer_conversions_retain_native_error_without_output_creati
         );
         assert!(!output.exists());
     }
+}
+
+#[test]
+fn actual_public_archive_integer_overflow_retains_native_conversion_without_output() {
+    let fixture = Fixture::new();
+    let bytes = crate::archive_dict(vec![
+        ("Mode".into(), plist::Value::Integer(u64::MAX.into())),
+        ("Size".into(), plist::Value::Integer(0.into())),
+    ]);
+    fixture.database(&bytes, MODE_TYPE_FILE);
+    let error = fixture.list().unwrap_err();
+    let archive = io_source(&error, ErrorClass::Protocol)
+        .source()
+        .unwrap()
+        .downcast_ref::<ArchiveError>()
+        .unwrap();
+    assert!(archive.source().unwrap().is::<std::num::TryFromIntError>());
+    let output = fixture.root.join("owned-output");
+    let error = crate::backup2::unback_backup(&fixture.root, "owned-device", Some(&output), None)
+        .unwrap_err();
+    io_source(&error, ErrorClass::Protocol);
+    assert!(!output.exists());
+    assert_eq!(
+        fs::read(
+            fixture
+                .device
+                .join("11/1111111111111111111111111111111111111111")
+        )
+        .unwrap(),
+        b"owned-payload"
+    );
 }
 
 #[test]

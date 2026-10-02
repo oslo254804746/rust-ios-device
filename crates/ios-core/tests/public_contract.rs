@@ -9,6 +9,51 @@ use ios_core::{
 };
 
 #[test]
+fn root_backup_required_file_error_keeps_native_io_and_public_family() {
+    use ios_core::{
+        backup2::{initialize_backup_directory, load_backup_applications, Mobilebackup2Error},
+        classify_error, ErrorClass,
+    };
+    use std::error::Error;
+    struct OwnedDirectory(std::path::PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = OwnedDirectory(
+        std::env::temp_dir().join(format!("ios-public-backup-host-{}", uuid::Uuid::new_v4())),
+    );
+    let info = plist::Dictionary::from_iter([(
+        "Applications",
+        plist::Value::Dictionary(plist::Dictionary::new()),
+    )]);
+    let layout = initialize_backup_directory(&root.0, "owned-private-device", &info, true).unwrap();
+    assert_eq!(
+        load_backup_applications(&root.0, "owned-private-device").unwrap(),
+        info.get("Applications").cloned()
+    );
+    let path = layout.device_directory.join("Status.plist");
+    std::fs::remove_file(&path).unwrap();
+    let expected = std::fs::symlink_metadata(&path).unwrap_err();
+    let error = load_backup_applications(&root.0, "owned-private-device").unwrap_err();
+    assert_eq!(classify_error(&error), ErrorClass::NotFound);
+    let Mobilebackup2Error::Io(outer) = &error else {
+        panic!("expected native IO family");
+    };
+    assert_eq!(outer.kind(), std::io::ErrorKind::NotFound);
+    let original = outer
+        .source()
+        .unwrap()
+        .downcast_ref::<std::io::Error>()
+        .unwrap();
+    assert_eq!(original.raw_os_error(), expected.raw_os_error());
+    assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+    assert!(layout.device_directory.join("Info.plist").is_file());
+    assert!(!path.exists());
+}
+
+#[test]
 fn root_mux_constructor_keeps_its_typed_error_future() {
     fn signature<E, F>(future: F)
     where

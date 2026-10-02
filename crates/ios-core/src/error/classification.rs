@@ -221,7 +221,7 @@ fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     if let Some(archive) = error.downcast_ref::<Archive>() {
         return Some(match archive {
             Archive::TooDeep(_) => ErrorClass::ResourceLimit,
-            Archive::Plist(_) | Archive::Invalid(_) => ErrorClass::Protocol,
+            Archive::Plist(_) | Archive::Invalid(_) | Archive::Integer(_) => ErrorClass::Protocol,
         });
     }
     use crate::proto::opack::OpackError as Opack;

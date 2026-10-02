@@ -35,6 +35,8 @@ pub enum ArchiveError {
     Plist(#[source] plist::Error),
     #[error("invalid archive: {0}")]
     Invalid(String),
+    #[error("invalid archive integer: {0}")]
+    Integer(#[source] std::num::TryFromIntError),
     #[error("archive nesting exceeds {0} levels (cycle or hostile input?)")]
     TooDeep(usize),
 }
@@ -123,9 +125,7 @@ fn decode_value(
     // negative number instead of an error, which is worse than refusing the
     // archive — real NSNumber payloads never reach that range.
     if let Some(n) = obj.as_unsigned_integer() {
-        let value = i64::try_from(n).map_err(|_| {
-            ArchiveError::Invalid(format!("unsigned integer {n} does not fit in i64"))
-        })?;
+        let value = i64::try_from(n).map_err(ArchiveError::Integer)?;
         return Ok(ArchiveValue::Int(value));
     }
     if let Some(n) = obj.as_signed_integer() {
@@ -355,6 +355,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn actual_binary_archive_integer_overflow_keeps_native_source() {
+        use std::error::Error;
+        let mut bytes = Vec::new();
+        plist::to_writer_binary(
+            &mut bytes,
+            &plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("$archiver", plist::Value::String("NSKeyedArchiver".into())),
+                (
+                    "$objects",
+                    plist::Value::Array(vec![plist::Value::Integer(u64::MAX.into())]),
+                ),
+                (
+                    "$top",
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        "root",
+                        plist::Value::Uid(plist::Uid::new(0)),
+                    )])),
+                ),
+            ])),
+        )
+        .unwrap();
+        let error = unarchive(&bytes).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+        assert!(!format!("{error:?}").contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
     fn actual_unarchive_plist_failure_retains_native_source_and_safe_debug() {
         use std::error::Error;
         let error = unarchive(b"<plist><dict>owned-private").unwrap_err();
@@ -393,12 +421,11 @@ mod tests {
         );
 
         let err = decode_object(&objects, 1, 0).unwrap_err();
-        match err {
-            ArchiveError::Invalid(message) => {
-                assert!(message.contains("does not fit in i64"), "{message}");
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert!(matches!(err, ArchiveError::Integer(_)));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(std::error::Error::source(&err)
+            .unwrap()
+            .is::<std::num::TryFromIntError>());
     }
 
     #[test]
