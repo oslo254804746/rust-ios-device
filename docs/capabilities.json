@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-host-sources-47ed0d5",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned layout/copy/list prefix faults, three required-file misses with native OS code, worker IO/panic and binary archive integer overflow; public metadata list/extract rejection and external application reader success/missing-file fault"],
+      "required_state": ["Owned synthetic host source/files/local worker only; no existing backup, real credentials, device/daemon/Apple operation, copy-parent/worker-cancellation/every OS/allocator/architecture injection, running-worker termination, rollback/reuse/retry or remote cleanup certification"],
+      "tested_commit": "47ed0d5f2649ce4ed65af54ca9b5444246c6e666",
+      "date": "2026-10-02",
+      "location": "docs/validation/backup-host-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 seven erased prefix/filesystem/archive integer causes retained plus native Join context/panic category corrected. Missing required metadata becomes native NotFound; private ArchiveError Integer retains conversion source. Public four backup error variants/root APIs/results/features stay; returned variant/Display/class/source traversal migrations documented. Paths/bounds/staging/scheduling/decoding/fallback/success preserved. OPACK/XPC/other codec/guard/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-backup-inner-sources-7e5f174",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

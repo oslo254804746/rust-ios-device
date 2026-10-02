@@ -3738,3 +3738,65 @@ integer sources；UID/DTX/instruments 原 optional/raw fallback 另属行为合�
 改变。其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、
 L01/L03/A03/platform/device 条件仍待。未使用真实 backup/credentials/设备/Apple，
 未 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 主机备份文件与归档整数原生来源交付（2026-10-02）
+
+接续 clean HEAD `2b26398d8c29a5af23e8a77b93c04dfbd41ebe6e`；上一 slice
+加密/MBDB 已实现、完整验收及提交，本轮继续实际 source/class 修复，属于 PROGRESS。
+实现 `47ed0d5f2649ce4ed65af54ca9b5444246c6e666`，五个相关源码文件，首次 full
+后聚焦本地提交；无阻塞条件。
+
+七个原生来源丢失修复：host 五 StripPrefixError adapters、missing-required-file
+原 IO、archive unsigned-to-i64 原 TryFromIntError。另一个原已有 JoinError 对象
+的 adapter 改用 bounded fixed context/cache，使 panic Unknown（原 generic Io），
+cancelled Join 保留 Cancelled；不代表 running worker 终止。缺必需 Info/Manifest/
+Status 文件从 Protocol 改 Io/NotFound，保留 native source OS code；outer context
+raw_os_error 不是原码，调用者沿 source 查原 IO。Outside-root path 仍 Proto。
+固定 phase/Display/correlation/variant/class/get_ref-to-source 迁移有文档。
+
+Private ArchiveError 新增 Integer(native TryFromIntError)，另外三 variants 保留，
+没有 root export/public signature exposure；classifier 仅将它加入既有 Protocol arm。
+Public Mobilebackup2Error 四 variants/root APIs/results/features 保持。Native path/
+panic raw source/Debug 为 private data；context/outer Debug safe，panic hook 未变。
+原 created guards/optional UID/M6/raw fallbacks 未静默变化。
+
+Production comparison PASS：仅 adapters/helper、原 NotFound branch payload、新 private
+Integer variant、whitespace；host 14 原 map_err calls 保持，Manifest production/
+deps/lock/public features/exports byte-identical。Path/symlink/alias/canonicalization/
+bounds/incremental/staging/copy/remove/list/statvfs/thread/timer/depth/decoding/success 保持。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core | no-default archive decoder9、host20；minimal Manifest28、full backup87 PASS（1 既有 PBKDF2 ignored），terminal0 |
+| external / Clippy / comparison | root all23/no-default12 PASS；core/CLI 和 full workspace strict Clippy PASS；production comparison PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-backup-host-full.log` terminal0，1913 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 四 new internal、一 external；actual path/copy/list、3 required-file/OS code、binary archive/public metadata list/extract rejection/no output、root application reader success/fault。既有 integer boundary/worker IO/panic/timer fixtures 保持；非 copy-parent/cancelled worker/每 OS/allocator/architecture/rollback/running-worker termination/physical/remote cleanup injection |
+
+Corrected before-final 四日志共17 PASS/6 FAIL，每命令 terminal101，证明实际 native
+loss 或错误 class。更早 before logs 为 new test lifetime/dictionary key inference
+编译错误，不视作 intended regression；修正测试后重复 baseline。既有 unsigned
+断言和 private exhaustive negative match 随 Integer 迁移，未弱化 guard/limit/lint。
+失败日志保留；new owned UUID fixtures Drop cleanup，未用既有 backup/credentials。
+日志与界限见[专题证据](validation/backup-host-sources-2026-10-02.md)。
+
+ios0.1.13 debug SHA256
+`c6ac701899c416c8d032e6ce46f6e6f8bd6d1c574b306720ee7f65ab7dabcf1e`。
+Source full 前冻结、之后不变。上 slice 后11GiB free，确认 cargo/validate/maturin
+全部结束后官方 cargo clean -p ios-core 精确清理38.9GiB generated cache 至48GiB，
+日志 `/tmp/ios-a02-backup-host-cache-clean.log`；没有 storage failure/force-rm。
+本 full 前45GiB、后29GiB free。无额外 Chromium/installed3.9/3.13 重跑；
+catalog/quality/error contract/历史 inner follow-up 同步，maturity 保持，文档收尾另记。
+
+文档收尾：118 catalog records，五个 changed Markdown files 的105 local links
+（baseline `2b26398`）与 whitespace PASS；日志
+`/tmp/ios-a02-backup-host-docs-catalog.log`、`/tmp/ios-a02-backup-host-docs-links.log`。
+源码与 accepted full 不变，准备独立聚焦文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务与所有子任务 scope 保持。
+下一 readonly audit 已确认 OPACK 三 UTF8 source adapters 与 XPC framing/integer/
+deadline source adapters；审查笔记 `/tmp/ios-a02-backup-host-next-codec-audit.log`。
+Optional authenticated M6 info/UID/DTX/instruments raw fallback 原兼容行为保持；
+其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、L01/L03/A03/
+platform/device 条件仍待。未触及真实 backup/credentials/设备/daemon/Apple，
+未 push/publish/history rewrite/reference 编辑。

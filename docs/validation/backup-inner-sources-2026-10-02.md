@@ -94,8 +94,10 @@ Markdown files (baseline df9649e), and whitespace PASS. Logs:
 `/tmp/ios-a02-backup-inner-docs-catalog.log` and
 `/tmp/ios-a02-backup-inner-docs-links.log`. Source and full gate stay unchanged.
 
-A02/class 3/overall goal remain active; class 4 has not started. Host filesystem
-and archive integer sources, optional codec fallbacks, typed guards/created
+A02/class 3/overall goal remain active; class 4 has not started. Subsequent
+[host source validation](backup-host-sources-2026-10-02.md) retains filesystem/
+prefix/archive integer causes and corrects Join panic context; this historical
+gate is unchanged. Optional codec fallbacks, typed guards/created
 outcomes, stream/JSON/callback/binding and L01/L03/A03/platform/device conditions
 remain. All 31 tasks/subtasks and capability maturity stay. No push/publication,
 history rewrite or reference checkout edits.

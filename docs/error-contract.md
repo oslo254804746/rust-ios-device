@@ -649,6 +649,29 @@ encrypted fixtures establish host rejection/source and success behavior, not
 physical backup, every cipher/allocator/architecture fault or remote cleanup.
 Evidence: [inner backup source validation](validation/backup-inner-sources-2026-10-02.md).
 
+## Backup filesystem and archive integer sources
+
+Five host path adapters retain native StripPrefixError under existing
+Mobilebackup2Error::Io with InvalidData/protocol. Missing required backup metadata
+files now retain native IO as NotFound instead of Protocol prose, including the
+nested OS code. This is host not_found, not device_not_found or service_missing.
+Inspect Error::source for the original IO; the context's raw_os_error is not the
+original code. Blocking-task JoinError uses fixed context and its native category
+snapshot: panic is unknown, cancelled Join remains cancelled. Caller cancellation
+or that category does not certify termination of running blocking work.
+
+The private ArchiveError adds native Integer(TryFromIntError); unsigned archive
+values above i64::MAX remain protocol, with an original source. Its other variants
+and public root errors/APIs/features stay. Migrate affected Protocol/immediate
+get_ref matches to class/source traversal. Fixed phases, Display/correlations and
+missing-file/panic categories can change. Context/outer Debug omit private native
+payloads; explicit raw access remains private, and runtime panic hooks are unchanged.
+Path/symlink/platform aliases, caps, incremental/staging/copy policy, scheduling,
+decoding/depth and optional/raw fallbacks stay. Actual owned filesystem/worker/
+binary-archive/public reader fixtures establish host evidence, not every OS or
+architecture, running-worker termination, physical backup or remote cleanup.
+Evidence: [backup host source validation](validation/backup-host-sources-2026-10-02.md).
+
 ## usbmux native codec, connection and deadline sources
 
 Request serialization and received plist XML/schema faults retain original
