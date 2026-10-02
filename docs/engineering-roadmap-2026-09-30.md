@@ -2780,3 +2780,68 @@ dynamic/static/header/CLI SHA256；ios0.1.13仍为
 本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。void init/cleanup、
 其他JSON/stream callback/binding/lossy sources、L01/L03/平台/真机条件保留，无maturity
 升级、设备操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 C checked initialization/consuming cleanup（2026-10-02）
+
+上一轮两slice/four commits为真实progress，当前HEAD `f239474`、分支
+`feat/device-service-updates-20260927`、工作区clean已核对。继续void结果缺失边界，
+新增runtime init与device/tunnel/string/list consuming release共5个int-status
+entries；原void与uint16类别语义、symbols/status0–8/layout保留。checked init
+分类cached普通IO，成功清类、caught unwind为PANIC/unknown，缓存失败不重试；
+legacy init增加unwind guard而ordinary行为保留，未注入global initializer panic。
+checked release接收caller owner storage，先NULL/0再release；NULL owner报错，NULL
+owned resource success；list缺任一owner时均不修改。handle poison消耗后STATE/
+precondition、caught release unwind消耗后PANIC/unknown；不能retry saved aliases。
+cleanup也覆盖TLS类别，必须先保存原operation status/category。shared release
+helpers供旧/新接口使用，不推断Apple cleanup/task join，L01/A03更强合同保留。
+
+6条新增owned主机fixture：cached native runtime projection不执行operation、实际
+global success/idempotent与旧initializer类别保留、NULL vs empty owner、真实allocated
+lists/strings与拒绝owner不消耗、no-device handle正常/poison释放、shared helper的
+counted destructor unwind/clear-before/drop-once。FFI29 PASS、strict Clippy和strict
+linked C/actual owned ListDevices checked free PASS，分别
+`/tmp/ios-a02-c-lifecycle-host.log`、`/tmp/ios-a02-c-lifecycle-clippy.log`、
+`/tmp/ios-a02-c-lifecycle-abi.log`，terminal0。23 source/header/config names齐全，非
+cbindgen运行或一般ABI证明；27专题本地links/whitespace/fmt PASS。一次docs patch
+context不匹配无写入，核对后修正。第11节full安排
+`/tmp/ios-a02-c-lifecycle-full.log`，结果/审查/提交与文档收尾待完成。
+A02/第三类/总体目标active；其他JSON/stream callbacks、binding/source、L01/L03/
+A03与真实平台/device/资源耗尽/全局poison/有序cleanup条件保留，第四类尚未开始。
+
+### 大类 3：A02 C checked initialization/cleanup 主机验收与交付（2026-10-02）
+
+实现 `5c0649a5b077db5ba78a34fdba8fb2b0e07cccfe`（10个相关文件），完整gate后
+聚焦本地提交。5个additive int-status initializer/consuming cleanup，native cached
+runtime来源分类、accepted owner清NULL/0后release、poison STATE/precondition与
+caught unwind PANIC/unknown；saved alias不得retry，必须先保存operation类别再
+checked cleanup。原14接口与4个前additions/status/layout保留，旧void cleanup/
+uint16不更新category；legacy init增加unwind guard的迁移写入public/error/README/
+CHANGELOG。examples检查init与consuming free；shared helpers无Apple/task-join证明。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| FFI专项 | 29 Rust PASS/0 FAIL/ignored；`/tmp/ios-a02-c-lifecycle-host.log` terminal0；strict all-target/all-feature Clippy `/tmp/ios-a02-c-lifecycle-clippy.log` PASS terminal0 |
+| C专项 | strict23 signatures/header/link/example、NULL/no-op/runtime、raw capture、owned malformed/checked ListDevices/consuming free PASS；`/tmp/ios-a02-c-lifecycle-abi.log` terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-c-lifecycle-full.log` terminal0；1786 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/范围 | 所有23 source/header/config names一致，不声称cbindgen运行或一般ABI验收。NULL required owner未消耗，accepted pointers先clear，saved static类别仍有效；physical/task join与actual global runtime fail/poison待条件。无额外Chromium或installed3.9/3.13重跑 |
+
+6条新增owned fixtures：cached IO投影保持private原值且不执行operation，真实global
+runtime repeated success/legacy category，NULL vs empty release，真实allocated list/
+RSD JSON string及reject不消耗，正常/poison no-device handles，shared helper counted
+destructor clear-before/drop-once/unwind与NULL no-op不再调用release。strict linked C
+真实owned ListDevices/free包括缺owner仍保留outputs；一份valid legacy list继续旧free。
+句柄无ConnectedDevice owner、panic仅shared helper destructor，不冒充真实设备Drop/
+有序Apple cleanup。docs context首次fail无写入和精确SHA见
+[专题证据](validation/c-checked-lifecycle-2026-10-02.md)；ios0.1.13 SHA256仍为
+`24c44a2288cd7c2fa9ccd3d82a8426be576d81ee089ceb81010478a90d02043b`。
+
+文档收尾catalog118 records/106 changed local Markdown links/whitespace PASS；
+准确实现hash、可验证host范围与真实剩余条件写入catalog/quality/roadmap/专题证据。
+
+本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。下一项注册的streaming
+install：core现有ProgressCallback为void，CLI startup/progress eprintln不保留output
+IO失败；需要兼容入口/checked observer路径与native/partial fixtures，未列为当前PASS。
+其他JSON/stream/callback/binding/source、L01/L03/A03与真实平台/device/全局poison/
+资源耗尽/有序cleanup条件保留，无maturity升级、设备操作、推送/发布、历史改写或
+reference checkout修改。文档收尾后继续。

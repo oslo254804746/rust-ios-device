@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-c-checked-lifecycle-5c0649a",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned cached runtime IO projection and real initializer success; exported cleanup over allocated strings/lists and no-device poisoned handles, counted consuming-helper unwind, strict linked C owned ListDevices/free"],
+      "required_state": ["Host projection/local ownership only; no global runtime failure/poison injection, ConnectedDevice teardown, task join, physical tunnel or Apple cleanup certification"],
+      "tested_commit": "5c0649a5b077db5ba78a34fdba8fb2b0e07cccfe",
+      "date": "2026-10-02",
+      "location": "docs/validation/c-checked-lifecycle-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 additive checked initialization/consuming cleanup statuses with cached native categories, clear-before-release, state/unwind outcomes and original void category/ABI retained. Other callbacks/JSON/binding/source/lifecycle work remains pending; no maturity upgrade."
+    },
+    {
       "id": "linux-c-checked-ports-32a7e06",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
