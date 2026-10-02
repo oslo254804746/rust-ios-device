@@ -35,6 +35,8 @@ next work, followed by default-profile lockdown sources. The subsequent
 [manual transport follow-up](manual-pairing-sources-2026-10-02.md) retains those
 four outer chains and other native transport/codec errors; full device pairing
 and remaining default/codec/lifecycle conditions still require separate evidence.
+The later [default-profile follow-up](default-lockdown-sources-2026-10-02.md)
+retains default lockdown sources, while supervised/codec/lifecycle work remains.
 
 | Check | Result |
 | --- | --- |
@@ -92,7 +94,9 @@ the full gate.
 A02/class 3/overall goal remain active; class 4 has not started. At this checkpoint,
 outer manual pairing RSD/H2/XPC/bootstrap/crypto/JSON needed retention; the
 subsequent transport evidence above records that follow-up. Default lockdown
-PEM/TLS/plist/version/pair-record and other codec/legacy sources remain.
+PEM/TLS/plist/version/pair-record sources remained at that checkpoint; the
+default-profile evidence above records their follow-up. Supervised OpenSSL/
+record-save and other codec/legacy sources remain.
 Other A02 stream/output/binding,
 L01/L03/A03 and platform/device conditions remain. Classification does not
 authorize retry or prove cleanup, invalidation/reuse or cancellation of running

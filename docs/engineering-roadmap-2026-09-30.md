@@ -3406,3 +3406,54 @@ PASS；日志 `/tmp/ios-a02-manual-pairing-docs-catalog.log` 与
 下一defaultlockdown plist/PEM/rustls/version/PairRecord source；也需继续codec
 integer/guard legacystrings、createdoutcomes、streams/JSON/callback/binding与
 L01/L03/A03/platform/device条件。无推送/发布、history rewrite、设备或reference操作。
+
+### 大类 3：A02 默认 lockdown 原生来源主机验收与交付（2026-10-02）
+
+从clean HEAD `de8439406c2f7d83bfacaf30e381ab38b44a48ca` 接续；上一轮manual
+transport的文档收尾已提交。实现 `d81fa3f5517dcfbd008dccc4bda963cff8e193c0`
+（12个相关文件）已在完整门禁首次通过后本地聚焦提交。
+
+九个adapter保留request/response plist、semver、两PEM IO、rustls client-auth、
+DNS name、TLS IO和本地PairRecord plist；missingfile额外保留原生IO/OS code。
+现有LockdownError::Io与PairRecordError::Read承载source，两个公开三variant
+exhaustive enum保留。私有fixedcontext/cached32-source实现及三generic测试移至
+always-compiled error模块，原source/Debug/snapshot行为保留，device内部re-export。
+默认构建可保留opaque rustls Unknown；native TLS/文件kind保留，本地输入Input、
+收到plist/version Protocol。受影响Protocol/NotFound/Parse到Io/Read、Display/
+correlation迁移明确记录，未靠错误文本分类。
+
+TLS provider/verifier/name/参数、requests/selectors、frame/file limits、Zeroizing
+buffer/key、版本一/二段归一化、成功路径保持，无deps/lockfile/features/CLI/binding
+变化或新增timeout/retry/trust。emptycert/missingkey/field/SSL/readahead等created
+outcomes原Protocol保留，不伪造nativecause。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core | default lockdown31、full52 PASS；sharedcontext default/full各3、既有device2/manual18 PASS，terminal0 |
+| 外部consumer/Clippy | root public_contract full17/default10 PASS；core/CLI与full workspace strict Clippy PASS terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-default-lockdown-full.log` terminal0，1864Rust/13Python、0FAIL、2既有ignored |
+| 其余完整gate | fmt/check/MSRV1.80、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 九新增core+一external；actualserializer/frame/file/PEM/DER/name/version/TLS faults与file/framing/version/TLS appIOsuccess；bounded坏TLSpeer、两peer join/drop；非entirelockdownsession/device/trust/remoteACK/reuse/runningblockingcancel |
+
+初fixture两轮lifetime/typeinfer编译错误修正后，未改production的九个runtime
+回归2PASS/7FAIL，terminal101；原日志
+`/tmp/ios-a02-default-lockdown-before{,-final,-runtime}.log` 保留。首次postfix窄测
+30PASS/1FAIL因坏TLSfixture半个handshakeheader等待alert超时；修正为完整illegal
+record后31PASS，原 `/tmp/ios-a02-default-lockdown-core.log` terminal101保留。
+未弱化门禁/lint/timeout。默认窄测五个既有tunnel-MTU deadcode warnings保持，
+all-feature strict PASS无新增allow。其余专项日志前缀
+`/tmp/ios-a02-default-lockdown-`，准确文件见[专题记录](validation/default-lockdown-sources-2026-10-02.md)。
+
+测试ios0.1.13 debugbinary SHA256
+`754e4c9fb9618a340af415ccf0afb8d5393a3a1ce714eb64927a81c1e64d543b`。
+无额外Chromium/installed3.9/3.13重跑；无storage失败/清理，可用约39GiB到28GiB。
+source full后未变。catalog/quality/errorcontract与历史pairing专题followup同步，
+未升级maturity。文档收尾118catalogrecords、103localMarkdownlinks（七个changed
+Markdownfiles，baseline de84394）及whitespace PASS；日志
+`/tmp/ios-a02-default-lockdown-docs-catalog.log` 和
+`/tmp/ios-a02-default-lockdown-docs-links.log`。准备独立聚焦文档提交。
+
+A02/第三类/总体goal active，第四类未开始，完整31任务/子任务scope保持。
+接续supervised-pair OpenSSL/record-save原生来源，再codec整数转换/typedguards/
+createdoutcomes、stream/JSON/callback/binding与L01/L03/A03/platform/device条件。
+本片段未真实credentialstore/设备/Apple请求，也未推送/发布、改写history或编辑reference。

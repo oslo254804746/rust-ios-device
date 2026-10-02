@@ -122,7 +122,11 @@ bool here; the pairing module/type itself is tunnel-gated. The
 [inner-source follow-up](inner-pairing-sources-2026-10-02.md) retains these seven
 adapters; at that checkpoint the public manual-pairing transport still flattened
 four inner causes. The later [manual transport follow-up](manual-pairing-sources-2026-10-02.md)
-retains those and other original transport/codec objects. Other A02 JSON/stream/callback/binding boundaries,
+retains those and other original transport/codec objects. The later
+[default-profile follow-up](default-lockdown-sources-2026-10-02.md) moves the
+shared context and three generic tests into the always-compiled error module,
+retaining default lockdown native sources and missing-file IO. Supervised
+OpenSSL/record-save and other A02 JSON/stream/callback/binding boundaries,
 L01/L03/A03 and platform/device acceptance remain. Error classification does
 not authorize retry or prove remote cleanup, client invalidation or reuse; outer
 cancellation still does not stop already-running blocking work. No capability

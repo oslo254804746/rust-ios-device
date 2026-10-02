@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-default-lockdown-sources-d81fa3f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual plist/PEM/DER/DNS/version faults and successes; owned temporary pairing files; owned TLS closed write/invalid record/backend and real handshake/application IO; default shared-context native/cycle/Join checks; external root APIs"],
+      "required_state": ["Host stage/source/local file/duplex join/drop only; no real credential store, complete lockdown session, device pairing/Apple operation, new trust policy, running-worker cancellation, reuse or remote cleanup certification"],
+      "tested_commit": "d81fa3f5517dcfbd008dccc4bda963cff8e193c0",
+      "date": "2026-10-02",
+      "location": "docs/validation/default-lockdown-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 nine default lockdown/local plist adapters retain original objects through existing Io/Read plus missing-file native IO/OS code; private bounded context now always compiled. Local input/remote protocol/opaque unknown roles and TLS native kinds are preserved; returned variant/Display migration documented. Exhaustive enums, signatures, dependencies/features, requests, limits, zeroizing storage, version normalization and TLS/trust/success unchanged. Supervised/other sources/streams/bindings/lifecycle/platform/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-manual-pairing-sources-d694cfa",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

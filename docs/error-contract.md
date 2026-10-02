@@ -521,6 +521,45 @@ the encryption adapter uses a typed native-error fixture. No device, new trust,
 real credential directory or Apple request is involved. Local drop/join does not
 prove remote cleanup, rollback, invalidation/reuse or safe retry.
 
+## Default lockdown native sources
+
+Default builds now retain request/response plist, ProductVersion semver,
+certificate/key PEM, rustls client-auth, DNS-name and TLS-handshake errors through
+existing LockdownError::Io. The common private source/context adapter is always
+compiled; cached Unknown and the 32-source construction bound remain. Local
+serialization/PEM/name failures are InvalidInput; received plist/version faults
+are InvalidData/protocol. Opaque rustls configuration errors remain unknown.
+TLS preserves original IO kind and backend payload. These categories express
+typed causes or the explicit input/response role, without matching prose.
+
+PairRecord::load/load_from_path now return existing PairRecordError::Read for
+missing files and malformed local plists. Missing-file failures retain native
+NotFound IO/OS code; malformed plists retain plist::Error under InvalidInput.
+Both keep their previous `not_found`/`invalid_input` classes. The Read path field
+and native sources remain explicitly inspectable; Display/Debug still omit
+credential paths/data. All three variants of both public error enums remain.
+Migrate affected NotFound/Parse/Protocol matches to class/source observations;
+Display prefixes and safe correlations can change. Original source/Display
+access remains private data, while context Debug omits payloads.
+
+The explicit path remains authoritative and the identifier argument remains
+accepted. The file bound/Zeroizing key and buffer, frame budget, ProductVersion
+normalization, selectors and successful output remain. TLS provider/verifier,
+server names and parameters stay; no timeout, retry or trust policy is added.
+Created validation failures (empty certificate, missing key/fields, disabled SSL,
+read-ahead guard) retain their existing Protocol outcomes without invented causes.
+
+Owned host fixtures cover actual malformed/valid serializers and files, native
+PEM/DER/name errors, closed TLS write and malformed peer/backend, successful
+duplex TLS/application IO, product-version normalization and root API consumers.
+The internally constructed version client and unpolled root constructor do not
+prove full lockdown session/device pairing. Shared-context default tests cover
+native kinds/Unknown, bounded cyclic sources and actual Join flags. Native
+classification does not authorize retry or certify running-worker cancellation,
+remote cleanup or stream reuse. Supervised OpenSSL/record-save, other codec/
+created outcome/stream/binding and L01/L03/A03 conditions remain. Evidence:
+[default lockdown source validation](validation/default-lockdown-sources-2026-10-02.md).
+
 ## Deactivation fallback and activation HTTP sources
 
 `ConnectedDevice::deactivate` attempts mobileactivationd and, on failure, one

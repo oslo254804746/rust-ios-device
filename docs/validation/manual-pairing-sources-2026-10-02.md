@@ -92,8 +92,11 @@ links across eight changed Markdown files and whitespace PASS. Logs:
 implementation and documentation follow-up. Source remained unchanged after
 the full gate.
 
-A02/class 3/overall goal remain active; class 4 has not started. Default lockdown
-plist/PEM/rustls/version/pair-record sources are next. Other codec conversions,
+A02/class 3/overall goal remain active; class 4 has not started. At this checkpoint,
+default lockdown plist/PEM/rustls/version/pair-record sources were next. The
+[default-profile follow-up](default-lockdown-sources-2026-10-02.md) now retains
+those sources and missing-file IO, with unchanged TLS/trust/success behavior.
+Supervised OpenSSL/record-save sources and other codec conversions,
 legacy created outcomes, A02 stream/output/binding, L01/L03/A03 and platform/
 device conditions remain. Classification does not authorize retry or certify
 cleanup, invalidation/reuse or cancellation of running blocking work. No maturity
