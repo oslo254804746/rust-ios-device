@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Honor JSON mode for application mutation statuses with versioned tagged
+  results and ordered pkill progress/completion records. Retain human bytes,
+  stop subsequent calls on failure, preserve DTX/deadline/routing sources, and
+  retain appservice fallback for named typed service misses.
+
+- Apply the syslog 1 MiB input limit to terminated final chunks before copying;
+  preserve exact-limit/next-message behavior and prior CLI NDJSON on rejection.
+
 - Return syslog relay read/EOF failures through the safe CLI failure path with
   exit 1 and retained native sources, preserving prior records and successful
   count/capture-time stops. Keep NDJSON/human bytes, check record write/flush and

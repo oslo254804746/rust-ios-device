@@ -377,6 +377,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_message_limit_fails_after_prior_ndjson_record() {
+        let mut wire = b"complete\0".to_vec();
+        wire.resize(wire.len() + 1024 * 1024 + 1, b'x');
+        wire.push(0);
+        let reader = OwnedReader::new(wire, None);
+        let drops = Arc::clone(&reader.drops);
+        let mut output = String::new();
+        let error = command(&[])
+            .consume_logs(ios_core::syslog::into_stream(reader), true, |record| {
+                output.push_str(record);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert_failure(
+            &error,
+            io::ErrorKind::InvalidData,
+            ios_core::ErrorClass::Protocol,
+        );
+        let records: Vec<serde_json::Value> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["raw"], "complete");
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn matching_count_is_success_and_drops_reader_before_terminal_failure() {
         let reader = OwnedReader::new(
             b"discarded\0selected first\0selected second\0".to_vec(),

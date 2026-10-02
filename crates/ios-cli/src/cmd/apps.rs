@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use crate::cmd::connect::{connect_by_ios_major, userspace_options};
 
+mod mutation_output;
+use mutation_output::Mutation;
+
 #[derive(clap::Args)]
 pub struct AppsCmd {
     #[command(subcommand)]
@@ -288,7 +291,13 @@ impl AppsCmd {
                     )
                     .await
                     .context("streaming zip conduit install failed")?;
-                    crate::output::outln!("Installed {ipa_path} (streaming)");
+                    mutation_output::emit(
+                        &Mutation::Install {
+                            path: &ipa_path,
+                            streaming: true,
+                        },
+                        json,
+                    )?;
                     return Ok(());
                 }
 
@@ -398,7 +407,13 @@ impl AppsCmd {
                 }
 
                 cleanup_result.context("installed app but failed to remove staged payload")?;
-                crate::output::outln!("Installed {ipa_path}");
+                mutation_output::emit(
+                    &Mutation::Install {
+                        path: &ipa_path,
+                        streaming: false,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Upgrade { ipa_path } => {
                 let source_path = std::path::Path::new(&ipa_path);
@@ -484,7 +499,7 @@ impl AppsCmd {
                 }
 
                 cleanup_result.context("upgraded app but failed to remove staged payload")?;
-                crate::output::outln!("Upgraded {ipa_path}");
+                mutation_output::emit(&Mutation::Upgrade { path: &ipa_path }, json)?;
             }
             AppsSub::Archive { bundle_id } => {
                 let stream = device
@@ -492,7 +507,12 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.archive(&bundle_id).await?;
-                crate::output::outln!("Archived {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Archive {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Restore { bundle_id } => {
                 let stream = device
@@ -500,7 +520,12 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.restore(&bundle_id).await?;
-                crate::output::outln!("Restored {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Restore {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Show { bundle_id, attrs } => {
                 let stream = device
@@ -546,7 +571,7 @@ impl AppsCmd {
                     Ok::<_, anyhow::Error>(proxy.query(&bundle_id).await?)
                 })
                 .await
-                .map_err(|_| anyhow::anyhow!("install-record timed out after {timeout:?}"))??;
+                .with_context(|| format!("install-record timed out after {timeout:?}"))??;
                 let output = install_record_to_json(&result);
                 if json {
                     crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
@@ -574,10 +599,10 @@ impl AppsCmd {
                             super::instruments::connect_instruments(&udid).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            .context("DTX error")?;
                         di.running_processes()
                             .await
-                            .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
+                            .context("runningProcesses error")?
                             .into_iter()
                             .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
@@ -623,22 +648,20 @@ impl AppsCmd {
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
-                        pc.kill(pid)
-                            .await
-                            .map_err(|err| anyhow::anyhow!("kill error: {err}"))?;
+                                .context("DTX error")?;
+                        pc.kill(pid).await.context("kill error")?;
                     }
                     Err(e) => return Err(e.into()),
                 }
-                crate::output::outln!("Killed process {pid}");
+                mutation_output::emit(&Mutation::Kill { pid }, json)?;
             }
             AppsSub::Signal { pid, signal } => match connect_appservice(&device, &udid).await {
                 Ok(mut client) => {
                     client.send_signal(pid, signal).await?;
-                    crate::output::outln!("Sent signal {signal} to process {pid}");
+                    mutation_output::emit(&Mutation::Signal { pid, signal }, json)?;
                 }
                 Err(e) if should_fallback_to_instruments(&e) => {
-                    return Err(anyhow::anyhow!(
+                    return Err(anyhow::Error::new(e).context(
                             "arbitrary signal sending requires iOS 17+ appservice (not available on this device); \
                              use 'apps kill' for SIGKILL which supports DTX fallback"
                         ));
@@ -653,10 +676,10 @@ impl AppsCmd {
                             super::instruments::connect_instruments(&udid).await?;
                         let mut di = ios_core::instruments::DeviceInfoClient::connect(stream)
                             .await
-                            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                            .context("DTX error")?;
                         di.running_processes()
                             .await
-                            .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?
+                            .context("runningProcesses error")?
                             .into_iter()
                             .map(|p| ios_core::apps::RunningAppProcess {
                                 pid: p.pid,
@@ -670,40 +693,34 @@ impl AppsCmd {
                     Err(e) => return Err(e.into()),
                 };
 
-                let pattern_lower = pattern.to_ascii_lowercase();
-                let matched: Vec<_> = processes
-                    .iter()
-                    .filter(|p| p.name.to_ascii_lowercase().contains(&pattern_lower))
-                    .collect();
-
-                if matched.is_empty() {
-                    crate::output::outln!("No processes matched pattern '{pattern}'");
-                } else {
-                    for p in &matched {
-                        match connect_appservice(&device, &udid).await {
-                            Ok(mut client) => client.send_signal(p.pid, signal).await?,
+                let device_ref = &device;
+                let udid_ref = udid.as_str();
+                mutation_output::signal_matches(&processes, &pattern, signal, json,
+                    |pid| async move {
+                        match connect_appservice(device_ref, udid_ref).await {
+                            Ok(mut client) => client.send_signal(pid, signal).await?,
                             Err(e) if should_fallback_to_instruments(&e) => {
                                 if !pkill_signal_allows_instruments_fallback(signal) {
-                                    return Err(anyhow::anyhow!(
+                                    return Err(anyhow::Error::new(e).context(format!(
                                         "apps pkill --signal {signal} requires iOS 17+ appservice \
                                          because Instruments fallback only supports SIGKILL (9)"
-                                    ));
+                                    )));
                                 }
                                 let (_device, stream) =
-                                    super::instruments::connect_instruments(&udid).await?;
+                                    super::instruments::connect_instruments(udid_ref).await?;
                                 let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
                                     .await
-                                    .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
-                                pc.kill(p.pid)
+                                    .context("DTX error")?;
+                                pc.kill(pid)
                                     .await
-                                    .map_err(|err| anyhow::anyhow!("kill error: {err}"))?;
+                                    .context("kill error")?;
                             }
                             Err(e) => return Err(e.into()),
                         }
-                        crate::output::outln!("Sent signal {signal} to {} (pid {})", p.name, p.pid);
-                    }
-                    crate::output::outln!("Killed {} process(es)", matched.len());
-                }
+                        Ok(())
+                    },
+                    |record| crate::output::write_formatted(format_args!("{record}")),
+                ).await?;
             }
             AppsSub::Launch { bundle_id } => {
                 let pid = match connect_appservice(&device, &udid).await {
@@ -716,21 +733,23 @@ impl AppsCmd {
                         let mut pc =
                             ios_core::instruments::process_control::ProcessControl::connect(stream)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+                                .context("DTX error")?;
                         let env = HashMap::new();
                         Some(
                             pc.launch(&bundle_id, &[], &env)
                                 .await
-                                .map_err(|err| anyhow::anyhow!("launch error: {err}"))?,
+                                .context("launch error")?,
                         )
                     }
                     Err(e) => return Err(e.into()),
                 };
-                if let Some(pid) = pid {
-                    crate::output::outln!("Launched {bundle_id} (pid {pid})");
-                } else {
-                    crate::output::outln!("Launched {bundle_id}");
-                }
+                mutation_output::emit(
+                    &Mutation::Launch {
+                        bundle_id: &bundle_id,
+                        pid,
+                    },
+                    json,
+                )?;
             }
             AppsSub::Roots => {
                 let mut client = connect_appservice(&device, &udid).await?;
@@ -843,9 +862,7 @@ impl AppsCmd {
                     client.monitor_process_termination(pid),
                 )
                 .await
-                .map_err(|_| {
-                    anyhow::anyhow!("timed out waiting for process {pid} termination")
-                })??;
+                .with_context(|| format!("timed out waiting for process {pid} termination"))??;
                 let output = process_termination_to_json(&termination);
                 crate::output::outln!("{}", serde_json::to_string_pretty(&output)?);
             }
@@ -855,7 +872,12 @@ impl AppsCmd {
                     .await?;
                 let mut proxy = ios_core::apps::InstallationProxy::new(stream);
                 proxy.uninstall(&bundle_id).await?;
-                crate::output::outln!("Uninstalled {bundle_id}");
+                mutation_output::emit(
+                    &Mutation::Uninstall {
+                        bundle_id: &bundle_id,
+                    },
+                    json,
+                )?;
             }
         }
         Ok(())
@@ -917,6 +939,10 @@ async fn connect_appservice(
 
 fn should_fallback_to_instruments(err: &CoreError) -> bool {
     match err {
+        CoreError::Xpc(ios_core::XpcError::ServiceNotFound(service)) => matches!(
+            service.as_str(),
+            ios_core::apps::APPSERVICE_SERVICE | "com.apple.coredevice.appservice.shim.remote"
+        ),
         CoreError::Unsupported(message) => {
             message.contains("service 'com.apple.coredevice.appservice' not found")
                 || message.contains("RSD not available")
@@ -1870,6 +1896,34 @@ mod tests {
         )));
         assert!(should_fallback_to_instruments(&CoreError::Unsupported(
             "service 'com.apple.coredevice.appservice' not found".into()
+        )));
+    }
+
+    #[test]
+    fn instruments_fallback_accepts_only_named_typed_appservice_misses() {
+        for name in [
+            ios_core::apps::APPSERVICE_SERVICE,
+            "com.apple.coredevice.appservice.shim.remote",
+        ] {
+            assert!(should_fallback_to_instruments(&CoreError::Xpc(
+                ios_core::XpcError::ServiceNotFound(name.into()),
+            )));
+        }
+        assert!(!should_fallback_to_instruments(&CoreError::Xpc(
+            ios_core::XpcError::ServiceNotFound("other-service".into()),
+        )));
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            assert!(!should_fallback_to_instruments(&CoreError::Xpc(
+                ios_core::XpcError::Io(std::io::Error::from(kind)),
+            )));
+        }
+        assert!(!should_fallback_to_instruments(&CoreError::Other(
+            "service 'com.apple.coredevice.appservice' not found".into(),
         )));
     }
 

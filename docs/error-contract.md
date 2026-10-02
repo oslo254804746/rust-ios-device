@@ -253,7 +253,68 @@ failure; an owned idle duplex observes capture expiry and peer EOF. This proves
 local stream drop, without certifying physical relay/signal behavior, connection
 reuse, rollback or device cleanup. Migrate scripts that relied on relay failure
 as exit 0 to preserve valid prior records and handle the nonzero result. Other
-streams, JSON mutation statuses and binding/lifecycle boundaries remain pending.
+streams and binding/lifecycle boundaries remain pending.
+
+The relay's 1 MiB limit applies to message bytes before the NUL delimiter and
+before vis/UTF-8 decoding. The cumulative check now also covers the final chunk
+containing NUL, before copying it into the message buffer. An exact-limit record
+is accepted; one extra byte is InvalidData/`protocol`, whether or not the final
+chunk contains its terminator. Previously a terminated final chunk could bypass
+the check. CLI syslog returns this error with prior NDJSON retained and no
+oversized record emitted. Discard the reader after a size error; this fix does
+not establish error/cancellation-safe reuse or a limit on the serialized JSON's
+size after decoding/escaping. L01 retains connection invalidation/reuse work.
+
+`apps install`, `upgrade`, `archive`, `restore`, `kill`, `signal`, `launch` and
+`uninstall` now honor global JSON mode instead of printing human status lines.
+Each emits one compact newline-terminated result after its existing service and,
+where present, staging-cleanup checks. New records contain integer
+`schema_version: 1`, an `operation` tag and the fields below. Preserve a version
+and unknown-operation fallback, and ignore future extra fields. `--no-json`
+retains the prior human bytes. Existing list/show/install-record/processes/roots/
+spawn/icons/monitor JSON shapes stay unchanged.
+
+| Operation | New result fields |
+| --- | --- |
+| `install` | `path` and boolean `streaming` |
+| `upgrade` | `path` |
+| `archive`, `restore`, `uninstall` | `bundle_id` |
+| `kill` | unsigned `pid` |
+| `signal` | unsigned `pid`, signed `signal` |
+| `launch` | `bundle_id`, `pid` (null if the existing service result supplies no PID) |
+| `pkill` | `pattern`, `signal`, `matched_count`, `completed_count`, `complete`; per-process records additionally contain `process: {pid, name}` |
+
+`apps pkill` JSON is NDJSON. After each successful signal call it emits a record
+with `complete: false`, that process and the number of calls completed so far.
+After all matching calls succeed it emits one summary with `complete: true` and
+no process field. No matches yields only the zero-count complete summary and no
+signal calls. Counts describe successful signal requests, not observed process
+termination. ASCII case-insensitive matching, process order and per-process
+connections are unchanged. The human summary keeps its old wording, including
+"Killed" for a selected signal other than SIGKILL.
+
+A request failure preserves prior records and emits no complete summary. An
+output failure also stops before the next process and may leave a partial final
+record. Final errors retain their native source, exit 1 and unknown effects;
+there is no rollback or automatic retry guarantee. Even a valid result can be
+followed by a flush error. Result data intentionally includes requested paths,
+bundle identifiers and process names; it is distinct from safe diagnostics.
+Install/upgrade can succeed on the device before later cleanup/output failure,
+so absence of a success record does not establish absence of device effects.
+Streaming-install stderr callbacks remain a separate pending IO boundary.
+
+Application fallback accepts the existing typed ServiceNotFound only for the
+canonical appservice and its shim, retaining old Unsupported compatibility
+cases. Native timeout/permission/refusal/broken-pipe or another missing service
+does not select fallback. Ten DTX adapters now retain sources through fixed
+anyhow contexts; install-record/monitor wrappers retain Tokio Elapsed, and
+signal prerequisites keep the original routing error under context. Error enum
+definitions, deadlines, successful wire calls and SIGKILL-only Instruments
+fallback are unchanged. Returned error source/class, Display context and safe
+correlation can change. The output/ordered-call fixtures use owned callbacks;
+they do not certify physical mutation, DTX fallback or complete CLI service
+startup workflows. Other JSON commands, callbacks and binding/lifecycle boundaries
+remain pending.
 
 ## Python exceptions
 

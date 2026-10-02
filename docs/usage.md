@@ -208,6 +208,15 @@ ios -u <UDID> wda --device-port 8100 status
 ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
 ```
 
+Application mutations honor global JSON mode: install, upgrade, archive, restore,
+kill, signal, launch and uninstall return compact version-1 result objects.
+Use `--no-json` to retain their human status messages. `apps pkill PATTERN`
+returns NDJSON progress after each successful signal request, then a record with
+`complete: true`. A failure keeps prior records and has exit 1; incomplete
+progress does not authorize retrying signals. No matches returns a complete
+zero-count summary. The [error/partial-result contract](error-contract.md)
+documents the fields and output/cleanup limits.
+
 `apps list --coredevice`, `apps processes`, `apps launch`, `apps roots`,
 `apps spawn`, and `apps monitor` use newer app service paths. `apps icons` uses
 the independent CoreDevice `iconservice` on iOS 17+ and the legacy SpringBoard
@@ -443,6 +452,11 @@ flush failure also exits 1 and may leave an incomplete final JSON record.
 `--error-format=json` places the safe final failure on stderr; the streaming
 progress line is still stderr text. See the [error/partial-result
 contract](error-contract.md) before treating a partial stream as complete.
+
+Each incoming syslog message is limited to 1 MiB before NUL termination and
+decoding. Over-limit messages fail as protocol errors, including a final chunk
+that contains NUL; earlier complete records remain available. This input budget
+is separate from the size of decoded/escaped JSON output.
 
 `os-trace stream` (also available as `os-trace live`) performs the binary
 `StartActivity` handshake and emits one structured record per line. Filters

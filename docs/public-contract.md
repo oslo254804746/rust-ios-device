@@ -94,6 +94,17 @@ and stderr progress failures are checked. Matching-count and chosen capture-time
 stops remain successful. See the [error contract](error-contract.md) for native
 classes, partial-result migration and local drop versus device cleanup evidence.
 
+Application mutations now honor global JSON mode with new compact version-1
+tagged result records. `pkill` emits ordered NDJSON progress and a final complete
+summary only after all matching signal calls succeed. Prior records survive
+failure; output failure prevents the next call. Human mode retains its old
+bytes and other app JSON queries retain their existing shapes. Migrate scripts
+that parsed the old human statuses in default JSON mode by selecting `--no-json`
+or the new version/tag fields. See the [error contract](error-contract.md) for
+exact fields, signal-request counts, output/cleanup uncertainty and host scope.
+Named typed appservice misses retain existing fallback behavior; native failure
+sources now survive DTX/deadline/prerequisite contexts without new enum variants.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing
