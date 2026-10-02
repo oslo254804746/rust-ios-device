@@ -2545,7 +2545,22 @@ mod tests {
             Some("wrong-password"),
         )
         .expect_err("wrong password");
-        assert!(error.to_string().contains("password") || error.to_string().contains("wrapped"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = false;
+        for _ in 0..32 {
+            let Some(current) = source else { break };
+            if let Some(native) = current.downcast_ref::<aes_kw::Error>() {
+                assert!(matches!(native, aes_kw::Error::IntegrityCheckFailed));
+                found = true;
+                break;
+            }
+            source = current.source();
+        }
+        assert!(
+            found,
+            "native AES-KW failure must survive the public error chain"
+        );
         assert!(!wrong_output.join("HomeDomain/Library/SMS/sms.db").exists());
         assert!(device.join("Manifest.db").is_file());
         assert!(device.join(&keep_id[..2]).join(&keep_id).is_file());

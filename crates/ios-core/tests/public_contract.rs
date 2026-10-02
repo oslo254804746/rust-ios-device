@@ -85,6 +85,68 @@ fn root_backup_metadata_error_keeps_exhaustive_family_and_native_sqlite_source()
     assert!(!format!("{error:?} {:?}", source.get_ref()).contains("owned-private"));
 }
 
+#[cfg(feature = "backup2-manifest")]
+#[test]
+fn root_legacy_backup_rejection_keeps_native_utf8_bytes_without_public_variant_changes() {
+    use ios_core::{
+        backup2::{list_backup_entries, Mobilebackup2Error},
+        classify_error, ErrorClass,
+    };
+    use std::error::Error;
+    struct OwnedDirectory(std::path::PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = OwnedDirectory(
+        std::env::temp_dir().join(format!("ios-public-mbdb-{}", uuid::Uuid::new_v4())),
+    );
+    let device = root.0.join("owned-device");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(device.join("Info.plist"), b"owned-info").unwrap();
+    std::fs::write(device.join("Status.plist"), b"owned-status").unwrap();
+    plist::to_file_xml(
+        device.join("Manifest.plist"),
+        &plist::Dictionary::from_iter([
+            ("IsEncrypted", plist::Value::Boolean(false)),
+            (
+                "Lockdown",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ProductVersion",
+                    "10.2",
+                )])),
+            ),
+        ]),
+    )
+    .unwrap();
+    let bytes = [
+        b"mbdb\x05\x00".as_slice(),
+        b"\x00\x0eowned-private\xff".as_slice(),
+    ]
+    .concat();
+    std::fs::write(device.join("Manifest.mbdb"), bytes).unwrap();
+    let error = list_backup_entries(&root.0, "owned-device", None).unwrap_err();
+    assert!(matches!(&error, Mobilebackup2Error::Io(_)));
+    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+    assert!(!format!("{error:?}").contains("owned-private"));
+    let mut current: Option<&(dyn Error + 'static)> = Some(&error);
+    let mut found = false;
+    for _ in 0..32 {
+        let Some(source) = current else { break };
+        if let Some(native) = source.downcast_ref::<std::string::FromUtf8Error>() {
+            assert_eq!(native.as_bytes(), b"owned-private\xff");
+            found = true;
+            break;
+        }
+        current = source.source();
+    }
+    assert!(
+        found,
+        "native UTF8 source must remain reachable from root API"
+    );
+}
+
 #[tokio::test]
 async fn default_lockdown_root_api_retains_sources_and_exhaustive_errors() {
     use ios_core::{

@@ -60,6 +60,14 @@ pub(crate) enum CryptoError {
     Io(#[from] std::io::Error),
 }
 
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CryptoError {
+    CryptoError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
 /// A parsed BackupKeyBag and the key used to unwrap Manifest.db/file keys.
 ///
 /// Every key-bearing allocation is wrapped in `Zeroizing`; this type intentionally
@@ -225,16 +233,28 @@ impl ParsedKeybag {
             if header_end > data.len() {
                 return Err(CryptoError::Keybag("truncated record header"));
             }
-            let tag: [u8; 4] = data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| CryptoError::Keybag("invalid record tag"))?;
-            let size = u32::from_be_bytes(
-                data[offset + 4..offset + 8]
-                    .try_into()
-                    .map_err(|_| CryptoError::Keybag("invalid record length"))?,
-            );
-            let size = usize::try_from(size)
-                .map_err(|_| CryptoError::Keybag("record length does not fit host usize"))?;
+            let tag: [u8; 4] = data[offset..offset + 4].try_into().map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "decode backup keybag record tag",
+                    error,
+                )
+            })?;
+            let size =
+                u32::from_be_bytes(data[offset + 4..offset + 8].try_into().map_err(|error| {
+                    native_error(
+                        std::io::ErrorKind::InvalidData,
+                        "decode backup keybag record length",
+                        error,
+                    )
+                })?);
+            let size = usize::try_from(size).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "convert backup keybag record length",
+                    error,
+                )
+            })?;
             if size > MAX_KEYBAG_VALUE_BYTES {
                 return Err(CryptoError::Keybag("record value is too large"));
             }
@@ -246,11 +266,15 @@ impl ParsedKeybag {
             }
             let value_bytes = &data[header_end..value_end];
             let value = if size == 4 {
-                TlvValue::Integer(u32::from_be_bytes(
-                    value_bytes
-                        .try_into()
-                        .map_err(|_| CryptoError::Keybag("invalid integer value"))?,
-                ))
+                TlvValue::Integer(u32::from_be_bytes(value_bytes.try_into().map_err(
+                    |error| {
+                        native_error(
+                            std::io::ErrorKind::InvalidData,
+                            "decode backup keybag integer value",
+                            error,
+                        )
+                    },
+                )?))
             } else {
                 TlvValue::Bytes(value_bytes.to_vec())
             };
@@ -463,7 +487,13 @@ fn unwrap_encryption_key(
             )
         });
     }
-    let class_id = u32::from_le_bytes(encoded[..4].try_into().map_err(|_| CryptoError::Crypto)?);
+    let class_id = u32::from_le_bytes(encoded[..4].try_into().map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode encrypted backup class identifier",
+            error,
+        )
+    })?);
     let wrapping_key = class_keys
         .get(&class_id)
         .ok_or(CryptoError::InvalidPassword)?;
@@ -480,11 +510,23 @@ fn unwrap_aes_kw(
     {
         return Err(CryptoError::InvalidPassword);
     }
-    let cipher = KekAes256::try_from(wrapping_key).map_err(|_| CryptoError::Crypto)?;
+    let cipher = KekAes256::try_from(wrapping_key).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::Other,
+            "initialize backup AES-KW cipher",
+            error,
+        )
+    })?;
     let mut unwrapped = Zeroizing::new([0u8; AES_KEY_BYTES]);
     cipher
         .unwrap(wrapped, unwrapped.as_mut())
-        .map_err(|_| CryptoError::InvalidPassword)?;
+        .map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidData,
+                "unwrap encrypted backup key",
+                error,
+            )
+        })?;
     Ok(unwrapped)
 }
 
@@ -506,7 +548,13 @@ fn process_cbc_stream<R: Read, W: Write>(
     encrypt: bool,
     expected_plaintext_len: Option<u64>,
 ) -> Result<u64, CryptoError> {
-    let cipher = Aes256::new_from_slice(key).map_err(|_| CryptoError::Crypto)?;
+    let cipher = Aes256::new_from_slice(key).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::Other,
+            "initialize backup AES-CBC cipher",
+            error,
+        )
+    })?;
     let mut previous = [0u8; AES_BLOCK_BYTES];
     let mut input = vec![0u8; CBC_BUFFER_BYTES];
     let mut output = vec![0u8; CBC_BUFFER_BYTES];
@@ -521,7 +569,13 @@ fn process_cbc_stream<R: Read, W: Write>(
             break;
         }
         total_input = total_input
-            .checked_add(u64::try_from(read).map_err(|_| CryptoError::Crypto)?)
+            .checked_add(u64::try_from(read).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::Other,
+                    "convert encrypted backup input count",
+                    error,
+                )
+            })?)
             .ok_or(CryptoError::Payload("CBC input length overflow"))?;
         for (in_block, out_block) in input[..read]
             .chunks_exact(AES_BLOCK_BYTES)
@@ -564,7 +618,13 @@ fn process_cbc_stream<R: Read, W: Write>(
         if encrypt {
             destination.write_all(&output[..read])?;
             total_output = total_output
-                .checked_add(u64::try_from(read).map_err(|_| CryptoError::Crypto)?)
+                .checked_add(u64::try_from(read).map_err(|error| {
+                    native_error(
+                        std::io::ErrorKind::Other,
+                        "convert encrypted backup output count",
+                        error,
+                    )
+                })?)
                 .ok_or(CryptoError::Payload("CBC output length overflow"))?;
         }
     }
@@ -598,7 +658,13 @@ fn process_cbc_stream<R: Read, W: Write>(
     let final_plaintext = AES_BLOCK_BYTES - padding;
     if let Some(expected) = expected_plaintext_len {
         let plaintext_len = total_output
-            .checked_add(u64::try_from(final_plaintext).map_err(|_| CryptoError::Crypto)?)
+            .checked_add(u64::try_from(final_plaintext).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::Other,
+                    "convert encrypted backup final plaintext count",
+                    error,
+                )
+            })?)
             .ok_or(CryptoError::Payload("plaintext length overflow"))?;
         if plaintext_len != expected {
             return Err(CryptoError::Payload(
@@ -608,7 +674,13 @@ fn process_cbc_stream<R: Read, W: Write>(
     }
     destination.write_all(&pending_plaintext[..final_plaintext])?;
     total_output
-        .checked_add(u64::try_from(final_plaintext).map_err(|_| CryptoError::Crypto)?)
+        .checked_add(u64::try_from(final_plaintext).map_err(|error| {
+            native_error(
+                std::io::ErrorKind::Other,
+                "convert encrypted backup final output count",
+                error,
+            )
+        })?)
         .ok_or(CryptoError::Payload("CBC output length overflow"))
 }
 
@@ -672,6 +744,109 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn actual_aes_kw_integrity_failure_retains_native_error_without_key_debug() {
+        use std::error::Error;
+        let mut wrapped = zero_class_encryption_key(2);
+        wrapped[4] ^= 1;
+        let error = unwrap_aes_kw(&[0u8; 32], &wrapped[4..]).unwrap_err();
+        let CryptoError::Io(source) = &error else {
+            panic!("native AES-KW cause lost")
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(
+            source
+                .source()
+                .unwrap()
+                .downcast_ref::<aes_kw::Error>()
+                .unwrap(),
+            aes_kw::Error::IntegrityCheckFailed
+        ));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(!format!("{error:?} {:?}", source.get_ref()).contains("Zeroizing"));
+    }
+
+    #[test]
+    fn native_cipher_and_conversion_adapters_keep_typed_causes_and_unknown() {
+        use std::{error::Error, io};
+        fn check<E: Error + Send + Sync + 'static>(
+            original: E,
+            kind: io::ErrorKind,
+            class: crate::ErrorClass,
+        ) {
+            let error = native_error(kind, "owned native adapter", original);
+            let CryptoError::Io(source) = &error else {
+                unreachable!()
+            };
+            assert_eq!(source.kind(), kind);
+            assert_eq!(crate::classify_error(&error), class);
+            assert!(source.source().unwrap().is::<E>());
+        }
+        check(
+            KekAes256::try_from(&[0u8; 31][..]).err().unwrap(),
+            io::ErrorKind::Other,
+            crate::ErrorClass::Unknown,
+        );
+        check(
+            Aes256::new_from_slice(&[0u8; 31]).err().unwrap(),
+            io::ErrorKind::Other,
+            crate::ErrorClass::Unknown,
+        );
+        check(
+            <[u8; 4]>::try_from(&[0u8; 3][..]).unwrap_err(),
+            io::ErrorKind::InvalidData,
+            crate::ErrorClass::Protocol,
+        );
+        check(
+            u64::try_from(u128::MAX).unwrap_err(),
+            io::ErrorKind::Other,
+            crate::ErrorClass::Unknown,
+        );
+    }
+
+    #[test]
+    fn actual_cbc_read_and_write_faults_keep_native_io_and_stop() {
+        use std::io;
+        struct Refused;
+        impl Read for Refused {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "owned-private",
+                ))
+            }
+        }
+        impl Write for Refused {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "owned-private"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut destination = Vec::new();
+        let error =
+            process_cbc_stream(&mut Refused, &mut destination, &[0; 32], true, None).unwrap_err();
+        assert!(destination.is_empty());
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::PermissionDenied
+        );
+        assert!(!format!("{error:?}").contains("owned-private"));
+        let mut source = io::Cursor::new([0; 16]);
+        let error =
+            process_cbc_stream(&mut source, &mut Refused, &[0; 32], true, None).unwrap_err();
+        assert_eq!(source.position(), 16);
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+        let CryptoError::Io(native) = error else {
+            unreachable!()
+        };
+        assert_eq!(native.kind(), io::ErrorKind::BrokenPipe);
+    }
 
     fn record(tag: &[u8; 4], value: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
@@ -816,10 +991,11 @@ mod tests {
             "528c9c5171bf8bef1ea397cf29d2a838c90529df02a6ad2f823a1c6f3a5b2040e2a309c520c6a2ab",
         );
         wrapped[0] ^= 1;
-        assert!(matches!(
-            unwrap_aes_kw(&[0u8; 32], &wrapped),
-            Err(CryptoError::InvalidPassword)
-        ));
+        let error = unwrap_aes_kw(&[0u8; 32], &wrapped).unwrap_err();
+        assert!(
+            matches!(&error, CryptoError::Io(source) if source.kind()==std::io::ErrorKind::InvalidData)
+        );
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
     }
 
     #[test]

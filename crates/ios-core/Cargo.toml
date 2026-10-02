@@ -195,7 +195,7 @@ p256         = { workspace = true }
 sha2         = { workspace = true }
 sha1         = { workspace = true, optional = true }
 aes          = { workspace = true, optional = true }
-aes-kw       = { workspace = true, optional = true }
+aes-kw       = { workspace = true, optional = true, features = ["std"] }
 cbc          = { workspace = true, optional = true }
 pbkdf2       = { workspace = true, optional = true, features = ["hmac", "sha1", "sha2"] }
 hkdf         = { workspace = true }
