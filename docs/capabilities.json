@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-01",
+  "updated": "2026-10-02",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-http-error-headers-62d1c4f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Node 24.19.0/Playwright 1.63.0/Chromium 151.0.7922.34",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual protected Rust HTTP/WebSocket admission errors, owned typed/native failures and real Chromium fetch"],
+      "required_state": ["Host-only router error headers; no physical device workflow, CDP client acceptance or Apple cleanup certification"],
+      "tested_commit": "62d1c4ff41d94b9ec849e6cef3972b8d120bfb20",
+      "date": "2026-10-02",
+      "location": "docs/validation/http-errors-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 additive fixed HTTP error headers and approved-origin exposure with old statuses/bodies and security admission retained. Pre-router/post-upgrade/remaining source, binding, probe and stream/partial work remains pending; no maturity upgrade."
+    },
     {
       "id": "linux-c-error-categories-3ae9691",
       "level": "host-unit/protocol",

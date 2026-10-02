@@ -5,7 +5,7 @@ When cadence changes, record the reason and next review date; retain previous
 conclusions. This template starts D02 governance, not 1.0 readiness or release
 authorization. The roadmap retains every unfinished task and subtask.
 
-Current implementation review: 2026-10-01. Monthly review remains planned for 2026-10-30.
+Current implementation review: 2026-10-02. Monthly review remains planned for 2026-10-30.
 The [capability catalog](capabilities.md) is the source for maturity/evidence;
 [build evidence](validation/build-release-2026-09-30.md) records the first gate.
 
@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [A02 C category gate](validation/c-errors-2026-10-01.md), latest `3ae9691`, 1736 Rust/12 Python, 49 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; C signatures and owned typed failure, Python 3.12 wheel/sdist; preceding Python 3.9/3.13, Rust/source, CLI/cancellation and TLS/browser evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 HTTP header gate](validation/http-errors-2026-10-02.md), latest `62d1c4f`, 1742 Rust/12 Python, 49 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; actual Chromium header access, C owned failure and Python 3.12 wheel/sdist; preceding Python 3.9/3.13, Rust/source, CLI/cancellation and TLS evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

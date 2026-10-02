@@ -2168,3 +2168,106 @@ handle terminal exit0）；首次compile FAIL保留为历史，最终证据见
 该slice主机验收完成，A02/第三类未完成。无实际设备、配对、DDI/TSS/擦除恢复、
 推送/发布/历史改写；文档收尾核对后继续A02 HTTP adapter，保留其余真实pending。
 总体目标active，第四类尚未开始；前述pending full以本条terminal结果为准。
+
+### 大类 3 进行中：A02 protected HTTP error metadata（2026-10-01）
+
+C实现 `3ae96914ae70cd70f4dcc62e1eafb0904af56b25` 与文档收尾
+`f4c4f6709ef742d5f2ef097e2105e351a1e947bc` 已核对，收尾后clean。继续A02，当前
+未提交：在reviewed/router fallback HTTP error上附加固定 `x-ios-error-schema-version`
+（1）/class/phase/effects（unknown）headers，成功不附加，原status/body与安全diagnostic
+extension保持；phase只来自enum，不回显URL/query/headers。WebInspector AppError与
+manager native失败在转换前typed classification；两个manager真实Elapsed dial分支
+保留原message-only body并给Timeout class。Auth/Host/Origin denial是PermissionDenied；
+ticket capacity ResourceLimit、input InvalidInput、entropy failure Unknown。无source的
+reviewed/framework fallback保持Unknown，不按HTTP数字/自然语言猜设备类别。
+
+仅向已准入Origin的error response暴露固定机器headers，不改变origin/credential/
+preflight准入；HEAD正文仍空。尚未完成专项、实际protected native/fallback/denial
+HTTP/原始secret验证、完整第11节、diff与聚焦实现/文档收尾。此slice不覆盖WebSocket
+frame error、TLS/HTTP parser在router前失败、远端client source恢复或所有legacy static
+manager类别；其余Python/C/probe/stderr stream partial与真机/L01条件保留，A02/第三类/
+总体目标active，第四类尚未开始。
+
+HTTP首轮existing fallback专项 **1 PASS**（`/tmp/ios-a02-http-error-first.log`），
+加入body/header/成功负例与forged request/response headers后的owner专项 **2 PASS**
+（`/tmp/ios-a02-http-error-headers.log`，terminal exit0）。新native WebInspector/
+manager typed IO、cancel/EINTR/opaque/axum/JSON与真实Elapsed、原body/status回归待结果；
+实际protected debug routes、完整access/manager专项及独立Chromium gate已安排。
+浏览器probe首次 `node --check` **FAIL**（局部const denied与既有函数重名），已改
+bootstrapDenial，最终syntax PASS。独立browser gate将实际fetch 401的四个机器headers
+纳入原检查，同时保留relay/replay/reload/expiry/不准入Origin路径；未把syntax当browser
+PASS。完整第11节和实现/文档提交仍待执行；A02/总体目标active。
+
+2026-10-02 继续核对：branch/HEAD仍为 `feat/device-service-updates-20260927` /
+`f4c4f6709ef742d5f2ef097e2105e351a1e947bc`，14个相关文件未提交，无无关tracked
+变更。上一轮有实际code/doc改动、专项/真实Chromium证据，归类为progress；未标记
+目标complete。旧Clippy handle已missing、log有Finished，未重启该旧进程；后续最终
+code变更需重新gate。已确认native两项PASS、access28 PASS、WebInspector39 PASS、
+manager40 PASS/1既有browser ignored；独立Chromium1 PASS，reload/expiry各16checks
+并实际读取401的四个headers，旧syntax FAIL不当通过证据；上述专项handles已terminal
+exit0。最终ticket7 PASS，加入issuer known outcomes及unknown status negative；未诱导
+真实entropy exhaustion。此前默认fallback的未来未知status修为Unknown，非泛化Input。
+
+继续补齐已有owner可明确判断的manager分支：hop/upstream容量限制ResourceLimit、
+空selector/零port InvalidInput、registry/tunnel目标lookup miss NotFound、local
+unsupported transport及legacy GET tombstone Unsupported。通过各分支传明确enum，
+不扫描status/message做分类、不把HTTP/local Unsupported算设备显式不支持。原body/
+status保持；新增最终专项、真实router/Chromium、完整第11节和提交待执行。A02/第三类/
+总体目标active，其他source/probe/stream与真机平台条件仍保留。
+
+最终manager专项首轮compile FAIL：新测试未导入既有 `JsonRequest` trait；修复后
+运行40 PASS/1 FAIL/1 browser ignored，容量fixture的明文DNS URL先被S03保护策略
+拒绝，未到达容量分支。改用可登记的HTTPS合成地址（不发起dial），保留安全策略，
+最终同一完整manager范围 **41 PASS、0 FAIL、1既有browser ignored**，terminal exit0，
+`/tmp/ios-a02-http-error-manager-final-accepted.log`。两次失败分别保存在
+`/tmp/ios-a02-http-error-manager-final.log` / `-final-fixed.log`，不作为通过证据。
+最终strict Clippy/独立真实Chromium正在执行；主线验收与提交仍待完成。
+
+最终 `cargo clippy -p ios-cli --all-targets --all-features --locked -- -D warnings`
+PASS（`/tmp/ios-a02-http-error-clippy-final.log`，terminal exit0）；最终独立browser
+gate **1 PASS**（`/tmp/ios-a02-http-error-browser-final.log`，terminal exit0），
+Node 24.19.0 / Playwright 1.63.0 / Chromium 151.0.7922.34，reload/expiry各16checks，
+实际获准browser fetch读取四个headers。源码/专题文档diff与83个changed local links
+通过；第11节完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` 已启动，log
+`/tmp/ios-a02-http-error-full.log`，尚未得到最终退出码。主线运行期间不改产品代码，
+仅只读核对下一项RSD owner：skip_tunnel/缺mdns和实际握手失败均曾返回None，
+成功cached目录与on-demand重试也须明确区分，不能凭None声称尚未探测或设备不支持。
+
+### 大类 3：A02 protected HTTP metadata 主机验收与交付（2026-10-02）
+
+实现提交：`62d1c4ff41d94b9ec849e6cef3972b8d120bfb20`（14个相关文件）。证据：
+[HTTP错误headers与真实Chromium](validation/http-errors-2026-10-02.md)。在受保护
+manager/CDP/WebDriver router错误上增加固定version/class/phase/effects headers；
+原status/body、安全诊断、成功输出与准入保留。native转换前分类，owner明确的
+auth/Host/Origin/issuer/manager分支传typed enum；source未知保持Unknown，effects
+始终unknown。已准入Origin实际可读headers，不扩大凭据/CORS/Host准入。
+
+专项实际结果：shared HTTP2 PASS、native Web/manager2 PASS、access28 PASS、
+WebInspector39 PASS、finalticket7 PASS、finalmanager41 PASS/0 FAIL/1既有browser
+ignored；strict package Clippy PASS。最终独立Chromium gate1 PASS，Node24.19.0 /
+Playwright1.63.0 / Chromium151.0.7922.34，reload/expiry各16 checks，terminal exit0。
+保留首轮trait编译FAIL、明文DNS容量fixture提前安全拒绝FAIL及更早JS重名syntax
+FAIL；修复fixture后通过，不将失败日志算通过。无真实entropy耗尽；unsupported
+transport guard为dormant源码审查，未编造runtime或设备证据。
+
+第11节完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，log
+`/tmp/ios-a02-http-error-full.log`，terminal exit0；**1742 Rust/12 Python、0 FAIL、
+2既有ignored**。fmt/check/strict Clippy/MSRV、66 feature builds/4groups、7+7
+doctests/3downstream snippets、C19B ABI raw+25B owned failure、3.12wheel/sdist、
+49tooling、118help、38raw、5host/22real-device NOT_RUN、15CLI/3backup通过。
+受测ios0.1.13 SHA-256：
+`a9b56fce623641603f0cd814aa37a78d23eed5d9ed0aa1543b0ed5613c450c4a`。
+实现diff/whitespace和83 changed local links已审查，收尾更新能力证据/质量指标。
+
+本HTTP host slice验收；A02/第三类/总体目标仍active。pre-router TLS/parser、
+post-upgrade frame、远端/其他source、Python/C剩余boundary、RSD probe owner和
+stderr/stream/partial继续；L01/平台/真机条件不因此解除。下一项推进RSD owner的
+真实未探测/失败/成功观察，不用None或ProductVersion推断支持。未推送/发布/改写
+历史/操作reference checkout或实际设备；按明确范围提交本类文档收尾后继续。
+
+文档收尾范围：本计划、HTTP验收页、质量指标与能力证据四个文件；69个本轮文档
+local links、`python3 scripts/capabilities.py` 和 `git diff --check` PASS。新增证据
+仅host-unit/protocol，不升级任何能力的设备成熟度。实现提交内容已核对，产品文件
+无剩余变更；本轮收尾随后做聚焦本地提交，总体目标保持active。
