@@ -64,6 +64,16 @@ typedef struct IosDeviceHandle IosDeviceHandle;
 void ios_runtime_init(void);
 
 /**
+ * Initialize the shared runtime with int status/caller-thread category.
+ * Success clears the category; cached ordinary IO failure is IOS_ERR_RUNTIME
+ * with its typed category; a caught unwind is IOS_ERR_PANIC/unknown. Repeated
+ * calls reuse the initialization result without retrying it. No device is opened.
+ * Does not suppress a process panic hook or recover from abort/invalid memory.
+ * The original void initializer reports no result and preserves the category.
+ */
+int ios_runtime_init_checked(void);
+
+/**
  * Stable typed category of this caller OS thread's last int-status operation.
  *
  * Returns a borrowed static NUL-terminated string, valid while the library is
@@ -116,6 +126,18 @@ int ios_list_devices_checked(IosDevice **devices_out, size_t *count_out);
  */
 void ios_free_devices(IosDevice *devices, size_t count);
 
+/**
+ * Consume/free a library-owned device list and clear its caller pointer/count.
+ * Both owner pointers are required: if either is NULL, returns IOS_ERR_NULL/
+ * invalid_input without modifying either output. Otherwise, clears both before
+ * release, including on a caught unwind. A NULL list is a successful no-op,
+ * resetting count to 0. A non-NULL list requires its exact returned count.
+ * Owner storage must be writable, distinct and non-overlapping with the list.
+ * Failure after consumption does not authorize retry or prove complete cleanup.
+ * Do not concurrently use/free it or subsequently use/free retained aliases.
+ */
+int ios_free_devices_checked(IosDevice **devices_in_out, size_t *count_in_out);
+
 /* ── Device handle ─────────────────────────────────────────────────────────── */
 
 /**
@@ -130,6 +152,19 @@ int ios_device_open(const char *udid, IosDeviceHandle **out);
  * Close and free a handle returned by ios_device_open().
  */
 void ios_device_close(IosDeviceHandle *handle);
+
+/**
+ * Consume/close a device handle and clear the caller pointer before release.
+ * NULL owner storage is IOS_ERR_NULL/invalid_input; a NULL owned handle is a
+ * successful no-op. Poisoned state is IOS_ERR_STATE/precondition after consumption;
+ * caught unwind is IOS_ERR_PANIC/unknown. Success clears the caller-thread category.
+ * No consumed handle may be retried, including on failure. Local drop does not
+ * acknowledge Apple cleanup; other owners can retain the ConnectedDevice.
+ * Storage must be writable, holding NULL or an exclusively owned live handle
+ * returned by ios_device_open, without overlapping it. No concurrent use/close
+ * or retained-alias reuse.
+ */
+int ios_device_close_checked(IosDeviceHandle **handle_in_out);
 
 /**
  * Get the device product version as a newly-allocated UTF-8 string.
@@ -151,6 +186,17 @@ int ios_get_lockdown_value_json(const IosDeviceHandle *handle, const char *key, 
  */
 void ios_free_string(char *s);
 
+/**
+ * Consume/free a library-owned string and clear the caller pointer before release.
+ * NULL owner storage is IOS_ERR_NULL/invalid_input; a NULL string succeeds as a
+ * no-op. Caught unwind is IOS_ERR_PANIC/unknown with the pointer already cleared.
+ * Storage must be writable, holding NULL or a live string returned by this library.
+ * It must not overlap the string allocation.
+ * Do not modify its terminator, concurrently use/free it or reuse retained aliases.
+ * Failure after consumption supplies no safe retry or completed-cleanup guarantee.
+ */
+int ios_free_string_checked(char **string_in_out);
+
 /* ── Tunnel ─────────────────────────────────────────────────────────────────── */
 
 /**
@@ -167,9 +213,18 @@ int ios_start_tunnel(const char *udid, IosTunMode mode, IosTunnel **out);
 
 /**
  * Close and free a tunnel.
- * Cancels the underlying tunnel task and releases all resources.
+ * Drops this local owner; does not join tasks or acknowledge device/Apple cleanup.
+ * Clear the caller pointer after release. No status/category is reported.
  */
 void ios_tunnel_close(IosTunnel *tunnel);
+
+/**
+ * Consume/close a tunnel and clear its caller pointer before release. Status and
+ * ownership rules match ios_device_close_checked. The non-NULL handle must be
+ * exclusively owned and returned by ios_start_tunnel. Local drop may request
+ * cancellation; no task join, orderly Apple cleanup or failure retry is promised.
+ */
+int ios_tunnel_close_checked(IosTunnel **tunnel_in_out);
 
 /**
  * Get the device's tunnel IPv6 address (null-terminated string).

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add checked C runtime initialization and consuming cleanup statuses, clearing
+  accepted caller pointers before release and preserving legacy void categories.
+  Report cached native initialization errors, poisoned state and caught unwinds;
+  document consumed ownership separately from completed device cleanup.
+
 - Add checked C RSD/userspace port queries with explicit NULL/missing/success
   statuses and caller-thread categories, retaining legacy uint16_t behavior.
   Document cached metadata versus current reachability/support and lifecycle.

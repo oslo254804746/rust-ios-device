@@ -12,11 +12,13 @@ parse_deps = false
 
 [export]
 include = ["IosDevice", "IosDeviceHandle", "IosTunMode", "ios_runtime_init",
+           "ios_runtime_init_checked",
            "ios_last_error_class", "ios_list_devices", "ios_list_devices_checked",
-           "ios_free_devices", "ios_device_open",
-           "ios_device_close", "ios_get_product_version",
-           "ios_get_lockdown_value_json", "ios_free_string",
-           "ios_start_tunnel", "ios_tunnel_close", "ios_tunnel_server_address",
+           "ios_free_devices", "ios_free_devices_checked", "ios_device_open",
+           "ios_device_close", "ios_device_close_checked", "ios_get_product_version",
+           "ios_get_lockdown_value_json", "ios_free_string", "ios_free_string_checked",
+           "ios_start_tunnel", "ios_tunnel_close", "ios_tunnel_close_checked",
+           "ios_tunnel_server_address",
            "ios_tunnel_rsd_port", "ios_tunnel_userspace_port",
            "ios_tunnel_rsd_port_checked", "ios_tunnel_userspace_port_checked",
            "ios_tunnel_rsd_services_json"]

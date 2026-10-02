@@ -11,7 +11,7 @@
 //! #include <stdio.h>
 //!
 //! int main(void) {
-//!     ios_runtime_init();
+//!     if (ios_runtime_init_checked() != IOS_SUCCESS) return 1;
 //!     IosDevice *devices = NULL;
 //!     size_t count = 0;
 //!     int status = ios_list_devices_checked(&devices, &count);
@@ -19,7 +19,7 @@
 //!     if (count == 0) puts("no device found");
 //!     for (size_t i = 0; i < count; ++i)
 //!         printf("%s %s\n", devices[i].udid, devices[i].connection_type);
-//!     ios_free_devices(devices, count);
+//!     if (ios_free_devices_checked(&devices, &count) != IOS_SUCCESS) return 1;
 //!     return 0;
 //! }
 //! ```
@@ -33,6 +33,9 @@ use std::os::raw::{c_char, c_int};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::runtime::Runtime;
+
+#[cfg(test)]
+mod lifecycle_contract_tests;
 
 static RUNTIME: LazyLock<std::io::Result<Runtime>> = LazyLock::new(Runtime::new);
 
@@ -94,9 +97,27 @@ const IOS_ERR_BUFFER_TOO_SMALL: c_int = 8;
 /// Initialize the ios-rs async runtime.
 /// Initialize before device/tunnel operations; the error-class getter needs no runtime.
 /// Safe to call multiple times (idempotent).
+/// No result/category is reported; use [`ios_runtime_init_checked`] for a status.
 #[no_mangle]
 pub extern "C" fn ios_runtime_init() {
-    LazyLock::force(&RUNTIME);
+    ffi_void(|| {
+        LazyLock::force(&RUNTIME);
+    });
+}
+
+/// Initialize the shared runtime with an int status/caller-thread category.
+///
+/// Success clears the category. A cached ordinary initialization IO error returns
+/// IOS_ERR_RUNTIME with its typed category; a caught unwind is IOS_ERR_PANIC/
+/// unknown. Repeated calls reuse the same initialization result, without retrying
+/// it. No device is opened. This does not suppress a process-installed panic hook
+/// or recover from abort, invalid memory access or allocation failure that aborts.
+#[no_mangle]
+pub extern "C" fn ios_runtime_init_checked() -> c_int {
+    ffi_status(|| match runtime() {
+        Ok(_) => IOS_SUCCESS,
+        Err(code) => code,
+    })
 }
 
 /// Stable typed category of this caller thread's last int-status operation.
@@ -137,7 +158,11 @@ fn error_status(code: c_int, error: &(dyn std::error::Error + 'static)) -> c_int
 }
 
 fn runtime() -> Result<&'static Runtime, c_int> {
-    RUNTIME
+    runtime_from(&RUNTIME)
+}
+
+fn runtime_from(initialization: &std::io::Result<Runtime>) -> Result<&Runtime, c_int> {
+    initialization
         .as_ref()
         .map_err(|error| error_status(IOS_ERR_RUNTIME, error))
 }
@@ -168,6 +193,19 @@ fn ffi_void(f: impl FnOnce() + std::panic::UnwindSafe) {
 
 fn ffi_u16(f: impl FnOnce() -> u16 + std::panic::UnwindSafe) -> u16 {
     std::panic::catch_unwind(f).unwrap_or(0)
+}
+
+unsafe fn consume_pointer<T>(owner: *mut *mut T, release: impl FnOnce(*mut T) -> c_int) -> c_int {
+    if owner.is_null() {
+        return IOS_ERR_NULL;
+    }
+    let pointer = *owner;
+    *owner = std::ptr::null_mut();
+    if pointer.is_null() {
+        IOS_SUCCESS
+    } else {
+        release(pointer)
+    }
 }
 
 fn plist_value_to_json(value: &plist::Value) -> serde_json::Value {
@@ -377,21 +415,54 @@ unsafe fn list_devices_with_projection(
 /// Caller must pass a pointer previously returned by `ios_list_devices` with the correct count.
 #[no_mangle]
 pub unsafe extern "C" fn ios_free_devices(devices: *mut IosDevice, count: usize) {
-    ffi_void(|| {
-        if devices.is_null() {
-            return;
+    ffi_void(|| free_device_list(devices, count));
+}
+
+unsafe fn free_device_list(devices: *mut IosDevice, count: usize) {
+    if devices.is_null() {
+        return;
+    }
+    let slice = std::slice::from_raw_parts_mut(devices, count);
+    for d in &mut *slice {
+        if !d.udid.is_null() {
+            drop(CString::from_raw(d.udid));
         }
-        let slice = std::slice::from_raw_parts_mut(devices, count);
-        for d in &mut *slice {
-            if !d.udid.is_null() {
-                drop(CString::from_raw(d.udid));
-            }
-            if !d.connection_type.is_null() {
-                drop(CString::from_raw(d.connection_type));
-            }
+        if !d.connection_type.is_null() {
+            drop(CString::from_raw(d.connection_type));
         }
-        drop_ios_devices_allocation(devices, count);
-    });
+    }
+    drop_ios_devices_allocation(devices, count);
+}
+
+/// Consume/free a device list and reset the caller's pointer/count.
+///
+/// Both owner pointers are required; otherwise neither is modified and the call
+/// returns IOS_ERR_NULL/invalid_input. Once accepted, they are cleared before
+/// release, including on a caught unwind. A null list is a successful no-op.
+/// Failure after consumption grants no safe retry or full-cleanup guarantee.
+///
+/// # Safety
+///
+/// Owner pointers must be null or valid, writable, distinct and non-overlapping
+/// with the list. A non-null list must be a live allocation returned by an ios
+/// list function with its exact count. Do not concurrently use/free it or retain
+/// aliases for later cleanup.
+#[no_mangle]
+pub unsafe extern "C" fn ios_free_devices_checked(
+    devices: *mut *mut IosDevice,
+    count: *mut usize,
+) -> c_int {
+    ffi_status(|| {
+        if devices.is_null() || count.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let allocation = *devices;
+        let length = *count;
+        *devices = std::ptr::null_mut();
+        *count = 0;
+        free_device_list(allocation, length);
+        IOS_SUCCESS
+    })
 }
 
 // ── Device handle ────────────────────────────────────────────────────────────
@@ -451,15 +522,43 @@ pub unsafe extern "C" fn ios_device_open(
 #[no_mangle]
 pub unsafe extern "C" fn ios_device_close(handle: *mut IosDeviceHandle) {
     ffi_void(|| {
-        if handle.is_null() {
-            return;
-        }
-        let mut handle = Box::from_raw(handle);
-        if let Ok(guard) = handle._device.get_mut() {
-            guard.take();
-        }
-        drop(handle);
+        let _ = close_device_handle(handle);
     });
+}
+
+unsafe fn close_device_handle(handle: *mut IosDeviceHandle) -> c_int {
+    if handle.is_null() {
+        return IOS_SUCCESS;
+    }
+    let mut handle = Box::from_raw(handle);
+    let status = match handle._device.get_mut() {
+        Ok(guard) => {
+            guard.take();
+            IOS_SUCCESS
+        }
+        Err(_) => IOS_ERR_STATE,
+    };
+    drop(handle);
+    status
+}
+
+/// Consume/close a device handle and clear the caller's pointer before release.
+///
+/// A null owner pointer is IOS_ERR_NULL/invalid_input. A null owned handle is a
+/// successful no-op. Poisoned state returns IOS_ERR_STATE/precondition after
+/// consuming/dropping the handle; a caught unwind is IOS_ERR_PANIC/unknown.
+/// No consumed handle may be retried, even on failure. No Apple cleanup is
+/// acknowledged; other owners may retain the ConnectedDevice.
+///
+/// # Safety
+///
+/// `owner` must be null or writable pointer storage. Its non-null value must be a
+/// live handle returned by ios_device_open, owned exclusively for this release.
+/// Storage must not overlap the handle. Do not concurrently access/close it or
+/// later use/free any retained alias.
+#[no_mangle]
+pub unsafe extern "C" fn ios_device_close_checked(owner: *mut *mut IosDeviceHandle) -> c_int {
+    ffi_status(|| consume_pointer(owner, |handle| close_device_handle(handle)))
 }
 
 /// Get the device product version as a newly-allocated UTF-8 C string.
@@ -550,12 +649,35 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
 /// Caller must pass a string previously returned by an `ios_get_*` function, or null.
 #[no_mangle]
 pub unsafe extern "C" fn ios_free_string(s: *mut c_char) {
-    ffi_void(|| {
-        if s.is_null() {
-            return;
-        }
+    ffi_void(|| free_string(s));
+}
+
+unsafe fn free_string(s: *mut c_char) {
+    if !s.is_null() {
         drop(CString::from_raw(s));
-    });
+    }
+}
+
+/// Consume/free a library-owned C string and clear its caller pointer.
+///
+/// A null owner is IOS_ERR_NULL/invalid_input; a null string is a successful
+/// no-op. The owner is cleared before release, even on a caught unwind. No safe
+/// retry or completed cleanup follows from a failure after consumption.
+///
+/// # Safety
+///
+/// `owner` must be null or writable pointer storage containing null or a live
+/// string returned by this library. Storage must not overlap the string. Do not
+/// concurrently use/free it, modify its terminator or later use/free a retained
+/// alias.
+#[no_mangle]
+pub unsafe extern "C" fn ios_free_string_checked(owner: *mut *mut c_char) -> c_int {
+    ffi_status(|| {
+        consume_pointer(owner, |string| {
+            free_string(string);
+            IOS_SUCCESS
+        })
+    })
 }
 
 // ── Tunnel ────────────────────────────────────────────────────────────────────
@@ -635,16 +757,41 @@ pub unsafe extern "C" fn ios_start_tunnel(
 #[no_mangle]
 pub unsafe extern "C" fn ios_tunnel_close(tunnel: *mut IosTunnel) {
     ffi_void(|| {
-        if tunnel.is_null() {
-            return;
-        }
-        let mut t = Box::from_raw(tunnel);
-        // Drop the ConnectedDevice first (cancels tunnel), then drop the box
-        if let Ok(guard) = t._device.get_mut() {
-            guard.take();
-        }
-        drop(t);
+        let _ = close_tunnel(tunnel);
     });
+}
+
+unsafe fn close_tunnel(tunnel: *mut IosTunnel) -> c_int {
+    if tunnel.is_null() {
+        return IOS_SUCCESS;
+    }
+    let mut tunnel = Box::from_raw(tunnel);
+    let status = match tunnel._device.get_mut() {
+        Ok(guard) => {
+            guard.take();
+            IOS_SUCCESS
+        }
+        Err(_) => IOS_ERR_STATE,
+    };
+    drop(tunnel);
+    status
+}
+
+/// Consume/close a tunnel handle and clear the caller's pointer before release.
+///
+/// Status/ownership rules match [`ios_device_close_checked`]. Local owner drop
+/// can request cancellation, but does not join background tasks or acknowledge
+/// orderly device/Apple cleanup. A consumed handle cannot be retried on failure.
+///
+/// # Safety
+///
+/// `owner` must be null or writable pointer storage. Its non-null value must be a
+/// live handle returned by ios_start_tunnel, owned exclusively for this release.
+/// Storage must not overlap the handle. Do not concurrently access/close it or
+/// later use/free any retained alias.
+#[no_mangle]
+pub unsafe extern "C" fn ios_tunnel_close_checked(owner: *mut *mut IosTunnel) -> c_int {
+    ffi_status(|| consume_pointer(owner, |tunnel| close_tunnel(tunnel)))
 }
 
 /// Get the device's tunnel IPv6 address (null-terminated string).

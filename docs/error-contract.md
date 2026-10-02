@@ -387,8 +387,8 @@ This query adds no interruptible C call, concurrent handle-mutation guarantee,
 automatic retry or Apple cleanup acknowledgement. A `disconnected` IO class
 does not identify which object disconnected. `none` describes a successful
 numeric status, not a certificate of device cleanup or absence of partial
-effects. Void initialization/cleanup reporting remains a separate review
-boundary. The owned linked-C malformed ListDevices fixture validates a real
+effects. Legacy void calls still report no outcome; additive checked entries
+are described below. The owned linked-C malformed ListDevices fixture validates a real
 library call, not device connection/query/tunnel acceptance. Native source
 details are not exported as an unsafe C string.
 
@@ -427,7 +427,57 @@ handle reuse remain unsupported. Rust-owned metadata tests exercise both actual
 exported functions for missing/nonzero values, NULL output and category/thread
 transitions; strict linked C verifies signatures and NULL clearing. This proves
 the projection boundary, not a physical tunnel/proxy/RSD probe or Apple cleanup.
-Bindings still need remaining initialization/cleanup/source/lifecycle review.
+Other binding/source/lifecycle review remains pending.
+
+`ios_runtime_init_checked` returns an int status for shared runtime initialization:
+success clears the category, a cached ordinary native IO error returns
+`IOS_ERR_RUNTIME` with its typed category, and a caught unwind returns
+`IOS_ERR_PANIC`/`unknown`. The original IO result remains cached and is classified
+without exporting its private Display text. Repeating initialization does not
+retry a failed result. No device is opened. The legacy void initializer retains
+its ordinary result/category behavior and now catches unwinds before the C
+boundary. Catching an unwind does not suppress a process panic hook or recover
+from abort/invalid memory. The global initializer panic path is source-reviewed,
+not established by an actual process-level poisoned runtime fixture.
+
+`ios_device_close_checked`, `ios_tunnel_close_checked` and
+`ios_free_string_checked` take writable pointer-to-pointer owner storage.
+A NULL owner pointer returns `IOS_ERR_NULL`/`invalid_input`; a valid owner whose
+value is NULL succeeds as a no-op. A non-null owned pointer is cleared **before**
+release. Handle state poisoning returns `IOS_ERR_STATE`/`precondition` after
+consumption and local drop; a caught unwind returns `IOS_ERR_PANIC`/`unknown`.
+The owner stays cleared on these failures. A consumed pointer or retained alias
+must never be retried, used or freed. No API validates arbitrary/dangling pointers.
+
+`ios_free_devices_checked` requires both pointer and count owner storage.
+If either is NULL, neither is modified and the result is `IOS_ERR_NULL`/
+`invalid_input`. Once both are accepted, the list pointer and count are cleared
+to NULL/0 before release. A NULL list succeeds as a no-op and clears the count;
+a non-null list requires its exact returned count, including a non-null allocated
+empty list. The standard allocator/string ownership rules remain unchanged.
+Owner storage must be writable, distinct where there are two outputs, outside
+the allocation being released, and unavailable to concurrent use/close.
+
+Every checked call uses the same caller-thread category replacement rule.
+Read/save an operation's original status/category **before** checked cleanup;
+even a successful no-op cleanup resets the observation to `none`. The borrowed
+static code pointer remains valid after later int calls while the library is
+loaded. Inspect release failures separately. Original void cleanup preserves
+the category and signatures; its shared release routines retain prior behavior.
+The checked symbols require a library providing these additive entries.
+
+Success reports local release/no-op status. It does not acknowledge Apple
+teardown, task joins, cancellation completion or absence of partial effects;
+other owners can retain a ConnectedDevice. Failure after consumption does not
+promise all resources were released or supply rollback/retry authority. Repeated
+release is safe only through the now-NULL owner storage, never through a saved
+non-null alias. Owned tests cover native initialization projection, actual
+runtime success, allocated lists/strings, no-device handles and poisoned state;
+the shared consuming helper's counted destructor fixture verifies clearing,
+single drop and caught unwind. Strict linked C exercises actual ListDevices
+allocations and checked freeing. These do not certify physical service/tunnel
+teardown or actual global runtime resource exhaustion. Stronger L01/A03 contracts,
+other sources/bindings and stream/callback boundaries remain pending.
 
 ## Protected HTTP responses
 

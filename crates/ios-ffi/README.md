@@ -124,8 +124,54 @@ The handle must remain live during a query, and output storage must not overlap
 it. No concurrent close or freed-pointer reuse is supported. Rust-owned metadata
 fixtures cover nonzero/zero cached values and category transitions; linked C
 smoke checks the new signatures, NULL handling and output clearing. Neither
-fixture certifies a physical tunnel or Apple cleanup. Void initialization/cleanup
-failure reporting and extended lifecycle APIs remain separate pending work.
+fixture certifies a physical tunnel or Apple cleanup. Initialization/cleanup
+status additions are described below; stronger lifecycle APIs remain pending.
+
+Use `ios_runtime_init_checked()` to inspect the cached shared initialization
+result. Ordinary IO failure returns `IOS_ERR_RUNTIME` with its typed category;
+caught unwind returns `IOS_ERR_PANIC`/`unknown`. Success clears the category.
+Repeated calls reuse the same result rather than retrying initialization. The
+legacy void initializer keeps its ordinary category behavior and now catches
+unwinds before the C boundary. Neither call suppresses a process panic hook or
+recovers from abort/invalid memory. No device is opened by initialization.
+
+Checked cleanup takes caller owner storage: `ios_device_close_checked(&handle)`,
+`ios_tunnel_close_checked(&tunnel)`, `ios_free_string_checked(&text)` and
+`ios_free_devices_checked(&devices, &count)`. NULL required owner storage returns
+`IOS_ERR_NULL`/`invalid_input`; a NULL owned value is a successful no-op. Both
+list outputs are required, and neither changes if either is NULL. Accepted
+owner pointers/count are cleared before release. Handle state poisoning returns
+`IOS_ERR_STATE`/`precondition` after consumption; caught unwind is
+`IOS_ERR_PANIC`/`unknown`. Even on failure, consumed allocations/aliases must not
+be retried, used or freed. Repeat only with the cleared owner storage.
+
+Read/save the original status/category before checked cleanup: every int-status
+operation, including a successful no-op cleanup, replaces the observation.
+The borrowed static category pointer remains valid after later calls while the
+library is loaded. Inspect release errors separately. Legacy void cleanup
+preserves the category. The checked symbols need a library containing them.
+
+```c
+int status = ios_list_devices_checked(&devices, &count);
+const char *operation_class = ios_last_error_class();
+/* Use successful results here, then release even an empty owned list. */
+int release_status = ios_free_devices_checked(&devices, &count);
+if (status != IOS_SUCCESS) {
+    fprintf(stderr, "listing failed (%s)\n", operation_class);
+} else if (release_status != IOS_SUCCESS) {
+    fprintf(stderr, "release failed (%s)\n", ios_last_error_class());
+}
+```
+
+Use exact returned counts, library-owned strings/handles, and writable owner
+storage outside the released allocation, with distinct list pointer/count
+outputs. Arbitrary/dangling pointers and concurrent use/free are not validated.
+Success means local release/no-op status, without task joins, Apple teardown or
+proof that no other owner retains a device. Failure after consumption does not
+prove complete cleanup or authorize retry. Owned host fixtures and linked C
+exercise these boundaries; they do not certify physical tunnel teardown or
+actual global runtime resource exhaustion. L01/A03 retain stronger resource and
+asynchronous lifecycle contracts.
 
 ## Linking
 

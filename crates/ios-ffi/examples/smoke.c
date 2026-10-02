@@ -21,17 +21,22 @@ int main(int argc, char **argv) {
     /* Assign every public entry to its existing C signature. Strict warnings
        reject a header change; linking exercises the exported symbol names. */
     void (*runtime_fn)(void) = ios_runtime_init;
+    int (*checked_runtime_fn)(void) = ios_runtime_init_checked;
     const char *(*class_fn)(void) = ios_last_error_class;
     int (*list_fn)(IosDevice **, size_t *) = ios_list_devices;
     int (*checked_list_fn)(IosDevice **, size_t *) = ios_list_devices_checked;
     void (*free_devices_fn)(IosDevice *, size_t) = ios_free_devices;
+    int (*checked_free_devices_fn)(IosDevice **, size_t *) = ios_free_devices_checked;
     int (*open_fn)(const char *, IosDeviceHandle **) = ios_device_open;
     void (*close_device_fn)(IosDeviceHandle *) = ios_device_close;
+    int (*checked_close_device_fn)(IosDeviceHandle **) = ios_device_close_checked;
     int (*version_fn)(const IosDeviceHandle *, char **) = ios_get_product_version;
     int (*value_fn)(const IosDeviceHandle *, const char *, char **) = ios_get_lockdown_value_json;
     void (*free_string_fn)(char *) = ios_free_string;
+    int (*checked_free_string_fn)(char **) = ios_free_string_checked;
     int (*start_fn)(const char *, IosTunMode, IosTunnel **) = ios_start_tunnel;
     void (*close_tunnel_fn)(IosTunnel *) = ios_tunnel_close;
+    int (*checked_close_tunnel_fn)(IosTunnel **) = ios_tunnel_close_checked;
     int (*address_fn)(const IosTunnel *, char *, size_t) = ios_tunnel_server_address;
     uint16_t (*rsd_fn)(const IosTunnel *) = ios_tunnel_rsd_port;
     uint16_t (*proxy_fn)(const IosTunnel *) = ios_tunnel_userspace_port;
@@ -41,7 +46,11 @@ int main(int argc, char **argv) {
     assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
            version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
            address_fn && rsd_fn && proxy_fn && services_fn && class_fn && checked_list_fn &&
-           checked_rsd_fn && checked_proxy_fn);
+           checked_rsd_fn && checked_proxy_fn && checked_runtime_fn &&
+           checked_free_devices_fn && checked_close_device_fn &&
+           checked_free_string_fn && checked_close_tunnel_fn);
+    assert(strcmp(class_fn(), "none") == 0);
+    assert(checked_runtime_fn() == IOS_SUCCESS);
     assert(strcmp(class_fn(), "none") == 0);
     IosDevice *devices = NULL;
     size_t count = 99;
@@ -84,11 +93,17 @@ int main(int argc, char **argv) {
         assert(checked_list_fn(&devices, &count) == IOS_SUCCESS);
         assert(count == 2 && strcmp(class_fn(), "none") == 0);
         assert(devices[0].device_id == 42 && devices[1].device_id == 45);
-        free_devices_fn(devices, count);
-        devices = NULL;
+        const IosDevice *saved_devices = devices;
+        assert(checked_free_devices_fn(NULL, &count) == IOS_ERR_NULL && count == 2);
+        assert(checked_free_devices_fn(&devices, NULL) == IOS_ERR_NULL && devices == saved_devices);
+        assert(strcmp(class_fn(), "invalid_input") == 0);
+        assert(checked_free_devices_fn(&devices, &count) == IOS_SUCCESS);
+        assert(devices == NULL && count == 0 && strcmp(class_fn(), "none") == 0);
+        assert(checked_free_devices_fn(&devices, &count) == IOS_SUCCESS);
         assert(checked_list_fn(&devices, &count) == IOS_SUCCESS);
         assert(count == 0 && strcmp(class_fn(), "none") == 0);
-        free_devices_fn(devices, count);
+        assert(checked_free_devices_fn(&devices, &count) == IOS_SUCCESS);
+        assert(devices == NULL && count == 0 && strcmp(class_fn(), "none") == 0);
         puts("C ABI checked list passed");
         return 0;
     }
@@ -111,6 +126,19 @@ int main(int argc, char **argv) {
     assert(checked_rsd_fn(NULL, &port) == IOS_ERR_NULL && port == 0);
     const char *saved_port_class = class_fn();
     assert(strcmp(saved_port_class, "invalid_input") == 0);
+    assert(checked_close_device_fn(NULL) == IOS_ERR_NULL);
+    assert(checked_close_tunnel_fn(NULL) == IOS_ERR_NULL);
+    assert(checked_free_string_fn(NULL) == IOS_ERR_NULL);
+    assert(checked_free_devices_fn(NULL, NULL) == IOS_ERR_NULL);
+    assert(strcmp(class_fn(), "invalid_input") == 0);
+    for (int i = 0; i < 2; ++i) {
+        assert(checked_close_device_fn(&device) == IOS_SUCCESS && device == NULL);
+        assert(checked_close_tunnel_fn(&tunnel) == IOS_SUCCESS && tunnel == NULL);
+        assert(checked_free_string_fn(&text) == IOS_SUCCESS && text == NULL);
+        assert(checked_free_devices_fn(&devices, &count) == IOS_SUCCESS);
+        assert(devices == NULL && count == 0 && strcmp(class_fn(), "none") == 0);
+        assert(checked_runtime_fn() == IOS_SUCCESS);
+    }
     port = UINT16_MAX;
     assert(checked_proxy_fn(NULL, &port) == IOS_ERR_NULL && port == 0);
     assert(checked_rsd_fn(NULL, NULL) == IOS_ERR_NULL);

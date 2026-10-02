@@ -225,6 +225,26 @@ metadata queries, requiring no runtime/network work; neither success nor a
 missing value establishes support, mode, current reachability or cleanup.
 See the [error contract](error-contract.md) for pointer/thread and scope limits.
 
+The additive `ios_runtime_init_checked` returns the cached shared initialization
+status, classifying ordinary native IO as `IOS_ERR_RUNTIME` and caught unwind as
+`IOS_ERR_PANIC`/`unknown`. It does not retry a cached failure. The legacy void
+initializer now catches unwinds before the C boundary while preserving ordinary
+initialization/category behavior. Five added status entries include this
+initializer and checked device/tunnel/string/list releases. All old signatures,
+layouts and status values remain available.
+
+Checked releases take caller owner storage, clear accepted pointers before
+release and report local status, including poisoned handle state or caught
+unwind. NULL owned resources succeed; NULL required owner storage fails.
+List release requires both outputs and leaves both unchanged if either is NULL.
+After consumption, a failed status never authorizes retry through a saved alias.
+Read/save the original operation's status/category before checked cleanup,
+because even successful no-op cleanup resets the category. The existing void
+cleanup APIs preserve it. Repeated release of the cleared owner is a safe no-op,
+not repeated close of a dangling pointer. Local release is separate from task
+join/Apple cleanup; L01/A03 retain those stronger lifecycle contracts. The
+[error contract](error-contract.md) defines exact pointer/count/thread limits.
+
 ## Python API and ownership
 
 Preserve module/distribution names (`ios_rs` / `rust-ios-device-tunnel`), factories,
@@ -288,11 +308,13 @@ features; targeted alias mode also runs explicitly. Existing compile_fail docs
 retain private-module encapsulation. `validate.py compatibility` exercises the
 actual CLI against bounded owned USB/Network/empty fake-usbmux responses in JSON
 and human mode; only safe counters are printed. Linked C smoke checks the original
-14 signatures plus the additive category getter, checked listing and two checked
-port queries, statuses/layout/null/UTF-8 ownership failures and owned malformed/
-checked ListDevices replies. Cached-port success/missing and caller-thread
-transitions are exercised by Rust-owned metadata fixtures through the exported
-queries; this is not a physical tunnel acceptance test.
+14 signatures plus the additive category getter, checked listing, two checked
+port queries and five initialization/cleanup entries, statuses/layout/null/UTF-8
+ownership failures and owned malformed/checked ListDevices replies with consuming
+checked free. Cached-port, allocated string, no-device handle/poisoned state and
+caller-thread transitions are exercised by Rust-owned fixtures; the consuming
+helper also has counted destructor/unwind coverage. These are projection/local
+ownership tests, not physical tunnel or Apple teardown acceptance.
 Installed Python smoke checks factories/signatures and patch/resource exposure,
 invalid mode with an owned endpoint trap and a real malformed owned ListDevices
 reply. Its child/peer deadlines and bounded request permit no device-service
