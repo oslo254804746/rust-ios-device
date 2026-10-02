@@ -8,6 +8,19 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[test]
+fn root_mux_constructor_keeps_its_typed_error_future() {
+    fn signature<E, F>(future: F)
+    where
+        E: std::error::Error + Send + Sync + 'static,
+        F: Future<Output = Result<ios_core::MuxClient, E>>,
+    {
+        drop(future);
+    }
+    // External type check only; no daemon endpoint or device is contacted.
+    signature(ios_core::MuxClient::connect());
+}
+
 #[tokio::test]
 async fn default_lockdown_root_api_retains_sources_and_exhaustive_errors() {
     use ios_core::{

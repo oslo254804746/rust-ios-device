@@ -34,7 +34,13 @@ where
     T: Serialize,
 {
     let mut plist_bytes = Vec::new();
-    plist::to_writer_xml(&mut plist_bytes, value).map_err(|e| MuxError::Protocol(e.to_string()))?;
+    plist::to_writer_xml(&mut plist_bytes, value).map_err(|error| {
+        MuxError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode usbmuxd request plist",
+            error,
+        ))
+    })?;
     let msg = encode_message(&plist_bytes, tag)?;
     writer.write_all(&msg).await?;
     writer.flush().await?;
@@ -61,7 +67,13 @@ where
     }
     let mut payload = vec![0u8; length - 16];
     reader.read_exact(&mut payload).await?;
-    let value = plist::from_bytes(&payload).map_err(|e| MuxError::Protocol(e.to_string()))?;
+    let value = plist::from_bytes(&payload).map_err(|error| {
+        MuxError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            "decode usbmuxd response plist",
+            error,
+        ))
+    })?;
     Ok(value)
 }
 
@@ -175,6 +187,9 @@ pub(crate) struct DeviceEvent {
     pub device_id: u32,
     pub properties: Option<DevicePropertiesRaw>,
 }
+
+#[cfg(test)]
+mod source_contract_tests;
 
 #[cfg(test)]
 mod tests {

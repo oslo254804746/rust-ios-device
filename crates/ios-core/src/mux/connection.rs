@@ -73,7 +73,7 @@ impl UsbmuxStream {
 }
 
 async fn connect_tcp_with_timeout<F>(
-    address: &str,
+    _address: &str,
     timeout: Duration,
     connector: F,
 ) -> io::Result<TcpStream>
@@ -82,16 +82,15 @@ where
 {
     match tokio::time::timeout(timeout, connector).await {
         Ok(Ok(stream)) => Ok(stream),
-        Ok(Err(error)) => Err(io::Error::new(
+        Ok(Err(error)) => Err(crate::error::context::retained_io(
             error.kind(),
-            format!("usbmuxd TCP connect to {address} failed: {error}"),
+            "connect usbmuxd TCP",
+            error,
         )),
-        Err(_) => Err(io::Error::new(
+        Err(error) => Err(crate::error::context::retained_io(
             io::ErrorKind::TimedOut,
-            format!(
-                "usbmuxd TCP connect to {address} timed out after {} ms",
-                timeout.as_millis()
-            ),
+            "wait for usbmuxd TCP connection",
+            error,
         )),
     }
 }
@@ -179,7 +178,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tcp_connect_timeout_is_bounded_and_names_address() {
+    async fn test_tcp_connect_timeout_is_bounded_and_retains_elapsed() {
+        use std::error::Error;
         let pending = std::future::pending::<io::Result<TcpStream>>();
         let error =
             connect_tcp_with_timeout("198.51.100.7:27015", Duration::from_millis(5), pending)
@@ -187,12 +187,13 @@ mod tests {
                 .expect_err("injected black-hole connector should time out");
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(error.to_string().contains("198.51.100.7:27015"));
-        assert!(error.to_string().contains("timed out"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(error.source().unwrap().is::<tokio::time::error::Elapsed>());
     }
 
     #[tokio::test]
-    async fn test_tcp_connect_error_names_address() {
+    async fn test_tcp_connect_error_retains_original_io() {
+        use std::error::Error;
         let connector = async {
             Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
@@ -204,7 +205,23 @@ mod tests {
             .expect_err("injected connector should fail");
 
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
-        assert!(error.to_string().contains("127.0.0.1:27015"));
-        assert!(error.to_string().contains("injected refusal"));
+        let original = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(original.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(original.to_string(), "injected refusal");
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+    }
+
+    #[tokio::test]
+    async fn actual_owned_tcp_refusal_retains_original_os_code() {
+        use std::error::Error;
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = format!("tcp://{}", socket.local_addr().unwrap());
+        let error = UsbmuxStream::connect(&address).await.err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        let original = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(original.kind(), error.kind());
+        assert!(original.raw_os_error().is_some());
+        drop(socket);
     }
 }
