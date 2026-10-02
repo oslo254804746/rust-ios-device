@@ -2910,3 +2910,69 @@ source为extract_zip_entries中的archive/entry ZipError与entry read IO→Strin
 需原source/class/variant迁移fixtures，非当前PASS。其他JSON/callback/binding/source、
 L01/L03/A03/平台/真机/有序cleanup条件保留；无maturity升级、设备操作、推送/发布、
 历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 ZIP decoder 原始来源（2026-10-02）
+
+上一install progress实现 `5810d16`、文档 `dea7c51` 已核对，收尾clean；当前
+分支 `feat/device-service-updates-20260927`。extract_zip_entries三处String
+adapter改为既有Io variant的private fixed-phase wrappers，保留原ZipError/IO
+对象与nativekind。已知nonIO localpackage reasons仍InvalidInput，不推断device
+unsupported/notfound；CRC原生InvalidData改为Protocol，未来ZIP reason Other/io
+fallback。原public enum与old/new signatures、成功提取/transfer/wire未改，返回
+variant/Display/context/correlation/class迁移写入public/error/CHANGELOG/rustdoc。
+
+9新增fixtures：2条adapter保留7种IO及4种knownZIP reason的原对象/class/safeDebug；
+5条realdecoder归档/条目头/密码metadata/CRC/valid-empty order，1条两public
+install实际tinyownedIPA/service的4种decodefail-before-write/read/flush/observer，
+1条CLI真实localdecode与safeenvelope apps/exit1/unknown。目录释放显式验证；
+密码测试仅metadata标记，不认证加密payload。最初beforefix回归0PASS/1FAIL，
+typedZIP source丢失已复现；expanded16PASS/2FAIL来自fixture误将localheader
+预期为entryphase，locked2.4.2实际new时检查；改真实phase并补entrypassword
+fault，产品native分类未改。日志 `/tmp/ios-a02-zip-source-before.log`、
+`/tmp/ios-a02-zip-source-core-expanded.log` 保留。
+
+专项all-feature/apps-only core各19 PASS，CLI apps46、public14 PASS，strict
+core/CLI Clippy PASS（terminal0）：`/tmp/ios-a02-zip-source-core-final.log`、
+`/tmp/ios-a02-zip-source-minimal-final.log`、`/tmp/ios-a02-zip-source-cli.log`、
+`/tmp/ios-a02-zip-source-public.log`、`/tmp/ios-a02-zip-source-clippy.log`。
+第11节full将执行 `/tmp/ios-a02-zip-source-full.log`，完整结果/提交/收尾待完成。
+local解包发生在core payload之前，但CLI此前已service setup，effects仍unknown；
+非physical安装/cleanup/streamreuse/newlimits证明，wholefile/decompression memory
+未增加budget。其他A02 sources/JSON/callback/binding、L01/L03/L04/Q04/A03与平台/
+真机条件继续，第三类/总体goal active，第四类尚未开始，无设备操作/推送/发布/
+历史改写/reference checkout修改。文档收尾后继续。
+
+### 大类 3：A02 ZIP decoder 来源主机验收与交付（2026-10-02）
+
+实现 `b986ae1547bb16c2c90b4ee09b67817e6ab79d0a`（8个相关文件），完整gate后
+聚焦本地提交。3处private adapter保留原returned ZipError/entryIO，经既有Io
+variant/fixedphase；knownnonIO localinput语义保留，nativekind不再被String覆盖，
+CRC InvalidData→Protocol迁移明确。原exhaustiveenum与函数/callback signatures、
+success提取/metadata/wire不改，Debug/CLI安全、Rust cause原privatepayload保留。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/CLI/public | all-feature/apps-only各19 PASS，CLI apps46、public14 PASS；`/tmp/ios-a02-zip-source-core-final.log`、`/tmp/ios-a02-zip-source-minimal-final.log`、`/tmp/ios-a02-zip-source-cli.log`、`/tmp/ios-a02-zip-source-public.log` terminal0 |
+| strict Clippy | `/tmp/ios-a02-zip-source-clippy.log` core/CLI PASS terminal0；full workspace strict PASS |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-zip-source-full.log` terminal0；1802 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/范围 | 9新增tests：真实decoder/2publicinstall在4类fault下zero write/read/flush/observer，native sources/classes、安全actualCLI envelope，valid-emptyorder；密码仅metadata、非加密payload/pairedCLI/physicalcleanup或newbudgets。无额外Chromium/installed3.9/3.13重跑 |
+
+最初typed source回归0PASS/1FAIL与expanded16PASS/2FAIL原记录保留，后者为
+localheader实际上在archive构造中检查，补entrypasswordmetadata并改真实phase，
+产品分类未为fixture弱化。Locked zip2.4.2返回原InvalidArchive及CRC nativeIO
+均保留；不声称重建库内部已隐藏原因，未知futurevariant fallback非构造验收。
+原cause/class/context及returnedvariant migration、目录清理和精确日志见
+[专题证据](validation/zip-decoder-sources-2026-10-02.md)；ios0.1.13 SHA256
+`edfc4ad10aa102c37ca07b888a50e85690ecb7f521c85b0fb7bffd7a8ef508aa`。
+
+文档收尾catalog118 records/106 local Markdown links（6个changed Markdown files）/
+whitespace PASS；准确实现hash、host边界及真实剩余条件写入catalog/quality/roadmap/
+专题证据。
+
+本slice主机验收；A02/第三类/总体goal active，第四类尚未开始。下一已确认lossy
+paths：CLI remote symbols connect、activation record application（包括内层
+ConnectedDevice mobileactivation映射）、pasteboard XPC startup；须保留原sources/
+class/context并验证migration，未列为当前PASS。其他source/JSON/callback/binding、
+L01/L03/L04/Q04/A03、平台/真机/有序cleanup条件保留；无maturity升级、设备操作、
+推送/发布、历史改写或reference checkout修改。文档收尾后继续。

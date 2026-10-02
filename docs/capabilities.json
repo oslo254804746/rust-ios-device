@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-zip-decoder-sources-b986ae1",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Real local ZIP archive/header/password-metadata/CRC decoding; both entire public installs over temporary IPA files and owned services, actual CLI safe error renderer"],
+      "required_state": ["Host source/decode/output only; no encrypted-payload support, paired-TLS CLI process, physical install, stream reuse, new memory budgets or Apple cleanup certification"],
+      "tested_commit": "b986ae1547bb16c2c90b4ee09b67817e6ab79d0a",
+      "date": "2026-10-02",
+      "location": "docs/validation/zip-decoder-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 decoder errors retain original ZIP/IO causes under existing Io with fixed context, native kinds and local-input semantics; returned variant/CRC migration recorded, valid extraction/wire retained. Other source/JSON/callback/binding/lifecycle work remains pending; no maturity upgrade."
+    },
+    {
       "id": "linux-install-progress-errors-5810d16",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
