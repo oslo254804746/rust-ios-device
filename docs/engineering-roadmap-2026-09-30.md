@@ -2420,3 +2420,60 @@ host范围审查C list不可编码记录的显式结果/兼容迁移，先保留
 本runtime文档收尾四文件的71 local links、`python3 scripts/capabilities.py` /
 whitespace PASS；实现提交内容已核对，剩余只有本类文档。总体目标active，本轮
 三个已验收独立slice均为实际progress，不能据此完成第三类或31项总体目标。
+
+### 续接会话：A02 checked C device-list projection（2026-10-02）
+
+原会话 `01a0f318-99b9-7b71-bb7e-285621ed843b` 因额度停止；从本地会话记录
+恢复完整31项目标和阶段提交授权，在新会话继续持久化目标。当前分支
+`feat/device-service-updates-20260927`，恢复时HEAD
+`d07e102434cdb7e27c1836a5ffdeafa790e73f2b`；五个未提交文件均属于本C slice，
+无无关tracked变更，原实现保留并审查。已读取本地忽略AGENTS.MD、任务/验收/提交
+规则及最新交付记录，不提交指南或操作参考checkout。
+
+新增 `ios_list_devices_checked`，原layout/free/status保留；任何收到的UDID或
+connection type含NUL时返回IOS_ERR_CORE/Protocol、NULL/0且无partial array。
+旧entry保留skip兼容；prepared CStrings在检查期间由Rust拥有，失败释放此前行。
+valid/empty保持success，这只检查收到列表的C投影，不证明upstream discovery完整。
+头文件/示例/错误和兼容合同/Unreleased同步。owned binary-plist fixture经实际
+linked library运行五次ListDevices，覆盖bad UDID/type、旧skip、新valid/empty。
+工具扫描完整secret和NUL截断前缀，新增三项negative/positive validator tests。
+
+原会话first baseline19 PASS、后续host21 PASS与linked fixture PASS已复核。
+本次最终 `cargo test -p ios-ffi --all-features --locked` **21 PASS、0 FAIL/ignored**；
+`validate.py ffi`三项19/25/26B raw captures及strict C11 header/link/example **PASS**；
+strict package Clippy、fmt/whitespace、`validate.py tooling-tests` **52 PASS**，
+均terminal exit0。日志 `/tmp/ios-a02-c-checked-list-{host,linked,clippy,tooling}-final.log`。
+第11节full主线与提交/文档收尾仍待完成；主线期间不改产品代码。A02/第三类/总体
+目标active，void/port、probe/inner sources与stderr/stream/partial继续；L01、跨平台
+与真机条件保留。此fixture不接真实设备，不配对/DDI/TSS/刷机，不推送或发布。
+
+### 大类 3：A02 checked C listing 主机验收与交付（2026-10-02）
+
+实现提交 `6abb92f15e2dcd1b4a879ed15f5987bf71fdd1e5`（11个相关文件）；
+[验收证据](validation/c-checked-list-2026-10-02.md)。恢复旧会话五文件工作并完成
+兼容/错误/示例/工具收尾；新增checked entry以IOS_ERR_CORE/Protocol明确拒绝
+含NUL的收到记录、NULL/0且无partial array。旧skip、status/layout/free保留。
+仅验证C投影，不证明upstream discovery完整、实际设备可达或Apple cleanup。
+
+最终FFI21 PASS、strict package Clippy/strict C11 header/link/example PASS；实际
+linked五次binary-plist ListDevices覆盖bad UDID/type、legacy skip、valid/empty，
+19/25/26B captures均zero raw hits、完整owned cleanup。三项新增validator使全工具
+52 PASS；FFI专项工具Python3.9.25/3.13.15各6 PASS，仅工具不是新wheel安装。
+15个已有header declarations完整保留，仅新增1个symbol；86 changed local links/
+whitespace通过。CString先owned后转raw的失败释放经源码审查/实际错误路径验收，
+没有heap profiler/sanitizer结论。所有专项与full handles均已terminal exit0。
+
+第11节 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，
+`/tmp/ios-a02-c-checked-list-full.log`；**1749 Rust/13 Python、0 FAIL、2既有ignored**。
+fmt/check/strict Clippy/MSRV、66features/4groups、7+7doctests/3snippets、C ABI/
+ownedfailure/checked、3.12wheel/sdist、52tools、118help、38raw、5host/22device
+NOT_RUN、15CLI/3backup通过。ios0.1.13 SHA-256仍为
+`29cb95dfa5729d22c7480db4500f08261fb69ce8af3f5ea9a468e9e48d98d90d`；独立Chromium
+未因本C修改重跑，保留此前证据。四文件文档收尾更新host索引/指标，无成熟度升级。
+
+本slice主机范围已验收；A02/第三类/总体目标active。下一项是RSD后续重试耗尽
+丢失原失败/错误返回Unsupported的问题，补typed service lookup miss与兼容迁移、
+owned fixture；inner H2/RSD source、C void/port与其余binding/stream/partial继续。
+L01期限/取消、平台/真机条件不因此解除。没有推送/发布/改写历史/操作reference
+checkout或实际设备，完成本类文档聚焦提交并核对工作区后继续。

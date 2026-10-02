@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-c-checked-list-6abb92f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python tools 3.9.25/3.13.15/3.14.4",
+      "device": null,
+      "ios": null,
+      "transport": ["Strict linked C header and five owned binary-plist ListDevices replies; typed projection errors and bounded raw captures"],
+      "required_state": ["C projection only; no upstream discovery completeness, physical query/tunnel or Apple cleanup certification"],
+      "tested_commit": "6abb92f15e2dcd1b4a879ed15f5987bf71fdd1e5",
+      "date": "2026-10-02",
+      "location": "docs/validation/c-checked-list-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 additive checked C listing rejects embedded NUL with Protocol and no partial output, retaining legacy skip behavior, layout and free ownership. Void/port, later probe/inner sources, bindings and stream/partial work remains pending; no maturity upgrade."
+    },
+    {
       "id": "linux-python-runtime-errors-b064539",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; installed bindings on Python 3.9.25/3.12.13/3.13.15",
