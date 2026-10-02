@@ -84,6 +84,59 @@ async fn default_lockdown_root_api_retains_sources_and_exhaustive_errors() {
     );
 }
 
+#[cfg(feature = "supervised-pair")]
+#[tokio::test]
+async fn supervised_pairing_root_api_keeps_native_sources_and_record_fields() {
+    use ios_core::{
+        classify_error, pair_supervised, save_pair_record, ErrorClass, FullPairRecord,
+        LockdownError,
+    };
+    use std::{error::Error, io};
+    let (mut stream, peer) = tokio::io::duplex(64);
+    let error = pair_supervised(
+        &mut stream,
+        b"owned-private invalid DER",
+        "owned-password",
+        "owned-buid",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(classify_error(&error), ErrorClass::InvalidInput);
+    let LockdownError::Io(source) = &error else {
+        panic!("root native cause lost")
+    };
+    assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+    assert!(source.source().unwrap().is::<openssl::error::ErrorStack>());
+    assert!(!format!("{error:?} {:?}", source.get_ref()).contains("owned-private"));
+    let record = FullPairRecord {
+        device_certificate: vec![1],
+        host_certificate: vec![2],
+        host_private_key: vec![3],
+        root_certificate: vec![4],
+        root_private_key: vec![5],
+        host_id: "owned-host".into(),
+        system_buid: "owned-buid".into(),
+    };
+    struct OwnedDirectory(std::path::PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let owned = OwnedDirectory(
+        std::env::temp_dir().join(format!("ios-supervised-root-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir(&owned.0).unwrap();
+    let path = owned.0.join("owned-private\0.plist");
+    let error = save_pair_record(&record, b"escrow", None, &path).unwrap_err();
+    assert_eq!(classify_error(&error), ErrorClass::InvalidInput);
+    let LockdownError::Io(source) = &error else {
+        panic!("root native IO lost")
+    };
+    assert!(source.source().unwrap().is::<io::Error>());
+    drop(peer);
+}
+
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 #[test]
 fn manual_pairing_root_api_preserves_its_exhaustive_error_and_future() {
