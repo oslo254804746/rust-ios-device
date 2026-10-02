@@ -2477,3 +2477,76 @@ NOT_RUN、15CLI/3backup通过。ios0.1.13 SHA-256仍为
 owned fixture；inner H2/RSD source、C void/port与其余binding/stream/partial继续。
 L01期限/取消、平台/真机条件不因此解除。没有推送/发布/改写历史/操作reference
 checkout或实际设备，完成本类文档聚焦提交并核对工作区后继续。
+
+### 大类 3 进行中：A02 RSD retry 与服务缺失 owner（2026-10-02）
+
+C实现 `6abb92f15e2dcd1b4a879ed15f5987bf71fdd1e5` / 文档收尾 `d1d13df` 已核对，
+收尾后clean。继续独立host source范围：RSD重试保留最后一次Completed失败，原
+五次/500ms间隔/inner budgets与fresh transport保持，owner preflight仍立即返回。
+successful cached/新discovered目录缺canonical/shim时用既有ServiceNotFound，
+可判断ServiceMissing而不是笼统Unsupported；初始snapshot/缓存/metadata permissive
+行为不更新。截图只为原特定服务增加typed fallback，legacy兼容分支保留。
+proxy probe和XPC reconnector共用private typed dial/prelude adapter，原native IO/
+非IO source保留。返回failure variant/安全correlation改变已记录迁移，无public
+enum/字段/signature改动，inner H2/RSD flatten仍pending。
+
+首轮all-feature device68 PASS、screenshot8 PASS、tunnel-only47 PASS、external
+consumer12 PASS、strict Clippy PASS；随后补真实owned RSD discovery→directory miss/
+EOF/零服务dial及native adapter source，最终all-feature device **70 PASS**。
+新fixture使用真实TCP proxy prelude/H2/XPC，输入来自已有合成handshake形状，bounded
+frames/总5s；无真实device/TUN。初始Failed/Timeout和cache仍保留，不把后续success
+改写初始。一次apply_patch因fmt后的context不匹配失败，确认整批未写入后修正。
+最终screenshot、tunnel-only/strict Clippy和第11节full尚待完成；A02/第三类/总体
+目标active，C void/port、binding/stream/partial、L01/平台/真机条件继续保留。
+
+最终专项all-feature device70 PASS、tunnel-only49 PASS、screenshot8 PASS，原external
+consumer12 PASS；最终strict core/CLI Clippy PASS，均terminal exit0。85 changed local
+links/whitespace与三个public enum/device声明文件逐字未变检查通过，实际diff已审查；
+此source比较不是一般ABI或设备行为证明。第11节full安排在专项后执行，日志
+`/tmp/ios-a02-rsd-retry-full.log`；尚无最终退出码，主线期间不改产品代码。
+
+首轮full已terminal exit1：fmt/check/Clippy、1757Rust/13Python、MSRV/features/docs/
+C与3.12wheel/sdist均先通过，但tooling中安全Debug静态guard检测到测试专用
+AttemptSource派生Debug，52项工具有1 FAIL。该full不计PASS；去掉该derive并提供
+固定安全Debug，不放宽guard。原失败日志保留；修复后专项/完整门禁重新执行。
+源码只读确认下一项缺口：inner RSD/H2仍将typed错误转Tls string；syslog stream
+Err诊断后break并返回Ok，应用部分mutation的global --json仍打印human状态。
+这些不是通过证据，后续继续实际修复/合同及owned fixture，不据当前slice完成A02。
+
+### 大类 3：A02 RSD retry/typed lookup 主机验收与交付（2026-10-02）
+
+实现提交 **`233348554e44022f6bca522d18728d45b62bab05`**（8个相关文件）；
+[验收证据](validation/rsd-retry-errors-2026-10-02.md)。原五次/500ms及inner budgets/
+fresh transports保留，耗尽返回最后一次原CoreError/source，success/preflight早停；
+successful目录miss返回既有ServiceNotFound/ClassServiceMissing，metadata/shim策略
+和初始snapshot/cache不变。shared private dial/prelude adapter保留原sources，XPC
+reconnector wiring源码审查，不声称完整断连重连workflow。截图按原特定服务typed
+miss保留fallback；failurevariant/安全correlation迁移已写入合同，无public声明变化。
+
+修复后all-feature device70 PASS、tooling52 PASS；screenshot8 PASS，external
+consumer12 PASS（full重跑该consumer），strict core/CLI及fullworkspace Clippy PASS。
+最终tunnel-only49在Debug修正前已通过，修正后的已提交代码安排accepted重跑，
+结果另记。实际ownedproxy/H2/XPC discovery→empty目录miss/EOF/零service dial，
+原Failed/Timeout snapshot/cache及本地watch release通过；无TUN/forwarding/设备
+cleanup证据。原full在safeDebug guard有1 FAIL，保留失败日志，未弱化guard；改test
+error为固定Debug后重新通过。一次patch context失败未写入的历史同样保留。
+
+第11节修正后完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，terminal exit0，
+`/tmp/ios-a02-rsd-retry-full-fixed.log`；**1757 Rust/13 Python、0 FAIL、2既有ignored**。
+fmt/check/Clippy/MSRV、66features/4groups、7+7doctests/3snippets、C19/25/26B
+captures、3.12wheel/sdist、52tools、118help、38raw、5host/22device NOT_RUN、
+15CLI/3backup通过。ios0.1.13 SHA-256：
+`44d2553f82647b734705d76214a6031ea7246e2abd1eefd7aadcf7650ddd9db1`。
+原始diff/whitespace/85local links和public声明逐字比较已审查，后者不是一般ABI证明。
+
+本host slice验收，A02/第三类/总体目标active。下一项继续inner RSD/H2 native错误
+在framer/bootstrap/read中转Tls string的source修复与兼容/fixture；随后stream
+失败/partial、JSON mutation合同。C void/port、其他binding/相关L01/平台/真机条件
+保留。四文件文档收尾更新host索引与指标，无成熟度升级；不推送/发布/改写历史/
+修改reference checkout或操作实际设备。核对收尾后继续，不结束31项总体目标。
+
+修正后已提交 `2333485` 的最终tunnel-only **49 PASS、0 FAIL/ignored**，terminal
+exit0，`/tmp/ios-a02-rsd-retry-tunnel-only-accepted.log`；验收页同步最终结果。
+四文件文档收尾73 local links、`scripts/capabilities.py` 118records及whitespace
+PASS。实现范围/提交内容已核对，剩余仅本类文档；收尾后继续上述A02范围，目标active。
