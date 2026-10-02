@@ -43,6 +43,8 @@ async fn authenticated_legacy_get_is_readonly_and_post_shutdown_notifies() {
                 StatusCode::METHOD_NOT_ALLOWED | StatusCode::GONE
             ));
             assert_eq!(response.headers()["allow"], "POST");
+            assert_eq!(response.headers()["x-ios-error-class"], "unsupported");
+            assert_eq!(response.headers()["x-ios-error-phase"], "tunnel_manager");
             assert_eq!(response.headers()["cache-control"], "no-store");
             let original = response.text().await.unwrap();
             assert!(!original.contains("synthetic-secret"));
@@ -117,6 +119,7 @@ async fn legacy_notice_has_a_fixed_end_and_never_advertises_get_mutation() {
         let response = legacy_management_reply(now);
         assert_eq!(response.status(), expected);
         assert_eq!(response.headers()["allow"], "POST");
+        assert_eq!(response.headers()["x-ios-error-class"], "unsupported");
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();

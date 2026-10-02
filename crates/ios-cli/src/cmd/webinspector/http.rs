@@ -31,6 +31,7 @@ pub(super) struct ServerState {
 pub(super) struct AppError {
     status: StatusCode,
     message: String,
+    class: ios_core::ErrorClass,
 }
 
 impl AppError {
@@ -38,16 +39,21 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            class: ios_core::ErrorClass::InvalidInput,
         }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        crate::http_diagnostics::reviewed((
-            self.status,
-            Json(json!({ "value": { "error": "unknown error", "message": self.message } })),
-        ))
+        crate::http_diagnostics::classified(
+            (
+                self.status,
+                Json(json!({ "value": { "error": "unknown error", "message": self.message } })),
+            ),
+            self.class,
+            crate::http_diagnostics::ErrorPhase::WebInspector,
+        )
     }
 }
 
@@ -55,6 +61,7 @@ impl From<anyhow::Error> for AppError {
     fn from(value: anyhow::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            class: ios_core::classify_error(value.as_ref()),
             message: format!(
                 "WebInspector operation failed: {}",
                 crate::output::error_message(&value)
@@ -67,6 +74,7 @@ impl From<axum::Error> for AppError {
     fn from(value: axum::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            class: ios_core::classify_error(&value),
             message: format!(
                 "WebInspector HTTP failed: {}",
                 ios_core::redaction::diagnostic_error(&value)
@@ -79,6 +87,7 @@ impl From<serde_json::Error> for AppError {
     fn from(value: serde_json::Error) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            class: ios_core::classify_error(&value),
             message: format!(
                 "WebInspector JSON decode failed: {}",
                 ios_core::redaction::diagnostic_error(&value)
@@ -159,7 +168,77 @@ async fn debug_reload_policy(
             }
             _ => json!({"value": {"error": "invalid request", "message": message}}),
         };
-        return crate::http_diagnostics::reviewed((StatusCode::BAD_REQUEST, Json(body)));
+        return crate::http_diagnostics::classified(
+            (StatusCode::BAD_REQUEST, Json(body)),
+            ios_core::classify_error(error.as_ref()),
+            crate::http_diagnostics::ErrorPhase::PolicyReload,
+        );
     }
     Json(json!({"operation": "reload_policy", "data": true})).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn native_http_categories_preserve_safe_body_and_original_status() {
+        let secret = "synthetic-private-http-native-source";
+        let cases = [
+            (
+                anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, secret))
+                    .context(secret),
+                "timeout",
+            ),
+            (
+                anyhow::Error::new(ios_core::OperationCancelled::new()).context(secret),
+                "cancelled",
+            ),
+            (
+                anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                "io",
+            ),
+            (
+                anyhow::Error::new(ios_core::CoreError::Other(
+                    "timeout permission denied cancelled".into(),
+                )),
+                "unknown",
+            ),
+        ];
+        for (error, class) in cases {
+            let old_message = format!(
+                "WebInspector operation failed: {}",
+                crate::output::error_message(&error)
+            );
+            let response = AppError::from(error).into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(response.headers()["x-ios-error-schema-version"], "1");
+            assert_eq!(response.headers()["x-ios-error-class"], class);
+            assert_eq!(response.headers()["x-ios-error-phase"], "webinspector");
+            assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
+            let raw = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            assert!(!std::str::from_utf8(&raw).unwrap().contains(secret));
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&raw).unwrap(),
+                json!({"value": {"error": "unknown error", "message": old_message}})
+            );
+        }
+        let error = axum::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            AppError::from(error).into_response().headers()["x-ios-error-class"],
+            "permission_denied"
+        );
+        let error = serde_json::from_str::<serde_json::Value>(secret).unwrap_err();
+        let response = AppError::from(error).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["x-ios-error-class"], "protocol");
+        assert_eq!(
+            AppError::bad_request("unsupported locator strategy")
+                .into_response()
+                .headers()["x-ios-error-class"],
+            "invalid_input"
+        );
+    }
 }

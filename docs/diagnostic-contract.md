@@ -36,9 +36,9 @@ implementation.
 | Framework HTTP rejection | Status and Allow retained; fixed HTTP phase, status category and request correlation; HEAD body empty | Query/JSON/path/handshake rejection bodies are discarded without reading them |
 | WebDriver failure | Existing status and `value.error`, fixed phase plus safe `value.message` | Successful script/element results remain debugger data |
 | Device CDP protocol failure | Request/session routing and numeric error code retained; message replaced; arbitrary error data omitted | Runtime results, exceptionDetails, console events and page data retain their protocol purpose |
-| Python operation exception | Existing RuntimeError/ValueError type, fixed phase or allowed-value hint | `list_devices`, attributes and `connect_info` retain usable selector data |
+| Python operation exception | Existing RuntimeError/ValueError type/args, fixed phase or allowed-value hint; additive typed schema/class/phase/effects attributes in the mapped profile | `list_devices`, attributes and `connect_info` retain usable selector data |
 | Python tunnel/patch repr | Address pseudonym, ports and counts | `connect_info` exposes the actual address for connection setup |
-| C failure | Existing numeric status and output reset/ownership rules | Successful selector JSON remains API data |
+| C failure | Existing numeric status and output reset/ownership rules; caller-thread borrowed static category getter | Successful selector JSON remains API data |
 | dproxy progress | Protocol category, direction and summary correlation | Explicit traffic recording files still contain raw/decoded device traffic |
 | Rust owned error Debug | Type name, safe category and correlation; normal and pretty Debug omit fields/source text | Typed variants, Display and sources remain available to explicit API callers |
 | Clipboard promise failure | Fixed `promise failed` phase and correlation in human/JSON/event output | Requested clipboard values remain data; the Rust snapshot retains its original typed payload |
@@ -48,6 +48,12 @@ a handler runs. Reviewed diagnostic helpers mark safe replies in server-only
 response extensions; a client header cannot bypass the fallback. Unreviewed
 error bodies and headers are not copied, apart from the framework's Allow
 header. The fallback sets Cache-Control: no-store and retains HTTP status.
+Protected router errors also supply fixed version/class/phase/effects headers
+from typed sources or named admission outcomes, with Unknown for lost sources.
+They preserve existing bodies/statuses and do not copy submitted header values.
+Approved origins can read those four headers; credentials and Origin admission
+remain unchanged. See the [error contract](error-contract.md) for exact fields
+and remaining pre-router/post-upgrade boundaries.
 
 FullPairRecord, SupervisionIdentity and VerifyPairSession Debug omit credential
 material, including certificates, key bytes and handshake/session keys.

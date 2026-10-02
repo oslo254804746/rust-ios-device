@@ -1,9 +1,9 @@
 # Error and machine-output contract
 
 A02 is in progress. Additive Rust classification, opt-in final CLI machine
-errors, Python factory/proxy metadata and caller-thread C categories are
-implemented; the roadmap keeps
-HTTP mappings, remaining Python/C boundaries, stream semantics, probe observations
+errors, Python factory/proxy metadata, caller-thread C categories and protected
+router HTTP headers are implemented; the roadmap keeps remaining HTTP/Python/C
+boundaries, stream semantics, probe observations
 and remaining information-loss fixes pending. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
 
@@ -138,8 +138,9 @@ reporting remains best effort after failure: a closed stderr retains the origina
 nonzero status and may prevent delivery of the envelope. Ordinary progress,
 tracing and stream callbacks may still emit other stderr records; this option
 does not yet make the entire stderr stream JSON. Partial stdout may already
-exist. Existing HTTP and C statuses retain their shapes. HTTP mappings remain
-pending A02 work; additive C/Python category queries are described below.
+exist. Existing HTTP and C statuses retain their shapes. Additive HTTP headers
+and C/Python category queries are described below; post-upgrade frames and
+remaining adapters still need their own acceptance.
 
 Both the human confirmation hint and machine field now inspect at most 32
 sources, matching the classifier's bounded interpretation. Normal guard errors
@@ -223,3 +224,50 @@ void cleanup reporting or port-zero ambiguity; these remain separate review
 boundaries. The owned linked-C malformed ListDevices fixture validates a real
 library call, not device connection/query/tunnel acceptance. Native source
 details are not exported as an unsafe C string.
+
+## Protected HTTP responses
+
+Manager, CDP and WebDriver router errors gain four fixed response headers,
+without changing their existing HTTP statuses, JSON body shapes or safe
+messages. Successful/informational responses do not gain these fields.
+
+| Header | Meaning |
+| --- | --- |
+| `X-Ios-Error-Schema-Version` | String `1`; retain a future-version/fallback branch |
+| `X-Ios-Error-Class` | Stable ErrorClass code from a native typed source or an explicit admission/issuer outcome; opaque/unobserved sources stay `unknown` |
+| `X-Ios-Error-Phase` | Enum-selected `http_request`, `http_access`, `browser_ticket`, `webinspector`, `tunnel_manager` or `policy_reload`; never a submitted URL, selector or header |
+| `X-Ios-Error-Effects` | String `unknown`; failure alone does not certify rollback, safe retry or completed cleanup |
+
+WebInspector conversions and manager operation failures inspect the original
+typed error before constructing the existing safe body. Both manager dial
+timeout wrappers use the actual Elapsed class while preserving their original
+message-only response. Access/Host/Origin refusal is PermissionDenied; ticket
+capacity is ResourceLimit, issuer input rejection InvalidInput and unavailable
+entropy Unknown. These are local named outcomes, not a classifier of arbitrary
+HTTP status numbers. Named manager hop/upstream limits are ResourceLimit,
+zero/missing connect input is InvalidInput, registry/tunnel lookup misses are
+NotFound, and unsupported local transport/legacy GET routes are Unsupported.
+Those local outcomes do not prove a missing daemon service or an explicit
+device-side capability rejection. The transport guard is currently dormant:
+every constructible StartTunnelConnectionType returns no unsupported message;
+its header mapping is source-reviewed, with no fabricated runtime/device proof.
+Other opaque failures and framework rejections
+without a retained native source stay Unknown even when their prose/status
+mentions timeout or a missing target.
+
+The reviewed-response marker stays in server-only extensions. An incoming or
+unreviewed outgoing header cannot bypass body sanitization or select a class.
+Framework error bodies/headers are discarded as before, with status/Allow,
+no-store and empty HEAD bodies retained. HEAD can still deliver machine headers.
+Approved Origin responses expose exactly these four error headers to browser
+fetch. Existing Host/Origin/credential and preflight admission remain unchanged;
+unapproved origins gain no CORS access. Existing JSON/body consumers require no
+migration; new callers read headers and allow future codes/versions.
+
+This profile covers responses reaching the protected routers. TLS/HTTP parser
+failures before routing, WebSocket frames after upgrade, remote client error
+sources, remaining opaque decisions and stream/partial semantics remain
+separate work. Missing headers are not proof of success. Native failures are
+classified before boundary conversion; private original Rust chains are not
+exported as unsafe HTTP data. Host/Chromium evidence does not certify a device
+workflow or Apple teardown.

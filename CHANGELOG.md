@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add versioned typed error headers to protected manager/CDP/WebDriver router
+  failures while retaining existing HTTP statuses and JSON bodies. Keep unknown
+  sources explicit and effect uncertainty unchanged; expose fixed headers only
+  to already approved browser origins and verify actual Chromium fetch.
+
 - Add a caller-thread C error-category getter with borrowed static codes.
   Preserve the original 14 symbols, numeric statuses and layouts; classify
   native sources before conversion and retain runtime IO failures. Verify the

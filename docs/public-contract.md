@@ -110,6 +110,16 @@ schema are extensible; other stderr progress/stream records remain separate
 pending work. See the [error contract](error-contract.md) for exact fields and
 parser recovery. This does not modify existing HTTP/C/Python error schemas.
 
+Protected manager/CDP/WebDriver router errors additionally expose fixed
+`X-Ios-Error-Schema-Version`, `X-Ios-Error-Class`, `X-Ios-Error-Phase` and
+`X-Ios-Error-Effects` response headers. Existing statuses/JSON bodies and success
+formats remain unchanged. Native typed failures and named admission outcomes
+supply the category; unknown sources retain Unknown. Approved origins can read
+these headers through explicit CORS exposure, with admission unchanged. The
+[error contract](error-contract.md) defines version/codes, fixed phases and
+unknown effects, plus router/upgrade/parser boundaries. CLI error-format does
+not control this HTTP profile.
+
 [R04 encoding/output migration](plist-json-contract.md) retains historical
 Data/Date/Uid profiles. Failed result stdout now returns 1 instead of a possible
 panic/101; failed help/version stdout returns 1 instead of silent success/0.

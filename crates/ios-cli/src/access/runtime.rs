@@ -411,7 +411,11 @@ pub(crate) fn denied_for(
         ErrorShape::Cdp => json!({"error": {"code": -32600, "message": message}}),
         ErrorShape::WebDriver => json!({"value": {"error": "invalid request", "message": message}}),
     };
-    let mut response = crate::http_diagnostics::reviewed((status, Json(body)));
+    let mut response = crate::http_diagnostics::classified(
+        (status, Json(body)),
+        ios_core::ErrorClass::PermissionDenied,
+        crate::http_diagnostics::ErrorPhase::Access,
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

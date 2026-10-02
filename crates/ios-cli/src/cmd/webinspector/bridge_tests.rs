@@ -175,9 +175,15 @@ async fn injected_source_is_called_only_after_admission_and_failures_are_safe() 
         };
         let denied = request().send().await.unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(denied.headers()["x-ios-error-class"], "permission_denied");
+        assert_eq!(denied.headers()["x-ios-error-phase"], "http_access");
         assert_eq!(source.calls(), 0);
         let failed = request().bearer_auth(TOKEN).send().await.unwrap();
         assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(failed.headers()["x-ios-error-schema-version"], "1");
+        assert_eq!(failed.headers()["x-ios-error-class"], "permission_denied");
+        assert_eq!(failed.headers()["x-ios-error-phase"], "webinspector");
+        assert_eq!(failed.headers()["x-ios-error-effects"], "unknown");
         let raw = failed.text().await.unwrap();
         assert!(!raw.contains(SECRET));
         assert!(!raw.contains(DEVICE));
@@ -214,6 +220,10 @@ async fn actual_debug_routers_preserve_startup_io_and_existing_error_response_sh
         };
         let response = request.bearer_auth(TOKEN).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()["x-ios-error-schema-version"], "1");
+        assert_eq!(response.headers()["x-ios-error-class"], "disconnected");
+        assert_eq!(response.headers()["x-ios-error-phase"], "webinspector");
+        assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
         let raw = response.text().await.unwrap();
         assert!(!raw.contains(DEVICE));
         assert!(!raw.contains(SECRET));

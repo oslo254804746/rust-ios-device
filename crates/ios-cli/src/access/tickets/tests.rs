@@ -1,4 +1,29 @@
 use super::*;
+
+#[test]
+fn ticket_error_metadata_matches_explicit_issuer_outcomes() {
+    for shape in [ErrorShape::Manager, ErrorShape::Cdp, ErrorShape::WebDriver] {
+        for (status, class, phase) in [
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "resource_limit",
+                "browser_ticket",
+            ),
+            (StatusCode::SERVICE_UNAVAILABLE, "unknown", "browser_ticket"),
+            (StatusCode::BAD_REQUEST, "invalid_input", "browser_ticket"),
+            (StatusCode::REQUEST_TIMEOUT, "unknown", "browser_ticket"),
+            (StatusCode::UNAUTHORIZED, "permission_denied", "http_access"),
+            (StatusCode::FORBIDDEN, "permission_denied", "http_access"),
+        ] {
+            let response = error(shape, status);
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()["x-ios-error-schema-version"], "1");
+            assert_eq!(response.headers()["x-ios-error-class"], class);
+            assert_eq!(response.headers()["x-ios-error-phase"], phase);
+            assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
+        }
+    }
+}
 use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, TOKEN};
 use crate::access::{AccessControl, HttpBoundaryArgs};
 use axum::extract::ws::WebSocketUpgrade;

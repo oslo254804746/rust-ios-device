@@ -155,7 +155,16 @@ fn error(shape: ErrorShape, status: StatusCode) -> Response {
         ErrorShape::Cdp => json!({"error": {"code": -32600, "message": message}}),
         ErrorShape::WebDriver => json!({"value": {"error": "invalid request", "message": message}}),
     };
-    crate::http_diagnostics::reviewed((status, Json(body)))
+    let class = match status {
+        StatusCode::TOO_MANY_REQUESTS => ios_core::ErrorClass::ResourceLimit,
+        StatusCode::BAD_REQUEST => ios_core::ErrorClass::InvalidInput,
+        _ => ios_core::ErrorClass::Unknown,
+    };
+    crate::http_diagnostics::classified(
+        (status, Json(body)),
+        class,
+        crate::http_diagnostics::ErrorPhase::Ticket,
+    )
 }
 
 async fn issue(

@@ -318,6 +318,17 @@ async fn admission(
             response
                 .headers_mut()
                 .append(header::VARY, "Origin".parse().unwrap());
+            if response
+                .headers()
+                .contains_key("x-ios-error-schema-version")
+            {
+                response.headers_mut().insert(
+                    header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                    crate::http_diagnostics::ERROR_HEADER_EXPOSURE
+                        .parse()
+                        .unwrap(),
+                );
+            }
         }
         return response;
     }
@@ -327,7 +338,11 @@ async fn admission(
         ErrorShape::Cdp => json!({"error": {"code": -32600, "message": message}}),
         ErrorShape::WebDriver => json!({"value": {"error": "invalid request", "message": message}}),
     };
-    let mut response = crate::http_diagnostics::reviewed((StatusCode::FORBIDDEN, Json(body)));
+    let mut response = crate::http_diagnostics::classified(
+        (StatusCode::FORBIDDEN, Json(body)),
+        ios_core::ErrorClass::PermissionDenied,
+        crate::http_diagnostics::ErrorPhase::Access,
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -348,6 +363,94 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
+
+    #[tokio::test]
+    async fn approved_origins_can_read_fixed_error_headers_without_widening_admission() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let router = Router::new()
+            .route(
+                "/failure",
+                get(move || async move {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    crate::http_diagnostics::classified(
+                        (StatusCode::FORBIDDEN, "original denial"),
+                        ios_core::ErrorClass::PermissionDenied,
+                        crate::http_diagnostics::ErrorPhase::Access,
+                    )
+                }),
+            )
+            .route("/success", get(|| async { "original success" }));
+        let router = HttpBoundaryArgs {
+            allow_host: vec![],
+            allow_origin: vec!["https://approved.invalid".into()],
+        }
+        .validate()
+        .unwrap()
+        .for_listener(address)
+        .protect(router, ErrorShape::Manager);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let base = format!("http://{address}");
+        let response = client
+            .get(format!("{base}/failure"))
+            .header("origin", "https://approved.invalid")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            "https://approved.invalid"
+        );
+        assert_eq!(
+            response.headers()["access-control-expose-headers"],
+            crate::http_diagnostics::ERROR_HEADER_EXPOSURE
+        );
+        assert_eq!(response.headers()["x-ios-error-class"], "permission_denied");
+        assert_eq!(response.text().await.unwrap(), "original denial");
+        for origin in ["https://unapproved.invalid", "null"] {
+            let response = client
+                .get(format!("{base}/failure"))
+                .header("origin", origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert_eq!(response.headers()["x-ios-error-class"], "permission_denied");
+            assert!(!response
+                .headers()
+                .contains_key("access-control-allow-origin"));
+            assert!(!response
+                .headers()
+                .contains_key("access-control-expose-headers"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let response = client
+            .get(format!("{base}/success"))
+            .header("origin", "https://approved.invalid")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key("x-ios-error-class"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-expose-headers"));
+        assert_eq!(response.text().await.unwrap(), "original success");
+        server.abort();
+        let _ = server.await;
+    }
 
     #[test]
     fn boundary_configuration_rejects_wildcards_paths_credentials_duplicates_and_excess() {

@@ -44,11 +44,18 @@ async function main() {
         headers: { 'Content-Type': 'application/json', ...(authorized ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ origin, target: selected }),
       });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await response.json(),
+        errorSchema: response.headers.get('x-ios-error-schema-version'),
+        errorClass: response.headers.get('x-ios-error-class'),
+        errorPhase: response.headers.get('x-ios-error-phase'),
+        errorEffects: response.headers.get('x-ios-error-effects') };
     };
     let checks = 0;
     const check = (value) => { if (!value) throw new Error('contract check'); checks += 1; };
-    check((await issue(target, location.origin, false)).status === 401);
+    const bootstrapDenial = await issue(target, location.origin, false);
+    check(bootstrapDenial.status === 401 && bootstrapDenial.errorSchema === '1' &&
+      bootstrapDenial.errorClass === 'permission_denied' && bootstrapDenial.errorPhase === 'http_access' &&
+      bootstrapDenial.errorEffects === 'unknown');
     check((await issue({ ...target, udid: 'other-device' })).status === 403);
     check((await issue({ ...target, port: 22 })).status === 403);
     check((await issue(target, 'http://unapproved.invalid')).status === 403);

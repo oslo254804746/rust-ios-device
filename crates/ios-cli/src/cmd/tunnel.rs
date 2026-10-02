@@ -1330,9 +1330,10 @@ async fn agent_list_tunneld(
 ) -> Result<Json<FederationListing>, Response> {
     principal.require_permission(Permission::List)?;
     if query.hop > MAX_FEDERATION_HOPS {
-        return Err(manager_error(
+        return Err(manager_classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
+            ios_core::ErrorClass::ResourceLimit,
         ));
     }
     let mut records = principal
@@ -1350,8 +1351,16 @@ async fn agent_list_tunneld(
     Ok(Json(records))
 }
 
-fn manager_error(status: StatusCode, message: &'static str) -> Response {
-    crate::http_diagnostics::reviewed((status, Json(json!({ "message": message }))))
+fn manager_classified_error(
+    status: StatusCode,
+    message: &'static str,
+    class: ios_core::ErrorClass,
+) -> Response {
+    crate::http_diagnostics::classified(
+        (status, Json(json!({ "message": message }))),
+        class,
+        crate::http_diagnostics::ErrorPhase::Manager,
+    )
 }
 
 fn manager_operation_error(
@@ -1359,13 +1368,17 @@ fn manager_operation_error(
     phase: &'static str,
     error: &(dyn std::error::Error + 'static),
 ) -> Response {
-    crate::http_diagnostics::reviewed((
-        status,
-        Json(json!({
-            "message": phase,
-            "error": ios_core::redaction::diagnostic_error(error).to_string(),
-        })),
-    ))
+    crate::http_diagnostics::classified(
+        (
+            status,
+            Json(json!({
+                "message": phase,
+                "error": ios_core::redaction::diagnostic_error(error).to_string(),
+            })),
+        ),
+        ios_core::classify_error(error),
+        crate::http_diagnostics::ErrorPhase::Manager,
+    )
 }
 
 fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
@@ -1398,9 +1411,10 @@ async fn agent_add_upstream(
     })?;
     let mut upstreams = state.inner.upstreams.write().await;
     if !upstreams.contains(&url) && upstreams.len() >= MAX_UPSTREAMS {
-        return Err(manager_error(
+        return Err(manager_classified_error(
             StatusCode::BAD_REQUEST,
             "upstream limit reached",
+            ios_core::ErrorClass::ResourceLimit,
         ));
     }
     upstreams.insert(url.clone());
@@ -1452,15 +1466,17 @@ async fn agent_connect_authorized(
     principal: Principal,
 ) -> Result<Response, Response> {
     if query.hop > MAX_FEDERATION_HOPS {
-        return Err(manager_error(
+        return Err(manager_classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
+            ios_core::ErrorClass::ResourceLimit,
         ));
     }
     if query.udid.is_empty() || query.port == 0 {
-        return Err(manager_error(
+        return Err(manager_classified_error(
             StatusCode::BAD_REQUEST,
             "udid and nonzero port are required",
+            ios_core::ErrorClass::InvalidInput,
         ));
     }
     let local = if query.upstream.is_none() {
@@ -1479,7 +1495,13 @@ async fn agent_connect_authorized(
             connect_record_port(&record, query.port),
         )
         .await
-        .map_err(|_| manager_error(StatusCode::GATEWAY_TIMEOUT, "tunnel TCP dial timed out"))?
+        .map_err(|error| {
+            manager_classified_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "tunnel TCP dial timed out",
+                ios_core::classify_error(&error),
+            )
+        })?
         .map_err(|err| {
             manager_operation_error(
                 StatusCode::BAD_GATEWAY,
@@ -1501,16 +1523,18 @@ async fn agent_connect_authorized(
             .into_response());
     }
     if query.hop >= MAX_FEDERATION_HOPS {
-        return Err(manager_error(
+        return Err(manager_classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
+            ios_core::ErrorClass::ResourceLimit,
         ));
     }
     if let Some(upstream) = &query.upstream {
         if !state.inner.upstreams.read().await.contains(upstream) {
-            return Err(manager_error(
+            return Err(manager_classified_error(
                 StatusCode::BAD_REQUEST,
                 "upstream is not registered",
+                ios_core::ErrorClass::NotFound,
             ));
         }
     }
@@ -1524,7 +1548,13 @@ async fn agent_connect_authorized(
                 err.as_ref(),
             )
         })?
-        .ok_or_else(|| manager_error(StatusCode::NOT_FOUND, "tunnel target not found"))?;
+        .ok_or_else(|| {
+            manager_classified_error(
+                StatusCode::NOT_FOUND,
+                "tunnel target not found",
+                ios_core::ErrorClass::NotFound,
+            )
+        })?;
     let url = remote_connect_url(&target, &query).map_err(|err| {
         manager_operation_error(
             StatusCode::BAD_REQUEST,
@@ -1564,10 +1594,11 @@ async fn agent_connect_authorized(
         ),
     )
     .await
-    .map_err(|_| {
-        manager_error(
+    .map_err(|error| {
+        manager_classified_error(
             StatusCode::GATEWAY_TIMEOUT,
             "upstream WebSocket dial timed out",
+            ios_core::classify_error(&error),
         )
     })?
     .map_err(|err| {
@@ -1615,10 +1646,10 @@ async fn agent_get_tunnel(
     let record = principal.run(state.get_record(&udid)).await?;
     principal.require(Permission::List, Some(&udid), None)?;
     record.map(Json).ok_or_else(|| {
-        crate::http_diagnostics::reviewed((
+        crate::http_diagnostics::classified((
             StatusCode::NOT_FOUND,
             Json(json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() })),
-        ))
+        ), ios_core::ErrorClass::NotFound, crate::http_diagnostics::ErrorPhase::Manager)
     })
 }
 
@@ -1633,12 +1664,16 @@ async fn agent_delete_tunnel(
             json!({ "operation": "cancel", "udid": udid, "data": true }),
         ))
     } else {
-        Err(crate::http_diagnostics::reviewed((
-            StatusCode::NOT_FOUND,
-            Json(
-                json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() }),
+        Err(crate::http_diagnostics::classified(
+            (
+                StatusCode::NOT_FOUND,
+                Json(
+                    json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() }),
+                ),
             ),
-        )))
+            ios_core::ErrorClass::NotFound,
+            crate::http_diagnostics::ErrorPhase::Manager,
+        ))
     }
 }
 
@@ -1649,14 +1684,18 @@ async fn agent_start_tunnel(
 ) -> Result<Json<StartTunnelResponse>, Response> {
     principal.require(Permission::ManageTunnels, Some(&query.udid), None)?;
     if let Some(message) = query.unsupported_transport_message() {
-        return Err(crate::http_diagnostics::reviewed((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "message": message,
-                "device": ios_core::redaction::diagnostic_id(&query.udid).to_string(),
-                "connection_type": query.requested_connection_type(),
-            })),
-        )));
+        return Err(crate::http_diagnostics::classified(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(json!({
+                    "message": message,
+                    "device": ios_core::redaction::diagnostic_id(&query.udid).to_string(),
+                    "connection_type": query.requested_connection_type(),
+                })),
+            ),
+            ios_core::ErrorClass::Unsupported,
+            crate::http_diagnostics::ErrorPhase::Manager,
+        ));
     }
 
     principal
@@ -1690,7 +1729,7 @@ fn legacy_management_reply(now: u64) -> Response {
     } else {
         (StatusCode::GONE, "legacy GET management removed; use POST")
     };
-    let mut response = manager_error(status, message);
+    let mut response = manager_classified_error(status, message, ios_core::ErrorClass::Unsupported);
     response
         .headers_mut()
         .insert(axum::http::header::ALLOW, "POST".parse().unwrap());
@@ -1760,6 +1799,7 @@ async fn agent_reload_policy(
 
 #[cfg(test)]
 mod tests {
+    use crate::access::test_support::JsonRequest;
     use clap::Parser;
     use futures_util::{SinkExt, StreamExt};
 
@@ -1769,6 +1809,161 @@ mod tests {
     mod browser_tests;
     mod method_tests;
     mod upstream_tests;
+
+    #[tokio::test]
+    async fn manager_http_categories_keep_native_and_message_only_bodies() {
+        let secret = "synthetic-private-manager-native-source";
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, secret);
+        let response =
+            manager_operation_error(StatusCode::BAD_GATEWAY, "original operation phase", &error);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.headers()["x-ios-error-class"], "permission_denied");
+        assert_eq!(response.headers()["x-ios-error-phase"], "tunnel_manager");
+        let raw = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        assert!(!std::str::from_utf8(&raw).unwrap().contains(secret));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&raw).unwrap(),
+            json!({"message": "original operation phase", "error": ios_core::redaction::diagnostic_error(&error).to_string()})
+        );
+
+        let elapsed = tokio::time::timeout(Duration::from_millis(5), std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        let response = manager_classified_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "original timeout phase",
+            ios_core::classify_error(&elapsed),
+        );
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(response.headers()["x-ios-error-class"], "timeout");
+        assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
+        let raw = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&raw).unwrap(),
+            json!({"message": "original timeout phase"})
+        );
+        let response = manager_classified_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "opaque timeout permission denied",
+            ios_core::ErrorClass::Unknown,
+        );
+        assert_eq!(
+            response.headers()["x-ios-error-class"],
+            "unknown",
+            "status/prose is not native typed evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_manager_routes_classify_named_local_failures_before_device_work() {
+        const SECRET: &str = "synthetic-private-manager-selector";
+        let state = TunnelAgentState::new(TunMode::Userspace);
+        let (port, server) = spawn_test_router(agent_router(state.clone())).await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let base = format!("http://127.0.0.1:{port}");
+        for (method, path, status, class) in [
+            (
+                reqwest::Method::GET,
+                "/?hop=4".to_string(),
+                StatusCode::LOOP_DETECTED,
+                "resource_limit",
+            ),
+            (
+                reqwest::Method::GET,
+                format!("/tunnel/{SECRET}"),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                reqwest::Method::DELETE,
+                format!("/tunnel/{SECRET}"),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+        ] {
+            let response = client
+                .request(method, format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()["x-ios-error-schema-version"], "1");
+            assert_eq!(response.headers()["x-ios-error-class"], class);
+            assert_eq!(response.headers()["x-ios-error-phase"], "tunnel_manager");
+            assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
+            assert!(!response.text().await.unwrap().contains(SECRET));
+        }
+        for (query, status, class) in [
+            (
+                format!("udid={SECRET}&port=0"),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                format!("udid={SECRET}&port=12345&hop=4"),
+                StatusCode::LOOP_DETECTED,
+                "resource_limit",
+            ),
+            (
+                format!(
+                    "udid={SECRET}&port=12345&upstream=http%3A%2F%2Funregistered.invalid%3A1%2F"
+                ),
+                StatusCode::BAD_REQUEST,
+                "not_found",
+            ),
+            (
+                format!("udid={SECRET}&port=12345"),
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+        ] {
+            let failure = tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/connect?{query}")),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            match failure {
+                tungstenite::Error::Http(response) => {
+                    assert_eq!(response.status(), status);
+                    assert_eq!(response.headers()["x-ios-error-class"], class);
+                    assert_eq!(response.headers()["x-ios-error-phase"], "tunnel_manager");
+                    assert_eq!(response.headers()["x-ios-error-effects"], "unknown");
+                    assert!(!response.body().as_ref().is_some_and(|body| body
+                        .windows(SECRET.len())
+                        .any(|value| value == SECRET.as_bytes())));
+                }
+                other => panic!(
+                    "unexpected owned WebSocket failure: {}",
+                    ios_core::redaction::diagnostic_error(&other)
+                ),
+            }
+        }
+        state.inner.upstreams.write().await.extend(
+            (0..MAX_UPSTREAMS).map(|index| format!("https://owned-fixture-{index}.invalid:1/")),
+        );
+        let response = client
+            .post(format!("{base}/upstream"))
+            .json(&json!({"url": "https://unregistered.invalid:1/"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["x-ios-error-class"], "resource_limit");
+        assert_eq!(state.inner.upstreams.read().await.len(), MAX_UPSTREAMS);
+        assert!(state.list_records().await.is_empty());
+        server.abort();
+        let _ = server.await;
+    }
 
     fn fake_record(proxy_port: u16) -> TunnelRecord {
         TunnelRecord {
