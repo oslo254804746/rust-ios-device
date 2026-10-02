@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-inner-sources-7e5f174",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual AES-KW integrity and CBC read/write faults; MBDB UTF-8/property/field conversion faults; external public legacy list rejection with native bytes; existing modern encrypted patch/unback success and rejection"],
+      "required_state": ["Owned synthetic host source/files only; no existing backup, real credentials, device/daemon/Apple operation, every cipher/allocator/architecture fault, retry/reuse or remote cleanup certification; fixed-width failures source-reviewed, shared adapter exercised separately"],
+      "tested_commit": "7e5f174169964b713257c037c395312f841dc49c",
+      "date": "2026-10-02",
+      "location": "docs/validation/backup-inner-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 twelve crypto and three MBDB native adapters retain original AES-KW/cipher/slice/integer/UTF-8 objects; existing optional aes-kw/std enabled without version/lock/public feature change. Private MBDB representation/traits and Display migration documented; public four error variants/root APIs/results stay. Algorithms/bounds/encoding/success preserved. Host filesystem/archive integer and other codec/guard/stream/binding/lifecycle/platform/device work remain; no maturity upgrade."
+    },
+    {
       "id": "linux-backup-metadata-sources-dcdda80",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

@@ -602,8 +602,9 @@ objects through existing public Mobilebackup2Error::Io and private fixed context
 The four public error variants, root APIs/result fields and feature definitions
 stay. Metadata integer/path/validation/UTF-8 errors remain protocol; archive depth
 now survives as resource_limit. Crypto IO preserves native kind/source/OS code,
-while the opaque Crypto marker now classifies as unknown. Deeper errors already erased inside
-private crypto/MBDB are not reconstructed; their native retention remains pending.
+while the opaque Crypto marker now classifies as unknown. Subsequent inner
+crypto/MBDB retention is described below; previously discarded objects cannot be
+reconstructed from older string errors.
 
 With backup2-manifest, native SQLite codes supply permission/authorization denied,
 busy/locked/constraint conflict, memory/disk/size resource_limit, read-only
@@ -623,6 +624,30 @@ evidence; test-only authorizer/BLOB limits do not change production policy. Phys
 devices, existing backups, every backend/architecture stage and remote cleanup
 remain unverified. Evidence:
 [backup metadata source validation](validation/backup-metadata-sources-2026-10-02.md).
+
+## Encrypted backup and legacy index inner sources
+
+Twelve private crypto adapters retain original AES-KW/cipher/slice/integer errors
+under the existing CryptoError::Io and fixed context. Malformed keybag/class fields
+and failed key unwrap use protocol; opaque initialization/count errors retain
+unknown. Native CBC read/write kinds survive. AES-KW integrity failure does not
+distinguish an incorrect password from corrupted wrapped data. Enabling the
+resolved optional aes-kw 0.2.1 std feature makes its Error source available; dependency
+version, lockfile, public features and algorithms remain.
+
+Three private MBDB conversions retain FromUtf8Error/TryFromIntError. MbdbError is
+now a private Clone enum with native sources and safe outer Debug; its unused
+private Eq/PartialEq traits are removed. Public Mobilebackup2Error's four variants,
+root signatures and results stay. Native UTF-8 errors retain private metadata bytes;
+explicit raw source/Debug access must follow the redaction boundary.
+
+Affected Display/correlations change; callers inspect class/source rather than
+password or field prose. Existing validation-created guards have no invented
+backend cause. Bounds, sentinel/null encoding, parser/serializer order, encryption
+parameters/Zeroizing and successful operations stay. Owned legacy and modern
+encrypted fixtures establish host rejection/source and success behavior, not
+physical backup, every cipher/allocator/architecture fault or remote cleanup.
+Evidence: [inner backup source validation](validation/backup-inner-sources-2026-10-02.md).
 
 ## usbmux native codec, connection and deadline sources
 

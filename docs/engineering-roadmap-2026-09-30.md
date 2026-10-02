@@ -3673,3 +3673,68 @@ A02/第三类/总体 goal active，第四类未开始，完整31任务/子任务
 typed guards/created outcomes、stream/JSON/callback/binding、L01/L03/A03/platform/
 device 条件。DTX/instruments 原 raw/optional fallback 未静默改动。未使用真实
 backup/credentials/设备/Apple，未 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 备份内部加密与 MBDB 原生来源交付（2026-10-02）
+
+接续 HEAD `df9649e129ac4d8d1969b3dd2a2dbc270e570ae9` 的五个未提交相关源码
+变更；上轮已有 native failure 复现和实现进展，本轮继续专项验证及收尾，属于
+PROGRESS。实现 `7e5f174169964b713257c037c395312f841dc49c`，首次 full 后按
+明确五文件范围本地提交；无阻塞条件。
+
+12 个 private crypto adapters 保留原 AES-KW/cipher/TryFromSlice/TryFromInt
+对象，3 个 MBDB adapters 保留 FromUtf8Error/TryFromIntError。CryptoError 六
+variants 保持；keybag/class 转换及 unwrap 使用 InvalidData/Proto，opaque cipher/
+count 使用 Other/cached Unknown。class-id 原 opaque marker 的转换现在显式
+按数据角色 Proto；当前 fixed width guard 后该故障未注入。CBC native IO 原 kind
+保持。AES-KW integrity 不证明 password 或 wrapped data 哪个有问题。
+
+现有 optional aes-kw0.2.1 启用 std 以使原 Error 实现 StdError；同时启用该依赖
+alloc API，生产仍用原 slice unwrap。版本/lockfile/公开66 feature 名称保持；
+crypto-common InvalidLength 已有 Error，无 AES/std 或新依赖。Private MbdbError
+tuple 改 Clone/native-source enum，unused private Eq/PartialEq 移除，outer Debug
+按原 redaction。Public Mobilebackup2Error 四 variants/root APIs/results 保持；
+Display/fixed phase/correlation/私有 variant 与 trait 迁移记录，native UTF8 bytes
+为 private data，不进入自动诊断。
+
+Production comparison PASS：仅 native adapters/helper、private error representation、
+等价 map closure braces/trailing call commas/whitespace 和 reviewed u16 admission；
+Manifest production byte-identical。None 编码 ffff，0..65534 接受，65535 sentinel
+guard 和更长 native conversion 均 append 前拒绝；cipher/PBKDF/wrapping/CBC/
+Zeroizing/bounds/record order/fileID/success 保持。未改变 wire/binding/retry/lifecycle。
+比较 helper 的初次断言未规范化 trailing comma/closure braces，经规范化确认相同，
+没有因此改动 production。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core / external | backup minimal/full84/84 PASS，1 既有 PBKDF2 ignored；root all/minimal22/13 PASS，terminal0 |
+| Clippy / comparison | core/CLI 及 full workspace strict Clippy PASS；production comparison PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-backup-inner-full.log` terminal0，1908 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 六 new internal、一 external，actual AES-KW/CBC IO/MBDB UTF8/props/field/public legacy list；既有现代 encrypted patch/unback success/rejection 保持。非法 cipher constructor/slice/integer native failure 单独经 common adapter；非 fixed-width/architecture/每个 backend/allocator/rollback/physical/remote cleanup injection |
+
+Corrected before-final 两日志共 0 PASS/4 FAIL，terminal101，证明四个来源丢失。
+更早 before logs 为 test-only Option borrow 编译错误，不作 native regression 证据。
+首次 post-fix minimal81 PASS/1 FAIL/1 ignored，既有 encrypted fixture 期待已丢弃
+password/wrapped prose；改查 Protocol 与 <=32 source 内 native IntegrityCheckFailed，
+原 wrong password/no payload/source 存在断言保持。未弱化生产 precondition/gate/lint。
+失败日志保留。该失败留下的一个 synthetic fixture 已按 PID/nonce/mtime/expected
+files/payload/no symlinks 核实后精确删除，未触及无关临时路径；无 build storage
+failure/cleanup。具体日志见[专题证据](validation/backup-inner-sources-2026-10-02.md)。
+
+ios0.1.13 debug SHA256
+`ee8bc1e5e2e86fe323e98b840abe6a8b2d99ba002b49bb26c1432b8dfacd6a5d`。
+源码 full 前冻结、之后不变；约20GiB 至11GiB free。没有额外 Chromium/installed
+3.9/3.13 重跑。catalog/quality/error contract 与历史 metadata follow-up 同步，
+maturity 不变；文档收尾单独记录。
+
+文档收尾：118 catalog records，五个 changed Markdown files 的 103 local links
+（baseline `df9649e`）与 whitespace PASS；日志
+`/tmp/ios-a02-backup-inner-docs-catalog.log`、
+`/tmp/ios-a02-backup-inner-docs-links.log`。源码和受测 full gate 不变，准备独立文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务与全部子任务 scope 保持。
+下一 host filesystem native StripPrefix/missing required IO/Join context 和 archive
+integer sources；UID/DTX/instruments 原 optional/raw fallback 另属行为合同，未静默
+改变。其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、
+L01/L03/A03/platform/device 条件仍待。未使用真实 backup/credentials/设备/Apple，
+未 push/publish/history rewrite/reference 编辑。

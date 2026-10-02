@@ -28,7 +28,9 @@ class. Known malformed keybag/manifest/payload or ambiguous invalid password/
 wrapped-key failures remain protocol; the opaque Crypto marker becomes unknown.
 This retains the original existing typed crypto/MBDB errors, without recovering
 backend/UTF-8 causes already discarded inside those private modules. MBDB's
-fixed validation errors remain protocol. Their deeper source retention is next.
+fixed validation errors remain protocol. Subsequent
+[inner source validation](backup-inner-sources-2026-10-02.md) retains native
+AES-KW/cipher/conversion and MBDB UTF-8/integer causes; this historical gate is unchanged.
 
 With backup2-manifest, SQLite native codes are classified without reading prose:
 permission/authorization denied; busy/locked/constraint conflict; memory/disk/
@@ -104,8 +106,8 @@ Logs: `/tmp/ios-a02-backup-sources-docs-catalog.log` and
 `/tmp/ios-a02-backup-sources-docs-links.log`. Source and the accepted full gate
 remain unchanged.
 
-A02/class 3/overall goal remain active; class 4 has not started. Private crypto/
-MBDB, host filesystem and archive integer sources, other codecs/typed guards/
+A02/class 3/overall goal remain active; class 4 has not started. The subsequent
+inner crypto/MBDB slice is linked above. Host filesystem and archive integer sources, other codecs/typed guards/
 created outcomes/stream/JSON/callback/binding and L01/L03/A03/platform/device
 conditions remain. All 31 tasks/subtasks and maturity remain. No push/publication,
 history rewrite or reference checkout changes.
