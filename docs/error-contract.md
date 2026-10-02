@@ -188,7 +188,7 @@ its existing RuntimeError. These errors gain four additive attributes:
 | --- | --- |
 | `ios_error_schema_version` | Integer `1`; allow future versions and additional attributes |
 | `ios_error_class` | Stable ErrorClass code; consumers need a fallback for unknown/future codes |
-| `ios_error_phase` | Fixed `list devices`, `start tunnel`, `tunnel mode` or `asyncio proxy`, without user values |
+| `ios_error_phase` | Fixed `list devices`, `start tunnel`, `initialize runtime`, `tunnel mode` or `asyncio proxy`, without user values |
 | `ios_error_effects` | `unknown` for native operations; `not_started` for rejected mode or unavailable proxy before that operation |
 
 No public factory/method parameter is added. Existing `except RuntimeError` and
@@ -199,11 +199,21 @@ an asyncio patch. Unknown effects never grant retry, rollback or cleanup safety.
 Original Rust sources remain available to native callers before this conversion;
 they are not exported as unsafe Python causes or diagnostic payloads.
 
+Ordinary Tokio runtime-initialization IO errors now return this safe RuntimeError
+profile with phase `initialize runtime` and unknown effects, before device work.
+The original IO error is cached instead of triggering the former expect panic
+and poisoning later initialization attempts. Initialization and device blocking
+work still execute inside allow_threads; invalid mode still fails first. This
+changes the exceptional initialization path from a panic boundary to the mapped
+built-in exception. Success and existing operation-error args/signatures remain.
+Controlled host tests inject a typed failed initialization result; they do not
+induce real thread/memory exhaustion or certify runtime cleanup under that failure.
+
 If metadata allocation/assignment fails, that Python exception is returned with
 the original safe Python exception as its cause. The operation remains failed;
 complete metadata delivery is not promised under allocation failure. Python
 argument extraction errors, interpreter/allocation errors, callback exceptions
-and the existing runtime-initialization panic boundary are outside this mapped
+and other runtime-internal panics are outside this mapped
 profile and still need their own review. Absence of attributes does not mean
 success or an unknown side effect was rolled back. The host tests and installed
 owned ListDevices peer certify this boundary, not physical tunnel startup or

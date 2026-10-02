@@ -28,8 +28,16 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use tokio::runtime::Runtime;
 
-static RUNTIME: LazyLock<Runtime> =
-    LazyLock::new(|| Runtime::new().expect("failed to create tokio runtime"));
+static RUNTIME: LazyLock<std::io::Result<Runtime>> = LazyLock::new(Runtime::new);
+
+/// Ordinary initialization errors are cached and do not invoke device work.
+/// The caller evaluates this inside allow_threads, including lazy initialization.
+fn with_runtime<T>(
+    initialization: &std::io::Result<Runtime>,
+    operation: impl FnOnce(&Runtime) -> T,
+) -> Result<T, &std::io::Error> {
+    initialization.as_ref().map(operation)
+}
 
 const ASYNCIO_PROXY_HELPERS: &str = r#"
 import ipaddress
@@ -121,7 +129,12 @@ fn ios_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 fn list_devices(py: Python<'_>) -> PyResult<PyObject> {
     let devices = py
-        .allow_threads(|| RUNTIME.block_on(ios_core::list_devices()))
+        .allow_threads(|| {
+            with_runtime(&RUNTIME, |runtime| {
+                runtime.block_on(ios_core::list_devices())
+            })
+        })
+        .map_err(|error| operation_error(py, "initialize runtime", error))?
         .map_err(|e| operation_error(py, "list devices", &e))?;
 
     let list = PyList::empty_bound(py);
@@ -154,7 +167,12 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
     };
     let udid = udid.to_string();
     let device = py
-        .allow_threads(|| RUNTIME.block_on(ios_core::connect(&udid, opts)))
+        .allow_threads(|| {
+            with_runtime(&RUNTIME, |runtime| {
+                runtime.block_on(ios_core::connect(&udid, opts))
+            })
+        })
+        .map_err(|error| operation_error(py, "initialize runtime", error))?
         .map_err(|e| operation_error(py, "start tunnel", &e))?;
 
     let server_address = device.server_address().unwrap_or("").to_string();
@@ -517,6 +535,80 @@ mod tests {
                 .extract()
                 .unwrap(),
         )
+    }
+
+    #[test]
+    fn cached_runtime_io_failure_skips_operation_and_preserves_safe_python_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        pyo3::prepare_freethreaded_python();
+        let starts = AtomicUsize::new(0);
+        let operations = AtomicUsize::new(0);
+        let secret = "synthetic-private-runtime-initialization-source";
+        let initialization: LazyLock<std::io::Result<Runtime>, _> = LazyLock::new(|| {
+            starts.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, secret))
+        });
+        for _ in 0..2 {
+            let source = with_runtime(&initialization, |_| {
+                operations.fetch_add(1, Ordering::SeqCst);
+                42
+            })
+            .unwrap_err();
+            assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
+            assert_eq!(source.to_string(), secret);
+            Python::with_gil(|py| {
+                let error = operation_error(py, "initialize runtime", source);
+                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                assert_eq!(
+                    metadata(py, &error),
+                    (
+                        1,
+                        "timeout".into(),
+                        "initialize runtime".into(),
+                        "unknown".into()
+                    )
+                );
+                let (message,) = error
+                    .value_bound(py)
+                    .getattr("args")
+                    .unwrap()
+                    .extract::<(String,)>()
+                    .unwrap();
+                assert!(message.starts_with("initialize runtime failed: io/TimedOut error:"));
+                assert!(!format!("{message} {error:?}").contains(secret));
+                assert!(error.cause(py).is_none());
+            });
+        }
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "ordinary failure stays cached without poisoning"
+        );
+        assert_eq!(operations.load(Ordering::SeqCst), 0);
+
+        let ready = tokio::runtime::Builder::new_current_thread().build();
+        let native = with_runtime(&ready, |runtime| {
+            operations.fetch_add(1, Ordering::SeqCst);
+            runtime.block_on(std::future::ready(Err::<(), _>(ios_core::CoreError::Io(
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, secret),
+            ))))
+        })
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(operations.load(Ordering::SeqCst), 1);
+        Python::with_gil(|py| {
+            let error = operation_error(py, "list devices", &native);
+            assert_eq!(
+                metadata(py, &error),
+                (
+                    1,
+                    "permission_denied".into(),
+                    "list devices".into(),
+                    "unknown".into()
+                )
+            );
+            assert!(!format!("{error:?}").contains(secret));
+        });
     }
 
     #[test]

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Return typed safe Python RuntimeError for ordinary runtime-initialization IO
+  failure, replacing the expect/panic path while retaining released-GIL work,
+  signatures and existing operation errors. Cache the original failed result
+  and keep effects unknown.
+
 - Add a borrowed initial RSD probe observation distinguishing skipped, available
   and failed discovery, with skip reasons and retained owner errors. Preserve
   legacy optional directories and retries; retain native userspace-proxy dial

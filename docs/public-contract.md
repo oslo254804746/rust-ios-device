@@ -195,6 +195,15 @@ signatures. Consumers allow future codes/attributes and retain a fallback for
 exceptions outside this profile. The [error contract](error-contract.md) records
 allocation/callback/runtime boundaries, safe causes and host-only acceptance.
 
+Ordinary runtime-initialization IO failure now produces a safe RuntimeError with
+typed metadata and `initialize runtime` phase, replacing the former expect/panic
+path and avoiding lazy-lock poisoning on that ordinary error. Existing factory
+signatures, success values, native operation errors and invalid-mode precedence
+remain. Initialization/blocking work still release the GIL. Applications can
+catch RuntimeError for this exceptional failure; remaining interpreter/panic
+boundaries stay outside the profile. The release must account for this documented
+exception-type behavior change under the version/migration rules below.
+
 ## Versions, migrations and checks
 
 The workspace currently declares 0.1.13; that version has already been published.
