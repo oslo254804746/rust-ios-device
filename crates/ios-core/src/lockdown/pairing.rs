@@ -27,8 +27,12 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha512};
+use std::{error::Error, io};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+#[cfg(test)]
+mod source_contract_tests;
 
 // ── TLV type codes (from go-ios tunnel/tlvbuffer.go) ──────────────────────────
 
@@ -77,12 +81,14 @@ impl HostIdentity {
     ) -> Result<Self, PairingError> {
         // Our own copy of the seed: the caller's slice is theirs to manage, this
         // one must not survive the constructor.
-        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(private_key.try_into().map_err(|_| {
-            PairingError::Crypto(format!(
-                "expected 32-byte Ed25519 private key seed, got {} bytes",
-                private_key.len()
-            ))
-        })?);
+        let seed: Zeroizing<[u8; 32]> =
+            Zeroizing::new(private_key.try_into().map_err(|error| {
+                native_error(
+                    io::ErrorKind::InvalidInput,
+                    "decode host Ed25519 private seed",
+                    error,
+                )
+            })?);
         Ok(Self {
             identifier: identifier.into(),
             signing_key: SigningKey::from_bytes(&seed),
@@ -312,7 +318,7 @@ fn hkdf_sha512(ikm: &[u8], salt: &[u8], info: &[u8]) -> Result<[u8; 32], Pairing
     let h = Hkdf::<Sha512>::new(if salt.is_empty() { None } else { Some(salt) }, ikm);
     let mut out = [0u8; 32];
     h.expand(info, &mut out)
-        .map_err(|e| PairingError::Crypto(format!("HKDF expand failed: {e}")))?;
+        .map_err(|error| native_error(io::ErrorKind::InvalidInput, "expand pairing HKDF", error))?;
     Ok(out)
 }
 
@@ -331,12 +337,17 @@ fn chacha_seal(
     nonce_label: &[u8],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha key init failed: {e}")))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidInput,
+            "initialize pairing cipher",
+            error,
+        )
+    })?;
     let nonce = chacha20poly1305::Nonce::from(chacha_nonce(nonce_label));
     cipher
         .encrypt(&nonce, plaintext)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha seal failed: {e}")))
+        .map_err(|error| native_error(io::ErrorKind::Other, "seal pairing payload", error))
 }
 
 fn chacha_open(
@@ -344,12 +355,31 @@ fn chacha_open(
     nonce_label: &[u8],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| PairingError::Crypto(format!("ChaCha key init failed: {e}")))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidInput,
+            "initialize pairing cipher",
+            error,
+        )
+    })?;
     let nonce = chacha20poly1305::Nonce::from(chacha_nonce(nonce_label));
-    cipher.decrypt(&nonce, ciphertext).map_err(|_| {
-        PairingError::Crypto("ChaCha decrypt failed (wrong key or tampered data)".into())
+    cipher.decrypt(&nonce, ciphertext).map_err(|error| {
+        native_error(
+            io::ErrorKind::InvalidData,
+            "authenticate pairing payload",
+            error,
+        )
     })
+}
+
+fn native_error(
+    kind: io::ErrorKind,
+    phase: &'static str,
+    source: impl Error + Send + Sync + 'static,
+) -> PairingError {
+    PairingError::Io(crate::device::error_context::retained_io(
+        kind, phase, source,
+    ))
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -360,6 +390,9 @@ pub enum PairingError {
     Io(#[from] std::io::Error),
     #[error("crypto error: {0}")]
     Crypto(String),
+    // Preserve the existing error family while OPACK now retains its native
+    // source in Io. This crate-private module has no current Protocol producer.
+    #[allow(dead_code)]
     #[error("protocol error: {0}")]
     Protocol(String),
 }
@@ -441,7 +474,7 @@ pub fn build_device_info_tlv(
             opack::OpackValue::String("ios-rs-serial".into()),
         ),
     ]))
-    .map_err(|e| PairingError::Protocol(e.to_string()))?;
+    .map_err(|error| native_error(io::ErrorKind::Other, "encode pairing device info", error))?;
 
     // 4. Build inner TLV
     let mut inner = TlvBuffer::new();

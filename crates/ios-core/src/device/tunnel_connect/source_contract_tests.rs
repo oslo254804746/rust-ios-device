@@ -109,14 +109,19 @@ fn actual_local_credential_loaders_keep_input_sources_and_key_mismatch_protocol(
         let crate::CoreError::Io(outer) = &error else {
             panic!("identity cause lost");
         };
-        assert!(matches!(
-            outer
-                .source()
-                .unwrap()
-                .downcast_ref::<PairingError>()
-                .unwrap(),
-            PairingError::Crypto(_)
-        ));
+        let PairingError::Io(identity_source) = outer
+            .source()
+            .unwrap()
+            .downcast_ref::<PairingError>()
+            .unwrap()
+        else {
+            panic!("inner identity cause lost");
+        };
+        assert_eq!(identity_source.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(identity_source
+            .source()
+            .unwrap()
+            .is::<std::array::TryFromSliceError>());
         assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
     }
     let mut mismatch = persisted();

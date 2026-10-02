@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain native private-seed, HKDF, cipher and device-info encoding causes in
+  existing PairingError::Io with fixed safe context. Classify local length
+  faults as invalid input and received authentication failures as protocol;
+  keep opaque encryption unknown and enable the same-version HKDF std Error
+  implementation. Document failure-variant migration with unchanged crypto
+  parameters, successful pairing payloads and trust policy.
+
 - Retain native connection/pairing task, PSK, credential, codec and deadline
   causes through existing error variants with fixed safe context. Distinguish
   local invalid input from malformed remote data, preserve opaque unknown

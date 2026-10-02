@@ -182,14 +182,29 @@ native sources can still contain sensitive data. Enums, signatures, wire and
 trust/routing/retry policies stay unchanged. The existing backend-unsupported
 PSK case now supplies its original OpenSSL source.
 
-The workspace enables the existing chacha20poly1305 dependency's std feature
-to retain its native AEAD object as a standard source. This adds its Error
-implementation in an already std/Tokio workspace; it changes no dependency
-version, service feature names/defaults/groups or cryptographic parameters.
+Inner pairing seed, HKDF, cipher and device-info encoding failures now retain
+native objects under the existing internal PairingError::Io. Internal
+Crypto/Protocol matches and Display parsing migrate to class/source inspection:
+local length faults become invalid_input, received authentication failure protocol,
+OPACK keeps its typed class and opaque encryption stays unknown. Nested
+credential loaders keep the inner source as well. PairingError remains
+exhaustive with the same three variants in the crate-private lockdown module,
+available only with tunnel; no external API or default-profile type is added.
+External callers retain CoreError and can inspect longer credential-loader
+source chains through existing APIs; affected Display/correlation can change.
+The separate public manual-pairing transport still flattens four inner errors
+into PairingTransportError::Crypto(String); their outer migration is pending.
+The inner M6 protocol classification is not yet an end-to-end public contract.
+
+The workspace enables the existing chacha20poly1305 and hkdf dependencies' std
+features to retain their native AEAD and InvalidLength objects as standard
+sources. This adds Error implementations in an already std/Tokio workspace;
+it changes no dependency version, lockfile, service feature names/defaults/groups
+or cryptographic parameters, successful payloads, signing or trust behavior.
 No no_std support was previously offered. Minimum-feature/MSRV/full gates and
 the existing downstream consumer cover this dependency-feature migration.
 The [error contract](error-contract.md) records category snapshots, changed
-contexts, incomplete inner crypto sources and host versus device scope.
+contexts, remaining legacy string outcomes and host versus device scope.
 
 ## CLI and JSON
 

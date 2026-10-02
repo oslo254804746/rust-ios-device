@@ -438,12 +438,46 @@ source-reviewed rather than network timeout-injected. Not every listener stage
 is independently fault-injected. No real credential directory, pairing/device
 operation, trust-policy change or Apple request occurs.
 
+Seven inner pairing adapters now use the same retained-cause context through
+existing PairingError::Io: private-seed slice conversion, HKDF expansion, both
+cipher key initializations, payload encryption/decryption and device-info OPACK
+encoding. Seed/key/output length rejection is InvalidInput; received payload
+authentication failure is InvalidData/protocol. Opaque encryption remains
+unknown, and OPACK preserves its typed category. Explicit source inspection
+reaches the original TryFromSliceError, hkdf::InvalidLength, cipher InvalidLength,
+AEAD Error or OpackError through IO; wrapper Debug omits private payloads.
+Nested credential loaders retain both the PairingError and its native cause.
+This is an inner-source contract: the public manual-pairing transport still
+flattens four PairingError paths into PairingTransportError::Crypto(String),
+including M6 verification. Those outer adapters remain pending; this slice
+does not claim native sources/categories survive that entire handshake.
+
+Affected Crypto(String)/Protocol(String) failures now return Io, with changed
+Display prefixes/correlation and more precise categories. Match class/source
+rather than old variants or message text for these internal failures. PairingError
+is inside a crate-private module; its three variants remain, as do external APIs.
+The legacy Protocol variant has a targeted dead-code allowance after its sole
+OPACK producer now retains Io, with other warnings still checked. HKDF enables
+its existing dependency's std feature so InvalidLength implements standard Error; versions,
+lockfile and service feature names/defaults/groups stay unchanged. Successful
+derivation lengths, salts/info, nonces, AEAD, signing, wire fields and optional
+M6 information handling are unchanged. No extra verification or trust behavior
+is introduced. PairingError's classifier stays tunnel-gated because the pairing
+module/type itself only exists with tunnel; default builds have no such type.
+Ed25519 signing is infallible here, and SRP proof verification returns bool,
+so neither supplies a discarded native signature-validation error.
+
+Owned actual constructor, M6 authentication and device-info encoding faults
+verify sources, safe Debug and no partial success. Fixed HKDF values independently
+computed with Python hmac and authenticated M5 contents/signature check preserved
+success. Native HKDF/key-length errors and bounded in-place AEAD errors pass
+through the production context adapter; these do not inject failure into the
+fixed 32-byte production HKDF/key initialization or Vec encryption call.
+
 Failure does not authorize retry or prove remote cleanup. Dropping an awaiting
-caller still does not stop already-running blocking work. Three inner crypto
-helpers and other legacy PairingError adapters still flatten some native causes;
-this does not reconstruct them or infer a category from their strings. Their
-source work, CLI/HTTP/stream/binding boundaries and L01/L03/device conditions
-remain pending; the new source adapters do not add invalidation or reuse rules.
+caller still does not stop already-running blocking work. Other legacy string
+outcomes, CLI/HTTP/stream/binding boundaries and L01/L03/device conditions remain
+pending; the new source adapters do not add invalidation or reuse rules.
 
 ## Deactivation fallback and activation HTTP sources
 

@@ -3226,9 +3226,68 @@ whitespace PASS；日志 `/tmp/ios-a02-pairing-sources-docs-links.log`，baselin
 roadmap/专题证据，不升级maturity。
 
 本slice主机验收；A02/第三类/总体goal active，第四类未开始。下一确认innerloss：
-HostIdentity privatekeyslice、HKDF expand、ChaChakeyinit/seal/open、signatureverify
+HostIdentity privatekeyslice、HKDF expand、ChaChakeyinit/seal/open与OPACK encode
 nativecauses仍String；需保留nativeobject、合理typedinput/protocol/unknown及兼容迁移。
 另需核验当前PairingError::Protocol classification的tunnelfeaturegating在default/minimal
 profile的一致性。其他A02/JSON/streams/callback/binding及L01/L03/A03与平台/真机/
 有序cleanup条件继续。无maturity升级、设备操作、推送/发布、历史改写或reference
 checkout修改。文档收尾检查后继续。
+
+### 大类 3 进行中：A02 inner pairing 原生来源（2026-10-02）
+
+当前源码核验纠正先前假设：lockdown::pairing模块/type本身cfg(tunnel)，分类器
+同条件正确；default没有PairingError，未撤掉gate或假称复现default分类bug。
+本模块Ed25519签名不返回错误，SRP proof验证返回bool，没有丢失的native
+signature-validation error；实际另一丢失点为device-info OPACK encode。
+
+修改前实际constructor/M6/device-info三个回归均失败：0PASS/3FAIL、terminal101，
+日志 `/tmp/ios-a02-inner-pairing-before.log`。七个inneradapter保留nativecause，
+seed/HKDF/keylength InvalidInput，receivedauthentication InvalidData/protocol，
+encrypt opaqueUnknown，OPACK originalclass；既有PairingError::Io/fixedcontext/
+boundedcachedclassification与safeDebug复用。Nestedcredential回归强化为PairingError
+之下真正TryFromSliceError。HKDF同版本stdfeature使InvalidLength实现Error；原enum/
+signatures/crypto32byte/salts/info/nonces/signing/wire/optionalM6/trust保留，明确
+returnedvariant/Display/correlation迁移，不根据文本分类。
+
+新增5innerfixture：实际seed0/31/33reject与32success、M6错误key/
+tamper/truncate/nonce及正确altIRK、实际过长identity OPACK拒绝，真实HKDF/keyinit/
+boundedBuffer AEAD错误经生产adapter、独立Python hmac固定向量和M5验签/字段。
+后者nativeadapter不假称fixed32productionHKDF/keyinit或Vecencrypt失败注入。
+首次专项配对16PASS；外部新增fixture误用crate-private lockdown路径，编译E0603
+terminal101 `/tmp/ios-a02-inner-pairing-public.log`。已撤回该无效fixture、不扩API，
+在内部fixture检查原exhaustive enum与Error/Send/Sync；既有external consumer重跑。
+保留旧Protocol variant，对其已无producer的状态加单项有解释dead_code allowance，
+不压制其他lint；合同准确区分内部变体迁移和外部CoreError来源/类别观察。
+专项/full/审查/实现提交/文档收尾尚待；A02/第三类/总体goal active，第四类未开始。
+其他A02与L01/L03/A03/platform/device条件仍保留，未操作设备或修改reference。
+
+专项最终全部terminal0：pairing all-feature/minimal tunnel各16PASS；tunnel_connect
+all-feature17/minimal15PASS；既有externalpublic full15/minimal10/default9PASS。
+core/CLI all-target/all-feature strictClippy PASS，无全局allow或降低门禁。
+日志 `/tmp/ios-a02-inner-pairing-{core,tunnel-core,public,minimal,tunnel-minimal,
+public-minimal,public-default,clippy}-final.log`。第11节完整门禁开始，日志
+`/tmp/ios-a02-inner-pairing-full.log`；source冻结，完整结果/审查/提交/收尾待完成。
+
+完整门禁已通过fmt/check/workspace strictClippy、1845Rust/13Python（0FAIL、2既有
+ignored）及MSRV1.80；66features/4groups与后续docs/C/Python/tooling等仍在运行。
+实际diff审查七个转换保留原对象，不改32byte、salts/info、nonce、AEAD、signing、
+wire/optionalM6/信任；公共错误类型和servicefeatures不扩展、Cargo.lock不改。
+下一已确认lossy路径为默认配置也编译的lockdown plist/session PEM/rustls与version
+转换，PairRecord plist Parse也丢source；须根据local/remote角色保留原cause/类别，
+并保持TLS验证策略及success，不在当前slice或真机PASS中计入。
+
+追踪actualcaller再确认：公开manual-pairing的pairing_transport仍有四处把
+PairingError stringify成Crypto（含M6），其RSD/H2/XPC/bootstrap/AEAD/JSON也有
+nativecause丢失。此slice仅innercause与nestedcredential保留，不假称完整公开
+pairing流程已保留nativeclass；合同明确外层待补，优先续该调用链，再default
+lockdown来源。Host-only、无新增trust/deviceoperation的边界保留。
+
+完整门禁首次terminal0 PASS：1845Rust/13Python、0FAIL、2既有ignored；fmt/check/
+workspace strictClippy/MSRV1.80、66feature编译/4groups、7+7doctests/3downstream
+snippets、C ABI/ownedmalformed/checkedListDevices、3.12wheel/sdist安装、53tools、
+118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup合同均PASS。日志
+`/tmp/ios-a02-inner-pairing-full.log`。ios0.1.13 SHA256
+`f7ba544e466b1c089bd86caeb652af0a02b3db99ae58f623a9b32dad1097dc3c`。
+既有PBKDF2/browser ignored保留，无额外Chromium或installed3.9/3.13重跑。
+八个相关文件diff/whitespace审查完成，准备本地聚焦实现提交，再准确hash文档收尾；
+不升级maturity，不结束A02/第三类/总体goal。
