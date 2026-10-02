@@ -3457,3 +3457,57 @@ A02/第三类/总体goal active，第四类未开始，完整31任务/子任务s
 接续supervised-pair OpenSSL/record-save原生来源，再codec整数转换/typedguards/
 createdoutcomes、stream/JSON/callback/binding与L01/L03/A03/platform/device条件。
 本片段未真实credentialstore/设备/Apple请求，也未推送/发布、改写history或编辑reference。
+
+### 大类 3：A02 supervised pairing 原生来源主机验收与交付（2026-10-02）
+
+接续clean HEAD `e452ea28652c109d620ede8f229198cfbcaf15ab`；上一轮default lockdown
+实现与文档完成。实现 `b642afef32d8d575d45cbbdfd0a0ba7df8193b3a` 三个相关文件，
+完整门禁首次通过后本地聚焦提交。本turn有实现/证据/提交进展，无阻塞审计触发。
+
+原全部53native-to-string adapters（51 OpenSSL ErrorStack、1plist、1filesystemIO）
+保留原对象/codes/entries，在现有LockdownError::Io和privatefixedcontext下分类：
+48opaque backend Unknown，2local P12 Input，receivedpublickey Proto，save plist
+原类别，write原IO.kind。另新增nativeNulError guard：DER后/parse2前拒绝含NUL密码，
+替代已复现的dependencyCString unwrap panic；validpassword不新增CString copy。
+nativeNulError持有密码bytes，明确source/Debug私有敏感，contextDebug仍safe。
+
+Protocol-to-Io与Display/correlation/class迁移记录；公开三variant/error/root
+functions/FullPairRecord fields与原features保持。Success/control-flow源码比对
+剔除erroradapters/NULguard后完全一致；RSA2048、certificate fields/signatures/
+validity/extensions、PKCS7BINARY、GetValue/Pair keys/order、privatekeystripping、
+IDs/escrow/save/owner-only目录与replacement/tempcleanup原策略保持，无deps/lockfile/
+CLI-schema/binding/newtimeout/retry/trust/lifecycle变化。createdmissingcert/key和
+devicevalidation原Protocol保留，无伪造source。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core | minimal supervised-pair原13/final14 PASS；full lockdown61 PASS，terminal0 |
+| 外部consumer/Clippy | final root full18/minimal11 PASS；core/CLI与full workspace strict Clippy PASS terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-supervised-pairing-full.log` terminal0，1874Rust/13Python、0FAIL、2既有ignored |
+| 其余完整gate | fmt/check/MSRV1.80、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 九新增core+一external；actualDER/password/NUL/remotePublicKey/root+signedcert/PKCS7/file faults；complete rootownedPair exchange，3request/64KiB frames，certsignature/knownsigner/binarychallenge/escrow、peer shutdown/join/hostdrop；save/Unixmodes；非physicalsupervision/Trust/enrollment/all51stage/allocator/fixedserializer/remoteACK/reuse |
+
+beforefix八fixtures2PASS/6FAIL（含actualNulpanic），terminal101
+`/tmp/ios-a02-supervised-pairing-before.log`；随后新增actualPKCS7 fault成为九fixtures。
+首次external17PASS/1FAIL来自共享/tmp parentmode check先于预期NULpath校验，原
+`/tmp/ios-a02-supervised-pairing-public.log` terminal101保留；核对/tmp为root1777，
+无permission改动。fixture改为UUIDowned目录后final full18/minimal11 PASS，未改
+production保存策略/门禁/lint。其余准确专项日志见
+[专题记录](validation/supervised-pairing-sources-2026-10-02.md)。
+
+测试ios0.1.13 debugbinary SHA256
+`a8718b15ee20032bfe1e053bdf5255add2aa9c369d533a8c66bb9872bd328673`。
+full source冻结且之后未变；无额外Chromium/installed3.9/3.13重跑，无storage失败/
+cleanup（可用约28GiB至27GiB）。catalog/quality/errorcontract和default历史topic
+followup同步，不升级maturity。文档收尾118catalogrecords、94localMarkdownlinks
+（五个changedMarkdownfiles，baseline e452ea2）与whitespace PASS；日志
+`/tmp/ios-a02-supervised-pairing-docs-catalog.log` 和
+`/tmp/ios-a02-supervised-pairing-docs-links.log`。准备独立聚焦文档提交。
+
+A02/第三类/总体goal active，第四类未开始，完整31任务/子任务scope保持。
+已确认MCInstall使用同类P12 parse2（相同NUL panic boundary）并仍丢OpenSSL来源，
+下一优先该入口，再base mux/archive/codec整数/typedguards/createdoutcomes、stream/
+JSON/callback/binding、L01/L03/A03/platform/device条件；FullPairRecord原Vec secret
+lifecycle保留待后续。未操作真实credentials/设备/Apple，未推送/发布/historyrewrite/
+reference编辑。hostPKCS7 NOVERIFY/NOINTERN仅knownsyntheticsigner数学签名验证，
+非chaintrust认证或生产策略更改。

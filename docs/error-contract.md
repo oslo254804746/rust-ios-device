@@ -560,6 +560,38 @@ remote cleanup or stream reuse. Supervised OpenSSL/record-save, other codec/
 created outcome/stream/binding and L01/L03/A03 conditions remain. Evidence:
 [default lockdown source validation](validation/default-lockdown-sources-2026-10-02.md).
 
+## Supervised pairing native sources
+
+With supervised-pair, 51 OpenSSL adapters, record plist serialization and file
+writing retain their original native sources through existing LockdownError::Io
+and bounded fixed context. Opaque backend/key/certificate/signing stacks stay
+unknown, local PKCS12 parsing/unlocking is invalid_input, malformed received
+device public keys are protocol, and file errors preserve native IO kinds.
+Original ErrorStack codes/entries survive. No permission or unsupported class
+is inferred from backend text. Missing certificate/key and created device
+response validation retain their existing Protocol outcomes.
+
+An interior NUL password now returns InvalidInput with the original NulError
+instead of panicking inside the dependency's CString unwrap. Validation follows
+DER parsing and precedes parse2; valid passwords keep their existing path. The
+NulError object owns original password bytes, so source/Debug access is sensitive.
+Wrapper Debug omits these bytes; raw Rust Display/source access remains private
+data. Affected Protocol-to-Io, category/Display/correlation migrations are
+explicit; the exhaustive error enum, root functions and FullPairRecord fields
+stay. Consumers should use class/source rather than old message/variant parsing.
+
+Certificate generation parameters, PKCS7 BINARY, Pair request fields/order,
+private-key stripping, results, file format and owner-only publication/replacement
+policy remain. No timeout, retry, trust or lifecycle policy is added. Owned
+fixtures verify actual P12/NUL/public-key/backend/signing/file failures and a
+complete root exchange with generated certificate/signature checks and signed
+binary challenge. Test-only PKCS7 NOVERIFY/NOINTERN uses a known synthetic signer
+and verifies the signature without establishing chain trust. No physical
+supervised device/enrollment/Trust or remote cleanup/reuse is certified; not
+every backend or save stage is fault-injected. MCInstall's analogous P12 boundary,
+other sources/streams/bindings and L01/L03/A03 remain. Evidence:
+[supervised pairing source validation](validation/supervised-pairing-sources-2026-10-02.md).
+
 ## Deactivation fallback and activation HTTP sources
 
 `ConnectedDevice::deactivate` attempts mobileactivationd and, on failure, one

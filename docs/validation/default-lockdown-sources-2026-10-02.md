@@ -110,8 +110,11 @@ across seven changed Markdown files, and whitespace PASS. Logs:
 implementation and documentation follow-up. Source remained unchanged after
 the full gate.
 
-A02/class 3/overall goal remain active; class 4 has not started. Supervised-pair
-OpenSSL/record-save sources are next, followed by other codec conversions,
+A02/class 3/overall goal remain active; class 4 has not started. At this checkpoint,
+supervised-pair OpenSSL/record-save sources were next. The subsequent
+[supervised follow-up](supervised-pairing-sources-2026-10-02.md) retains these
+sources and rejects the actual PKCS12 NUL-password panic. MCInstall's analogous
+P12 boundary/source retention and other codec conversions,
 legacy created outcomes, stream/JSON/callback/binding work and L01/L03/A03.
 Platform/device conditions remain; the full 31-task scope and maturity are
 unchanged. No push/publication, history rewrite or reference checkout edit.
