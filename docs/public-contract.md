@@ -68,6 +68,14 @@ Later on-demand retries do not update this initial snapshot or legacy cache.
 See the [error contract](error-contract.md) for exact states, sensitive explicit
 source access and remaining inner-adapter/lifecycle boundaries.
 
+On-demand RSD service failures now retain the final probe CoreError/source after
+the existing retry schedule; a successful-directory lookup miss uses the existing
+XpcError::ServiceNotFound variant. This changes returned failure variants from
+opaque Unsupported to their native category without extending the exhaustive
+public error enums. Migrate by inspecting class/source; local missing-feature
+prerequisites remain Unsupported. See the [error contract](error-contract.md)
+for initial/latest observation, discovery and screenshot fallback boundaries.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

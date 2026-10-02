@@ -1,7 +1,7 @@
 //! Optional direct and userspace-proxy RSD handshakes.
 
 use super::rsd_observation::RsdProbeOutcome;
-use super::tunnel_endpoint::TunnelEndpoint;
+use super::tunnel_endpoint::{connection_error_to_xpc, TunnelEndpoint};
 #[cfg(not(feature = "mdns"))]
 use super::InitialRsdProbeSkipReason;
 #[cfg(feature = "mdns")]
@@ -67,10 +67,7 @@ pub(super) async fn attempt_rsd_via_proxy(
         endpoint
             .connect(rsd_port)
             .await
-            .map_err(|error| match error {
-                CoreError::Io(error) => crate::xpc::XpcError::Io(error),
-                other => crate::xpc::XpcError::Io(std::io::Error::other(other)),
-            })
+            .map_err(connection_error_to_xpc)
     })
     .await;
     match result {

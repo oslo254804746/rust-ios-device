@@ -133,6 +133,11 @@ fn coredevice_fallback_allowed(error: &anyhow::Error) -> bool {
                                 "service 'com.apple.coredevice.screencaptureservice' not found",
                             )
                 )
+                    || matches!(
+                        error,
+                        ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(name))
+                            if name == "com.apple.coredevice.screencaptureservice"
+                    )
             })
             || cause
                 .downcast_ref::<ios_core::error::CoreError>()
@@ -160,6 +165,12 @@ fn dtx_fallback_allowed(error: &anyhow::Error) -> bool {
                                 "service 'com.apple.instruments.server.services.deviceinfo' not found",
                             )
                 )
+                    || matches!(
+                        error,
+                        ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(name))
+                            if name == "com.apple.instruments.dtservicehub"
+                                || name == "com.apple.instruments.server.services.deviceinfo"
+                    )
             })
             || cause
                 .downcast_ref::<ios_core::dtx::DtxError>()
@@ -395,5 +406,36 @@ mod tests {
             "service disconnected",
         )));
         assert!(dtx_fallback_allowed(&dtx_io));
+    }
+
+    #[test]
+    fn typed_rsd_misses_preserve_service_specific_fallback_without_hiding_probe_failures() {
+        for (name, coredevice, dtx) in [
+            ("com.apple.coredevice.screencaptureservice", true, false),
+            ("com.apple.instruments.dtservicehub", false, true),
+            (
+                "com.apple.instruments.server.services.deviceinfo",
+                false,
+                true,
+            ),
+            ("synthetic.unknown.service", false, false),
+        ] {
+            let error = anyhow::Error::new(ios_core::CoreError::Xpc(
+                ios_core::XpcError::ServiceNotFound(name.into()),
+            ));
+            assert_eq!(coredevice_fallback_allowed(&error), coredevice);
+            assert_eq!(dtx_fallback_allowed(&error), dtx);
+        }
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            let error = anyhow::Error::new(ios_core::CoreError::Xpc(ios_core::XpcError::Io(
+                std::io::Error::new(kind, "synthetic-private-probe-error"),
+            )));
+            assert!(!coredevice_fallback_allowed(&error));
+            assert!(!dtx_fallback_allowed(&error));
+        }
     }
 }

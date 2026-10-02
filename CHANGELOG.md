@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain the final on-demand RSD probe error after the existing retry schedule,
+  and classify missing entries in a successful directory as service missing.
+  Preserve initial snapshots/cache, successful routing and service-specific
+  screenshot fallback; retain native XPC reconnector dial sources. Returned
+  failure variants have an explicit migration in the error contract.
+
 - Add `ios_list_devices_checked` to reject unencodable received C device records
   with `IOS_ERR_CORE`/`protocol`, cleared outputs and no partial array. Preserve
   the original listing symbol's skip behavior and existing layout/free contract;

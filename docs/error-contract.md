@@ -118,7 +118,8 @@ neither a skipped probe nor a failed request is an explicit device-side
 unsupported response. Empty feature lists retain their permissive legacy
 behavior. The added observation is historical: later on-demand retries do not
 update it or the old cache, and it cannot certify current reachability or device
-cleanup. Those later owner observations remain pending work.
+cleanup. Later service calls now retain their retry failure independently, as
+described below; this getter does not become a mutable latest-probe report.
 
 The private userspace-proxy dial adapter now retains native IO instead of
 flattening it to XpcError::Tls text. Some deeper RSD/H2 adapters still flatten
@@ -126,6 +127,33 @@ sources before they reach this owner; the observation cannot recover those.
 Existing public error enum definitions, retry counts, deadlines, bootstrap
 frames and permissive feature rules remain unchanged. Read the initial state before interpreting a missing directory;
 `rsd() == None` alone continues to conflate skipped and failed initial discovery.
+
+On-demand RSD service calls keep the existing five attempts with 500 ms between
+attempts, inner bootstrap budgets and fresh transports. When all completed
+probes fail, the owner returns the final original CoreError/source instead of
+the former `Unsupported("RSD handshake failed after retries")`. Earlier failures
+are released; this is not an aggregate history. Owner preflight failures still
+return immediately, and success stops retries. A skipped direct probe without
+the local mdns feature returns Unsupported with that local prerequisite; it
+does not prove a device-side rejection. No-tunnel behavior remains unchanged.
+
+A missing canonical and shim service in a successfully obtained directory now
+returns `CoreError::Xpc(XpcError::ServiceNotFound(requested_name))`, with class
+`service_missing`, instead of Unsupported. Missing feature metadata and
+unadvertised features keep their separate evidence semantics. The class concerns
+that directory snapshot, without proving the service is absent for all routes
+or currently unreachable. Both cached and newly discovered directories follow
+the same rule; no service socket is opened for a lookup miss.
+
+Migrate exhaustive callers that treated every former Unsupported as a device
+capability decision: inspect the native class/source, keep a future fallback,
+and do not retry side effects merely because discovery failed. Enum definitions,
+signatures, successful frames/output, initial observations and cache behavior
+are unchanged; returned failure variants and safe diagnostic correlation can
+change. CLI screenshot fallback accepts the same specific missing service names
+through the typed variant, retaining its legacy compatibility cases. XPC service
+reconnector dials also retain native IO instead of a TLS string. Inner H2/RSD
+source conversions and stronger lifecycle/reconnection guarantees remain work.
 
 ## Machine output and partial results
 

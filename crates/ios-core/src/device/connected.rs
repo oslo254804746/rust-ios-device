@@ -6,13 +6,15 @@ use super::lockdown_transport::tunnel_unavailable;
 #[cfg(feature = "tunnel")]
 use super::rsd_connect::{attempt_rsd, attempt_rsd_via_proxy};
 #[cfg(feature = "tunnel")]
+use super::rsd_observation::RsdProbeOutcome;
+#[cfg(feature = "tunnel")]
 use super::service_routing::ensure_remote_xpc_service;
 use super::service_routing::{
     resolve_rsd_service_details, rsd_checkin_with_timeout, ResolvedRsdService, RSD_CHECKIN_TIMEOUT,
 };
 use super::support::{plist_value_to_string, plist_value_to_string_vec};
 #[cfg(feature = "tunnel")]
-use super::tunnel_endpoint::TunnelEndpoint;
+use super::tunnel_endpoint::{connection_error_to_xpc, TunnelEndpoint};
 #[cfg(feature = "tunnel")]
 use super::ResolvedServiceMetadata;
 use super::{ConnectedDevice, InternationalConfiguration, ServiceStream};
@@ -31,6 +33,33 @@ fn should_strip_service_ssl(service_name: &str) -> bool {
         service_name,
         "com.apple.instruments.remoteserver" | "com.apple.accessibility.axAuditDaemon.remoteserver"
     )
+}
+
+#[cfg(feature = "tunnel")]
+async fn retry_rsd<F, Fut>(mut probe: F) -> Result<RsdHandshake, CoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<RsdProbeOutcome, CoreError>>,
+{
+    const MAX_ATTEMPTS: usize = 5;
+    let mut last_error = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        // Owner preflight errors still fail immediately; completed probes use
+        // the existing five-attempt schedule and retain their final failure.
+        match probe().await?.into_result() {
+            Ok(directory) => return Ok(directory),
+            Err(error) => last_error = Some(error),
+        }
+        tracing::debug!(
+            "RSD handshake attempt {}/{} failed, retrying...",
+            attempt + 1,
+            MAX_ATTEMPTS
+        );
+    }
+    Err(last_error.expect("nonzero RSD retry count"))
 }
 
 impl ConnectedDevice {
@@ -374,7 +403,7 @@ impl ConnectedDevice {
             let stream = endpoint
                 .connect(port)
                 .await
-                .map_err(|error| crate::xpc::XpcError::Tls(error.to_string()))?;
+                .map_err(connection_error_to_xpc)?;
             XpcClient::connect_stream(stream).await
         });
 
@@ -393,18 +422,13 @@ impl ConnectedDevice {
     ) -> Result<ResolvedRsdService, CoreError> {
         if let Some(rsd) = self.rsd.as_ref() {
             return resolve_rsd_service_details(rsd, service_name).ok_or_else(|| {
-                CoreError::Unsupported(format!(
-                    "service '{service_name}' not found in RSD directory"
-                ))
+                CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
             });
         }
 
         let rsd = self.resolve_rsd_with_retry().await?;
-        resolve_rsd_service_details(&rsd, service_name).ok_or_else(|| {
-            CoreError::Unsupported(format!(
-                "service '{service_name}' not found in RSD directory"
-            ))
-        })
+        resolve_rsd_service_details(&rsd, service_name)
+            .ok_or_else(|| CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into())))
     }
 
     async fn resolve_rsd_with_retry(&self) -> Result<RsdHandshake, CoreError> {
@@ -415,38 +439,18 @@ impl ConnectedDevice {
 
         #[cfg(feature = "tunnel")]
         {
-            const MAX_ATTEMPTS: usize = 5;
-
             if self.tunnel.is_none() {
                 return Err(CoreError::Unsupported(
                     "RSD not available (no tunnel or iOS <17)".into(),
                 ));
             }
 
-            for attempt in 0..MAX_ATTEMPTS {
-                if attempt > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-
-                if let Some(rsd) = self.attempt_rsd_from_tunnel().await? {
-                    return Ok(rsd);
-                }
-
-                tracing::debug!(
-                    "RSD handshake attempt {}/{} failed, retrying...",
-                    attempt + 1,
-                    MAX_ATTEMPTS
-                );
-            }
-
-            Err(CoreError::Unsupported(
-                "RSD handshake failed after retries".into(),
-            ))
+            retry_rsd(|| self.attempt_rsd_from_tunnel()).await
         }
     }
 
     #[cfg(feature = "tunnel")]
-    async fn attempt_rsd_from_tunnel(&self) -> Result<Option<RsdHandshake>, CoreError> {
+    async fn attempt_rsd_from_tunnel(&self) -> Result<RsdProbeOutcome, CoreError> {
         let server_addr = self
             .server_address()
             .ok_or_else(|| CoreError::Unsupported("no server address".into()))?;
@@ -457,8 +461,7 @@ impl ConnectedDevice {
         Ok(match self.userspace_port() {
             Some(proxy_port) => attempt_rsd_via_proxy(proxy_port, server_addr, rsd_port).await,
             None => attempt_rsd(server_addr, rsd_port).await,
-        }
-        .into_directory())
+        })
     }
 
     #[cfg(feature = "tunnel")]
@@ -526,5 +529,334 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains("SupportedLocales"));
         assert!(rendered.contains("string"));
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn retry_exhaustion_retains_final_typed_source_and_existing_attempt_count() {
+        #[derive(thiserror::Error)]
+        #[error("synthetic-private-attempt-source")]
+        struct AttemptSource(usize);
+
+        impl std::fmt::Debug for AttemptSource {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("AttemptSource")
+            }
+        }
+
+        let mut attempts = 0;
+        let error = retry_rsd(|| {
+            attempts += 1;
+            std::future::ready(Ok(RsdProbeOutcome::Completed(Err(CoreError::Xpc(
+                crate::XpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    AttemptSource(attempts),
+                )),
+            )))))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(attempts, 5);
+        assert_eq!(error.class(), crate::ErrorClass::Timeout);
+        let CoreError::Xpc(crate::XpcError::Io(source)) = &error else {
+            panic!("final native failure lost at retry owner")
+        };
+        assert_eq!(
+            source
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<AttemptSource>()
+                .unwrap()
+                .0,
+            5
+        );
+        assert!(!format!("{error:?}").contains("synthetic-private"));
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn retry_stops_at_success_and_owner_preflight_error() {
+        let mut attempts = 0;
+        let directory = retry_rsd(|| {
+            attempts += 1;
+            std::future::ready(Ok(RsdProbeOutcome::Completed(if attempts == 1 {
+                Err(CoreError::Xpc(crate::XpcError::NotConnected))
+            } else {
+                Ok(RsdHandshake {
+                    udid: "synthetic-private-later-directory".into(),
+                    services: std::collections::HashMap::new(),
+                })
+            })))
+        })
+        .await
+        .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(directory.udid, "synthetic-private-later-directory");
+
+        attempts = 0;
+        let error = retry_rsd(|| {
+            attempts += 1;
+            std::future::ready(Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "synthetic-private-preflight",
+            ))))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert_eq!(error.class(), crate::ErrorClass::InvalidInput);
+    }
+
+    #[cfg(feature = "tunnel")]
+    fn owned_rsd_device(
+        directory: Option<RsdHandshake>,
+        proxy_port: u16,
+    ) -> (ConnectedDevice, tokio::sync::watch::Receiver<()>) {
+        let probe = RsdProbeOutcome::Completed(directory.ok_or_else(|| {
+            CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "synthetic-private-initial-failure",
+            ))
+        }));
+        let (rsd, initial_rsd_probe) = probe.into_parts();
+        let (handle, receiver) = TunnelHandle::new(
+            "synthetic-private-device".into(),
+            crate::TunnelInfo {
+                server_address: "fd00::42".into(),
+                server_rsd_port: 58783,
+                client_address: "fd00::43".into(),
+                client_mtu: 1280,
+            },
+            Some(proxy_port),
+        );
+        (
+            ConnectedDevice {
+                info: crate::DeviceInfo {
+                    udid: "synthetic-private-device".into(),
+                    device_id: 42,
+                    connection_type: "USB".into(),
+                    product_id: 0,
+                },
+                tunnel: Some(Arc::new(handle)),
+                rsd,
+                initial_rsd_probe,
+                pair_record: None,
+                lockdown_transport: super::super::LockdownTransport::Usbmux { device_id: 42 },
+            },
+            receiver,
+        )
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn public_service_calls_retain_real_retry_failure_without_rewriting_initial_snapshot() {
+        // Reserve a non-listening port; no released-port race, TUN or device IO.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let (device, receiver) = owned_rsd_device(None, socket.local_addr().unwrap().port());
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            device.connect_rsd_service("synthetic.private.service"),
+        )
+        .await
+        .unwrap()
+        .err()
+        .expect("non-listening owned proxy must fail");
+        let CoreError::Xpc(crate::XpcError::Io(source)) = &error else {
+            panic!("public service call discarded the retry failure")
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::ConnectionRefused);
+        assert_eq!(error.class(), crate::ErrorClass::Io);
+        assert!(device.rsd().is_none());
+        assert_eq!(
+            device.initial_rsd_probe().state(),
+            crate::InitialRsdProbeState::Failed
+        );
+        assert_eq!(
+            device.initial_rsd_probe().error_class(),
+            Some(crate::ErrorClass::Timeout)
+        );
+        drop(device);
+        assert!(receiver.has_changed().is_err());
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn newly_discovered_directory_miss_retains_initial_failure_and_releases_discovery_socket()
+    {
+        use crate::xpc::message::{decode_message, encode_message, flags, XpcMessage, XpcValue};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (device, receiver) = owned_rsd_device(None, listener.local_addr().unwrap().port());
+        let peer = async {
+            let mut stream = listener.accept().await.unwrap().0;
+            let mut prelude = [0; 20];
+            stream.read_exact(&mut prelude).await.unwrap();
+            assert_eq!(
+                &prelude[..16],
+                &"fd00::42".parse::<std::net::Ipv6Addr>().unwrap().octets()
+            );
+            assert_eq!(u32::from_le_bytes(prelude[16..].try_into().unwrap()), 58783);
+            let mut preface = [0; 24];
+            stream.read_exact(&mut preface).await.unwrap();
+            assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+            stream
+                .write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            let mut found_handshake = false;
+            for _ in 0..20 {
+                let mut header = [0; 9];
+                stream.read_exact(&mut header).await.unwrap();
+                let length = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
+                assert!(length <= 65536);
+                let mut payload = vec![0; length];
+                stream.read_exact(&mut payload).await.unwrap();
+                if header[3] != 0 || u32::from_be_bytes(header[5..].try_into().unwrap()) != 1 {
+                    continue;
+                }
+                let message = decode_message(bytes::Bytes::from(payload)).unwrap();
+                if message
+                    .body
+                    .as_ref()
+                    .and_then(XpcValue::as_dict)
+                    .and_then(|body| body.get("MessageType"))
+                    .and_then(XpcValue::as_str)
+                    == Some("Handshake")
+                {
+                    found_handshake = true;
+                    break;
+                }
+            }
+            assert!(found_handshake);
+            let response = encode_message(&XpcMessage {
+                flags: flags::ALWAYS_SET | flags::DATA,
+                msg_id: 1,
+                body: Some(XpcValue::Dictionary(indexmap::IndexMap::from([
+                    ("MessageType".into(), XpcValue::String("Handshake".into())),
+                    (
+                        "Properties".into(),
+                        XpcValue::Dictionary(indexmap::IndexMap::from([(
+                            "UniqueDeviceID".into(),
+                            XpcValue::String("synthetic-private-later-directory".into()),
+                        )])),
+                    ),
+                    (
+                        "Services".into(),
+                        XpcValue::Dictionary(indexmap::IndexMap::new()),
+                    ),
+                ]))),
+            })
+            .unwrap();
+            let length = u32::try_from(response.len()).unwrap().to_be_bytes();
+            stream
+                .write_all(&[length[1], length[2], length[3], 0, 0, 0, 0, 0, 1])
+                .await
+                .unwrap();
+            stream.write_all(&response).await.unwrap();
+            // The discovery framer must release its transport on completion.
+            let mut rest = Vec::new();
+            stream.take(65536).read_to_end(&mut rest).await.unwrap();
+            assert!(rest.len() < 65536);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                    .await
+                    .is_err()
+            );
+        };
+        let ((), error) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                peer,
+                device.connect_rsd_service("synthetic.private.missing")
+            )
+        })
+        .await
+        .unwrap();
+        let error = error.err().unwrap();
+        assert_eq!(error.class(), crate::ErrorClass::ServiceMissing);
+        assert!(matches!(
+            error,
+            CoreError::Xpc(crate::XpcError::ServiceNotFound(_))
+        ));
+        assert!(device.rsd().is_none());
+        assert_eq!(
+            device.initial_rsd_probe().state(),
+            crate::InitialRsdProbeState::Failed
+        );
+        assert_eq!(
+            device.initial_rsd_probe().error_class(),
+            Some(crate::ErrorClass::Timeout)
+        );
+        drop(device);
+        assert!(receiver.has_changed().is_err());
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn successful_directory_miss_is_typed_and_never_dials_a_service() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let directory = RsdHandshake {
+            udid: "synthetic-private-directory".into(),
+            services: std::collections::HashMap::from([
+                ("owned.service".into(), crate::ServiceDescriptor::new(12345)),
+                (
+                    "owned.shim.shim.remote".into(),
+                    crate::ServiceDescriptor::new(23456),
+                ),
+            ]),
+        };
+        let (device, receiver) =
+            owned_rsd_device(Some(directory), listener.local_addr().unwrap().port());
+        let resolved = device
+            .resolve_rsd_service_with_retry("owned.service")
+            .await
+            .unwrap();
+        assert_eq!(resolved.port, 12345);
+        let shim = device
+            .resolve_rsd_service_with_retry("owned.shim")
+            .await
+            .unwrap();
+        assert_eq!(shim.resolved_service_name, "owned.shim.shim.remote");
+        for error in [
+            device
+                .connect_rsd_service("synthetic.private.missing")
+                .await
+                .err()
+                .unwrap(),
+            device
+                .connect_xpc_service("synthetic.private.missing")
+                .await
+                .err()
+                .unwrap(),
+        ] {
+            assert_eq!(error.class(), crate::ErrorClass::ServiceMissing);
+            assert!(
+                matches!(error, CoreError::Xpc(crate::XpcError::ServiceNotFound(ref name)) if name == "synthetic.private.missing")
+            );
+            assert!(!format!("{error:?}").contains("synthetic.private"));
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            device.initial_rsd_probe().state(),
+            crate::InitialRsdProbeState::Available
+        );
+        assert_eq!(
+            device
+                .rsd()
+                .unwrap()
+                .feature_evidence("owned.service", "missing.feature"),
+            crate::RsdFeatureEvidence::MetadataUnavailable
+        );
+        drop(device);
+        assert!(receiver.has_changed().is_err());
     }
 }

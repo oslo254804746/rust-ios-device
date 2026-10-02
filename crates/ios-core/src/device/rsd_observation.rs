@@ -104,16 +104,40 @@ impl RsdProbeOutcome {
         }
     }
 
-    /// Preserve the existing on-demand optional result. Initial observations
-    /// intentionally do not describe those later independent retries.
-    pub(super) fn into_directory(self) -> Option<crate::RsdHandshake> {
-        self.into_parts().0
+    /// Later retries preserve their original failure without changing the
+    /// connection's historical initial observation or cached directory.
+    pub(super) fn into_result(self) -> Result<crate::RsdHandshake, CoreError> {
+        match self {
+            Self::Completed(result) => result,
+            #[cfg(any(not(feature = "mdns"), test))]
+            Self::Skipped(reason) => Err(CoreError::Unsupported(
+                match reason {
+                    InitialRsdProbeSkipReason::TunnelSkipped => "RSD discovery requires a tunnel",
+                    InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable => {
+                        "RSD direct probing requires ios-core feature 'mdns'"
+                    }
+                }
+                .into(),
+            )),
+        }
     }
 }
 
 #[cfg(all(test, feature = "tunnel"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn later_probe_skips_describe_local_preconditions_without_device_failure() {
+        for reason in [
+            InitialRsdProbeSkipReason::TunnelSkipped,
+            InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable,
+        ] {
+            let error = RsdProbeOutcome::Skipped(reason).into_result().unwrap_err();
+            assert_eq!(error.class(), ErrorClass::Unsupported);
+            assert!(matches!(error, CoreError::Unsupported(_)));
+        }
+    }
 
     #[test]
     fn initial_probe_distinguishes_skips_failures_and_directory_evidence() {

@@ -22,6 +22,8 @@ async fn timeout_io<T>(
 
 /// Network path used to reach any port exposed through an RSD tunnel.
 ///
+/// Dial/prelude errors cross the XPC boundary through connection_error_to_xpc.
+///
 /// Userspace TUN routes use the go-ios-compatible 20-byte prelude: a 16-byte
 /// IPv6 destination followed by a little-endian `u32` port. Kernel TUN routes
 /// connect directly to the IPv6 destination.
@@ -34,6 +36,14 @@ pub(super) enum TunnelEndpoint {
     DirectIpv6 {
         remote_addr: Ipv6Addr,
     },
+}
+
+/// Retain native dial/prelude sources across the existing XPC error boundary.
+pub(super) fn connection_error_to_xpc(error: CoreError) -> crate::XpcError {
+    match error {
+        CoreError::Io(error) => crate::XpcError::Io(error),
+        other => crate::XpcError::Io(io::Error::other(other)),
+    }
 }
 
 impl TunnelEndpoint {
@@ -87,6 +97,41 @@ impl TunnelEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xpc_connection_adapter_retains_native_io_and_other_sources() {
+        for (kind, class) in [
+            (io::ErrorKind::TimedOut, crate::ErrorClass::Timeout),
+            (
+                io::ErrorKind::PermissionDenied,
+                crate::ErrorClass::PermissionDenied,
+            ),
+            (io::ErrorKind::ConnectionRefused, crate::ErrorClass::Io),
+        ] {
+            let error = connection_error_to_xpc(CoreError::Io(io::Error::new(
+                kind,
+                "synthetic-private-dial",
+            )));
+            assert_eq!(crate::classify_error(&error), class);
+            let crate::XpcError::Io(source) = &error else {
+                panic!("native IO lost")
+            };
+            assert_eq!(source.kind(), kind);
+            assert_eq!(source.to_string(), "synthetic-private-dial");
+            assert!(!format!("{error:?}").contains("synthetic-private"));
+        }
+        let error =
+            connection_error_to_xpc(CoreError::Protocol("synthetic-private-prelude".into()));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let crate::XpcError::Io(source) = error else {
+            panic!("prelude source lost")
+        };
+        assert!(source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<CoreError>()
+            .is_some());
+    }
 
     #[tokio::test]
     async fn timeout_io_classifies_elapsed_dials() {
