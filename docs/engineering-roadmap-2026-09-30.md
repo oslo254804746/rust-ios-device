@@ -2976,3 +2976,69 @@ ConnectedDevice mobileactivation映射）、pasteboard XPC startup；须保留�
 class/context并验证migration，未列为当前PASS。其他source/JSON/callback/binding、
 L01/L03/L04/Q04/A03、平台/真机/有序cleanup条件保留；无maturity升级、设备操作、
 推送/发布、历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 symbols/activation/pasteboard 来源（2026-10-02）
+
+上一ZIP decoder实现 `b986ae1`、文档 `5b4bdcb` 已核对，收尾clean；当前分支
+`feat/device-service-updates-20260927`。上一轮发现外层CLI strings及内层H2 /
+modernactivation flattening；期间中断后核对clean/workers无残留，再落实修复。
+remote symbols 16处H2/XPC adapters使用既有Io/private fixed phases保留原对象；
+CLI connection context保持typed FetchSymbolsError。modern ConnectedDevice.activate
+service mapping Other→Io保留MobileActivationError，CLI原CoreError直接经期限；
+elapsed/observedCancellation/nativeSignal来源保留。pasteboard notification snapshot
+connection Protocol→Xpc/Io保留原CoreError，并复用真实monitor callback。原enum/
+signatures/Applekeys/requests/路由/回退条件/successoutput保留，返回variants与
+Display/classes/correlation migration已写入public/error/CHANGELOG。
+
+15新增tests：fetchsymbols7（2adapter、4entirepublicconnect/catalog/codec/file
+fixtures、1closedduplexbeforefix），activation core3（2typedmapper、1真实modern
+servicewritefail），CLI5（symbols1、activation3、pasteboard1）。symbols首个
+beforefix0PASS/1FAIL曾Protocol替代nativeDisconnected；初轮core8PASS/2FAIL为
+fixture10MiB单frame违反16KiB上限与非法控制在decode而非buffer阶段，修正输入和
+phase不改产品limits/class。CLI初轮E0603因试图引用private xpc raw类型，改公开
+IO cause检查而不暴露内部模块。日志 `/tmp/ios-a02-service-boundary-before.log`、
+`/tmp/ios-a02-service-boundary-core.log`、`/tmp/ios-a02-service-boundary-activation-cli.log`
+保留。所有source/future/peer均ownedhost，无实际设备或OS信号。
+
+最终专项terminal0：symbols core全feature/minimal fetchsymbols各10 PASS，activation
+core全feature/minimal mobileactivation各3 PASS，CLI activation11/symbols4/pasteboard12、
+externalpublic14 PASS；strict core/CLI Clippy PASS。日志 `/tmp/ios-a02-service-boundary-`
+前缀的core-final/fetch-minimal/activation-core-final/activation-minimal/
+activation-cli-final/symbols-cli/pasteboard-cli/public/clippy.log。将执行第11节full
+`/tmp/ios-a02-service-boundary-full.log`，完整结果/审查/提交/收尾待完成。其他A02
+source/JSON/callback/binding、L01/L03/A03与平台/真机条件保留，第三类/总体goal
+active，第四类尚未开始；无maturity升级、设备操作/推送/发布/历史改写/参考修改。
+
+### 大类 3：A02 service boundary 来源主机验收与交付（2026-10-02）
+
+实现 `817da67f9442e61f89e676a3dcfe93b3af71741a`（13个相关文件），完整gate后
+聚焦本地提交。symbols16H2/XPC adapters与CLI连接保留原对象；modern record
+application CoreOther→Io、CLI Core原链/Elapsed/observedCancellation/nativeSignal
+来源保留；pasteboard snapshot connect Protocol→Xpc/Io保留CoreError并复用monitor。
+原enum/signatures/requests/wirekeys/路由/回退条件/successoutput未改；returnedvariant/
+Display/classes/correlation迁移及privatepayload显式Rust可见、安全Debug/JSON写入合同。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/CLI/public | symbols all-feature/minimal各10 PASS，activation core all-feature/minimal各3 PASS，CLI activation11/symbols4/pasteboard12、externalpublic14 PASS；`/tmp/ios-a02-service-boundary-`前缀core-final/fetch-minimal/activation-core-final/activation-minimal/activation-cli-final/symbols-cli/pasteboard-cli/public.log terminal0 |
+| strict Clippy | core/CLI all-target/all-feature `/tmp/ios-a02-service-boundary-clippy.log` PASS terminal0；full workspace strict PASS |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-service-boundary-full.log` terminal0；1817 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/范围 | 15新增tests覆盖真实publicsymbols与10MiB完整chunk后EOF/limitedsuccess、typed mappers/realmodernservicewrite、sharedCLI deadline/signal、realmonitorbaseline/peerEOF与safeenvelopes；非pairedConnectedDevice/ACK、actualOSsignal、deviceworkflow/cleanup或每个16stage逐一fault注入。无额外Chromium/installed3.9/3.13重跑 |
+
+0PASS/1FAIL beforefix，初轮symbols8PASS/2FAIL非法10MiB frame/错误decodephase，CLI
+E0603 privateXpc namespace错误引用记录保留，按实际16KiBframes/phase/publicIO
+修正fixture，未弱化产品limits/class或暴露模块。localpeer/service/future drop证据
+不认证devicecleanup或borrowedclient自动失效，failed符号下载可能留完整localchunks，
+失败不返回successsize；最终机器effectsunknown。精确日志/host限制/未来条件详见
+[专题证据](validation/service-boundary-sources-2026-10-02.md)，ios0.1.13 SHA256
+`3f99a3449ee1bd86b00131c08808c186b49307ae4f9eec3b67d907b0a8301f3d`。
+
+文档收尾catalog118 records/108 local Markdown links（6个changed Markdown files）/
+whitespace PASS；准确实现hash、host边界和未来条件写入catalog/quality/roadmap/专题证据。
+
+本slice主机验收；A02/第三类/总体goal active，第四类尚未开始。下一已确认
+deactivation combinedfallback与activation HTTP errors仍flattened；需保留typed
+原始来源/前后失败观察、合理class与兼容迁移。其他source/JSON/callback/binding、
+L01/L03/A03、平台/真机/有序cleanup条件继续；无maturity升级、设备操作、推送/
+发布、历史改写或reference checkout修改。文档收尾后继续。

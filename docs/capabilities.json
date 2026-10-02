@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-service-boundary-sources-817da67",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Public remote-symbols owned transport/codec/partial-file fixtures; modern service write failure and typed CoreError mapper; CLI deadline/signal controlled futures, real pasteboard monitor baseline and safe envelopes"],
+      "required_state": ["Host source/output/local-drop only; no paired-TLS ConnectedDevice activation/acknowledgement, real OS signals, physical symbols/pasteboard workflow, reuse or Apple cleanup certification"],
+      "tested_commit": "817da67f9442e61f89e676a3dcfe93b3af71741a",
+      "date": "2026-10-02",
+      "location": "docs/validation/service-boundary-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 symbols H2/XPC, modern activation application/deadline/cancellation and pasteboard connection causes survive existing variants with native categories, fixed context and safe envelopes. Requests/routing/fallback/success retained; variant migration documented, other source/binding/JSON/lifecycle work pending, no maturity upgrade."
+    },
+    {
       "id": "linux-zip-decoder-sources-b986ae1",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
