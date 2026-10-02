@@ -23,6 +23,48 @@ mod tests {
     use super::*;
     use std::io::{self, Write};
 
+    #[tokio::test]
+    async fn local_decoder_failure_keeps_actual_safe_cli_envelope() {
+        struct LocalIpa(std::path::PathBuf);
+        impl Drop for LocalIpa {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir =
+            std::env::temp_dir().join(format!("ios-owned-private-zip-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let owner = LocalIpa(dir.clone());
+        let path = dir.join("owned-private.ipa");
+        std::fs::write(&path, [0; 12]).unwrap();
+        let (mut service, _peer) = tokio::io::duplex(16);
+        let native = ios_core::apps::install_ipa_with_checked_progress(&mut service, &path, None)
+            .await
+            .unwrap_err();
+        let error = anyhow::Error::new(native).context("streaming zip conduit install failed");
+        let source = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<io::Error>())
+            .expect("native decoder IO wrapper lost");
+        assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+        assert!(std::error::Error::source(source).is_some());
+        let message = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "apps",
+            &error,
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(json["error"]["class"], "invalid_input");
+        assert_eq!(json["error"]["phase"], "apps");
+        assert_eq!(json["error"]["exit_code"], 1);
+        assert_eq!(json["error"]["effects"], "unknown");
+        assert!(!message.contains("owned-private"));
+        assert!(!message.contains(&path.to_string_lossy().to_string()));
+        drop(owner);
+        assert!(!dir.exists());
+    }
+
     #[test]
     fn progress_preserves_bytes_and_safe_native_flush_failure() {
         struct FlushFailure(Vec<u8>);

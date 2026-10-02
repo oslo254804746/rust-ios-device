@@ -26,7 +26,7 @@ a fallback for future categories. Human diagnostic text is not a classifier.
 | `service_missing` | XPC ServiceNotFound or the RemotePairing ServiceNotFound variant |
 | `permission_denied` | IO PermissionDenied, AFC PermDenied, or typed pairing rejection |
 | `protocol` | Existing Protocol/typed codec shape failures or invalid data; a codec's underlying IO failure takes precedence over its generic fallback |
-| `invalid_input` | IO InvalidInput, credential parse, GPX/ZIP input failure, or typed test-plan input validation |
+| `invalid_input` | IO InvalidInput, credential/GPX parse, known non-IO ZIP package failure, or typed test-plan input validation |
 | `unsupported` | Existing Unsupported/LegacyUnsupported/FeatureMissing/deprecated-version/backend variants |
 | `device_not_found` | Existing Core/usbmux DeviceNotFound |
 | `not_found` | IO NotFound, missing pair record or AFC ObjectNotFound; it is not inferred to mean a missing service |
@@ -348,7 +348,43 @@ after progress. CLI writer fixtures exercise the shared checked writer and actua
 safe error renderer; an external consumer keeps exhaustive error matching and
 old/new callback signatures. These are host source/output/transfer fixtures,
 not a paired-TLS CLI process or physical installation/teardown. Other callbacks,
-JSON commands, bindings, ZIP string adapters and L01/L03 remain pending.
+JSON commands, bindings, other source adapters and L01/L03 remain pending.
+
+Streaming install's local archive-open, entry-open and entry-read adapters now
+retain the original `zip::result::ZipError` or `io::Error` under the existing
+`ZipConduitError::Io`. Previously they flattened every failure into `Zip(String)`.
+No enum variant or function signature changes; manually constructed legacy
+`Zip(String)` still classifies as invalid input. Consumers matching `Zip` for
+decoder failures must migrate to `Io` and typed cause inspection, or use
+`classify_error`. Returned Display prefixes and safe diagnostic correlations
+can change. Class selection uses typed variants/kinds, never error words.
+
+| Original decoder cause | Returned kind / stable class |
+| --- | --- |
+| InvalidArchive, UnsupportedArchive, FileNotFound, InvalidPassword | InvalidInput / invalid_input; these describe the local package, without device support or service-missing inference |
+| ZipError::Io or entry-read IO | Original native kind/class, including Timeout, PermissionDenied and disconnected; InvalidData becomes protocol, UnexpectedEof/Interrupted/Other remain io |
+| Future non-exhaustive ZIP reason | Other / generic io fallback, with the original typed cause retained |
+
+Fixed owner context is `open IPA ZIP archive`, `open IPA ZIP entry` or
+`read IPA ZIP entry`. Owner/new wrapper Debug and CLI machine diagnostics keep
+private data hidden; native Rust cause access intentionally retains original
+payloads. Entry names are no longer inserted into read-failure context. A real
+stored-entry checksum mismatch emits native InvalidData and now classifies as
+protocol instead of the former flattened invalid_input. Locked zip 2.4.2 checks
+local headers during archive construction, so a damaged header is an archive
+phase error; a password-required metadata entry reaches the entry phase.
+
+Both public install entries finish local extraction before writing InitTransfer
+or payload, flushing, reading replies or invoking observers. Owned fixtures
+verify these boundaries on malformed archive/header, password-required metadata
+and actual CRC failures. CLI rendering of a real local decode failure keeps
+phase apps, exit field 1 and unknown effects; CLI service setup happens before
+local decoding, so this envelope does not claim the whole command never started.
+Valid/empty archive entries retain names, order, contents and directory flags;
+successful transfer bytes/keys and whole-file/in-memory extraction are unchanged.
+These host faults do not prove physical installation, encrypted-payload support,
+cleanup, stream reuse or new decompression/resource budgets. Other A02 source,
+JSON/callback/binding work and L01/L03/L04/Q04 conditions remain pending.
 
 ## Python exceptions
 

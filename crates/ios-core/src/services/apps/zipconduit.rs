@@ -14,6 +14,8 @@ use std::path::Path;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+mod error_mapping;
+
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
 
@@ -42,6 +44,9 @@ pub type CheckedProgressCallback = Box<dyn Fn(u32, &str) -> std::io::Result<()> 
 /// `stream` must be an already-connected streaming_zip_conduit service connection.
 /// `ipa_path` is the local path to the IPA file.
 /// `progress` is an optional callback for installation progress updates.
+/// Local ZIP decoder errors use `ZipConduitError::Io` with retained typed
+/// causes and fixed phase context. Known non-IO package errors classify as
+/// invalid input; native IO keeps its kind. Extraction precedes stream writes.
 pub async fn install_ipa<S>(
     stream: &mut S,
     ipa_path: &Path,
@@ -182,6 +187,9 @@ where
 #[cfg(test)]
 mod progress_contract_tests;
 
+#[cfg(test)]
+mod extraction_contract_tests;
+
 // ── ZIP entry types ─────────────────────────────────────────────────────────
 
 struct ZipEntry {
@@ -193,21 +201,21 @@ struct ZipEntry {
 /// Extract all entries from a ZIP file, decompressing as needed.
 fn extract_zip_entries(data: &[u8]) -> Result<Vec<ZipEntry>, ZipConduitError> {
     let reader = std::io::Cursor::new(data);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| ZipConduitError::Zip(e.to_string()))?;
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|error| error_mapping::zip_error("open IPA ZIP archive", error))?;
 
     let mut entries = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
-            .map_err(|e| ZipConduitError::Zip(e.to_string()))?;
+            .map_err(|error| error_mapping::zip_error("open IPA ZIP entry", error))?;
         let name = file.name().to_string();
         let is_dir = file.is_dir();
 
         let mut file_data = Vec::new();
         if !is_dir {
             file.read_to_end(&mut file_data)
-                .map_err(|e| ZipConduitError::Zip(format!("failed to read {name}: {e}")))?;
+                .map_err(error_mapping::entry_read_error)?;
         }
 
         entries.push(ZipEntry {

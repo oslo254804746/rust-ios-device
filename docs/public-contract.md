@@ -115,6 +115,15 @@ stderr stream or absent success result can follow payload transfer; do not retry
 or reuse a failed connection from the error alone. The [error contract](error-contract.md)
 records native classes, borrowed-stream lifetime and host versus device scope.
 
+Both streaming install entries now return ZIP decoder failures through the
+existing `ZipConduitError::Io`, retaining typed causes instead of flattening
+them into `Zip(String)`. The exhaustive enum and callback signatures stay
+available. Migrate decoder-specific `Zip` matches to typed sources or
+`classify_error`; known local package errors remain invalid input, while native
+read errors use their kind (CRC InvalidData becomes protocol). Fixed phase
+context replaces entry-name context. See the [error contract](error-contract.md)
+for the complete returned-variant and diagnostic migration.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

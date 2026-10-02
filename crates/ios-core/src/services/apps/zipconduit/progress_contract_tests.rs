@@ -97,6 +97,53 @@ fn complete() -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn extraction_failure_in_both_public_installs_precedes_transfer_and_observer() {
+    let ipa = Ipa::new();
+    for (bytes, class, phase) in super::extraction_contract_tests::damaged_packages() {
+        std::fs::write(&ipa.path, bytes).unwrap();
+        for checked in [false, true] {
+            let seen = Arc::new(Mutex::new(0));
+            let observer = Arc::clone(&seen);
+            let mut service = Service {
+                replies: std::io::Cursor::new(complete()),
+                ..Service::default()
+            };
+            let error = if checked {
+                install_ipa_with_checked_progress(
+                    &mut service,
+                    &ipa.path,
+                    Some(Box::new(move |_, _| {
+                        *observer.lock().unwrap() += 1;
+                        Ok(())
+                    })),
+                )
+                .await
+                .unwrap_err()
+            } else {
+                install_ipa(
+                    &mut service,
+                    &ipa.path,
+                    Some(Box::new(move |_, _| *observer.lock().unwrap() += 1)),
+                )
+                .await
+                .unwrap_err()
+            };
+            let ZipConduitError::Io(native) = &error else {
+                panic!("decoder source discarded");
+            };
+            assert!(std::error::Error::source(native).is_some());
+            assert_eq!(crate::classify_error(&error), class);
+            assert!(error.to_string().contains(phase));
+            assert_eq!(*seen.lock().unwrap(), 0);
+            assert!(service.written.is_empty());
+            assert_eq!(service.flushes, 0);
+            assert_eq!(service.replies.position(), 0);
+        }
+    }
+    ipa.close();
+}
+
+#[tokio::test]
 async fn observer_failure_retains_native_source_and_does_not_consume_completion() {
     let ipa = Ipa::new();
     let first = progress(20, "owned-first");

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain original ZIP/archive-entry decoder and entry-read IO sources during
+  streaming IPA installation through the existing IO error variant. Preserve
+  local package input categories, classify native IO by kind, and document
+  returned-variant/CRC migration with fixed context and safe diagnostics.
+
 - Add fallible streaming-install progress observers, preserving native IO
   sources and stopping before later replies on failure. CLI startup/progress
   stderr writes and flushes are checked, with existing safe progress bytes and
