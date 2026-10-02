@@ -588,9 +588,41 @@ complete root exchange with generated certificate/signature checks and signed
 binary challenge. Test-only PKCS7 NOVERIFY/NOINTERN uses a known synthetic signer
 and verifies the signature without establishing chain trust. No physical
 supervised device/enrollment/Trust or remote cleanup/reuse is certified; not
-every backend or save stage is fault-injected. MCInstall's analogous P12 boundary,
-other sources/streams/bindings and L01/L03/A03 remain. Evidence:
+every backend or save stage is fault-injected. MCInstall's analogous P12 boundary
+has subsequent coverage below; other sources/streams/bindings and L01/L03/A03
+remain. Evidence:
 [supervised pairing source validation](validation/supervised-pairing-sources-2026-10-02.md).
+
+## MCInstall native sources and explicit P12 outcomes
+
+Five OpenSSL adapters retain original ErrorStack objects under existing
+McInstallError::Io and bounded private fixed context. Local PKCS12 DER/password
+failures are invalid_input; certificate DER, signing-stack allocation and PKCS7
+signing/encoding failures remain unknown. The remove-profile identifier encoder
+propagates original plist::Error as existing Plist instead of Protocol(String).
+Its class remains protocol. No backend text is used for classification.
+
+Interior NUL passwords return invalid_input with the original NulError after
+DER parsing and before the dependency's parse2 unwrap. This native object owns
+password bytes; explicit source/Debug access is private data. Context Debug
+omits payloads. Missing parsed certificate/key predicates return InvalidInput
+IO without inventing an underlying backend cause. Without supervised-pair,
+both public P12 entry points retain an explicit CoreError::Unsupported feature
+decision through Io and perform no writes. Legacy manually constructed Crypto
+remains unknown; PasscodeSet remains precondition.
+
+All five public error variants, root exports/signatures and feature definitions
+stay. Affected Crypto-to-Io and Protocol-to-Plist matches should migrate to
+class/source observations; Display prefixes, correlations and categories can
+change. Existing PKCS7 BINARY, request keys/order, challenge handling, zeroization,
+ACK gates and best-effort profile-list fallback remain. No timeout, retry, trust
+or lifecycle policy is added. Owned fixtures cover actual faults, each ACK gate
+and a complete public silent-install exchange with known-signer verification;
+test-only NOVERIFY/NOINTERN does not establish chain trust. Physical supervision,
+profile installation, remote cleanup/reuse, every backend/allocator/encoder stage
+and memory-lifecycle guarantees remain unverified. Existing profile metadata
+integer conversion and other codec/guard/stream/binding work remain. Evidence:
+[MCInstall source validation](validation/mcinstall-sources-2026-10-02.md).
 
 ## Deactivation fallback and activation HTTP sources
 

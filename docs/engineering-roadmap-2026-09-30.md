@@ -3511,3 +3511,56 @@ JSON/callback/binding、L01/L03/A03/platform/device条件；FullPairRecord原Vec
 lifecycle保留待后续。未操作真实credentials/设备/Apple，未推送/发布/historyrewrite/
 reference编辑。hostPKCS7 NOVERIFY/NOINTERN仅knownsyntheticsigner数学签名验证，
 非chaintrust认证或生产策略更改。
+
+### 大类 3：A02 MCInstall 原生来源与 P12 outcome 主机交付（2026-10-02）
+
+接续 clean HEAD `1def8192b8d8952cfe56f4d35aa8020933bd13d1`。实现
+`f1f9d37665d969011bd3b69970b03febe1ee0f45`，三个相关源码文件；完整门禁
+通过后本地聚焦提交。本轮有实现、证据与提交进展，未触发阻塞审计。
+
+六个 native-to-string adapters 移除：五个 OpenSSL ErrorStack 经现有 Io/
+private fixed context 保留对象，remove-profile encoder 经现有 Plist 保留
+原 plist::Error。P12 DER/password 为 Input，三个 opaque backend adapters
+保持 Unknown。DER 后/parse2 前 native NulError guard 替代已复现的 dependency
+CString unwrap panic；valid password 无额外 CString copy，native source 持有
+密码 bytes，明确私有敏感访问边界。两个 feature-disabled 入口为 typed
+CoreError::Unsupported admission；两个 missing cert/key predicates 为 Input
+且不伪造 backend source。公开五 variants/root signatures/features 保持，
+Crypto-to-Io/Protocol-to-Plist 及 class/Display/correlation 迁移记录。
+
+Escalate success/control-flow 比对仅 error adapters/NUL guard/optional commas
+变化；PKCS7 BINARY、DER/wire keys/order、challenge/既有 zeroization/ACK gating、
+profile-list best-effort fallback 保持，无 deps/lockfile/CLI-schema/binding/
+timeout/retry/trust/lifecycle 改动。metadata `u64 as i64` 留待 integer/typed-guard
+审计，未猜测协议。原 Crypto(String) 手工构造仍 Unknown，PasscodeSet 为 Precondition。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core | mcinstall-only 25 / supervised 31 / all-feature 31 PASS，terminal 0 |
+| 外部 consumer / Clippy | root all 19 / mcinstall 11 / supervised 12 PASS；core/CLI 及 full workspace strict Clippy PASS |
+| 第 11 节完整主线 | 首次 full `/tmp/ios-a02-mcinstall-full.log` terminal 0，1883 Rust / 13 Python、0 FAIL、2 既有 ignored |
+| 其余 full gate | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 覆盖边界 | 九 distinct internal fixtures 加一 external；actual feature/serializer/DER/password/NUL/missing-field/PKCS7/IO/plist/四 ACK faults；完整 public owned silent-install 四 requests/64KiB fixture frames、known signer/exact binary challenge、shutdown/join/drop；非 physical supervision/install/Trust/all backend stages/allocator/fixed encoder/remote cleanup/reuse |
+
+修复前 final fixtures 两 feature modes 合计 5 PASS / 5 FAIL（九 distinct tests
+的十次执行），含 actual NUL panic，`/tmp/ios-a02-mcinstall-before-final.log`
+terminal 101。更早 before.log 中 empty-P12 fixture 的 native builder 失败已改为
+真实 cert-only bundle；fixture construction 失败不冒充 production regression，
+原日志保留。没有弱化 production policy、gate、lint 或 timeout。专项准确日志和
+source comparison 见[专题证据](validation/mcinstall-sources-2026-10-02.md)。
+
+测试 ios0.1.13 debug binary SHA256
+`2319b64f23b52af9a96d3c820ed37ce189a4606b41c7b80163a64b0ef49e3034`。
+源码 full 前冻结、之后未变；无 storage failure/cleanup，可用约 26GiB。
+没有额外 Chromium/installed3.9/3.13 重跑。catalog/quality/error contract 和
+历史 supervised topic follow-up 同步，maturity 不变；文档收尾检查另记录。
+
+文档收尾：118 catalog records、五个 changed Markdown files 的 96 local links
+（baseline `1def819`）及 whitespace PASS。日志
+`/tmp/ios-a02-mcinstall-docs-catalog.log`、`/tmp/ios-a02-mcinstall-docs-links.log`。
+源码不变，准备独立聚焦文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，全部 31 任务/子任务 scope 保持。
+接续 base mux/archive native sources、codec integer/typed guards/created outcomes，
+其他 stream/JSON/callback/binding、L01/L03/A03/platform/device 条件仍待。
+未操作真实 credentials/设备/Apple，未 push/publish/history rewrite/reference 编辑。

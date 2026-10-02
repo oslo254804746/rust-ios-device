@@ -109,9 +109,10 @@ across five changed Markdown files, and whitespace PASS. Logs:
 implementation and documentation follow-up. Source remained unchanged after
 the full gate.
 
-A02/class 3/overall goal remain active; class 4 has not started. MCInstall has
-the same PKCS12 password boundary and remaining OpenSSL source flattening, now
-confirmed as next work. Base mux/archive/codec integer sources, typed guards,
+A02/class 3/overall goal remain active; class 4 has not started. Subsequent
+[MCInstall source coverage](mcinstall-sources-2026-10-02.md) addresses its analogous
+PKCS12 password boundary and native-source adapters; this page retains the
+supervised-pairing gate counts above. Base mux/archive/codec integer sources, typed guards,
 created outcomes, stream/JSON/callback/binding, L01/L03/A03 and platform/device
 conditions remain. All 31 tasks/subtasks and maturity stay. No push/publication,
 history rewrite or reference checkout change.
