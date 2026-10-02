@@ -260,7 +260,7 @@ impl ConnectedDevice {
             client
                 .activate(activation_record, response_headers)
                 .await
-                .map_err(|error| CoreError::Other(format!("mobile activation: {error}")))?;
+                .map_err(super::activation_error::service_error)?;
         }
         self.lockdown_set_value(
             Some(crate::services::mobileactivation::ACTIVATION_STATE_ACKNOWLEDGED_KEY),

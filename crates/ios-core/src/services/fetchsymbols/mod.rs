@@ -10,6 +10,10 @@ use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
+mod error_mapping;
+#[cfg(test)]
+mod source_contract_tests;
+
 pub const SERVICE_NAME: &str = "com.apple.dt.fetchsymbols";
 pub const REMOTE_SERVICE_NAME: &str = "com.apple.dt.remoteFetchSymbols";
 const CMD_LIST_FILES: u32 = 0x3030_3030;
@@ -107,7 +111,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
     pub async fn connect(stream: S) -> Result<Self, FetchSymbolsError> {
         let mut framer = crate::xpc::h2_raw::H2Framer::connect(stream)
             .await
-            .map_err(|err| FetchSymbolsError::Protocol(format!("H2 error: {err}")))?;
+            .map_err(|err| error_mapping::h2_error("H2 error", err))?;
         bootstrap_remote_xpc(&mut framer).await?;
         Ok(Self {
             framer,
@@ -158,14 +162,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                     msg_id: 0,
                     body: None,
                 })
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("file stream encode failed: {err}"))
-                })?,
+                .map_err(|err| error_mapping::xpc_error("file stream encode failed", err))?,
             )
             .await
-            .map_err(|err| {
-                FetchSymbolsError::Protocol(format!("file stream open failed: {err}"))
-            })?;
+            .map_err(|err| error_mapping::h2_error("file stream open failed", err))?;
 
         let limit = max_bytes.map_or(file.size, |limit| limit.min(file.size));
         let mut remaining = limit;
@@ -179,9 +179,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 .framer
                 .read_stream(stream_id, chunk_len)
                 .await
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("file stream read failed: {err}"))
-                })?;
+                .map_err(|err| error_mapping::h2_error("file stream read failed", err))?;
             buf[..chunk_len].copy_from_slice(&chunk);
             writer.write_all(&buf[..chunk_len])?;
             written += chunk_len as u64;
@@ -211,12 +209,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                     msg_id: self.next_msg_id,
                     body: Some(crate::xpc::XpcValue::Dictionary(request)),
                 })
-                .map_err(|err| {
-                    FetchSymbolsError::Protocol(format!("catalog request encode failed: {err}"))
-                })?,
+                .map_err(|err| error_mapping::xpc_error("catalog request encode failed", err))?,
             )
             .await
-            .map_err(|err| FetchSymbolsError::Protocol(format!("catalog request failed: {err}")))?;
+            .map_err(|err| error_mapping::h2_error("catalog request failed", err))?;
         self.next_msg_id += 1;
         Ok(())
     }
@@ -230,18 +226,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteFetchSymbolsClient<S> {
                 return Ok(message);
             }
 
-            let frame = self.framer.read_next_data_frame().await.map_err(|err| {
-                FetchSymbolsError::Protocol(format!("control frame read failed: {err}"))
-            })?;
+            let frame = self
+                .framer
+                .read_next_data_frame()
+                .await
+                .map_err(|err| error_mapping::h2_error("control frame read failed", err))?;
             if frame.is_end_stream() && frame.payload.is_empty() {
                 continue;
             }
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload).map_err(|err| {
-                FetchSymbolsError::Protocol(format!("control response buffer failed: {err}"))
-            })?;
+            self.control_messages
+                .push(&frame.payload)
+                .map_err(|err| error_mapping::xpc_error("control response buffer failed", err))?;
         }
     }
 
@@ -305,7 +303,7 @@ impl<S> RemoteFetchSymbolsClient<S> {
     ) -> Result<Option<crate::xpc::XpcMessage>, FetchSymbolsError> {
         self.control_messages
             .try_next()
-            .map_err(|err| FetchSymbolsError::Protocol(format!("control decode failed: {err}")))
+            .map_err(|err| error_mapping::xpc_error("control decode failed", err))
     }
 }
 
@@ -432,22 +430,16 @@ where
                 body: Some(crate::xpc::XpcValue::Dictionary(IndexMap::new())),
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 1 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 1 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 1 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 1 failed", err))?;
 
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap open stream 3 failed", err))?;
 
     framer
         .write_client_server(
@@ -457,15 +449,11 @@ where
                 body: None,
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 2 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 2 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 2 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 2 failed", err))?;
 
     framer
         .write_server_client(
@@ -476,15 +464,11 @@ where
                 body: None,
             })
             .map_err(|err| {
-                FetchSymbolsError::Protocol(format!(
-                    "remote XPC bootstrap encode step 3 failed: {err}"
-                ))
+                error_mapping::xpc_error("remote XPC bootstrap encode step 3 failed", err)
             })?,
         )
         .await
-        .map_err(|err| {
-            FetchSymbolsError::Protocol(format!("remote XPC bootstrap step 3 failed: {err}"))
-        })?;
+        .map_err(|err| error_mapping::h2_error("remote XPC bootstrap step 3 failed", err))?;
 
     Ok(())
 }
@@ -494,6 +478,27 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[tokio::test]
+    async fn remote_connect_retains_native_h2_write_failure() {
+        let (stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let error = RemoteFetchSymbolsClient::connect(stream)
+            .await
+            .err()
+            .expect("closed stream accepted");
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::Disconnected
+        );
+        let mut current: &(dyn std::error::Error + 'static) = &error;
+        let mut retained = false;
+        while let Some(source) = current.source() {
+            retained |= source.is::<crate::xpc::h2_raw::H2Error>();
+            current = source;
+        }
+        assert!(retained, "original H2 error discarded");
+    }
 
     #[test]
     fn file_stream_id_rejects_overflow_and_reserved_ids() {

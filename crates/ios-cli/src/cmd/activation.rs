@@ -491,12 +491,7 @@ async fn apply_record(
     deadline: tokio::time::Instant,
 ) -> Result<()> {
     with_deadline_at(
-        async {
-            device
-                .activate(record, headers)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))
-        },
+        device.activate(record, headers),
         deadline,
         "activation record application",
     )
@@ -544,16 +539,29 @@ where
     F: std::future::Future<Output = Result<T, E>>,
     E: Into<anyhow::Error>,
 {
-    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
+    with_deadline_and_signal_at(future, deadline, operation, tokio::signal::ctrl_c()).await
+}
+
+async fn with_deadline_and_signal_at<F, T, E>(
+    future: F,
+    deadline: tokio::time::Instant,
+    operation: &str,
+    signal: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+    E: Into<anyhow::Error>,
+{
     tokio::select! {
         result = tokio::time::timeout_at(deadline, future) => {
             result
-                .map_err(|_| anyhow::anyhow!("{operation} timed out"))?
+                .with_context(|| format!("{operation} timed out"))?
                 .map_err(Into::into)
         }
-        signal = &mut ctrl_c => {
-            signal.map_err(|error| anyhow::anyhow!("failed waiting for Ctrl+C: {error}"))?;
-            Err(anyhow::anyhow!("{operation} cancelled by Ctrl+C"))
+        signal = signal => {
+            signal.context("failed waiting for Ctrl+C")?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+                .context(format!("{operation} cancelled by Ctrl+C")))
         }
     }
 }
@@ -623,6 +631,146 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    fn assert_failure(error: &anyhow::Error, class: &str) {
+        let message = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "activation",
+            error,
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(json["error"]["class"], class);
+        assert_eq!(json["error"]["phase"], "activation");
+        assert_eq!(json["error"]["exit_code"], 1);
+        assert_eq!(json["error"]["effects"], "unknown");
+        assert!(!message.contains("owned-private"));
+    }
+
+    #[tokio::test]
+    async fn record_deadline_wrapper_keeps_typed_core_errors_and_native_sources() {
+        for (source, class) in [
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "owned-private-record",
+                )),
+                "permission_denied",
+            ),
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "owned-private-record",
+                )),
+                "disconnected",
+            ),
+            (
+                ios_core::CoreError::Unsupported("owned-private-condition".into()),
+                "unsupported",
+            ),
+            (
+                ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(
+                    "owned-private-service".into(),
+                )),
+                "service_missing",
+            ),
+        ] {
+            let original = std::mem::discriminant(&source);
+            let error = with_deadline_and_signal_at(
+                std::future::ready(Err::<(), _>(source)),
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                "activation record application",
+                std::future::pending(),
+            )
+            .await
+            .unwrap_err();
+            let retained = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<ios_core::CoreError>())
+                .unwrap();
+            assert_eq!(std::mem::discriminant(retained), original);
+            if let ios_core::CoreError::Io(native) = retained {
+                assert_eq!(native.to_string(), "owned-private-record");
+            }
+            assert_failure(&error, class);
+        }
+    }
+
+    #[tokio::test]
+    async fn deadline_keeps_elapsed_and_drops_started_local_future() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Guard(Arc<AtomicUsize>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let entered = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let (observed_entered, observed_dropped) = (Arc::clone(&entered), Arc::clone(&dropped));
+        let error = with_deadline_and_signal_at(
+            async move {
+                observed_entered.fetch_add(1, Ordering::SeqCst);
+                let _guard = Guard(observed_dropped);
+                std::future::pending::<Result<(), ios_core::CoreError>>().await
+            },
+            tokio::time::Instant::now() + std::time::Duration::from_millis(1),
+            "activation record application",
+            std::future::pending(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+        assert_eq!(error.to_string(), "activation record application timed out");
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_failure(&error, "timeout");
+    }
+
+    #[tokio::test]
+    async fn signal_branch_keeps_native_registration_error_or_observed_cancellation() {
+        for failed_registration in [false, true] {
+            let signal = if failed_registration {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "owned-private-signal",
+                ))
+            } else {
+                Ok(())
+            };
+            let error = with_deadline_and_signal_at(
+                std::future::pending::<Result<(), ios_core::CoreError>>(),
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                "activation record application",
+                std::future::ready(signal),
+            )
+            .await
+            .unwrap_err();
+            if failed_registration {
+                let native = error
+                    .chain()
+                    .find_map(|source| source.downcast_ref::<std::io::Error>())
+                    .unwrap();
+                assert_eq!(native.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(native.to_string(), "owned-private-signal");
+                assert_failure(&error, "permission_denied");
+            } else {
+                assert!(error
+                    .chain()
+                    .any(|source| source.is::<ios_core::OperationCancelled>()));
+                assert_eq!(
+                    error.to_string(),
+                    "activation record application cancelled by Ctrl+C"
+                );
+                assert_failure(&error, "cancelled");
+            }
+        }
+    }
 
     #[derive(Parser)]
     struct TestCli {

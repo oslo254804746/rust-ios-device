@@ -386,6 +386,60 @@ These host faults do not prove physical installation, encrypted-payload support,
 cleanup, stream reuse or new decompression/resource budgets. Other A02 source,
 JSON/callback/binding work and L01/L03/L04/Q04 conditions remain pending.
 
+## Symbols, activation and pasteboard sources
+
+The following adapters preserve original typed causes instead of formatting
+them into strings. Public exhaustive enums and function signatures remain
+unchanged; affected returned variants, Display prefixes and safe correlations
+can change. Consumers should use typed causes or classify_error instead of
+matching the former flattened variant or diagnostic words.
+
+| Boundary | Returned migration / retained source |
+| --- | --- |
+| RemoteFetchSymbolsClient H2 connect/bootstrap/catalog/file operations and XPC encoding/buffering/decoding | FetchSymbolsError::Protocol(String) becomes existing Io, with fixed phase and original H2Error/XpcError; native IO retains kind/class, genuine protocol failures stay protocol |
+| CLI remote symbols connection | Opaque anyhow string becomes original FetchSymbolsError chain under fixed connect remote symbols context |
+| ConnectedDevice modern activation record application | CoreError::Other(String) becomes existing Io with fixed mobile activation context and original MobileActivationError; native kinds and typed Timeout/Http/Protocol/Plist causes survive |
+| Pasteboard notification snapshot connection | PasteboardError::Protocol(String) becomes existing Xpc/Io with fixed connect pasteboard XPC context and original CoreError; precise native, named service-missing and explicit unsupported sources remain distinct |
+
+Modern activation's legacy-wrapper routing, service command and later lockdown
+acknowledgement are unchanged. The CLI passes its original CoreError through the
+existing absolute-deadline wrapper. Actual expiry now retains Tokio Elapsed;
+observed Ctrl-C failure retains OperationCancelled, while signal-registration
+failure keeps native IO under context. Timeout/cancellation Display summaries
+are retained; registration-error context and safe correlations can change.
+Plain Interrupted is still IO. Deadline/signal selection and durations remain
+unchanged; caller-observed cancellation and local future drop do not certify
+rollback, Apple cleanup or safe retry. Deactivation's separate combined fallback
+and activation HTTP/source adapters remain pending.
+
+CLI symbols, activation and pasteboard keep success output, command/flag shapes
+and final error envelope fields. Retained sources can change formerly unknown
+or protocol categories to timeout, cancelled, disconnected, permission_denied,
+service_missing or explicit unsupported. Final errors still use exit 1 and
+unknown effects. A host-output/native category does not identify device state.
+Private native payloads remain accessible to explicit Rust cause inspection;
+owner/new wrapper Debug and safe CLI JSON keep them hidden.
+
+A failed symbols download can leave completed local chunks; a later incomplete
+H2 read does not deliver its partial bytes to the sink. No success size/result
+is returned after failure. Discard the failed remote client; these changes do
+not automatically invalidate, close/join or certify reuse of its borrowed stream.
+The bounded host fixture retains a complete 10 MiB chunk before a second-chunk
+EOF, and a successful limited download retains exact requested bytes. H2 frame,
+buffer and file budgets are unchanged. Pasteboard registration can precede a
+baseline connection error; the host fixture observes one baseline attempt,
+no monitor result, registration bytes and local notification-stream EOF.
+Neither fixture is device cleanup acknowledgement.
+
+Host evidence covers real public remote-symbols transport/codec faults, a real
+modern service write fault through the shared CoreError mapper, typed mapping
+fixtures, the production CLI deadline/signal helper over controlled futures,
+the actual pasteboard monitor baseline with the shared connection/snapshot path,
+and actual safe error rendering. It does not establish paired-TLS ConnectedDevice
+activation/acknowledgement, actual OS Ctrl-C registration/delivery, remote-symbol
+device workflows or physical pasteboard state. Other source/JSON/callback/binding,
+L01/L03/A03 and platform/device conditions remain pending.
+
 ## Python exceptions
 
 The existing RuntimeError from `ios_rs.list_devices()` and `start_tunnel()`

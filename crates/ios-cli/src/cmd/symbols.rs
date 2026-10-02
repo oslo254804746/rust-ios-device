@@ -107,9 +107,7 @@ impl SymbolsCmd {
         let stream = device
             .connect_rsd_service(ios_core::fetchsymbols::REMOTE_SERVICE_NAME)
             .await?;
-        let mut client = ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(stream)
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let mut client = connect_remote_client(stream).await?;
         match self.sub {
             SymbolsSub::List => {
                 let files = client
@@ -149,6 +147,17 @@ impl SymbolsCmd {
             }
         }
     }
+}
+
+async fn connect_remote_client<S>(
+    stream: S,
+) -> Result<ios_core::fetchsymbols::RemoteFetchSymbolsClient<S>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    ios_core::fetchsymbols::RemoteFetchSymbolsClient::connect(stream)
+        .await
+        .context("connect remote symbols")
 }
 
 /// Open the download sink without blocking the runtime.
@@ -243,6 +252,36 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn remote_connect_keeps_actual_core_h2_source_and_safe_failure_envelope() {
+        let (stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let error = connect_remote_client(stream)
+            .await
+            .err()
+            .expect("closed stream accepted");
+        assert!(error
+            .chain()
+            .any(|source| source.is::<ios_core::fetchsymbols::FetchSymbolsError>()));
+        let native = error
+            .chain()
+            .filter_map(|source| source.downcast_ref::<std::io::Error>())
+            .last()
+            .expect("native transport source lost");
+        assert_eq!(native.kind(), std::io::ErrorKind::BrokenPipe);
+        let message = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "symbols",
+            &error,
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(json["error"]["class"], "disconnected");
+        assert_eq!(json["error"]["phase"], "symbols");
+        assert_eq!(json["error"]["exit_code"], 1);
+        assert_eq!(json["error"]["effects"], "unknown");
+    }
 
     #[derive(Parser)]
     struct TestCli {

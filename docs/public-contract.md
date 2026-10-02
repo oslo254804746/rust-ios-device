@@ -124,6 +124,19 @@ read errors use their kind (CRC InvalidData becomes protocol). Fixed phase
 context replaces entry-name context. See the [error contract](error-contract.md)
 for the complete returned-variant and diagnostic migration.
 
+Remote-symbols H2/XPC adapters now return `FetchSymbolsError::Io` with retained
+typed causes instead of `Protocol(String)`; genuine protocol failures remain
+protocol and native IO uses its kind. Modern `ConnectedDevice::activate` service
+failures similarly use existing `CoreError::Io` instead of `Other(String)`.
+Pasteboard notification snapshot connection failures use existing
+`PasteboardError::Xpc` instead of a protocol string. Exhaustive enums and public
+signatures stay available; migrate the affected variant matches to typed
+causes or `classify_error`. CLI symbols/activation/pasteboard retain these
+sources, with fixed contexts and unchanged success output/failure envelope
+fields. Activation's existing deadline and observed Ctrl-C failure now classify
+as timeout/cancelled; effects stay unknown. See the [error contract](error-contract.md)
+for scope, partial-file behavior and host versus device evidence.
+
 WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing

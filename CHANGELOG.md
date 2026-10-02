@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve remote-symbols H2/XPC, modern activation-record and pasteboard
+  snapshot-connection causes through existing error variants. Keep native
+  classes, activation deadline/observed-cancellation sources and safe CLI
+  envelopes; document returned-variant and diagnostic migration without
+  changing requests, routing, fallback conditions or successful output.
+
 - Retain original ZIP/archive-entry decoder and entry-read IO sources during
   streaming IPA installation through the existing IO error variant. Preserve
   local package input categories, classify native IO by kind, and document

@@ -13,6 +13,8 @@ use tokio::io::AsyncReadExt;
 
 const MAX_CLI_DATA_BYTES: usize = 64 * 1024 * 1024;
 
+mod connection_error;
+
 #[derive(clap::Args)]
 pub struct PasteboardCmd {
     #[command(subcommand)]
@@ -373,12 +375,12 @@ async fn watch_notifications(
             .await?;
         let mut monitor = pasteboard::PasteboardMonitor::start(
             stream,
-            |policy| async move {
-                let xpc = device
-                    .connect_xpc_service(pasteboard::SERVICE_NAME)
-                    .await
-                    .map_err(|error| pasteboard::PasteboardError::Protocol(error.to_string()))?;
-                PasteboardClient::new(xpc).get_snapshot(name, policy).await
+            |policy| {
+                read_notification_snapshot(
+                    device.connect_xpc_service(pasteboard::SERVICE_NAME),
+                    name,
+                    policy,
+                )
             },
             policy,
         )
@@ -396,6 +398,15 @@ async fn watch_notifications(
         result = watch => result,
         signal = tokio::signal::ctrl_c() => signal.context("waiting for Ctrl-C"),
     }
+}
+
+async fn read_notification_snapshot(
+    connect: impl std::future::Future<Output = Result<ios_core::XpcClient, ios_core::CoreError>>,
+    name: &str,
+    policy: DataInclusionPolicy,
+) -> Result<PasteboardSnapshot, pasteboard::PasteboardError> {
+    let xpc = connect.await.map_err(connection_error::retain)?;
+    PasteboardClient::new(xpc).get_snapshot(name, policy).await
 }
 
 async fn build_cli_item(
@@ -928,6 +939,98 @@ mod tests {
     use ios_core::XpcValue;
 
     use super::*;
+
+    #[tokio::test]
+    async fn notification_baseline_keeps_connection_causes_and_closes_local_monitor_on_failure() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for (source, class) in [
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "owned-private-connect",
+                )),
+                "timeout",
+            ),
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "owned-private-connect",
+                )),
+                "permission_denied",
+            ),
+            (
+                ios_core::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "owned-private-connect",
+                )),
+                "disconnected",
+            ),
+            (
+                ios_core::CoreError::Xpc(ios_core::XpcError::ServiceNotFound(
+                    "owned-private-service".into(),
+                )),
+                "service_missing",
+            ),
+            (
+                ios_core::CoreError::Unsupported("owned-private-condition".into()),
+                "unsupported",
+            ),
+        ] {
+            let original = std::mem::discriminant(&source);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&calls);
+            let mut source = Some(source);
+            let (stream, mut peer) = tokio::io::duplex(1024);
+            let error = pasteboard::PasteboardMonitor::start(
+                stream,
+                move |policy| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(policy, DataInclusionPolicy::AllPromised);
+                    read_notification_snapshot(
+                        std::future::ready(Err(source.take().expect("extra snapshot attempt"))),
+                        "general",
+                        policy,
+                    )
+                },
+                DataInclusionPolicy::PromiseSecondary,
+            )
+            .await
+            .err()
+            .expect("connection fault accepted");
+            assert!(matches!(error, pasteboard::PasteboardError::Xpc(_)));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let error = anyhow::Error::new(error).context("watch pasteboard notifications");
+            let retained = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<ios_core::CoreError>())
+                .unwrap();
+            assert_eq!(std::mem::discriminant(retained), original);
+            let message = crate::output::operation_failure_message(
+                crate::output::ErrorFormat::Json,
+                "pasteboard",
+                &error,
+            )
+            .unwrap();
+            let json: serde_json::Value = serde_json::from_str(&message).unwrap();
+            assert_eq!(json["error"]["class"], class);
+            assert_eq!(json["error"]["phase"], "pasteboard");
+            assert_eq!(json["error"]["exit_code"], 1);
+            assert_eq!(json["error"]["effects"], "unknown");
+            assert!(!message.contains("owned-private"));
+            let mut registration = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                peer.read_to_end(&mut registration),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(!registration.is_empty());
+        }
+    }
 
     #[derive(Parser)]
     struct TestCli {
