@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve manual-pairing RSD/H2/XPC, inner crypto, authentication, JSON and
+  deadline sources through existing PairingTransportError::Io with fixed safe
+  context. Retain native kinds and opaque unknown categories, reject short
+  header fields without a panic, and document failure-variant migration with
+  unchanged pairing requests, sequence/nonces, limits, trust and success.
+
 - Retain native private-seed, HKDF, cipher and device-info encoding causes in
   existing PairingError::Io with fixed safe context. Classify local length
   faults as invalid input and received authentication failures as protocol;

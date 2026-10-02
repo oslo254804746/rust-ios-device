@@ -29,6 +29,11 @@ use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 use indexmap::IndexMap;
 use tokio::net::TcpStream;
 
+mod error_context;
+
+#[cfg(test)]
+mod source_contract_tests;
+
 pub const UNTRUSTED_SERVICE_NAME: &str = "com.apple.internal.dt.coredevice.untrusted.tunnelservice";
 const CONTROL_CHANNEL_ENVELOPE_TYPE: &str = "RemotePairing.ControlChannelMessageEnvelope";
 const CONTROL_CHANNEL_ORIGIN: &str = "host";
@@ -96,7 +101,7 @@ pub async fn pair_new_device(
     // 1. RSD handshake to find the untrusted service port
     let rsd = crate::xpc::rsd::handshake(device_addr, crate::xpc::rsd::RSD_PORT)
         .await
-        .map_err(|e| PairingTransportError::Rsd(e.to_string()))?;
+        .map_err(|error| error_context::xpc("discover manual pairing service", error))?;
 
     let port = rsd
         .get_port(UNTRUSTED_SERVICE_NAME)
@@ -109,16 +114,11 @@ pub async fn pair_new_device(
         TcpStream::connect(sock_addr),
     )
     .await
-    .map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("pairing service dial to {sock_addr} timed out"),
-        )
-    })??;
+    .map_err(error_context::dial_timeout)??;
 
     let mut framer = crate::xpc::h2_raw::H2Framer::connect(stream)
         .await
-        .map_err(|e| PairingTransportError::Xpc(format!("H2: {e}")))?;
+        .map_err(|error| error_context::h2("connect manual pairing H2", error))?;
 
     // 3. RemoteXPC bootstrap + handshake request
     bootstrap_remote_xpc(&mut framer).await?;
@@ -158,7 +158,7 @@ pub async fn pair_new_device(
 
     // 7. SRP computation
     let srp = SrpSession::new(&salt, &device_pub)
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
+        .map_err(|error| error_context::pairing("compute manual pairing SRP", error))?;
 
     // 8. Send SRP proof (State 3)
     let proof_tlv = build_srp_proof_tlv(&srp);
@@ -188,7 +188,7 @@ pub async fn pair_new_device(
 
     // 10. Exchange device info (State 5)
     let (info_tlv, setup_key) = build_device_info_tlv(&srp.session_key, &identity)
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
+        .map_err(|error| error_context::pairing("build manual pairing device info", error))?;
 
     let info_event = build_pairing_event(
         &info_tlv,
@@ -207,11 +207,11 @@ pub async fn pair_new_device(
         .ok_or_else(|| PairingTransportError::Failed("no encrypted data in response".into()))?;
 
     let peer_alt_irk = verify_device_info_response(&setup_key, enc_payload)
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
+        .map_err(|error| error_context::pairing("verify manual pairing device info", error))?;
 
     // 12. Derive session cipher keys
     let (client_key, server_key) = derive_cipher_keys(&srp.session_key)
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
+        .map_err(|error| error_context::pairing("derive manual pairing cipher keys", error))?;
     let remote_unlock_host_key =
         create_remote_unlock_key(&mut framer, &client_key, &server_key, &mut sequence_number)
             .await?;
@@ -361,7 +361,7 @@ async fn bootstrap_remote_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + 
 ) -> Result<(), PairingTransportError> {
     crate::xpc::rsd::initialize_xpc_connection_on_framer(framer)
         .await
-        .map_err(|e| PairingTransportError::Xpc(format!("RemoteXPC bootstrap: {e}")))
+        .map_err(|error| error_context::xpc("bootstrap manual pairing RemoteXPC", error))
 }
 
 async fn send_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -375,11 +375,12 @@ async fn send_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         msg_id,
         body: Some(body.clone()),
     };
-    let bytes = encode_message(&msg).map_err(|e| PairingTransportError::Xpc(e.to_string()))?;
+    let bytes = encode_message(&msg)
+        .map_err(|error| error_context::xpc("encode manual pairing XPC", error))?;
     framer
         .write_client_server(&bytes)
         .await
-        .map_err(|e| PairingTransportError::Xpc(e.to_string()))
+        .map_err(|error| error_context::h2("write manual pairing XPC", error))
 }
 
 fn take_required_field(
@@ -504,30 +505,38 @@ async fn recv_xpc<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     let header = framer
         .read_client_server(24)
         .await
-        .map_err(|e| PairingTransportError::Xpc(e.to_string()))?;
+        .map_err(|error| error_context::h2("read manual pairing XPC header", error))?;
     let body_len = xpc_body_len(&header)?;
     let body = if body_len > 0 {
         framer
             .read_client_server(body_len)
             .await
-            .map_err(|e| PairingTransportError::Xpc(e.to_string()))?
+            .map_err(|error| error_context::h2("read manual pairing XPC body", error))?
     } else {
         Bytes::new()
     };
     let mut full = BytesMut::new();
     full.extend_from_slice(&header);
     full.extend_from_slice(&body);
-    let msg =
-        decode_message(full.freeze()).map_err(|e| PairingTransportError::Xpc(e.to_string()))?;
+    let msg = decode_message(full.freeze())
+        .map_err(|error| error_context::xpc("decode manual pairing XPC", error))?;
     msg.body
         .ok_or_else(|| PairingTransportError::MissingField("xpc message body".into()))
 }
 
 fn xpc_body_len(header: &[u8]) -> Result<usize, PairingTransportError> {
     let declared_len = u64::from_le_bytes(
-        header[8..16]
+        header
+            .get(8..16)
+            .unwrap_or_default()
             .try_into()
-            .map_err(|_| PairingTransportError::Xpc("bad header length field".into()))?,
+            .map_err(|error| {
+                error_context::native(
+                    std::io::ErrorKind::InvalidData,
+                    "decode manual pairing XPC body length",
+                    error,
+                )
+            })?,
     );
     crate::xpc::message::checked_xpc_body_len(declared_len, MAX_XPC_BODY_SIZE).map_err(|error| {
         PairingTransportError::Xpc(format!(
@@ -667,16 +676,33 @@ where
     });
     let encrypted_request = client_cipher
         .encrypt(&nonce.into(), request.to_string().as_bytes())
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
+        .map_err(|error| {
+            error_context::native(
+                std::io::ErrorKind::Other,
+                "encrypt manual pairing unlock request",
+                error,
+            )
+        })?;
     let body = build_encrypted_request(&encrypted_request, next_sequence_number(sequence_number));
     send_xpc(framer, &body, 5).await?;
 
     let encrypted_response = decode_encrypted_response(recv_xpc(framer).await?)?;
     let plaintext = server_cipher
         .decrypt(&nonce.into(), encrypted_response.as_ref())
-        .map_err(|e| PairingTransportError::Crypto(e.to_string()))?;
-    let response: serde_json::Value = serde_json::from_slice(&plaintext)
-        .map_err(|e| PairingTransportError::Xpc(format!("invalid encrypted JSON: {e}")))?;
+        .map_err(|error| {
+            error_context::native(
+                std::io::ErrorKind::InvalidData,
+                "authenticate manual pairing unlock response",
+                error,
+            )
+        })?;
+    let response: serde_json::Value = serde_json::from_slice(&plaintext).map_err(|error| {
+        error_context::native(
+            std::io::ErrorKind::InvalidData,
+            "decode manual pairing unlock JSON",
+            error,
+        )
+    })?;
     let response_body = response
         .get("response")
         .and_then(|value| value.get("_1"))
@@ -982,7 +1008,7 @@ mod tests {
         xpc_dict(pairs)
     }
 
-    fn settings_frame() -> Vec<u8> {
+    pub(super) fn settings_frame() -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0x03u16.to_be_bytes());
         payload.extend_from_slice(&100u32.to_be_bytes());
@@ -991,11 +1017,11 @@ mod tests {
         frame(FRAME_SETTINGS, 0, 0, &payload)
     }
 
-    fn settings_ack_frame() -> Vec<u8> {
+    pub(super) fn settings_ack_frame() -> Vec<u8> {
         frame(FRAME_SETTINGS, FLAG_SETTINGS_ACK, 0, &[])
     }
 
-    fn data_frame(stream_id: u32, payload: &[u8]) -> Vec<u8> {
+    pub(super) fn data_frame(stream_id: u32, payload: &[u8]) -> Vec<u8> {
         frame(FRAME_DATA, 0, stream_id, payload)
     }
 

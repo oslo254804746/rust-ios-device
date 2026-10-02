@@ -447,10 +447,10 @@ unknown, and OPACK preserves its typed category. Explicit source inspection
 reaches the original TryFromSliceError, hkdf::InvalidLength, cipher InvalidLength,
 AEAD Error or OpackError through IO; wrapper Debug omits private payloads.
 Nested credential loaders retain both the PairingError and its native cause.
-This is an inner-source contract: the public manual-pairing transport still
-flattens four PairingError paths into PairingTransportError::Crypto(String),
-including M6 verification. Those outer adapters remain pending; this slice
-does not claim native sources/categories survive that entire handshake.
+The public manual-pairing transport now retains these four PairingError paths,
+including M6 verification, through the outer contract below. This preserves
+already-retained native chains; it does not reconstruct earlier legacy strings
+or establish a successful full device pairing workflow.
 
 Affected Crypto(String)/Protocol(String) failures now return Io, with changed
 Display prefixes/correlation and more precise categories. Match class/source
@@ -478,6 +478,48 @@ Failure does not authorize retry or prove remote cleanup. Dropping an awaiting
 caller still does not stop already-running blocking work. Other legacy string
 outcomes, CLI/HTTP/stream/binding boundaries and L01/L03/device conditions remain
 pending; the new source adapters do not add invalidation or reuse rules.
+
+## Manual-pairing transport sources
+
+Sixteen adapters retain original RSD/bootstrap/codec XpcError, H2Error,
+PairingError, header TryFromSliceError, AEAD Error and serde_json::Error objects
+through existing PairingTransportError::Io and the bounded fixed-context
+snapshot. Native IO kinds remain, H2 protocol maps to InvalidData, received
+authentication/JSON/header faults are protocol, and opaque crypto/encryption
+stays unknown. Named XPC service misses/closed states retain service_missing/
+disconnected rather than becoming generic protocol text. Four inner crypto
+stages retain PairingError and its own source, including the inner M6 native
+authentication error. Pre-existing string-only fields remain string-only.
+
+The service dial wrapper also retains original Tokio Elapsed under TimedOut
+with fixed context instead of address-bearing text; the existing timeout value
+and schedule remain. A short private header-length input now yields the native
+slice error under InvalidData rather than panicking on indexing. The actual
+H2 reader still requests 24 header bytes. Existing body-length limit diagnostics
+remain PairingTransportError::Xpc: the shared checked-length helper currently
+returns String, not a native Error. No cause is fabricated for it or for legacy
+created failure/proof strings; those typed guard/lifecycle details remain work.
+
+Affected Xpc/Rsd/Crypto failures migrate to existing Io. All nine exhaustive
+public variants, root function signature/future and credential fields remain.
+Class/source inspection replaces affected variant or Display parsing; safe
+correlations/Display prefixes can change. Requests, sequence numbers/nonces,
+salts/derivation, signing, stream selection/bootstrap, body limits, trust, retry
+schedule, remote-error handling and optional/successful unlock-key results stay.
+No dependency/lockfile/service-feature or binding/CLI-schema changes.
+
+Owned H2 streams test actual closed write, header/body read, decoder and
+bootstrap faults, and the actual unlock request/response with AEAD/JSON failures
+and both returned key/optional-empty success. Peers bound reads, verify request
+ID/sequence/plaintext, shutdown and join; the local framer is dropped. A real
+RSD refusal uses an owned non-listening IPv6 socket; real Elapsed uses an expired
+pending future. Typed adapters cover native kinds, named XPC and opaque sources,
+and actual inner M6/seed/SRP errors. The root API future is externally type-checked
+without polling. This does not inject every stage of the public full SRP flow,
+the existing 15-second network dial timeout, huge encoder-size or Vec encryption failure;
+the encryption adapter uses a typed native-error fixture. No device, new trust,
+real credential directory or Apple request is involved. Local drop/join does not
+prove remote cleanup, rollback, invalidation/reuse or safe retry.
 
 ## Deactivation fallback and activation HTTP sources
 

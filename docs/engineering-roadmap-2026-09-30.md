@@ -3324,3 +3324,54 @@ PASS；日志 `/tmp/ios-a02-inner-pairing-docs-catalog.log` 和
 来源，然后defaultlockdown plist/PEM/rustls/version/PairRecord来源，保持wire与
 TLS/trust政策，未列为当前PASS。其他A02/output/streams/binding与L01/L03/A03及
 platform/device条件继续；未推送/发布、改写history、操作设备或修改reference。
+
+### 大类 3 进行中：A02 manual-pairing transport 原生来源（2026-10-02）
+
+已核对clean workspace/HEAD94373c1；前一turn为实现+文档提交和full gate的实际
+进展。磁盘25GiB可用、incremental48GiB且无cargo/rustc/validate/maturin进程；
+官方cargo clean-pcore terminal0移除28948 generatedfiles/34.1GiB，恢复58GiB。
+日志 `/tmp/ios-a02-manual-pairing-clean.log`；source/reference/证据保留。
+
+修改前实际write/read/unlock与shortheader四回归0PASS/4FAIL，terminal101；
+`/tmp/ios-a02-manual-pairing-before.log`。write/read原Proto错误分类、AEAD原Unknown、
+shortheader切片panic均复现。16个nativeadapter+1Elapsed保留RSD/bootstrap/XpcError、
+H2Error、四PairingError、TryFromSliceError、AEAD、serdeJSON及dialElapsed原对象/
+类别；nativeIO.kind保留，remoteauth/JSON/header Protocol，opaquecrypto/encrypt
+Unknown，namedXPC service/closed精准。固定safecontext/boundedcachedsnapshot复用。
+shortheader.get安全返回nativeSlice错误；actualH2仍读24byte。
+
+原9variant/exhaustive rootPairingTransportError、rootfuture/signatures、credential
+fields、requests/sequence/nonces/crypto/signing/bootstrap/stream/budgets/trust/
+retry/remoteerror与unlocksuccess/optional保留，明确Xpc/Rsd/Crypto-to-Io与Display/
+correlation迁移。checkedbodylen当前返回String非nativeError，原guard/variant/
+diagnostic保留，未伪造source；此前已丢的legacyString仍不可还原。
+
+新增8corefixtures+1externalrootconsumer；actualownedH2 closedwrite/header/body/
+decode/bootstrap，unlockRPC AEAD/JSONfault+key/optionalsuccess，boundedpeer检查
+request ID5/seq9与plaintext后shutdown/join/drop；actualRSD IPv6ownednonlistener
+refusal/realElapsed，typedkind9项/namedXPC/opaqueAEAD与actualinnerM6/seed/SRP。
+connect为actualH2call+productionadapter，不是entirepublicflow逐stagefault注入；
+AEADencrypt用typednativefixture，未实际Vecfault；巨大encode-size与15snetworkdial
+timeout未注入，无device/Trust/realcredential/Apple或remotecleanup/reuse证明。
+externalrootAPI future仅typecheck不poll，保持正确private模块边界。
+
+首all-feature pairing_transport18PASS，terminal0
+`/tmp/ios-a02-manual-pairing-core.log`；minimal/public/strictClippy正在执行，full/
+review/implementation与documentation closeout待完成。A02/第三类/总体goal active，
+第四类未开始，31任务scope保持；接续defaultlockdown与其他source/streams/binding/
+L01/L03/A03/platform/device条件，未升级maturity或推送/发布/改写history。
+
+专项全部terminal0：all-feature/minimal tunnel,mdns pairing_transport各18PASS；
+externalpublic full16/minimal11PASS；core/CLI all-target/all-feature strictClippy
+PASS。日志 `/tmp/ios-a02-manual-pairing-{core,minimal,public,public-minimal,clippy}.log`。
+源码核验dial常量15s，合同按实际值记录，不修改timeout。第11节full开始，日志
+`/tmp/ios-a02-manual-pairing-full.log`；source冻结，完整结果/审查/提交/收尾待完成。
+
+第11节full首次terminal0：1854Rust/13Python、0FAIL、2既有ignored；fmt/check/
+workspace strictClippy/MSRV1.80、66features/4groups、7+7doctests/3downstream
+snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist安装、53tools、118help、
+38raw、5host/22deviceNOT_RUN、15CLI/3backup均PASS。ios0.1.13 SHA256
+`fa4e97f1b3447e6584ad452dc259efd9f1a300c2eaf59bd443dff1f7b7c658c0`。
+此前beforefix4FAIL保留，无额外Chromium或installed3.9/3.13重跑。八文件actualdiff/
+whitespace审查完成；代码无依赖/feature/binding/CLI-schema变化，准备聚焦本地
+实现提交和准确hash文档收尾；A02/第三类/总体goal继续，不升级maturity。

@@ -192,9 +192,17 @@ exhaustive with the same three variants in the crate-private lockdown module,
 available only with tunnel; no external API or default-profile type is added.
 External callers retain CoreError and can inspect longer credential-loader
 source chains through existing APIs; affected Display/correlation can change.
-The separate public manual-pairing transport still flattens four inner errors
-into PairingTransportError::Crypto(String); their outer migration is pending.
-The inner M6 protocol classification is not yet an end-to-end public contract.
+The public manual-pairing transport now retains all four inner error objects,
+including the native M6 authentication chain. Sixteen outer source adapters
+and the dial deadline retain XPC/H2/crypto/codec/Elapsed objects under existing
+PairingTransportError::Io. Migrate affected Xpc/Rsd/Crypto matches and Display
+parsing to class/source: native IO kinds, named service-missing/closed states,
+received protocol faults and opaque unknown remain distinct. All nine public
+variants, the root pair_new_device future/signature and credential fields stay.
+Short internal header fields now return typed protocol errors rather than panic.
+Body-limit String guards retain their existing variant/diagnostic, and earlier
+legacy string sources cannot be reconstructed. Full pairing/device, reuse and
+cleanup acceptance remains pending despite owned lower-stage source tests.
 
 The workspace enables the existing chacha20poly1305 and hkdf dependencies' std
 features to retain their native AEAD and InvalidLength objects as standard

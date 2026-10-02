@@ -8,6 +8,37 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+#[test]
+fn manual_pairing_root_api_preserves_its_exhaustive_error_and_future() {
+    use ios_core::{pair_new_device, PairedCredentials, PairingTransportError};
+    use std::{error::Error, net::Ipv6Addr};
+    fn family(error: &PairingTransportError) -> &'static str {
+        match error {
+            PairingTransportError::Io(_) => "io",
+            PairingTransportError::Xpc(_) => "xpc",
+            PairingTransportError::Rsd(_) => "rsd",
+            PairingTransportError::Crypto(_) => "crypto",
+            PairingTransportError::Failed(_) => "failed",
+            PairingTransportError::Rejected(_) => "rejected",
+            PairingTransportError::MissingField(_) => "missing",
+            PairingTransportError::UnexpectedType(_) => "type",
+            PairingTransportError::ServiceNotFound => "service-missing",
+        }
+    }
+    fn signature<F: Future<Output = Result<PairedCredentials, PairingTransportError>>>(future: F) {
+        drop(future);
+    }
+    fn assert_error<E: Error + Send + Sync + 'static>() {}
+    assert_error::<PairingTransportError>();
+    // The real root API future is type-checked but never polled/device-connected.
+    signature(pair_new_device(Ipv6Addr::LOCALHOST));
+    assert_eq!(
+        family(&PairingTransportError::ServiceNotFound),
+        "service-missing"
+    );
+}
+
 #[cfg(feature = "mobileactivation")]
 #[test]
 fn deactivation_fallback_observation_is_public_borrowed_and_thread_safe() {
