@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-metadata-sources-dcdda80",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual private archive plist/cycle/depth; owned metadata/int/version/legacy/keybag/IO/symlink faults and public list/extract success; actual SQLite corrupt/schema/constraint/busy/readonly/authorizer/bounded-BLOB faults; external exhaustive root consumer"],
+      "required_state": ["Owned host source/local file/list/extract only; no existing backup/real credentials/device/daemon/Apple operation, every backend/allocator/filesystem/architecture fault, remote cleanup or lifecycle certification; SQLite FFI policy fixture is test-only"],
+      "tested_commit": "dcdda80b2a13e7d3d18f713e20e38be373674343",
+      "date": "2026-10-02",
+      "location": "docs/validation/backup-metadata-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 22 source adapters retain original archive/plist, metadata integer/path/UTF8/validation, SQLite, crypto and MBDB objects through existing public IO/private fixed context. Typed SQLite categories preserve unknown/ambiguous codes; depth resource and crypto native IO survive. Four public error variants/root APIs/features preserved; migrations documented. Manifest SQL/bounds/path/encryption/staging/rollback/success unchanged. Deeper private crypto/MBDB/host/codec sources and lifecycle/platform/device work remain; no maturity upgrade."
+    },
+    {
       "id": "linux-usbmux-sources-f8d8905",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

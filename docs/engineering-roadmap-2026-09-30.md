@@ -3614,3 +3614,62 @@ DTX/instruments 原 raw/optional fallback 为另一 behavior contract，未静�
 codec integer/typed guards/created outcomes、其他 stream/JSON/callback/binding、
 L01/L03/A03/platform/device 条件保留。未操作真实 credentials/设备/Apple，未
 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 archive/backup metadata 原始来源与 SQLite 分类交付（2026-10-02）
+
+接续 clean HEAD `c5f338a2355b7567194cc909014e9b540b8bec28`；上一 goal turn 有
+MCInstall/usbmux 实现、完整门禁和提交进展，属于 PROGRESS。本轮实现
+`dcdda80b2a13e7d3d18f713e20e38be373674343`，五个相关源码文件，首次 full 后
+聚焦本地提交；无阻塞条件。
+
+22 个 source adapters 保留原对象：private ArchiveError::Plist 改为 native
+plist::Error source；全部 18 Manifest anonymous adapters（12 TryFromIntError、
+ParseIntError、2 StripPrefixError、原 identifier validation、ArchiveError、
+FromUtf8Error）及 SQLite/crypto/MBDB 三 common helpers。公开 Mobilebackup2Error
+四 variants/root APIs/result fields/features 保持；ArchiveError 无 root export/
+public signature exposure。Protocol-to-Io 与 fixed phases/Display/correlation/
+class 迁移记录。metadata/path/int/UTF8 仍 Proto；depth 保留 ResourceLimit；
+crypto IO 原 kind/source/OS code 保留，opaque Crypto marker Unknown。
+
+backup2-manifest 下 SQLite typed codes 供 PermissionDenied/Conflict/ResourceLimit/
+Precondition/Protocol/Io 分类，unknown 保留；CannotOpen 不猜 NotFound/permission，
+Interrupted 不作 caller cancellation。固定 kind/schema roles 与 native conversion
+source 区分，未读 prose/伪造 backend cause。原 Crypto/MBDB 对象保留不等于恢复其
+内部早已丢弃的 AES/UTF8 等对象；下一继续内部来源。Native UTF8 bytes/SQL/path 的
+source/Debug 为私有数据，context/outer diagnostic Debug safe，无 JSON schema 改动。
+
+Production comparison 仅 adapters/helpers/whitespace，53 个原 map_err calls 保持；
+SQL/bounds/depth/path/symlink/version/encryption/Zeroizing/transactions/staging/
+replacement/rollback/success 保持，无 deps/binding/protocol/retry/trust/lifecycle 变更。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core | minimal archive21、minimal Manifest27、full backup78 PASS（1 既有 PBKDF2 ignored），terminal0 |
+| external / Clippy / comparison | root all21/minimal12 PASS；core/CLI 及 full workspace strict Clippy PASS；production comparison PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-backup-sources-full.log` terminal0，1901 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 边界 | 十一 new core + 一 external；actual archive/plist/cycle/depth、metadata Mode/Size/version、legacy/keybag/IO、symlink UTF8、public list/extract fault/success；actual SQLite corrupt/schema/constraint extended-code/busy/readonly/authorizer/64-byte BLOB limit。typed CannotOpen/Interrupted negative fixtures；非 every code/allocator/fs/architecture/remote cleanup/physical backup |
+
+修复前 corrected 八 initial fixtures 合计 1 PASS/7 FAIL，before-final-archive /
+before-final-manifest logs terminal101。更早 broad before.log 17 PASS/8 FAIL 含 fixture
+缺 Info.plist/Status.plist，focused debug 也 FAIL；不视作 intended native regression。
+补齐 required owned files 后重新复现，valid success PASS；之后增加三 core 与一
+external。失败日志保留，未弱化 precondition/gate/lint。准确日志及安全的 test-only
+SQLite FFI 约束见[专题证据](validation/backup-metadata-sources-2026-10-02.md)。
+
+ios0.1.13 debug SHA256
+`b1f1292e8968cd664b18ecaef8e50f796e7e9268be7cd60c2c5b41ab7a40f5df`。
+source full 前冻结、之后不变；无 storage failure/cleanup，约23GiB free。
+没有额外 Chromium/installed3.9/3.13 重跑。catalog/quality/error contract 和
+historical usbmux follow-up 同步，maturity 不变；文档收尾另记录。
+
+文档收尾：118 catalog records、五个 changed Markdown files 的 100 local links
+（baseline `c5f338a`）与 whitespace PASS；日志
+`/tmp/ios-a02-backup-sources-docs-catalog.log`、
+`/tmp/ios-a02-backup-sources-docs-links.log`。源码不变，准备独立聚焦文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务/子任务 scope 保持。
+下一 private crypto/MBDB internal native sources，再 host fs/其他 codec/integer/
+typed guards/created outcomes、stream/JSON/callback/binding、L01/L03/A03/platform/
+device 条件。DTX/instruments 原 raw/optional fallback 未静默改动。未使用真实
+backup/credentials/设备/Apple，未 push/publish/history rewrite/reference 编辑。

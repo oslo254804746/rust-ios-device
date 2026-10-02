@@ -593,6 +593,37 @@ has subsequent coverage below; other sources/streams/bindings and L01/L03/A03
 remain. Evidence:
 [supervised pairing source validation](validation/supervised-pairing-sources-2026-10-02.md).
 
+## Archive and backup metadata sources
+
+The private archive decoder retains plist::Error under ArchiveError::Plist.
+ArchiveError has no root export or public signature exposure. All 18 anonymous
+Manifest adapters and the SQLite/crypto/MBDB helpers retain their original
+objects through existing public Mobilebackup2Error::Io and private fixed context.
+The four public error variants, root APIs/result fields and feature definitions
+stay. Metadata integer/path/validation/UTF-8 errors remain protocol; archive depth
+now survives as resource_limit. Crypto IO preserves native kind/source/OS code,
+while the opaque Crypto marker now classifies as unknown. Deeper errors already erased inside
+private crypto/MBDB are not reconstructed; their native retention remains pending.
+
+With backup2-manifest, native SQLite codes supply permission/authorization denied,
+busy/locked/constraint conflict, memory/disk/size resource_limit, read-only
+precondition, corrupt/not-a-database protocol and system io categories. Unknown
+codes remain unknown; CannotOpen does not infer NotFound/permission and interrupt
+does not acknowledge cancellation. Column type/range/UTF-8 metadata errors remain
+protocol; other source chains are traversable. No code or message authorizes retry.
+
+Migrate affected Protocol matches to class/source; fixed phase labels replace
+adapter-created path/identifier prose. Display prefixes, categories and safe
+correlations can change. Native sources may retain SQL/path metadata and original
+FromUtf8Error bytes; raw source/Debug access is private data. Context/outer Debug
+and machine output remain safe. SQL, limits/depth, format selection, paths,
+encryption/Zeroizing, transactions/staging/rollback and successful output stay.
+Owned public list/extract and actual SQLite backend fixtures establish host
+evidence; test-only authorizer/BLOB limits do not change production policy. Physical
+devices, existing backups, every backend/architecture stage and remote cleanup
+remain unverified. Evidence:
+[backup metadata source validation](validation/backup-metadata-sources-2026-10-02.md).
+
 ## usbmux native codec, connection and deadline sources
 
 Request serialization and received plist XML/schema faults retain original

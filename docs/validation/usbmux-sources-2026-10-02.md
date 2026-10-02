@@ -82,9 +82,11 @@ across five changed Markdown files (baseline `adb95d9`), and whitespace PASS.
 Logs: `/tmp/ios-a02-mux-docs-catalog.log` and `/tmp/ios-a02-mux-docs-links.log`.
 Source and the accepted full gate remain unchanged.
 
-A02/class 3/overall goal remain active; class 4 has not started. Confirmed next
-native loss is internal NSKeyedArchiver plist decoding and its backup metadata
-error adapter. DTX/instruments' existing raw/optional decode fallbacks are separate
+A02/class 3/overall goal remain active; class 4 has not started. Subsequent
+[archive/backup metadata source coverage](backup-metadata-sources-2026-10-02.md)
+addresses the decoder plist and Manifest adapters; this page retains usbmux
+gate counts above. Deeper private crypto/MBDB/host and archive integer sources
+remain. DTX/instruments' existing raw/optional decode fallbacks are separate
 behavior contracts. Integer conversions/typed guards/created outcomes, other
 stream/JSON/callback/binding and L01/L03/A03/platform/device conditions remain.
 All 31 tasks/subtasks and maturity remain. No real credentials, devices or Apple
