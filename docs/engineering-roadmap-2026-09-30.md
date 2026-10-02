@@ -2271,3 +2271,79 @@ stderr/stream/partial继续；L01/平台/真机条件不因此解除。下一项
 local links、`python3 scripts/capabilities.py` 和 `git diff --check` PASS。新增证据
 仅host-unit/protocol，不升级任何能力的设备成熟度。实现提交内容已核对，产品文件
 无剩余变更；本轮收尾随后做聚焦本地提交，总体目标保持active。
+
+### 大类 3 进行中：A02 initial RSD probe owner（2026-10-02）
+
+HTTP实现 `62d1c4ff41d94b9ec849e6cef3972b8d120bfb20` / 文档收尾
+`e25eaf0cedd0df70a569ae18944a30fa5ec73781` 已核对，收尾后clean。继续真实
+probe owner的独立可执行部分，当前未提交：新增借用的 `initial_rsd_probe()`、
+private-field observation及non-exhaustive state/skip reason，区分初始跳过/成功/
+失败，保存到达owner的CoreError/class，Debug只显示固定字段；skip_tunnel与缺mdns
+分别登记。legacy rsd/into_rsd仍optional初始目录；on-demand retries保持原cache、
+次数/期限/结果，明确不更新此历史snapshot，不把后续成功误记为初始成功。
+private proxy dial保留IO而非Tls string，深层H2/RSD lost sources仍pending。
+
+首轮 `cargo test -p ios-core --all-features --locked device:: -- --nocapture`
+59 PASS、0 FAIL/ignored（`/tmp/ios-a02-rsd-initial-host-first.log`，terminal exit0）；
+发现all-feature非test构建的internal skipped variant无构造warning，已按实际cfg
+收窄，不抑制lint。补充真实owned不listen端口拒绝、非法端点零连接、实际skip路径
+与外部consumer编译检查，最终专项/strict Clippy/第11节/diff/提交仍待完成。
+一次apply_patch因fmt后的exact context不匹配失败，未部分写入，核对后修正。
+A02/第三类/总体目标active；后续probe最新状态、inner source、binding、stream/partial
+与L01/平台/真机条件保留。未操作实际设备或reference checkout。
+
+最终owner fixture加入实际connection construction与legacy getter的一致性、保留typed
+timeout/source和消费device后本地channel释放；只造owned handle，不创建TUN或
+转发task，不当设备cleanup证据。最终all-feature device **63 PASS**，default device
+**18 PASS**，external public-contract **12 PASS**；strict Clippy最终PASS，均terminal
+exit0。tunnel-only前一轮41 PASS，新增owner fixture后的最终同范围与第11节完整主线
+已安排顺序运行（`/tmp/ios-a02-rsd-initial-tunnel-only-final.log` / `-full.log`）；
+未有最后退出码，不提前计PASS。源码/新owner文件/专题文档diff与81 changed local
+links已审查；主线运行期间不改产品代码。
+
+最终tunnel-only **42 PASS、0 FAIL/ignored** 后已进入full主线，fmt/check/strict
+Clippy、Rust/Python拆分与MSRV当前PASS，feature矩阵仍运行。只读审查明确后续
+可执行缺口：on-demand probe重试仍丢弃原失败并最终返回legacy Unsupported；
+RSD bootstrap/read的H2错误仍在原public路径转换为Tls string；Python全局runtime
+初始化仍使用expect，普通IO失败会进入panic边界；C list遇不可编码记录仍跳过后
+报success。这些保留独立实现/兼容迁移与真实owned fixture验收，不算本initial slice
+完成，不缩减A02。待full真实结束后提交与文档收尾，再推进相关host工作。
+
+### 大类 3：A02 initial RSD probe 主机验收与交付（2026-10-02）
+
+实现提交：`b2c002629b17fed302b087462eb0a955fdd23f4e`（12个相关文件）。证据：
+[初始RSD probe owner验收](validation/initial-rsd-probe-2026-10-02.md)。新增借用的
+`ConnectedDevice::initial_rsd_probe()` 与private-field observation/non-exhaustive
+state/skip enums；真实区分初始未尝试、成功、失败和两种跳过原因，保留到达owner的
+CoreError/class，Debug只显示固定字段。原public字段/enum、rsd/into_rsd optional
+初始目录、wire/retry/deadline/feature permissive行为保留；private proxy dial不再
+把IOflatten为Tls string。后续on-demand重试不更新历史snapshot/cache，明确单列。
+
+相关实际验收：finalall-feature device **63 PASS**、finaltunnel-only **42 PASS**、
+default device **18 PASS**、external public contract **12 PASS**；strict package
+Clippy最终PASS，均0 FAIL/ignored、terminal成功。owned真实ConnectionRefused保留IO，
+非法端点零连接；实际skip owner、initial connection construction、原目录/typed
+timeout与本地channel release、原owned proxy handshake/identity回归通过。没有TUN/
+转发task或设备cleanup证据。首轮59 PASS的internalvariant warning与一次patch
+context失败保留记录；不压lint、不编造设备/entropy/协议观察。
+
+第11节完整 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python` **PASS**，
+`/tmp/ios-a02-rsd-initial-full.log`，terminal exit0；**1747 Rust/12 Python、0 FAIL、
+2既有ignored**。fmt/check/strict Clippy/MSRV、66features/4groups、7+7doctests/
+3downstream snippets、C19B ABI raw+25B ownedfailure、3.12wheel/sdist、49tooling、
+118help、38raw、5host/22real-device NOT_RUN、15CLI/3backup通过。受测ios0.1.13
+SHA-256：`29cb95dfa5729d22c7480db4500f08261fb69ce8af3f5ea9a468e9e48d98d90d`。
+原始source/新owner文件/专题文档diff与81changed local links已核对；更新能力host
+证据/质量指标，不升级设备成熟度。
+
+本initial-probe host slice验收；A02/第三类/总体目标保持active。后续probe/retry
+观察/原错误、inner H2/RSD source、Python runtime/interpreter/callback、C filtering/
+void/port和stderr/stream/partial仍待实现，L01/平台/真机保持原条件。下一独立host
+项处理Python Runtime普通IO失败进入expect/panic的问题；遵守GIL/既有signature、
+safe typed metadata与真实打包验收，未授权任何实际设备操作。先完成本文四文件
+文档收尾并核对提交/工作区，再继续；未推送/发布/改写历史或修改reference checkout。
+
+本initial-probe文档收尾四文件的70 local links、`python3 scripts/capabilities.py`
+与whitespace检查PASS；实现提交范围已核对，剩余只有本类文档。总体目标active，
+本轮为真实实现/主线通过的progress，不能据此完成A02或31项总体目标。

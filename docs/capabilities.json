@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-initial-rsd-observation-b2c0026",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned userspace proxy success/refusal and local connection ownership; default and tunnel-only build paths"],
+      "required_state": ["Historical initial probe only; no latest retry, physical service, current reachability or Apple cleanup certification"],
+      "tested_commit": "b2c002629b17fed302b087462eb0a955fdd23f4e",
+      "date": "2026-10-02",
+      "location": "docs/validation/initial-rsd-probe-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 borrowed initial skip/available/failure observation with original owner errors and native proxy dial IO, retaining legacy optional directories and retry behavior. Later probes, inner sources, bindings and stream/partial remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-http-error-headers-62d1c4f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Node 24.19.0/Playwright 1.63.0/Chromium 151.0.7922.34",
