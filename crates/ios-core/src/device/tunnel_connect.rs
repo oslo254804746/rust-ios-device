@@ -42,6 +42,9 @@ mod protocol;
 #[cfg(feature = "mdns")]
 use pairing::{establish_direct_tunnel_stream, establish_remote_pairing_tunnel_stream};
 
+#[cfg(test)]
+mod source_contract_tests;
+
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub(super) async fn discover_direct_rsd_targets(
     udid: &str,
@@ -97,7 +100,7 @@ pub(super) async fn discover_remote_pairing_targets(
 ) -> Result<Vec<(String, String, u16)>, CoreError> {
     let keys = tokio::task::spawn_blocking(credentials::load_remote_discovery_keys)
         .await
-        .map_err(|_| CoreError::Other("remote pairing record task failed".into()))??;
+        .map_err(|error| super::error_context::retain("load remote discovery keys", error))??;
     if keys.is_empty() {
         return Err(CoreError::Unsupported(
             "no existing RemotePairing record has a usable peer altIRK; direct RSD remains available for older records".into()

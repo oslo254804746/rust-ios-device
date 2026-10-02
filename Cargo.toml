@@ -46,7 +46,7 @@ pbkdf2       = "0.12"
 hkdf         = "0.12"
 hmac         = "0.12"
 siphasher    = "1"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = { version = "0.10", features = ["std"] }
 zeroize      = { version = "1", features = ["derive"] }
 subtle       = "2"
 clap         = { version = "4", features = ["derive", "env"] }

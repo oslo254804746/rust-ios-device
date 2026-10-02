@@ -386,6 +386,65 @@ These host faults do not prove physical installation, encrypted-payload support,
 cleanup, stream reuse or new decompression/resource budgets. Other A02 source,
 JSON/callback/binding work and L01/L03/L04/Q04 conditions remain pending.
 
+## Connection and pairing native sources
+
+Twenty connection/pairing adapters now retain original native objects instead
+of flattened Other or Protocol strings, under existing CoreError::Io and a
+private fixed-context payload. Four task-join paths retain JoinError, including
+observed cancellation or blocking-worker panic. Two verification and two PSK
+paths retain the original PairingError/PskTlsError, native IO kinds and precise
+source categories. A PSK backend-unsupported error also retains its OpenSSL
+stack as a standard source. Three local credential adapters retain typed host
+identity/hex failures with InvalidInput. Two remote Base64 decoders, two received
+public-key slice conversions and tunnel IPv6 parsing retain their native objects
+with InvalidData/protocol. Four listener AEAD adapters retain the original AEAD
+error: encryption preserves its unknown category and response authentication
+failure is explicitly protocol, without guessing a permission rejection.
+
+Private context construction takes a bounded category snapshot from the native
+source. Classification uses that snapshot after any precise outer IO kind,
+including Unknown; adding an IO container alone does not invent IO evidence
+for an opaque crypto/backend/panic cause. Standard source inspection retains
+the original object, even when that object's own older fields are already
+strings. Construction reads at most the existing 32-source bound and does not
+format text; subsequent classification of the context reads the cached value.
+Wrapper Debug exposes fixed phase/category only, while original Rust Display
+and source access can reveal private material. The native AEAD source requires
+the existing dependency's std feature, now enabled with unchanged version and
+crypto parameters; this workspace already requires std/Tokio.
+
+Three other adapters retain original Tokio Elapsed under TimedOut: PSK dial,
+RemotePairing control-channel dial and tunnel endpoint dial budgets. Values,
+clock semantics, success and failure schedule remain. Fixed contexts replace
+host/port-bearing timer text, and native elapsed text follows the context.
+Returned Other/Protocol become Io on the specified native paths; existing
+exhaustive enums and public signatures remain. Category can change from unknown
+to native timeout/disconnected/unsupported/cancelled, local invalid_input or
+malformed remote protocol. Opaque crypto/backend/panic stays unknown. Safe
+correlations/Display prefixes change, while existing machine fields/statuses/
+exit codes and success output remain.
+
+Owned host fixtures cover original IO/opaque categories, bounded cyclic sources,
+real async JoinError cancellation and blocking JoinError panic, actual PSK dial
+refusal and closed-stream handshake failure, local in-memory credential loaders,
+both Base64 extraction functions, received key-length conversion and the actual
+RemotePairing listener request/response over loopback TCP. The listener fixture
+tests malformed Base64, failed authentication and valid encrypted port success;
+it joins its peer and drops the local control channel. Existing endpoint tests
+now verify original address/Elapsed objects rather than only text. No worker
+fault is injected into an entire discovery/device process, no actual blocking
+task is claimed cancellable after it starts, and the two other dial timers are
+source-reviewed rather than network timeout-injected. Not every listener stage
+is independently fault-injected. No real credential directory, pairing/device
+operation, trust-policy change or Apple request occurs.
+
+Failure does not authorize retry or prove remote cleanup. Dropping an awaiting
+caller still does not stop already-running blocking work. Three inner crypto
+helpers and other legacy PairingError adapters still flatten some native causes;
+this does not reconstruct them or infer a category from their strings. Their
+source work, CLI/HTTP/stream/binding boundaries and L01/L03/device conditions
+remain pending; the new source adapters do not add invalidation or reuse rules.
+
 ## Deactivation fallback and activation HTTP sources
 
 `ConnectedDevice::deactivate` attempts mobileactivationd and, on failure, one

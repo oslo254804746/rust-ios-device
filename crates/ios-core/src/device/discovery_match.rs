@@ -19,7 +19,7 @@ const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 pub async fn discover_paired_mobdev2_devices() -> Result<Vec<PairedMobdev2Device>, CoreError> {
     let records = tokio::task::spawn_blocking(load_wifi_pairings)
         .await
-        .map_err(|e| CoreError::Other(format!("join error: {e}")))?;
+        .map_err(|error| super::error_context::retain("load paired Wi-Fi records", error))?;
     if records.is_empty() {
         return Ok(Vec::new());
     }

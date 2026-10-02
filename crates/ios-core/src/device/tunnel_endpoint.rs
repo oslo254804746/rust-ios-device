@@ -13,11 +13,13 @@ use crate::tunnel::TUNNEL_CONNECT_TIMEOUT;
 async fn timeout_io<T>(
     duration: Duration,
     operation: impl Future<Output = io::Result<T>>,
-    context: &str,
+    context: &'static str,
 ) -> io::Result<T> {
     tokio::time::timeout(duration, operation)
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, context))?
+        .map_err(|elapsed| {
+            super::error_context::retained_io(io::ErrorKind::TimedOut, context, elapsed)
+        })?
 }
 
 /// Network path used to reach any port exposed through an RSD tunnel.
@@ -51,8 +53,13 @@ impl TunnelEndpoint {
         server_addr: &str,
         userspace_port: Option<u16>,
     ) -> Result<Self, CoreError> {
-        let remote_addr = Ipv6Addr::from_str(server_addr)
-            .map_err(|e| CoreError::Protocol(format!("invalid IPv6 addr: {e}")))?;
+        let remote_addr = Ipv6Addr::from_str(server_addr).map_err(|error| {
+            super::error_context::with_kind(
+                io::ErrorKind::InvalidData,
+                "parse tunnel IPv6 address",
+                error,
+            )
+        })?;
 
         Ok(match userspace_port {
             Some(proxy_port) => Self::UserspaceProxy {
@@ -144,7 +151,10 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert_eq!(err.to_string(), "test dial timed out");
+        assert!(err.to_string().starts_with("test dial timed out: "));
+        assert!(std::error::Error::source(&err)
+            .unwrap()
+            .is::<tokio::time::error::Elapsed>());
     }
 }
 
@@ -185,7 +195,13 @@ mod routing_tests {
         let err = TunnelEndpoint::resolve("not-an-ipv6", Some(60105))
             .expect_err("invalid IPv6 should fail");
 
-        assert!(err.to_string().contains("invalid IPv6 addr"));
+        assert_eq!(err.class(), crate::ErrorClass::Protocol);
+        let CoreError::Io(outer) = err else {
+            panic!("address parser cause lost");
+        };
+        assert!(std::error::Error::source(&outer)
+            .unwrap()
+            .is::<std::net::AddrParseError>());
     }
 
     #[tokio::test]

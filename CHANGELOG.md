@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain native connection/pairing task, PSK, credential, codec and deadline
+  causes through existing error variants with fixed safe context. Distinguish
+  local invalid input from malformed remote data, preserve opaque unknown
+  categories and document returned-variant/source migration without changing
+  trust, requests, routing, retries or timeout values.
+
 - Preserve both failed deactivation attempts in a borrowed Rust observation,
   including lockdown connection failure, and classify by the final cause.
   Retain native activation HTTP/URL sources, classify rejected endpoint input

@@ -170,6 +170,27 @@ WebInspector launch's successful Ctrl+C branch retains its context and exit
 while supplying this typed source; JSON failure class becomes `cancelled`, with
 effects still unknown. Signal failure remains IO and cleanup remains unconfirmed.
 
+Connection discovery/pairing native failures now retain JoinError, PSK/Pairing
+errors, credential parsers, Base64/AEAD, address and slice parsers through the
+existing CoreError::Io variant and private fixed context. Categories preserve
+the original source, including unknown for opaque crypto/backend/panic causes;
+local credential syntax is invalid input and malformed received encodings/key
+length/address or failed response authentication is protocol. Three dial-budget
+adapters also retain Elapsed, with unchanged timeout values. Migrate affected
+Other/Protocol matches and Display parsing to class/source inspection; explicit
+native sources can still contain sensitive data. Enums, signatures, wire and
+trust/routing/retry policies stay unchanged. The existing backend-unsupported
+PSK case now supplies its original OpenSSL source.
+
+The workspace enables the existing chacha20poly1305 dependency's std feature
+to retain its native AEAD object as a standard source. This adds its Error
+implementation in an already std/Tokio workspace; it changes no dependency
+version, service feature names/defaults/groups or cryptographic parameters.
+No no_std support was previously offered. Minimum-feature/MSRV/full gates and
+the existing downstream consumer cover this dependency-feature migration.
+The [error contract](error-contract.md) records category snapshots, changed
+contexts, incomplete inner crypto sources and host versus device scope.
+
 ## CLI and JSON
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation

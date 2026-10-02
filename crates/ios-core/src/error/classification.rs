@@ -138,6 +138,10 @@ macro_rules! typed_class {
 use typed_class;
 
 fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
+    #[cfg(any(feature = "mdns", feature = "tunnel"))]
+    if let Some(error) = error.downcast_ref::<crate::device::error_context::RetainedCause>() {
+        return Some(error.class());
+    }
     #[cfg(feature = "mobileactivation")]
     if let Some(error) = error.downcast_ref::<crate::DeactivationFallbackError>() {
         // The earlier failure remains separately observable. A wrapper must not

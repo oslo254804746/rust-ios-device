@@ -122,7 +122,13 @@ pub(super) fn load_ios_rs_remote_pairing_credentials(
     let host_private_key = remote_pair_record.private_key.clone();
     let host_identity =
         HostIdentity::from_private_key_bytes(persisted.host_identifier, &host_private_key)
-            .map_err(|e| CoreError::Other(format!("invalid persisted host identity: {e}")))?;
+            .map_err(|error| {
+                super::super::error_context::with_kind(
+                    std::io::ErrorKind::InvalidInput,
+                    "parse persisted host identity",
+                    error,
+                )
+            })?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {
         return Err(CoreError::Protocol(
@@ -131,8 +137,13 @@ pub(super) fn load_ios_rs_remote_pairing_credentials(
     }
 
     if let Some(host_private_key_hex) = persisted.host_private_key_hex {
-        let persisted_private_key = hex::decode(host_private_key_hex)
-            .map_err(|e| CoreError::Other(format!("invalid host private key hex: {e}")))?;
+        let persisted_private_key = hex::decode(host_private_key_hex).map_err(|error| {
+            super::super::error_context::with_kind(
+                std::io::ErrorKind::InvalidInput,
+                "decode persisted private key",
+                error,
+            )
+        })?;
         if persisted_private_key != remote_pair_record.private_key {
             return Err(CoreError::Protocol(
                 "persisted host private key mismatch for remote pairing record".into(),
@@ -160,10 +171,12 @@ pub(super) fn load_pymobiledevice3_remote_pairing_credentials(
     let host_identifier = pymobiledevice3_host_identifier(hostname);
     let host_identity =
         HostIdentity::from_private_key_bytes(host_identifier, &remote_pair_record.private_key)
-            .map_err(|e| {
-                CoreError::Other(format!(
-                    "invalid pymobiledevice3 remote pairing identity: {e}"
-                ))
+            .map_err(|error| {
+                super::super::error_context::with_kind(
+                    std::io::ErrorKind::InvalidInput,
+                    "parse compatible host identity",
+                    error,
+                )
             })?;
 
     if host_identity.public_key_bytes() != remote_pair_record.public_key {

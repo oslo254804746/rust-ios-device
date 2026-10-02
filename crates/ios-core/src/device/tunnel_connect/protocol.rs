@@ -149,7 +149,9 @@ pub(super) async fn create_direct_tcp_listener(
     let client_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.client_key).into());
     let encrypted = client_cipher
         .encrypt((&nonce).into(), request.to_string().as_bytes())
-        .map_err(|e| CoreError::Other(format!("createListener encrypt failed: {e}")))?;
+        .map_err(|error| {
+            super::super::error_context::retain("encrypt direct listener request", error)
+        })?;
 
     client
         .send(build_direct_control_envelope(
@@ -171,7 +173,13 @@ pub(super) async fn create_direct_tcp_listener(
     let server_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.server_key).into());
     let plaintext = server_cipher
         .decrypt((&nonce).into(), encrypted_response.as_ref())
-        .map_err(|e| CoreError::Other(format!("createListener decrypt failed: {e}")))?;
+        .map_err(|error| {
+            super::super::error_context::with_kind(
+                std::io::ErrorKind::InvalidData,
+                "decrypt direct listener response",
+                error,
+            )
+        })?;
     let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
         .get("response")
@@ -219,8 +227,8 @@ pub(super) async fn create_remote_pairing_tcp_listener(
     let client_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.client_key).into());
     let encrypted = client_cipher
         .encrypt((&nonce).into(), request.to_string().as_bytes())
-        .map_err(|e| {
-            CoreError::Other(format!("remote pairing createListener encrypt failed: {e}"))
+        .map_err(|error| {
+            super::super::error_context::retain("encrypt remote listener request", error)
         })?;
 
     control
@@ -240,8 +248,12 @@ pub(super) async fn create_remote_pairing_tcp_listener(
     let server_cipher = chacha20poly1305::ChaCha20Poly1305::new((&session.server_key).into());
     let plaintext = server_cipher
         .decrypt((&nonce).into(), encrypted_response.as_ref())
-        .map_err(|e| {
-            CoreError::Other(format!("remote pairing createListener decrypt failed: {e}"))
+        .map_err(|error| {
+            super::super::error_context::with_kind(
+                std::io::ErrorKind::InvalidData,
+                "decrypt remote listener response",
+                error,
+            )
         })?;
     let response: serde_json::Value = serde_json::from_slice(&plaintext)?;
     let response_body = response
@@ -449,9 +461,13 @@ pub(super) fn extract_remote_pairing_tlv(body: &serde_json::Value) -> Result<Vec
         .ok_or_else(|| {
             CoreError::Protocol("remote pairing response missing pairingData._0.data".into())
         })?;
-    BASE64_STANDARD
-        .decode(data)
-        .map_err(|e| CoreError::Other(format!("invalid remote pairing TLV base64: {e}")))
+    BASE64_STANDARD.decode(data).map_err(|error| {
+        super::super::error_context::with_kind(
+            std::io::ErrorKind::InvalidData,
+            "decode remote pairing TLV",
+            error,
+        )
+    })
 }
 
 #[cfg(feature = "tunnel")]
@@ -485,10 +501,12 @@ pub(super) fn extract_remote_pairing_stream_encrypted(
                 "remote pairing encrypted response missing message.streamEncrypted._0".into(),
             )
         })?;
-    BASE64_STANDARD.decode(encoded).map_err(|e| {
-        CoreError::Other(format!(
-            "invalid remote pairing encrypted payload base64: {e}"
-        ))
+    BASE64_STANDARD.decode(encoded).map_err(|error| {
+        super::super::error_context::with_kind(
+            std::io::ErrorKind::InvalidData,
+            "decode remote encrypted response",
+            error,
+        )
     })
 }
 

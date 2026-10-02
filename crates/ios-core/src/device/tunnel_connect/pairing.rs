@@ -27,6 +27,15 @@ use super::protocol::{
 const DIRECT_PAIRING_TYPE_PUBLIC_KEY: u8 = 0x03;
 const DIRECT_PAIRING_TYPE_ERROR: u8 = 0x07;
 
+pub(super) fn decode_pairing_public_key(
+    bytes: &[u8],
+    phase: &'static str,
+) -> Result<[u8; 32], CoreError> {
+    bytes.try_into().map_err(|error| {
+        super::super::error_context::with_kind(std::io::ErrorKind::InvalidData, phase, error)
+    })
+}
+
 pub(super) struct GuardedTunnelStream<G> {
     stream: tokio_openssl::SslStream<TcpStream>,
     _guard: G,
@@ -73,10 +82,11 @@ impl RemotePairingControlChannel {
             TcpStream::connect((host, port)),
         )
         .await
-        .map_err(|_| {
-            std::io::Error::new(
+        .map_err(|elapsed| {
+            super::super::error_context::retained_io(
                 std::io::ErrorKind::TimedOut,
-                format!("remote pairing dial to {host}:{port} timed out"),
+                "remote pairing dial timed out",
+                elapsed,
             )
         })??;
         Ok(Self { stream })
@@ -144,7 +154,9 @@ pub(super) async fn establish_direct_tunnel_stream(
         let id = remote_identifier.clone();
         tokio::task::spawn_blocking(move || load_remote_pairing_credentials(&id))
             .await
-            .map_err(|e| CoreError::Other(format!("spawn_blocking join error: {e}")))?
+            .map_err(|error| {
+                super::super::error_context::retain("load direct pairing credentials", error)
+            })?
     }?;
 
     let mut our_secret = [0u8; 32];
@@ -176,16 +188,15 @@ pub(super) async fn establish_direct_tunnel_stream(
         )));
     }
 
-    let device_public: [u8; 32] = verify_start_fields
-        .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
-        .ok_or_else(|| {
-            CoreError::Protocol("verifyManualPairing start missing device public key".into())
-        })?
-        .as_ref()
-        .try_into()
-        .map_err(|_| {
-            CoreError::Protocol("verifyManualPairing device public key must be 32 bytes".into())
-        })?;
+    let device_public = decode_pairing_public_key(
+        verify_start_fields
+            .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
+            .ok_or_else(|| {
+                CoreError::Protocol("verifyManualPairing start missing device public key".into())
+            })?
+            .as_ref(),
+        "decode direct pairing public key",
+    )?;
 
     let verify_session = build_verify_step2_tlv(
         our_secret,
@@ -193,7 +204,9 @@ pub(super) async fn establish_direct_tunnel_stream(
         &device_public,
         &loaded.host_identity,
     )
-    .map_err(|e| CoreError::Other(format!("verifyManualPairing finish build failed: {e}")))?;
+    .map_err(|error| {
+        super::super::error_context::pairing("build direct pair verification", error)
+    })?;
 
     client
         .send(build_direct_pairing_event(
@@ -227,7 +240,7 @@ pub(super) async fn establish_direct_tunnel_stream(
         &verify_session.encryption_key,
     )
     .await
-    .map_err(|e| CoreError::Other(format!("direct TLS-PSK listener connect failed: {e}")))?;
+    .map_err(|error| super::super::error_context::psk("connect direct TLS-PSK listener", error))?;
 
     Ok(GuardedTunnelStream {
         stream,
@@ -244,7 +257,9 @@ pub(super) async fn establish_remote_pairing_tunnel_stream(
         let id = remote_identifier.to_owned();
         tokio::task::spawn_blocking(move || load_remote_pairing_credentials(&id))
             .await
-            .map_err(|e| CoreError::Other(format!("spawn_blocking join error: {e}")))?
+            .map_err(|error| {
+                super::super::error_context::retain("load remote pairing credentials", error)
+            })?
     }?;
     let mut control = RemotePairingControlChannel::connect(host, port).await?;
     let mut sequence_number = 0u64;
@@ -285,16 +300,15 @@ pub(super) async fn establish_remote_pairing_tunnel_stream(
         )));
     }
 
-    let device_public: [u8; 32] = verify_start_fields
-        .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
-        .ok_or_else(|| {
-            CoreError::Protocol("remote pairing verify start missing device public key".into())
-        })?
-        .as_ref()
-        .try_into()
-        .map_err(|_| {
-            CoreError::Protocol("remote pairing device public key must be 32 bytes".into())
-        })?;
+    let device_public = decode_pairing_public_key(
+        verify_start_fields
+            .get(&DIRECT_PAIRING_TYPE_PUBLIC_KEY)
+            .ok_or_else(|| {
+                CoreError::Protocol("remote pairing verify start missing device public key".into())
+            })?
+            .as_ref(),
+        "decode remote pairing public key",
+    )?;
 
     let verify_session = build_verify_step2_tlv(
         our_secret,
@@ -302,7 +316,9 @@ pub(super) async fn establish_remote_pairing_tunnel_stream(
         &device_public,
         &loaded.host_identity,
     )
-    .map_err(|e| CoreError::Other(format!("remote pairing verify finish build failed: {e}")))?;
+    .map_err(|error| {
+        super::super::error_context::pairing("build remote pair verification", error)
+    })?;
 
     control
         .send(&build_remote_pairing_pairing_event(
@@ -334,10 +350,8 @@ pub(super) async fn establish_remote_pairing_tunnel_stream(
     let stream =
         crate::psk_tls::connect_psk_tls(host, listener_port, &verify_session.encryption_key)
             .await
-            .map_err(|e| {
-                CoreError::Other(format!(
-                    "remote pairing TLS-PSK listener connect failed: {e}"
-                ))
+            .map_err(|error| {
+                super::super::error_context::psk("connect remote TLS-PSK listener", error)
             })?;
 
     Ok(GuardedTunnelStream {

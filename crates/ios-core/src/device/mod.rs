@@ -112,6 +112,8 @@ mod deactivation_error;
 pub use deactivation_error::DeactivationFallbackError;
 mod connected;
 mod connection;
+#[cfg(any(feature = "mdns", feature = "tunnel"))]
+pub(crate) mod error_context;
 mod lockdown_transport;
 mod rsd_observation;
 mod service_routing;

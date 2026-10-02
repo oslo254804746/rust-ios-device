@@ -3135,3 +3135,63 @@ source/class，明确input/protocol/unsupported及opaqueunknown，保持原reque
 重试/信任政策；尚未作为PASS。其他A02HTTPbody-budget/status、JSON/callback/binding，
 L01/L03/A03与平台/真机/有序cleanup条件继续；无设备操作、推送/发布、历史改写/
 referencecheckout修改。文档收尾检查后继续。
+
+### 大类 3 进行中：A02 connection/pairing 原生来源（2026-10-02）
+
+上一deactivation/HTTP实现 `87e2b47`、文档 `a36853b` 已核对，分支
+`feat/device-service-updates-20260927` clean后继续。盘点增加remote-discovery Join、
+remoteTLS-PSK、AEAD与publickey/address nativeparser，覆盖20处原flattened/dropped
+nativecause与3处Elapseddeadline adapters。既有CoreIo/privatefixedcontext保存原对象
+和boundedclass snapshot，opaqueUnknown不因包装伪变IO；4Join、2verify、2PSK原类/
+nativekind保留，3credentialinputs归Input，2Base64/2publickeylength/1IPv6/decrypt2
+归Protocol，encrypt2仍nativeUnknown。Pskbackendunsupported保留原OpenSSLsource。
+三dial预算保留Elapsed/TimedOut、固定context代替host/porttext，原预算/请求/路由/
+重试/信任/成功/enum/signatures保持，returnedOther/Protocol→Io与类/Display/
+correlation迁移写入合同。chacha20poly1305同版本开启std以保留nativeAEADError，
+项目原已std/Tokio，服务feature/default/groups及cryptoparameters未变，Cargo.lock未改。
+
+9新增Rusttests：privatecontext5、tunnel source4，另强化2既有endpointtests检验native
+Elapsed/AddrParseError。涵盖9IOkinds/native/opaque、cyclebounded32/noformat、actual
+asyncJoincancel+blockingJoinpanic、typedPairing/PSK/native/backendsource，真实PSK
+ownedrefusal/closedduplex；actualmemorycredentialloaders2invalididentity/hex/mismatch、
+2Base64functions、公钥0/31/33failure及32success，actualRemotePairinglistener overTCP
+malformedB64/AEADauthenticationfailure/validencryptedport并join/drop。非真实credential
+dirs/entirediscovery/paired/device/每个stage逐一fault注入；不声称runningblocking任务可
+取消、remotecloseACK或borrowedclientreuse。InnerPairingErrorCrypto/cryptohelper仍有
+Stringsource，未假称恢复；下一需继续其nativecause及其他A02/JSON/streams/binding。
+
+beforefix初fixture多余JSONbrace编译101 `/tmp/ios-a02-pairing-source-before.log`；修正
+fixture不改产品后真实0PASS/1FAIL UnknownvsProtocol `/tmp/ios-a02-pairing-source-before-final.log`
+terminal101。core/CLIalltargetcheck `/tmp/ios-a02-pairing-sources-check.log` terminal0。
+首strictClippy两err_expect失败 `/tmp/ios-a02-pairing-sources-clippy.log`，改有Debug的
+ownedPSKresult使用expect_err，不suppresslint；final与追加publickeyparser后final2均0。
+
+专项最终terminal0：context all-feature/tunnel-only各5、mdns-only3；tunnel all-feature17/
+tunnel-only15；endpoint6、publicconsumer15、strictcore/CLI PASS。日志
+`/tmp/ios-a02-device-context-core.log`、`/tmp/ios-a02-device-context-minimal.log`、
+`/tmp/ios-a02-device-context-mdns.log`、`/tmp/ios-a02-pairing-sources-core-final.log`、
+`/tmp/ios-a02-pairing-sources-minimal-final.log`、`/tmp/ios-a02-pairing-endpoint-core.log`、
+`/tmp/ios-a02-pairing-sources-public.log`、`/tmp/ios-a02-pairing-sources-clippy-final2.log`。
+第11节full `/tmp/ios-a02-pairing-sources-full.log` 正在运行，完整结果/审查/实现提交/
+文档收尾待完成。A02/第三类/总体goal active，第四类未开始，全部31scope保持；无
+真机/配对/Apple操作、推送/发布、历史改写或referencecheckout修改，平台/设备/cleanup
+与L01/L03/A03各自继续待条件。
+
+首次full terminal1：1840Rust/13Python、0FAIL/2既有ignored，fmt/check/workspace
+strictClippy/MSRV、66features/4groups、7+7doctests/3snippets已PASS；FFIarchive构建
+因磁盘NoSpace(os28)失败，不是C ABI验收PASS。root194G仅159M可用，target105G，
+incremental68G；任务已终止并核对无Cargo/rustc残留。直接rm-f清理命令被执行策略
+拒绝且未执行；改官方 `cargo clean -p ios-core` terminal0，移除64625个generatedfiles/
+67.9GiB，恢复65GiB可用（source/reference/validationrecords未改）。日志
+`/tmp/ios-a02-pairing-sources-disk-clean.log`、`/tmp/ios-a02-pairing-sources-disk-recovery.log`。
+完整重跑 `/tmp/ios-a02-pairing-sources-full-final.log` 正在运行；source未为storagegate
+weakening修改，结果/审查/提交/收尾继续。
+
+最终完整重跑terminal0：1840Rust/13Python、0FAIL/2既有ignored，fmt/check/workspace
+strictClippy/MSRV、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/
+checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、
+15CLI/3backup均PASS。source审查确认20native+3Elapsedadapters保留原因和原路由/
+请求/信任/重试/预算，unknowncachebounded32不格式化，localInput/remoteProtocol角色
+迁移明确。依赖stdfeature同版本/Cargo.lock不变且MSRV/minimal/downstream通过；
+既有publicvariants/signatures未变。将按16个相关文件实现本地提交，再写准确hash/
+索引与收尾；无额外Chromium/installed3.9/3.13重跑或真机cleanup/reuse认证。
