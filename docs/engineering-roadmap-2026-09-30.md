@@ -2845,3 +2845,68 @@ IO失败；需要兼容入口/checked observer路径与native/partial fixtures�
 其他JSON/stream/callback/binding/source、L01/L03/A03与真实平台/device/全局poison/
 资源耗尽/有序cleanup条件保留，无maturity升级、设备操作、推送/发布、历史改写或
 reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 streaming-install checked progress（2026-10-02）
+
+上一C lifecycle实现 `5c0649a`、文档 `5e9cdef` 已核对，收尾clean；当前分支
+`feat/device-service-updates-20260927`。旧core ProgressCallback void与CLI eprintln
+不能传播writer IO；新增兼容checked observer入口，原install_ipa委托同一wire flow，
+callback failure立即保留ZipConduitError::Io/native source、不读取后续completion。
+CLI startup/progress复用shared checked stderr writer，safe diagnostic bytes与既有
+stdout install JSON保留。payload先于progress；错误不证明无device effects、rollback/
+retry或borrowed stream可复用，L01/L03/device cleanup条件继续。
+
+7新增fixtures：4条entire public install经tiny owned IPA/service，4种native callback
+error后completion未读、legacy/checked/no-observer wire bytes与两种terminal保留、
+prior progress后remote Error优先于Complete、truncated IO/invalid XML Protocol；2条
+CLI shared writer partial write/flush/native source/safe actual envelope；1条external
+consumer保留exhaustive enum/old-new callback signatures与local NotFound来源。
+all-feature与apps-only core各4 PASS，CLI apps45、public14 PASS，strict core/CLI
+Clippy PASS，日志 `/tmp/ios-a02-install-progress-core-final.log`、
+`/tmp/ios-a02-install-progress-minimal-final.log`、`/tmp/ios-a02-install-progress-cli.log`、
+`/tmp/ios-a02-install-progress-public.log`、`/tmp/ios-a02-install-progress-clippy.log`。
+首个fixture编译E0283为Dictionary key.into类型歧义，改显式str；其后两configuration
+各3PASS/1FAIL来自把single '?'解析器内层EOF误期望Protocol，产品native-first分类
+未改，invalid XML integer与独立truncated输入现PASS。docs context错配无写入后修正。
+第11节full将执行 `/tmp/ios-a02-install-progress-full.log`；结果/审查/提交/收尾待完成。
+A02/第三类/总体目标active；其他JSON/callback/binding/ZIP string/lossy sources与
+L01/L03/A03/平台/真机条件保留，第四类尚未开始，无设备操作/推送/发布/参考修改。
+
+### 大类 3：A02 install checked progress 主机验收与交付（2026-10-02）
+
+实现 `5810d16fa3eeaaf949b4226b80dfbc8c1871219d`（11个相关文件），完整gate后
+聚焦本地提交。additive fallible observer保留ZipConduitError::Io/native sources，
+callback Err立即return且不读下一reply/报success；legacyvoid callback/function与
+exhaustive enum保留，委托同一transfer body。CLI startup/progress shared checked
+stderr write/flush、原safe诊断bytes和stdout install successJSON保留；无成功结果
+不证明无device effects。borrowedstream callback失败需discard，不自动close/join；
+existingCLI ownerdrop不认证Apple cleanup/cancel完成，machine failure phaseapps/
+exit1/unknowneffects，stderr不可写时最终报告仍best effort。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/CLI/public | all-feature/apps-only各4 PASS，CLI apps45、public14 PASS；`/tmp/ios-a02-install-progress-core-final.log`、`/tmp/ios-a02-install-progress-minimal-final.log`、`/tmp/ios-a02-install-progress-cli.log`、`/tmp/ios-a02-install-progress-public.log` terminal0 |
+| strict Clippy | `/tmp/ios-a02-install-progress-clippy.log` core/CLI PASS，terminal0；final fixture后full workspace Clippy PASS |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-install-progress-full.log` terminal0；1793 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/范围 | 原body/wire keys/remoteError与completion顺序未改，legacy/checked/no-observer当前实现bytes相同；非priorrelease binary比对/一般ABI/physical install或cleanup证明。无额外Chromium或installed3.9/3.13重跑 |
+
+7新增回归覆盖entirepublicinstall tinyownedIPA/service，4种native error在第二progress
+之后completion仍未读，prior records/Debug/class/source保留；两种完成reply不call
+observer、remoteError先于Complete、truncated nativeIO/invalidXMLProtocol原链；
+ownedIPA目录清理显式验证。CLI partialwrite/flush与actual safeenvelope、external
+old/new types/exhaustive enum/localNotFound保留。非pairedTLS CLI/physicaldevice/
+borrow reuse/cancel或Applecleanup。E0283fixture歧义、两次3PASS/1FAIL parserEOF
+误期望及无写入docscontext失败详见[专题证据](validation/install-progress-errors-2026-10-02.md)，
+未弱化native-first分类；ios0.1.13 SHA256
+`fb786aad30988485cee86ebb5882a1018495befcbfc704a658f784c7f640277a`。
+
+文档收尾catalog118 records/121 changed local Markdown links/whitespace PASS；
+locked plist1.7.1 is_binary的8-byte read_exact源码确认single '?'内层IO EOF来源。
+准确实现hash、host边界及真实剩余条件写入catalog/quality/roadmap/专题证据。
+
+本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。下一已确认lossy
+source为extract_zip_entries中的archive/entry ZipError与entry read IO→String，
+需原source/class/variant迁移fixtures，非当前PASS。其他JSON/callback/binding/source、
+L01/L03/A03/平台/真机/有序cleanup条件保留；无maturity升级、设备操作、推送/发布、
+历史改写或reference checkout修改。文档收尾后继续。

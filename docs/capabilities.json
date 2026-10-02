@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-install-progress-errors-5810d16",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Entire public install over tiny owned ZIP IPAs and service byte streams; checked CLI writer/envelope faults and external old/new API consumer"],
+      "required_state": ["Host output/source/transfer only; no paired-TLS CLI startup, physical install, stream reuse, task join or Apple cleanup certification"],
+      "tested_commit": "5810d16fa3eeaaf949b4226b80dfbc8c1871219d",
+      "date": "2026-10-02",
+      "location": "docs/validation/install-progress-errors-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 additive fallible observer retains native IO and stops before later completion; CLI startup/progress stderr checked with safe prior bytes and success JSON preserved. Legacy callbacks/wire/errors remain; other source/JSON/callback/binding/lifecycle work pending, no maturity upgrade."
+    },
+    {
       "id": "linux-c-checked-lifecycle-5c0649a",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
