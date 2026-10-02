@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-xpc-h2-errors-96f23e9",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Controlled AsyncRead/Write H2 bootstrap and partial-body faults; public root XpcClient over a closed owned duplex stream"],
+      "required_state": ["Host-only source/class/context and local transport drop; no physical transfer, reuse/retry or Apple cleanup certification"],
+      "tested_commit": "96f23e91dbbdd79656586217bff766eff313801b",
+      "date": "2026-10-02",
+      "location": "docs/validation/xpc-h2-errors-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 retains typed H2/IO sources through RSD/RemoteXPC setup/bootstrap/read/write adapters using existing error variants, with native classes and explicit migration. Bindings, other lossy adapters and stream/partial remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-rsd-retry-errors-2333485",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

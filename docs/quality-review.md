@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [A02 RSD retry/lookup gate](validation/rsd-retry-errors-2026-10-02.md), latest `2333485`, 1757 Rust/13 Python, 52 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; owned retry/native refusal and actual RSD discovery→missing service/EOF, 3.12 wheel/sdist; preceding checked C, installed 3.9/3.13 Python, initial RSD, Chromium, C categories, Rust/source, CLI/cancellation and TLS evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 H2/RSD source gate](validation/xpc-h2-errors-2026-10-02.md), latest `96f23e9`, 1763 Rust/13 Python, 52 tooling tests, 38 raw cases, five regression host cases/15 CLI output/three backup contracts; typed H2 bootstrap/partial-body faults and root XpcClient consumer, 3.12 wheel/sdist; preceding RSD retry/discovery, checked C, installed 3.9/3.13 Python, initial RSD, Chromium, C categories, Rust/source, CLI/cancellation and TLS evidence retained | 22 real-device matrix rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

@@ -2550,3 +2550,50 @@ captures、3.12wheel/sdist、52tools、118help、38raw、5host/22device NOT_RUN�
 exit0，`/tmp/ios-a02-rsd-retry-tunnel-only-accepted.log`；验收页同步最终结果。
 四文件文档收尾73 local links、`scripts/capabilities.py` 118records及whitespace
 PASS。实现范围/提交内容已核对，剩余仅本类文档；收尾后继续上述A02范围，目标active。
+
+### 大类 3 进行中：A02 H2/RSD 原始错误来源（2026-10-02）
+
+前一slice实现 `233348554e44022f6bca522d18728d45b62bab05` 与文档
+`dfe2a67cf331f968142536b774e17e082d3205b2` 已核对，收尾后clean。继续修复inner
+RSD/RemoteXPC的H2 setup/bootstrap/header/body/send/transfer错误转Tls字符串：
+private mapper以现有XpcError::Io承载固定phase和原H2Error，native IO kind不变，
+H2 Protocol为InvalidData且typed source保留。原enum/signature/frame/retry/预算及
+pending limits不变；返回variant、Display前缀和safe correlation变化已登记迁移。
+
+新增五条模块测试和一条公开root XpcClient consumer。合成AsyncRead/Write在
+setup读/写、bootstrap/host handshake/send、header或已完整header后的body失败；
+三种receive路径保留PermissionDenied/source，owned transport Drop精确一次。
+没有打开设备、TUN或网络服务；pending bytes检查不认证设备cleanup或partial retry。
+初次外部测试引用crate-private framer编译失败，已放回模块内并独立保留root API
+consumer；首次四条来源断言未处理std::io::Error::get_ref而失败，修正遍历后
+all-feature XPC **88 PASS**、public consumer **13 PASS**、tooling **52 PASS**。
+失败日志保留；均未靠扩大API/弱化guard通过。tunnel-only、strict Clippy及第11节
+full gate尚待完成；A02/第三类/总体目标active，其他binding/stream/partial继续。
+
+### 大类 3：A02 H2/RSD source 主机验收与交付（2026-10-02）
+
+实现 `96f23e91dbbdd79656586217bff766eff313801b`，9个相关文件，完整gate后提交。
+24个H2-to-XPC adapters保留typed来源与固定phase，native IO分类恢复，H2 Protocol
+仍Protocol；enum/signature/frame/bootstrap顺序/retry/预算/pending limits不变。
+source观察包含std::io::Error::get_ref；Display/返回variant/correlation迁移已记录。
+
+| 检查 | 结果 |
+| --- | --- |
+| 最终all-feature与tunnel-only XPC | 各88 PASS、0 FAIL/ignored；`/tmp/ios-a02-xpc-h2-source-fixed.log`、`/tmp/ios-a02-xpc-h2-tunnel-only.log`，terminal0；reduced-feature既有dead-code warnings保留 |
+| public consumer | 13 PASS，原exhaustive matches与root XpcClient closed duplex的outer/native BrokenPipe来源通过；`/tmp/ios-a02-xpc-h2-public-final.log`，terminal0 |
+| strict Clippy/tooling | Core all-target/all-feature PASS，tooling52 PASS；对应`/tmp/ios-a02-xpc-h2-clippy.log`、`/tmp/ios-a02-xpc-h2-tooling.log`，terminal0 |
+| 第11节完整主线 | `/tmp/ios-a02-xpc-h2-source-full.log`，首次full terminal0；1763 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 其他完整gate | fmt/check/workspace Clippy/MSRV，66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查 | XpcError enum声明与旧commit比较相同；87changed local links/whitespace PASS。不是一般ABI证明；无额外Chromium或installed3.9/3.13重跑 |
+
+owned faults覆盖setup、bootstrap/host handshake/send、完整header后的body失败与
+三种receive；Drop精确一次、pending accounting零，不能证明partial安全重试、
+connection复用或Apple cleanup。cryptex adapter wiring为source review+既有host
+回归，非每个phase注入或真实transfer/TSS。两次测试开发失败与修正保留在
+[专题证据](validation/xpc-h2-errors-2026-10-02.md)，未扩大private API或弱化guard。
+ios 0.1.13 SHA256 `8f13a3de4261deaeb3e95a84fffd9b48de3dd5075661cc1086cae1371a6f23c8`。
+
+本slice主机验收，A02/第三类/总体目标active。下一项syslog读取失败被吞成成功退出的
+修复及流式/partial合同；application mutations的JSON、binding void/port及其他lossy
+adapters继续。L01/L03、跨平台/真机条件保留；无设备操作/推送/发布/历史改写/
+reference checkout变更。文档收尾后继续，第四类尚未开始。
