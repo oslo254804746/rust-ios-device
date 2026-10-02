@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-pairing-native-sources-98aeccb",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Native IO/opaque/cycle category snapshots; real async Join cancellation and blocking-worker panic; actual PSK owned refusal/closed-stream failure; memory credential loaders; Base64/public-key parsers and actual RemotePairing listener over owned TCP"],
+      "required_state": ["Host source/codec/output/local ownership only; no real credential directory, entire discovery/device process, paired authentication, actual device listener, running blocking-task cancellation, reuse or remote cleanup certification"],
+      "tested_commit": "98aeccb5b4bab66d8431c1eeb9d91bbdacf02b62",
+      "date": "2026-10-02",
+      "location": "docs/validation/pairing-native-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 twenty native adapters and three deadline adapters retain original causes through existing Io/fixed context with bounded category snapshots, preserving unknown while distinguishing local input and malformed remote protocol. Same-version AEAD std feature supplies its native Error source; requests/trust/routing/retries/budgets unchanged and variant migration documented. Other sources/streams/bindings/lifecycle/platform/device conditions remain, no maturity upgrade."
+    },
+    {
       "id": "linux-deactivation-http-sources-87e2b47",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

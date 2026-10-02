@@ -3195,3 +3195,40 @@ checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_R
 迁移明确。依赖stdfeature同版本/Cargo.lock不变且MSRV/minimal/downstream通过；
 既有publicvariants/signatures未变。将按16个相关文件实现本地提交，再写准确hash/
 索引与收尾；无额外Chromium/installed3.9/3.13重跑或真机cleanup/reuse认证。
+
+### 大类 3：A02 connection/pairing 原生来源主机验收与交付（2026-10-02）
+
+实现 `98aeccb5b4bab66d8431c1eeb9d91bbdacf02b62`（16个相关文件），完整门禁后本地
+聚焦提交。20native+3Elapsedadapters通过既有Io/fixedcontext保留原对象/类别，
+缓存bounded32分类包括opaqueUnknown，localcredentialInput与remoteProto分类明确；
+PSKnativekind/backendsource保留，依赖AEAD stdfeature同版本、Cargo.lock不改。
+原publicenums/signatures、wire/crypto/信任/路由/重试/预算/成功保留，变体/Display/
+correlation迁移写入合同。未用诊断文本猜分类。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项core/public | context all-feature/tunnel各5、mdns3；tunnel all-feature17/minimal15、endpoint6、externalpublic15 PASS，相关日志见前一记录，terminal0 |
+| strict Clippy | core/CLI final2 PASS terminal0；full workspace strict PASS |
+| 第11节完整主线 | 最终full `/tmp/ios-a02-pairing-sources-full-final.log` terminal0；1840Rust/13Python、0FAIL、2既有ignored |
+| 完整其余gate | fmt/check/MSRV、66features/4groups、7+7doctests/3snippets、C ABI/ownedmalformed/checkedlists、3.12wheel/sdist、53tools、118help、38raw、5host/22deviceNOT_RUN、15CLI/3backup PASS |
+| 审查/范围 | 9新增Rustfixtures+2既有endpoint strengthened；realasyncJoincancel/blockingJoinpanic/PSKownedfaults、memorycredential/B64/keylength、actualRemotePairinglistenerTCP3cases成功/故障+join/drop；非entirediscovery/pairing/device/directXPCstage逐一fault注入/runningblockingcancel或remoteACK/reuse |
+
+fixtureJSONbrace编译失败、修正后的beforefix0PASS/1FAIL UnknownvsProtocol、首次
+strictClippy err_expect2failure、首次fullFFI NoSpace(os28)均保留原日志。执行策略
+拒绝直接rm-f未执行；官方cargo clean-pcore移除67.9GiB generatedoutputs恢复65GiB，
+不动source/reference/validationrecords，完整重跑不弱化门禁或产品。最终证据见
+[专题记录](validation/pairing-native-sources-2026-10-02.md)，ios0.1.13 SHA256
+`833df7056404ca8dbf7cd6f16a1d15cf6759360cde49f11020f0eb1b8a4ee927`。
+
+文档收尾catalog118records/112localMarkdownlinks（6个changedMarkdownfiles）/
+whitespace PASS；日志 `/tmp/ios-a02-pairing-sources-docs-links.log`，baseline
+`a36853b` 含本次实现和收尾；精确hash/host边界/剩余条件已写入catalog/quality/
+roadmap/专题证据，不升级maturity。
+
+本slice主机验收；A02/第三类/总体goal active，第四类未开始。下一确认innerloss：
+HostIdentity privatekeyslice、HKDF expand、ChaChakeyinit/seal/open、signatureverify
+nativecauses仍String；需保留nativeobject、合理typedinput/protocol/unknown及兼容迁移。
+另需核验当前PairingError::Protocol classification的tunnelfeaturegating在default/minimal
+profile的一致性。其他A02/JSON/streams/callback/binding及L01/L03/A03与平台/真机/
+有序cleanup条件继续。无maturity升级、设备操作、推送/发布、历史改写或reference
+checkout修改。文档收尾检查后继续。
