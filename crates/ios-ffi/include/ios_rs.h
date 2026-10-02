@@ -185,9 +185,25 @@ int ios_tunnel_server_address(const IosTunnel *tunnel, char *buf, size_t buf_len
  * Get the RSD port for iOS 17+ Remote Service Discovery.
  *
  * Use the RemoteXPC/RSD transport on [server_address]:rsd_port to enumerate services.
- * Returns 0 if not available.
+ * Returns 0 if not available or tunnel is NULL; does not change the last category.
+ * Use ios_tunnel_rsd_port_checked for an explicit status/category.
  */
 uint16_t ios_tunnel_rsd_port(const IosTunnel *tunnel);
+
+/**
+ * Get the cached RSD port with an int status and caller-thread error category.
+ *
+ * A non-NULL port_out is cleared to 0 before checking tunnel. NULL inputs return
+ * IOS_ERR_NULL/invalid_input; a zero cached port returns IOS_ERR_STATE/precondition.
+ * Success writes a nonzero port and clears the category to "none". No runtime or
+ * network operation is required. A snapshot does not prove current reachability,
+ * disconnect, device support, or successful RSD probing. Read the category on the
+ * same OS thread before another int-status call. Legacy uint16_t calls are unchanged.
+ *
+ * tunnel must be NULL or a live handle; port_out must be NULL or writable uint16_t
+ * storage that does not overlap it. Do not concurrently close the handle.
+ */
+int ios_tunnel_rsd_port_checked(const IosTunnel *tunnel, uint16_t *port_out);
 
 /**
  * Get the local userspace proxy port (IOS_TUN_USERSPACE mode only).
@@ -197,9 +213,19 @@ uint16_t ios_tunnel_rsd_port(const IosTunnel *tunnel);
  *   - 4 bytes:  target service port as little-endian uint32
  * After that, the socket is a transparent TCP connection to that service.
  *
- * Returns 0 in kernel mode or if unavailable.
+ * Returns 0 in kernel mode, if unavailable or if tunnel is NULL; does not change
+ * the last category. Use ios_tunnel_userspace_port_checked for an explicit status.
  */
 uint16_t ios_tunnel_userspace_port(const IosTunnel *tunnel);
+
+/**
+ * Get the cached userspace proxy port with the same output/status/category rules
+ * as ios_tunnel_rsd_port_checked. A zero cached port is IOS_ERR_STATE/precondition;
+ * it does not establish kernel mode, disconnect or explicit device unsupported.
+ * A nonzero snapshot does not certify that a proxy is currently accepting calls.
+ * The same live-handle, output-storage and concurrent-close restrictions apply.
+ */
+int ios_tunnel_userspace_port_checked(const IosTunnel *tunnel, uint16_t *port_out);
 
 /**
  * Get the RSD service directory as a newly-allocated compact JSON object.

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add checked C RSD/userspace port queries with explicit NULL/missing/success
+  statuses and caller-thread categories, retaining legacy uint16_t behavior.
+  Document cached metadata versus current reachability/support and lifecycle.
+
 - Honor JSON mode for application mutation statuses with versioned tagged
   results and ordered pkill progress/completion records. Retain human bytes,
   stop subsequent calls on failure, preserve DTX/deadline/routing sources, and

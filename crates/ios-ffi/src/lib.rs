@@ -678,6 +678,7 @@ pub unsafe extern "C" fn ios_tunnel_server_address(
 
 /// Get the RSD port (Remote Service Discovery, iOS 17+).
 /// Returns 0 if the tunnel is not established or RSD is not available.
+/// Use [`ios_tunnel_rsd_port_checked`] to distinguish NULL from a missing port.
 ///
 /// # Safety
 ///
@@ -692,6 +693,46 @@ pub unsafe extern "C" fn ios_tunnel_rsd_port(tunnel: *const IosTunnel) -> u16 {
     })
 }
 
+unsafe fn checked_tunnel_port(
+    tunnel: *const IosTunnel,
+    out: *mut u16,
+    select: fn(&IosTunnel) -> u16,
+) -> c_int {
+    if out.is_null() {
+        return IOS_ERR_NULL;
+    }
+    *out = 0;
+    if tunnel.is_null() {
+        return IOS_ERR_NULL;
+    }
+    let port = select(&*tunnel);
+    if port == 0 {
+        return IOS_ERR_STATE;
+    }
+    *out = port;
+    IOS_SUCCESS
+}
+
+/// Get the cached RSD port with an int status and caller-thread error category.
+///
+/// A non-null output is cleared to zero before checking the handle. NULL inputs
+/// return IOS_ERR_NULL/invalid_input; a zero cached port returns
+/// IOS_ERR_STATE/precondition. Success writes a nonzero port and clears the
+/// category. This snapshot query requires no runtime or network operation; it
+/// does not prove current reachability or a device's support for an operation.
+///
+/// # Safety
+///
+/// `tunnel` must be null or a live handle. `out` must be null or point to writable
+/// u16 storage that does not overlap the handle. Do not concurrently close it.
+#[no_mangle]
+pub unsafe extern "C" fn ios_tunnel_rsd_port_checked(
+    tunnel: *const IosTunnel,
+    out: *mut u16,
+) -> c_int {
+    ffi_status(|| checked_tunnel_port(tunnel, out, |handle| handle.rsd_port))
+}
+
 /// Get the local userspace proxy port (for IOS_TUN_USERSPACE mode).
 ///
 /// Connect to `127.0.0.1:<port>` and send:
@@ -702,6 +743,7 @@ pub unsafe extern "C" fn ios_tunnel_rsd_port(tunnel: *const IosTunnel) -> u16 {
 /// Then use the socket as a direct TCP connection to that service.
 ///
 /// Returns 0 in kernel mode or if not available.
+/// Use [`ios_tunnel_userspace_port_checked`] for an explicit status/category.
 ///
 /// # Safety
 ///
@@ -714,6 +756,25 @@ pub unsafe extern "C" fn ios_tunnel_userspace_port(tunnel: *const IosTunnel) -> 
         }
         (*tunnel).userspace_port
     })
+}
+
+/// Get the cached local userspace proxy port with an int status/category.
+///
+/// Like [`ios_tunnel_rsd_port_checked`], this clears a non-null output, rejects
+/// NULL inputs, and returns IOS_ERR_STATE/precondition when its cached port is
+/// zero. It does not infer kernel mode, disconnect or explicit unsupported.
+/// A nonzero port is a snapshot, not a reachability check.
+///
+/// # Safety
+///
+/// `tunnel` must be null or a live handle. `out` must be null or point to writable
+/// u16 storage that does not overlap the handle. Do not concurrently close it.
+#[no_mangle]
+pub unsafe extern "C" fn ios_tunnel_userspace_port_checked(
+    tunnel: *const IosTunnel,
+    out: *mut u16,
+) -> c_int {
+    ffi_status(|| checked_tunnel_port(tunnel, out, |handle| handle.userspace_port))
 }
 
 /// Get the RSD service directory as a newly allocated compact JSON object.
@@ -922,6 +983,101 @@ mod tests {
             "invalid_input",
             "borrowed code remains valid after later calls"
         );
+    }
+
+    #[test]
+    fn checked_ports_report_null_missing_and_snapshot_without_changing_legacy() {
+        type Checked = unsafe extern "C" fn(*const IosTunnel, *mut u16) -> c_int;
+        type Legacy = unsafe extern "C" fn(*const IosTunnel) -> u16;
+        let queries: [(Checked, Legacy); 2] = [
+            (ios_tunnel_rsd_port_checked, ios_tunnel_rsd_port),
+            (ios_tunnel_userspace_port_checked, ios_tunnel_userspace_port),
+        ];
+        for (rsd_port, userspace_port) in [
+            (1234, 4321),
+            (0, 4321),
+            (1234, 0),
+            (0, 0),
+            (1, u16::MAX),
+            (u16::MAX, 1),
+        ] {
+            // An owned metadata fixture, not a constructed physical connection.
+            let tunnel = IosTunnel {
+                server_address: "fd00::8".into(),
+                rsd_port,
+                userspace_port,
+                rsd_services_json: "{}".into(),
+                _device: Mutex::new(None),
+            };
+            for ((checked, legacy), expected) in queries.into_iter().zip([rsd_port, userspace_port])
+            {
+                ffi_status(|| {
+                    error_status(
+                        IOS_ERR_CORE,
+                        &std::io::Error::from(std::io::ErrorKind::TimedOut),
+                    )
+                });
+                let saved = ios_last_error_class();
+                assert_eq!(unsafe { legacy(&tunnel) }, expected);
+                assert_eq!(unsafe { legacy(std::ptr::null()) }, 0);
+                assert_eq!(last_class(), "timeout");
+
+                let mut output = 99;
+                assert_eq!(
+                    unsafe { checked(&tunnel, &mut output) },
+                    if expected == 0 {
+                        IOS_ERR_STATE
+                    } else {
+                        IOS_SUCCESS
+                    }
+                );
+                assert_eq!(output, expected);
+                assert_eq!(
+                    last_class(),
+                    if expected == 0 {
+                        "precondition"
+                    } else {
+                        "none"
+                    }
+                );
+                assert_eq!(unsafe { CStr::from_ptr(saved) }.to_bytes(), b"timeout");
+
+                output = 99;
+                assert_eq!(
+                    unsafe { checked(std::ptr::null(), &mut output) },
+                    IOS_ERR_NULL
+                );
+                assert_eq!(output, 0);
+                assert_eq!(last_class(), "invalid_input");
+                for handle in [&tunnel as *const IosTunnel, std::ptr::null()] {
+                    assert_eq!(
+                        unsafe { checked(handle, std::ptr::null_mut()) },
+                        IOS_ERR_NULL
+                    );
+                    assert_eq!(last_class(), "invalid_input");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checked_port_category_is_local_to_actual_exported_caller() {
+        ffi_status(|| {
+            error_status(
+                IOS_ERR_CORE,
+                &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            )
+        });
+        let observed = std::thread::spawn(|| {
+            let initial = last_class();
+            let mut port = 99;
+            let status = unsafe { ios_tunnel_rsd_port_checked(std::ptr::null(), &mut port) };
+            (initial, status, port, last_class())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(observed, ("none", IOS_ERR_NULL, 0, "invalid_input"));
+        assert_eq!(last_class(), "permission_denied");
     }
 
     #[test]

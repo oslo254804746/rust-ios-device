@@ -35,10 +35,13 @@ int main(int argc, char **argv) {
     int (*address_fn)(const IosTunnel *, char *, size_t) = ios_tunnel_server_address;
     uint16_t (*rsd_fn)(const IosTunnel *) = ios_tunnel_rsd_port;
     uint16_t (*proxy_fn)(const IosTunnel *) = ios_tunnel_userspace_port;
+    int (*checked_rsd_fn)(const IosTunnel *, uint16_t *) = ios_tunnel_rsd_port_checked;
+    int (*checked_proxy_fn)(const IosTunnel *, uint16_t *) = ios_tunnel_userspace_port_checked;
     int (*services_fn)(const IosTunnel *, char **) = ios_tunnel_rsd_services_json;
     assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
            version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
-           address_fn && rsd_fn && proxy_fn && services_fn && class_fn && checked_list_fn);
+           address_fn && rsd_fn && proxy_fn && services_fn && class_fn && checked_list_fn &&
+           checked_rsd_fn && checked_proxy_fn);
     assert(strcmp(class_fn(), "none") == 0);
     IosDevice *devices = NULL;
     size_t count = 99;
@@ -104,6 +107,15 @@ int main(int argc, char **argv) {
     assert(ios_get_lockdown_value_json(NULL, NULL, &text) == IOS_ERR_NULL);
     assert(ios_tunnel_rsd_services_json(NULL, &text) == IOS_ERR_NULL);
     assert(ios_tunnel_server_address(NULL, address, sizeof(address)) == IOS_ERR_NULL);
+    uint16_t port = UINT16_MAX;
+    assert(checked_rsd_fn(NULL, &port) == IOS_ERR_NULL && port == 0);
+    const char *saved_port_class = class_fn();
+    assert(strcmp(saved_port_class, "invalid_input") == 0);
+    port = UINT16_MAX;
+    assert(checked_proxy_fn(NULL, &port) == IOS_ERR_NULL && port == 0);
+    assert(checked_rsd_fn(NULL, NULL) == IOS_ERR_NULL);
+    assert(checked_proxy_fn(NULL, NULL) == IOS_ERR_NULL);
+    assert(strcmp(class_fn(), "invalid_input") == 0);
     assert(ios_tunnel_rsd_port(NULL) == 0);
     assert(ios_tunnel_userspace_port(NULL) == 0);
     ios_free_devices(NULL, 0);
@@ -111,6 +123,7 @@ int main(int argc, char **argv) {
     ios_device_close(NULL);
     ios_tunnel_close(NULL);
     assert(strcmp(class_fn(), "invalid_input") == 0);
+    assert(strcmp(saved_port_class, "invalid_input") == 0);
     puts("C ABI smoke passed");
     return 0;
 }

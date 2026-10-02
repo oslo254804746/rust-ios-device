@@ -213,6 +213,18 @@ skip behavior; callers requiring detectable encoding failures migrate to the
 checked symbol and inspect the returned status/class. This validates the
 received list's C projection, without certifying upstream discovery completeness.
 
+The additive `ios_tunnel_rsd_port_checked` and
+`ios_tunnel_userspace_port_checked` return int status with a caller-owned
+`uint16_t` output. NULL input gives `IOS_ERR_NULL`/`invalid_input`; a zero cached
+port gives `IOS_ERR_STATE`/`precondition`; success writes a nonzero port and
+clears the category. A non-NULL output is cleared to zero before validation.
+The old uint16_t queries keep their zero fallback and do not update the
+category. Consumers needing distinct NULL/missing/success outcomes can migrate
+to the additive symbols with a library that provides them. These are cached
+metadata queries, requiring no runtime/network work; neither success nor a
+missing value establishes support, mode, current reachability or cleanup.
+See the [error contract](error-contract.md) for pointer/thread and scope limits.
+
 ## Python API and ownership
 
 Preserve module/distribution names (`ios_rs` / `rust-ios-device-tunnel`), factories,
@@ -276,8 +288,11 @@ features; targeted alias mode also runs explicitly. Existing compile_fail docs
 retain private-module encapsulation. `validate.py compatibility` exercises the
 actual CLI against bounded owned USB/Network/empty fake-usbmux responses in JSON
 and human mode; only safe counters are printed. Linked C smoke checks the original
-14 signatures plus the additive category getter, statuses/layout/null/UTF-8
-ownership failures and an owned malformed ListDevices typed failure.
+14 signatures plus the additive category getter, checked listing and two checked
+port queries, statuses/layout/null/UTF-8 ownership failures and owned malformed/
+checked ListDevices replies. Cached-port success/missing and caller-thread
+transitions are exercised by Rust-owned metadata fixtures through the exported
+queries; this is not a physical tunnel acceptance test.
 Installed Python smoke checks factories/signatures and patch/resource exposure,
 invalid mode with an owned endpoint trap and a real malformed owned ListDevices
 reply. Its child/peer deadlines and bounded request permit no device-service

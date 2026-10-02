@@ -387,8 +387,8 @@ This query adds no interruptible C call, concurrent handle-mutation guarantee,
 automatic retry or Apple cleanup acknowledgement. A `disconnected` IO class
 does not identify which object disconnected. `none` describes a successful
 numeric status, not a certificate of device cleanup or absence of partial
-effects. Void cleanup reporting and port-zero ambiguity remain separate review
-boundaries. The owned linked-C malformed ListDevices fixture validates a real
+effects. Void initialization/cleanup reporting remains a separate review
+boundary. The owned linked-C malformed ListDevices fixture validates a real
 library call, not device connection/query/tunnel acceptance. Native source
 details are not exported as an unsafe C string.
 
@@ -406,6 +406,28 @@ existing callers need no signature/layout change. Checking C encoding does not
 prove completeness of the upstream discovery result or current reachability.
 Controlled binary-plist peers exercise both real C entries and free successful
 arrays. No device service, pairing, or Apple cleanup is certified by this check.
+
+`ios_tunnel_rsd_port_checked` and `ios_tunnel_userspace_port_checked` add
+int-status queries over the handle's cached port fields. Each non-null output
+is reset to zero before the handle check. NULL input returns `IOS_ERR_NULL` with
+`invalid_input`; a zero cached value returns `IOS_ERR_STATE` with `precondition`;
+success writes a nonzero unsigned 16-bit port and resets the category to `none`.
+They do not require a runtime, allocate a resource, send a request or update a
+probe observation. A zero cache entry alone cannot distinguish kernel mode,
+missing metadata, skipped/failed discovery or explicit device unsupported.
+Neither zero nor nonzero establishes current disconnect or reachability.
+
+The existing uint16_t queries preserve their signatures, zero fallback and
+non-updating category behavior. Do not classify a legacy zero from the previous
+int call's category. Migrate consumers requiring NULL/missing/success status to
+the checked symbols and read the category on the same OS thread. Their library
+must provide these additive symbols; old binaries retain the legacy API.
+Outputs must not overlap the live handle, and concurrent close/use or freed
+handle reuse remain unsupported. Rust-owned metadata tests exercise both actual
+exported functions for missing/nonzero values, NULL output and category/thread
+transitions; strict linked C verifies signatures and NULL clearing. This proves
+the projection boundary, not a physical tunnel/proxy/RSD probe or Apple cleanup.
+Bindings still need remaining initialization/cleanup/source/lifecycle review.
 
 ## Protected HTTP responses
 

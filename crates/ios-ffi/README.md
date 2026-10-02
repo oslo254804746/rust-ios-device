@@ -99,6 +99,34 @@ received list; it does not certify completeness of discovery upstream. The
 linked smoke checks both calls over five owned binary-plist replies, with
 valid, unencodable and empty input.
 
+Use `ios_tunnel_rsd_port_checked` and `ios_tunnel_userspace_port_checked` for
+explicit int-status queries. Each clears a writable output to zero before
+validating the handle. NULL input is `IOS_ERR_NULL`/`invalid_input`; a zero cached
+port is `IOS_ERR_STATE`/`precondition`; success supplies a nonzero `uint16_t` and
+clears the category to `none`. These snapshot queries need no runtime/network
+operation and do not establish current proxy/RSD reachability, kernel mode,
+disconnect or explicit unsupported. The original uint16_t functions keep their
+zero fallback and do not replace the category. Do not infer a reason for zero
+from a previous call's category. The checked symbols require a library containing
+these additions; older libraries continue to provide the legacy queries.
+
+```c
+uint16_t port = 0;
+int status = ios_tunnel_rsd_port_checked(tunnel, &port);
+if (status != IOS_SUCCESS) {
+    fprintf(stderr, "cached RSD port unavailable (%s)\n", ios_last_error_class());
+    /* No connection/retry/support inference follows from this category. */
+    return 1;
+}
+```
+
+The handle must remain live during a query, and output storage must not overlap
+it. No concurrent close or freed-pointer reuse is supported. Rust-owned metadata
+fixtures cover nonzero/zero cached values and category transitions; linked C
+smoke checks the new signatures, NULL handling and output clearing. Neither
+fixture certifies a physical tunnel or Apple cleanup. Void initialization/cleanup
+failure reporting and extended lifecycle APIs remain separate pending work.
+
 ## Linking
 
 A minimal CMake snippet:
