@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-apps-stream-output-60d5cb0",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned application output/serial signal callbacks and actual shared error renderer; real core syslog decoder through CLI driver with oversize relay bytes"],
+      "required_state": ["Host rendering/call/decoder boundaries and reviewed dispatch only; no physical mutations, DTX fallback, process termination or Apple cleanup certification"],
+      "tested_commit": "60d5cb080f03d56194d9e9ea4d1ce8fd81dc49cf",
+      "date": "2026-10-02",
+      "location": "docs/validation/apps-stream-output-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 versioned application mutation JSON and ordered partial pkill records with retained human bytes, sources and named fallback; syslog input limit covers NUL final chunks with prior CLI records preserved. Other JSON/callback/binding/source/lifecycle work remains pending; no maturity upgrade."
+    },
+    {
       "id": "linux-syslog-stream-errors-7b6394e",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

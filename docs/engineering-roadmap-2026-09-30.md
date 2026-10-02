@@ -2666,3 +2666,67 @@ Drop struct构造编译失败及保留assertions的isolated-page修正详见
 core syslog terminated branch的累计message limit边界，再推进其他streams/JSON
 mutations、binding void/port与lossy sources；L01/L03/平台/真机条件保留。无设备
 操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 syslog limit 与 apps machine results（2026-10-02）
+
+上一轮为progress：H2/RSD与syslog实现/fixture修正、完整gate及五个本地提交完成，
+当前核对HEAD `00e439b`、分支 `feat/device-service-updates-20260927`、工作区clean。
+不重做已验收范围，本轮先owned复现terminated final chunk绕过累计1MiB检查：
+`/tmp/ios-a02-syslog-limit-before.log` 为真实1 FAIL。现统一在copy前检查至NUL的
+body长度，exact-limit/next message保留；all-feature与syslog-only各7 PASS，CLI
+真实decoder→driver的prior NDJSON+oversize Protocol/drop回归在17条syslog中PASS。
+原S04/Q01/A02边界补齐，不认证error/cancel后的reader复用或decoded JSON上限。
+
+同时修复apps mutation默认JSON打印human状态：private版本1/tagged单结果、pkill
+ordered NDJSON per成功call与最终complete summary，--no-json旧bytes保留。原filter/
+排序/逐process factory未改，send或output失败保留此前progress并阻止后续call，
+no-match不发送、summary count0；counts仅为成功signal请求，非process exit。
+六条renderer/owned call回归与named typed appservice ServiceNotFound fallback一条
+通过，apps最终43 PASS。10处DTX与两处Elapsed来源保留，signal prerequisite保留
+原CoreError；相同native timeout/permission/refusal/broken-pipe不触发fallback。
+完整CLI/device mutation、真实DTX fallback、callbacks和L01/L03各自仍待条件。
+
+对应专项日志 `/tmp/ios-a02-syslog-limit-after.log`、
+`/tmp/ios-a02-syslog-limit-minimal.log`、`/tmp/ios-a02-syslog-limit-cli.log`、
+`/tmp/ios-a02-apps-json-final.log`，terminal0；core/CLI strict Clippy专项PASS。
+无实际device mutation/TUN/推送/发布/参考checkout改动。一次docs apply_patch context
+不匹配无写入，核对usage后修正；guard移除unreachable allow后final apps重跑通过。
+第11节full将执行 `/tmp/ios-a02-stream-apps-full.log`，结果/审查/实现与文档提交尚待。
+A02/第三类/总体目标active；其他JSON命令/stream callbacks、binding void/port与lossy
+sources继续，第四类尚未开始。
+
+### 大类 3：A02 apps results/syslog bounds 主机验收与交付（2026-10-02）
+
+实现 `60d5cb080f03d56194d9e9ea4d1ce8fd81dc49cf`（8个相关文件），完整gate后聚焦
+本地提交。apps默认JSON的human mutation状态改为version1/tagged结果，pkill逐成功
+signal request记录progress与最终complete summary，human旧bytes保留；原filter/
+order/per-process factory与wire calls保留。输出或请求失败阻止后续call、保留此前
+records，无complete summary/rollback/retry承诺；count不证明process已exit。
+named typed appservice/shim miss fallback与legacy compatibility保留，10处DTX、两处
+Elapsed及signal prerequisite来源保留。core syslog累计1MiB检查在final NUL chunk
+copy前执行，exact-limit/next message及CLI prior NDJSON保持。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项回归 | core all-feature/syslog-only各7 PASS，CLI syslog17、apps43 PASS；`/tmp/ios-a02-syslog-limit-after.log`、`/tmp/ios-a02-syslog-limit-minimal.log`、`/tmp/ios-a02-syslog-limit-cli.log`、`/tmp/ios-a02-apps-json-final.log`，terminal0 |
+| strict Clippy | core/CLI all-target/all-feature专项PASS；`/tmp/ios-a02-stream-apps-clippy.log`，terminal0；最后fixture简化后的full workspace Clippy PASS |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-stream-apps-full.log` terminal0；1778 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/兼容 | private render/call helper；公开error enum/signatures/wire keys保留，JSON schema/partial/source/limit迁移写入error/public/usage/CHANGELOG；非一般ABI或physical workflow证明；无额外Chromium或installed3.9/3.13重跑 |
+
+9条新增回归：真实core limit前失败与后边界PASS、CLI decoder→driver保留prior
+record/Protocol/drop、typed named fallback、6条owned renderer/serial call/partial
+failure/zero-match/human bytes。shared error renderer验证phase/class/exit1/unknown
+effects/native source/safe diagnostics；application dispatch/source adapters已review，
+但非实际paired-TLS CLI/appservice/DTX、process termination/staging或Apple cleanup。
+首次oversize terminated regression真实FAIL、docs无写入context失败及final guard
+处理详见[专题证据](validation/apps-stream-output-2026-10-02.md)。ios 0.1.13 SHA256
+`24c44a2288cd7c2fa9ccd3d82a8426be576d81ee089ceb81010478a90d02043b`。
+
+文档收尾：catalog118 records PASS，114 changed local Markdown links/whitespace
+PASS；准确实现hash、范围与真实剩余条件写入catalog/quality/roadmap/专题证据。
+
+本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。其他JSON commands/
+stream callbacks、binding void/port与lossy sources继续；streaming-install stderr IO
+边界、reader error/cancel reuse、L01/L03/平台/真机条件保留。无maturity升级、设备
+操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
