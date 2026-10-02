@@ -2730,3 +2730,53 @@ PASS；准确实现hash、范围与真实剩余条件写入catalog/quality/roadm
 stream callbacks、binding void/port与lossy sources继续；streaming-install stderr IO
 边界、reader error/cancel reuse、L01/L03/平台/真机条件保留。无maturity升级、设备
 操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
+
+### 大类 3 进行中：A02 C checked port snapshot（2026-10-02）
+
+上一slice实现 `60d5cb0`、文档 `9822da2` 已核对，收尾clean；继续原binding void/
+port边界，不重做apps/syslog。增设两个int-status checked port getter，沿用opaque
+handle/既有status0–8/TLS类别：非NULL output先置0，NULL为NULL/invalid_input，
+cached0为STATE/precondition，非0成功清category。原uint16 getter/zero fallback/
+不更新类别语义保留；不凭缓存0猜kernel mode/skip/failed discovery/Unsupported，
+不凭非0认证proxy/RSD当前reachability。无runtime、network、allocation或probe变化。
+Rust两条metadata/actual exported getter tests含0/non0/mixed/1/u16MAX、NULL
+handle/output、旧getter不覆盖类别、saved static pointer与真实caller thread隔离；
+strict C smoke增signature/NULL output clearing。cbindgen export清单补齐新增symbols
+及先前category/checked listing的遗漏；实际public header手工维护，未声称生成器验收。
+专项FFI23 PASS、strict Clippy及linked C/owned malformed/checked-list PASS，分别
+`/tmp/ios-a02-c-port-host.log`、`/tmp/ios-a02-c-port-clippy.log`、
+`/tmp/ios-a02-c-port-abi.log`，terminal0。进度section初次误插到较早记录前，已移至
+实际交付后，不改历史验收范围。第11节full安排 `/tmp/ios-a02-c-port-full.log`，
+结果/审查/实现与文档收尾待完成。void init/cleanup、其他binding/source/JSON/
+callback/L01/L03与device/platform仍待；A02/第三类/总体目标active。
+
+### 大类 3：A02 C checked port 主机验收与交付（2026-10-02）
+
+实现 `32a7e0653e36c336d153caed9772fc2db1a486cc`（8个相关文件），完整gate后聚焦
+本地提交。新增两个int-status/caller-out checked cached port，明确NULL、cached0、
+non0状态与TLS类别；legacy14接口、两个先前additive symbols、statuses/layout与
+旧uint16不更新category语义保留。公开header、smoke和optional cbindgen exports一致；
+仅name清单检查18 symbols，不声称运行generator或跨平台ABI验收。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| FFI专项 | 23 Rust PASS；`/tmp/ios-a02-c-port-host.log`，terminal0；strict all-target/all-feature Clippy `/tmp/ios-a02-c-port-clippy.log` PASS，terminal0 |
+| C专项 | strict header/link/list example、NULL ABI/raw capture、owned malformed/checked list PASS；`/tmp/ios-a02-c-port-abi.log`，terminal0 |
+| 第11节完整主线 | 首次full `/tmp/ios-a02-c-port-full.log` terminal0；1780 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/兼容 | cached0为STATE/precondition，不猜mode/metadata/probe/Unsupported；非0不认证reachability；输出先置0，same-thread类别/输出不可overlap/live handle不可concurrent close。无额外Chromium或installed3.9/3.13重跑 |
+
+两条新增Rust通过真实exported functions覆盖0/non0/mixed/1/u16MAX、NULL参数、
+category reset/old getter保留前类、saved pointer与fresh caller thread；ownedmetadata
+无ConnectedDevice owner，非physical tunnel/proxy/RSD probe/support/cleanup证明。
+strict linked C验证两新signature/NULL output，不伪称真实成功tunnel；所有原owned
+listing/free测试保留。专题[验收证据](validation/c-checked-ports-2026-10-02.md)包含
+dynamic/static/header/CLI SHA256；ios0.1.13仍为
+`24c44a2288cd7c2fa9ccd3d82a8426be576d81ee089ceb81010478a90d02043b`。
+
+文档收尾catalog118 records/104 changed local Markdown links/whitespace PASS，
+准确实现hash/host范围/真实剩余条件写入catalog/quality/roadmap/专题证据。
+
+本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。void init/cleanup、
+其他JSON/stream callback/binding/lossy sources、L01/L03/平台/真机条件保留，无maturity
+升级、设备操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
