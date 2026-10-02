@@ -3739,6 +3739,7 @@ integer sources；UID/DTX/instruments 原 optional/raw fallback 另属行为合�
 L01/L03/A03/platform/device 条件仍待。未使用真实 backup/credentials/设备/Apple，
 未 push/publish/history rewrite/reference 编辑。
 
+
 ### 大类 3：A02 主机备份文件与归档整数原生来源交付（2026-10-02）
 
 接续 clean HEAD `2b26398d8c29a5af23e8a77b93c04dfbd41ebe6e`；上一 slice
@@ -3800,3 +3801,69 @@ Optional authenticated M6 info/UID/DTX/instruments raw fallback 原兼容行为�
 其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、L01/L03/A03/
 platform/device 条件仍待。未触及真实 backup/credentials/设备/daemon/Apple，
 未 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 OPACK/XPC 原生来源交付（2026-10-02）
+
+接续 clean HEAD `2a9814ea47401f72e57b3647fa3641eb2935905e`，本轮实际实现、
+验证及提交，属于 PROGRESS；实现 `fcb4cb5dfde7637d74581b72647b97c6b847bd2f`，
+十二个相关源码文件，首次 full 后聚焦本地提交。无阻塞条件。
+
+32 个 native erasers 修复：OPACK3、message12、H2 integer4、XpcClient timer3、
+RSD slice/timer7、identity UTF8/timer/env3。初始 audit31，再发现 non-Unix env
+.ok() 的 VarError loss。原 Utf8/TryFromInt/TryFromSlice/Elapsed/VarError 对象保留；
+无 invented backend cause。Public XpcError 四、H2Error 两 variants 保持；private
+OPACK InvalidUtf8 增 native payload，classifier 只改其 pattern，32-source bound 保持。
+
+Private body helper 改 IO result，保存 declared u64/native conversion，limit guard 原
+消息及 admission/read/allocation order 保持；八 consumers 为 message2/RSD3/H2ready1/
+pairing1/DProxy1。Pairing 原 Protocol class 保持，Xpc prose 改 nested Io。DProxy
+明确仍在既有 textual event boundary to_string；其他 slice/decoded projection 待审，
+不声称 structured observations 完成。Local encode native conversion Protocol 改
+InvalidInput；non-Unix NotUnicode 原 collapsed NotFound 改 Protocol，NotPresent 原
+NotFound 与 empty guard/success 保持。Variant/Display/correlation/source traversal
+迁移、safe outer Debug/private native OS data 记录于[专题证据](validation/xpc-native-sources-2026-10-02.md)。
+
+H2 fatal count conversion 仍 first-error-only poison，返回前无 window writes；
+后续 cached Protocol guard 不重建 native cause。其余 windows/frames/buffers/streams
+保持。Private shared Tokio mapper 保留真实 Elapsed，原15秒及 separate stage budgets、
+connector IO/polling/reconnect factory ownership 保持；identity command cap/drop/
+cleanup 保持。未引入新 L01 deadline/retry/remote cleanup acknowledgement。
+
+Production audit PASS：OPACK/H2/message/RSD/pairing adapters、DProxy one adaptation、
+XPC helper/public family、原 H2 mapper/classifier/deps/lock/features/root exports。
+Client timer consolidation 与 identity extraction/env roles 为 structural review，
+非 automated equality。Artifact normalizer 初次遗漏 comments/trailing commas/generic
+fn/双 test attributes，修正后 PASS，未据此改 production。Wire/order/bounds/depth/
+success 及 optional authenticated M6/UID/DTX/instruments raw fallbacks 保持。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core | no-default lib226、final all-feature XPC94、pairing18、DProxy12 PASS，terminal0 |
+| external / Clippy / audit | root all24/minimal13 PASS；core/CLI 与 full workspace strict Clippy PASS；production audit PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-xpc-native-full.log` terminal0，1921 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 七 new core、一 external；actual malformed OPACK/XPC UTF8、private encode/H2 native overflow与poison/no writes、short Elapsed/Drop、hostname/OS-value、public codec success/fault。Actual missing env UUID；NotUnicode 为 owned typed invalid OsString fixture，无 ambient writes。非 actual Windows/macOS identity、public15秒TCPexpiry、narrow-host/每allocator/physical/remote cleanup certification |
+
+Corrected before 七 regression 合计0 PASS/7 FAIL，六命令均 terminal101。
+更早 external fixture 误用 private module 触发 E0603，修正为既有 root aliases 后才
+复现 baseline，不算 native regression。Post-fix 专项 PASS，最后 env fixture 改用
+actual invalid OS data。Existing declared-length/bounds assertions 改查 typed errors，
+未弱化 guard/limit/gate/lint；失败日志保留。详情见专题证据。
+
+ios0.1.13 debug SHA256
+`f97a7890eab5930433e03801788b6cae73a37986ecfbeec8b421d005d418bc74`。
+Source full 前冻结、之后不变，约28GiB 至18GiB free；本 slice 无 storage failure/
+cleanup。无额外 Chromium/installed3.9/3.13 重跑。Catalog/quality/error contract 与
+历史 backup host follow-up 同步，maturity 保持；文档收尾单独记录。
+
+文档收尾：118 catalog records，五个 changed Markdown files 的107 local links
+（baseline `2a9814e`）、capability implementation/maturity/historical evidence 与
+whitespace PASS。日志 `/tmp/ios-a02-xpc-native-docs-catalog.log`、
+`/tmp/ios-a02-xpc-native-docs-links.log`；源码和 accepted full 不变，准备独立文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务与全部子任务 scope 保持。
+下一 readonly service audit `/tmp/ios-a02-xpc-native-next-services.log` 确认候选
+deadline/address/integer/framing native loss，逐项审查角色和状态再实现；DProxy textual
+observations、其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、
+L01/L03/A03/platform/device 条件仍待。未触及真实 backup/credentials/设备/daemon/
+Apple；未 push/publish/history rewrite/reference 编辑。

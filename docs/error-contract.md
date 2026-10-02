@@ -672,6 +672,38 @@ binary-archive/public reader fixtures establish host evidence, not every OS or
 architecture, running-worker termination, physical backup or remote cleanup.
 Evidence: [backup host source validation](validation/backup-host-sources-2026-10-02.md).
 
+## OPACK and XPC native codec, identity and deadline sources
+
+Thirty-two native UTF-8/integer/slice/Elapsed/environment adapters retain original
+errors. Public XpcError's four and H2Error's two variants stay; affected failures
+use existing Io with fixed context. Private OPACK InvalidUtf8 gains its Utf8Error
+payload, preserving protocol. The private body-length helper returns IO, retaining
+declared u64 and native conversion source; existing admission limits/order stay.
+Manual pairing retains that nested IO as protocol. DProxy still projects it to
+String at its existing diagnostic boundary; structured observations remain pending.
+
+Local XPC encoding conversions now classify invalid_input rather than protocol;
+received conversions/UTF-8 remain protocol. Non-Unix hostname NotPresent keeps
+not_found/native VarError, while NotUnicode changes from not_found to protocol.
+Empty-value guards and Unix hostname policy stay. Migrate affected Tls/Protocol/
+Xpc and immediate get_ref matches to class/source traversal. Fixed phases replace
+endpoint/field prose; Display/correlations may change. Outer/context Debug stay
+safe; explicit native source/Display/Debug, including OsString, remains private.
+
+Fatal H2 count conversion still poisons the connection before state writes;
+the returned error retains its native cause, while later cached protocol guards
+do not reconstruct it. Other windows/frames/buffering/stream behavior stay.
+Shared timeout mapping retains real Elapsed with the same existing stage budgets,
+polling, reconnect ownership and command cleanup. Local future Drop is not remote
+cancellation or Apple teardown. No new L01 budget/retry/cleanup contract.
+
+Owned codecs/private flow helpers, short-stage timers, hostname/OS-value and
+external root consumers establish host evidence. Actual Windows/macOS identity,
+production fifteen-second TCP deadlines, narrow-host conversions and physical
+devices remain unverified. Wire/limits/success/features/root exports and optional
+M6/UID/DTX/instruments compatibility fallbacks stay. Evidence:
+[XPC native source validation](validation/xpc-native-sources-2026-10-02.md).
+
 ## usbmux native codec, connection and deadline sources
 
 Request serialization and received plist XML/schema faults retain original

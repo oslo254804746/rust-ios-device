@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-xpc-native-sources-fcb4cb5",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual OPACK/XPC UTF-8 faults, native encoding/private H2 integer conversion and connection poison without writes, short-stage Elapsed/local future Drop, hostname/environment OS-value faults and external root codec consumer success/rejection"],
+      "required_state": ["Owned host source/duplex/local command only; typed NotUnicode fixture and actual missing UUID variable without ambient writes. No actual Windows/macOS identity, production public fifteen-second TCP expiry, narrow-host/every allocator injection, physical device/daemon/Apple, remote cleanup/reuse/retry certification"],
+      "tested_commit": "fcb4cb5dfde7637d74581b72647b97c6b847bd2f",
+      "date": "2026-10-02",
+      "location": "docs/validation/xpc-native-sources-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 32 OPACK/XPC/identity native sources retained through existing public Io/private context. Private OPACK payload/body result migration, local encoding invalid_input and environment NotUnicode protocol documented; public error families/root exports/features/budgets/wire/bounds/success/fallbacks stay. DProxy still has textual diagnostic projection; other adapters/guards/streams/bindings/lifecycle/platform/device work remain, no maturity upgrade."
+    },
+    {
       "id": "linux-backup-host-sources-47ed0d5",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

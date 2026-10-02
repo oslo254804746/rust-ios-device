@@ -95,3 +95,9 @@ M6 info, UID and DTX/instruments raw fallbacks keep their existing behavior.
 Other typed guards/created outcomes, stream/JSON/callback/binding and
 L01/L03/A03/platform/device conditions remain. All 31 tasks/subtasks and capability
 maturity stay. No push/publication, history rewrite or reference checkout edits.
+
+Follow-up: implementation `fcb4cb5dfde7637d74581b72647b97c6b847bd2f` retains
+32 OPACK/XPC/identity native sources; [XPC evidence](xpc-native-sources-2026-10-02.md)
+records its separate 1921 Rust/13 Python full gate. This page's historical 1913
+gate remains. DProxy's textual projection, other native adapters, created guards,
+streams/bindings and lifecycle/platform/device conditions still remain.
