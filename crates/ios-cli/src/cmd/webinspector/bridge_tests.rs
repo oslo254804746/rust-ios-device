@@ -41,6 +41,7 @@ struct Trace {
 struct SyntheticSource {
     reject: bool,
     close_at_startup: bool,
+    page_id: Option<u64>,
     calls: Mutex<Vec<String>>,
     tasks: Mutex<Vec<JoinHandle<Result<Trace>>>>,
 }
@@ -61,7 +62,7 @@ impl InspectorSource for SyntheticSource {
                 self.tasks
                     .lock()
                     .unwrap()
-                    .push(tokio::spawn(fake_service(peer)));
+                    .push(tokio::spawn(fake_service(peer, self.page_id.unwrap_or(1))));
             }
             Ok(InspectorConnection {
                 device: None,
@@ -157,6 +158,7 @@ async fn injected_source_is_called_only_after_admission_and_failures_are_safe() 
         let source = Arc::new(SyntheticSource {
             reject: true,
             close_at_startup: false,
+            page_id: None,
             calls: Mutex::default(),
             tasks: Mutex::default(),
         });
@@ -204,6 +206,7 @@ async fn actual_debug_routers_preserve_startup_io_and_existing_error_response_sh
         let source = Arc::new(SyntheticSource {
             reject: false,
             close_at_startup: true,
+            page_id: None,
             calls: Mutex::default(),
             tasks: Mutex::default(),
         });
@@ -328,7 +331,16 @@ async fn injected_service_runs_real_page_bridge_runtime_and_teardown() {
 
 #[tokio::test]
 async fn injected_service_runs_real_browser_bridge_flattened_session_and_detach() {
-    let source = Arc::new(SyntheticSource::default());
+    // The page and browser fixtures run in parallel. Distinct synthetic pages
+    // keep them from contending on the production process-wide page lock.
+    let target = "PID:42:page-2";
+    let source = Arc::new(SyntheticSource {
+        reject: false,
+        close_at_startup: false,
+        page_id: Some(2),
+        calls: Mutex::default(),
+        tasks: Mutex::default(),
+    });
     let (port, _server, _policy) = start(source.clone(), true).await;
     let mut socket = socket(port, "devtools/browser/ios-cli").await;
     let targets = exchange(
@@ -340,8 +352,8 @@ async fn injected_service_runs_real_browser_bridge_flattened_session_and_detach(
         targets["result"]["targetInfos"].as_array().unwrap().len(),
         1
     );
-    assert_eq!(targets["result"]["targetInfos"][0]["targetId"], TARGET);
-    let attached = exchange(&mut socket, json!({"id": 2, "method": "Target.attachToTarget", "params": {"targetId": TARGET, "flatten": true}})).await;
+    assert_eq!(targets["result"]["targetInfos"][0]["targetId"], target);
+    let attached = exchange(&mut socket, json!({"id": 2, "method": "Target.attachToTarget", "params": {"targetId": target, "flatten": true}})).await;
     let session = attached["result"]["sessionId"].as_str().unwrap();
     let reply = exchange(&mut socket, json!({"id": 3, "sessionId": session, "method": "Runtime.evaluate", "params": {"expression": "6*7"}})).await;
     assert_eq!(
@@ -416,7 +428,7 @@ async fn send_json(stream: &mut DuplexStream, message: JsonValue) -> Result<()> 
     write_frame(stream, envelope("_rpc_applicationSentData:", argument)).await
 }
 
-async fn fake_service(mut stream: DuplexStream) -> Result<Trace> {
+async fn fake_service(mut stream: DuplexStream, page_id: u64) -> Result<Trace> {
     let mut trace = Trace::default();
     while let Some(message) = read_frame(&mut stream).await? {
         let selector = message
@@ -493,12 +505,15 @@ async fn fake_service(mut stream: DuplexStream) -> Result<Trace> {
                     ("WIRTitleKey", "Synthetic page"),
                     ("WIRURLKey", "https://example.invalid/"),
                 ]);
-                page.insert("WIRPageIdentifierKey".to_string(), Value::Integer(1.into()));
+                page.insert(
+                    "WIRPageIdentifierKey".to_string(),
+                    Value::Integer(page_id.into()),
+                );
                 let mut listing = strings(&[("WIRApplicationIdentifierKey", "PID:42")]);
                 listing.insert(
                     "WIRListingKey".to_string(),
                     Value::Dictionary(Dictionary::from_iter([(
-                        "page-1".to_string(),
+                        format!("page-{page_id}"),
                         Value::Dictionary(page),
                     )])),
                 );
@@ -520,7 +535,7 @@ async fn fake_service(mut stream: DuplexStream) -> Result<Trace> {
                     argument
                         .get("WIRPageIdentifierKey")
                         .and_then(Value::as_unsigned_integer),
-                    Some(1)
+                    Some(page_id)
                 );
                 send_json(&mut stream, json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "synthetic-web-target"}}})).await?;
             }
