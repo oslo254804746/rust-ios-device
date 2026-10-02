@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-syslog-stream-errors-7b6394e",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned native relay reader/output faults through the real decoder and CLI driver; idle duplex capture expiry/EOF and actual shared error renderer"],
+      "required_state": ["Host driver/decoder/output/envelope only; no paired-TLS syslog process, physical relay, OS signal or Apple cleanup certification"],
+      "tested_commit": "7b6394ec63dd68c79d290a1f470618ecf34110c3",
+      "date": "2026-10-02",
+      "location": "docs/validation/syslog-stream-errors-2026-10-02.md",
+      "result": "PASS",
+      "scope": "A02 syslog read/EOF failures retain sources and reach exit-1 final errors with prior stdout retained; NDJSON/human formats and successful count/capture stops preserved, write/flush checked. Core limit, other streams, JSON mutations, bindings and lifecycle remain pending; no maturity upgrade."
+    },
+    {
       "id": "linux-xpc-h2-errors-96f23e9",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

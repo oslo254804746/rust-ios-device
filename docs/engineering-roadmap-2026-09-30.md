@@ -2597,3 +2597,72 @@ ios 0.1.13 SHA256 `8f13a3de4261deaeb3e95a84fffd9b48de3dd5075661cc1086cae1371a6f2
 修复及流式/partial合同；application mutations的JSON、binding void/port及其他lossy
 adapters继续。L01/L03、跨平台/真机条件保留；无设备操作/推送/发布/历史改写/
 reference checkout变更。文档收尾后继续，第四类尚未开始。
+
+### 大类 3 进行中：A02 syslog stream/partial 失败（2026-10-02）
+
+H2/RSD实现 `96f23e91dbbdd79656586217bff766eff313801b` 和文档 `38509e2` 已核对，
+收尾后clean。继续syslog：private driver共用原decode/filter/count/capture逻辑，
+native读取错误立即返回主CLI failure path，代替诊断后break/Ok的exit0；EOF保持
+UnexpectedEof/Io，不凭其推断device disconnect。compact NDJSON/原human字节保留，
+逐record write+flush均检查，stderr固定progress也改为checked写；此前stdout保留，
+output失败允许partial末record，capture时长/匹配条数正常停止继续success。
+
+新增6条owned主机用例通过真实core.into_stream驱动相同CLI helper：4种native
+failures在2条JSON后失败、EOF不输出未terminated记录、filter/count成功且drop、
+idle duplex的实际1秒capture expiry与peer EOF、partial output/flush原IO、raw与
+parsed旧bytes。失败JSON由实际shared renderer验证phase/class/exit1/unknown effects
+和无private source，但未启动带配对TLS的真实syslog进程/设备，不认证signal或Apple
+cleanup。首次human fixture误把既有parsed双newline当成单newline，产品字节未改，
+修正expected后 `/tmp/ios-a02-syslog-host-fixed.log` **16 PASS**，strict CLI Clippy
+`/tmp/ios-a02-syslog-clippy.log` PASS，均terminal0；失败log保留。
+
+第11节full安排 `/tmp/ios-a02-syslog-full.log`，结果/提交/文档收尾尚待完成，主线期间
+不改产品代码。A02/第三类/总体目标active，其他streams/JSON mutations、binding
+void/port、lossy sources与L01/L03/平台/真机条件保留。只读另见core syslog的terminated
+分支没有累计1MiB检查，需owned边界fixture确认/修复，未列为当前PASS范围。
+
+首个full在Rust阶段失败：CLI **644 PASS/1 FAIL/1 ignored**，page bridge fixture
+WebSocket被reset；`/tmp/ios-a02-syslog-full.log` 保留FAIL，后续gate未执行。孤立
+同例和原两例成对5次均PASS，未完全复现失败来源；source显示page/browser两条独立
+fixture共享process-global的PID:42:page-1 lock，100ms期限可能争用（此因果为推断）。
+将browser owned page改为2并验证对应listing/setup/target，原期限/响应/cleanup
+assertions保留；未修改product CDP lock。首个fixture修正用Drop struct的update
+语法导致E0509，改为显式构造后四条bridge PASS、全部CLI **645 PASS/0 FAIL/1
+ignored**、strict CLI Clippy PASS，均terminal0，分别
+`/tmp/ios-a02-syslog-bridge-isolated-pages-fixed.log`、`/tmp/ios-a02-syslog-cli-final.log`、
+`/tmp/ios-a02-syslog-clippy-final.log`。最终full重跑安排
+`/tmp/ios-a02-syslog-full-fixed.log`，尚未接受；A02/总体目标仍active。
+
+### 大类 3：A02 syslog stream/partial 主机验收与交付（2026-10-02）
+
+独立fixture修正 `1de103eb79d66dad6905fdcb1e737d76a8f00c2d`（1个test-only文件），
+syslog实现 `7b6394ec63dd68c79d290a1f470618ecf34110c3`（5个相关文件），完整gate后
+聚焦提交。原read-error→break/Ok修正为保留native source→主CLI failure/exit1；
+既有NDJSON/human字段与bytes、filter/count和capture停止保留，checked
+write/flush与stderr progress，stdout此前records或partial末record不假称rollback。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| syslog/bridge/CLI | 16 syslog PASS，4 bridge PASS，全部CLI645 PASS/0 FAIL/1既有ignored；对应`/tmp/ios-a02-syslog-host-fixed.log`、`/tmp/ios-a02-syslog-bridge-isolated-pages-fixed.log`、`/tmp/ios-a02-syslog-cli-final.log`，terminal0 |
+| strict CLI Clippy | `/tmp/ios-a02-syslog-clippy-final.log` PASS，terminal0 |
+| 第11节完整主线 | `/tmp/ios-a02-syslog-full-fixed.log`，terminal0；1769 Rust/13 Python PASS、0 FAIL、2既有ignored |
+| 完整其余gate | fmt/check/workspace Clippy/MSRV、66feature builds/4groups、7+7doctests/3snippets、C ABI/owned malformed/checked list、3.12wheel/sdist、52tools、118help、38raw diagnostics、5host/22device NOT_RUN、15CLI/3backup合同 PASS |
+| 审查/兼容 | private driver/render、公开args/fields/wire keys不变；103 changed local links/whitespace PASS；read/EOF退出码、safe failure、flush和partial迁移已写error/public/usage/CHANGELOG。非一般ABI证明；无额外Chromium或installed3.9/3.13重跑 |
+
+6条新owned回归经过真实decoder，native失败在2条JSON后返回；EOF suffix不emit；
+count/filter成功、reader Drop一次；实际1秒idle duplex capture与peer EOF；partial
+write或flush失败保留原IO/终止emission；raw/parsed旧bytes精确保留。error由实际
+shared renderer验证class/phase/exit1/unknown effects，dispatch wiring已source review；
+非实际paired-TLS syslog进程/物理relay/OS signal/启动stderr失败fixture或Apple cleanup。
+read UnexpectedEof为Io，native TimedOut为Timeout，与chosen capture success不同。
+
+首次fixture newline误判、首次full bridge FAIL、未完全复现的global-lock争用推断、
+Drop struct构造编译失败及保留assertions的isolated-page修正详见
+[专题证据](validation/syslog-stream-errors-2026-10-02.md)。失败日志不记为PASS，修正
+后的完整gate已真实结束。ios 0.1.13 SHA256
+`f62516c5f070eb050dfb6cc9a5e95a8347e3b777678d4ef525ddb9fce684a3ed`。
+
+本slice主机验收；A02/第三类/总体目标active，第四类尚未开始。下一项先复现/修复
+core syslog terminated branch的累计message limit边界，再推进其他streams/JSON
+mutations、binding void/port与lossy sources；L01/L03/平台/真机条件保留。无设备
+操作、推送/发布、历史改写或reference checkout修改。文档收尾后继续。
