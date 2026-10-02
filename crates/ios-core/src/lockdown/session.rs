@@ -92,8 +92,12 @@ fn build_rustls_config(pair_record: &PairRecord) -> Result<Arc<ClientConfig>, Lo
     let mut cert_reader = Cursor::new(&pair_record.host_certificate);
     let cert_chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| {
-            LockdownError::Protocol(format!("failed to parse host certificate PEM: {e}"))
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidInput,
+                "parse host certificate PEM",
+                error,
+            )
         })?;
     if cert_chain.is_empty() {
         return Err(LockdownError::Protocol(
@@ -103,14 +107,26 @@ fn build_rustls_config(pair_record: &PairRecord) -> Result<Arc<ClientConfig>, Lo
 
     let mut key_reader = Cursor::new(&pair_record.host_private_key);
     let private_key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| LockdownError::Protocol(format!("failed to parse host private key PEM: {e}")))?
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidInput,
+                "parse host private key PEM",
+                error,
+            )
+        })?
         .ok_or_else(|| LockdownError::Protocol("pair record host private key is missing".into()))?;
 
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(InsecureSkipVerify))
         .with_client_auth_cert(cert_chain, private_key)
-        .map_err(|e| LockdownError::Protocol(format!("rustls client auth config: {e}")))?;
+        .map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::Other,
+                "configure rustls client authentication",
+                error,
+            )
+        })?;
 
     Ok(Arc::new(config))
 }
@@ -127,14 +143,20 @@ where
     let connector = tokio_rustls::TlsConnector::from(config);
 
     // Hostname is ignored by our verifier, but rustls still requires a syntactically valid name.
-    let server_name = ServerName::try_from(server_name).map_err(|e| {
-        LockdownError::Protocol(format!("invalid rustls server name '{server_name}': {e}"))
+    let server_name = ServerName::try_from(server_name).map_err(|error| {
+        super::error_context::native(
+            std::io::ErrorKind::InvalidInput,
+            "parse rustls server name",
+            error,
+        )
     })?;
 
     connector
         .connect(server_name, stream)
         .await
-        .map_err(|e| LockdownError::Protocol(format!("TLS handshake: {e}")))
+        .map_err(|error| {
+            super::error_context::native(error.kind(), "handshake lockdown service TLS", error)
+        })
 }
 
 /// Send StartService over an established TLS session.
@@ -231,10 +253,13 @@ where
 }
 
 #[cfg(test)]
+mod source_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn dummy_pair_record(cert: &[u8], key: &[u8]) -> PairRecord {
+    pub(super) fn dummy_pair_record(cert: &[u8], key: &[u8]) -> PairRecord {
         PairRecord {
             device_certificate: b"ignored".to_vec(),
             host_certificate: cert.to_vec(),
@@ -247,7 +272,7 @@ mod tests {
     }
 
     // A self-signed RSA 2048 cert+key for testing (generated offline, no secrets)
-    const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
+    pub(super) const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
 MIIC/zCCAeegAwIBAgIUIcm1BZEI6nF3fXhXJuEND4sUAfcwDQYJKoZIhvcNAQEL
 BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA0MzAwNDM5MzBaFw0yNzA0MzAwNDM5
 MzBaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
@@ -267,7 +292,7 @@ BMGvz0c6Jfe9c3vifv+9GmvYETZyPxbNxwA33vTOLKtq0Wcb8zPvOq05rgeXOoVU
 f/68
 -----END CERTIFICATE-----";
 
-    const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+    pub(super) const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC79dsRr759iA4c
 borijwjiNsZzHQvL9J5PGJlShqIC2aL9UMKCU1EPtYTR5F4SDz6HDS3IeXPoEErn
 03hNkHopg463XbVgiFXOZwzPZbahNrKksGp+Klvc0cNbnClv/gmKro1Q9vp3IieR

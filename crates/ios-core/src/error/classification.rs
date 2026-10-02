@@ -138,8 +138,7 @@ macro_rules! typed_class {
 use typed_class;
 
 fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
-    #[cfg(any(feature = "mdns", feature = "tunnel"))]
-    if let Some(error) = error.downcast_ref::<crate::device::error_context::RetainedCause>() {
+    if let Some(error) = error.downcast_ref::<super::context::RetainedCause>() {
         return Some(error.class());
     }
     #[cfg(feature = "mobileactivation")]

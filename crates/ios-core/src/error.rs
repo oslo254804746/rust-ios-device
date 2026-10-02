@@ -1,6 +1,7 @@
 use crate::lockdown::pair_record::PairRecordError;
 
 mod classification;
+pub(crate) mod context;
 pub use classification::{classify_error, ErrorClass};
 
 /// A caller-observed operation cancellation, independent of IO Interrupted.

@@ -4,6 +4,7 @@
 //! Use [`LockdownClient`] to read device values, start services, and manage pairing.
 
 pub mod client;
+mod error_context;
 crate::redaction::error_debug!(LockdownError);
 pub(crate) mod pair_record;
 #[cfg(feature = "tunnel")]

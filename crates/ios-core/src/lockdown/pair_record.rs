@@ -138,22 +138,25 @@ impl PairRecord {
     }
 
     /// Load from an explicit path.
-    pub fn load_from_path(path: &std::path::Path, udid: &str) -> Result<Self, PairRecordError> {
+    ///
+    /// Read/parse failures retain their native source in `PairRecordError::Read`.
+    /// The identifier argument remains for compatibility; the explicit path
+    /// determines which record is loaded. Diagnostics omit both path and data.
+    pub fn load_from_path(path: &std::path::Path, _udid: &str) -> Result<Self, PairRecordError> {
         // The raw plist carries the private key too, so the read buffer gets the
         // same protection as the parsed field.
-        let data = match read_pair_record_bytes(path) {
-            Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(PairRecordError::NotFound(udid.to_string()));
-            }
-            Err(source) => {
-                return Err(PairRecordError::Read {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        plist::from_bytes(data.as_slice()).map_err(|e| PairRecordError::Parse(e.to_string()))
+        let data = read_pair_record_bytes(path).map_err(|source| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        plist::from_bytes(data.as_slice()).map_err(|error| PairRecordError::Read {
+            path: path.to_path_buf(),
+            source: crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse local pairing record plist",
+                error,
+            ),
+        })
     }
 }
 

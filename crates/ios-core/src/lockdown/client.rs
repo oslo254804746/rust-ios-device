@@ -242,8 +242,13 @@ impl LockdownClient {
             1 => format!("{s}.0"),
             _ => s.to_string(),
         };
-        semver::Version::parse(&normalized)
-            .map_err(|e| LockdownError::Protocol(format!("invalid version '{s}': {e}")))
+        semver::Version::parse(&normalized).map_err(|error| {
+            super::error_context::native(
+                std::io::ErrorKind::InvalidData,
+                "parse lockdown product version",
+                error,
+            )
+        })
     }
 }
 
@@ -288,8 +293,41 @@ fn extract_get_value(
 #[cfg(test)]
 mod tests {
     use crate::test_util::MockStream;
+    use std::error::Error;
 
     use super::*;
+
+    #[tokio::test]
+    async fn actual_product_version_parse_retains_semver_source_and_normalization() {
+        use crate::{classify_error, ErrorClass};
+        for (version, expected) in [
+            ("17", Some("17.0.0")),
+            ("17.5", Some("17.5.0")),
+            ("17.5.1", Some("17.5.1")),
+            ("owned-private-invalid", None),
+        ] {
+            let response =
+                plist::Value::Dictionary(plist::Dictionary::from_iter([("Value", version)]));
+            let mut client = LockdownClient {
+                reader: Box::new(MockStream::with_response(response)),
+                writer: Box::new(MockStream::eof()),
+                session_id: None,
+            };
+            let result = client.product_version().await;
+            if let Some(expected) = expected {
+                assert_eq!(result.unwrap().to_string(), expected);
+            } else {
+                let error = result.unwrap_err();
+                let LockdownError::Io(io) = &error else {
+                    panic!("semver source flattened");
+                };
+                assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+                assert_eq!(classify_error(&error), ErrorClass::Protocol);
+                assert!(io.source().unwrap().is::<semver::Error>());
+                assert!(!format!("{error:?} {:?}", io.get_ref()).contains("owned-private"));
+            }
+        }
+    }
 
     #[test]
     fn missing_get_value_payload_reports_context() {

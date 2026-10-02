@@ -8,6 +8,82 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[tokio::test]
+async fn default_lockdown_root_api_retains_sources_and_exhaustive_errors() {
+    use ios_core::{
+        classify_error, ErrorClass, LockdownClient, LockdownError, PairRecord, PairRecordError,
+    };
+    use std::{error::Error, io};
+    use tokio::io::AsyncWriteExt;
+    fn family(error: &LockdownError) -> &'static str {
+        match error {
+            LockdownError::Io(_) => "io",
+            LockdownError::Protocol(_) => "protocol",
+            LockdownError::PairRecord(_) => "pair-record",
+        }
+    }
+    fn record_family(error: &PairRecordError) -> &'static str {
+        match error {
+            PairRecordError::NotFound(_) => "missing",
+            PairRecordError::Read { .. } => "read",
+            PairRecordError::Parse(_) => "parse",
+        }
+    }
+    fn assert_error<E: Error + Send + Sync + 'static>() {}
+    fn signature<F: Future<Output = Result<LockdownClient, LockdownError>>>(future: F) {
+        drop(future);
+    }
+    assert_error::<LockdownError>();
+    assert_error::<PairRecordError>();
+    let record = PairRecord {
+        device_certificate: Vec::new(),
+        host_certificate: b"-----BEGIN CERTIFICATE-----\nowned-private!\n-----END CERTIFICATE-----"
+            .to_vec(),
+        host_private_key: Vec::new().into(),
+        root_certificate: Vec::new(),
+        host_id: "owned-host".into(),
+        system_buid: "owned-buid".into(),
+        wifi_mac_address: None,
+    };
+    let (stream, peer) = tokio::io::duplex(64);
+    // Root constructor is type-checked but not polled/session-established.
+    signature(LockdownClient::connect_with_stream(stream, &record));
+    drop(peer);
+    let (stream, peer) = tokio::io::duplex(64);
+    let error = ios_core::wrap_service_tls(stream, &record)
+        .await
+        .unwrap_err();
+    drop(peer);
+    assert_eq!(family(&error), "io");
+    assert_eq!(classify_error(&error), ErrorClass::InvalidInput);
+    let LockdownError::Io(source) = &error else {
+        unreachable!()
+    };
+    assert_eq!(source.kind(), io::ErrorKind::InvalidInput);
+    assert!(source.source().unwrap().is::<io::Error>());
+    assert!(!format!("{error:?} {:?}", source.get_ref()).contains("owned-private"));
+
+    let (mut stream, mut peer) = tokio::io::duplex(64);
+    let payload = b"<plist><dict>";
+    peer.write_all(&(payload.len() as u32).to_be_bytes())
+        .await
+        .unwrap();
+    peer.write_all(payload).await.unwrap();
+    let error = ios_core::recv_lockdown::<_, plist::Value>(&mut stream)
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+    let LockdownError::Io(source) = &error else {
+        unreachable!()
+    };
+    assert!(source.source().unwrap().is::<plist::Error>());
+    assert_eq!(
+        record_family(&PairRecordError::Parse("owned-private".into())),
+        "parse"
+    );
+}
+
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 #[test]
 fn manual_pairing_root_api_preserves_its_exhaustive_error_and_future() {
