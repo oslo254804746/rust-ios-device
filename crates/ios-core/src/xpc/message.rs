@@ -14,8 +14,9 @@
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use indexmap::IndexMap;
+use std::io::{self, ErrorKind};
 
-use crate::xpc::XpcError;
+use crate::xpc::{native_error, XpcError};
 
 pub const WRAPPER_MAGIC: u32 = 0x29B00B92;
 pub const OBJECT_MAGIC: u32 = 0x42133742;
@@ -70,15 +71,35 @@ pub(crate) fn xpc_body_limit_for_flags(message_flags: u32) -> usize {
     }
 }
 
-/// Convert a wire body length without truncation and reject it before callers
-/// use it to read or allocate. The original u64 is retained in diagnostics so
-/// malformed values such as `u64::MAX` remain actionable on 32- and 64-bit
-/// hosts alike.
-pub(crate) fn checked_xpc_body_len(declared: u64, limit: usize) -> Result<usize, String> {
-    let length = usize::try_from(declared)
-        .map_err(|_| format!("XPC body length {declared} exceeds usize::MAX"))?;
+/// Retain the declared wire length alongside a narrow-host conversion failure.
+#[derive(thiserror::Error)]
+#[error("XPC body length {declared} exceeds usize::MAX")]
+struct BodyLengthOverflow {
+    declared: u64,
+    #[source]
+    source: std::num::TryFromIntError,
+}
+
+crate::redaction::error_debug!(BodyLengthOverflow);
+
+/// Convert and bound a wire body length before callers read or allocate it.
+/// Both conversion and limit failures retain the declared u64 in diagnostics.
+pub(crate) fn checked_xpc_body_len(declared: u64, limit: usize) -> io::Result<usize> {
+    let length = usize::try_from(declared).map_err(|error| {
+        crate::error::context::retained_io(
+            ErrorKind::InvalidData,
+            "convert XPC body length",
+            BodyLengthOverflow {
+                declared,
+                source: error,
+            },
+        )
+    })?;
     if length > limit {
-        return Err(format!("XPC body length {declared} exceeds limit {limit}"));
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("XPC body length {declared} exceeds limit {limit}"),
+        ));
     }
     Ok(length)
 }
@@ -267,19 +288,24 @@ fn encode_value(val: &XpcValue, out: &mut BytesMut) -> Result<(), XpcError> {
     Ok(())
 }
 
-fn checked_collection_len(kind: &str, len: usize) -> Result<u32, XpcError> {
-    u32::try_from(len)
-        .map_err(|_| XpcError::Tls(format!("XPC {kind} encoded size exceeds u32::MAX: {len}")))
+fn checked_collection_len(_kind: &str, len: usize) -> Result<u32, XpcError> {
+    u32::try_from(len).map_err(|error| {
+        native_error(
+            ErrorKind::InvalidInput,
+            "encode XPC collection length",
+            error,
+        )
+    })
 }
 
-fn checked_u32_len(kind: &str, len: usize) -> Result<u32, XpcError> {
+fn checked_u32_len(_kind: &str, len: usize) -> Result<u32, XpcError> {
     u32::try_from(len)
-        .map_err(|_| XpcError::Tls(format!("XPC {kind} length exceeds u32::MAX: {len}")))
+        .map_err(|error| native_error(ErrorKind::InvalidInput, "encode XPC field length", error))
 }
 
-fn checked_u64_len(kind: &str, len: usize) -> Result<u64, XpcError> {
+fn checked_u64_len(_kind: &str, len: usize) -> Result<u64, XpcError> {
     u64::try_from(len)
-        .map_err(|_| XpcError::Tls(format!("XPC {kind} length exceeds u64::MAX: {len}")))
+        .map_err(|error| native_error(ErrorKind::InvalidInput, "encode XPC body length", error))
 }
 
 fn checked_align4(kind: &str, len: usize) -> Result<usize, XpcError> {
@@ -322,8 +348,9 @@ fn decode_dict_key(buf: &mut Bytes) -> Result<String, XpcError> {
     if pad > 0 {
         buf.advance(pad);
     }
-    let s = std::str::from_utf8(&raw)
-        .map_err(|_| XpcError::Tls("XPC: invalid UTF-8 in dict key".into()))?;
+    let s = std::str::from_utf8(&raw).map_err(|error| {
+        native_error(ErrorKind::InvalidData, "decode XPC dictionary key", error)
+    })?;
     Ok(s.to_string())
 }
 
@@ -345,7 +372,7 @@ pub fn decode_message(mut buf: Bytes) -> Result<XpcMessage, XpcError> {
     let declared_body_len = buf.get_u64_le();
     let msg_id = buf.get_u64_le();
     let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
-        .map_err(XpcError::Tls)?;
+        .map_err(XpcError::Io)?;
 
     let body = if body_len > 0 {
         if buf.remaining() < body_len {
@@ -425,18 +452,19 @@ impl XpcMessageBuffer {
             return Ok(None);
         }
 
-        let declared_body_len = u64::from_le_bytes(
-            self.pending[8..16]
-                .try_into()
-                .map_err(|_| XpcError::Tls("XPC: invalid wrapper header".into()))?,
-        );
-        let flags = u32::from_le_bytes(
-            self.pending[4..8]
-                .try_into()
-                .map_err(|_| XpcError::Tls("XPC: invalid wrapper flags".into()))?,
-        );
+        let declared_body_len =
+            u64::from_le_bytes(self.pending[8..16].try_into().map_err(|error| {
+                native_error(
+                    ErrorKind::InvalidData,
+                    "decode buffered XPC body length",
+                    error,
+                )
+            })?);
+        let flags = u32::from_le_bytes(self.pending[4..8].try_into().map_err(|error| {
+            native_error(ErrorKind::InvalidData, "decode buffered XPC flags", error)
+        })?);
         let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
-            .map_err(XpcError::Tls)?;
+            .map_err(XpcError::Io)?;
         let total_len = 24usize
             .checked_add(body_len)
             .ok_or_else(|| XpcError::Tls("XPC: message length overflow".into()))?;
@@ -513,10 +541,8 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
                 return Err(XpcError::Tls("XPC: data length truncated".into()));
             }
             let declared_data_len = buf.get_u32_le();
-            let data_len = usize::try_from(declared_data_len).map_err(|_| {
-                XpcError::Tls(format!(
-                    "XPC data length {declared_data_len} exceeds usize::MAX"
-                ))
+            let data_len = usize::try_from(declared_data_len).map_err(|error| {
+                native_error(ErrorKind::InvalidData, "convert XPC data length", error)
             })?;
             let padded = checked_align4("data", data_len)?;
             if buf.remaining() < padded {
@@ -534,10 +560,8 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
                 return Err(XpcError::Tls("XPC: string length truncated".into()));
             }
             let declared_data_len = buf.get_u32_le();
-            let data_len = usize::try_from(declared_data_len).map_err(|_| {
-                XpcError::Tls(format!(
-                    "XPC string length {declared_data_len} exceeds usize::MAX"
-                ))
+            let data_len = usize::try_from(declared_data_len).map_err(|error| {
+                native_error(ErrorKind::InvalidData, "convert XPC string length", error)
             })?;
             let padded = checked_align4("string", data_len)?;
             if buf.remaining() < padded {
@@ -549,8 +573,9 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
                 buf.advance(pad);
             }
             let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-            let s = std::str::from_utf8(&raw[..end])
-                .map_err(|_| XpcError::Tls("XPC: invalid UTF-8 in string".into()))?;
+            let s = std::str::from_utf8(&raw[..end]).map_err(|error| {
+                native_error(ErrorKind::InvalidData, "decode XPC string", error)
+            })?;
             Ok(XpcValue::String(s.to_string()))
         }
         TYPE_UUID => {
@@ -570,10 +595,8 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
                 return Err(XpcError::Tls("XPC: array count truncated".into()));
             }
             let declared_count = buf.get_u32_le();
-            let count = usize::try_from(declared_count).map_err(|_| {
-                XpcError::Tls(format!(
-                    "XPC array count {declared_count} exceeds usize::MAX"
-                ))
+            let count = usize::try_from(declared_count).map_err(|error| {
+                native_error(ErrorKind::InvalidData, "convert XPC array count", error)
             })?;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
@@ -593,10 +616,12 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
                 return Err(XpcError::Tls("XPC: dict count truncated".into()));
             }
             let declared_count = buf.get_u32_le();
-            let count = usize::try_from(declared_count).map_err(|_| {
-                XpcError::Tls(format!(
-                    "XPC dictionary count {declared_count} exceeds usize::MAX"
-                ))
+            let count = usize::try_from(declared_count).map_err(|error| {
+                native_error(
+                    ErrorKind::InvalidData,
+                    "convert XPC dictionary count",
+                    error,
+                )
             })?;
             if count > MAX_XPC_COLLECTION_SIZE {
                 return Err(XpcError::Tls(format!("XPC collection too large: {count}")));
@@ -627,6 +652,63 @@ fn decode_value_at_depth(buf: &mut Bytes, depth: usize) -> Result<XpcValue, XpcE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_xpc_string_and_dictionary_faults_retain_native_utf8_sources() {
+        use std::error::Error;
+        for body in [
+            XpcValue::String("owned-private".into()),
+            XpcValue::Dictionary(IndexMap::from_iter([(
+                "owned-private".into(),
+                XpcValue::Null,
+            )])),
+        ] {
+            let message = XpcMessage {
+                flags: flags::ALWAYS_SET,
+                msg_id: 1,
+                body: Some(body),
+            };
+            let mut bytes = encode_message(&message).unwrap().to_vec();
+            let position = bytes
+                .windows(b"owned-private".len())
+                .position(|s| s == b"owned-private")
+                .unwrap();
+            bytes[position] = 0xff;
+            let error = decode_message(Bytes::from(bytes)).unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            let XpcError::Io(outer) = &error else {
+                panic!("native XPC source lost");
+            };
+            let native = outer
+                .source()
+                .unwrap()
+                .downcast_ref::<std::str::Utf8Error>()
+                .unwrap();
+            assert_eq!(native.valid_up_to(), 0);
+            assert_eq!(native.error_len(), Some(1));
+            assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn actual_xpc_encoding_length_conversions_retain_native_input_errors() {
+        use std::error::Error;
+        let length = u32::MAX as usize + 1;
+        for error in [
+            checked_collection_len("array", length).unwrap_err(),
+            checked_u32_len("data", length).unwrap_err(),
+        ] {
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let XpcError::Io(outer) = error else {
+                panic!("native input error lost");
+            };
+            assert!(outer.source().unwrap().is::<std::num::TryFromIntError>());
+        }
+    }
 
     fn roundtrip(val: XpcValue) -> XpcValue {
         let msg = XpcMessage {
@@ -734,11 +816,11 @@ mod tests {
 
         let over = XPC_CONTROL_BODY_LIMIT as u64 + 1;
         let error = checked_xpc_body_len(over, XPC_CONTROL_BODY_LIMIT).unwrap_err();
-        assert!(error.contains(&over.to_string()), "{error}");
-        assert!(error.contains("exceeds limit"), "{error}");
+        assert!(error.to_string().contains(&over.to_string()), "{error}");
+        assert!(error.to_string().contains("exceeds limit"), "{error}");
 
         let error = checked_xpc_body_len(u64::MAX, XPC_CONTROL_BODY_LIMIT).unwrap_err();
-        assert!(error.contains(&u64::MAX.to_string()), "{error}");
+        assert!(error.to_string().contains(&u64::MAX.to_string()), "{error}");
 
         // The decoder rejects the declared size before checking available bytes,
         // so this test never allocates a body-sized buffer.
@@ -774,15 +856,15 @@ mod tests {
     #[test]
     fn collection_length_rejects_values_above_u32_max() {
         let err = checked_collection_len("array", u32::MAX as usize + 1).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("array encoded size exceeds u32::MAX"));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::InvalidInput);
+        assert!(matches!(err, XpcError::Io(_)));
     }
 
     #[test]
     fn checked_xpc_u32_len_rejects_values_above_u32_max() {
         let err = checked_u32_len("data", u32::MAX as usize + 1).unwrap_err();
-        assert!(err.to_string().contains("data length exceeds u32::MAX"));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::InvalidInput);
+        assert!(matches!(err, XpcError::Io(_)));
     }
 
     #[test]

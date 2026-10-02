@@ -50,24 +50,48 @@ pub(crate) fn current_hostname() -> io::Result<String> {
                 "host name exceeds identity limit",
             )
         })?;
-        let hostname = std::str::from_utf8(&buffer[..end]).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "host name is not valid UTF-8")
-        })?;
-        if hostname.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "host name is empty",
-            ));
-        }
-        Ok(hostname.to_owned())
+        parse_hostname(&buffer[..end]).map(str::to_owned)
     }
     #[cfg(not(unix))]
     {
-        std::env::var("COMPUTERNAME")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "host name unavailable"))
+        parse_environment_hostname(std::env::var("COMPUTERNAME"))
     }
+}
+
+#[cfg(any(not(unix), test))]
+fn parse_environment_hostname(value: Result<String, std::env::VarError>) -> io::Result<String> {
+    let hostname = value.map_err(|error| {
+        let kind = match &error {
+            std::env::VarError::NotPresent => io::ErrorKind::NotFound,
+            std::env::VarError::NotUnicode(_) => io::ErrorKind::InvalidData,
+        };
+        crate::error::context::retained_io(kind, "read host identity environment", error)
+    })?;
+    if hostname.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "host name unavailable",
+        ));
+    }
+    Ok(hostname)
+}
+
+#[cfg(any(unix, test))]
+fn parse_hostname(bytes: &[u8]) -> io::Result<&str> {
+    let hostname = std::str::from_utf8(bytes).map_err(|error| {
+        crate::error::context::retained_io(
+            io::ErrorKind::InvalidData,
+            "decode host identity name",
+            error,
+        )
+    })?;
+    if hostname.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "host name is empty",
+        ));
+    }
+    Ok(hostname)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -145,7 +169,13 @@ async fn bounded_command_output(
         Ok(output)
     })
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "remoted identity query timed out"))?;
+    .map_err(|error| {
+        crate::error::context::retained_io(
+            io::ErrorKind::TimedOut,
+            "remoted identity query timed out",
+            error,
+        )
+    })?;
     // kill_on_drop also handles cancellation of this entire future. Explicit
     // cleanup on output errors releases an overproducing child promptly.
     if result.is_err() {
@@ -157,6 +187,71 @@ async fn bounded_command_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_hostname_retains_native_errors_and_preserves_empty_and_success() {
+        use std::error::Error;
+        let key = format!("IOS_A02_OWNED_ABSENT_{}", Uuid::new_v4());
+        let error = parse_environment_hostname(std::env::var(key)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<std::env::VarError>(),
+            Some(std::env::VarError::NotPresent)
+        ));
+        #[cfg(unix)]
+        let invalid = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(b"owned-private\xff".to_vec())
+        };
+        #[cfg(windows)]
+        let invalid = {
+            use std::os::windows::ffi::OsStringExt;
+            let units: Vec<_> = "owned-private".encode_utf16().chain([0xd800]).collect();
+            std::ffi::OsString::from_wide(&units)
+        };
+        #[cfg(not(any(unix, windows)))]
+        let invalid = std::ffi::OsString::from("owned-private");
+        let error =
+            parse_environment_hostname(Err(std::env::VarError::NotUnicode(invalid.clone())))
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<std::env::VarError>(),
+            Some(std::env::VarError::NotUnicode(value)) if value == &invalid
+        ));
+        assert!(!format!("{:?}", error.get_ref()).contains("owned-private"));
+        assert_eq!(
+            parse_environment_hostname(Ok(String::new()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            parse_environment_hostname(Ok("owned-host".into())).unwrap(),
+            "owned-host"
+        );
+    }
+
+    #[test]
+    fn hostname_parser_retains_actual_utf8_source_and_existing_admission() {
+        use std::error::Error;
+        let error = parse_hostname(b"owned-private\xff").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let native = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::str::Utf8Error>()
+            .unwrap();
+        assert_eq!(native.valid_up_to(), 13);
+        assert_eq!(native.error_len(), Some(1));
+        assert!(!format!("{:?}", error.get_ref()).contains("owned-private"));
+        assert_eq!(
+            parse_hostname(b"").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(parse_hostname(b"owned-host").unwrap(), "owned-host");
+    }
 
     #[test]
     fn stable_identity_matches_dns_uuid3_vectors() {
@@ -245,6 +340,9 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(std::error::Error::source(&error)
+            .unwrap()
+            .is::<tokio::time::error::Elapsed>());
 
         let mut failed = tokio::process::Command::new("/bin/sh");
         failed.args(["-c", "exit 7"]);

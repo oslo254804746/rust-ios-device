@@ -20,7 +20,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::net::TcpStream;
 
 #[cfg(feature = "tunnel")]
-use crate::xpc::error_mapping::h2_error;
+use crate::xpc::error_mapping::{h2_error, xpc_timeout};
 #[cfg(feature = "tunnel")]
 use crate::xpc::h2_raw::{H2Error, H2Framer, MAX_BUFFERED_BYTES_PER_STREAM, MAX_FRAME_PAYLOAD};
 #[cfg(feature = "tunnel")]
@@ -294,9 +294,7 @@ async fn rsd_timeout<T>(
     context: &'static str,
     operation: impl std::future::Future<Output = Result<T, XpcError>>,
 ) -> Result<T, XpcError> {
-    tokio::time::timeout(duration, operation)
-        .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, context))?
+    xpc_timeout(duration, context, operation).await
 }
 
 /// Announce this host on an RSD control connection after the XPC bootstrap.
@@ -555,18 +553,22 @@ where
         .read_client_server(24)
         .await
         .map_err(|e| h2_error("read header: ", e))?;
-    let declared_body_len = u64::from_le_bytes(
-        header[8..16]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header".into()))?,
-    );
-    let message_flags = u32::from_le_bytes(
-        header[4..8]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header flags".into()))?,
-    );
+    let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD client body length",
+            error,
+        )
+    })?);
+    let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD client flags",
+            error,
+        )
+    })?);
     let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-        .map_err(XpcError::Tls)?;
+        .map_err(XpcError::Io)?;
     let body = if body_len > 0 {
         read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, body_len)
             .await
@@ -588,18 +590,22 @@ where
         .read_server_client(24)
         .await
         .map_err(|e| h2_error("read header: ", e))?;
-    let declared_body_len = u64::from_le_bytes(
-        header[8..16]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header".into()))?,
-    );
-    let message_flags = u32::from_le_bytes(
-        header[4..8]
-            .try_into()
-            .map_err(|_| XpcError::Tls("bad header flags".into()))?,
-    );
+    let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD server body length",
+            error,
+        )
+    })?);
+    let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+        crate::xpc::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode RSD server flags",
+            error,
+        )
+    })?);
     let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-        .map_err(XpcError::Tls)?;
+        .map_err(XpcError::Io)?;
     let body = if body_len > 0 {
         read_xpc_body_in_chunks(framer, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, body_len)
             .await
@@ -1113,19 +1119,23 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .read_stream(stream_id, 24)
             .await
             .map_err(|e| h2_error("", e))?;
-        let declared_body_len = u64::from_le_bytes(
-            header[8..16]
-                .try_into()
-                .map_err(|_| XpcError::Tls("invalid header bytes".into()))?,
-        );
-        let message_flags = u32::from_le_bytes(
-            header[4..8]
-                .try_into()
-                .map_err(|_| XpcError::Tls("invalid header flags".into()))?,
-        );
+        let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
+            crate::xpc::native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode XPC response body length",
+                error,
+            )
+        })?);
+        let message_flags = u32::from_le_bytes(header[4..8].try_into().map_err(|error| {
+            crate::xpc::native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode XPC response flags",
+                error,
+            )
+        })?);
         let body_len =
             checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(message_flags))
-                .map_err(XpcError::Tls)?;
+                .map_err(XpcError::Io)?;
         let body = if body_len > 0 {
             read_xpc_body_in_chunks(&mut self.framer, stream_id, body_len)
                 .await
@@ -1462,6 +1472,13 @@ mod tests {
             matches!(error, XpcError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut)
         );
         assert!(error.to_string().contains("RSD response timed out"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        let XpcError::Io(outer) = error else {
+            unreachable!()
+        };
+        assert!(std::error::Error::source(&outer)
+            .unwrap()
+            .is::<tokio::time::error::Elapsed>());
     }
 
     struct CapturingSubscriber {

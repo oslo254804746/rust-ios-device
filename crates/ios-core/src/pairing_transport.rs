@@ -539,9 +539,7 @@ fn xpc_body_len(header: &[u8]) -> Result<usize, PairingTransportError> {
             })?,
     );
     crate::xpc::message::checked_xpc_body_len(declared_len, MAX_XPC_BODY_SIZE).map_err(|error| {
-        PairingTransportError::Xpc(format!(
-            "body too large: declared {declared_len} bytes ({error})"
-        ))
+        error_context::native(error.kind(), "check manual pairing XPC body length", error)
     })
 }
 
@@ -950,9 +948,8 @@ mod tests {
         header[8..16].copy_from_slice(&((MAX_XPC_BODY_SIZE as u64) + 1).to_le_bytes());
 
         let err = xpc_body_len(&header).unwrap_err();
-        assert!(
-            matches!(err, PairingTransportError::Xpc(message) if message.contains("body too large"))
-        );
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(matches!(err, PairingTransportError::Io(_)));
     }
 
     #[test]
@@ -961,11 +958,8 @@ mod tests {
         header[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
 
         let err = xpc_body_len(&header).unwrap_err();
-        assert!(matches!(
-            err,
-            PairingTransportError::Xpc(message)
-                if message.contains(&u64::MAX.to_string())
-        ));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(err.to_string().contains(&u64::MAX.to_string()));
     }
 
     #[test]

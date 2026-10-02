@@ -9,6 +9,46 @@ use ios_core::{
 };
 
 #[test]
+fn root_xpc_codec_error_retains_native_source_and_exhaustive_family() {
+    use ios_core::{
+        decode_xpc_message as decode_message, encode_xpc_message as encode_message, XpcError,
+    };
+    use std::error::Error;
+    fn family(error: &XpcError) -> &'static str {
+        match error {
+            XpcError::Io(_) => "io",
+            XpcError::NotConnected => "not-connected",
+            XpcError::ServiceNotFound(_) => "service-not-found",
+            XpcError::Tls(_) => "protocol",
+        }
+    }
+    let message = XpcMessage {
+        flags: 1,
+        msg_id: 42,
+        body: Some(XpcValue::String("owned-private".into())),
+    };
+    let valid = encode_message(&message).unwrap();
+    assert_eq!(decode_message(valid.clone()).unwrap().body, message.body);
+    let mut malformed = valid.to_vec();
+    let position = malformed
+        .windows(b"owned-private".len())
+        .position(|s| s == b"owned-private")
+        .unwrap();
+    malformed[position] = 0xff;
+    let error = decode_message(bytes::Bytes::from(malformed)).unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Protocol
+    );
+    let XpcError::Io(outer) = &error else {
+        unreachable!()
+    };
+    assert!(outer.source().unwrap().is::<std::str::Utf8Error>());
+    assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+}
+
+#[test]
 fn root_backup_required_file_error_keeps_native_io_and_public_family() {
     use ios_core::{
         backup2::{initialize_backup_directory, load_backup_applications, Mobilebackup2Error},

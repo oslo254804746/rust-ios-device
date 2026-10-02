@@ -441,6 +441,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         H2Error::Protocol(message)
     }
 
+    fn connection_protocol_source(
+        &mut self,
+        phase: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> H2Error {
+        if self.connection_error.is_none() {
+            self.connection_error = Some(phase.to_owned());
+        }
+        H2Error::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            phase,
+            source,
+        ))
+    }
+
     fn ensure_stream_available(&self, stream_id: u32) -> Result<(), H2Error> {
         self.ensure_connection_open()?;
         if let Some(error_code) = self.reset_streams.get(&stream_id) {
@@ -714,10 +729,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         if consumed == 0 {
             return Ok(());
         }
-        let consumed = u32::try_from(consumed).map_err(|_| {
-            self.connection_protocol_error(format!(
-                "received DATA length {consumed} does not fit in a WINDOW_UPDATE"
-            ))
+        let consumed = u32::try_from(consumed).map_err(|error| {
+            self.connection_protocol_source("convert H2 received DATA count", error)
         })?;
 
         let mut frames = Vec::new();
@@ -923,7 +936,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         let flags = u32::from_le_bytes(buffer[4..8].try_into().unwrap());
         let declared_body_len = u64::from_le_bytes(buffer[8..16].try_into().unwrap());
         let body_len = checked_xpc_body_len(declared_body_len, xpc_body_limit_for_flags(flags))
-            .map_err(H2Error::Protocol)?;
+            .map_err(H2Error::Io)?;
         let total_len = 24usize.checked_add(body_len).ok_or_else(|| {
             H2Error::Protocol("XPC message length overflow while selecting a stream".into())
         })?;
@@ -1090,23 +1103,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         if self.outbound_connection_window <= 0 || stream_window <= 0 {
             return Ok(0);
         }
-        let connection = usize::try_from(self.outbound_connection_window).map_err(|_| {
-            H2Error::Protocol(format!(
-                "invalid outbound connection window {}",
-                self.outbound_connection_window
+        let connection = usize::try_from(self.outbound_connection_window).map_err(|error| {
+            H2Error::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidData,
+                "convert H2 connection window",
+                error,
             ))
         })?;
-        let stream = usize::try_from(stream_window).map_err(|_| {
-            H2Error::Protocol(format!(
-                "invalid outbound stream {stream_id} window {stream_window}"
+        let stream = usize::try_from(stream_window).map_err(|error| {
+            H2Error::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidData,
+                "convert H2 stream window",
+                error,
             ))
         })?;
         Ok(self.outbound_max_frame_size.min(connection).min(stream))
     }
 
     fn consume_outbound_window(&mut self, stream_id: u32, amount: usize) -> Result<(), H2Error> {
-        let amount = i64::try_from(amount).map_err(|_| {
-            self.connection_protocol_error(format!("outbound DATA length {amount} exceeds i64"))
+        let amount = i64::try_from(amount).map_err(|error| {
+            self.connection_protocol_source("convert H2 outbound DATA count", error)
         })?;
         let stream_window = self
             .outbound_stream_windows
@@ -1471,6 +1487,39 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use super::*;
+
+    #[cfg(target_pointer_width = "64")]
+    #[tokio::test]
+    async fn actual_h2_count_overflows_keep_native_error_and_poison_without_window_changes() {
+        use std::error::Error;
+        for receive in [true, false] {
+            let (client, _peer) = tokio::io::duplex(64);
+            let mut framer = H2Framer::new(client);
+            let error = if receive {
+                framer
+                    .replenish_receive_window(1, usize::MAX)
+                    .await
+                    .unwrap_err()
+            } else {
+                framer.consume_outbound_window(1, usize::MAX).unwrap_err()
+            };
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(framer.ensure_connection_open().is_err());
+            assert!(framer.pending_window_updates.is_empty());
+            assert_eq!(framer.outbound_connection_window, DEFAULT_PEER_WINDOW_SIZE);
+            let mut source: Option<&(dyn Error + 'static)> = Some(&error);
+            let mut found = false;
+            for _ in 0..32 {
+                let Some(current) = source else { break };
+                if current.is::<std::num::TryFromIntError>() {
+                    found = true;
+                    break;
+                }
+                source = current.source();
+            }
+            assert!(found, "native integer conversion must remain reachable");
+        }
+    }
 
     #[test]
     fn test_settings_frame_layout() {

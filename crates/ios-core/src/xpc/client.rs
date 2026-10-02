@@ -6,7 +6,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-use crate::xpc::error_mapping::h2_error;
+use crate::xpc::error_mapping::{h2_error, xpc_timeout};
 use crate::xpc::h2_raw::H2Framer;
 use crate::xpc::message::{flags, XpcMessage, XpcValue};
 use crate::xpc::rsd::{initialize_xpc_connection_on_framer, XpcConnection};
@@ -29,28 +29,18 @@ impl XpcClient {
     /// Connect to an XPC service at the given IPv6 address and port.
     pub async fn connect(addr: Ipv6Addr, port: u16) -> Result<Self, XpcError> {
         let sock_addr = SocketAddr::new(addr.into(), port);
-        let stream = tokio::time::timeout(
+        let stream = xpc_timeout(
             crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
-            TcpStream::connect(sock_addr),
+            "dial XPC service",
+            async { Ok(TcpStream::connect(sock_addr).await?) },
         )
-        .await
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("XPC dial to {sock_addr} timed out"),
-            )
-        })??;
-        let client = tokio::time::timeout(
+        .await?;
+        let client = xpc_timeout(
             crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+            "initialize XPC service",
             Self::connect_stream(stream),
         )
-        .await
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("XPC initialization with {sock_addr} timed out"),
-            )
-        })??;
+        .await?;
         Ok(client.with_reconnector(move || async move {
             let stream = TcpStream::connect(sock_addr).await?;
             Self::connect_stream(stream).await
@@ -96,11 +86,12 @@ impl XpcClient {
             let connect = connect.ok_or_else(|| {
                 XpcError::Tls("this XPC transport has no reconnection factory".into())
             })?;
-            let mut client = tokio::time::timeout(crate::tunnel::TUNNEL_CONNECT_TIMEOUT, connect())
-                .await
-                .map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "XPC reconnect timed out")
-                })??;
+            let mut client = xpc_timeout(
+                crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+                "reconnect XPC service",
+                connect(),
+            )
+            .await?;
             client.reconnector = Some(connect);
             Ok(client)
         }

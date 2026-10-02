@@ -228,9 +228,10 @@ fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     if let Some(opack) = error.downcast_ref::<Opack>() {
         return Some(match opack {
             Opack::TooDeep(_) => ErrorClass::ResourceLimit,
-            Opack::UnexpectedEof | Opack::UnknownTag(_) | Opack::InvalidUtf8 | Opack::Encode(_) => {
-                ErrorClass::Protocol
-            }
+            Opack::UnexpectedEof
+            | Opack::UnknownTag(_)
+            | Opack::InvalidUtf8(_)
+            | Opack::Encode(_) => ErrorClass::Protocol,
         });
     }
     services::class(error)

@@ -587,7 +587,8 @@ fn try_take_xpc_message(buffer: &mut BytesMut) -> Result<Option<crate::xpc::XpcM
     let body_len = crate::xpc::message::checked_xpc_body_len(
         declared_body_len,
         crate::xpc::message::xpc_body_limit_for_flags(message_flags),
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     let total = 24usize
         .checked_add(body_len)
         .ok_or_else(|| "XPC message length overflow".to_string())?;

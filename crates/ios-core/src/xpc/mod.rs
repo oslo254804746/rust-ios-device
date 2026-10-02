@@ -57,3 +57,11 @@ pub enum XpcError {
     #[error("TLS / protocol error: {0}")]
     Tls(String),
 }
+
+pub(crate) fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> XpcError {
+    XpcError::Io(crate::error::context::retained_io(kind, phase, source))
+}
