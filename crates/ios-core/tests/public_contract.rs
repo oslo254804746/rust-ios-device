@@ -48,6 +48,44 @@ fn root_xpc_codec_error_retains_native_source_and_exhaustive_family() {
     assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
 }
 
+#[cfg(feature = "pcap")]
+#[tokio::test]
+async fn root_pcap_reader_retains_native_metadata_source_and_exhaustive_family() {
+    use ios_core::pcap::{PcapClient, PcapError};
+    use std::error::Error;
+    fn family(error: &PcapError) -> &'static str {
+        match error {
+            PcapError::Io(_) => "io",
+            PcapError::Plist(_) => "plist",
+            PcapError::Protocol(_) => "protocol",
+        }
+    }
+    let mut raw = vec![0; 95];
+    raw[..4].copy_from_slice(&95u32.to_be_bytes());
+    raw[25..39].copy_from_slice(b"owned-private\xff");
+    let mut payload = Vec::new();
+    plist::to_writer_binary(&mut payload, &plist::Value::Data(raw)).unwrap();
+    let mut wire = (payload.len() as u32).to_be_bytes().to_vec();
+    wire.extend_from_slice(&payload);
+    let mut reader = PcapClient::new(std::io::Cursor::new(wire));
+    let error = reader.next_packet().await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Protocol
+    );
+    let PcapError::Io(outer) = &error else {
+        unreachable!()
+    };
+    let native = outer
+        .source()
+        .unwrap()
+        .downcast_ref::<std::string::FromUtf8Error>()
+        .unwrap();
+    assert_eq!(native.as_bytes(), b"owned-private\xff");
+    assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+}
+
 #[test]
 fn root_backup_required_file_error_keeps_native_io_and_public_family() {
     use ios_core::{

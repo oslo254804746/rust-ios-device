@@ -923,7 +923,13 @@ impl TouchSession<'_> {
                 .send_touchscreen(TouchPhase::Cancel, coordinate, self.service_id, None);
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| HidError::Protocol("touch session close timed out".into()))??;
+            .map_err(|error| {
+                HidError::Xpc(crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "close HID touch session",
+                    error,
+                ))
+            })??;
         self.active_contact = None;
         self.last_coordinate = None;
         let _ = contact_id;
@@ -1077,7 +1083,13 @@ impl KeyboardSession<'_> {
         let operation = self.service.send_keyboard(self.service_id, &[], None);
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| HidError::Protocol("keyboard session close timed out".into()))??;
+            .map_err(|error| {
+                HidError::Xpc(crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "close HID keyboard session",
+                    error,
+                ))
+            })??;
         self.pressed.clear();
         self.closed = true;
         Ok(())
@@ -1189,6 +1201,48 @@ fn ascii_usage(character: char) -> Option<(KeyboardUsage, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_close_timeouts_keep_elapsed_and_held_state_until_send_succeeds() {
+        use crate::{
+            classify_error,
+            test_native::{connected_xpc_pair, has_source},
+            ErrorClass,
+        };
+        use std::sync::atomic::Ordering;
+        let (client, _peer, open) = connected_xpc_pair().await;
+        let mut service = UniversalHidServiceClient::new(client);
+        open.store(false, Ordering::SeqCst);
+        let mut touch = service.touch_session(DEFAULT_TOUCHSCREEN_SERVICE_ID);
+        touch.active_contact = Some(7);
+        touch.last_coordinate = Some(TouchCoordinate { x: 0.3, y: 0.4 });
+        let error = touch.close(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(classify_error(&error), ErrorClass::Timeout);
+        assert!(has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(touch.active_contact, Some(7));
+        assert_eq!(
+            touch.last_coordinate,
+            Some(TouchCoordinate { x: 0.3, y: 0.4 })
+        );
+        assert!(!touch.closed);
+        open.store(true, Ordering::SeqCst);
+        touch.close(Duration::from_secs(1)).await.unwrap();
+        assert!(touch.closed && touch.active_contact.is_none() && touch.last_coordinate.is_none());
+        touch.close(Duration::ZERO).await.unwrap();
+        drop(touch);
+        let mut keyboard = service.keyboard_session(DEFAULT_KEYBOARD_SERVICE_ID);
+        keyboard.pressed.push(KeyboardUsage::new(4).unwrap());
+        open.store(false, Ordering::SeqCst);
+        let error = keyboard.close(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(classify_error(&error), ErrorClass::Timeout);
+        assert!(has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(keyboard.pressed, [KeyboardUsage::new(4).unwrap()]);
+        assert!(!keyboard.closed);
+        open.store(true, Ordering::SeqCst);
+        keyboard.close(Duration::from_secs(1)).await.unwrap();
+        assert!(keyboard.closed && keyboard.pressed.is_empty());
+        keyboard.close(Duration::ZERO).await.unwrap();
+    }
 
     #[test]
     fn reports_match_upstream_sizes_and_offsets() {

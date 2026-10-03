@@ -87,6 +87,8 @@ pub mod secret_file;
 pub mod services;
 pub(crate) mod staged_file;
 #[cfg(test)]
+pub(crate) mod test_native;
+#[cfg(test)]
 pub(crate) mod test_util;
 pub(crate) mod tunnel;
 pub(crate) mod xpc;

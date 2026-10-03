@@ -122,7 +122,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PcapClient<S> {
         while packets < limits.max_packets && bytes < limits.max_bytes {
             let packet = timeout_at(deadline, self.next_packet())
                 .await
-                .map_err(|_| PcapError::Protocol("IP finder timed out".into()))??;
+                .map_err(|error| {
+                    PcapError::Io(crate::error::context::retained_io(
+                        std::io::ErrorKind::TimedOut,
+                        "find packet capture IP",
+                        error,
+                    ))
+                })??;
             packets += 1;
             bytes = bytes.saturating_add(packet.payload.len());
             if bytes > limits.max_bytes {
@@ -248,8 +254,13 @@ pub fn write_packet_record<W: std::io::Write>(
 }
 
 fn checked_packet_record_len(len: usize) -> Result<u32, PcapError> {
-    u32::try_from(len)
-        .map_err(|_| PcapError::Protocol(format!("packet payload too large for pcap: {len}")))
+    u32::try_from(len).map_err(|error| {
+        PcapError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode pcap packet length",
+            error,
+        ))
+    })
 }
 
 fn decode_packet(buf: &[u8]) -> Result<CapturedPacket, PcapError> {
@@ -329,7 +340,13 @@ fn parse_fixed_string(buf: &[u8], offset: usize, len: usize) -> Result<String, P
         .copied()
         .take_while(|byte| *byte != 0)
         .collect::<Vec<_>>();
-    String::from_utf8(trimmed).map_err(|e| PcapError::Protocol(format!("invalid string: {e}")))
+    String::from_utf8(trimmed).map_err(|error| {
+        PcapError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            "decode packet capture metadata",
+            error,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -337,6 +354,42 @@ mod tests {
     use crate::test_util::MockStream;
 
     use super::*;
+
+    #[test]
+    fn native_packet_metadata_utf8_fault_keeps_owned_bytes() {
+        let mut raw = sample_header(14);
+        raw[25] = 0xff;
+        let error = decode_packet(&raw).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = None;
+        for _ in 0..32 {
+            let Some(error) = source else { break };
+            if let Some(error) = error.downcast_ref::<std::string::FromUtf8Error>() {
+                found = Some(error);
+                break;
+            }
+            source = error.source();
+        }
+        assert_eq!(found.unwrap().as_bytes(), b"\xffn0");
+    }
+
+    #[tokio::test]
+    async fn native_ip_finder_timeout_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(64);
+        let error = PcapClient::new(stream)
+            .find_ip(
+                "02:00:00:00:00:01",
+                FindIpLimits {
+                    timeout: Duration::from_millis(1),
+                    ..FindIpLimits::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
 
     fn sample_header(frame_pre_length: u32) -> Vec<u8> {
         let mut buf = vec![0u8; DEFAULT_HEADER_SIZE];
@@ -371,9 +424,9 @@ mod tests {
     fn checked_packet_record_len_rejects_large_lengths() {
         let err = checked_packet_record_len(u32::MAX as usize + 1).unwrap_err();
 
-        assert!(matches!(
-            err,
-            PcapError::Protocol(message) if message.contains("packet payload too large")
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::InvalidInput);
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &err
         ));
     }
 

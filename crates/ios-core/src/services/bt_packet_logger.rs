@@ -142,9 +142,7 @@ pub fn write_pcapng_record<W: Write>(
         return Ok(false);
     };
     let timestamp_microseconds = packetlogger_timestamp_microseconds(record, tz_offset_seconds);
-    let captured_len = u32::try_from(frame.len()).map_err(|_| {
-        BtPacketLoggerError::Protocol(format!("pcapng frame too large: {}", frame.len()))
-    })?;
+    let captured_len = checked_captured_len(frame.len())?;
 
     let mut packet = Vec::new();
     packet.extend_from_slice(&0u32.to_le_bytes());
@@ -177,15 +175,39 @@ fn write_pcapng_block<W: Write>(
     block_type: u32,
     body: &[u8],
 ) -> Result<(), BtPacketLoggerError> {
-    let total_length = u32::try_from(body.len() + 12).map_err(|_| {
-        BtPacketLoggerError::Protocol(format!("pcapng block too large: {}", body.len()))
-    })?;
+    let total_length = checked_block_len(body.len())?;
     writer.write_all(&block_type.to_le_bytes())?;
     writer.write_all(&total_length.to_le_bytes())?;
     writer.write_all(body)?;
     writer.write_all(&total_length.to_le_bytes())?;
     writer.flush()?;
     Ok(())
+}
+
+fn checked_captured_len(len: usize) -> Result<u32, BtPacketLoggerError> {
+    u32::try_from(len).map_err(|error| {
+        BtPacketLoggerError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode pcapng captured length",
+            error,
+        ))
+    })
+}
+
+fn checked_block_len(len: usize) -> Result<u32, BtPacketLoggerError> {
+    let length = len.checked_add(12).ok_or_else(|| {
+        BtPacketLoggerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "pcapng block length overflows host size",
+        ))
+    })?;
+    u32::try_from(length).map_err(|error| {
+        BtPacketLoggerError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidInput,
+            "encode pcapng block length",
+            error,
+        ))
+    })
 }
 
 fn write_options_end(buf: &mut Vec<u8>) {
@@ -201,6 +223,35 @@ fn pad_to_32bit(buf: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn native_pcapng_length_conversions_retain_input_sources() {
+        for error in [
+            checked_captured_len(u32::MAX as usize + 1).unwrap_err(),
+            checked_block_len(u32::MAX as usize).unwrap_err(),
+        ] {
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+        }
+        assert_eq!(checked_captured_len(u32::MAX as usize).unwrap(), u32::MAX);
+        assert_eq!(checked_block_len(u32::MAX as usize - 12).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn pcapng_block_host_overflow_is_rejected_without_invented_native_source() {
+        let error = checked_block_len(usize::MAX).unwrap_err();
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::InvalidInput
+        );
+        assert!(!crate::test_native::has_source::<std::num::TryFromIntError>(&error));
+    }
 
     fn packetlogger_record(
         packet_type: PacketLoggerPacketType,

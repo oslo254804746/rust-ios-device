@@ -84,6 +84,14 @@ pub enum MediaKind {
     Audio,
 }
 
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> DisplayError {
+    DisplayError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
 impl MediaKind {
     fn wire_name(self) -> &'static str {
         match self {
@@ -263,14 +271,20 @@ impl DisplayServiceClient {
                 "invalid media stream options".into(),
             ));
         }
-        let receiver: IpAddr = options
-            .receiver_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("receiver_ip is not an IP address".into()))?;
-        let sender: IpAddr = options
-            .sender_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("sender_ip is not an IP address".into()))?;
+        let receiver: IpAddr = options.receiver_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media receiver address",
+                error,
+            )
+        })?;
+        let sender: IpAddr = options.sender_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media sender address",
+                error,
+            )
+        })?;
         validate_media_endpoint(receiver, "receiver_ip")?;
         validate_media_endpoint(sender, "sender_ip")?;
         if receiver.is_ipv4() != sender.is_ipv4() {
@@ -400,7 +414,9 @@ impl DisplayServiceClient {
                 .map_err(DisplayError::Xpc)
         })
         .await
-        .map_err(|_| DisplayError::Timeout)??;
+        .map_err(|error| {
+            native_error(std::io::ErrorKind::TimedOut, "invoke media control", error)
+        })??;
         if feature == START_MEDIA_FEATURE && media_in_use(&response) {
             return Err(DisplayError::MediaInUse);
         }
@@ -470,10 +486,13 @@ impl MediaStreamSession {
         kind: MediaKind,
         options: MediaStreamOptions,
     ) -> Result<Self, DisplayError> {
-        let ip: IpAddr = options
-            .receiver_ip
-            .parse()
-            .map_err(|_| DisplayError::Protocol("receiver_ip is not an IP address".into()))?;
+        let ip: IpAddr = options.receiver_ip.parse().map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse media receiver address",
+                error,
+            )
+        })?;
         validate_media_endpoint(ip, "receiver_ip")?;
         let socket = Arc::new(UdpSocket::bind(SocketAddr::new(ip, options.receiver_port)).await?);
         let port = socket.local_addr()?.port();
@@ -488,7 +507,13 @@ impl MediaStreamSession {
                 .sender_ip
                 .parse()
                 .map(|ip| SocketAddr::new(ip, port))
-                .map_err(|_| DisplayError::Protocol("sender_ip is not an IP address".into()))
+                .map_err(|error| {
+                    native_error(
+                        std::io::ErrorKind::InvalidInput,
+                        "parse media sender address",
+                        error,
+                    )
+                })
         });
         let sender = sender.transpose()?;
         let highest_sequence = Arc::new(AtomicU32::new(0));
@@ -580,7 +605,9 @@ impl MediaStreamSession {
             }
             let n = tokio::time::timeout(remaining, self.socket.recv(&mut packet))
                 .await
-                .map_err(|_| DisplayError::Timeout)??;
+                .map_err(|error| {
+                    native_error(std::io::ErrorKind::TimedOut, "receive media packet", error)
+                })??;
             // RTCP packets use the same RTP version bit but their 8-bit
             // packet type maps to the reserved RTP payload-type range. A
             // minimal RTCP RR is only 8 bytes, so classify it before the
@@ -624,7 +651,9 @@ impl MediaStreamSession {
         };
         tokio::time::timeout(timeout, service.stop_media_stream(self.id))
             .await
-            .map_err(|_| DisplayError::Timeout)??;
+            .map_err(|error| {
+                native_error(std::io::ErrorKind::TimedOut, "stop media session", error)
+            })??;
         Ok(())
     }
     pub fn sender_addr(&self) -> Option<SocketAddr> {
@@ -1087,8 +1116,12 @@ fn optional_u16(
     if value == 0 {
         return Ok(None);
     }
-    u16::try_from(value).map(Some).map_err(|_| {
-        DisplayError::Protocol(format!("streamConfig.{key} value {value} exceeds u16::MAX"))
+    u16::try_from(value).map(Some).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode media configuration u16",
+            error,
+        )
     })
 }
 
@@ -1102,8 +1135,12 @@ fn optional_u32(
     if value == 0 {
         return Ok(None);
     }
-    u32::try_from(value).map(Some).map_err(|_| {
-        DisplayError::Protocol(format!("streamConfig.{key} value {value} exceeds u32::MAX"))
+    u32::try_from(value).map(Some).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode media configuration u32",
+            error,
+        )
     })
 }
 
@@ -1338,6 +1375,106 @@ fn build_media_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_media_address_errors_are_input_without_consuming_request() {
+        let (client, _peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let mut service = DisplayServiceClient::new(client);
+        for receiver in [true, false] {
+            let options = MediaStreamOptions {
+                receiver_ip: if receiver { "owned-private" } else { "fd00::1" }.into(),
+                sender_ip: if receiver { "fd00::2" } else { "owned-private" }.into(),
+                receiver_port: 4000,
+                ..MediaStreamOptions::default()
+            };
+            let error = service.start_video_stream(&options).await.unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            assert!(crate::test_native::has_source::<std::net::AddrParseError>(
+                &error
+            ));
+            assert!(!service.request_sent);
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
+
+    #[test]
+    fn native_media_config_integer_faults_keep_protocol_source_and_optional_values() {
+        let values = IndexMap::from([("port".into(), XpcValue::Uint64(u64::MAX))]);
+        for error in [
+            optional_u16(&values, "port").unwrap_err(),
+            optional_u32(&values, "port").unwrap_err(),
+        ] {
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+        }
+        assert_eq!(optional_u16(&values, "missing").unwrap(), None);
+        let values = IndexMap::from([("port".into(), XpcValue::Uint64(0))]);
+        assert_eq!(optional_u16(&values, "port").unwrap(), None);
+        assert_eq!(optional_u32(&values, "port").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn native_media_control_timeout_keeps_elapsed_and_used_channel() {
+        let (client, _peer, open) = crate::test_native::connected_xpc_pair().await;
+        open.store(false, Ordering::SeqCst);
+        let mut service = DisplayServiceClient::new(client);
+        let error = service
+            .invoke_with_deadline(
+                MEDIA_SUPPORT_FEATURE,
+                MEDIA_SUPPORT_ACTION,
+                dict([]),
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(service.request_sent);
+        assert!(matches!(
+            service.get_media_support_info().await,
+            Err(DisplayError::Reconnect(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_media_receive_and_stop_timeout_keep_elapsed_and_consumption() {
+        let (client, _peer, open) = crate::test_native::connected_xpc_pair().await;
+        open.store(false, Ordering::SeqCst);
+        let mut session = MediaStreamSession {
+            service: Some(DisplayServiceClient::new(client)),
+            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()),
+            kind: MediaKind::Video,
+            id: uuid::Uuid::new_v4(),
+            assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+            sender: None,
+            local_ssrc: None,
+            remote_ssrc: None,
+            highest_sequence: Arc::new(AtomicU32::new(0)),
+            highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+            rtcp_task: None,
+            drain_task: None,
+        };
+        let error = session
+            .recv_access_unit(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(session.service.is_some());
+        let zero = session.recv_access_unit(Duration::ZERO).await.unwrap_err();
+        assert!(matches!(zero, DisplayError::Timeout));
+        session.spawn_drain();
+        let error = session.stop(Duration::from_millis(1)).await.unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(session.service.is_none() && session.drain_task.is_none());
+        session.stop(Duration::ZERO).await.unwrap();
+    }
     fn pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
         let mut p = vec![
             0x80,
