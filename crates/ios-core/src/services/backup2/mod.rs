@@ -3,9 +3,11 @@ use std::path::PathBuf;
 
 use crate::services::device_link::{DeviceLinkClient, DeviceLinkError};
 
+mod deadline;
 mod host_fs;
 mod protocol;
 mod session;
+pub use deadline::{DeviceOperation, DeviceOperationTimeout, DeviceOperationTimeoutPhase};
 pub use host_fs::{
     backup_is_encrypted, backup_status_is_full, has_incremental_backup_metadata,
     initialize_backup_directory, load_backup_applications, should_do_full_backup,

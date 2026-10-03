@@ -8,6 +8,78 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[tokio::test]
+async fn root_mobilebackup2_timeout_evidence_keeps_family_and_issuer_scope() {
+    use ios_core::backup2::{
+        DeviceOperation, DeviceOperationTimeout, DeviceOperationTimeoutPhase,
+        Mobilebackup2Error as E,
+    };
+    use std::{
+        error::Error,
+        fmt, io,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+    fn family(error: &E) -> &str {
+        match error {
+            E::DeviceLink(_) => "device_link",
+            E::Io(_) => "io",
+            E::Plist(_) => "plist",
+            E::Protocol(_) => "protocol",
+        }
+    }
+    // Verify the downstream observation API without constructing an issued timer.
+    fn observation(value: &DeviceOperationTimeout) {
+        let _: DeviceOperation = value.operation();
+        let _: DeviceOperationTimeoutPhase = value.phase();
+        let _: Duration = value.duration();
+        let _: Option<&E> = value.operation_error();
+        let _: &(dyn Error + Send + Sync) = value;
+    }
+    let _: fn(&DeviceOperationTimeout) = observation;
+    assert_ne!(DeviceOperation::Unback, DeviceOperation::Extract);
+    assert_ne!(
+        DeviceOperationTimeoutPhase::Operation,
+        DeviceOperationTimeoutPhase::Disconnect
+    );
+    #[derive(Debug)]
+    struct Cycle(Arc<AtomicUsize>);
+    impl fmt::Display for Cycle {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            panic!("issuer lookup must not format source")
+        }
+    }
+    impl Error for Cycle {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some(self)
+        }
+    }
+    #[derive(Debug, thiserror::Error)]
+    #[error("foreign timer")]
+    struct Foreign(#[source] tokio::time::error::Elapsed);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let errors = [
+        E::Io(io::Error::new(io::ErrorKind::TimedOut, "foreign IO")),
+        E::Io(io::Error::other(Foreign(
+            tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+                .await
+                .unwrap_err(),
+        ))),
+        E::Io(io::Error::other(Cycle(Arc::clone(&reads)))),
+        E::Protocol("timeout Disconnect Unback".into()),
+    ];
+    for error in errors {
+        let _ = family(&error);
+        assert!(error.device_operation_timeout().is_none());
+    }
+    assert!(reads.load(Ordering::SeqCst) > 0);
+    assert!(reads.load(Ordering::SeqCst) <= 32);
+}
+
 #[cfg(feature = "imagemounter")]
 #[tokio::test]
 async fn root_ddi_cache_native_io_retains_exhaustive_family() {

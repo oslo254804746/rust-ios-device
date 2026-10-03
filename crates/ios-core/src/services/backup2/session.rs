@@ -19,6 +19,7 @@ use super::{
 };
 use crate::services::device_link::DeviceLinkError;
 
+use super::deadline::{timeout_error, DeviceOperation, DeviceOperationTimeoutPhase};
 use super::filter::should_preserve_backup_file;
 #[cfg(feature = "backup2-manifest")]
 use super::manifest::patch_backup_directory;
@@ -42,12 +43,21 @@ use tracing::warn;
 #[cfg(feature = "backup2-manifest")]
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod native_source_contract_tests;
+
 const MAX_DEVICE_TRANSFER_FILES: u64 = 1_000_000;
 const MAX_DEVICE_TRANSFER_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 // Device-side Unback/Extract are long-running DeviceLink operations. Keep one
 // bounded lifetime for the complete exchange, including version negotiation,
 // so a peer that stops sending cannot leave a caller waiting forever.
 const DEVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+enum DeviceOperationRequest<'a> {
+    Unback(UnbackRequest<'a>),
+    Extract(ExtractRequest<'a>),
+}
+
 impl<S> Mobilebackup2Client<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -373,26 +383,17 @@ where
         source_identifier: Option<&str>,
         password: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
-        let deadline = tokio::time::Instant::now() + DEVICE_OPERATION_TIMEOUT;
-        let result = match tokio::time::timeout_at(
-            deadline,
-            self.run_device_unback(backup_root, target_identifier, source_identifier, password),
+        self.run_device_operation(
+            backup_root,
+            DeviceOperationRequest::Unback(UnbackRequest {
+                message_name: "Unback",
+                target_identifier,
+                source_identifier,
+                password,
+            }),
+            DEVICE_OPERATION_TIMEOUT,
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
-                "device-side Unback exceeded the total timeout of {} seconds",
-                DEVICE_OPERATION_TIMEOUT.as_secs()
-            ))),
-        };
-        match tokio::time::timeout_at(deadline, self.finish_session(result)).await {
-            Ok(result) => result,
-            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
-                "device-side Unback exceeded the total timeout of {} seconds",
-                DEVICE_OPERATION_TIMEOUT.as_secs()
-            ))),
-        }
     }
 
     async fn run_device_unback(
@@ -442,32 +443,78 @@ where
         source_identifier: Option<&str>,
         password: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
-        let deadline = tokio::time::Instant::now() + DEVICE_OPERATION_TIMEOUT;
-        let result = match tokio::time::timeout_at(
-            deadline,
-            self.run_device_extract(
-                backup_root,
+        self.run_device_operation(
+            backup_root,
+            DeviceOperationRequest::Extract(ExtractRequest {
+                message_name: "Extract",
                 target_identifier,
                 domain_name,
                 relative_path,
                 source_identifier,
                 password,
-            ),
+            }),
+            DEVICE_OPERATION_TIMEOUT,
         )
+        .await
+    }
+
+    async fn run_device_operation(
+        &mut self,
+        backup_root: &Path,
+        request: DeviceOperationRequest<'_>,
+        duration: Duration,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        let operation = match request {
+            DeviceOperationRequest::Unback(_) => DeviceOperation::Unback,
+            DeviceOperationRequest::Extract(_) => DeviceOperation::Extract,
+        };
+        let deadline = tokio::time::Instant::now() + duration;
+        let result = match tokio::time::timeout_at(deadline, async {
+            match request {
+                DeviceOperationRequest::Unback(request) => {
+                    self.run_device_unback(
+                        backup_root,
+                        request.target_identifier,
+                        request.source_identifier,
+                        request.password,
+                    )
+                    .await
+                }
+                DeviceOperationRequest::Extract(request) => {
+                    self.run_device_extract(
+                        backup_root,
+                        request.target_identifier,
+                        request.domain_name,
+                        request.relative_path,
+                        request.source_identifier,
+                        request.password,
+                    )
+                    .await
+                }
+            }
+        })
         .await
         {
             Ok(result) => result,
-            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
-                "device-side Extract exceeded the total timeout of {} seconds",
-                DEVICE_OPERATION_TIMEOUT.as_secs()
-            ))),
+            Err(elapsed) => Err(timeout_error(
+                operation,
+                DeviceOperationTimeoutPhase::Operation,
+                duration,
+                elapsed,
+                None,
+            )),
         };
-        match tokio::time::timeout_at(deadline, self.finish_session(result)).await {
-            Ok(result) => result,
-            Err(_) => Err(Mobilebackup2Error::Protocol(format!(
-                "device-side Extract exceeded the total timeout of {} seconds",
-                DEVICE_OPERATION_TIMEOUT.as_secs()
-            ))),
+        // Keep the operation result outside the timed future: dropping a stalled
+        // disconnect must not drop the earlier failure along with that future.
+        match tokio::time::timeout_at(deadline, self.disconnect_best_effort()).await {
+            Ok(()) => result,
+            Err(elapsed) => Err(timeout_error(
+                operation,
+                DeviceOperationTimeoutPhase::Disconnect,
+                duration,
+                elapsed,
+                result.err(),
+            )),
         }
     }
 
@@ -836,8 +883,12 @@ where
     }
 
     fn account_transfer_bytes(&mut self, bytes: usize) -> Result<(), Mobilebackup2Error> {
-        let bytes = u64::try_from(bytes).map_err(|_| {
-            Mobilebackup2Error::Protocol("backup transfer byte count does not fit in u64".into())
+        let bytes = u64::try_from(bytes).map_err(|error| {
+            Mobilebackup2Error::Io(crate::error::context::retained_io(
+                ErrorKind::InvalidData,
+                "backup transfer byte count does not fit in u64",
+                error,
+            ))
         })?;
         self.transfer_bytes = self.transfer_bytes.checked_add(bytes).ok_or_else(|| {
             Mobilebackup2Error::Protocol("backup transfer byte count overflow".into())
@@ -1159,7 +1210,7 @@ mod tests {
         frame
     }
 
-    async fn read_test_frame(stream: &mut tokio::io::DuplexStream) -> plist::Value {
+    pub(super) async fn read_test_frame(stream: &mut tokio::io::DuplexStream) -> plist::Value {
         let mut length = [0u8; 4];
         stream.read_exact(&mut length).await.expect("frame length");
         let length = u32::from_be_bytes(length) as usize;
@@ -1180,7 +1231,7 @@ mod tests {
         super::canonicalize_simplified(&std::env::temp_dir()).expect("canonical temp directory")
     }
 
-    fn test_backup_root(label: &str, identifier: &str) -> PathBuf {
+    pub(super) fn test_backup_root(label: &str, identifier: &str) -> PathBuf {
         let root = test_temp_dir().join(format!(
             "ios-core-backup2-device-{label}-{}-{}",
             std::process::id(),
@@ -1194,7 +1245,7 @@ mod tests {
         root
     }
 
-    async fn complete_device_link_handshake(stream: &mut tokio::io::DuplexStream) {
+    pub(super) async fn complete_device_link_handshake(stream: &mut tokio::io::DuplexStream) {
         stream
             .write_all(&encode_test_frame(&plist::Value::Array(vec![
                 plist::Value::String("DLMessageVersionExchange".into()),
@@ -1236,7 +1287,7 @@ mod tests {
             .expect("write hello response");
     }
 
-    async fn complete_process_message(
+    pub(super) async fn complete_process_message(
         stream: &mut tokio::io::DuplexStream,
         error_code: u64,
         content: Option<plist::Value>,

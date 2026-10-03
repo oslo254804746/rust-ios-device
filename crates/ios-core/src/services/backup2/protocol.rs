@@ -129,8 +129,13 @@ where
 
     let mut buf = vec![0u8; size];
     stream.read_exact(&mut buf).await?;
-    String::from_utf8(buf)
-        .map_err(|err| Mobilebackup2Error::Protocol(format!("backup path was not utf-8: {err}")))
+    String::from_utf8(buf).map_err(|error| {
+        Mobilebackup2Error::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::InvalidData,
+            "decode backup path UTF-8",
+            error,
+        ))
+    })
 }
 
 pub(super) async fn read_u32_be<S>(stream: &mut S) -> Result<u32, Mobilebackup2Error>
@@ -419,5 +424,17 @@ mod tests {
         let mut cursor = std::io::Cursor::new(data);
         let result = read_prefixed_string(&mut cursor).await.unwrap();
         assert_eq!(result, "hello");
+    }
+
+    #[tokio::test]
+    async fn native_source_prefixed_path_retains_utf8_error() {
+        let mut data = 2u32.to_be_bytes().to_vec();
+        data.extend_from_slice(&[b'/', 0xff]);
+        let error = read_prefixed_string(&mut std::io::Cursor::new(data))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::string::FromUtf8Error>(&error));
+        assert!(error.device_operation_timeout().is_none());
     }
 }
