@@ -3867,3 +3867,77 @@ deadline/address/integer/framing native loss，逐项审查角色和状态再实
 observations、其他 codec/typed guards/created outcomes、stream/JSON/callback/binding、
 L01/L03/A03/platform/device 条件仍待。未触及真实 backup/credentials/设备/daemon/
 Apple；未 push/publish/history rewrite/reference 编辑。
+
+### 大类 3：A02 媒体、HID 与抓包原生来源交付（2026-10-03）
+
+接续 clean HEAD `9a16f14c7294db14de4ac334bea247b932984e24`，本轮实现与实际
+source/state tests、完整验收，属于 PROGRESS。实现
+`5dce4bfcce162b1ebe82b740631e1a0e893fb3d5`，八个相关源码文件，首次 full 后
+聚焦本地提交。无阻塞条件。
+
+17 个 native losses 修复：HID2 Elapsed、Display4 address/3 timer/2 integer、
+plist frame1 integer、Bluetooth pcapng2 integer、pcap timer/integer/UTF8各1。
+最后一个 pcap formatted eraser 超出先前 anonymous search。原 AddrParseError/
+TryFromIntError/Elapsed/FromUtf8Error 对象保留，pcap 原 metadata bytes 可沿 source
+获取。Fixed context/outer Debug safe，explicit native raw access 为 private data。
+
+HID close 原 Protocol 改 existing Xpc(Io)/Timeout；Display native timer 改 existing
+Io，remaining-zero 原 unit Timeout 保持。Local address Protocol 改 InvalidInput，
+received config integer Protocol 保持。Pcap IP finder Protocol 改 Timeout，pcap/
+pcapng encode Protocol 改 InvalidInput；private plist native adapter direct Unknown
+改 InvalidInput。Public Display8/HID5/pcap3/Bluetooth3、private plist3 variants、
+signatures/exports/features/classifier 保持；affected variant/Display/correlation/
+get_ref-to-source 迁移有[专题证据](validation/media-capture-sources-2026-10-03.md)。
+
+Private 三 framing/pcapng length conversions 等价抽出后保留 native source，
+无 giant allocation。BT block 新 checked_add(12) 把 host overflow 作为 source-free
+InvalidInput，conversion/writes 前拒绝，不制造 TryFromIntError。原 admitted values/
+record order/padding/timestamp/write/flush/unsupported false 与 plist max-before-write
+保持。HID reports 只 send、不等待回复；held state 原 send success 后清空。Display
+channel-used-before-I/O、fresh connection、stop consume service/request abort before
+await、remaining-zero 与 EOF compatibility fallback 保持；repeated local no-op 不
+证明 prior remote stop。原 budgets/RTP/caps/counters/optional fields/success 保持，
+不引入新 L01 cleanup/reuse/cancellation acknowledgement。
+
+Production comparison PASS：五 HID/十五 Display/三 pcap/二 plist/二 Bluetooth
+map calls 保持，仅 native adapters/helper 与等价 conversion extraction；BT guard/
+state ordering 单独 review。旧 shared test_util byte-identical，lib.rs 仅新增 private
+cfg(test) test_native，public exports/deps/lock/features/classifier 不变。Snapshot
+含新 fixture file；日志 `/tmp/ios-a02-media-native-code-audit.log`。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| 专项 core | all-feature Display17/HID8/pcap10/BT8/plist5、final native60/minimal227 PASS，terminal0 |
+| external / Clippy | root all25/minimal13、既有 public Display3 PASS；final core/CLI 与 full workspace strict Clippy PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-media-native-full.log` terminal0，1932 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5 host/22 device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 十 new core、一 external；actual XPC bootstrap/held state/control+stop timers、local UDP expiry/zero、address/config/native bytes/root framed pcap failure；private integer/host-add helpers 与既有 success fixtures。Write gate 在 request bytes 前阻塞，reopen 仅证明 local send/state，非 partial-send reuse/device delivery。非 giant writes/task join/每platform/allocator/architecture/physical/remote cleanup |
+
+修复前两日志共50 PASS/10 FAIL，terminal101；三个 private conversions 在 baseline
+fixtures 前等价抽出且仍用旧 erasers，comparison 验证未改变行为。Post-fix 专项
+PASS。首次 all-target Clippy 因 helper 置于 integration tests 也 include 的 shared
+test_util，crate-root XPC names 不存在，E0433/E0425/E0422 FAIL。改独立 cfg(test)
+module 并还原 shared file后 final native/minimal/public/strict Clippy PASS；无 production
+guard/gate/lint 弱化，失败日志保留。详见专题证据。
+
+ios0.1.13 debug SHA256
+`7b8ce4f8c069a4eb7380c121c8c23b983c696db0fbe1a5a40bd75fa555e063c8`。
+Source full 前冻结、之后不变，约18GiB 至17GiB free；无 storage failure/cleanup。
+无额外 Chromium/installed3.9/3.13 重跑。Catalog/quality/error contract/历史 XPC
+follow-up 同步，maturity 保持；文档收尾另记。
+
+文档收尾：118 catalog records，五个 changed Markdown files 的109 local links
+（baseline `9a16f14`）、capability implementation/maturity/historical evidence 与
+whitespace PASS。日志 `/tmp/ios-a02-media-native-docs-catalog.log`、
+`/tmp/ios-a02-media-native-docs-links.log`；源码与 accepted full 不变，准备独立文档提交。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务/子任务 scope 保持。
+下一 readonly search 为28 service files/66 anonymous candidates，非66 confirmed
+native losses；formatted/.ok()/created/optional guards另审。日志
+`/tmp/ios-a02-media-native-next-services.log`、
+`/tmp/ios-a02-media-native-next-timeout-audit.log`。WebInspector quiescence/startup
+compatibility 使用 named Timeout 正常完成，保留 Elapsed 时必须保持 issuer语义，
+不能把 every IO TimedOut 都作为正常完成。Other services/DProxy text/codec/typed
+guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/device
+条件仍待。未使用真实 credentials/device/daemon/Apple；无 push/publish/history
+rewrite/reference 编辑。

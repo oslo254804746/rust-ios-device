@@ -5,7 +5,7 @@ When cadence changes, record the reason and next review date; retain previous
 conclusions. This template starts D02 governance, not 1.0 readiness or release
 authorization. The roadmap retains every unfinished task and subtask.
 
-Current implementation review: 2026-10-02. Monthly review remains planned for 2026-10-30.
+Current implementation review: 2026-10-03. Monthly review remains planned for 2026-10-30.
 The [capability catalog](capabilities.md) is the source for maturity/evidence;
 [build evidence](validation/build-release-2026-09-30.md) records the first gate.
 
@@ -13,7 +13,7 @@ The [capability catalog](capabilities.md) is the source for maturity/evidence;
 | --- | --- | --- |
 | Indexed CLI/service surfaces | 62 commands and 49 service families | CI checks drift against source and actual help |
 | Stable device workflows | No current capability certified stable | Representative device PASS with scope and exact commit |
-| Host build/tests | [A02 XPC native gate](validation/xpc-native-sources-2026-10-02.md), latest `fcb4cb5`, 1921 Rust/13 Python, 53 tooling tests, 38 raw cases, five host workflows/15 CLI output/three backup contracts; actual OPACK/XPC UTF-8, private H2 integer/poison, Elapsed/local Drop, hostname/native OS-value and external root consumer evidence; 3.12 wheel/sdist; [preceding backup host evidence](validation/backup-host-sources-2026-10-02.md) and earlier gates retained | Other native codec/service adapters, DProxy textual observations, typed guards/created outcomes/stream/binding work remain; physical backup/device workflows and 22 real-device rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
+| Host build/tests | [A02 media/capture gate](validation/media-capture-sources-2026-10-03.md), latest `5dce4bf`, 1932 Rust/13 Python, 53 tooling tests, 38 raw cases, five host workflows/15 CLI output/three backup contracts; actual gated XPC/HID state, media address/configuration/UDP/control/stop timers, private encoding conversions and public pcap metadata source evidence; 3.12 wheel/sdist; [preceding XPC evidence](validation/xpc-native-sources-2026-10-02.md) and earlier gates retained | Other native codec/service adapters with timeout sentinel behavior, DProxy textual observations, typed guards/created outcomes/stream/binding work remain; physical workflows and 22 real-device rows NOT_RUN; platform/fixture/deployment conditions remain in Q02/Q03/S01–S03 |
 | Platform release candidates | Linux x86_64 validated | macOS, Windows, ARM Linux runner results |
 | Post-release regression | NOT_RUN | No release made by this implementation |
 | Critical p50/p95 latency and throughput | NOT_RUN | L04 reproducible before/after baseline |

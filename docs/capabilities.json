@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-02",
+  "updated": "2026-10-03",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-media-capture-sources-5dce4bf",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual H2/XPC bootstrap over owned gated duplex with HID held-state and media control/stop timers, UDP receive expiry, media address/configuration integer faults, private plist/pcapng length/host-add guards and public framed pcap metadata UTF-8 rejection with native bytes"],
+      "required_state": ["Owned host source/local UDP/duplex only; write gate stalls before request bytes, controlled reopening proves local send/state only. No giant allocation/write, partial-send reuse, background-task join, every allocator/architecture/platform fault, physical media/capture/device/daemon/Apple, remote cleanup/retry certification"],
+      "tested_commit": "5dce4bfcce162b1ebe82b740631e1a0e893fb3d5",
+      "date": "2026-10-03",
+      "location": "docs/validation/media-capture-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 17 HID/Display/plist/Bluetooth/pcap native sources retained through existing errors/private context. Native deadlines/local encoding/address roles corrected; variant/Display/source migration documented. Public families/signatures/features/classifier/budgets/wire/bounds/state/success stay; host block-add overflow rejects as explicit source-free input guard. Other adapters/sentinel outcomes/DProxy/streams/bindings/lifecycle/platform/device work remain, no maturity upgrade."
+    },
     {
       "id": "linux-xpc-native-sources-fcb4cb5",
       "level": "host-unit/protocol",

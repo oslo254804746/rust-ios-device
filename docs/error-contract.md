@@ -704,6 +704,32 @@ devices remain unverified. Wire/limits/success/features/root exports and optiona
 M6/UID/DTX/instruments compatibility fallbacks stay. Evidence:
 [XPC native source validation](validation/xpc-native-sources-2026-10-02.md).
 
+## Media, HID and packet capture native sources
+
+Seventeen native address/integer/Elapsed/UTF-8 adapters retain original sources.
+HID close uses existing Xpc(Io), changing protocol to timeout. Display's native
+timers use Io rather than its unit Timeout; the source-free remaining-zero marker
+stays. Local media IP parsing becomes invalid_input, received configuration
+integers remain protocol. Pcap find-IP expiry becomes timeout, metadata UTF-8
+remains protocol with owned original bytes, and pcap/pcapng/plist encoding lengths
+become invalid_input. Bluetooth host block-add overflow is an explicit input
+guard without an invented native cause.
+
+Public error families/signatures/exports/features stay. Migrate affected Protocol/
+Timeout/get_ref matches to class/source; fixed phase/Display/correlations can
+change. Native metadata/raw source access stays private, outer/context Debug safe.
+HID state still clears after send success, without waiting for a reply. Display
+still marks its channel before I/O and consumes service/requests task abort before
+stop awaits; a subsequent no-op is not remote cleanup proof. Existing deadlines,
+wire/limits/RTP/optional fields/stop EOF compatibility and success stay.
+
+Actual owned XPC bootstrap with writes gated before request bytes, UDP timers,
+metadata frames and private conversion helpers establish host evidence. Controlled
+gate reopening proves local state/send success, not partial-send reuse or device
+delivery. Physical media/capture, task joins and every allocator/architecture/
+platform stage remain unverified; L01/streams and other A02 work remain. Evidence:
+[media and capture source validation](validation/media-capture-sources-2026-10-03.md).
+
 ## usbmux native codec, connection and deadline sources
 
 Request serialization and received plist XML/schema faults retain original

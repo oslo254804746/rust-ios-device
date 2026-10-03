@@ -133,3 +133,9 @@ behavior review. DProxy textual observations, other codecs/typed guards/created
 outcomes, stream/JSON/callback/binding and L01/L03/A03/platform/device conditions
 remain. All 31 tasks/subtasks and capability maturity stay. No push/publication,
 history rewrite or reference checkout edits.
+
+Follow-up: implementation `5dce4bfcce162b1ebe82b740631e1a0e893fb3d5` retains
+17 media/capture native sources; [media evidence](media-capture-sources-2026-10-03.md)
+records its separate 1932 Rust/13 Python gate. This page's historical 1921 gate
+remains. Other adapters, DProxy text, typed guards, streams/bindings and
+lifecycle/platform/device conditions remain; capability maturity stays.
