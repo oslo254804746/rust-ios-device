@@ -8,6 +8,61 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "afc")]
+#[tokio::test]
+async fn public_guarded_sources_afc_rejects_received_length_with_owned_stream() {
+    use ios_core::afc::{AfcClient, AfcError};
+    use std::error::Error;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn family(error: &AfcError) -> &str {
+        match error {
+            AfcError::Io(_) => "io",
+            AfcError::Status(_) => "status",
+            AfcError::Protocol(_) => "protocol",
+        }
+    }
+    let (stream, mut peer) = tokio::io::duplex(256);
+    let caller = async move {
+        let mut client = AfcClient::new(stream);
+        let error = client.list_dir("/").await.unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(&error),
+            ios_core::ErrorClass::Protocol
+        );
+        if usize::BITS < 64 {
+            assert_eq!(family(&error), "io");
+            let AfcError::Io(io) = &error else {
+                unreachable!()
+            };
+            assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        } else {
+            // This host reaches the existing frame ceiling, not the native
+            // conversion failure that requires a narrower usize.
+            assert_eq!(family(&error), "protocol");
+            assert!(error.to_string().contains("frame too large"));
+        }
+        drop(client);
+    };
+    let server = async move {
+        for field in [0x4141504c36414643_u64, u64::MAX, 40, 1, 2] {
+            peer.write_all(&field.to_le_bytes()).await.unwrap();
+        }
+        peer.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        peer.read_to_end(&mut request).await.unwrap();
+        assert_eq!(request.len(), 42);
+        assert_eq!(&request[..8], b"CFA6LPAA");
+        assert_eq!(&request[32..40], &3_u64.to_le_bytes());
+        assert_eq!(&request[40..], b"/\0");
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(caller, server);
+    })
+    .await
+    .unwrap();
+}
+
 #[cfg(feature = "dproxy")]
 #[tokio::test]
 async fn public_dproxy_recording_observer_owns_native_error_without_device() {

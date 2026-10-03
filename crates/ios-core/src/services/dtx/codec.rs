@@ -465,9 +465,13 @@ pub fn decode_dtx_message_from_bytes(data: &[u8]) -> Result<Option<(DtxMessage, 
         return Ok(None);
     }
 
-    let header_bytes: &[u8; 32] = data[..32]
-        .try_into()
-        .map_err(|_| DtxError::Protocol("DTX header truncated".into()))?;
+    let header_bytes: &[u8; 32] = data[..32].try_into().map_err(|error| {
+        DtxError::Io(crate::error::context::received_io(
+            "decode DTX header",
+            None,
+            error,
+        ))
+    })?;
     let header = parse_dtx_header(header_bytes)?;
     let total_len = header
         .header_len

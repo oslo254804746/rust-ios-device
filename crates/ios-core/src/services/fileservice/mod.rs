@@ -671,11 +671,13 @@ where
     let mut header = [0u8; FILE_WIRE_HEADER_LEN];
     stream.read_exact(&mut header).await?;
     ensure_file_wire_magic(&header, "file data")?;
-    let file_size = u32::from_be_bytes(
-        header[36..40]
-            .try_into()
-            .map_err(|_| FileServiceError::Protocol("invalid file data size header".into()))?,
-    ) as u64;
+    let file_size = u32::from_be_bytes(header[36..40].try_into().map_err(|error| {
+        FileServiceError::Io(crate::error::context::received_io(
+            "decode fileservice data length",
+            None,
+            error,
+        ))
+    })?) as u64;
     validate_file_size(file_size)?;
     Ok(file_size)
 }

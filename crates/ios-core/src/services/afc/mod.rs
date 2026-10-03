@@ -36,6 +36,17 @@ pub enum AfcError {
     Protocol(String),
 }
 
+fn header_error(source: zerocopy::CastError<&[u8], AfcHeader>) -> AfcError {
+    // The production caller reads exactly the fixed 40-byte header. Only an
+    // error owns a bounded copy; the successful borrowed decode stays unchanged.
+    let source = source.map_src(|bytes| bytes.to_vec().into_boxed_slice());
+    AfcError::Io(crate::error::context::received_io(
+        "decode AFC header",
+        None,
+        source,
+    ))
+}
+
 /// AFC status codes from the device (matches go-ios/ios/afc/errors.go).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfcStatusCode {
@@ -227,8 +238,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         let mut hdr_buf = [0u8; AfcHeader::SIZE];
         self.stream.read_exact(&mut hdr_buf).await?;
 
-        let hdr = AfcHeader::ref_from_bytes(&hdr_buf)
-            .map_err(|_| AfcError::Protocol("bad AFC header".into()))?;
+        let hdr = AfcHeader::ref_from_bytes(&hdr_buf).map_err(header_error)?;
 
         if hdr.magic.get() != AFC_MAGIC {
             return Err(AfcError::Protocol(format!(
@@ -256,14 +266,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             )));
         }
 
-        let entire_len = usize::try_from(entire_len_raw).map_err(|_| {
-            AfcError::Protocol(format!(
-                "AFC entire_len does not fit in usize: {entire_len_raw}"
+        let entire_len = usize::try_from(entire_len_raw).map_err(|error| {
+            AfcError::Io(crate::error::context::received_io(
+                "convert AFC entire_len",
+                Some(entire_len_raw),
+                error,
             ))
         })?;
-        let this_len = usize::try_from(this_len_raw).map_err(|_| {
-            AfcError::Protocol(format!(
-                "AFC this_len does not fit in usize: {this_len_raw}"
+        let this_len = usize::try_from(this_len_raw).map_err(|error| {
+            AfcError::Io(crate::error::context::received_io(
+                "convert AFC this_len",
+                Some(this_len_raw),
+                error,
             ))
         })?;
 
@@ -299,9 +313,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         // Status opcode (1): header_payload[0..8] = LE u64 error code
         if opcode == AfcOpcode::Status as u64 {
             let code = AfcStatusCode::from_u64(u64::from_le_bytes(
-                header_payload[..8]
-                    .try_into()
-                    .map_err(|_| AfcError::Protocol("bad status code".into()))?,
+                header_payload[..8].try_into().map_err(|error| {
+                    AfcError::Io(crate::error::context::received_io(
+                        "decode AFC status",
+                        None,
+                        error,
+                    ))
+                })?,
             ));
             if code != AfcStatusCode::Success {
                 return Err(AfcError::Status(code));
@@ -502,11 +520,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
                 "FileRefOpenResult: short response".into(),
             ));
         }
-        let fd = u64::from_le_bytes(
-            pkt.header_payload[..8]
-                .try_into()
-                .map_err(|_| AfcError::Protocol("bad file handle".into()))?,
-        );
+        let fd = u64::from_le_bytes(pkt.header_payload[..8].try_into().map_err(|error| {
+            AfcError::Io(crate::error::context::received_io(
+                "decode AFC file handle",
+                None,
+                error,
+            ))
+        })?);
         Ok(fd)
     }
 
@@ -615,6 +635,57 @@ pub mod mode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guarded_sources_afc_cast_owns_original_short_source_and_keeps_protocol_role() {
+        use super::*;
+        use std::error::Error;
+        let error = {
+            let bytes = [0x81; 39];
+            header_error(AfcHeader::ref_from_bytes(&bytes).unwrap_err())
+        };
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        let AfcError::Io(io) = &error else {
+            panic!("original cast lost")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+        let cast = io
+            .source()
+            .unwrap()
+            .downcast_ref::<zerocopy::CastError<Box<[u8]>, AfcHeader>>()
+            .unwrap();
+        assert!(matches!(cast, zerocopy::ConvertError::Size(_)));
+        assert_eq!(cast.clone().into_src().as_ref(), &[0x81; 39]);
+        assert!(!format!("{error:?} {:?}", io.get_ref()).contains("129"));
+        // Production reads exactly 40 bytes and this header has alignment 1:
+        // the short-source fixture tests ownership, not a reachable recv fault.
+        assert_eq!(std::mem::size_of::<AfcHeader>(), AfcHeader::SIZE);
+        assert_eq!(std::mem::align_of::<AfcHeader>(), 1);
+    }
+
+    #[tokio::test]
+    async fn guarded_sources_afc_huge_length_reaches_host_specific_rejection() {
+        use std::error::Error;
+        let mut header = AfcHeader::new(1, AfcOpcode::Data, 0, 0);
+        header.entire_len = zerocopy::byteorder::U64::new(u64::MAX);
+        let mut stream = MockStream::new(header.as_bytes().to_vec());
+        let mut client = AfcClient::new(&mut stream);
+        let error = match client.recv().await {
+            Err(error) => error,
+            Ok(_) => panic!("unbounded frame admitted"),
+        };
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        if usize::BITS < 64 {
+            let AfcError::Io(io) = &error else {
+                panic!("native conversion lost")
+            };
+            assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        } else {
+            assert!(matches!(error, AfcError::Protocol(_)));
+            assert!(error.to_string().contains("frame too large"));
+        }
+        assert_eq!(stream.read_pos, AfcHeader::SIZE);
+        assert!(stream.written.is_empty());
+    }
     use crate::test_util::MockStream;
 
     use super::*;

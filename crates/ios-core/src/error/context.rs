@@ -44,10 +44,63 @@ pub(crate) fn retained_io(
     )
 }
 
+/// The owner knows this failed conversion is received protocol data. Preserve
+/// that role without classifying an otherwise opaque native conversion error.
+pub(crate) fn received_io(
+    phase: &'static str,
+    declared: Option<u64>,
+    source: impl Error + Send + Sync + 'static,
+) -> io::Error {
+    #[derive(thiserror::Error)]
+    #[error("{phase} (declared={declared:?}): {source}")]
+    struct ReceivedCause<E: Error + 'static> {
+        phase: &'static str,
+        declared: Option<u64>,
+        #[source]
+        source: E,
+    }
+    impl<E: Error> std::fmt::Debug for ReceivedCause<E> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ReceivedDataError")
+                .field("phase", &self.phase)
+                .field("declared", &self.declared)
+                .finish_non_exhaustive()
+        }
+    }
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        ReceivedCause {
+            phase,
+            declared,
+            source,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CoreError;
+
+    #[test]
+    fn guarded_sources_received_integer_and_slice_keep_role_and_native_objects() {
+        let integer = u32::try_from(u64::MAX).unwrap_err();
+        // This proves the exact adapter using an actual native conversion. The
+        // production conversions are guarded or require a narrower host.
+        let error = received_io("convert received length", Some(u64::MAX), integer);
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+        assert!(error.to_string().contains(&u64::MAX.to_string()));
+        let source = <[u8; 8]>::try_from(b"private".as_slice()).unwrap_err();
+        let error = received_io("decode received scalar", None, source);
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(error
+            .source()
+            .unwrap()
+            .is::<std::array::TryFromSliceError>());
+        assert!(!format!("{:?}", error.get_ref()).contains("private"));
+    }
 
     fn retain(phase: &'static str, source: impl Error + Send + Sync + 'static) -> CoreError {
         CoreError::Io(retained_io(io::ErrorKind::Other, phase, source))

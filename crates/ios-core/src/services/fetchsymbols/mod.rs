@@ -334,8 +334,12 @@ fn parse_catalog_count(value: &crate::xpc::XpcValue) -> Result<usize, FetchSymbo
     let declared = as_u64(value).ok_or_else(|| {
         FetchSymbolsError::Protocol("catalog response missing DSCFilePaths count".into())
     })?;
-    let count = usize::try_from(declared).map_err(|_| {
-        FetchSymbolsError::Protocol(format!("catalog file count {declared} exceeds usize::MAX"))
+    let count = usize::try_from(declared).map_err(|error| {
+        FetchSymbolsError::Io(crate::error::context::received_io(
+            "convert remote symbol count",
+            Some(declared),
+            error,
+        ))
     })?;
     if count > MAX_CATALOG_FILES {
         return Err(FetchSymbolsError::Protocol(format!(
@@ -475,6 +479,21 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guarded_sources_symbol_count_reaches_host_specific_rejection() {
+        use std::error::Error;
+        let error = parse_catalog_count(&crate::xpc::XpcValue::Uint64(u64::MAX)).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        if usize::BITS < 64 {
+            let FetchSymbolsError::Io(io) = &error else {
+                panic!("native conversion lost")
+            };
+            assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        } else {
+            assert!(matches!(error, FetchSymbolsError::Protocol(_)));
+            assert!(error.to_string().contains("exceeds limit"));
+        }
+    }
     use std::path::Path;
 
     use super::*;
