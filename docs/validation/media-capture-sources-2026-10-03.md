@@ -126,3 +126,9 @@ IO TimedOut. Other services, DProxy textual observations, codecs/typed guards/
 created outcomes, stream/JSON/callback/binding and L01/L03/A03/platform/device
 conditions remain. All 31 tasks/subtasks and capability maturity stay. No push/
 publication, history rewrite or reference checkout edits.
+
+Follow-up: [discovery source evidence](discovery-native-sources-2026-10-03.md)
+records `89bcd3f`, 22 WebInspector/Companion/Notification native adapters and
+1945 Rust/13 Python full PASS. Service-issued budget getters preserve quiescence
+without consuming generic IO timeout. This page's 1932-test media gate remains
+historical; the overall scope and capability maturity stay unchanged.

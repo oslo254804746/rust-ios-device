@@ -3941,3 +3941,78 @@ compatibility 使用 named Timeout 正常完成，保留 Elapsed 时必须保持
 guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/device
 条件仍待。未使用真实 credentials/device/daemon/Apple；无 push/publish/history
 rewrite/reference 编辑。
+
+### 大类 3：A02 发现服务原生来源与期限发行方交付（2026-10-03）
+
+接续 HEAD `8a08f22742bf61d016d812c8a5422af14d93968a`，本轮实施及专项/完整
+验收属于 PROGRESS，无阻塞条件。实现
+`89bcd3f81f6e0617e8a1526f3147feb5e7197876`，十二个相关源码文件，本地聚焦提交。
+
+22 native losses 修复：WebInspector14（Client3/Inspector3/Automation5 Elapsed、
+Page/PID2 ParseInt、frame1 TryInt），Companion6（send/roundtrip/listener/stop4
+Elapsed、negative/u16 port2 TryInt），Notification2 Elapsed。PID formatted eraser、
+Companion match arm/.ok() 超出先前 anonymous search。原 native 对象/固定 context
+保留在 existing Io，timer Timeout、received conversion Protocol、local frame
+conversion InvalidInput；returned variant/Display/source/correlation 迁移见
+[专题证据](validation/discovery-native-sources-2026-10-03.md)。
+
+Public WebInspector6/Companion4/Notification5 variants 保持，新增两 error
+`timeout_duration()` 方法。Private issuer payload 同时保留真实 Elapsed 和旧
+Timeout adapter 报告的 Duration，getter 最多32 typed sources、不格式化，不把
+generic IO TimedOut/standalone Elapsed 当作本服务期限。None 不证明不是 timeout。
+Startup write 报告 original budget，response/event 可报告 remaining phase budget。
+Web listing quiescence、CLI discovery2/CDP2 消费 own expiry 语义保持；底层 IO
+timeout 仍报错。Legacy start 的 response own timeout/closed stream 仍故意 Disabled/
+丢 source；blocked identifier-write 直接返回 native Io，preserving start 保留 source。
+Created remaining-zero markers不伪造 Elapsed。
+
+Companion listener partial read 仍 finished-before-return、不resume，stored pending
+future ownership保持；forward stop 仍成功 response 后才设置 stopped/cache，Drop
+best effort保持。Port unsigned precedence/type/zero/range保持，negative conversion
+真实 source可观测。Notification observe send-success后更新、ProxyDeath/zero保持。
+Web max-before-write、explicit PageID precedence、PID delimiter/success保持。
+Private frame converter baseline前等价抽出，直接 helper测overflow无 giant allocation，
+现有16MiB cap保持。Protocol/budgets/retries/wire/state/cleanup未更改，不引入L01
+partial-operation reuse、remote cleanup或task join保证。
+
+Production comparison PASS：Inspector3/Automation5/model1/Notification2/client5/
+wire2/Companion9 map_err保留；native adapters/helpers、frame等价抽出、own-deadline
+predicate以外相等；port rewrite/issuer/getter/listener arm单独 review。CLI仅4
+consumer branches及unused CDP import/rustfmt。Cargo/lock/core root/classifier/
+test_native byte-identical。日志 `/tmp/ios-a02-discovery-native-code-audit.log`。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| core 专项 | all-feature Web38/Companion16/Notification10；对应 no-default service features38/16/10；final native12 PASS，terminal0 |
+| external / CLI / Clippy | Web12、root all26/minimal13、CLI Web39；final core/CLI和 full workspace strict Clippy PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-discovery-native-full.log` terminal0，1945 Rust/13 Python、0 FAIL、2既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5host/22device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 十二 new core、一 external：actual owned duplex/pending timers/PID/page/port、typed bounded cycle/foreign IO fixture、partial Companion terminal state、forward failure state/Notification observations和exhaustive root consumers。Automation later attach stages仅source review；private frame helper直接转换。非actual OS timeout/giant writes/partial-write reuse/task join/platform/physical/remote cleanup |
+
+Corrected baseline日志共0 PASS/11 FAIL，terminal101；initial E0283 Dictionary
+fixture编译失败先修正，不计native regression。Post-fix专项PASS。First external
+Web11 PASS/1 FAIL因新断言误要求exact20ms，改为positive remaining<=20ms并保留
+late完整帧断言；原budgets不变。First strict Clippy发现unused CDP import/test IO
+constructor，修正后finalPASS；未弱化production guard/gate/lint。原失败日志保留，
+完整命令及边界见专题证据。
+
+ios0.1.13 debug SHA256
+`97defac193aecb4303b51abfa72587a46a40695626363ce08cf789600bbae7db`。
+Source full前冻结、之后与audit snapshot一致；full前后约15GiB free，无storage
+failure/cleanup，无额外Chromium/installed3.9/3.13重跑。Error/public contract、
+quality/catalog与historical media follow-up同步，maturity保持；文档收尾另记。
+
+文档收尾：118 catalog records，六个 changed Markdown files 的136 local links
+（baseline `8a08f22`）、capability implementation/maturity/historical evidence及
+whitespace PASS。日志 `/tmp/ios-a02-discovery-native-docs-catalog.log`、
+`/tmp/ios-a02-discovery-native-docs-links.log`；七文档文件独立提交，源码和accepted
+full保持不变。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务/全部子任务scope保持。
+Readonly next scan 21service files/47 anonymous candidates，非47confirmed native
+losses。日志 `/tmp/ios-a02-discovery-native-next-services.log`、
+`/tmp/ios-a02-discovery-native-next-consumers.log`；CrashReport watch parse retry
+消费own parser failure，后续保留source须保持issuer而非retry every Protocol/IO。
+其他services/DProxy text/codec/typed guards/created outcomes/stream/JSON/callback/
+bindings与L01/L03/A03/platform/device条件仍待。未使用真实credentials/device/
+daemon/Apple；无push/publish/history rewrite/reference编辑。

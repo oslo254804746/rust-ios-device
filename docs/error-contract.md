@@ -79,13 +79,31 @@ cancellation/cleanup acknowledgement.
 
 `WebInspectorClient::start_preserving_errors(timeout)` shares the existing
 identifier-report/event loop and one deadline with `start(timeout)`, but returns
-original IO errors and the existing typed Timeout instead of remapping them to
-Disabled. The old `start` and WebInspectorError variants remain available with
-their old behavior. Elapsed timers inside Core still become the existing
-Timeout(Duration), rather than carrying a Tokio Elapsed source; response timeout
-duration is the remaining phase budget, while a blocked report write uses the
-original startup budget. This API restores the startup IO source, without
-inventing a device setting or unsupported reply from a timeout or EOF.
+original IO errors and native Elapsed under the existing Io variant. The additive
+`WebInspectorError::timeout_duration()` reports the budget formerly carried by
+Timeout(Duration): response/event stages can report their remaining phase budget,
+while a blocked report write reports the original startup budget. The legacy
+Timeout variant remains for created budget markers and existing callers. Legacy
+`start` still intentionally maps response own-timeout/closed-stream errors to
+Disabled, discarding that source; a blocked report-write timer is returned
+directly. The preserving method keeps the original startup source without
+inventing a device setting or unsupported reply from timeout or EOF.
+
+WebInspector, Companion and NotificationProxy now retain 22 original deadline/
+integer-parser/conversion causes under their existing Io variants. Native timers
+classify timeout, malformed received integers remain protocol and local frame
+length conversion becomes invalid_input. Public error enum definitions stay
+exhaustive; CompanionError also adds `timeout_duration()`. Both budget getters
+inspect at most 32 typed sources for a private service-issued deadline or their
+own legacy Timeout variant, without formatting. A generic IO TimedOut or standalone
+Elapsed is not proof of that issuer and returns None, even when its class is
+timeout. None does not prove absence of a timeout. WebInspector quiescence and
+CLI/CDP idle loops continue to consume only their own deadlines; other IO timeout
+still propagates. Companion listener expiry remains terminal and forwarding stop
+state still follows its existing successful response. Created zero-budget
+markers, protocol limits, wire/success, budgets and cleanup behavior stay. See
+the [discovery source migration and host evidence](validation/discovery-native-sources-2026-10-03.md)
+for returned-variant/Display/source access changes and partial-operation limits.
 
 CLI tasks, CDP discovery/page/browser startup and WebDriver runtime construction
 now use the preserving method. A closed stream can consequently yield an IO

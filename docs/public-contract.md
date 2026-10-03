@@ -157,12 +157,24 @@ can contain private URLs. Public signatures/enums, HTTPS verification, opt-in,
 redirect policy, budgets and success response shapes remain. The
 [error contract](error-contract.md) records host fixture and partial-effect scope.
 
-WebInspector's additive `start_preserving_errors` retains startup IO/Timeout;
+WebInspector's additive `start_preserving_errors` retains startup IO/native
+Elapsed under its existing Io variant;
 the existing `start` keeps its legacy phase-specific Disabled mapping and its
 exhaustive error enum. CLI/CDP/WebDriver startup uses the new method, changing
 safe failure diagnostic categories when the original source is available,
 with existing status/exit/body shapes and success output retained. The
 [error contract](error-contract.md) records phase budgets and migration.
+
+WebInspectorError and CompanionError also add `timeout_duration()` for their
+own issued deadline or legacy Timeout value. Native WebInspector/Companion/
+Notification timers now return existing Io with their original Elapsed instead
+of Timeout; received parser/conversion faults keep protocol and local frame
+encoding conversion becomes invalid_input. Existing public families remain
+6/4/5 exhaustive variants. Migrate affected variant/Display/immediate-payload
+matches to typed source/category inspection; the bounded getter's None can still
+accompany an IO timeout. It reports the former phase budget, not current time left
+or cleanup/retry safety. The [discovery evidence](validation/discovery-native-sources-2026-10-03.md)
+records preserved quiescence, legacy source loss and partial-operation limits.
 
 The additive private-fields `OperationCancelled` marker records caller-observed
 local cancellation without changing CoreError variants. Plain EINTR stays IO.

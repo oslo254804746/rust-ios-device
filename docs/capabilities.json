@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-discovery-native-sources-89bcd3f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned duplex/pending WebInspector/Companion/Notification Elapsed, PID/page/port conversion faults, bounded cyclic-source issuer getter, controlled foreign IO timeout, terminal partial Companion header and exhaustive external public consumer"],
+      "required_state": ["Owned host source/duplex only; private frame converter overflow without giant allocation. Automation initial attach/command tested, later stages source-reviewed. No actual OS timeout, partial-write reuse, pending-task join, physical device/daemon/Apple, remote cleanup/retry certification"],
+      "tested_commit": "89bcd3f81f6e0617e8a1526f3147feb5e7197876",
+      "date": "2026-10-03",
+      "location": "docs/validation/discovery-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 22 discovery service native sources retained under existing Io; additive WebInspector/Companion budget getters distinguish owned deadlines from generic IO timeout and retain existing quiescence/legacy response Disabled behavior. Returned variants/Display/source migration documented; public exhaustive families/root exports/features/classifier, framing/bounds/budgets/state/success stay. Other native/parser/guard/DProxy/stream/binding/lifecycle/platform/device work remains, no maturity upgrade."
+    },
+    {
       "id": "linux-media-capture-sources-5dce4bf",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
