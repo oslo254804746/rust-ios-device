@@ -139,3 +139,9 @@ DTX/file/symbol/app/test conversions, DProxy text, typed guards/created outcomes
 stream/JSON/callback/binding and L01/L03/A03/platform/device work remain.
 No physical backup, credentials, ambient daemon, Apple/device operation,
 push/publication, history rewrite or reference checkout edit.
+
+Follow-up: [restore native source evidence](restore-native-sources-2026-10-03.md)
+records `d1a210f`, 25 retained H2/XPC/IPSW/TSS boundaries and a first full gate
+of 2017 Rust/13 Python. This accepted backup deadline/source evidence stays.
+Legacy TSS batch fallback observations, remaining conversions and lifecycle/
+platform/device conditions continue separately; no maturity upgrade.

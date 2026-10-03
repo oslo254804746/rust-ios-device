@@ -218,6 +218,20 @@ lost on disconnect timeout. No new reuse/rollback/remote cleanup promise. The
 [backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
 distinguishes internal short-budget behavior from external interface coverage.
 
+RestoreError remains exhaustive with three unchanged variants; existing client,
+IPSW/TSS/result fields, signatures and root paths stay. Twenty-five H2/XPC/IPSW/
+TSS adapters now return Io with original objects instead of Protocol strings.
+IO kinds/categories survive; local package/serialization errors become input,
+received codecs stay protocol, HTTP expiry becomes timeout and other HTTP/XPC
+categories remain. Migrate variant/text/immediate payload matches to typed
+class and bounded source inspection. There is no new public method, enum field,
+dependency or feature. Wire, 30/120s TSS budgets, body/archive/firmware bounds,
+identity/nonce/fallback rules and successful output stay. Legacy batch fallback
+still loses per-attempt errors behind failed updater names; its observation
+contract remains work. The
+[restore evidence](validation/restore-native-sources-2026-10-03.md) records native
+versus injected OS faults, encoding/size review and physical-operation limits.
+
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
 Download/Tss strings to existing Io, preserving original sources and IO kinds.

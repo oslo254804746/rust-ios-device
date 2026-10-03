@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain restore H2/XPC, IPSW ZIP/read/manifest and TSS HTTP/codec causes through
+  existing RestoreError::Io. Preserve native IO categories, distinguish local
+  package/input failures from received protocol data and HTTP timeouts, and
+  document source/variant migration with unchanged restore requests and limits.
+
 - Preserve MobileBackup2 Unback/Extract operation and disconnect timeout
   causes, including an earlier operation failure when disconnect also expires.
   Add bounded typed deadline evidence with operation, phase and shared budget;

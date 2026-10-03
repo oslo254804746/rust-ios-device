@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-restore-native-sources-d1a210f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Scripted owned AsyncRead/Write H2 connect/bootstrap/request/read faults, actual read_exact EOF and malformed settings/control UTF-8, direct bounded XPC buffer guard, owned synthetic IPSW malformed/encrypted/CRC/manifest faults and generic reader/seek OS injection, actual loopback TSS request/body timers and UID/UTF-8/plist/builder errors, exhaustive external local package/TSS consumer and minimum restore"],
+      "required_state": ["Generic H2 write and ZIP read/seek fixtures inject actual captured owned OS file-open errors; not actual transport/filesystem write/read/seek syscall or every backend. Request/three fixed bootstrap encoding and firmware conversion failures are source-reviewed. HTTP joined peers tolerate read reset, not per-peer EOF proof. No real IPSW/firmware/ticket/credentials/daemon/Apple/device restore or cleanup/retry/reuse certification"],
+      "tested_commit": "d1a210f2ff466ae8f9e5f281e87ebb69823092fa",
+      "date": "2026-10-03",
+      "location": "docs/validation/restore-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 25 returned restore H2/XPC/IPSW/TSS causes retained through existing Io/private context; native IO kinds and typed XPC categories, local input/received protocol/HTTP timeout and opaque unknown remain distinct. Three public variants/signatures/fields/root/features/classifier and wire/budget/guard/state/nonce/batch fallback remain; variant/Display/source/class migration and corrected ZIP scan control documented. First full 2017 Rust/13 Python PASS. Batch fallback observations and other A02/lifecycle/platform/device work remain; no maturity upgrade."
+    },
+    {
       "id": "linux-backup-deadline-native-sources-145d0c4",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

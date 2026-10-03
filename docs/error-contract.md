@@ -190,6 +190,27 @@ may remain, and client reuse or remote cleanup is not certified. See the
 [backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
 for actual owned timers, primary-loss negative controls and public/minimum scope.
 
+Restore retains 25 original H2/XPC, IPSW and TSS error objects under existing
+Io with fixed private context. Native IO, including nested ZIP/H2 IO, keeps its
+kind/category/OS cause; H2 protocol and received TSS UTF-8/plist stay protocol.
+XPC keeps its original category, including typed input and opaque unknown.
+Local IPSW ZIP format/password/manifest and TSS serialization faults become
+invalid_input; HTTP builder faults become invalid_input and HTTP expiry timeout.
+Other HTTP errors keep their own category, including unknown. These failures
+formerly flattened to Protocol, so returned variant, Display, immediate payload,
+class and safe diagnostic correlation can change. Follow typed class/source
+traversal and the redaction policy for explicit native data.
+
+The three-variant public family, signatures/fields/features/classifier, H2/XPC
+wire/state and TSS/IPSW validation/limits stay. Request/bootstrap encoding and
+firmware size conversion include source-reviewed failure branches; host checks
+do not manufacture giant inputs. Direct status/shape/size guards retain existing
+Protocol outcomes. TSS batch/per-updater fallback still intentionally consumes
+errors into failed updater names and needs a separate preserving observation
+API; this migration does not fix that partial-result contract or certify retry,
+connection reuse, restore execution or Apple signing. See the
+[restore source evidence](validation/restore-native-sources-2026-10-03.md).
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.

@@ -4363,3 +4363,94 @@ H2/XPC control/bootstrap 的 native adapters，read-only next-restore/context
 guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/
 device 条件继续。无设备/credentials/daemon/Apple 操作、推送/发布、历史改写或
 reference checkout 修改，capability maturity 不升级。
+
+### 大类 3：A02 restore H2/XPC、IPSW 与 TSS 来源交付（2026-10-03）
+
+从 clean `a5bb2f409eb22f73ad83dee4a6b13121a2bdcb68` 继续，分支
+`feat/device-service-updates-20260927`。上轮属于已验进展。实现
+`d1a210f2ff466ae8f9e5f281e87ebb69823092fa`，九个源码文件，已聚焦本地提交。
+Linux x86_64、Rust 1.97.1/MSRV 1.80.1、Python 3.12.13。
+[专题证据](validation/restore-native-sources-2026-10-03.md)。
+
+保留 25 个原始 returned-error adapters：Restore control/bootstrap 的 7 H2Error
+和 6 XpcError（13）；IPSW/preflight 的 3 ZipError、1 plist、1 IO、1 TryFromIntError
+（6）；TSS 的 3 reqwest、2 plist、1 Utf8Error（6）。均通过已有 RestoreError::Io
+和 fixed private context 保留原对象；native IO/ZIP/H2 inner IO 的 kind/category/
+OS cause 保持，received H2/TSS codec 为 protocol，XPC 保留原 class（含 input/
+opaque unknown）；local ZIP format/password/manifest/TSS serialization 为 input，
+HTTP builder/expiry 为 input/timeout，其余 HTTP 保持原 class（含 unknown）。
+原 Protocol variant/Display/get_ref/kind/class/safe correlation 有迁移，explicit
+source 受 redaction 约束；source-free direct guards 不制造 native OS cause。
+
+公开 family 仍三个 variants/原 fields 穷举，无新 public getter/enum field/
+signature。Root/feature/deps/lock/classifier 保持；private TSS builder 和 control
+buffer helper 在旧 adapter 基线前等价提取。整份 production mod/preflight/TSS
+仅 normalize 13/6/6 个 native callbacks 后相等，每个 final callback 明确走 native
+helper；其他 bodies/guards/policies 完整比较，extraction/kind wrappers 另审。
+Cargo/root/classifier/shared native fixture/H2/XPC codecs byte-identical。
+code-audit-final/source-diff/baseline/original 等日志同 `/tmp/ios-a02-restore-native-`
+前缀，source diff SHA256
+`8a52dcf3e4502ccca04836275672a40e375b249be6c6a68866d4807708610bd8`。
+
+Wire flags/streams/bootstrap、request ID 在成功 write 后递增、control filtering/
+buffering、preflight consume-one connection 保持。TSS 30/120s、4/16 MiB caps、
+headers/URL/POST/status/nonce/batch fallback 保持；IPSW identity/variant、100k entries/
+256 identities/8 MiB manifest/64 MiB firmware/depth64、path/duplicate/size guards
+及 256 KiB chunk iterator 保持。无新 total/cleanup deadline、archive allocation
+bound、blocking-work stop、fail-closed/retry/rollback/reuse/remote cleanup 保证。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| restore all-feature/独立 no-default restore | 各 44 PASS；after-final/minimal.log terminal 0 |
+| external public_contract all/restore minimum | 31/15 PASS；public/public-minimal.log terminal 0 |
+| core strict Clippy | clippy.log terminal 0 |
+| 第 11 节 full | 首次 full.log terminal 0，2017 Rust/13 Python、0 FAIL、2 既有 ignored |
+
+新增 15 internal 和 1 external tests。Scripted owned AsyncRead/Write 输入有效
+SETTINGS/control，六个 write 位置覆盖 connect 与所有 bootstrap write/open；
+write fault 用 captured owned OS file-open error 注入，非实际传输 write syscall。
+Exhausted scripted input 导致真实 read_exact UnexpectedEof，不称真实 peer EOF。
+Malformed settings/control UTF-8、ID failure state 和 exact private helper 的
+bounded XPC buffer guard 有证据；未冒充完整 live 64 MiB response。
+
+Synthetic IPSW malformed/encrypted/CRC/manifest、archive open/entry scan native
+IO、actual plist/UTF-8/UID codecs 与 loopback HTTP request/body timer、builder/
+endpoint 有证据。Reader/seek 用实际 captured OS file-open error 注入，非真实
+IPSW FS read/seek 或所有 backend。Request 与三处 fixed bootstrap encoding
+failure、firmware i64 length failure 仅 source review，未制造多 GiB request/
+fake slice；现有 successful POST/ticket/status/size/batch/nonce tests 也通过。
+HTTP peer/client futures bounded 2s join 允许 reset，非逐 peer EOF；owned 目录
+Drop 清理。External 实际调用 public local IPSW/TSS，UID 在 network 前失败，
+穷举三 variant。无真实 firmware/ticket/credentials/device/daemon/Apple/restore。
+
+Before-final 29 PASS/15 FAIL 中 14 为 genuine；scan fixture 仅 gate Read，实际
+到达 later member-read 而非 by_index_raw scan，排除该项错误期望的负控制证据。
+初 before 同 fixture、尚未将多 case inputs 放在 source assertions 前。Public
+before 为 0 PASS/1 genuine FAIL；首 after 为 43 PASS/1 fixture FAIL。Zip 2.4.2
+open 缓存 data offset，scan 走 Seek；修为 Seek 也失败后，targeted 仅恢复旧 scan
+adapter 的 before-corrected-scan 是 0 PASS/1 genuine FAIL，非完整旧 source rerun。
+之后恢复 fixed adapter 再全部 final/full；失败日志保留，无 compile errors、
+production guard/budget/lint 削弱，不把坏夹具或重复失败当新增 regressions。
+
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 features/四 groups、7+7
+doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI/
+3 backup contracts。Tested ios 0.1.13 debug SHA256
+`675c638f8836ab8e4bfba1aa11beb4960f1498cbe731643b33e2fdea754b7ff4`。
+源码 full 前后冻结；磁盘约 4.1/3.6 GiB，无 storage failure/cleanup；无额外
+Chromium/installed 3.9/3.13。文档审查和收尾独立提交，不改 accepted 源码。
+
+文档收尾：118 capability records、七个 changed Markdown 的 156 local links
+（baseline a5bb2f4）、implementation/maturity/历史 evidence 保持、单个 host
+entry 与 tested source commit 一致、whitespace PASS；docs-catalog/docs-links
+日志同前缀。CHANGELOG/error/public/quality/catalog/roadmap/新专题与前专题
+follow-up 共八个文件独立提交，accepted 源码/full 不变。
+
+A02/第三类/总体 goal active，第四类未开始，全部 31 主任务/子任务保持。
+下一确认合同缺口：legacy prefetch_tss_batch 将 combined/per-updater 原错误消费
+为 failed_updaters 名称，无法区分 transport/codec 与 missing ticket。需提供
+保留现有 constructible TssBatchResult fields、retry/nonce/wire 的 additive
+observation API；read-only next-batch-observation/next-converters 日志同前缀。
+其他 AFC/DTX/file/symbol/app/test/ZIP/GPX conversions、DProxy text、typed guards/
+created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/device
+条件继续；不升级 maturity、推送/发布、改写历史或修改 reference checkout。
