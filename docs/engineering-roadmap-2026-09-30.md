@@ -4095,3 +4095,102 @@ pasteboard deadlines须保留old phase/Duration/seconds与state，区分actual E
 created admission/sleep markers；其他native/typed guards/DProxy text/stream/JSON/
 callback/bindings与L01/L03/A03/platform/device仍待。无真实diagnostics/backup/
 credentials/device/daemon/Apple，无push/publish/history rewrite/reference编辑。
+
+### 大类 3：A02 服务期限、原生来源与 promised-size 上限交付（2026-10-03）
+
+从 clean `3144ca5d0a0fd90091bbb17d5feddd8430bc1edc` 恢复，分支
+`feat/device-service-updates-20260927`。实现提交
+`bd6ee91459fd34b2b2f42f419f12b90dccd259da`，九个源码文件；聚焦本地交付，
+不推送/发布。Linux x86_64、Rust 1.97.1/MSRV 1.80.1、Python 3.12.13。
+
+保留21处实际原生来源：Cryptex四个Elapsed、assets三个reqwest及一个cache
+rename IO（八处）；MobileActivation两个Elapsed；InstallCoordination connect
+一个Elapsed和一个原始CoreError；Pasteboard/client/subscription/monitor七个
+Elapsed及TryFromIntError/uuid::Error（九处）。已有Io/Xpc(Io)承载来源，
+四个public enum仍11/5/3/7 variants与原fields穷举。新增
+`CryptexError::timeout_phase()`、MobileActivation/InstallCoordination
+`timeout_duration()`、`PasteboardError::timeout_seconds()`，保留旧Timeout的
+phase/Duration/whole seconds及as_secs截断。最多32个typed sources，只认自己的
+private issuer或legacy Timeout；generic IO TimedOut/unissued Elapsed返回None，
+不format，None不排除timeout，也不证明retry/cleanup完成。
+[专题证据](validation/service-deadline-native-sources-2026-10-03.md)。
+
+Native timers保持timeout，received pasteboard integer/UUID保持protocol。
+Cryptex HTTP timeout/builder从opaque Download变为timeout/invalid_input；native
+cache IO保留kind/OS source，可能从Protocol变为io；InstallCoordination connect
+保留CoreError原class。Returned variants/Display/immediate get_ref/IO kinds与safe
+correlation可能改变；typed class/source/issuer getters迁移，native显式访问遵循
+redaction边界。Created activation admission/poll/sleep和InstallCoordination
+query/select deadlines仍source-free legacy Timeout，不伪造Elapsed。
+
+私有budget/connect/fetch/builder/publish helpers在before baseline前等价提取，
+公开Cryptex routine/preflight30s、install600s及HTTP connect/total30/600s保持，
+used=true之后下一routine重连规则保持；activation绝对期限和initial unsupported
+fallback、canonical metadata gates、InstallCoordination query unusable/late-reply
+规则保持。Pasteboard公开10s期限、五条timeout owner/closed/idempotent unsubscribe
+路径、monitor initial-baseline/read fail-closed与无期限idle等待保持。Timed future
+drop后take XPC owner顺序、其他错误原reuse策略与best-effort Drop保持，不扩展L01
+cleanup/retry/remote acknowledgement保证。
+
+一处显式guard修复：非负promised size以u64完整比较data limit，关闭32bit上
+usize conversion失败后跳过上限的路径；negative/over-limit仍source-free
+Protocol/Limit。Host覆盖exact limit、超限与i64::MAX，32bit仅source review，
+无32bit runtime claim。Cryptex fixed-four paths Vec-to-array Err不是StdError；
+上轮next-consumers称TryFromSlice不正确，该guard保持。
+
+生产比较：提取baseline后named native callback normalization、五条pasteboard
+owner/state bodies、cache remove/concurrent-load/fallback顺序、一个full-width
+promise条件PASS。MobileActivation send_command normalization包含两个未改的
+frame adapters；四enum/macro family exact；Cargo/lock/root/classifier byte-identical。
+Shared XPC fixture只扩展test cfg gates。完整diff另审提取/固定context；日志
+`/tmp/ios-a02-service-deadline-code-audit.log`，source patch SHA256
+`1c2a6d64dab344e1e681c616ae117d47c6e51f45f784d40b7a525ec262d497de`。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| native_source group | 19 PASS：16新增internal与3既有；after-final.log terminal0 |
+| all-feature Cryptex/activation/InstallCoordination/pasteboard | 20/33/28/30 PASS |
+| 对应单个no-default feature | 20/29/28/30 PASS；activation另四TLS fixtures需其他features |
+| 外部public_contract all/no-default | 28/13 PASS；每服务minimum getter另1 PASS |
+| core strict Clippy | clippy-final.log PASS，terminal0 |
+| 第11节full | 首次full.log PASS terminal0，1973 Rust/13 Python、0 FAIL、2既有ignored |
+
+新增测试触发actual owned H2/XPC stalled operations、activation command/session
+期限、loopback HTTP send/chunk timeout及builder fault、cache rename native OS
+error/有效竞争cache fallback、received conversions、五条pasteboard owner路径、
+monitor baseline/read状态及cyclic/panicking Display/unissued getter边界。
+Cryptex connect/preflight和InstallCoordination connect用相同私有边界/owned
+pending/Core futures，公开设备入口placement仅source review。Invoke/install
+使用真实XPC client和synthetic on-disk assets；local EOF/join/owned file Drop只
+证明fixture cleanup，不证明partial-write reuse、设备cancel/stop或remote cleanup。
+
+Before实际13新增native tests FAIL、3既有PASS，terminal101；首次fixture compile
+E0283（String keys）/E0716（borrowed path temporary）仅fixture修正后再跑genuine
+baseline，日志before-compile/before保留。首次activation组32PASS/1FAIL：迁移
+断言错误要求caller10ms等于internally-started absolute budget；改为>0且<=10ms
+并保留actual Elapsed检查，生产budget/fallback不改；final33PASS。日志均采用
+`/tmp/ios-a02-service-deadline-`前缀，专题列完整commands/records；guard/lint未削弱。
+
+Full覆盖fmt/check/workspace strict Clippy/MSRV、66feature builds/四groups、
+7+7doctests/三snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53tools、118help、38raw、5host workflows/22device NOT_RUN、15CLI/
+3backup contracts。Tested ios0.1.13 debug SHA256
+`735b7a46d62d9b705062febd25c0302cc1a870afa092194b93ee0756fb9f9172`。
+Full前后源码冻结；磁盘约8.1/7.3GiB，无storage failure或cleanup；无额外
+Chromium/installed3.9/3.13、external DDI download/real TSS/pairing/credentials/
+device/daemon/Apple。Error/public/quality/catalog及historical diagnostic
+follow-up同步，implementation/maturity和历史evidence保持；文档另提交。
+
+文档收尾：118capability records、六个changed Markdown的142local links（baseline
+3144ca5）、implementation/maturity/历史evidence保持、单个new host evidence与
+tested commit一致、whitespace PASS。docs-catalog/docs-links.log同上述前缀；
+七文档文件独立提交，accepted源码/full保持不变。
+
+A02/第三类/总体goal active，第四类未开始，完整31任务/全部子任务scope保持。
+扩大readonly扫描90candidates/28files，含36anonymous/22files，包括test branches/
+deliberate optional/string observers，不是confirmed losses。next-services、
+next-anonymous、next-dproxy及next-consumers日志同前缀；下一步核对ImageMounter/
+restore HTTP/TSS/ZIP native角色与原budget/proxy/limit/guards、MobileBackup2
+四个Unback/Extract operation/finish deadline及state/cleanup规则，再处理AFC/
+DTX/integer/DProxy text/typed guards/created outcomes/stream/JSON/callback/bindings
+与L01/L03/A03/platform/device条件。没有删除任务或maturity升级。

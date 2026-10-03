@@ -188,6 +188,20 @@ created guards/EOF/wire/success/budgets/staging/cleanup stay. The
 [diagnostic evidence](validation/diagnostic-native-sources-2026-10-03.md) records
 legacy string source loss, IO kind migration and host/device boundaries.
 
+Cryptex/MobileActivation/InstallCoordination/Pasteboard retain 21 native causes
+under existing Io or Xpc(Io), keeping their 11/5/3/7 public variants/fields
+exhaustive. Additive `timeout_phase()`, `timeout_duration()` on activation and
+InstallCoordination, and `timeout_seconds()` on Pasteboard preserve the former
+Timeout payloads, including truncated whole seconds. Bounded typed getters
+recognize their private issuer or legacy Timeout, returning None for generic
+IO timeout or unissued Elapsed. These values do not imply retry or cleanup.
+Native timer/HTTP/parser/cache/connect variants, Display and immediate source
+payloads can change; use typed classification/source traversal. Created deadline
+markers and existing budgets/wire/state/fallback remain. The full-width promise
+size comparison also rejects values that could bypass a 32-bit usize limit.
+The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
+records getter scope, native class changes, exact API families and host limits.
+
 The additive private-fields `OperationCancelled` marker records caller-observed
 local cancellation without changing CoreError variants. Plain EINTR stays IO.
 WebInspector launch's successful Ctrl+C branch retains its context and exit

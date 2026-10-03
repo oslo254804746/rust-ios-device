@@ -147,3 +147,11 @@ Duration/seconds values, admission/sleep markers and state rules. Other adapters
 typed guards/created outcomes, DProxy text, stream/JSON/callback/binding and
 L01/L03/A03/platform/device conditions remain. All 31 tasks/subtasks and capability
 maturity stay. No push/publication, history rewrite or reference checkout edits.
+
+Follow-up: [service deadline/native evidence](service-deadline-native-sources-2026-10-03.md)
+records `bd6ee91459fd34b2b2f42f419f12b90dccd259da`, 21 Cryptex/activation/
+InstallCoordination/pasteboard native causes, four issuer getters and the promised
+size guard correction; first full 1973 Rust/13 Python PASS. The prior next-consumer
+note's Cryptex asset-count TryFromSlice label was incorrect: that fixed four-path
+conversion fails with a Vec, not a native StdError. Historical diagnostic
+implementation/full evidence remain; A02 and the complete goal remain active.

@@ -126,6 +126,29 @@ The [diagnostic source migration](validation/diagnostic-native-sources-2026-10-0
 records returned variants/Display, local AFC peer cleanup, archive OS faults and
 the limits of partial-read/write/device evidence.
 
+Cryptex, MobileActivation, InstallCoordination and Pasteboard now retain 21
+native causes. Their timers use existing Io or Xpc(Io), retaining actual Elapsed
+and the former phase/Duration/whole-seconds value. Additive getters are
+`CryptexError::timeout_phase()`, `MobileActivationError::timeout_duration()`,
+`InstallCoordinationError::timeout_duration()` and
+`PasteboardError::timeout_seconds()`. Each recognizes only its own private
+issuer or legacy Timeout value within 32 typed sources. Generic IO timeout or
+unissued Elapsed returns None; None does not exclude a timeout. The seconds
+getter preserves as_secs truncation, including Some(0). Recognition establishes
+neither safe retry nor completed remote cleanup.
+
+Received pasteboard integer/UUID errors stay protocol. Cryptex HTTP timeouts and
+builder faults now classify timeout/invalid_input; native cache publication IO
+and InstallCoordination CoreError keep their original kinds/classes/sources
+instead of Protocol strings. Returned variants/Display/immediate payloads and
+safe diagnostic correlation can change; native source access follows redaction
+policy. Public exhaustive families, production deadlines, wire and existing
+owner/fail-closed/fallback behavior stay. Created activation/InstallCoordination
+deadline markers remain source-free. One promised-size guard now compares the
+full nonnegative integer against its limit, closing a 32-bit conversion bypass;
+32-bit behavior is source-reviewed. The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
+records actual local faults, helper/device-entry scope and migration limits.
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.
