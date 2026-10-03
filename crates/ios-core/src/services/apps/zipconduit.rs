@@ -16,6 +16,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 mod error_mapping;
 
+#[cfg(test)]
+mod input_source_contract_tests;
+
 pub const SERVICE_NAME: &str = "com.apple.streaming_zip_conduit";
 pub const RSD_SERVICE_NAME: &str = "com.apple.streaming_zip_conduit.shim.remote";
 
@@ -92,15 +95,15 @@ where
     // Calculate totals for ZipMetadata
     let total_uncompressed = entries.iter().try_fold(0u64, |acc, entry| {
         let len = u64::try_from(entry.data.len())
-            .map_err(|_| ZipConduitError::Protocol(format!("entry too large: {}", entry.name)))?;
+            .map_err(|error| error_mapping::input_error("encode IPA entry data length", error))?;
         acc.checked_add(len).ok_or_else(|| {
             ZipConduitError::Protocol("total uncompressed ZIP metadata size overflow".to_string())
         })
     })?;
     // RecordCount = META-INF dir + ZipMetadata file + all entries
     let record_count = u64::try_from(entries.len())
-        .ok()
-        .and_then(|len| len.checked_add(2))
+        .map_err(|error| error_mapping::input_error("encode IPA record count", error))?
+        .checked_add(2)
         .ok_or_else(|| {
             ZipConduitError::Protocol("ZIP metadata record count overflow".to_string())
         })?;
@@ -303,20 +306,16 @@ async fn write_local_file_header<S: AsyncWrite + Unpin>(
 
 // ── Plist helpers ───────────────────────────────────────────────────────────
 
-fn checked_zip_u32_len(what: &str, len: usize) -> Result<u32, ZipConduitError> {
-    u32::try_from(len)
-        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u32 range: {len}")))
+fn checked_zip_u32_len(what: &'static str, len: usize) -> Result<u32, ZipConduitError> {
+    u32::try_from(len).map_err(|error| error_mapping::input_error(what, error))
 }
 
-fn checked_zip_u16_len(what: &str, len: usize) -> Result<u16, ZipConduitError> {
-    u16::try_from(len)
-        .map_err(|_| ZipConduitError::Protocol(format!("{what} exceeds ZIP u16 range: {len}")))
+fn checked_zip_u16_len(what: &'static str, len: usize) -> Result<u16, ZipConduitError> {
+    u16::try_from(len).map_err(|error| error_mapping::input_error(what, error))
 }
 
-fn checked_zip_i64(what: &str, value: u64) -> Result<i64, ZipConduitError> {
-    i64::try_from(value).map_err(|_| {
-        ZipConduitError::Protocol(format!("{what} exceeds plist integer range: {value}"))
-    })
+fn checked_zip_i64(what: &'static str, value: u64) -> Result<i64, ZipConduitError> {
+    i64::try_from(value).map_err(|error| error_mapping::input_error(what, error))
 }
 
 fn build_init_transfer(filename: &str) -> plist::Value {

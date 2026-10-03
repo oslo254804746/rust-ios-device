@@ -1030,8 +1030,10 @@ mod tests {
 
     #[tokio::test]
     async fn authorize_test_session_rejects_pid_outside_dtx_integer_range() {
-        let (session_client, _session_server) = duplex(4096);
-        let (control_client, _control_server) = duplex(4096);
+        use std::error::Error;
+        use tokio::io::AsyncReadExt;
+        let (session_client, mut session_server) = duplex(4096);
+        let (control_client, mut control_server) = duplex(4096);
         let mut testmanager =
             TestmanagerClient::from_connections_for_test(session_client, 3, control_client, 4);
 
@@ -1039,10 +1041,28 @@ mod tests {
             .authorize_test_session_with_process_id(u64::MAX)
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            DtxError::Protocol(message)
-                if message.contains("exceeds DTX signed integer range")
-        ));
+        assert_eq!(
+            ios_core::classify_error(&err),
+            ios_core::ErrorClass::InvalidInput
+        );
+        let DtxError::Io(io) = &err else {
+            panic!("original source lost");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(io.source().unwrap().is::<std::num::TryFromIntError>());
+        drop(testmanager);
+        let mut session_wire = Vec::new();
+        let mut control_wire = Vec::new();
+        let (session, control) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(
+                session_server.read_to_end(&mut session_wire),
+                control_server.read_to_end(&mut control_wire),
+            )
+        })
+        .await
+        .unwrap();
+        session.unwrap();
+        control.unwrap();
+        assert!(session_wire.is_empty() && control_wire.is_empty());
     }
 }

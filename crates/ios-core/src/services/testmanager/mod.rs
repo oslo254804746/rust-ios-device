@@ -8,6 +8,9 @@ pub mod results;
 pub mod workflow;
 pub mod xctestrun;
 
+#[cfg(test)]
+mod input_source_contract_tests;
+
 use crate::proto::nskeyedarchiver_encode::{
     archive_uuid, archive_xct_capabilities, archive_xctest_configuration, XcTestConfiguration,
     XctCapabilities,
@@ -140,9 +143,11 @@ where
         &mut self,
         pid: u64,
     ) -> Result<bool, DtxError> {
-        let pid = i64::try_from(pid).map_err(|_| {
-            DtxError::Protocol(format!(
-                "test runner process id exceeds DTX signed integer range: {pid}"
+        let pid = i64::try_from(pid).map_err(|error| {
+            DtxError::Io(crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "encode test runner process identifier",
+                error,
             ))
         })?;
         let (control, channel) = self.control_mut()?;

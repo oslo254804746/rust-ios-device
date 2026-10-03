@@ -16,6 +16,9 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub const SERVICE_NAME: &str = "com.apple.dt.simulatelocation";
 
+#[cfg(test)]
+mod input_source_contract_tests;
+
 #[derive(thiserror::Error)]
 pub enum SimLocationError {
     #[error("IO error: {0}")]
@@ -58,7 +61,7 @@ where
 }
 
 pub fn parse_gpx_route(gpx: &str) -> Result<Vec<GpxRoutePoint>, SimLocationError> {
-    let parsed: Gpx = from_str(gpx).map_err(|e| SimLocationError::GpxParse(e.to_string()))?;
+    let parsed: Gpx = from_str(gpx).map_err(|error| input_error("parse GPX XML", error))?;
     let mut points = Vec::new();
     let mut previous_time: Option<String> = None;
 
@@ -115,15 +118,26 @@ where
 
 fn parse_delay(previous: &str, current: &str) -> Result<Duration, SimLocationError> {
     let previous = OffsetDateTime::parse(previous, &Rfc3339)
-        .map_err(|e| SimLocationError::GpxParse(e.to_string()))?;
+        .map_err(|error| input_error("parse previous GPX timestamp", error))?;
     let current = OffsetDateTime::parse(current, &Rfc3339)
-        .map_err(|e| SimLocationError::GpxParse(e.to_string()))?;
+        .map_err(|error| input_error("parse current GPX timestamp", error))?;
     let delta = current - previous;
     if delta.is_negative() {
         Ok(Duration::ZERO)
     } else {
         Ok(Duration::from_secs(delta.whole_seconds() as u64))
     }
+}
+
+fn input_error(
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> SimLocationError {
+    SimLocationError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::InvalidInput,
+        phase,
+        source,
+    ))
 }
 
 #[derive(Debug, Deserialize)]

@@ -12,6 +12,9 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 
+#[cfg(test)]
+mod input_source_contract_tests;
+
 const FEATURE_LIST_PROCESSES: &str = "com.apple.coredevice.feature.listprocesses";
 const FEATURE_LIST_APPS: &str = "com.apple.coredevice.feature.listapps";
 const FEATURE_STREAM_APPS: &str = "com.apple.coredevice.feature.streamapplist";
@@ -671,9 +674,18 @@ fn build_monitor_process_termination_input(pid: u64) -> Result<XpcValue, AppServ
 }
 
 fn process_identifier_to_i64(pid: u64) -> Result<i64, AppServiceError> {
-    i64::try_from(pid).map_err(|_| {
-        AppServiceError::Protocol(format!("process id exceeds DTX integer range: {pid}"))
-    })
+    i64::try_from(pid).map_err(|error| input_error("encode CoreDevice process identifier", error))
+}
+
+fn input_error(
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> AppServiceError {
+    AppServiceError::Xpc(XpcError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::InvalidInput,
+        phase,
+        source,
+    )))
 }
 
 fn build_launch_application_input(bundle_id: &str) -> Result<XpcValue, AppServiceError> {
@@ -760,14 +772,17 @@ fn string_map_to_xpc_dict(values: &IndexMap<String, String>) -> XpcValue {
 
 fn empty_binary_plist(field_name: &str) -> Result<Bytes, AppServiceError> {
     let mut bytes = Vec::new();
-    plist::to_writer_binary(
-        &mut bytes,
-        &plist::Value::Dictionary(plist::Dictionary::new()),
-    )
-    .map_err(|error| {
-        AppServiceError::Protocol(format!("failed to encode {field_name}: {error}"))
-    })?;
+    write_empty_binary_plist(&mut bytes, field_name)?;
     Ok(Bytes::from(bytes))
+}
+
+fn write_empty_binary_plist(
+    writer: impl std::io::Write,
+    _field_name: &str,
+) -> Result<(), AppServiceError> {
+    plist::to_writer_binary(writer, &plist::Value::Dictionary(plist::Dictionary::new()))
+        .map_err(|error| input_error("encode CoreDevice empty binary plist", error))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1170,9 +1185,7 @@ mod tests {
     fn build_send_signal_input_rejects_pid_above_i64_max() {
         let err = build_send_signal_input(u64::MAX, SIGKILL).unwrap_err();
 
-        assert!(
-            matches!(err, AppServiceError::Protocol(message) if message.contains("process id exceeds"))
-        );
+        assert!(matches!(err, AppServiceError::Xpc(XpcError::Io(_))));
     }
 
     #[test]
@@ -1473,9 +1486,7 @@ mod tests {
     fn build_monitor_process_termination_input_rejects_pid_above_i64_max() {
         let err = build_monitor_process_termination_input(u64::MAX).unwrap_err();
 
-        assert!(
-            matches!(err, AppServiceError::Protocol(message) if message.contains("process id exceeds"))
-        );
+        assert!(matches!(err, AppServiceError::Xpc(XpcError::Io(_))));
     }
 
     #[test]

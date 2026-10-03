@@ -8,6 +8,93 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[tokio::test]
+async fn root_input_native_gpx_keeps_exhaustive_family_and_preflight_source() {
+    use ios_core::{
+        simlocation::{parse_gpx_route, replay_gpx_route, GpxRoutePoint, SimLocationError},
+        ErrorClass,
+    };
+    fn family(error: &SimLocationError) -> &str {
+        match error {
+            SimLocationError::Io(_) => "io",
+            SimLocationError::GpxParse(_) => "gpx",
+        }
+    }
+    let GpxRoutePoint {
+        latitude,
+        longitude,
+        delay_from_previous,
+    } = GpxRoutePoint {
+        latitude: "1".into(),
+        longitude: "2".into(),
+        delay_from_previous: std::time::Duration::ZERO,
+    };
+    assert_eq!((latitude.as_str(), longitude.as_str()), ("1", "2"));
+    assert!(delay_from_previous.is_zero());
+    let gpx = "<gpx><trk><trkseg><trkpt lat=\"owned-private\"/></trkseg></trk></gpx>";
+    let parsed = parse_gpx_route(gpx).unwrap_err();
+    let (mut stream, mut peer) = tokio::io::duplex(64);
+    let replayed = replay_gpx_route(&mut stream, gpx).await.unwrap_err();
+    for error in [parsed, replayed] {
+        assert_eq!(family(&error), "io");
+        assert_eq!(ios_core::classify_error(&error), ErrorClass::InvalidInput);
+        let SimLocationError::Io(io) = &error else {
+            unreachable!()
+        };
+        assert!(std::error::Error::source(io)
+            .unwrap()
+            .is::<quick_xml::DeError>());
+        assert!(!format!("{error:?}").contains("owned-private"));
+    }
+    drop(stream);
+    let mut wire = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut wire),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(wire.is_empty());
+}
+
+#[cfg(feature = "testmanager")]
+#[tokio::test]
+async fn root_input_native_test_pid_keeps_exhaustive_dtx_family() {
+    use ios_core::{dtx::DtxError, testmanager::TestmanagerClient, ErrorClass};
+    fn family(error: &DtxError) -> &str {
+        match error {
+            DtxError::Io(_) => "io",
+            DtxError::BadMagic(_) => "magic",
+            DtxError::Protocol(_) => "protocol",
+        }
+    }
+    let (stream, mut peer) = tokio::io::duplex(64);
+    let mut client = TestmanagerClient::from_session_connection_for_test(stream, 1);
+    let error = client
+        .authorize_test_session_with_process_id(u64::MAX)
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(ios_core::classify_error(&error), ErrorClass::InvalidInput);
+    let DtxError::Io(io) = &error else {
+        unreachable!()
+    };
+    assert!(std::error::Error::source(io)
+        .unwrap()
+        .is::<std::num::TryFromIntError>());
+    drop(client);
+    let mut wire = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut wire),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(wire.is_empty());
+}
+
 #[cfg(feature = "restore")]
 #[tokio::test]
 async fn root_tss_batch_observations_keep_legacy_literals_and_owned_native_errors() {

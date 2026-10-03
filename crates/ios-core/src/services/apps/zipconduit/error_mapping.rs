@@ -51,6 +51,17 @@ pub(super) fn entry_read_error(source: io::Error) -> ZipConduitError {
     ZipConduitError::Io(io::Error::new(source.kind(), EntryReadError { source }))
 }
 
+pub(super) fn input_error(
+    phase: &'static str,
+    source: std::num::TryFromIntError,
+) -> ZipConduitError {
+    ZipConduitError::Io(crate::error::context::retained_io(
+        io::ErrorKind::InvalidInput,
+        phase,
+        source,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
