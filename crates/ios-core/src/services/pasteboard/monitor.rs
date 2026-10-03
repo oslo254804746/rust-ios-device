@@ -42,6 +42,15 @@ where
         read: F,
         policy: DataInclusionPolicy,
     ) -> Result<Self, PasteboardError> {
+        Self::start_with_timeout(stream, read, policy, REQUEST_TIMEOUT).await
+    }
+
+    async fn start_with_timeout(
+        stream: S,
+        read: F,
+        policy: DataInclusionPolicy,
+        timeout: std::time::Duration,
+    ) -> Result<Self, PasteboardError> {
         policy.validate()?;
         let mut monitor = Self {
             notifications: NotificationProxyClient::new(stream),
@@ -50,7 +59,7 @@ where
             last_change: None,
             ready: false,
         };
-        tokio::time::timeout(REQUEST_TIMEOUT, async {
+        tokio::time::timeout(timeout, async {
             monitor
                 .notifications
                 .observe(PASTEBOARD_CHANGED_NOTIFICATION)
@@ -60,9 +69,7 @@ where
             Ok::<_, PasteboardError>(())
         })
         .await
-        .map_err(|_| PasteboardError::Timeout {
-            seconds: REQUEST_TIMEOUT.as_secs(),
-        })??;
+        .map_err(|source| super::native_timeout(timeout, "start pasteboard monitor", source))??;
         monitor.ready = true;
         Ok(monitor)
     }
@@ -70,6 +77,13 @@ where
     /// Wait for a new `(nonce, changeCount)` and return the bounded snapshot.
     /// Unrelated notifications and repeated counters within one nonce are skipped.
     pub async fn next_change(&mut self) -> Result<PasteboardSnapshot, PasteboardError> {
+        self.next_change_with_timeout(REQUEST_TIMEOUT).await
+    }
+
+    async fn next_change_with_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<PasteboardSnapshot, PasteboardError> {
         if !self.ready {
             return Err(PasteboardError::Closed);
         }
@@ -84,10 +98,10 @@ where
                     return Err(NotificationProxyError::ProxyDeath.into())
                 }
             }
-            let snapshot = tokio::time::timeout(REQUEST_TIMEOUT, (self.read)(self.policy))
+            let snapshot = tokio::time::timeout(timeout, (self.read)(self.policy))
                 .await
-                .map_err(|_| PasteboardError::Timeout {
-                    seconds: REQUEST_TIMEOUT.as_secs(),
+                .map_err(|source| {
+                    super::native_timeout(timeout, "read pasteboard monitor snapshot", source)
                 })??;
             let duplicate = snapshot.change_id().is_some_and(|(nonce, count)| {
                 self.last_change
@@ -144,6 +158,60 @@ mod tests {
         value.to_writer_xml(&mut bytes).unwrap();
         stream.write_u32(bytes.len() as u32).await.unwrap();
         stream.write_all(&bytes).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_source_monitor_registration_deadline_retains_elapsed() {
+        let (stream, _peer) = duplex(4096);
+        let error = PasteboardMonitor::start_with_timeout(
+            stream,
+            |policy| {
+                assert_eq!(policy, DataInclusionPolicy::AllPromised);
+                std::future::pending::<Result<PasteboardSnapshot, PasteboardError>>()
+            },
+            DataInclusionPolicy::PromiseSecondary,
+            Duration::from_millis(10),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.timeout_seconds(), Some(0));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+    }
+
+    #[tokio::test]
+    async fn native_source_monitor_read_deadline_keeps_fail_closed_state() {
+        let (stream, mut peer) = duplex(4096);
+        let mut monitor = PasteboardMonitor {
+            notifications: NotificationProxyClient::new(stream),
+            read: |_| std::future::pending::<Result<PasteboardSnapshot, PasteboardError>>(),
+            policy: DataInclusionPolicy::PromiseSecondary,
+            last_change: Some((XpcValue::String("baseline".into()), 1)),
+            ready: true,
+        };
+        notify(
+            &mut peer,
+            "RelayNotification",
+            PASTEBOARD_CHANGED_NOTIFICATION,
+        )
+        .await;
+        let error = monitor
+            .next_change_with_timeout(Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert_eq!(error.timeout_seconds(), Some(0));
+        assert!(!monitor.ready);
+        assert_eq!(
+            monitor.last_change,
+            Some((XpcValue::String("baseline".into()), 1))
+        );
+        assert!(matches!(
+            monitor.next_change().await,
+            Err(PasteboardError::Closed)
+        ));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
     }
 
     #[tokio::test]

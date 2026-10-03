@@ -61,6 +61,115 @@ pub enum InstallCoordinationError {
     Timeout(Duration),
 }
 
+#[derive(thiserror::Error)]
+#[error("install coordination connection timed out after {duration:?}")]
+struct InstallCoordinationTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+crate::redaction::error_debug!(InstallCoordinationTimeout);
+
+impl InstallCoordinationError {
+    /// The reported budget of this service's deadline or legacy Timeout value.
+    /// A generic XPC/IO timeout does not identify this issuer or safe retry.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<InstallCoordinationTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> InstallCoordinationError {
+    InstallCoordinationError::Xpc(XpcError::Io(crate::error::context::retained_io(
+        kind, phase, source,
+    )))
+}
+
+#[cfg(test)]
+mod deadline_source_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn native_source_connect_deadline_retains_elapsed() {
+        let error = connect_operation(
+            Duration::from_millis(10),
+            std::future::pending::<Result<(), crate::CoreError>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+    }
+    #[tokio::test]
+    async fn native_source_connect_retains_original_core_classes() {
+        let missing =
+            std::env::temp_dir().join(format!("ios-install-native-{}", uuid::Uuid::new_v4()));
+        for (source, expected) in [
+            (
+                crate::CoreError::Io(std::fs::read(missing).unwrap_err()),
+                crate::ErrorClass::NotFound,
+            ),
+            (
+                crate::CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "owned permission failure",
+                )),
+                crate::ErrorClass::PermissionDenied,
+            ),
+            (
+                crate::CoreError::Other("owned-private timeout".into()),
+                crate::ErrorClass::Unknown,
+            ),
+        ] {
+            let error = connect_operation(Duration::from_secs(1), async { Err::<(), _>(source) })
+                .await
+                .unwrap_err();
+            assert!(crate::test_native::has_source::<crate::CoreError>(&error));
+            assert_eq!(crate::classify_error(&error), expected);
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
+}
+
+async fn connect_operation<T>(
+    timeout: Duration,
+    operation: impl std::future::Future<Output = Result<T, crate::CoreError>>,
+) -> Result<T, InstallCoordinationError> {
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|source| {
+            native_error(
+                std::io::ErrorKind::TimedOut,
+                "connect InstallCoordinationProxy",
+                InstallCoordinationTimeout {
+                    duration: timeout,
+                    source,
+                },
+            )
+        })?
+        .map_err(|error| {
+            native_error(
+                std::io::ErrorKind::Other,
+                "connect InstallCoordinationProxy",
+                error,
+            )
+        })
+}
+
 /// The LaunchServices install record returned by `Query`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstallRecord {
@@ -142,17 +251,11 @@ impl InstallCoordinationProxyClient {
         // TCP connection but never speaks RemoteXPC.  Keep the library entry
         // point bounded just like the query itself; callers that need a
         // shorter total deadline can still wrap this future externally.
-        let (client, metadata) = tokio::time::timeout(
+        let (client, metadata) = connect_operation(
             DEFAULT_TIMEOUT,
             device.connect_xpc_service_with_metadata(SERVICE_NAME),
         )
-        .await
-        .map_err(|_| InstallCoordinationError::Timeout(DEFAULT_TIMEOUT))?
-        .map_err(|error| {
-            InstallCoordinationError::Protocol(format!(
-                "failed to connect to {SERVICE_NAME}: {error}"
-            ))
-        })?;
+        .await?;
         if metadata.resolved_service_name != SERVICE_NAME {
             return Err(InstallCoordinationError::Protocol(format!(
                 "resolved unsupported InstallCoordinationProxy service {}",

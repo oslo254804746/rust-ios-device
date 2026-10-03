@@ -29,6 +29,22 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 type Result<T> = std::result::Result<T, CryptexError>;
 
+async fn bounded<T>(
+    duration: Duration,
+    phase: &'static str,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    tokio::time::timeout(duration, operation)
+        .await
+        .map_err(|source| {
+            native_error(
+                std::io::ErrorKind::TimedOut,
+                phase,
+                CryptexTimeout { phase, source },
+            )
+        })
+}
+
 #[derive(thiserror::Error)]
 pub enum CryptexError {
     #[error("Cryptex XPC: {0}")]
@@ -53,6 +69,42 @@ pub enum CryptexError {
     Connection(#[from] crate::CoreError),
     #[error("Cryptex personalization or image mounter: {0}")]
     ImageMounter(#[from] crate::imagemounter::protocol::ImageMounterError),
+}
+
+#[derive(thiserror::Error)]
+#[error("Cryptex routine timed out: {phase}")]
+struct CryptexTimeout {
+    phase: &'static str,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+crate::redaction::error_debug!(CryptexTimeout);
+
+impl CryptexError {
+    /// The phase of a Cryptex-issued deadline or the legacy Timeout variant.
+    /// Other IO timeouts do not identify this issuer or establish safe retry.
+    pub fn timeout_phase(&self) -> Option<&'static str> {
+        if let Self::Timeout(phase) = self {
+            return Some(*phase);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<CryptexTimeout>() {
+                return Some(error.phase);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CryptexError {
+    CryptexError::Io(crate::error::context::retained_io(kind, phase, source))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -101,12 +153,12 @@ impl CryptexClient {
     }
 
     pub async fn connect(device: &ConnectedDevice) -> Result<Self> {
-        let (xpc, metadata) = tokio::time::timeout(
+        let (xpc, metadata) = bounded(
             ROUTINE_TIMEOUT,
+            "connect",
             device.connect_xpc_service_with_metadata(SERVICE_NAME),
         )
-        .await
-        .map_err(|_| CryptexError::Timeout("connect"))??;
+        .await??;
         Ok(Self::new(xpc, metadata.features))
     }
 
@@ -130,13 +182,22 @@ impl CryptexClient {
         routine: &'static str,
         arguments: IndexMap<String, XpcValue>,
     ) -> Result<IndexMap<String, XpcValue>> {
-        tokio::time::timeout(ROUTINE_TIMEOUT, async {
+        self.invoke_with_timeout(routine, arguments, ROUTINE_TIMEOUT)
+            .await
+    }
+
+    async fn invoke_with_timeout(
+        &mut self,
+        routine: &'static str,
+        arguments: IndexMap<String, XpcValue>,
+        timeout: Duration,
+    ) -> Result<IndexMap<String, XpcValue>> {
+        bounded(timeout, routine, async {
             let xpc = self.connection().await?;
             xpc.send_request(request(routine, arguments)).await?;
             unwrap_response(routine, receive_response(xpc).await?)
         })
-        .await
-        .map_err(|_| CryptexError::Timeout(routine))?
+        .await?
     }
 
     pub async fn copy_installed(&mut self) -> Result<Vec<InstalledCryptex>> {
@@ -213,6 +274,16 @@ impl CryptexClient {
     /// Install a signed DDI, sending five announced transfers on odd H2 streams.
     /// The caller must obtain a Cryptex1 ticket using this identity's nonce handle.
     pub async fn install(&mut self, assets: &CryptexDdiAssets, ticket: &[u8]) -> Result<()> {
+        self.install_with_timeout(assets, ticket, INSTALL_TIMEOUT)
+            .await
+    }
+
+    async fn install_with_timeout(
+        &mut self,
+        assets: &CryptexDdiAssets,
+        ticket: &[u8],
+        timeout: Duration,
+    ) -> Result<()> {
         self.require_feature(FEATURE_INSTALL)?;
         if ticket.is_empty() || ticket.len() as u64 > assets::MAX_METADATA_BYTES {
             return Err(CryptexError::Protocol(
@@ -239,7 +310,7 @@ impl CryptexClient {
         }
         let lengths = [sizes[0], sizes[1], ticket.len() as u64, sizes[2], sizes[3]];
         let arguments = install_arguments(assets.properties()?, lengths);
-        tokio::time::timeout(INSTALL_TIMEOUT, async {
+        bounded(timeout, "install", async {
             let xpc = self.connection().await?;
             xpc.send_request(request("install", arguments)).await?;
             xpc.send_file_transfer(1, lengths[0], &mut files[0]).await?;
@@ -251,8 +322,7 @@ impl CryptexClient {
             unwrap_response("install", receive_response(xpc).await?)?;
             Ok(())
         })
-        .await
-        .map_err(|_| CryptexError::Timeout("install"))?
+        .await?
     }
 }
 
@@ -277,7 +347,7 @@ pub async fn auto_install_ddi(
             installed.identifier, installed.version
         )));
     }
-    tokio::time::timeout(ROUTINE_TIMEOUT, async {
+    bounded(ROUTINE_TIMEOUT, "image mounter preflight", async {
         let stream = device.connect_rsd_service(crate::imagemounter::protocol::SERVICE_NAME).await?;
         let mut mounter = crate::imagemounter::ImageMounterClient::new(stream);
         if !mounter.query_developer_mode_status().await? {
@@ -287,7 +357,7 @@ pub async fn auto_install_ddi(
             return Err(CryptexError::Conflict("a Personalized image owns /System/Developer; unmount it before installing a Cryptex DDI".into()));
         }
         Ok(())
-    }).await.map_err(|_| CryptexError::Timeout("image mounter preflight"))??;
+    }).await??;
     let assets = match restore_dir {
         Some(path) => CryptexDdiAssets::load(path).await?,
         None => CryptexDdiAssets::download(cache_dir).await?,

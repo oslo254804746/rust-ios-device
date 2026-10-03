@@ -76,6 +76,56 @@ pub fn has_legacy_activation_wrapper(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod http_source_contract_tests;
 
+#[cfg(test)]
+mod deadline_source_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn native_source_command_deadline_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::with_timeout(stream, Duration::from_millis(10));
+        let error = client.request_session_info().await.unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
+    #[tokio::test]
+    async fn native_source_session_deadline_retains_elapsed() {
+        let (stream, _peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::new(stream);
+        let started = tokio::time::Instant::now();
+        let error = client
+            .request_session_info_until(started + Duration::from_millis(10), started)
+            .await
+            .unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+    }
+
+    #[tokio::test]
+    async fn native_source_expired_session_marker_stays_source_free() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = MobileActivationClient::new(stream);
+        let started = tokio::time::Instant::now();
+        let error = client
+            .request_session_info_until(started, started)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MobileActivationError::Timeout(Duration::ZERO)
+        ));
+        assert_eq!(error.timeout_duration(), Some(Duration::ZERO));
+        assert!(!crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        drop(client);
+        let mut received = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut received)
+            .await
+            .unwrap();
+        assert!(received.is_empty());
+    }
+}
+
 service_error!(MobileActivationError, between {
     /// The operation exceeded its configured deadline.
     #[error("mobile activation operation timed out after {0:?}")]
@@ -84,6 +134,46 @@ service_error!(MobileActivationError, between {
     #[error("activation HTTP error: {0}")]
     Http(String),
 });
+
+#[derive(thiserror::Error)]
+#[error("mobile activation operation timed out after {duration:?}")]
+struct MobileActivationTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+crate::redaction::error_debug!(MobileActivationTimeout);
+
+impl MobileActivationError {
+    /// The budget reported by a mobileactivation-issued deadline or its legacy
+    /// Timeout variant. This does not establish safe retry or completed cleanup.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<MobileActivationTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_timeout(
+    duration: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> MobileActivationError {
+    MobileActivationError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        MobileActivationTimeout { duration, source },
+    ))
+}
 
 /// A client for one `mobileactivationd` service connection.
 #[derive(Debug)]
@@ -321,7 +411,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MobileActivationClient<S> {
         }
         tokio::time::timeout_at(deadline, self.request_session_info())
             .await
-            .map_err(|_| activation_session_timeout(started, deadline))?
+            .map_err(|source| {
+                native_timeout(
+                    deadline.saturating_duration_since(started),
+                    "wait for activation session",
+                    source,
+                )
+            })?
     }
 
     async fn send_command(
@@ -353,7 +449,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> MobileActivationClient<S> {
         };
         tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| MobileActivationError::Timeout(timeout))?
+            .map_err(|source| native_timeout(timeout, "mobile activation command", source))?
     }
 }
 
@@ -1025,7 +1121,11 @@ mod tests {
             )
             .await
             .expect_err("a stalled probe must remain an error");
-        assert!(matches!(error, MobileActivationError::Timeout(_)));
+        let reported = error
+            .timeout_duration()
+            .expect("activation-issued deadline");
+        assert!(reported > Duration::ZERO && reported <= Duration::from_millis(10));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
 
         let mut stream =
             MockStream::with_response(plist::Value::Dictionary(plist::Dictionary::from_iter([(
@@ -1393,9 +1493,8 @@ mod tests {
     async fn device_request_timeout_is_bounded() {
         let mut client =
             MobileActivationClient::with_timeout(PendingStream, Duration::from_millis(5));
-        assert!(matches!(
-            client.request_session_info().await,
-            Err(MobileActivationError::Timeout(_))
-        ));
+        let error = client.request_session_info().await.unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 }

@@ -114,6 +114,175 @@ pub enum PasteboardError {
     Limit(String),
 }
 
+#[derive(thiserror::Error)]
+#[error("pasteboard request timed out after {seconds}s; the connection was closed")]
+struct PasteboardTimeout {
+    seconds: u64,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+crate::redaction::error_debug!(PasteboardTimeout);
+
+impl PasteboardError {
+    /// The whole seconds formerly reported by a pasteboard-issued deadline or
+    /// its legacy Timeout variant. Other XPC/IO timeouts return None. This value
+    /// does not establish safe retry or completed remote cleanup.
+    pub fn timeout_seconds(&self) -> Option<u64> {
+        if let Self::Timeout { seconds } = self {
+            return Some(*seconds);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<PasteboardTimeout>() {
+                return Some(error.seconds);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> PasteboardError {
+    PasteboardError::Xpc(XpcError::Io(crate::error::context::retained_io(
+        kind, phase, source,
+    )))
+}
+
+fn native_timeout(
+    timeout: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> PasteboardError {
+    native_error(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        PasteboardTimeout {
+            seconds: timeout.as_secs(),
+            source,
+        },
+    )
+}
+
+#[cfg(test)]
+mod deadline_source_contract_tests {
+    use super::*;
+    use crate::test_native::{connected_xpc_pair, has_source};
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncReadExt;
+    #[test]
+    fn native_source_received_integer_and_uuid_are_retained() {
+        let integer = parse_i64(&XpcValue::Uint64(u64::MAX)).unwrap_err();
+        let uuid = parse_uuid(&XpcValue::String("owned-private".into())).unwrap_err();
+        assert!(has_source::<std::num::TryFromIntError>(&integer));
+        assert!(has_source::<uuid::Error>(&uuid));
+        for error in [integer, uuid] {
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
+    #[tokio::test]
+    async fn native_source_client_and_subscription_deadlines_keep_closed_state() {
+        let timeout = Duration::from_millis(10);
+        let mut errors = Vec::new();
+        for operation in 0..5 {
+            let (xpc, mut peer, open) = connected_xpc_pair().await;
+            open.store(false, Ordering::SeqCst);
+            if operation < 2 {
+                let mut client = PasteboardClient::with_timeout_and_limits(
+                    xpc,
+                    timeout,
+                    PasteboardLimits::default(),
+                );
+                let error = if operation == 0 {
+                    client
+                        .subscribe(GENERAL_PASTEBOARD, None)
+                        .await
+                        .err()
+                        .unwrap()
+                } else {
+                    client
+                        .send_receive(build_pull_request(GENERAL_PASTEBOARD))
+                        .await
+                        .unwrap_err()
+                };
+                assert!(client.client.is_none());
+                assert!(matches!(
+                    client
+                        .send_receive(build_pull_request(GENERAL_PASTEBOARD))
+                        .await,
+                    Err(PasteboardError::Closed)
+                ));
+                errors.push(error);
+            } else {
+                let mut subscription = PasteboardSubscription {
+                    client: Some(xpc),
+                    pasteboard_name: GENERAL_PASTEBOARD.into(),
+                    timeout,
+                    limits: PasteboardLimits::default(),
+                    closed: false,
+                    pending: VecDeque::new(),
+                };
+                let error = match operation {
+                    2 => subscription.read_wire_event().await.unwrap_err(),
+                    3 => subscription
+                        .resolve(GENERAL_PASTEBOARD, 0, UTI_TEXT)
+                        .await
+                        .unwrap_err(),
+                    _ => subscription.unsubscribe().await.unwrap_err(),
+                };
+                assert!(subscription.is_closed());
+                assert!(subscription.client.is_none());
+                subscription.unsubscribe().await.unwrap();
+                errors.push(error);
+            }
+            let mut rest = Vec::new();
+            tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut rest))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        for error in errors {
+            assert_eq!(error.timeout_seconds(), Some(timeout.as_secs()));
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(has_source::<tokio::time::error::Elapsed>(&error));
+        }
+    }
+
+    #[test]
+    fn native_source_promised_size_guard_checks_full_nonnegative_integer() {
+        let limits = PasteboardLimits {
+            max_data_bytes: 8,
+            ..PasteboardLimits::default()
+        };
+        let promise =
+            |size| XpcValue::Dictionary(IndexMap::from([("size".into(), XpcValue::Int64(size))]));
+        let mut total = 0;
+        assert_eq!(
+            parse_payload(&promise(8), 0, UTI_TEXT, &mut total, limits).unwrap(),
+            PasteboardPayload::Promised { size: Some(8) }
+        );
+        for size in [9, i64::MAX] {
+            let error = parse_payload(&promise(size), 0, UTI_TEXT, &mut total, limits).unwrap_err();
+            assert!(matches!(error, PasteboardError::Limit(_)));
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::ResourceLimit
+            );
+            assert!(!has_source::<std::num::TryFromIntError>(&error));
+        }
+        assert!(matches!(
+            parse_payload(&promise(-1), 0, UTI_TEXT, &mut total, limits),
+            Err(PasteboardError::Protocol(_))
+        ));
+        assert_eq!(total, 0);
+    }
+}
+
 /// Controls which item representations the device includes in a PULL/PUSH
 /// snapshot. The spelling and nesting match Apple's Codable
 /// `PasteboardDataInclusionPolicy` representation.
@@ -629,10 +798,7 @@ fn parse_payload(
                 "promised size for item {item_index} UTI {uti:?} is negative: {size}"
             )));
         }
-        if usize::try_from(size)
-            .ok()
-            .is_some_and(|size| size > limits.max_data_bytes)
-        {
+        if size as u64 > limits.max_data_bytes as u64 {
             return Err(PasteboardError::Limit(format!(
                 "promised size {size} for item {item_index} UTI {uti:?} exceeds limit {}",
                 limits.max_data_bytes
@@ -645,8 +811,13 @@ fn parse_payload(
 fn parse_i64(value: &XpcValue) -> Result<i64, PasteboardError> {
     match value {
         XpcValue::Int64(value) => Ok(*value),
-        XpcValue::Uint64(value) => i64::try_from(*value)
-            .map_err(|_| PasteboardError::Protocol(format!("integer {value} does not fit in i64"))),
+        XpcValue::Uint64(value) => i64::try_from(*value).map_err(|source| {
+            native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode pasteboard integer",
+                source,
+            )
+        }),
         other => Err(PasteboardError::Protocol(format!(
             "expected signed integer, got {}",
             xpc_value_kind(other)
@@ -679,11 +850,12 @@ fn parse_uuid(value: &XpcValue) -> Result<[u8; 16], PasteboardError> {
         XpcValue::String(value) => {
             Uuid::parse_str(value)
                 .map(|uuid| *uuid.as_bytes())
-                .map_err(|_| {
-                    PasteboardError::Protocol(format!(
-                        "invalid pasteboard UUID {:?}",
-                        bounded_text(value)
-                    ))
+                .map_err(|source| {
+                    native_error(
+                        std::io::ErrorKind::InvalidData,
+                        "decode pasteboard UUID",
+                        source,
+                    )
                 })
         }
         other => Err(PasteboardError::Protocol(format!(
@@ -1177,9 +1349,11 @@ impl PasteboardClient {
                 pending: VecDeque::new(),
             }),
             Ok(Err(error)) => Err(PasteboardError::Xpc(error)),
-            Err(_) => Err(PasteboardError::Timeout {
-                seconds: timeout.as_secs(),
-            }),
+            Err(source) => Err(native_timeout(
+                timeout,
+                "subscribe to pasteboard changes",
+                source,
+            )),
         }
     }
 
@@ -1207,13 +1381,11 @@ impl PasteboardClient {
 
         match result {
             Ok(result) => result,
-            Err(_) => {
+            Err(source) => {
                 // Dropping XpcClient drops the underlying stream. Do this after
                 // the timed future has been dropped so no reader can race it.
                 self.client.take();
-                Err(PasteboardError::Timeout {
-                    seconds: timeout.as_secs(),
-                })
+                Err(native_timeout(timeout, "pasteboard request", source))
             }
         }
     }
@@ -1706,12 +1878,10 @@ impl PasteboardSubscription {
                     self.closed = true;
                     return Err(PasteboardError::Xpc(error));
                 }
-                Err(_) => {
+                Err(source) => {
                     self.client.take();
                     self.closed = true;
-                    return Err(PasteboardError::Timeout {
-                        seconds: timeout.as_secs(),
-                    });
+                    return Err(native_timeout(timeout, "read pasteboard event", source));
                 }
             };
             let Some(body) = message.body else {
@@ -1816,12 +1986,14 @@ impl PasteboardSubscription {
         let reply = match result {
             Ok(Ok(reply)) => reply,
             Ok(Err(error)) => return Err(error),
-            Err(_) => {
+            Err(source) => {
                 self.client.take();
                 self.closed = true;
-                return Err(PasteboardError::Timeout {
-                    seconds: timeout.as_secs(),
-                });
+                return Err(native_timeout(
+                    timeout,
+                    "resolve pasteboard promise",
+                    source,
+                ));
             }
         };
         let data = parse_data_reply(&reply, self.limits)?;
@@ -1912,9 +2084,11 @@ impl PasteboardSubscription {
         match result {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(PasteboardError::Xpc(error)),
-            Err(_) => Err(PasteboardError::Timeout {
-                seconds: timeout.as_secs(),
-            }),
+            Err(source) => Err(native_timeout(
+                timeout,
+                "unsubscribe from pasteboard changes",
+                source,
+            )),
         }
     }
 

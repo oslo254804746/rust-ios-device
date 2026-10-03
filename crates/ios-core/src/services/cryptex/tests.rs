@@ -4,6 +4,232 @@ use bytes::Bytes;
 use plist::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+struct OwnedNativeDirectory(std::path::PathBuf);
+impl OwnedNativeDirectory {
+    fn new() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("ios-cryptex-native-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+    async fn assets(&self) -> CryptexDdiAssets {
+        let identity = fixture_identity();
+        let paths = [
+            "GenericDmg",
+            "GenericTrustCache",
+            "CryptexInfoPlist",
+            "GenericVolume",
+        ]
+        .map(|name| self.0.join("Firmware").join(name));
+        tokio::fs::create_dir(self.0.join("Firmware"))
+            .await
+            .unwrap();
+        for path in &paths {
+            tokio::fs::write(path, b"owned payload").await.unwrap();
+        }
+        let assets = CryptexDdiAssets {
+            build_identity: identity.clone(),
+            build_id: LATEST_CRYPTEX_DDI_BUILD_ID.into(),
+            paths,
+        };
+        let manifest = plist::Dictionary::from_iter([
+            (
+                "ProductBuildVersion".to_string(),
+                Value::String(assets.build_id.clone()),
+            ),
+            (
+                "BuildIdentities".to_string(),
+                Value::Array(vec![Value::Dictionary(identity)]),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        plist::to_writer_xml(&mut bytes, &manifest).unwrap();
+        tokio::fs::write(self.0.join("BuildManifest.plist"), bytes)
+            .await
+            .unwrap();
+        assets
+    }
+}
+impl Drop for OwnedNativeDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[tokio::test]
+async fn native_source_deadlines_retain_elapsed_and_routine_ownership() {
+    use crate::test_native::{connected_xpc_pair, has_source};
+    use std::sync::atomic::Ordering;
+    let timeout = Duration::from_millis(10);
+    let mut errors = Vec::new();
+    for phase in ["connect", "image mounter preflight"] {
+        errors.push(
+            bounded(timeout, phase, std::future::pending::<()>())
+                .await
+                .unwrap_err(),
+        );
+    }
+    let root = OwnedNativeDirectory::new();
+    let assets = root.assets().await;
+    for install in [false, true] {
+        let (xpc, mut peer, open) = connected_xpc_pair().await;
+        open.store(false, Ordering::SeqCst);
+        let mut client = CryptexClient::new(xpc, vec![]);
+        errors.push(if install {
+            client
+                .install_with_timeout(&assets, b"ticket", timeout)
+                .await
+                .unwrap_err()
+        } else {
+            client
+                .invoke_with_timeout("copy-installed", IndexMap::new(), timeout)
+                .await
+                .unwrap_err()
+        });
+        assert!(
+            client.used,
+            "the next routine must still obtain a fresh route"
+        );
+        drop(client);
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut rest))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    for (error, phase) in errors.into_iter().zip([
+        "connect",
+        "image mounter preflight",
+        "copy-installed",
+        "install",
+    ]) {
+        assert_eq!(error.timeout_phase(), Some(phase));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(has_source::<tokio::time::error::Elapsed>(&error));
+    }
+}
+
+#[test]
+fn native_source_download_builder_retains_reqwest() {
+    let error = assets::build_download_client(reqwest::Client::builder().user_agent("\n"))
+        .err()
+        .unwrap();
+    assert!(crate::test_native::has_source::<reqwest::Error>(&error));
+    assert_eq!(
+        crate::classify_error(&error),
+        crate::ErrorClass::InvalidInput
+    );
+}
+
+async fn owned_http_fault(headers: Option<&'static [u8]>) -> CryptexError {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/owned-private", listener.local_addr().unwrap());
+    let root = OwnedNativeDirectory::new();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(50))
+        .build()
+        .unwrap();
+    let destination = root.0.join("payload");
+    let operation = assets::fetch_at(&client, &url, "owned", &destination, 100);
+    let peer = async {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut byte = [0];
+        let mut suffix = Vec::new();
+        while !suffix.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            suffix.push(byte[0]);
+            assert!(suffix.len() <= 4096);
+        }
+        if let Some(headers) = headers {
+            stream.write_all(headers).await.unwrap();
+        }
+        let mut rest = Vec::new();
+        stream.read_to_end(&mut rest).await.unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(operation, peer)
+    })
+    .await
+    .unwrap();
+    result.unwrap_err()
+}
+
+#[tokio::test]
+async fn native_source_download_send_retains_reqwest_timeout() {
+    let error = owned_http_fault(None).await;
+    assert!(crate::test_native::has_source::<reqwest::Error>(&error));
+    assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+    assert!(!format!("{error:?}").contains("owned-private"));
+    assert_eq!(
+        error.timeout_phase(),
+        None,
+        "HTTP timeout is a different issuer"
+    );
+}
+
+#[tokio::test]
+async fn native_source_download_chunk_retains_reqwest_timeout() {
+    let error = owned_http_fault(Some(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n",
+    ))
+    .await;
+    assert!(crate::test_native::has_source::<reqwest::Error>(&error));
+    assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+}
+
+#[tokio::test]
+async fn native_source_download_guards_stay_source_free() {
+    for headers in [
+        b"HTTP/1.1 404 Missing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 101\r\nConnection: close\r\n\r\n".as_slice(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+    ] {
+        let error = owned_http_fault(Some(headers)).await;
+        assert!(matches!(error, CryptexError::Download(_)));
+        assert!(!crate::test_native::has_source::<reqwest::Error>(&error));
+        assert_eq!(error.timeout_phase(), None);
+    }
+}
+
+#[tokio::test]
+async fn native_source_cache_publish_retains_io_and_concurrent_cache() {
+    let stage = OwnedNativeDirectory::new();
+    let destination = OwnedNativeDirectory::new();
+    tokio::fs::write(stage.0.join("payload"), b"owned")
+        .await
+        .unwrap();
+    tokio::fs::write(destination.0.join("existing"), b"incomplete")
+        .await
+        .unwrap();
+    let error = assets::publish_stage(&stage.0, &destination.0)
+        .await
+        .err()
+        .unwrap();
+    assert!(!stage.0.exists());
+    assert!(destination.0.join("existing").exists());
+    assert!(crate::test_native::has_source::<std::io::Error>(&error));
+    let CryptexError::Io(outer) = &error else {
+        panic!("native publication error must retain its IO family")
+    };
+    let original = std::error::Error::source(outer)
+        .unwrap()
+        .downcast_ref::<std::io::Error>()
+        .unwrap();
+    assert!(original.raw_os_error().is_some());
+    assert_eq!(outer.kind(), original.kind());
+    let stage = OwnedNativeDirectory::new();
+    let _assets = destination.assets().await;
+    assert_eq!(
+        assets::publish_stage(&stage.0, &destination.0)
+            .await
+            .unwrap()
+            .build_id,
+        LATEST_CRYPTEX_DDI_BUILD_ID
+    );
+    assert!(!stage.0.exists());
+}
+
 fn response(arguments: IndexMap<String, XpcValue>) -> XpcMessage {
     XpcMessage {
         flags: flags::ALWAYS_SET | flags::DATA,

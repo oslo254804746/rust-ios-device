@@ -8,6 +8,179 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(any(
+    feature = "cryptex",
+    feature = "mobileactivation",
+    feature = "installcoordination",
+    feature = "pasteboard"
+))]
+#[tokio::test]
+async fn root_service_deadline_getters_keep_exhaustive_families_and_issuer_scope() {
+    use std::{error::Error, fmt, io, time::Duration};
+    #[derive(Debug)]
+    struct Cycle;
+    impl fmt::Display for Cycle {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            panic!("getter must not format errors")
+        }
+    }
+    impl Error for Cycle {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(self)
+        }
+    }
+    #[derive(Debug)]
+    struct Wrap(Cycle);
+    impl fmt::Display for Wrap {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            panic!("getter must not format wrappers")
+        }
+    }
+    impl Error for Wrap {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    #[derive(Debug, thiserror::Error)]
+    #[error("unissued deadline")]
+    struct Unissued(#[source] tokio::time::error::Elapsed);
+    async fn unissued() -> io::Error {
+        io::Error::other(Unissued(
+            tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+                .await
+                .unwrap_err(),
+        ))
+    }
+    #[cfg(any(
+        feature = "mobileactivation",
+        feature = "installcoordination",
+        feature = "pasteboard"
+    ))]
+    let duration = Duration::from_millis(1250);
+    #[cfg(feature = "cryptex")]
+    {
+        use ios_core::cryptex::CryptexError as E;
+        fn family(error: &E) -> &str {
+            match error {
+                E::Xpc(_) => "xpc",
+                E::Io(_) => "io",
+                E::Plist(_) => "plist",
+                E::Protocol(_) => "protocol",
+                E::Device(_) => "device",
+                E::Download(_) => "download",
+                E::Timeout(_) => "timeout",
+                E::Unsupported(_) => "unsupported",
+                E::Conflict(_) => "conflict",
+                E::Connection(_) => "connection",
+                E::ImageMounter(_) => "image-mounter",
+            }
+        }
+        assert_eq!(E::Timeout("install").timeout_phase(), Some("install"));
+        for error in [
+            E::Io(io::Error::from(io::ErrorKind::TimedOut)),
+            E::Io(io::Error::other(Wrap(Cycle))),
+            E::Io(unissued().await),
+        ] {
+            assert_eq!(family(&error), "io");
+            assert_eq!(error.timeout_phase(), None);
+        }
+    }
+    #[cfg(feature = "mobileactivation")]
+    {
+        use ios_core::mobileactivation::MobileActivationError as E;
+        fn family(error: &E) -> &str {
+            match error {
+                E::Io(_) => "io",
+                E::Plist(_) => "plist",
+                E::Protocol(_) => "protocol",
+                E::Timeout(_) => "timeout",
+                E::Http(_) => "http",
+            }
+        }
+        assert_eq!(E::Timeout(duration).timeout_duration(), Some(duration));
+        for error in [
+            E::Io(io::Error::from(io::ErrorKind::TimedOut)),
+            E::Io(io::Error::other(Wrap(Cycle))),
+            E::Io(unissued().await),
+        ] {
+            assert_eq!(family(&error), "io");
+            assert_eq!(error.timeout_duration(), None);
+        }
+        let (stream, _peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::mobileactivation::MobileActivationClient::with_timeout(
+            stream,
+            Duration::from_millis(10),
+        );
+        let error = client.request_session_info().await.unwrap_err();
+        assert_eq!(family(&error), "io");
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert_eq!(
+            ios_core::classify_error(&error),
+            ios_core::ErrorClass::Timeout
+        );
+        let mut next: Option<&(dyn Error + 'static)> = Some(&error);
+        let mut retained = false;
+        for _ in 0..32 {
+            let Some(source) = next else { break };
+            retained |= source.is::<tokio::time::error::Elapsed>();
+            next = source.source();
+        }
+        assert!(retained);
+    }
+    #[cfg(feature = "installcoordination")]
+    {
+        use ios_core::installcoordination::InstallCoordinationError as E;
+        fn family(error: &E) -> &str {
+            match error {
+                E::Xpc(_) => "xpc",
+                E::Protocol(_) => "protocol",
+                E::Timeout(_) => "timeout",
+            }
+        }
+        assert_eq!(E::Timeout(duration).timeout_duration(), Some(duration));
+        for io in [
+            io::Error::from(io::ErrorKind::TimedOut),
+            io::Error::other(Wrap(Cycle)),
+            unissued().await,
+        ] {
+            let error = E::Xpc(ios_core::XpcError::Io(io));
+            assert_eq!(family(&error), "xpc");
+            assert_eq!(error.timeout_duration(), None);
+        }
+    }
+    #[cfg(feature = "pasteboard")]
+    {
+        use ios_core::pasteboard::PasteboardError as E;
+        fn family(error: &E) -> &str {
+            match error {
+                E::Notification(_) => "notification",
+                E::Xpc(_) => "xpc",
+                E::Protocol(_) => "protocol",
+                E::Service { .. } => "service",
+                E::Timeout { .. } => "timeout",
+                E::Closed => "closed",
+                E::Limit(_) => "limit",
+            }
+        }
+        assert_eq!(
+            E::Timeout {
+                seconds: duration.as_secs()
+            }
+            .timeout_seconds(),
+            Some(1)
+        );
+        for io in [
+            io::Error::from(io::ErrorKind::TimedOut),
+            io::Error::other(Wrap(Cycle)),
+            unissued().await,
+        ] {
+            let error = E::Xpc(ios_core::XpcError::Io(io));
+            assert_eq!(family(&error), "xpc");
+            assert_eq!(error.timeout_seconds(), None);
+        }
+    }
+}
+
 #[test]
 fn root_xpc_codec_error_retains_native_source_and_exhaustive_family() {
     use ios_core::{

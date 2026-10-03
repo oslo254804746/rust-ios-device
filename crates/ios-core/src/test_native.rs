@@ -1,12 +1,22 @@
 //! Owned native-source and transport fixtures for crate unit tests.
 
-#[cfg(any(feature = "display", feature = "hid"))]
+#[cfg(any(
+    feature = "display",
+    feature = "hid",
+    feature = "cryptex",
+    feature = "pasteboard"
+))]
 use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
 };
-#[cfg(any(feature = "display", feature = "hid"))]
+#[cfg(any(
+    feature = "display",
+    feature = "hid",
+    feature = "cryptex",
+    feature = "pasteboard"
+))]
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub(crate) fn has_source<T: std::error::Error + 'static>(
@@ -25,7 +35,12 @@ pub(crate) fn has_source<T: std::error::Error + 'static>(
 
 /// Initialize the actual XPC client over an owned peer, then allow tests to
 /// stall its writes without changing ambient sockets or production timers.
-#[cfg(any(feature = "display", feature = "hid"))]
+#[cfg(any(
+    feature = "display",
+    feature = "hid",
+    feature = "cryptex",
+    feature = "pasteboard"
+))]
 pub(crate) async fn connected_xpc_pair() -> (
     crate::XpcClient,
     tokio::io::DuplexStream,

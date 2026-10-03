@@ -82,21 +82,7 @@ impl CryptexDdiAssets {
             let _ = tokio::fs::remove_dir_all(&stage).await;
             return Err(error);
         }
-        // Never replace a possibly in-use cache. Incomplete existing directories
-        // are reported explicitly so a concurrent installation cannot lose files.
-        if let Err(error) = tokio::fs::rename(&stage, &destination).await {
-            let _ = tokio::fs::remove_dir_all(&stage).await;
-            if let Ok(assets) = Self::load(&destination).await {
-                if assets.build_id == LATEST_CRYPTEX_DDI_BUILD_ID {
-                    return Ok(assets);
-                }
-            }
-            return Err(CryptexError::Protocol(format!(
-                "cannot publish Cryptex cache; remove the incomplete {} directory: {error}",
-                destination.display()
-            )));
-        }
-        Self::load(&destination).await
+        publish_stage(&stage, &destination).await
     }
 
     pub fn nonce_domain_handle(&self) -> Result<u64> {
@@ -126,6 +112,25 @@ impl CryptexDdiAssets {
     }
 }
 
+pub(super) async fn publish_stage(stage: &Path, destination: &Path) -> Result<CryptexDdiAssets> {
+    // Never replace a possibly in-use cache. Incomplete existing directories
+    // are reported explicitly so a concurrent installation cannot lose files.
+    if let Err(error) = tokio::fs::rename(stage, destination).await {
+        let _ = tokio::fs::remove_dir_all(stage).await;
+        if let Ok(assets) = CryptexDdiAssets::load(destination).await {
+            if assets.build_id == LATEST_CRYPTEX_DDI_BUILD_ID {
+                return Ok(assets);
+            }
+        }
+        return Err(super::native_error(
+            error.kind(),
+            "publish Cryptex cache",
+            error,
+        ));
+    }
+    CryptexDdiAssets::load(destination).await
+}
+
 // A cancelled download must not retain a partial multi-gigabyte image. This
 // private directory contains only our five files, so cleanup remains small.
 struct DownloadStage(PathBuf);
@@ -137,11 +142,11 @@ impl Drop for DownloadStage {
 }
 
 async fn download_into(stage: &Path) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|e| CryptexError::Download(e.to_string()))?;
+    let client = build_download_client(
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(600)),
+    )?;
     fetch(
         &client,
         "BuildManifest.plist",
@@ -178,11 +183,45 @@ async fn download_into(stage: &Path) -> Result<()> {
 }
 
 async fn fetch(client: &reqwest::Client, name: &str, destination: &Path, limit: u64) -> Result<()> {
+    fetch_at(
+        client,
+        &format!("{REPOSITORY}/{name}"),
+        name,
+        destination,
+        limit,
+    )
+    .await
+}
+
+pub(super) fn build_download_client(builder: reqwest::ClientBuilder) -> Result<reqwest::Client> {
+    builder
+        .build()
+        .map_err(|source| download_error("build Cryptex download client", source))
+}
+
+fn download_error(phase: &'static str, source: reqwest::Error) -> CryptexError {
+    let kind = if source.is_timeout() {
+        std::io::ErrorKind::TimedOut
+    } else if source.is_builder() {
+        std::io::ErrorKind::InvalidInput
+    } else {
+        std::io::ErrorKind::Other
+    };
+    super::native_error(kind, phase, source)
+}
+
+pub(super) async fn fetch_at(
+    client: &reqwest::Client,
+    url: &str,
+    name: &str,
+    destination: &Path,
+    limit: u64,
+) -> Result<()> {
     let mut response = client
-        .get(format!("{REPOSITORY}/{name}"))
+        .get(url)
         .send()
         .await
-        .map_err(|e| CryptexError::Download(e.to_string()))?;
+        .map_err(|source| download_error("request Cryptex asset", source))?;
     if !response.status().is_success() || response.content_length().is_some_and(|size| size > limit)
     {
         return Err(CryptexError::Download(format!(
@@ -199,7 +238,7 @@ async fn fetch(client: &reqwest::Client, name: &str, destination: &Path, limit: 
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| CryptexError::Download(e.to_string()))?
+        .map_err(|source| download_error("read Cryptex asset", source))?
     {
         received += chunk.len() as u64;
         if received > limit {
