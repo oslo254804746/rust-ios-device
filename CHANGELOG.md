@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add DProxy recorder/proxy callbacks that deliver owned decode failures before
+  fatal returns or event-write errors. Use them in CLI debug diagnostics with
+  metadata only, and return original IO errors from event/status stderr writes
+  instead of panicking; preserve capture bytes and forwarding order.
+
 - Add `dproxy::StreamDecoder::push_preserving_errors` to retain original parser
   errors, typed local decisions and events preceding a later fatal error.
   Expose owned/borrowed observations and explicit ignored DTX input with safe

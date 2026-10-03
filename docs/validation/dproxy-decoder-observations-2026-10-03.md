@@ -132,3 +132,9 @@ device conditions remain. No physical device/proxy/daemon/credentials/Apple
 operation, reference edit, push/publication, history rewrite or maturity upgrade.
 See the [public contract](../public-contract.md) and
 [preceding input source acceptance](service-input-native-sources-2026-10-03.md).
+
+Follow-up: [recorder/CLI observation and stderr acceptance](dproxy-recording-observations-2026-10-03.md)
+at source `4dda7a225a10f15e22d0bd5de47c7a5b6624ca83` adds owned streaming
+callbacks and uses them in CLI DEBUG metadata, with three checked stderr sites.
+The decoder engine and this preceding source/gate stay; guarded conversions
+and other A02/platform/lifecycle/device conditions remain pending.

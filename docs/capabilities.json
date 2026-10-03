@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-dproxy-recording-observations-4dda7a2",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned malformed plist/XPC/DTX callbacks before fatal or actual read-only event-file failure, raw read-only file failure before decoding, private writers injecting captured OS errors at JSON/newline/diagnostic/flush stages, actual child global stderr /dev/full ENOSPC, joined bounded bidirectional duplex wire/EOF and fatal zero-forwarding, actual safe CLI DEBUG capture and public recorder consumer/minimum dproxy"],
+      "required_state": ["Callbacks run inline under the recording mutex; no SDK session failure list, callers own retention/latency/panic policy. Per-push event indices do not imply persisted lines. Fatal decoding skips that push's events; raw/NDJSON effects can precede write failure. Global stderr evidence is Linux Core metadata recording, not physical CLI status/device use. Injected private writer causes are captured real OS errors, not actual sink syscalls. No device/daemon/credentials/Apple action or remote cleanup/retry/reuse certification"],
+      "tested_commit": "4dda7a225a10f15e22d0bd5de47c7a5b6624ca83",
+      "date": "2026-10-03",
+      "location": "docs/validation/dproxy-recording-observations-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 recorder/proxy owned failure callbacks and CLI integration; original independent sources arrive before fatal/event-write errors, legacy unobserved mode and capture/wire/buffering/error policy stay. Core event/two CLI status stderr errors now return original IO instead of panic; safe DEBUG metadata only. Original four variants/fields/root/classifier/codec/dependency and CLI JSON/dispatch remain. Eleven internal/one CLI/one external tests added; initial ten-test control 3 PASS/7 FAIL, public and CLI each 0 PASS/1 FAIL; added real Linux stderr test was not an old-algorithm control. First full 2068 Rust/13 Python PASS. Other A02/platform/lifecycle/device conditions remain; no maturity upgrade."
+    },
+    {
       "id": "linux-dproxy-decoder-observations-a37a80b",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

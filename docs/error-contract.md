@@ -276,10 +276,38 @@ error. `into_result()` deliberately drops observations and, on fatal error,
 preceding events, matching old `push`. Only input skipped because of a previous
 DTX failure sets `input_ignored`; partial/Binary input with no events does not.
 Existing event JSON/summary/guard text, parsing limits, clear/stop behavior and
-forwarding remain. The legacy path allocates no observation storage. Recorder
-and CLI still use that path; recorder/CLI checked stderr and error observers
-remain separate work. No new retry, reset, rollback or cleanup promise. See
+forwarding remain. The legacy path allocates no observation storage.
+No new retry, reset, rollback or cleanup promise. See
 [decoder observation evidence](validation/dproxy-decoder-observations-2026-10-03.md).
+
+`ProxyRecorder::record_chunk_with_observer` and
+`proxy_bidirectional_with_observer` now deliver owned DecodeFailure values to
+a synchronous callback. Raw writing precedes decoding; a raw-write failure
+skips decoding/callbacks and can still leave partial raw bytes. Observations
+arrive before event writing or a fatal decoder return, so a later serializer,
+newline, diagnostic or flush failure does not erase already delivered native
+objects. Those failures are independent of the original primary Result error,
+not its source chain. Decoder fatal still skips all events from that push;
+event indices refer to decoded events in the push, not persisted NDJSON lines
+or global session indices. Use the decoder outcome directly for partial events.
+
+The proxy serializes both directions' callbacks under the existing recording
+mutex before forwarding. It holds no session failure list; callers must bound
+their own retention and keep callbacks quick. Blocking callbacks stall recording;
+callback panics are not intercepted. Existing record_chunk/proxy_bidirectional
+retain their unobserved mode. CLI selects the observer mode and emits only safe
+metadata at DEBUG (`-vv`), with no native Display/source/raw event content.
+Ordinary nonfatal decode errors keep their existing successful-recording policy.
+
+Core event diagnostics and two CLI status lines now check stderr writes and
+return the original IO error instead of panic. A diagnostic failure can follow
+raw/complete NDJSON writes, before explicit event flush and before forwarding
+the current chunk; no disk-durability/rollback guarantee follows. Existing
+primary serde/raw/newline/flush/transport variants, message text, stdout/JSON
+and failure dispatch stay. Dispatcher maps a returned operation failure to exit
+1 and best-effort final reporting; physical DProxy status placement is reviewed,
+not a device invocation. Tracing itself remains the existing logging facility.
+See [recording and stderr acceptance](validation/dproxy-recording-observations-2026-10-03.md).
 
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO

@@ -289,11 +289,30 @@ Old `push` deliberately drops observations and preceding events on fatal error;
 the new outcome's `into_result` has the same policy. Successful JSON, parser
 limits, guard text and buffer/stream/error recovery behavior stay. Timestamps
 remain wall-clock values. The empty DATA missing-stream fatal behavior is
-preserved, not a new protocol guarantee. No recorder/CLI/binding automatically
-consumes this API, checked stderr remains pending, and there is no new resource
+preserved, not a new protocol guarantee. Bindings do not consume this API,
+and there is no new resource
 cleanup/retry/reuse certification. See
 [DProxy decoder acceptance](validation/dproxy-decoder-observations-2026-10-03.md)
 for original-source versus local-guard coverage and minimum-feature consumers.
+
+The additive recorder/proxy `*_with_observer` methods accept FnMut callbacks
+receiving owned DecodeFailure values; the async proxy requires Send and shares
+one serialized callback for both directions. Observations precede event writes
+and fatal return, but follow raw writes. Indices remain per-decoder-push, and
+may refer to events skipped by fatal decoding or subsequent write failure.
+Primary recording/forwarding errors still return through the original Result;
+delivered decode failures remain separate owners. No new public type/enum variant,
+constructor/field, feature, dependency, binding or machine JSON field.
+
+Existing methods retain unobserved mode, with no observation allocation. CLI
+selects observer mode, reporting metadata-only DEBUG diagnostics at `-vv`.
+Callbacks run synchronously under the recorder mutex, must bound their own
+retention, and must not block; their panics are not caught. Successful capture
+bytes/file layout, summary/status text and forwarding/flush/shutdown/try_join
+order remain. Core event and two CLI status writes now return native stderr
+IO instead of panic, through existing error variants/failure formatting.
+Partial capture writes and remote cleanup/reuse remain unproven. See
+[recorder/CLI acceptance](validation/dproxy-recording-observations-2026-10-03.md).
 
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from

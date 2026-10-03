@@ -4719,3 +4719,91 @@ legacy push，本次新 API 不代表已完成调用方集成。Read-only next-r
 typed guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/
 platform/device 条件保留。无 device/proxy/daemon/credentials/Apple 实操、
 reference edit、push/publication、历史改写或 maturity upgrade。
+
+### 大类 3：A02 DProxy 录制观察与 stderr 错误交付（2026-10-03）
+
+基线 `17abc82054b8a5480e9cf34b4e0bed949891339a`；受测 source
+`4dda7a225a10f15e22d0bd5de47c7a5b6624ca83`。Branch 仍为
+`feat/device-service-updates-20260927`，Linux x86_64 / Rust 1.97.1 /
+MSRV 1.80.1 / Python 3.12.13。合同与证据见
+[DProxy recorder/CLI observations](validation/dproxy-recording-observations-2026-10-03.md)。
+
+新增 record_chunk_with_observer / proxy_bidirectional_with_observer，FnMut
+callback 逐项取得 owned DecodeFailure；async proxy 的 callback 要求 Send，
+两 direction 在既有 recording mutex 内串行，当前 chunk 转发之前调用。
+Raw 写先于 decode，raw failure 不 decode/callback，仍可能留下 partial raw。
+Callbacks 在 events 写入／原 fatal 返回之前交付，后续 Serde/newline/diagnostic/
+flush error 不抹去已交付的原始来源。Primary Result 与 decode observations
+为独立 owner，非虚构 source chain。Fatal decode 仍跳过该 push 的全部 events；
+failure event_index 为 decoded push 内索引，非 persisted line/global index。
+需要 owned partial events 的调用者仍直接用 StreamDecoder outcome。
+
+SDK 不累计 session failure list，legacy record_chunk/proxy_bidirectional 保持
+unobserved mode，无 observation allocation。Caller 自行限制 retention，并
+避免 blocking；callback panics 不捕获。无新 timeout/retry/reset/rollback/
+cancellation/durability/remote cleanup/reuse 保证，ordinary decode errors
+仍为 nonfatal。CLI 改用 observer，DEBUG（-vv）仅写 metadata/count-safe
+Debug，不写 native Display/source/raw payload，既有 tracing facility 保持。
+Core event 和两 CLI status stderr sites 由 panic 改为原始 IO Err；既有
+dispatcher operation failure exit 1／best-effort final reporting 保持。Status
+调用位置在 initial connect/bind／capture creation 之后，仅源码审查，未运行
+物理 DProxy command。Raw/NDJSON effects 可早于诊断 failure，非 rollback。
+
+四 source files，710 insertions/23 deletions。原四 exhaustive DproxyError
+variants、ProxyEvent fields/JSON、root/features/deps/classifier/observation
+types 和 DTX/H2/XPC codecs 保持。整个 decoder/parser/old tests byte-identical，
+仅当前 adoption doc sentence 更新；recorder construction/meta/file layout/
+redaction 不变。共享 proxy 保留 splits/try_join/mutex/16 KiB read/record-before-
+forward/flush/shutdown；whole production CLI 仅改两个 checked status writes
+和 observer adoption。Private event writer 等价提取 JSON/newline/diagnostic/
+flush，原 panic policy 单独保留在负控制 prototype，final 在同一步返回 IO。
+Source diff SHA256
+`a72d1ec7cec1ecaf164bbed70c704f2ffc25538a992db34d231798bcefb29771`。
+
+| 验证 | 结果（日志 `/tmp/ios-a02-dproxy-recording-`） |
+| --- | --- |
+| 原算法 callback controls | before.log 初始 10 tests：3 PASS / 7 FAIL |
+| public / CLI metadata controls | before-public.log / before-cli.log 各 0 PASS / 1 FAIL |
+| all-feature / minimum dproxy | after-final.log / minimal.log 均 36 PASS |
+| CLI DProxy scope | cli.log 10 PASS |
+| public all-feature / minimum | public.log / public-minimal.log 36 / 17 PASS |
+| strict Core/CLI Clippy | clippy.log exit 0 |
+| 第 11 节首次 full | full.log terminal 0，2068 Rust / 13 Python，0 FAIL，2 既有 ignored |
+
+新增 11 internal / 1 CLI / 1 external tests。Malformed plist/DTX/XPC native
+objects 在 callbacks 保留；实际 read-only raw/events File 产生 OS write
+errors，验证 raw-before-decode／source-before-events-failure。Private writer
+注入 captured actual File::open NotFound，覆盖 JSON/newline/diagnostic/flush，
+native kind/OS/class 保留，不当作实际 sink syscall。Diagnostic failure 不
+panic，已有一完整 NDJSON line、尚未 flush／第二 event。额外 Linux child
+--nocapture 将自身 stderr 定向 /dev/full，public record_meta_event 返回真实
+ENOSPC/OS28/IO，child success stdout marker、已有一 NDJSON line；不影响
+parent stderr，不代表 CLI physical startup。该 test 在 controls 后新增，未
+声称运行旧算法负控制；cfg Linux，不推广其他平台 syscall acceptance。
+
+两个 joined duplex fixtures 有 1 s bound，实际双向 bytes/raw/EOF 与 fatal
+zero-forwarding/empty event file，证明 local owned stream destruction，非
+remote acknowledgement。Broken DTX 后仍留 raw，不重复 decode source；
+empty input 跳过 read-only writers。CLI actual subscriber capture 验证 safe
+metadata/class 且排除私有 payload/hex；public recorder 实际调用，public async
+signature 编译后 future 未 poll，Core tests 另行实际运行两方向。Controls
+失败为 missing observations/metadata 或 IO panic，非 compile/invalid fixture。
+code-audit-final.log 核对精确 old bodies 与 whole-production 变更，无降 guard/
+lint。所有 source（包括新文件）在 full 前 staged，full/docs 期间冻结。
+
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 feature builds/四 groups、
+7+7 doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI /
+3 backup contracts；14 Rust groups／独立 Python group，full-counts.log 可核对。
+无额外 Chromium/installed 3.9/3.13。受测 ios 0.1.13 debug SHA256
+`2f020e35dc0879d17d67afbc75844bd9779808a4beecb1939fd9353af08d248c`。
+Narrow 后约 59 GiB free，收尾 58 GiB；无 cleanup/storage failure，full terminal。
+
+八文档独立收尾，118 capability records 的 implementation/maturity/history
+保持，新增一个受测 host entry；七个 changed Markdown 的 171 local links、
+whitespace 和 accepted source/binary hashes 审查通过（doc-audit.log）。
+A02/第三类/总体 goal active，第四类未开始，全部 31 主任务及子任务
+保持。下一 guarded AFC/DTX/file/symbol ownership／32-bit sources，再继续
+其他 typed guards/created outcomes/stream/JSON/callback/binding；L01/L03/A03/
+platform/device 条件保持。无 physical proxy/device/daemon/credentials/Apple
+action、reference edit、push/publication、历史改写或 maturity upgrade。
