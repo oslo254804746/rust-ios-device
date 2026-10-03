@@ -73,10 +73,10 @@ impl DdiDownloader {
                 tracing::info!(path = %crate::redaction::diagnostic_id(&dir.to_string_lossy()), "Using cached DDI");
                 let image = tokio::fs::read(&img_path)
                     .await
-                    .map_err(|e| ImageMounterError::Download(format!("read cached image: {e}")))?;
-                let signature = tokio::fs::read(&sig_path).await.map_err(|e| {
-                    ImageMounterError::Download(format!("read cached signature: {e}"))
-                })?;
+                    .map_err(|source| super::native_io("read cached DDI image", source))?;
+                let signature = tokio::fs::read(&sig_path)
+                    .await
+                    .map_err(|e| super::native_io("read cached DDI signature", e))?;
                 return Ok(StandardDdi { image, signature });
             }
         }
@@ -87,21 +87,14 @@ impl DdiDownloader {
 
             let client = build_client()?;
             tracing::info!(url = %crate::redaction::diagnostic_id(&zip_url), "Downloading DDI");
-            let resp = client
-                .get(&zip_url)
-                .send()
-                .await
-                .map_err(|e| ImageMounterError::Download(format!("fetch DDI zip: {e}")))?;
+            let resp = request_archive(&client, &zip_url).await?;
 
             if !resp.status().is_success() {
                 tracing::debug!(url = %crate::redaction::diagnostic_id(&zip_url), status = %resp.status(), "DDI not found");
                 continue;
             }
 
-            let zip_bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| ImageMounterError::Download(format!("read DDI zip: {e}")))?;
+            let zip_bytes = read_standard_archive(resp).await?;
 
             // Extract DMG and signature from zip
             let (image, signature) = extract_standard_ddi(&zip_bytes, ver_str)?;
@@ -150,11 +143,7 @@ impl DdiDownloader {
         // Download zip
         eprintln!("Downloading personalized DDI...");
         let client = build_client()?;
-        let resp = client
-            .get(personalized_ddi_url())
-            .send()
-            .await
-            .map_err(|e| ImageMounterError::Download(format!("fetch DDI zip: {e}")))?;
+        let resp = request_archive(&client, &personalized_ddi_url()).await?;
 
         if !resp.status().is_success() {
             return Err(ImageMounterError::Download(format!(
@@ -163,28 +152,59 @@ impl DdiDownloader {
             )));
         }
 
-        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            ImageMounterError::Download(format!("create personalized DDI cache dir: {e}"))
-        })?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| super::native_io("create personalized DDI cache directory", e))?;
         let zip_path = dir.join("ddi.zip.tmp");
         download_response_to_file(resp, &zip_path).await?;
 
         // Extract zip (blocking zip decompression + filesystem writes)
         let dir_clone = dir.clone();
         let zip_path_clone = zip_path.clone();
-        tokio::task::spawn_blocking(move || {
-            let file = std::fs::File::open(&zip_path_clone)
-                .map_err(|e| ImageMounterError::Download(format!("open DDI zip: {e}")))?;
-            extract_zip_from_reader(std::io::BufReader::new(file), &dir_clone)
-        })
-        .await
-        .map_err(|e| ImageMounterError::Download(format!("join error: {e}")))??;
+        extraction_result(tokio::task::spawn_blocking(move || {
+            extract_archive_file(&zip_path_clone, &dir_clone)
+        }))
+        .await?;
         let _ = tokio::fs::remove_file(&zip_path).await;
 
         let ddi = load_personalized_from_dir(&dir).await?;
         validate_personalized_build_id(&ddi.build_manifest)?;
         Ok(ddi)
     }
+}
+
+async fn request_archive(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::Response, ImageMounterError> {
+    client
+        .get(url)
+        .send()
+        .await
+        .map_err(|source| super::native_http("request DDI archive", source))
+}
+
+async fn read_standard_archive(
+    response: reqwest::Response,
+) -> Result<bytes::Bytes, ImageMounterError> {
+    response
+        .bytes()
+        .await
+        .map_err(|source| super::native_http("read standard DDI archive", source))
+}
+
+async fn extraction_result(
+    task: tokio::task::JoinHandle<Result<(), ImageMounterError>>,
+) -> Result<(), ImageMounterError> {
+    task.await.map_err(|source| {
+        super::native_error(std::io::ErrorKind::Other, "join DDI extraction", source)
+    })?
+}
+
+fn extract_archive_file(zip_path: &Path, dest: &Path) -> Result<(), ImageMounterError> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|source| super::native_io("open downloaded DDI archive", source))?;
+    extract_zip_from_reader(std::io::BufReader::new(file), dest)
 }
 
 fn validate_personalized_build_id(build_manifest: &[u8]) -> Result<(), ImageMounterError> {
@@ -210,7 +230,7 @@ fn validate_personalized_build_id(build_manifest: &[u8]) -> Result<(), ImageMoun
 const ZIP_LOCAL_FILE_HEADER: &[u8] = b"PK\x03\x04";
 
 async fn download_response_to_file(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     path: &Path,
 ) -> Result<(), ImageMounterError> {
     // The DDI host answers an unknown build ID with an HTML page under HTTP 200,
@@ -232,20 +252,28 @@ async fn download_response_to_file(
 
     let mut file = tokio::fs::File::create(path)
         .await
-        .map_err(|e| ImageMounterError::Download(format!("create DDI zip cache: {e}")))?;
+        .map_err(|source| super::native_io("create DDI archive spool", source))?;
+    copy_archive_body(response, &mut file, &url).await
+}
+
+async fn copy_archive_body<W: tokio::io::AsyncWrite + Unpin>(
+    mut response: reqwest::Response,
+    file: &mut W,
+    url: &reqwest::Url,
+) -> Result<(), ImageMounterError> {
     let mut leading = Vec::with_capacity(ZIP_LOCAL_FILE_HEADER.len());
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| ImageMounterError::Download(format!("read DDI zip chunk: {e}")))?
+        .map_err(|source| super::native_http("read DDI archive chunk", source))?
     {
         if leading.len() < ZIP_LOCAL_FILE_HEADER.len() {
             let wanted = ZIP_LOCAL_FILE_HEADER.len() - leading.len();
             leading.extend_from_slice(&chunk[..wanted.min(chunk.len())]);
         }
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+        tokio::io::AsyncWriteExt::write_all(&mut *file, &chunk)
             .await
-            .map_err(|e| ImageMounterError::Download(format!("write DDI zip chunk: {e}")))?;
+            .map_err(|source| super::native_io("write DDI archive chunk", source))?;
     }
 
     if leading != ZIP_LOCAL_FILE_HEADER {
@@ -253,9 +281,9 @@ async fn download_response_to_file(
             "{url} did not return a zip archive (leading bytes {leading:02x?})"
         )));
     }
-    tokio::io::AsyncWriteExt::flush(&mut file)
+    tokio::io::AsyncWriteExt::flush(&mut *file)
         .await
-        .map_err(|e| ImageMounterError::Download(format!("flush DDI zip: {e}")))?;
+        .map_err(|source| super::native_io("flush DDI archive spool", source))?;
     Ok(())
 }
 
@@ -264,13 +292,13 @@ async fn load_personalized_from_dir(dir: &Path) -> Result<PersonalizedDdi, Image
 
     let image = tokio::fs::read(restore.join("PersonalizedDMG.dmg"))
         .await
-        .map_err(|e| ImageMounterError::Download(format!("read PersonalizedDMG.dmg: {e}")))?;
+        .map_err(|source| super::native_io("read personalized DDI image", source))?;
     let trustcache = tokio::fs::read(restore.join("PersonalizedDMG.trustcache"))
         .await
-        .map_err(|e| ImageMounterError::Download(format!("read trustcache: {e}")))?;
+        .map_err(|source| super::native_io("read personalized DDI trustcache", source))?;
     let build_manifest = tokio::fs::read(restore.join("BuildManifest.plist"))
         .await
-        .map_err(|e| ImageMounterError::Download(format!("read BuildManifest.plist: {e}")))?;
+        .map_err(|source| super::native_io("read personalized DDI manifest", source))?;
 
     Ok(PersonalizedDdi {
         image,
@@ -289,7 +317,7 @@ where
     R: std::io::Read + std::io::Seek,
 {
     let mut archive = zip::ZipArchive::new(reader)
-        .map_err(|e| ImageMounterError::Download(format!("open zip: {e}")))?;
+        .map_err(|source| super::native_zip("open personalized DDI archive", source))?;
     extract_zip_archive(&mut archive, dest)
 }
 
@@ -303,7 +331,7 @@ where
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
-            .map_err(|e| ImageMounterError::Download(format!("read zip entry: {e}")))?;
+            .map_err(|source| super::native_zip("read personalized DDI archive entry", source))?;
 
         let entry_name = file.name().to_string();
         // Skip directories and __MACOSX entries
@@ -341,14 +369,13 @@ where
 
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| ImageMounterError::Download(format!("create dir: {e}")))?;
+                .map_err(|source| super::native_io("create extracted DDI directory", source))?;
         }
 
-        let mut out_file = std::fs::File::create(&out_path).map_err(|e| {
-            ImageMounterError::Download(format!("create file {}: {e}", out_path.display()))
-        })?;
+        let mut out_file = std::fs::File::create(&out_path)
+            .map_err(|e| super::native_io("create extracted DDI file", e))?;
         std::io::copy(&mut file, &mut out_file)
-            .map_err(|e| ImageMounterError::Download(format!("extract {}: {e}", entry_name)))?;
+            .map_err(|source| super::native_io("copy personalized DDI archive entry", source))?;
     }
 
     Ok(())
@@ -357,27 +384,38 @@ where
 async fn cache_files(dir: &Path, files: &[(&str, &[u8])]) -> Result<(), ImageMounterError> {
     tokio::fs::create_dir_all(dir)
         .await
-        .map_err(|e| ImageMounterError::Download(format!("create cache dir: {e}")))?;
+        .map_err(|source| super::native_io("create DDI cache directory", source))?;
     for (name, data) in files {
         tokio::fs::write(dir.join(name), data)
             .await
-            .map_err(|e| ImageMounterError::Download(format!("write {name}: {e}")))?;
+            .map_err(|source| super::native_io("write cached DDI file", source))?;
     }
     Ok(())
 }
 
 /// Build an HTTP client, respecting HTTP_PROXY / HTTPS_PROXY env vars.
 fn build_client() -> Result<reqwest::Client, ImageMounterError> {
-    let mut builder = reqwest::Client::builder();
-    if let Ok(proxy_url) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY")) {
-        let proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|e| ImageMounterError::Download(format!("invalid proxy URL: {e}")))?;
+    let builder = reqwest::Client::builder();
+    let proxy_url = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY"));
+    build_client_with_proxy(builder, proxy_url.as_deref().ok())
+}
+
+fn build_client_with_proxy(
+    mut builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+) -> Result<reqwest::Client, ImageMounterError> {
+    if let Some(proxy_url) = proxy_url {
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|source| super::native_http("parse DDI proxy configuration", source))?;
         builder = builder.proxy(proxy);
     }
     builder
         .build()
-        .map_err(|e| ImageMounterError::Download(format!("build client: {e}")))
+        .map_err(|source| super::native_http("build DDI download client", source))
 }
+
+#[cfg(test)]
+mod native_source_contract_tests;
 
 /// Extract DeveloperDiskImage.dmg and .signature from a GitHub Releases zip.
 ///
@@ -386,7 +424,7 @@ fn build_client() -> Result<reqwest::Client, ImageMounterError> {
 fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), ImageMounterError> {
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| ImageMounterError::Download(format!("open zip: {e}")))?;
+        .map_err(|source| super::native_zip("open standard DDI archive", source))?;
 
     let mut image: Option<Vec<u8>> = None;
     let mut signature: Option<Vec<u8>> = None;
@@ -394,7 +432,7 @@ fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), I
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
-            .map_err(|e| ImageMounterError::Download(format!("read zip entry: {e}")))?;
+            .map_err(|source| super::native_zip("read standard DDI archive entry", source))?;
         if file.is_dir() {
             continue;
         }
@@ -403,12 +441,12 @@ fn extract_standard_ddi(data: &[u8], _ver: &str) -> Result<(Vec<u8>, Vec<u8>), I
         if base == "DeveloperDiskImage.dmg" {
             let mut buf = Vec::new();
             std::io::copy(&mut file, &mut buf)
-                .map_err(|e| ImageMounterError::Download(format!("extract dmg: {e}")))?;
+                .map_err(|source| super::native_io("copy standard DDI image", source))?;
             image = Some(buf);
         } else if base == "DeveloperDiskImage.dmg.signature" {
             let mut buf = Vec::new();
             std::io::copy(&mut file, &mut buf)
-                .map_err(|e| ImageMounterError::Download(format!("extract sig: {e}")))?;
+                .map_err(|source| super::native_io("copy standard DDI signature", source))?;
             signature = Some(buf);
         }
     }

@@ -32,29 +32,57 @@ async fn request_ticket(
     request_dict: &plist::Dictionary,
     ticket_keys: &[&str],
 ) -> Result<Vec<u8>, ImageMounterError> {
-    let mut buf = Vec::new();
-    plist::to_writer_xml(&mut buf, &plist::Value::Dictionary(request_dict.clone()))
-        .map_err(|e| ImageMounterError::Tss(format!("serialize request: {e}")))?;
-
-    let mut builder = reqwest::Client::builder()
+    let buf = serialize_request(request_dict)?;
+    let builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .timeout(std::time::Duration::from_secs(120));
-    if let Ok(proxy_url) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY")) {
-        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+    let proxy_url = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("HTTP_PROXY"));
+    let client = build_client_with_proxy(builder, proxy_url.as_deref().ok())?;
+    request_ticket_at(&client, TSS_URL, buf, ticket_keys).await
+}
+
+fn serialize_request(request_dict: &plist::Dictionary) -> Result<Vec<u8>, ImageMounterError> {
+    let mut buf = Vec::new();
+    plist::to_writer_xml(&mut buf, &plist::Value::Dictionary(request_dict.clone())).map_err(
+        |source| {
+            super::native_error(
+                std::io::ErrorKind::InvalidInput,
+                "serialize DDI TSS request",
+                source,
+            )
+        },
+    )?;
+    Ok(buf)
+}
+
+fn build_client_with_proxy(
+    mut builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+) -> Result<reqwest::Client, ImageMounterError> {
+    if let Some(proxy_url) = proxy_url {
+        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
             builder = builder.proxy(proxy);
         }
     }
-    let client = builder
+    builder
         .build()
-        .map_err(|e| ImageMounterError::Tss(format!("build HTTP client: {e}")))?;
+        .map_err(|source| super::native_http("build DDI TSS client", source))
+}
+
+async fn request_ticket_at(
+    client: &reqwest::Client,
+    url: &str,
+    buf: Vec<u8>,
+    ticket_keys: &[&str],
+) -> Result<Vec<u8>, ImageMounterError> {
     let mut resp = client
-        .post(TSS_URL)
+        .post(url)
         .header("Content-Type", "text/xml; charset=\"utf-8\"")
         .header("User-Agent", "InetURL/1.0")
         .body(buf)
         .send()
         .await
-        .map_err(|e| ImageMounterError::Tss(format!("HTTP request failed: {e}")))?;
+        .map_err(|source| super::native_http("request DDI TSS ticket", source))?;
 
     if !resp.status().is_success() {
         return Err(ImageMounterError::Tss(format!(
@@ -68,7 +96,7 @@ async fn request_ticket(
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| ImageMounterError::Tss(format!("read response: {e}")))?
+        .map_err(|source| super::native_http("read DDI TSS response", source))?
     {
         if chunk.len() > MAX_TSS_RESPONSE - body.len() {
             return Err(ImageMounterError::Tss("response exceeds 16 MiB".into()));
@@ -78,9 +106,17 @@ async fn request_ticket(
     parse_ticket_response(&body, ticket_keys)
 }
 
+#[cfg(test)]
+mod native_source_contract_tests;
+
 fn parse_ticket_response(body: &[u8], ticket_keys: &[&str]) -> Result<Vec<u8>, ImageMounterError> {
-    let body = std::str::from_utf8(body)
-        .map_err(|_| ImageMounterError::Tss("response is not UTF-8".into()))?;
+    let body = std::str::from_utf8(body).map_err(|source| {
+        super::native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode DDI TSS response text",
+            source,
+        )
+    })?;
     let status = body
         .split('&')
         .find_map(|field| field.strip_prefix("STATUS="));
@@ -95,8 +131,13 @@ fn parse_ticket_response(body: &[u8], ticket_keys: &[&str]) -> Result<Vec<u8>, I
         .ok_or_else(|| ImageMounterError::Tss("no plist in TSS response".into()))?;
 
     let plist_xml = &body[plist_start..];
-    let val: plist::Value = plist::from_bytes(plist_xml.as_bytes())
-        .map_err(|e| ImageMounterError::Tss(format!("parse TSS plist: {e}")))?;
+    let val: plist::Value = plist::from_bytes(plist_xml.as_bytes()).map_err(|source| {
+        super::native_error(
+            std::io::ErrorKind::InvalidData,
+            "parse DDI TSS response plist",
+            source,
+        )
+    })?;
 
     let dict = val
         .as_dictionary()

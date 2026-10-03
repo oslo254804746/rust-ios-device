@@ -8,6 +8,67 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "imagemounter")]
+#[tokio::test]
+async fn root_ddi_cache_native_io_retains_exhaustive_family() {
+    use ios_core::{
+        imagemounter::{DdiDownloader, ImageMounterError},
+        ErrorClass,
+    };
+    use std::{error::Error, path::PathBuf};
+    fn family(error: &ImageMounterError) -> &str {
+        match error {
+            ImageMounterError::Io(_) => "io",
+            ImageMounterError::Plist(_) => "plist",
+            ImageMounterError::Protocol(_) => "protocol",
+            ImageMounterError::DeviceError(_) => "device",
+            ImageMounterError::Tss(_) => "tss",
+            ImageMounterError::Download(_) => "download",
+        }
+    }
+    struct OwnedDirectory(PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = OwnedDirectory(
+        std::env::temp_dir().join(format!("ios-public-image-{}", uuid::Uuid::new_v4())),
+    );
+    let cached = root.0.join("standard/16.4");
+    std::fs::create_dir_all(cached.join("DeveloperDiskImage.dmg")).unwrap();
+    std::fs::write(
+        cached.join("DeveloperDiskImage.dmg.signature"),
+        b"owned-private",
+    )
+    .unwrap();
+    let error = DdiDownloader::new(Some(root.0.clone()))
+        .download_standard(&semver::Version::new(16, 4, 0))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(family(&error), "io");
+    let ImageMounterError::Io(outer) = &error else {
+        unreachable!()
+    };
+    let original = outer
+        .source()
+        .unwrap()
+        .downcast_ref::<std::io::Error>()
+        .unwrap();
+    assert!(original.raw_os_error().is_some());
+    assert_eq!(outer.kind(), original.kind());
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::classify_error(original)
+    );
+    assert_eq!(
+        ios_core::classify_error(&ImageMounterError::Tss("owned status".into())),
+        ErrorClass::ServiceFailure
+    );
+    assert!(!format!("{error:?} {:?}", outer.get_ref()).contains("owned-private"));
+}
+
 #[cfg(any(
     feature = "cryptex",
     feature = "mobileactivation",
