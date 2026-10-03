@@ -232,6 +232,28 @@ error payloads, rollback or cleanup guarantee. Wire/bounds/fallback and legacy
 output stay; no CLI/HTTP/binding currently consumes this new result. See
 [batch observation evidence](validation/tss-batch-observations-2026-10-03.md).
 
+Application/test process identifiers, fixed application plist encoding, five IPA
+integer conversions and GPX XML/paired timestamp parsing now retain eleven
+original native error objects. AppService uses its existing `Xpc(Io)` family;
+Testmanager's DtxError, ZipConduitError and SimLocationError use existing Io with
+InvalidInput and fixed private context. Local PID/ZIP failures migrate from
+protocol to invalid_input; GPX keeps invalid_input while moving from GpxParse
+text to native Io. The plist boundary is a local encoder: the private writer
+fault fixture retains its nested IO kind/OS code while the wrapper is input.
+
+Public families/signatures/fields/features/classifier stay. Returned variants,
+Display, immediate source payload and diagnostic correlation can change; inspect
+typed classes and bounded sources instead of matching text. Existing validation
+order, feature admission, ZIP metadata arithmetic guards/headers/CRC/transfer
+order and GPX coordinates/timing/stream bytes stay. A ZIP input error may follow
+earlier install writes; the private header zero-write fixture does not prove
+whole-install preflight. GPX/test PID no-write observations are scoped to their
+owned local streams. No cleanup/retry/rollback or new parser/transfer limits.
+Explicit sources remain private data under the redaction policy. See
+[input source evidence](validation/service-input-native-sources-2026-10-03.md)
+for private injected encoding versus public consumer and unreachable 64-bit
+conversion branches.
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.

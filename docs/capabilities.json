@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-service-input-native-sources-ab09790",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned GPX XML/time and public replay/authorization streams, actual app/test/ZIP scalar conversion errors, exact fixed empty plist bytes and private writer injecting a captured owned OS file-open error, zero private header writes, exhaustive public consumers, minimum apps/testmanager with and without tunnel and migrated integration contract"],
+      "required_state": ["Public app encoder remains fixed empty dictionary into Vec; injected writer proves the exact private adapter, not a reachable production Vec IO fault. ZIP u32/i64 tests use private scalar/metadata helpers, not multi-GiB archives. Two usize-to-u64 failures are source-reviewed on 64-bit. Header zero writes do not mean whole-install preflight; no physical app/test/install/location/device/daemon/credentials/Apple workflow or cleanup/retry/reuse certification"],
+      "tested_commit": "ab097900523e91f93e54249c42c214a7e1349ee6",
+      "date": "2026-10-03",
+      "location": "docs/validation/service-input-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 eleven original application/test/IPA/GPX native causes retained through existing Io or Xpc(Io), precise local input roles and safe private context. Public 2/3/5/2 families, signatures/fields/root/features/dependencies/classifier and wire/validation/limits/order/timing/success remain; variant/Display/source/class migration recorded. Nine internal/two external controls fail under old adapters; an old integration Protocol assertion failed the first full, was migrated with native/zero-write checks, then final full 2041 Rust/13 Python PASS. Official cargo clean after stopped handles reported 98.4 GiB; no storage failure. Other A02/platform/lifecycle/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-tss-batch-observations-17f31a3",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

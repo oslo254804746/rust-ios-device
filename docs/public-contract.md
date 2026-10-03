@@ -252,6 +252,27 @@ privacy rules. No CLI/HTTP/C/Python output change or new cleanup/retry promise.
 The [batch observation evidence](validation/tss-batch-observations-2026-10-03.md)
 records host, minimum-feature and downstream-consumer acceptance.
 
+AppServiceError remains exhaustive with Xpc/Protocol; process-identifier and
+fixed empty-plist encoding errors now retain native causes under Xpc(Io).
+Testmanager's DtxError keeps its three variants, ZipConduitError five and
+SimLocationError two. Their affected integer/XML/time failures use existing Io
+InvalidInput. PID/ZIP categories change from protocol to invalid_input; GPX
+classification stays invalid_input while its returned variant changes from
+GpxParse. Existing root paths, constructors, method signatures and published
+route/process fields stay. Migrate returned-variant/text/immediate-source matches
+to typed class and bounded native sources; safe diagnostic IDs can change.
+
+No new public method/type/enum field, feature or dependency. The fixed app plist
+helper is private and preserves the original empty-dictionary bytes. Public
+writer use remains the original Vec; injected writer failure is host boundary
+evidence, not a new caller-controlled encoder. Request/feature/control admission,
+ZIP/GPX wire, validation order, GPX route timing and
+success stay. Existing unchecked location string length casts, parser limits
+and lifecycle/retry semantics are separate work. The
+[input source evidence](validation/service-input-native-sources-2026-10-03.md)
+records 9 internal/2 external tests and public zero-write versus private scalar/
+header/helper coverage.
+
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
 Download/Tss strings to existing Io, preserving original sources and IO kinds.

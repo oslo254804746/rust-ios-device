@@ -110,3 +110,11 @@ Other native adapters, DProxy text, typed guards/created outcomes, stream/JSON/
 callback/bindings and L01/L03/A03/platform/device work remain. No physical
 request/ticket/firmware/daemon/credentials/Apple operation, reference edit,
 push/publication or history rewrite. See [public contract](../public-contract.md).
+
+Follow-up: [service input sources](service-input-native-sources-2026-10-03.md),
+source `ab097900523e91f93e54249c42c214a7e1349ee6`, retains eleven app/test/IPA/GPX
+native causes in existing families with input classification. Final complete
+gate passes 2041 Rust/13 Python after an old integration assertion migration;
+the initial full failure, official stopped-build cleanup and private-versus-
+public/64-bit source-review limits are retained. This leaves the above batch
+observation evidence and physical/lifecycle conditions intact.

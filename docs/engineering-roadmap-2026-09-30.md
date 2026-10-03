@@ -4543,3 +4543,101 @@ symbols guarded converters、DProxy text、typed guards/created outcomes/stream/
 JSON/callback/bindings 与 L01/L03/A03/platform/device 条件继续。未使用真实
 device-generated requests/tickets/firmware/daemon/credentials/Apple operation；
 不升级 maturity、推送/发布、改写历史或编辑 reference。
+
+### 大类 3：A02 应用、测试、IPA 与 GPX 输入来源交付（2026-10-03）
+
+上轮 source `17f31a3efe91a77f6397c469cd3fd4ee3a65c0a4` / 文档
+`a2b69cc2777fc81b03b528ff4df375ca6f5e907e` 后工作区 clean；当前 PROGRESS，
+非连续阻塞，分支 `feat/device-service-updates-20260927`。实现
+`ab097900523e91f93e54249c42c214a7e1349ee6`，Linux x86_64，Rust 1.97.1 /
+MSRV 1.80.1，workspace Python 3.12.13。专题
+[service input sources](validation/service-input-native-sources-2026-10-03.md)。
+
+保留 11 个此前 flatten/drop 的 native boundaries：AppService PID/plist（2），
+Testmanager PID（1），ZipConduit entry/count/u32/u16/i64（5），GPX XML 与前后
+RFC3339 timestamp（3）；合计 7 TryFromIntError / 1 plist / 1 DeError / 2 Parse。
+AppService 使用已有 Xpc(Io)，其余使用已有 Io InvalidInput / private context。
+Local PID/ZIP class 从 protocol 变 invalid_input；GPX 仍为 invalid_input，
+GpxParse string 变 Io。Encoder private injected fault 的 nested IO kind/OS code
+保留，wrapper 按 local serialization input。Returned variant/Display/immediate
+payload/safe correlation 迁移明确；explicit source 遵守 redaction。
+
+AppServiceError/DtxError/ZipConduitError/SimLocationError 既有 2/3/5/2 exhaustive
+variants、public signatures/root/fields/features/deps/classifier/context/codecs
+保持。无新 public API。固定 empty plist writer 在旧 adapter 基线前等价提取，
+production 仍为 empty dictionary into Vec，42 成功 bytes 与旧实现一致。四份
+extracted production sources 只 normalize native callbacks、private static phase
+lifetimes 和拆开的 record count conversion 后相同；checked_add/其他 guards 与
+原 ZIP decoder/read adapters 保持。Feature admission、control lookup/request/
+ZIP init/metadata/CRC/entry/terminator/progress、GPX coordinate/optional paired
+timestamp/rounding/negative clamp/wire/success 顺序不变。无新 budget/parser/
+transfer cap/retry/cancel/rollback/cleanup/reuse 合同。
+
+11 source files：5 production、4 new internal test modules、public consumer 与
+旧 Testmanager integration，384 insertions/42 deletions。两条旧 AppService unit
+assertions 与一条 integration assertion 按既定 variant migration 更新。最终
+Source diff SHA256
+`feffb2e4c54fe30f6822799cd5a66ab49ea0cdc65084df0eeb44d35c290df242`；
+第一次 full 前 ten-file diff
+`0370aa7472fb8e54873bc805e90c1b5b23486c0498ee0c33beaaed93921fb4df`
+保留为 source-diff-first.patch。code-audit-final/original/baseline 等日志统一
+`/tmp/ios-a02-service-input-`；encoder audit 的 formatter punctuation 假设以
+callback/trailing-comma normalization 修正，未变 source。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 新增合同 | 9 internal / 2 external |
+| 旧 adapter 负控制 | before-final.log 0 PASS / 9 FAIL；before-public.log 0 PASS / 2 FAIL |
+| 新 native contracts | after.log 9 PASS |
+| Apps/Testmanager/GPX unit scope | apps/test/gpx.log 分别 57 / 16 / 8 PASS |
+| 全 feature public consumer | public.log 34 PASS |
+| minimum apps,testmanager | 7 native / 17 public PASS；AppService 需要 tunnel |
+| minimum apps,testmanager,tunnel | 9 native / 18 public PASS |
+| migrated Testmanager integration | all-feature 与 minimum 均 19 PASS |
+| strict Core Clippy | clippy.log exit 0 |
+| 第 11 节首次 full | terminal 1，Rust stage exit 101：旧 integration group 18 PASS / 1 FAIL |
+| 第 11 节最终 full | full-final.log terminal 0，2041 Rust / 13 Python，0 FAIL，2 既有 ignored |
+
+负控制 actual integer/XML/time faults；两个 PID builders 和两个 time positions
+先 gather 再断言。Private writer 注入 captured owned File::open NotFound，保留
+plist + nested IO / raw OS code，不当作 production Vec IO 或 filesystem write。
+Empty success bytes 在旧 baseline source assertion 前通过。ZIP u32/i64 使用
+private scalar/metadata helpers，u16 使用 65536-byte private header name；不分配
+多 GiB assets。两个 usize→u64 failures 在本 64-bit host 不可发生，仅源码审查。
+Owned public GPX replay / Testmanager absent-control PID / integration present
+session+control 均检查 actual EOF / zero bytes，1 s bound，非 remote cleanup。
+Private header zero-write 不是 whole install preflight：public ZIP input error
+可能跟随已有 stream writes。Public GPX route fields/exhaustive families/native
+getters 实际执行，App full XPC placement 源码审查，无物理服务调用。
+
+第一次 full 揭示一条遗漏的旧 integration Protocol text 断言；更新为 Io/input/
+TryFromIntError 与两 stream zero bytes 后，两 integration profiles 通过，再
+完整重跑，production 未更改。保留 full-first-failed.log，不声称 first-pass。
+无 compile failure/坏 fixture；一次 apply_patch formatting context mismatch
+原子中止后重读再修正。未降 guard/budget/lint/验收标准。
+
+磁盘 narrow 后 1.9 GiB，所有 known build handles terminal，确认无 live build
+再仅 official cargo clean，报告 82403 files / 98.4 GiB，df 可用约 94 GiB。
+不删源码/credentials/reference；tunnel minimum rebuild、两次 full 后最终约
+69 GiB。clean-before/clean.log 保留，无 storage failure/再次 cleanup；每次 full
+期间冻结 source，首 full terminal 后仅改已识别 integration。最终受测 ios
+0.1.13 debug SHA256
+`77a948d729afacab1a968d5de9dd34ad116eaa961e50539ac25f82e752aee43b`。
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 features/四 groups、7+7
+doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI /
+3 backup contracts；14 Rust groups / 独立 Python group，full-counts.log 可核对。
+无额外 Chromium/installed 3.9/3.13。
+
+CHANGELOG/error/public/quality/catalog/roadmap/new topic/previous TSS follow-up
+八文档独立收尾，118 capability records / implementation / maturity / historical
+evidence 保持，新增唯一受测 host entry，七个 changed Markdown 的 161 local
+links（baseline a2b69cc）和 whitespace 审查通过，不改受测
+source。A02/第三类/总体 goal active，第四类未开始，全部 31 主任务/子任务保持。
+下一：guarded AFC/DTX/file/symbol sources 的 ownership/32-bit/unreachable 审查，
+以及可达 DProxy native event/String 与 unchecked stderr 观察；read-only
+next-guarded-sources/next-dproxy-observations 日志同前缀，已确认本地 zerocopy
+0.8.42 map_src 可进行 owned source 映射，尚未实现该后续合同。其他 typed guards/
+created outcomes/stream/JSON/callback/bindings 与 L01/L03/A03/platform/device
+条件保留，无真实 app/test/install/location/device/daemon/Apple/credentials
+动作、maturity 升级、推送/发布、历史改写或 reference edit。

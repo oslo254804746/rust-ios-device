@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve native application/test PID, fixed app plist, IPA integer and GPX
+  XML/time parser sources through existing IO/XPC variants with safe context.
+  Classify local input failures without text matching; keep wire/validation and
+  route timing behavior, and document returned-variant/source migration.
+
 - Add `prefetch_tss_batch_preserving_errors` with owned observations of combined
   request construction, signing failures and missing tickets, including failures
   recovered by fallback. Preserve native error sources, typed phases and rider
