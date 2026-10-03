@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve native DDI cache/download/ZIP/extraction-task and TSS causes through
+  existing ImageMounterError::Io, with typed input/received/HTTP/cancellation
+  categories and safe context. Keep public families, proxy/wire/budget/guard
+  and partial-file behavior; document failure-variant/source migration in the
+  [error contract](docs/error-contract.md).
+
+- Add bounded service-issued deadline getters for Cryptex, MobileActivation,
+  InstallCoordination and Pasteboard, retaining the former phase, duration or
+  whole-seconds payload with native Elapsed. Preserve owner/fallback rules and
+  reject promised pasteboard sizes that could bypass a 32-bit usize limit.
+
+- Add typed OS Trace filter compilation while retaining the legacy String
+  compiler, and preserve native CrashReport/OS Trace/parser/archive/PID causes.
+  Keep the crash watch's named parse retries and existing filter/wire budgets;
+  document typed input and returned-variant migration.
+
 - Preserve manual-pairing RSD/H2/XPC, inner crypto, authentication, JSON and
   deadline sources through existing PairingTransportError::Io with fixed safe
   context. Retain native kinds and opaque unknown categories, reject short

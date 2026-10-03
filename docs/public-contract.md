@@ -202,6 +202,17 @@ size comparison also rejects values that could bypass a 32-bit usize limit.
 The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
 records getter scope, native class changes, exact API families and host limits.
 
+ImageMounterError's six variants/fields and public downloader/TSS signatures stay
+exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
+Download/Tss strings to existing Io, preserving original sources and IO kinds.
+Native HTTP, parser, local serialization and host cancellation categories can
+change from opaque/service_failure to typed timeout/protocol/invalid_input/
+cancelled; panic stays unknown. Existing guard outcomes and successful requests,
+proxy/budget/cache/partial-file behavior stay. Migrate variant/text/immediate
+payload matches to typed class and source traversal, respecting native source
+privacy. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
+records exact callback scope and owned versus injected/device validation.
+
 The additive private-fields `OperationCancelled` marker records caller-observed
 local cancellation without changing CoreError variants. Plain EINTR stays IO.
 WebInspector launch's successful Ctrl+C branch retains its context and exit

@@ -157,3 +157,10 @@ MobileBackup2 operation deadlines, AFC/DTX/integer conversions, DProxy text,
 typed guards/created outcomes, stream/JSON/callback/binding, L01/L03/A03/platform/
 device work remain. No capability maturity upgrade, push/publication, history
 rewrite or reference checkout edit.
+
+Follow-up: [DDI/TSS native evidence](image-assets-native-sources-2026-10-03.md)
+records `120b07cbfeba1665af62aad0bdc8ad34d47104f6`, 34 original ImageMounter
+native boundaries and first full 1991 Rust/13 Python PASS. Download/TSS proxy,
+wire, budget/guard and partial-file behavior remain; corrected fixture/negative
+control scopes are explicit. Historical service deadline evidence remains;
+A02 and the full goal stay active.

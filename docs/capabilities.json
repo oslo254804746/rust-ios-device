@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-image-assets-native-sources-120b07c",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned cache/filesystem/ZIP malformed-encrypted-CRC faults and nested IO, loopback HTTP request/body/spool timers and successful TSS wire/header/body exchange, UID serialization/received UTF-8/plist errors, explicit proxy/client builders, actual host JoinError cancellation/panic, exhaustive external public downloader cache consumer and minimum feature"],
+      "required_state": ["Owned host synthetic assets/tickets and no-proxy loopback only; private generic writer/reader inject actual captured OS file-creation errors for write/flush/ZIP-read adapters. Joined HTTP peers tolerate local read errors, no per-peer EOF claim. Public external/device entry placement source-reviewed. No process-env mutation, external DDI download, real TSS/pairing/mount/credentials/device/daemon/Apple, every backend/syscall, rollback/remote cleanup/retry certification"],
+      "tested_commit": "120b07cbfeba1665af62aad0bdc8ad34d47104f6",
+      "date": "2026-10-03",
+      "location": "docs/validation/image-assets-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 34 original DDI download/cache/ZIP/join and TSS native boundaries retained through existing Io/private context; six public variants/signatures/root/features/classifier/protocol/manifest and wire/proxy/budget/guard/cache/partial-file behavior stay. Variant/Display/kind/class/source migrations and invalid baseline fixtures/targeted corrected controls documented. First full 1991 Rust/13 Python PASS. Other native/guard/DProxy/stream/binding/lifecycle/platform/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-service-deadline-native-sources-bd6ee91",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

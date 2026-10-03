@@ -4194,3 +4194,86 @@ restore HTTP/TSS/ZIP native角色与原budget/proxy/limit/guards、MobileBackup2
 四个Unback/Extract operation/finish deadline及state/cleanup规则，再处理AFC/
 DTX/integer/DProxy text/typed guards/created outcomes/stream/JSON/callback/bindings
 与L01/L03/A03/platform/device条件。没有删除任务或maturity升级。
+
+### 大类 3：A02 DDI 下载、ZIP 与 TSS 原始来源交付（2026-10-03）
+
+从clean `818dd69704c10006783c1544308be6aa52af8be1`继续，分支
+`feat/device-service-updates-20260927`。实现
+`120b07cbfeba1665af62aad0bdc8ad34d47104f6`，七源码文件，已聚焦本地提交。
+Linux x86_64、Rust1.97.1/MSRV1.80.1、Python3.12.13；上轮属于已验进展。
+
+保留34个原始native boundaries：DDI download/cache/extract的17 IO、6reqwest、
+4ZipError、1JoinError（28）；TSS的2plist、3reqwest、1UTF-8（6）。两个download
+GET边界共享等价private request helper，最终27+6callbacks。Native IO/ZIP inner
+IO保持kind/OS cause；received ZIP/UTF-8/plist为protocol，local serialization/
+HTTP builder为invalid_input，HTTP expiry为timeout，host JoinError cancellation
+为cancelled、panic保持unknown；其余HTTP保留自身category含unknown。Original
+Download/Tss可能转为已有Io；variant/Display/get_ref/kind/class/safe correlation
+有迁移，native显式访问受redaction约束，不伪造source-free guard的native来源。
+[专题证据](validation/image-assets-native-sources-2026-10-03.md)。
+
+Public ImageMounterError仍六variants/原fields穷举，无新public signatures/getters；
+root exports/features/Cargo/lock/classifier/protocol/manifest保持。Private request/
+body/builder/serialization/extraction-result/file/body-copy helpers在旧adapter
+baseline前提取。Headers/body/URL/build constants、version/cache/fallback/abort、
+warn-only cache write、HTTPS_PROXY→HTTP_PROXY precedence保持；download拒绝bad
+proxy、TSS permissive忽略bad proxy策略保持，tests不改process env。TSS30/120s与
+16MiB cap保持，download builder策略保持，无新增total/resource/output bound。
+
+Content-type先于spool创建、ZIP magic/path filtering/extraction顺序、personalized
+load/build校验与success后删除tmp ZIP保持。Failure时partial spool/extracted file
+仍可能留下、drop awaiter不保证停止blocking work；Source保留不证明retry/rollback/
+L01 cleanup。整份提取download/TSS源码只normalize27+6nativecallbacks后相等，
+其余bodies/guards/policies完整比较；extraction/private wrappers另审，不用happy
+path代替whole-body。上述public/schema/deps/root/protocol/manifest/shared fixture
+byte-identical；日志code-audit/source-diff同`/tmp/ios-a02-image-assets-`前缀，
+source diff SHA256
+`2d82729e2acc6ce02951fde62ab6ce39a2973cc22db5497c8b90df3971fa4fcd`。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| ImageMounter all-feature/独立minimum feature | 各30 PASS；after-final/minimal.log terminal0 |
+| external public_contract/对应minimum consumer | 29/1 PASS；public/public-minimal.log terminal0 |
+| core strict Clippy | clippy.log terminal0 |
+| 第11节full | 首次full.log terminal0，1991 Rust/13 Python、0FAIL、2既有ignored |
+
+新增17internal与1external，owned cache/OS/ZIP malformed/encrypted/CRC、loopback
+HTTP request/body/spool timers、真实local TSS headers/body成功、UID/received
+UTF-8/plist、host task abort/panic与exhaustive public cache path覆盖。Writer
+write/flush和ZIP reader用captured owned OS create error注入generic fixture，
+非实际disk-full/write/flush/all-backend syscall验收；其他file/cache/extract
+有真实OS路径失败。HTTP peers bounded join允许read IO error，非逐peer EOF证明；
+owned目录Drop清理仅fixture行为。Public external/device入口placement仅source
+review，无external DDI/real TSS/pairing/mount/credentials/device/daemon/Apple。
+
+基线诚实区分：before-final15PASS/13FAIL中的一个ZIP坏夹具在open时已失败，
+排除native-loss证据，另外12为genuine；初始before同夹具、12total FAIL。
+before-public0PASS/1FAIL为真实external native loss。首after26PASS/2FAIL是ZIP
+fixture和未进入native plist parsing的TSS样本；修为encrypted-entry与有XML
+declaration/incomplete-dictionary后通过。Targeted before-corrected-zip/plist
+临时仅恢复四旧ZIP和一个旧plist adapter：2PASS/3genuine native FAIL，非全旧源码
+rerun；之后全部恢复fixed source，再final相关/full。Logs保持、无compile failure、
+无削弱guard/budget/lint。专题列exact scopes，不把夹具错误或重复计数当新增证据。
+
+Full包含fmt/check/workspace strict Clippy/MSRV、66features/四groups、7+7doctests/
+三snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/install、53tools/
+118help/38raw、5host workflows/22device NOT_RUN、15CLI/3backup contracts。
+Tested ios0.1.13 debug SHA256
+`828fb95e0be4628f64ee6723e1016a3da771c973a6363354870ab3b4ad623600`。
+Full前后源码冻结，磁盘约6.5/6.1GiB，无storage failure/cleanup；无额外Chromium/
+installed3.9/3.13。Error/public/quality/catalog与historical service-deadline
+follow-up同步，CHANGELOG Unreleased登记DDI/TSS，并补近两轮getters/promise与
+typed filter/diagnostic迁移条目；implementation/maturity和history evidence保持。
+
+文档收尾：118capability records、七个changed Markdown的150local links（baseline
+818dd69）、implementation/maturity/历史evidence保持、单个host entry与tested
+source commit一致、whitespace PASS；docs-catalog/docs-links.log同前缀，八文档
+文件独立提交，accepted源码/full不变。
+
+A02/第三类/总体goal active，第四类未开始，完整31任务/全部子任务scope不变。
+扩大readonly scan剩59candidates/26files，含test/intentional optional/text observers，
+非confirmed losses；next-services/next-backup/next-conversions日志同前缀。
+下一步审MobileBackup2 Unback/Extract四operation/finish deadlines的primary
+error/disconnect-state规则，及restore TSS/preflight、AFC/DTX/file/symbol/app/test
+conversions；DProxy text/typed guards/created outcomes/stream/JSON/callback/bindings
+与L01/L03/A03/platform/device仍待。无push/publish/history rewrite/reference编辑。

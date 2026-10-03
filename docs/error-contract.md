@@ -149,6 +149,20 @@ full nonnegative integer against its limit, closing a 32-bit conversion bypass;
 32-bit behavior is source-reviewed. The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
 records actual local faults, helper/device-entry scope and migration limits.
 
+ImageMounter download/cache/extraction and TSS now preserve 34 original native
+boundaries under existing Io with fixed private context. IO/OS and nested ZIP
+IO kinds/sources survive; received ZIP/UTF-8/plist errors classify protocol,
+local TSS serialization and HTTP builder faults invalid_input, HTTP timeout
+timeout, and actual host JoinError cancellation cancelled (panic stays unknown).
+Other native HTTP categories stay, including unknown. Affected Download/Tss
+variants, Display, immediate payloads, kinds and safe correlation can change;
+use typed class/source inspection. Source-free status/ticket/size/cache/build/
+HTML/magic/missing-entry guards keep their existing outcomes. Public six-variant
+family, signatures, wire, proxy precedence/policy, budgets and partial-file/
+blocking-work behavior stay. Source retention does not add bounds, rollback or
+cleanup guarantees. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
+records native/local-injected faults, corrected baseline fixtures and limits.
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.
