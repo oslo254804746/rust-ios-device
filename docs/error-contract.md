@@ -163,6 +163,33 @@ blocking-work behavior stay. Source retention does not add bounds, rollback or
 cleanup guarantees. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
 records native/local-injected faults, corrected baseline fixtures and limits.
 
+MobileBackup2 Unback/Extract retain actual operation and disconnect `Elapsed`
+under the existing Io variant, changing their former Protocol class to timeout.
+`Mobilebackup2Error::device_operation_timeout()` inspects at most 32 typed
+sources for issued `DeviceOperationTimeout` evidence. Its `operation()`,
+`phase()` and `duration()` report the typed operation, awaiting phase and total
+shared budget. Generic IO timeouts, foreign Elapsed and protocol prose return
+None; None does not prove absence of a timeout. New operation/phase enums are
+non-exhaustive; the evidence has private fields and no public constructor.
+
+If disconnect times out after an operation failure, the main source chain
+follows that final Elapsed and classification is timeout. The evidence's
+`operation_error()` separately borrows the earlier Mobilebackup2Error with its
+original sources, including an earlier operation Elapsed. These are two branches,
+not two causes in one linear source chain. A successful content value still is
+not returned when disconnect times out. Native received path UTF-8 and transfer
+count conversions now retain their causes under Io InvalidData, keeping protocol
+classification; the count failure is source-reviewed on this 64-bit host.
+
+Four existing error variants, five-minute shared absolute deadline, requests,
+validation order, transfer bounds, state reset and best-effort disconnect policy
+stay. Affected variants/Display/immediate payloads and diagnostic correlation
+can change; explicit native sources and the earlier-error branch follow the
+redaction policy. Blocking work may outlive a dropped awaiter, partial transfers
+may remain, and client reuse or remote cleanup is not certified. See the
+[backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
+for actual owned timers, primary-loss negative controls and public/minimum scope.
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.

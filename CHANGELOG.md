@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve MobileBackup2 Unback/Extract operation and disconnect timeout
+  causes, including an earlier operation failure when disconnect also expires.
+  Add bounded typed deadline evidence with operation, phase and shared budget;
+  retain native path UTF-8 and transfer-count conversion causes. Document the
+  Protocol-to-Io migration with existing requests and five-minute budget.
+
 - Preserve native DDI cache/download/ZIP/extraction-task and TSS causes through
   existing ImageMounterError::Io, with typed input/received/HTTP/cancellation
   categories and safe context. Keep public families, proxy/wire/budget/guard

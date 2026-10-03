@@ -202,6 +202,22 @@ size comparison also rejects values that could bypass a 32-bit usize limit.
 The [service deadline evidence](validation/service-deadline-native-sources-2026-10-03.md)
 records getter scope, native class changes, exact API families and host limits.
 
+Mobilebackup2Error retains its four exhaustive variants and existing facade
+signatures/fields. Unback/Extract native timers now return Io TimedOut instead
+of Protocol text. The additive `device_operation_timeout()` borrows issued
+`DeviceOperationTimeout`, with private fields and operation/phase/budget getters.
+Its new operation/phase enums start non-exhaustive. The getter is bounded to
+32 typed sources, does not format errors and does not attribute generic IO or
+foreign timers to this service. `operation_error()` preserves a prior failure
+when disconnect also times out; the final source/class remain Elapsed/timeout.
+Received path UTF-8/count conversions move to Io InvalidData while retaining
+protocol classification. Migrate variant/Display/immediate-payload matches to
+class/source and typed evidence. Public requests, five-minute budget, successful
+output and ordinary best-effort disconnect stay; successful content is still
+lost on disconnect timeout. No new reuse/rollback/remote cleanup promise. The
+[backup deadline evidence](validation/backup-deadline-native-sources-2026-10-03.md)
+distinguishes internal short-budget behavior from external interface coverage.
+
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
 Download/Tss strings to existing Io, preserving original sources and IO kinds.

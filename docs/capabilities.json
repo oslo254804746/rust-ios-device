@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-deadline-native-sources-145d0c4",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned DeviceLink duplex negotiation/requests with short-budget Tokio operation and gated disconnect timers, real peer EOF and protocol errors, successful content followed by disconnect timeout, double actual Elapsed, zero budget and received path UTF-8; external exhaustive family and bounded cyclic/foreign issuer getter, minimum build"],
+      "required_state": ["Owned host temporary layouts/streams only; artificial pending writes yield actual Tokio Elapsed. Public fixed five-minute timer placement and usize-to-u64 failure are source-reviewed; no public five-minute/physical device run, ambient daemon/credentials/Apple operation, partial-success recovery, blocking task stop, safe reuse, remote cleanup or retry certification"],
+      "tested_commit": "145d0c41f839a22e757e4aef616885b5303f4d6f",
+      "date": "2026-10-03",
+      "location": "docs/validation/backup-deadline-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 six original MobileBackup2 native boundaries retained through existing Io; typed issued deadline evidence separates operation/disconnect and preserves an earlier operation error with its native chain. Four variants/public signatures/fields/root/features/classifier, 300s shared budget, wire/validation/state/transfer guards and ordinary best-effort disconnect stay; timeout class/variant and source migrations recorded. Two-stage genuine native/primary-loss negative controls and first full 2001 Rust/13 Python PASS. Other A02/lifecycle/platform/device work remains; no maturity upgrade."
+    },
+    {
       "id": "linux-image-assets-native-sources-120b07c",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

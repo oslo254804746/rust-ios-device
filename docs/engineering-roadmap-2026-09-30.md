@@ -4277,3 +4277,89 @@ A02/第三类/总体goal active，第四类未开始，完整31任务/全部子�
 error/disconnect-state规则，及restore TSS/preflight、AFC/DTX/file/symbol/app/test
 conversions；DProxy text/typed guards/created outcomes/stream/JSON/callback/bindings
 与L01/L03/A03/platform/device仍待。无push/publish/history rewrite/reference编辑。
+
+### 大类 3：A02 MobileBackup2 期限与主错误保留交付（2026-10-03）
+
+从 clean `01a72928930d6e2ba02582a29d09434b7274dae9` 继续，分支
+`feat/device-service-updates-20260927`。上轮属于已验进展。本轮实现
+`145d0c41f839a22e757e4aef616885b5303f4d6f`，六个源码文件，已聚焦本地提交。
+Linux x86_64、Rust 1.97.1/MSRV 1.80.1、Python 3.12.13。
+[专题证据](validation/backup-deadline-native-sources-2026-10-03.md)。
+
+保留六个原始 native 边界：Unback/Extract 的四个 operation/finish Elapsed，
+received path 的一个 FromUtf8Error，transfer bytes 的一个 TryFromIntError。
+两个入口在基线前提取为等价 private dispatch，最终共享两个 timer callbacks。
+原有 Protocol 超时改为 Io TimedOut，class 为 timeout；UTF-8/count 改为
+Io InvalidData、class 仍 protocol。count 转换在本 64-bit 主机无法失败，只作
+source review，不制造 overflow/native failure 或宣称其他架构运行验收。
+
+新增 `Mobilebackup2Error::device_operation_timeout()`，至多读取 32 个 typed
+sources、无需格式化；返回 private-field `DeviceOperationTimeout`。operation/
+phase/budget getters 使用两个新 non-exhaustive enums 和原 configured total
+Duration。generic IO TimedOut、foreign Elapsed、prose/cycle 不构成本发行方
+证据；None 不代表没有 timeout。原四个公开错误 variants/fields、facade fields/
+signatures、root/features/deps/classifier 保持。
+
+修复真实主错误丢失：result 留在 timed disconnect future 外，收尾超时时
+不再随该 future 一起销毁。最终标准 source/class 是收尾 Elapsed/timeout，
+`operation_error()` 独立借用原 Mobilebackup2Error/native sources，包括先前
+operation Elapsed。两个错误分支明确分开，不宣称一条线性 source chain 可含两因。
+若 operation 成功而 disconnect 超时，仍无成功 Content 返回；普通 best-effort
+disconnect failure 的 suppression/warning 和原 result 保持。
+
+公共 300s 常量和同一个 absolute deadline 保持。完整 inner Unback/Extract
+bodies、host validation/layout 在 negotiation 前的顺序、请求字段/Unicode/optional
+omission、Hello/version/transfer loop/counters/state reset/guards 保持；其他
+backup/restore/info/list/password finish_session 完整比较为原样。整份 production
+protocol 和 transfer helper tail 仅分别 normalize 一个 native callback 后相等；
+dispatch extraction 与有意 ownership 修复另审。Cargo/lock/root/classifier、
+DeviceLink、host_fs/manifest/crypto/MBDB/shared fixture byte-identical。
+code-audit-final/source-diff 等日志同 `/tmp/ios-a02-backup-deadline-` 前缀；
+source diff SHA256
+`e50dfedd077ef40c0cb989a67a01cc32e5deefc3cbc6c20ffa43da21fe79b749`。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| backup module all-feature/no-default | 96 PASS/1 既有 ignored；51 PASS；after-final/minimal.log terminal 0 |
+| external public_contract all/no-default | 30/14 PASS；public/public-minimal.log terminal 0 |
+| core strict Clippy | clippy.log terminal 0 |
+| 第 11 节 full | 首次 full.log terminal 0，2001 Rust/13 Python、0 FAIL、2 既有 ignored |
+
+新增九个 internal 和一个 external tests。Owned duplex/temporary layout 实际
+Tokio timer、gated pending disconnect、native peer EOF/protocol failure、成功
+Content 后 cleanup expiry、double Elapsed、zero budget、received UTF-8 有证据。
+Peer/client futures 在 3s 内 join、ready disconnect 在 1s 内读出，fixture 目录
+Drop 清理；gated write 非 OS write timeout。External 覆盖 API shape/borrow/
+Send+Sync、穷举 family、有界无格式化 issuer lookup，未运行公共五分钟 timer；
+公共 placement 仅 source review，未冒充真机/Apple/远端 cleanup 验收。
+
+两阶段负控制明确区分：等价 dispatch 与新 observation types 已存在、旧 adapters
+尚未发行证据的 before.log 是 87 PASS/9 genuine FAIL/1 ignored；仅保留 native
+sources、仍将 result 移入 finish 的 before-primary.log 是 92 PASS/4 genuine
+FAIL/1 ignored。四项分别丢失 Unback/Extract protocol、native EOF 和先前 timeout；
+ownership 修复后全过。没有 compile failure、坏夹具、guard/lint/budget 削弱，
+失败日志保留，不把同一组失败重复计作新增 regressions。
+
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 features/四 groups、7+7
+doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI/
+3 backup contracts。Tested ios 0.1.13 debug SHA256
+`a4f9ab1280248dfdf85145fd7b45dcb781c544fdef6ecebace46d48e06bba826`。
+源码在 full 前后冻结；磁盘约 5.7/4.4 GiB，无 storage failure/cleanup；无额外
+Chromium/installed 3.9/3.13。文档收尾记录另行审查并提交，不改 accepted 源码。
+
+文档收尾：118 capability records、七个 changed Markdown 的 153 local links
+（baseline 01a7292）、implementation/maturity/历史 evidence 保持、单个 host
+entry 与 tested source commit 一致、whitespace PASS；docs-catalog/docs-links
+日志同前缀。CHANGELOG/error/public/quality/catalog/roadmap/新专题与前专题
+follow-up 共八个文件独立提交，accepted 源码/full 不变。
+
+A02/第三类/总体 goal active，第四类未开始，全部 31 任务及子任务 scope 保持。
+本次主错误修复不结束 L01：blocking work 可能在 awaiter drop 后继续、partial
+file/stream effects、success-content recovery、client reuse、remote cleanup/
+cancellation/retry 仍待独立工作。下一确认项是 restore TSS/IPSW/preflight 与
+H2/XPC control/bootstrap 的 native adapters，read-only next-restore/context
+日志同前缀；其他 AFC/DTX/file/symbol/app/test conversions、DProxy text、typed
+guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/
+device 条件继续。无设备/credentials/daemon/Apple 操作、推送/发布、历史改写或
+reference checkout 修改，capability maturity 不升级。

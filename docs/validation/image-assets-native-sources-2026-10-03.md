@@ -149,3 +149,9 @@ restore TSS/preflight, AFC/DTX/file/symbol/app/test conversions, DProxy text,
 typed guards/created outcomes, stream/JSON/callback/binding and L01/L03/A03/
 platform/device work remain. No push/publication, history rewrite or reference
 checkout edit.
+
+Follow-up: [MobileBackup2 deadline evidence](backup-deadline-native-sources-2026-10-03.md)
+records `145d0c4` with native operation/disconnect timers and separately retained
+primary failures. Its two-stage controls and 2001 Rust/13 Python first full gate
+are independent of this accepted DDI/TSS gate. Restore TSS/IPSW/H2/XPC and the
+other listed boundaries remain; no lifecycle/device or maturity certification.
