@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-diagnostic-native-sources-1c81742",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned AFC listing/poll/file timers and four complete parse-retry exchanges with EOF/peer join; report UTF-8/JSON and bounded cyclic parser scope; OS Trace duplex timers, private request conversion, native short/checksum archive and actual OS extraction fault, typed regex/guard/PID preflight and exhaustive external consumer"],
+      "required_state": ["Owned host streams/archive files only; four received usize conversions source-reviewed on 64-bit, request helper tested without giant allocation. Peer EOF/join proves local fixture cleanup only, no device file-close/cancel acknowledgement, every OS/backend fault, physical device/daemon/Apple, partial reuse or remote cleanup/retry certification"],
+      "tested_commit": "1c8174275aadff24a1cb3001504e7451efc95fcf",
+      "date": "2026-10-03",
+      "location": "docs/validation/diagnostic-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 22 CrashReport/OS Trace/CLI native sources retained under existing Io/private contexts; bounded parser issuer keeps watch retry limit, additive preserving filter API supplies typed regex/input errors while legacy String compile stays. Public families/root/features/classifier and wire/budgets/state/archive bounds/staging/success stay; variant/Display/IO-kind/source migrations recorded. Other adapters/guard/DProxy/stream/binding/lifecycle/platform/device work remains, no maturity upgrade."
+    },
+    {
       "id": "linux-discovery-native-sources-89bcd3f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

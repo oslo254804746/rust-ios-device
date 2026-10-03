@@ -144,3 +144,9 @@ migration; other services, DProxy textual observations, codecs/typed guards/
 created outcomes, stream/JSON/callback/binding and L01/L03/A03/platform/device
 conditions remain. All 31 tasks/subtasks and capability maturity stay. No push/
 publication, history rewrite or reference checkout edits.
+
+Follow-up: [diagnostic source evidence](diagnostic-native-sources-2026-10-03.md)
+records `1c81742`, 22 CrashReport/OS Trace/CLI native adapters, typed filter
+compilation and retained watch parser retries, with 1956 Rust/13 Python full PASS.
+This page's 1945-test discovery gate stays historical; all remaining roadmap
+scope and capability maturity remain unchanged.

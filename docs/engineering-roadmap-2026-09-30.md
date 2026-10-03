@@ -4016,3 +4016,82 @@ losses。日志 `/tmp/ios-a02-discovery-native-next-services.log`、
 其他services/DProxy text/codec/typed guards/created outcomes/stream/JSON/callback/
 bindings与L01/L03/A03/platform/device条件仍待。未使用真实credentials/device/
 daemon/Apple；无push/publish/history rewrite/reference编辑。
+
+### 大类 3：A02 崩溃报告与 OS Trace 原生来源交付（2026-10-03）
+
+接续 clean HEAD `d993ecf4590547de8f200d9cb4bdb4e3a84504d7`，本轮实现及实际
+专项/完整验收属于 PROGRESS，无阻塞条件。实现
+`1c8174275aadff24a1cb3001504e7451efc95fcf`，四个源码文件，聚焦本地提交。
+
+22 native adapter sites：CrashReport9（5 Elapsed、2 UTF8、2 JSON），OS Trace12
+（2 Elapsed、5 integer、4 IO、1 regex），CLI PID1 integer。Original对象通过
+existing Io/private source保留。Timer为Timeout class、received report/trace decoding
+保持Protocol、local request/PID/regex为InvalidInput。Archive IO保留原kind/native
+OS chain，不再Protocol prose；host header UnexpectedEof为IO，不推断disconnect。
+Native tar IO也可从Protocol改IO；created format/path/link/limit guards保持Protocol。
+Public Crash5/Trace4 variants、existing signatures/fields/root/features/deps/lock/
+classifier保持；returned variant/Display/source/kind/correlation迁移见
+[专题证据](validation/diagnostic-native-sources-2026-10-03.md)。
+
+新增 MessageFilterOptions.compile_preserving_errors，Core/CLI选择typed方法。
+Legacy compile保持String signature/formatting与故意source loss；共享旧bounded
+filter实现，limits/case/Unicode/predicates/success保持。Term count/length为source-free
+Input guard、不伪造RegexError。CLI PID/regex从Unknown改Input，preflight/connect/
+signal顺序、exit/output/envelope shapes保持；private PID wrapper修复std IO source
+forwarding会跳过bare TryInt问题，Debug/Display固定。
+
+Crash watch private parser marker保留UTF8/JSON source，最多32 typed sources判定
+own parse failures与旧Protocol parser guards，不依赖Display或everyProtocolClass。
+原3 parse retries、pending/known/snapshots/poll/signature/yield/terminal规则保持。
+Admission timeout可正常结束，in-flight expiry仍错误；checked-add overflow保持
+source-free unitTimeout。Owned AFC peer验证initial/poll/read三个timer和4次完整
+malformed JSON file opens/reads/closes，最后source可观测，client丢弃后peer EOF/join。
+仅local fixture cleanup，非device file-close/cancel acknowledgement或partial reuse。
+
+OS request converter在baseline前等价抽出；仍conversion在8MiB guard/write前，
+helper直接测overflow无giant allocation。4received usize conversions在64bit仅source
+review，非32bit failure injection。Archive header/checksum两passes/native extraction
+OS fault与owned file cleanup验证；trace EOF/framing/caps/archive paths/links/types/
+staging/install/modes/cleanup保持。不新增L01 remote release/retry/invalidation保证。
+
+Production comparison PASS：Crash9maps；sharedfilter2guard/1regexcallback normalized
+body等于旧compiler；剩余Os13mapping sites包括typed consumer/既有move-file；CLI5
+maps normalize后body不变，private source helpers单独review。Cargo/lock/root/classifier/
+test_native byte-identical。日志 `/tmp/ios-a02-diagnostic-native-code-audit.log`。
+
+| 检查 | 最终结果 |
+| --- | --- |
+| core 专项 | final native9、all-feature Crash28/Trace31、对应 no-default28/31 PASS，terminal0 |
+| external / CLI / Clippy | root all27/minimal13、既有OS target5（含shared fixtures）、final CLI OS11；core/CLI/full workspace strict Clippy PASS |
+| 第11节 full | 首次 `/tmp/ios-a02-diagnostic-native-full.log` terminal0，1956 Rust/13 Python、0 FAIL、2既有 ignored |
+| 其余 gates | fmt/check/MSRV1.80、66 features/4 groups、7+7 doctests/3 snippets、C ABI/owned malformed/checked list、3.12 wheel/sdist、53 tools、118 help、38 raw、5host/22device NOT_RUN、15 CLI/3 backup PASS |
+| 主机边界 | 九new core、一external、一CLI；actual owned AFC/duplex/parser/regex/archive/OS sources、bounded cycle/fixed Debug、retry limit与local peer/file cleanup。非every OS/backend/allocator/giant writes/partial operation reuse/physical/remote cleanup |
+
+Genuine before-fix service/public logs共0 PASS/9 FAIL，terminal101；CLI原baseline
+与first post-fix使用无效level all，提前失败，不计native-loss baseline。改actual
+empty-default fixture后发现Input正确但standard source中缺TryInt（10PASS/1FAIL），
+修private source wrapper后finalCLI PASS，不弱化断言。First public post-fix E0433为
+新增ErrorClass断言未限定路径，修fixture后PASS。Audit原误估CLI3maps，实际5maps
+验证。Original failure logs保留，production guards/budgets/gates/lints未弱化。
+
+ios0.1.13 debug SHA256
+`9778f708eb92b42c85f1b61a29dca79c14ccdd8b0617d6ca3a89ccc4059295b5`。
+Source full前冻结、之后与audit snapshot一致；full前后约13GiB free，无storage
+failure/cleanup，无额外Chromium/installed3.9/3.13重跑。Error/public contract、
+quality/catalog与historical discovery follow-up同步，maturity保持；文档收尾另记。
+
+文档收尾：118 catalog records，六个 changed Markdown files 的139 local links
+（baseline `d993ecf`）、capability implementation/maturity/historical evidence及
+whitespace PASS。日志 `/tmp/ios-a02-diagnostic-native-docs-catalog.log`、
+`/tmp/ios-a02-diagnostic-native-docs-links.log`；七文档文件独立提交，源码和accepted
+full保持不变。
+
+A02/第三类/总体goal active，第四类未开始，完整31任务/全部子任务scope保持。
+Readonly next scan19service files/33 anonymous candidates，非33confirmed native
+losses；formatted/match/.ok()/created guards另审。日志
+`/tmp/ios-a02-diagnostic-native-next-services.log`、
+`/tmp/ios-a02-diagnostic-native-next-consumers.log`。Cryptex/activation/InstallCoordination/
+pasteboard deadlines须保留old phase/Duration/seconds与state，区分actual Elapsed和
+created admission/sleep markers；其他native/typed guards/DProxy text/stream/JSON/
+callback/bindings与L01/L03/A03/platform/device仍待。无真实diagnostics/backup/
+credentials/device/daemon/Apple，无push/publish/history rewrite/reference编辑。

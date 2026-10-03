@@ -176,6 +176,18 @@ accompany an IO timeout. It reports the former phase budget, not current time le
 or cleanup/retry safety. The [discovery evidence](validation/discovery-native-sources-2026-10-03.md)
 records preserved quiescence, legacy source loss and partial-operation limits.
 
+`MessageFilterOptions::compile_preserving_errors` adds typed OS Trace filter
+compilation without changing the legacy compile method's String contract.
+Core/CLI callers use the new method; invalid regex/count/length and CLI PID errors
+now supply invalid_input with native sources where a native failure exists.
+CrashReportError's five/OsTraceError's four variants stay exhaustive, while native
+timers/parser/encoding/archive errors move to existing Io and preserve original
+causes. Migrate affected Timeout/Protocol/text/immediate-payload matches to typed
+class/source inspection. Crash watch retains its named parse retries, and
+created guards/EOF/wire/success/budgets/staging/cleanup stay. The
+[diagnostic evidence](validation/diagnostic-native-sources-2026-10-03.md) records
+legacy string source loss, IO kind migration and host/device boundaries.
+
 The additive private-fields `OperationCancelled` marker records caller-observed
 local cancellation without changing CoreError variants. Plain EINTR stays IO.
 WebInspector launch's successful Ctrl+C branch retains its context and exit

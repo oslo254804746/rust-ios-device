@@ -105,8 +105,29 @@ markers, protocol limits, wire/success, budgets and cleanup behavior stay. See
 the [discovery source migration and host evidence](validation/discovery-native-sources-2026-10-03.md)
 for returned-variant/Display/source access changes and partial-operation limits.
 
-CLI tasks, CDP discovery/page/browser startup and WebDriver runtime construction
-now use the preserving method. A closed stream can consequently yield an IO
+CrashReport and OS Trace retain 21 native service causes, plus OS Trace CLI's
+native PID conversion, through existing Io/private source contexts. Timers
+classify timeout, received report/trace decoding remains protocol, and local
+request/PID/regex errors become invalid_input. Archive native IO kinds/OS chains
+survive instead of Protocol prose; a truncated host archive can classify io.
+Existing public error families and successful wire/state/limits stay. CrashReport
+watch uses a bounded typed parser marker to preserve its three parse retries;
+generic protocol/IO class alone never identifies that retry scope. Checked-add
+deadline and parser shape guards retain their source-free outcomes.
+
+`MessageFilterOptions::compile_preserving_errors()` adds typed filter compilation;
+Core next_filtered_options and CLI use it before reading/connecting. The old
+compile method keeps its String return/formatting and deliberately loses the
+native regex type. Term count/length guards on the new method are source-free
+InvalidInput; actual regex errors keep their original cause. Filter predicates,
+budgets, output/envelope shapes and failure exits stay. A private CLI PID wrapper
+also preserves standard source traversal through IO custom payload forwarding.
+The [diagnostic source migration](validation/diagnostic-native-sources-2026-10-03.md)
+records returned variants/Display, local AFC peer cleanup, archive OS faults and
+the limits of partial-read/write/device evidence.
+
+CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
+construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.
 Existing failure exits/HTTP statuses/error body shapes, successful output and
 wire frames stay unchanged. Migrate Rust callers by selecting the new method
