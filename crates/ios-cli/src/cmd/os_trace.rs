@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cmd::connect::connect_by_ios_major;
 
@@ -447,14 +447,40 @@ struct StreamArgs {
     timeout: Option<u64>,
 }
 
+struct TracePidConversionError(std::num::TryFromIntError);
+
+impl std::fmt::Debug for TracePidConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TracePidConversionError")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for TracePidConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OS trace PID conversion failed")
+    }
+}
+
+impl std::error::Error for TracePidConversionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
     let level_filter = ios_core::ostrace::parse_level_filter(&args.level)
         .map_err(|error| anyhow::anyhow!("invalid --level value: {error}"))?;
     let pid = args
         .pid
         .map(|pid| {
-            i32::try_from(pid)
-                .map_err(|_| anyhow::anyhow!("--pid must be no greater than {}", i32::MAX))
+            i32::try_from(pid).map_err(|error| {
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    TracePidConversionError(error),
+                ))
+                .context(format!("--pid must be no greater than {}", i32::MAX))
+            })
         })
         .transpose()?;
     let filter_options = ios_core::ostrace::MessageFilterOptions {
@@ -468,8 +494,8 @@ async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
         ignore_case: args.ignore_case,
     };
     let client_filter = filter_options
-        .compile()
-        .map_err(|error| anyhow::anyhow!("invalid OS trace filter: {error}"))?;
+        .compile_preserving_errors()
+        .context("invalid OS trace filter")?;
 
     let deadline = trace_deadline(args.timeout)?;
     let mut stop = stop_signal();
@@ -687,6 +713,41 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_diagnostic_os_trace_preflight_preserves_native_input() {
+        for pid_fault in [true, false] {
+            let args = StreamArgs {
+                pid: pid_fault.then_some(u32::MAX),
+                process: None,
+                level: String::new(),
+                subsystem: None,
+                category: None,
+                message_match: Vec::new(),
+                exclude: Vec::new(),
+                regex: if pid_fault {
+                    Vec::new()
+                } else {
+                    vec!["[owned-private".into()]
+                },
+                ignore_case: false,
+                count: Some(1),
+                timeout: None,
+            };
+            let error = run_stream("owned-private", args, false).await.unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            if pid_fault {
+                assert!(error
+                    .chain()
+                    .any(|source| source.is::<std::num::TryFromIntError>()));
+            } else {
+                assert!(error.chain().any(|source| source.is::<regex::Error>()));
+            }
+        }
+    }
 
     #[derive(Parser)]
     struct TestCli {

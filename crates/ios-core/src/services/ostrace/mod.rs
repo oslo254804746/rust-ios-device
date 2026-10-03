@@ -52,6 +52,18 @@ service_error!(
     },
 );
 
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> OsTraceError {
+    OsTraceError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn native_io(phase: &'static str, source: std::io::Error) -> OsTraceError {
+    native_error(source.kind(), phase, source)
+}
+
 /// Severity byte carried by an os_trace activity record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct LogLevel(pub u8);
@@ -318,13 +330,44 @@ const MAX_FILTER_REGEX_SIZE: usize = 4 * 1024 * 1024;
 
 impl MessageFilterOptions {
     pub fn compile(&self) -> Result<CompiledMessageFilter, String> {
+        self.compile_with_errors(std::convert::identity, |pattern, error| {
+            format!("invalid OS trace regex {pattern:?}: {error}")
+        })
+    }
+
+    /// Compile the same bounded predicates while retaining native regex errors.
+    /// Invalid filters return an input error before reading a trace stream.
+    /// The legacy [`Self::compile`] keeps its string error contract.
+    pub fn compile_preserving_errors(&self) -> Result<CompiledMessageFilter, OsTraceError> {
+        self.compile_with_errors(
+            |message| {
+                OsTraceError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    message,
+                ))
+            },
+            |_, error| {
+                native_error(
+                    std::io::ErrorKind::InvalidInput,
+                    "compile OS trace filter",
+                    error,
+                )
+            },
+        )
+    }
+
+    fn compile_with_errors<E>(
+        &self,
+        guard_error: impl Fn(String) -> E,
+        regex_error: impl Fn(&str, regex::Error) -> E,
+    ) -> Result<CompiledMessageFilter, E> {
         if self.matches.len() > MAX_FILTER_TERMS
             || self.excludes.len() > MAX_FILTER_TERMS
             || self.regex.len() > MAX_FILTER_TERMS
         {
-            return Err(format!(
+            return Err(guard_error(format!(
                 "too many OS trace text filters; maximum is {MAX_FILTER_TERMS} per kind"
-            ));
+            )));
         }
         for (kind, terms) in [
             ("match", &self.matches),
@@ -335,10 +378,10 @@ impl MessageFilterOptions {
                 .iter()
                 .find(|term| term.len() > MAX_FILTER_TERM_LENGTH)
             {
-                return Err(format!(
+                return Err(guard_error(format!(
                     "OS trace {kind} filter is {} bytes; maximum is {MAX_FILTER_TERM_LENGTH}",
                     term.len()
-                ));
+                )));
             }
         }
 
@@ -350,7 +393,7 @@ impl MessageFilterOptions {
                     .case_insensitive(self.ignore_case)
                     .size_limit(MAX_FILTER_REGEX_SIZE)
                     .build()
-                    .map_err(|error| format!("invalid OS trace regex {pattern:?}: {error}"))
+                    .map_err(|error| regex_error(pattern, error))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -567,8 +610,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TraceStream<S> {
             )));
         }
 
-        let length = usize::try_from(self.stream.read_u32_le().await?).map_err(|_| {
-            OsTraceError::Protocol("OS trace frame length does not fit usize".into())
+        let length = usize::try_from(self.stream.read_u32_le().await?).map_err(|error| {
+            native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode OS trace frame length",
+                error,
+            )
         })?;
         if length == 0 {
             return Err(OsTraceError::Protocol(
@@ -591,7 +638,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TraceStream<S> {
     ) -> Result<Option<LogEntry>, OsTraceError> {
         tokio::time::timeout(timeout, self.next_entry())
             .await
-            .map_err(|_| OsTraceError::Timeout)?
+            .map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "receive OS trace entry",
+                    error,
+                )
+            })?
     }
 
     pub fn into_stream(self) -> impl Stream<Item = Result<LogEntry, OsTraceError>> {
@@ -615,7 +668,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TraceStream<S> {
         &mut self,
         filter: &MessageFilterOptions,
     ) -> Result<Option<LogEntry>, OsTraceError> {
-        let filter = filter.compile().map_err(OsTraceError::Protocol)?;
+        let filter = filter.compile_preserving_errors()?;
         self.next_filtered_compiled(&filter).await
     }
 
@@ -723,8 +776,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
                     magic[0]
                 )));
             }
-            let length = usize::try_from(self.stream.read_u32_le().await?).map_err(|_| {
-                OsTraceError::Protocol("OS trace archive chunk length does not fit usize".into())
+            let length = usize::try_from(self.stream.read_u32_le().await?).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "decode OS trace archive chunk length",
+                    error,
+                )
             })?;
             if length > MAX_ARCHIVE_CHUNK_SIZE {
                 return Err(OsTraceError::Protocol(format!(
@@ -859,7 +916,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OsTraceClient<S> {
     ) -> Result<TraceStream<S>, OsTraceError> {
         tokio::time::timeout(timeout, self.start_activity(options))
             .await
-            .map_err(|_| OsTraceError::Timeout)?
+            .map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "start OS trace activity",
+                    error,
+                )
+            })?
     }
 }
 
@@ -869,9 +932,7 @@ async fn send_plist<S: AsyncWrite + Unpin>(
 ) -> Result<(), OsTraceError> {
     let mut buf = Vec::new();
     plist::to_writer_xml(&mut buf, value)?;
-    let length = u32::try_from(buf.len()).map_err(|_| {
-        OsTraceError::Protocol(format!("request plist length {} exceeds u32", buf.len()))
-    })?;
+    let length = checked_request_len(buf.len())?;
     if buf.len() > MAX_PLIST_SIZE {
         return Err(OsTraceError::Protocol(format!(
             "request plist length {} exceeds max {MAX_PLIST_SIZE}",
@@ -882,6 +943,16 @@ async fn send_plist<S: AsyncWrite + Unpin>(
     stream.write_all(&buf).await?;
     stream.flush().await?;
     Ok(())
+}
+
+fn checked_request_len(length: usize) -> Result<u32, OsTraceError> {
+    u32::try_from(length).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidInput,
+            "encode OS trace request length",
+            error,
+        )
+    })
 }
 
 async fn recv_prefixed_plist<S: AsyncRead + Unpin>(
@@ -1102,11 +1173,8 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), OsTraceError>
 fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTraceError> {
     let mut file = File::open(path)?;
     let mut header = [0u8; 512];
-    file.read_exact(&mut header).map_err(|error| {
-        OsTraceError::Protocol(format!(
-            "OS trace archive is shorter than one tar header: {error}"
-        ))
-    })?;
+    file.read_exact(&mut header)
+        .map_err(|error| native_io("read OS trace archive header", error))?;
     let magic = &header[257..263];
     if magic != b"ustar\0" && magic != b"ustar " {
         return Err(OsTraceError::Protocol(
@@ -1118,9 +1186,7 @@ fn validate_pax_archive(path: &Path, options: ArchiveOptions) -> Result<(), OsTr
     let mut entries = 0usize;
     let mut bytes = 0u64;
     for item in archive.entries()? {
-        let mut entry = item.map_err(|error| {
-            OsTraceError::Protocol(format!("invalid OS trace tar entry: {error}"))
-        })?;
+        let mut entry = item.map_err(|error| native_io("validate OS trace tar entry", error))?;
         entries = entries.checked_add(1).ok_or_else(|| {
             OsTraceError::Protocol("OS trace archive entry count overflow".into())
         })?;
@@ -1186,9 +1252,8 @@ fn extract_archive(
     let mut entries = 0usize;
     let mut bytes = 0u64;
     for item in archive.entries()? {
-        let mut entry = item.map_err(|error| {
-            OsTraceError::Protocol(format!("invalid OS trace tar entry: {error}"))
-        })?;
+        let mut entry =
+            item.map_err(|error| native_io("validate OS trace extraction entry", error))?;
         entries = entries.checked_add(1).ok_or_else(|| {
             OsTraceError::Protocol("OS trace archive entry count overflow".into())
         })?;
@@ -1233,9 +1298,9 @@ fn extract_archive(
 
     let file = File::open(tar_path)?;
     let mut archive = tar::Archive::new(file);
-    archive.unpack(output).map_err(|error| {
-        OsTraceError::Protocol(format!("failed to extract OS trace archive: {error}"))
-    })?;
+    archive
+        .unpack(output)
+        .map_err(|error| native_io("extract OS trace archive", error))?;
     lockdown_extracted_tree(output)?;
     Ok(ExtractionStats { entries, bytes })
 }
@@ -1304,10 +1369,12 @@ async fn read_start_activity_handshake<S: AsyncRead + Unpin>(
     let plist_len = length_bytes
         .into_iter()
         .fold(0u64, |value, byte| (value << 8) | u64::from(byte));
-    let plist_len = usize::try_from(plist_len).map_err(|_| {
-        OsTraceError::Protocol(format!(
-            "OS trace handshake plist length {plist_len} is too large"
-        ))
+    let plist_len = usize::try_from(plist_len).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode OS trace handshake length",
+            error,
+        )
     })?;
     if plist_len > MAX_PLIST_SIZE {
         return Err(OsTraceError::Protocol(format!(
@@ -1369,8 +1436,13 @@ pub fn parse_entry(data: &[u8]) -> Result<LogEntry, OsTraceError> {
     let thread_id = read_u32(data, 83, "thread ID")?;
     let image_uuid = read_array::<16>(data, 91, "image UUID")?;
     let imagepath_len = usize::from(read_u16(data, 107, "image path length")?);
-    let message_len = usize::try_from(read_u32(data, 109, "message length")?)
-        .map_err(|_| OsTraceError::Protocol("OS trace message length does not fit usize".into()))?;
+    let message_len = usize::try_from(read_u32(data, 109, "message length")?).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode OS trace message length",
+            error,
+        )
+    })?;
     let image_offset = read_u32(data, 113, "image offset")?;
     let subsystem_len = usize::from(read_u16(data, 117, "subsystem length")?);
     let category_len = usize::from(read_u16(data, 121, "category length")?);
@@ -1476,6 +1548,156 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_diagnostic_os_trace_deadlines_keep_elapsed() {
+        for capacity in [1, 4096] {
+            let (stream, _peer) = tokio::io::duplex(capacity);
+            let error = OsTraceClient::new(stream)
+                .start_activity_with_timeout(TraceOptions::default(), Duration::from_millis(5))
+                .await
+                .err()
+                .expect("owned stalled startup");
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        }
+        for partial in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(16);
+            if partial {
+                peer.write_all(&[TRACE_FRAME_MAGIC, 1]).await.unwrap();
+            }
+            let mut stream = TraceStream { stream };
+            let error = stream
+                .next_entry_with_timeout(Duration::from_millis(5))
+                .await
+                .unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn native_diagnostic_os_trace_request_conversion_keeps_source() {
+        let error = checked_request_len(u32::MAX as usize + 1).unwrap_err();
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::InvalidInput
+        );
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &error
+        ));
+        assert_eq!(checked_request_len(u32::MAX as usize).unwrap(), u32::MAX);
+    }
+
+    struct NativeArchiveFixture(PathBuf);
+
+    impl Drop for NativeArchiveFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn native_diagnostic_os_trace_archives_keep_io_objects_and_os_faults() {
+        fn native_io_objects(error: &(dyn std::error::Error + 'static)) -> (usize, bool) {
+            let mut next = Some(error);
+            let mut count = 0;
+            let mut native_os = false;
+            for _ in 0..32 {
+                let Some(error) = next else { break };
+                if let Some(error) = error.downcast_ref::<std::io::Error>() {
+                    count += 1;
+                    native_os |= error.raw_os_error().is_some();
+                }
+                next = error.source();
+            }
+            (count, native_os)
+        }
+        let root = NativeArchiveFixture(test_temp_dir().join(format!(
+            "ios-native-archive-owned-private-{}",
+            uuid::Uuid::new_v4()
+        )));
+        fs::create_dir(&root.0).unwrap();
+        let short = root.0.join("short.tar");
+        fs::write(&short, [0]).unwrap();
+        let error = validate_pax_archive(&short, ArchiveOptions::default()).unwrap_err();
+        assert!(native_io_objects(&error).0 >= 2);
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+        assert!(!format!("{error:?}").contains("owned-private"));
+
+        let bad = root.0.join("bad.tar");
+        let mut bad_bytes = archive_tar();
+        bad_bytes[0] ^= 1;
+        fs::write(&bad, bad_bytes).unwrap();
+        let error = validate_pax_archive(&bad, ArchiveOptions::default()).unwrap_err();
+        assert!(native_io_objects(&error).0 >= 2);
+        let error = extract_archive(&bad, &root.0.join("unused"), ArchiveOptions::default())
+            .err()
+            .expect("owned invalid tar entry");
+        assert!(native_io_objects(&error).0 >= 2);
+
+        let valid = root.0.join("valid.tar");
+        fs::write(&valid, archive_tar()).unwrap();
+        let blocked = root.0.join("blocked");
+        fs::write(&blocked, b"owned file").unwrap();
+        let error = extract_archive(&valid, &blocked, ArchiveOptions::default())
+            .err()
+            .expect("owned output is a file");
+        assert!(native_io_objects(&error).0 >= 2);
+        assert!(native_io_objects(&error).1);
+        fs::remove_dir_all(&root.0).unwrap();
+        assert!(!root.0.exists());
+    }
+
+    #[tokio::test]
+    async fn native_diagnostic_os_trace_filter_keeps_regex_before_read() {
+        let (stream, _peer) = tokio::io::duplex(16);
+        let mut stream = TraceStream { stream };
+        let options = MessageFilterOptions {
+            regex: vec!["[owned-private".into()],
+            ..MessageFilterOptions::default()
+        };
+        let error = stream.next_filtered_options(&options).await.unwrap_err();
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::ErrorClass::InvalidInput
+        );
+        assert!(crate::test_native::has_source::<regex::Error>(&error));
+        assert!(!format!("{error:?}").contains("owned-private"));
+        assert!(options
+            .compile()
+            .unwrap_err()
+            .contains("invalid OS trace regex"));
+        assert!(crate::test_native::has_source::<regex::Error>(
+            &options.compile_preserving_errors().unwrap_err()
+        ));
+        for options in [
+            MessageFilterOptions {
+                matches: vec!["owned".into(); MAX_FILTER_TERMS + 1],
+                ..MessageFilterOptions::default()
+            },
+            MessageFilterOptions {
+                regex: vec!["x".repeat(MAX_FILTER_TERM_LENGTH + 1)],
+                ..MessageFilterOptions::default()
+            },
+        ] {
+            let error = options.compile_preserving_errors().unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            assert!(!crate::test_native::has_source::<regex::Error>(&error));
+            assert!(options.compile().is_err());
+        }
+        let options = MessageFilterOptions {
+            regex: vec!["世界".into()],
+            ..MessageFilterOptions::default()
+        };
+        let entry = parse_entry(&build_entry(LogLevel::INFO, "Hello 世界")).unwrap();
+        assert!(options.compile().unwrap().matches(&entry));
+        assert!(options.compile_preserving_errors().unwrap().matches(&entry));
+    }
 
     // macOS exposes its temporary directory through the `/var` system
     // symlink.  The output policy intentionally rejects symlinked parents, so
@@ -1778,21 +2000,21 @@ mod tests {
         let (client, mut server) = tokio::io::duplex(1024);
         server.write_all(&[TRACE_FRAME_MAGIC, 1]).await.unwrap();
         let mut stream = TraceStream { stream: client };
-        assert!(matches!(
-            stream
-                .next_entry_with_timeout(Duration::from_millis(20))
-                .await,
-            Err(OsTraceError::Timeout)
-        ));
+        let error = stream
+            .next_entry_with_timeout(Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
 
         let (client, _server) = tokio::io::duplex(1024);
         let mut stream = TraceStream { stream: client };
-        assert!(matches!(
-            stream
-                .next_entry_with_timeout(Duration::from_millis(1))
-                .await,
-            Err(OsTraceError::Timeout)
-        ));
+        let error = stream
+            .next_entry_with_timeout(Duration::from_millis(1))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 
     #[tokio::test]
@@ -1801,7 +2023,9 @@ mod tests {
         let result = OsTraceClient::new(client)
             .start_activity_with_timeout(TraceOptions::default(), Duration::from_millis(1))
             .await;
-        assert!(matches!(result, Err(OsTraceError::Timeout)));
+        let error = result.err().expect("owned stalled handshake");
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 
     #[tokio::test]

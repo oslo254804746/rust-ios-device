@@ -721,6 +721,67 @@ async fn public_discovery_deadlines_keep_native_sources_and_exhaustive_families(
     assert!(has_elapsed(&error));
 }
 
+#[cfg(all(feature = "crashreport", feature = "ostrace"))]
+#[tokio::test]
+async fn public_diagnostic_services_keep_native_sources_and_exhaustive_families() {
+    use ios_core::{
+        crashreport::{parse_report_bytes, CrashReportError},
+        ostrace::{MessageFilterOptions, OsTraceClient, OsTraceError, TraceOptions},
+    };
+    use std::error::Error;
+    fn has_source<T: Error + 'static>(error: &(dyn Error + 'static)) -> bool {
+        let mut next = Some(error);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if error.is::<T>() {
+                return true;
+            }
+            next = error.source();
+        }
+        false
+    }
+    fn crash_family(error: &CrashReportError) -> &'static str {
+        match error {
+            CrashReportError::Io(_) => "io",
+            CrashReportError::Afc(_) => "afc",
+            CrashReportError::Protocol(_) => "protocol",
+            CrashReportError::Timeout => "timeout",
+            CrashReportError::InvalidPattern { .. } => "pattern",
+        }
+    }
+    fn trace_family(error: &OsTraceError) -> &'static str {
+        match error {
+            OsTraceError::Io(_) => "io",
+            OsTraceError::Plist(_) => "plist",
+            OsTraceError::Protocol(_) => "protocol",
+            OsTraceError::Timeout => "timeout",
+        }
+    }
+    let error = parse_report_bytes("owned-private.ips", &[0xff]).unwrap_err();
+    assert_eq!(crash_family(&error), "io");
+    assert!(has_source::<std::str::Utf8Error>(&error));
+    let (stream, _peer) = tokio::io::duplex(4096);
+    let error = OsTraceClient::new(stream)
+        .start_activity_with_timeout(TraceOptions::default(), std::time::Duration::from_millis(5))
+        .await
+        .err()
+        .expect("owned idle startup");
+    assert_eq!(trace_family(&error), "io");
+    assert!(has_source::<tokio::time::error::Elapsed>(&error));
+    let options = MessageFilterOptions {
+        regex: vec!["[owned-private".into()],
+        ..MessageFilterOptions::default()
+    };
+    assert!(options.compile().is_err());
+    let error: OsTraceError = options.compile_preserving_errors().unwrap_err();
+    assert_eq!(trace_family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::InvalidInput
+    );
+    assert!(has_source::<regex::Error>(&error));
+}
+
 fn event_id(event: DeviceEvent) -> u32 {
     match event {
         DeviceEvent::Attached(DeviceInfo { device_id, .. })
