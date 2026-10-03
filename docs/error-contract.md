@@ -254,6 +254,25 @@ Explicit sources remain private data under the redaction policy. See
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
+Eight guarded AFC/DTX/FileService/symbol conversion adapters retain their native
+objects through existing Io with private fixed context, optional full-width
+declared u64 and InvalidData. Classification stays Protocol: the container
+records received-data provenance, not an OS fault. AFC maps the original
+zerocopy cast source into owned Box<[u8]> only on failure; successful borrowed
+decoding stays. Debug hides native text/bytes; explicit sources remain private.
+
+Six adapters cannot fail after the current guards on any supported host,
+including AFC this_len after this <= entire and successful entire conversion.
+Only AFC entire_len and remote symbol count can overflow on narrower usize.
+The 64-bit production tests reach existing frame/count ceilings; private
+39-byte cast, actual u32 overflow and short-slice fixtures verify adapter
+ownership, without claiming those production branches ran. Returned variant,
+Display/immediate-source and diagnostic correlation can change; use typed
+class/source traversal. Zerocopy's existing std feature is required for its
+native StdError on MSRV, with unchanged version/lockfile. No new lifecycle,
+limit or success behavior. See
+[guarded source evidence](validation/guarded-native-sources-2026-10-03.md).
+
 DProxy callers can select `StreamDecoder::push_preserving_errors`. Its opaque
 `DecodeOutcome` keeps ordered events, independent `DecodeFailure` observations
 and the original optional fatal DproxyError. It retains original plist/DTX/XPC

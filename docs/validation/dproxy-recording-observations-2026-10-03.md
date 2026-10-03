@@ -147,3 +147,8 @@ L01/L03/A03/platform/device requirements remain. No physical proxy/device/
 daemon/credentials/Apple operation, reference edit, push/publication, history
 rewrite or maturity upgrade. See the [public contract](../public-contract.md)
 and [preceding decoder gate](dproxy-decoder-observations-2026-10-03.md).
+
+Follow-up: [guarded source ownership](guarded-native-sources-2026-10-03.md)
+accepts the listed AFC/DTX/file/symbol adapters and preserves their production
+guards. Narrower-host overflow runtime evidence remains NOT_RUN; the original
+recording slice's historical source/binary/counts remain as recorded above.

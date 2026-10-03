@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain guarded AFC/DTX/FileService/symbol conversion sources through existing
+  IO variants with a received-data Protocol role and safe fixed context.
+  Own AFC's original cast bytes on error and enable zerocopy's existing std
+  feature for MSRV; preserve guards, wire and successful borrowed decoding.
+
 - Add DProxy recorder/proxy callbacks that deliver owned decode failures before
   fatal returns or event-write errors. Use them in CLI debug diagnostics with
   metadata only, and return original IO errors from event/status stderr writes

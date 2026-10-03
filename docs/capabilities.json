@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-guarded-native-sources-37b09e0",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Private actual 39-byte zerocopy CastError ownership, native u32 overflow and short-slice received adapter, existing AFC/symbol u64::MAX host guards, public AfcClient list_dir joined owned duplex request/EOF, minimum afc/dtx/fileservice/fetchsymbols and restored MSRV"],
+      "required_state": ["Six adapters are guarded on every host; only AFC entire_len and symbol count can overflow on narrower usize. No production native-failure branch ran on 64-bit; private fixtures are adapter ownership evidence. Narrower-host conditional assertions compiled but were not run. Missing-std E0277 is a dependency/MSRV compile condition, not behavior coverage. No physical device/daemon/credentials/Apple action or remote cleanup/retry/reuse certification"],
+      "tested_commit": "37b09e0bd822bce725e74a01a78eedaeceb4688e",
+      "date": "2026-10-03",
+      "location": "docs/validation/guarded-native-sources-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 eight original received cast/integer/slice adapters retain native sources through existing Io/private fixed context; InvalidData records received Protocol role with optional full u64, AFC map_src owns original bytes only on failure. Public families/fields/root/core features/classifier/layouts and guard/read/allocation/wire/success stay; returned variant/Display/source migration documented. Existing zerocopy std enabled for MSRV without version/lock change. Four internal/one external tests added; first full 2073 Rust/13 Python PASS. Other A02/lifecycle/platform/device work remains, no maturity upgrade."
+    },
+    {
       "id": "linux-dproxy-recording-observations-4dda7a2",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

@@ -4807,3 +4807,59 @@ A02/第三类/总体 goal active，第四类未开始，全部 31 主任务及�
 其他 typed guards/created outcomes/stream/JSON/callback/binding；L01/L03/A03/
 platform/device 条件保持。无 physical proxy/device/daemon/credentials/Apple
 action、reference edit、push/publication、历史改写或 maturity upgrade。
+
+### 大类 3：A02 guarded AFC/DTX/file/symbol 原始来源交付（2026-10-03）
+
+实现与受测提交：`37b09e0bd822bce725e74a01a78eedaeceb4688e`，基线
+`e6e274ea175e327f00b8abb337bda69c7491b430`；分支保持
+`feat/device-service-updates-20260927`。
+[专题证据](validation/guarded-native-sources-2026-10-03.md)记录原生所有权与可达性。
+
+八个原生转换 adapter（AFC5、DTX1、FileService1、symbols1）从文本 Protocol
+转为既有 Io/private received context：InvalidData、固定阶段、optional full-width
+declared u64，分类保持 Protocol。AFC 使用 zerocopy map_src 保存原 CastError
+kind/bytes 的 Box<[u8]>；仅失败复制调用方固定40字节，成功 borrowed decode保持。
+Debug 不打印 native payload，显式来源仍受隐私合同约束。
+
+六处在当前守卫下任何平台均不可达：header sizeof40/align1、四处固定长度
+slice，以及 AFC this_len（先 this<=entire，且 entire 已成功转 usize）。
+只有 AFC entire_len 与符号 count 可能在 narrower usize 失败。本64位环境
+八处 production native failure 均未运行；u64::MAX 测试走既有 frame/count ceiling。
+私有39字节 CastError fixture 验证所有权，真实 u32 overflow/七字节 slice 验证
+generic received adapter，不冒充 production branch coverage。32位条件测试分支已
+编译但未执行，runtime证据继续 NOT_RUN。
+
+七个源文件231 insertions/27 deletions，新增四内部/一external测试。整个生产
+body只归一化八个callback并去掉新增private helper后与baseline一致；guards/
+read/order/allocations/status/magic/limits/wire/success、原测试与public families/
+fields/signatures/root/core feature list/classifier/layouts/H2/XPC保持。对应错误的
+returned variant/Display/immediate-source/diagnostic可能变化；按 typed class/source
+迁移。既有 zerocopy 0.8 std feature 为MSRV原生StdError所需；暂时关闭后最低
+afc check真实E0277/exit101，恢复后同check exit0。该失败是依赖编译条件，不是
+behavior negative control；无版本或lockfile变化。
+
+日志 `/tmp/ios-a02-guarded-sources-`：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 新内部 all/min combination | 4/4 PASS |
+| AFC/DTX/fileservice/symbol | 20/46/18/11 PASS |
+| Public all/min combination | 37/17 PASS；owned joined duplex真实request/EOF，1秒有界 |
+| restored最低afc MSRV / strict core Clippy | terminal exit0 / exit0 |
+| 首次canonical full | terminal exit0；2073 Rust/13 Python PASS、0FAIL、2既有ignored，14 Rust groups |
+
+Full是第11节统一入口，Python3.12.13：fmt/check/strict workspace Clippy/MSRV、
+66feature/四组、7+7doctest/三snippets、C ABI/malformed/checked list、3.12wheel/
+sdist、53tooling/118help/38raw/五host/22device NOT_RUN/15CLI/三backup合同均PASS。
+未单独重跑Chromium或安装3.9/3.13。source全程冻结，无live handles；约55GiB
+narrow后、34 GiB结束，未cleanup/未storage failure。
+source diff SHA256 `859736faeb608d2c6aa836d05ba58515c50488348d8f30a1194e1f16d5e1a277`；
+ios0.1.13 debug SHA256 `a3820d7a3c9009b4bfe32ea910316c81ec8a54b2bdaf5519041097fd6183fbba`。
+八文档另行收尾，七MD/175 local links与hash/whitespace通过；118capabilities/
+implementation/maturity/history保持，仅增加一条明确host entry。
+
+A02/第三类/总体goal active，第四类未开始，全部31主任务与所有子任务保持。
+下一为mDNS/CDTunnel及剩余connection native causes，再继续typed decisions/
+stream/JSON/callback/binding；L01/L03/A03/platform/device条件保留。未操作物理
+设备/daemon/credentials/Apple、未修改reference、未push/publish/rewrite history或
+升级成熟度。

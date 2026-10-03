@@ -273,6 +273,23 @@ and lifecycle/retry semantics are separate work. The
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
+The eight guarded AFC/DTX/FileService/symbol adapters use existing Io variants
+to retain original cast/integer/slice sources, with Protocol classification
+through InvalidData and safe private context. Their public exhaustive families,
+fields/signatures/root exports/core feature list/classifier and wire stay.
+Returned variant/Display/immediate-source and diagnostic correlation can change;
+migrate string/Protocol-variant assumptions to typed class and bounded sources.
+The AFC cast owns its original bytes through zerocopy map_src only on failure.
+
+Zerocopy's existing std dependency feature is enabled for the native StdError
+implementation on MSRV; version/lockfile stay. Six native failure branches are
+guarded on all hosts; only entire_len and symbols count need narrower-host
+runtime evidence. Current 64-bit consumer tests preserve frame rejection and
+local duplex EOF; private native fixtures do not certify those production
+branches or remote cleanup/reuse. No new public method/type/field, deadline,
+retry or allocation policy. See the
+[guarded source acceptance](validation/guarded-native-sources-2026-10-03.md).
+
 The additive `dproxy::StreamDecoder::push_preserving_errors` returns opaque
 `DecodeOutcome`. Events, independent original errors and the optional fatal
 error can coexist. Borrow them through `events`/`failures`/`fatal_error`, or
