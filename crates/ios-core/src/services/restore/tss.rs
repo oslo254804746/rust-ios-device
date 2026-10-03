@@ -8,6 +8,11 @@ use super::error_mapping::{native_error, native_http};
 use super::RestoreError;
 use crate::xpc::XpcValue;
 
+mod batch;
+pub use batch::{TssBatchFailure, TssBatchFailureKind, TssBatchOutcome, TssBatchPhase};
+
+#[cfg(test)]
+mod batch_contract_tests;
 #[cfg(test)]
 mod native_source_contract_tests;
 
@@ -180,43 +185,129 @@ fn validate_rider(rider: &TssRider) -> Result<(), RestoreError> {
 /// Sign all riders in one POST and retry individually if the combined request fails.
 /// The signer callback permits an offline fake TSS service. Missing tickets remain
 /// failures for the reactive signing path instead of being treated as success.
+/// This legacy result discards attempt errors; use prefetch_tss_batch_preserving_errors
+/// to observe those errors, including combined failures recovered by fallback.
 pub async fn prefetch_tss_batch<F, Fut>(
     riders: &[TssRider],
-    mut signer: F,
+    signer: F,
 ) -> Result<TssBatchResult, RestoreError>
 where
     F: FnMut(plist::Dictionary) -> Fut,
     Fut: std::future::Future<Output = Result<plist::Dictionary, RestoreError>>,
 {
+    Ok(prefetch_tss_batch_impl(riders, signer, false)
+        .await?
+        .into_result())
+}
+
+/// Sign with the legacy fallback policy while retaining independent failures.
+///
+/// Invalid riders return Err before invoking the signer. Recovered combined
+/// failures remain observable even if every final ticket succeeds. Missing
+/// tickets have a typed observation without a guessed native error/class.
+/// Errors are available to Rust callers; do not export their payloads as logs.
+pub async fn prefetch_tss_batch_preserving_errors<F, Fut>(
+    riders: &[TssRider],
+    signer: F,
+) -> Result<TssBatchOutcome, RestoreError>
+where
+    F: FnMut(plist::Dictionary) -> Fut,
+    Fut: std::future::Future<Output = Result<plist::Dictionary, RestoreError>>,
+{
+    prefetch_tss_batch_impl(riders, signer, true).await
+}
+
+async fn prefetch_tss_batch_impl<F, Fut>(
+    riders: &[TssRider],
+    mut signer: F,
+    preserve_errors: bool,
+) -> Result<TssBatchOutcome, RestoreError>
+where
+    F: FnMut(plist::Dictionary) -> Fut,
+    Fut: std::future::Future<Output = Result<plist::Dictionary, RestoreError>>,
+{
     let mut result = TssBatchResult::default();
+    let mut failures = Vec::new();
     if riders.is_empty() {
-        return Ok(result);
+        return Ok(TssBatchOutcome::new(result, failures));
     }
     for rider in riders {
         validate_rider(rider)?;
     }
-    let combined = build_tss_batch_request(riders);
-    if let Ok(request) = combined {
-        if let Ok(response) = signer(request).await {
-            for rider in riders {
-                if !store_ticket(&mut result, rider, &response) {
-                    match signer(rider.request.clone()).await {
-                        Ok(individual) if store_ticket(&mut result, rider, &individual) => {}
-                        _ => result.failed_updaters.push(rider.updater.clone()),
+    match build_tss_batch_request(riders) {
+        Ok(request) => match signer(request).await {
+            Ok(response) => {
+                for (index, rider) in riders.iter().enumerate() {
+                    if !store_ticket(&mut result, rider, &response) {
+                        record_batch_failure(
+                            &mut failures,
+                            preserve_errors,
+                            TssBatchPhase::SignCombinedRequest,
+                            Some(index),
+                            None,
+                        );
+                        match signer(rider.request.clone()).await {
+                            Ok(individual) if store_ticket(&mut result, rider, &individual) => {}
+                            reply => {
+                                record_batch_failure(
+                                    &mut failures,
+                                    preserve_errors,
+                                    TssBatchPhase::SignIndividualRequest,
+                                    Some(index),
+                                    reply.err(),
+                                );
+                                result.failed_updaters.push(rider.updater.clone());
+                            }
+                        }
                     }
                 }
+                return Ok(TssBatchOutcome::new(result, failures));
             }
-            return Ok(result);
-        }
+            Err(error) => record_batch_failure(
+                &mut failures,
+                preserve_errors,
+                TssBatchPhase::SignCombinedRequest,
+                None,
+                Some(error),
+            ),
+        },
+        Err(error) => record_batch_failure(
+            &mut failures,
+            preserve_errors,
+            TssBatchPhase::BuildCombinedRequest,
+            None,
+            Some(error),
+        ),
     }
-    for rider in riders {
+    for (index, rider) in riders.iter().enumerate() {
         validate_rider(rider)?;
         match signer(rider.request.clone()).await {
             Ok(response) if store_ticket(&mut result, rider, &response) => {}
-            _ => result.failed_updaters.push(rider.updater.clone()),
+            reply => {
+                record_batch_failure(
+                    &mut failures,
+                    preserve_errors,
+                    TssBatchPhase::SignIndividualRequest,
+                    Some(index),
+                    reply.err(),
+                );
+                result.failed_updaters.push(rider.updater.clone());
+            }
         }
     }
-    Ok(result)
+    Ok(TssBatchOutcome::new(result, failures))
+}
+
+fn record_batch_failure(
+    failures: &mut Vec<TssBatchFailure>,
+    preserve_errors: bool,
+    phase: TssBatchPhase,
+    rider_index: Option<usize>,
+    error: Option<RestoreError>,
+) {
+    if preserve_errors {
+        failures.push(TssBatchFailure::new(phase, rider_index, error));
+    }
 }
 
 fn store_ticket(

@@ -10,6 +10,84 @@ use ios_core::{
 
 #[cfg(feature = "restore")]
 #[tokio::test]
+async fn root_tss_batch_observations_keep_legacy_literals_and_owned_native_errors() {
+    use ios_core::{
+        restore::{
+            tss::{
+                prefetch_tss_batch_preserving_errors, sign_tss_request_with_client,
+                TssBatchFailureKind, TssBatchPhase, TssBatchResult, TssRider,
+            },
+            RestoreError,
+        },
+        ErrorClass,
+    };
+    use std::{error::Error, future::ready};
+    let legacy = TssBatchResult {
+        tickets: HashMap::new(),
+        failed_updaters: vec![],
+    };
+    let TssBatchResult {
+        tickets,
+        failed_updaters,
+    } = legacy;
+    assert!(tickets.is_empty() && failed_updaters.is_empty());
+    let rider = TssRider {
+        updater: "owned-private".into(),
+        ticket_key: "A,Ticket".into(),
+        nonce: vec![1],
+        request: plist::Dictionary::from_iter([("@A,Ticket", plist::Value::Boolean(true))]),
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let request =
+        plist::Dictionary::from_iter([("owned-private", plist::Value::Uid(plist::Uid::new(1)))]);
+    let original = sign_tss_request_with_client(&client, "http://127.0.0.1:1", &request)
+        .await
+        .unwrap_err();
+    let mut original = Some(original);
+    let outcome = prefetch_tss_batch_preserving_errors(&[rider], |_| {
+        ready(
+            original
+                .take()
+                .map_or_else(|| Ok(plist::Dictionary::new()), Err),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(outcome.result().failed_updaters, ["owned-private"]);
+    assert_eq!(outcome.failures().len(), 2);
+    assert_eq!(
+        outcome.failures()[0].phase(),
+        TssBatchPhase::SignCombinedRequest
+    );
+    assert_eq!(outcome.failures()[0].kind(), TssBatchFailureKind::Error);
+    assert_eq!(outcome.failures()[0].rider_index(), None);
+    assert_eq!(
+        outcome.failures()[0].error_class(),
+        Some(ErrorClass::InvalidInput)
+    );
+    assert_eq!(
+        outcome.failures()[1].kind(),
+        TssBatchFailureKind::MissingTicket
+    );
+    assert_eq!(outcome.failures()[1].rider_index(), Some(0));
+    assert!(outcome.failures()[1].error_class().is_none());
+    assert!(!format!("{outcome:?} {:?}", outcome.failures()).contains("owned-private"));
+    let (_, mut failures) = outcome.into_parts();
+    let original = failures.remove(0).into_error().unwrap();
+    let family = match &original {
+        RestoreError::Io(_) => "io",
+        RestoreError::Plist(_) => "plist",
+        RestoreError::Protocol(_) => "protocol",
+    };
+    assert_eq!(family, "io");
+    let RestoreError::Io(io) = original else {
+        unreachable!()
+    };
+    assert!(io.source().unwrap().is::<plist::Error>());
+}
+
+#[cfg(feature = "restore")]
+#[tokio::test]
 async fn root_restore_local_package_and_tss_keep_exhaustive_native_sources() {
     use ios_core::{
         restore::{
