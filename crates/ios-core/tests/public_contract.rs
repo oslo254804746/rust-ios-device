@@ -8,6 +8,57 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "restore")]
+#[tokio::test]
+async fn root_restore_local_package_and_tss_keep_exhaustive_native_sources() {
+    use ios_core::{
+        restore::{
+            preflight::{IpswIdentitySelector, IpswPreflight},
+            tss::sign_tss_request_with_client,
+            RestoreError,
+        },
+        ErrorClass,
+    };
+    use std::{error::Error, io::Cursor};
+    fn family(error: &RestoreError) -> &str {
+        match error {
+            RestoreError::Io(_) => "io",
+            RestoreError::Plist(_) => "plist",
+            RestoreError::Protocol(_) => "protocol",
+        }
+    }
+    let error = IpswPreflight::open(
+        Cursor::new(b"owned-private malformed"),
+        IpswIdentitySelector {
+            board_id: 1,
+            chip_id: 2,
+            device_class: "owned",
+            restore_behavior: "Update",
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(family(&error), "io");
+    assert_eq!(ios_core::classify_error(&error), ErrorClass::InvalidInput);
+    let RestoreError::Io(outer) = &error else {
+        unreachable!()
+    };
+    assert!(outer.source().unwrap().is::<zip::result::ZipError>());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let request =
+        plist::Dictionary::from_iter([("owned-private", plist::Value::Uid(plist::Uid::new(1)))]);
+    let error = sign_tss_request_with_client(&client, "http://127.0.0.1:1", &request)
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(ios_core::classify_error(&error), ErrorClass::InvalidInput);
+    let RestoreError::Io(outer) = &error else {
+        unreachable!()
+    };
+    assert!(outer.source().unwrap().is::<plist::Error>());
+    assert!(!format!("{error:?}").contains("owned-private"));
+}
+
 #[tokio::test]
 async fn root_mobilebackup2_timeout_evidence_keeps_family_and_issuer_scope() {
     use ios_core::backup2::{

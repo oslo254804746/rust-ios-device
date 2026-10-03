@@ -6,8 +6,12 @@ use std::io::{Read, Seek};
 use bytes::Bytes;
 use indexmap::IndexMap;
 
+use super::error_mapping::{native_error, native_io, native_zip};
 use super::RestoreError;
 use crate::xpc::XpcValue;
+
+#[cfg(test)]
+mod native_source_contract_tests;
 
 const MAX_PREFLIGHT_FIRMWARE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLIST_DEPTH: usize = 64;
@@ -39,8 +43,7 @@ impl<R: Read + Seek> IpswPreflight<R> {
                 "invalid IPSW identity selector".into(),
             ));
         }
-        let mut archive = zip::ZipArchive::new(reader)
-            .map_err(|e| RestoreError::Protocol(format!("open IPSW: {e}")))?;
+        let mut archive = zip::ZipArchive::new(reader).map_err(|e| native_zip("open IPSW", e))?;
         if archive.len() > MAX_IPSW_ENTRIES {
             return Err(RestoreError::Protocol(
                 "IPSW has too many ZIP entries".into(),
@@ -51,8 +54,13 @@ impl<R: Read + Seek> IpswPreflight<R> {
             "BuildManifest.plist",
             MAX_BUILD_MANIFEST_BYTES,
         )?;
-        let root = plist::from_bytes::<plist::Value>(&manifest)
-            .map_err(|e| RestoreError::Protocol(format!("parse BuildManifest.plist: {e}")))?;
+        let root = plist::from_bytes::<plist::Value>(&manifest).map_err(|e| {
+            native_error(
+                std::io::ErrorKind::InvalidInput,
+                "parse IPSW BuildManifest.plist",
+                e,
+            )
+        })?;
         let identities = root
             .as_dictionary()
             .and_then(|value| value.get("BuildIdentities"))
@@ -159,7 +167,7 @@ fn read_zip_member<R: Read + Seek>(
     for index in 0..archive.len() {
         let file = archive
             .by_index_raw(index)
-            .map_err(|e| RestoreError::Protocol(format!("inspect IPSW ZIP entry: {e}")))?;
+            .map_err(|e| native_zip("inspect IPSW ZIP entry", e))?;
         if !seen.insert(file.name().to_string()) {
             return Err(RestoreError::Protocol("duplicate IPSW ZIP member".into()));
         }
@@ -171,7 +179,7 @@ fn read_zip_member<R: Read + Seek>(
         found.ok_or_else(|| RestoreError::Protocol(format!("missing IPSW member {path}")))?;
     let file = archive
         .by_index(index)
-        .map_err(|e| RestoreError::Protocol(format!("open IPSW member {path}: {e}")))?;
+        .map_err(|e| native_zip("open IPSW member", e))?;
     if file.is_dir() || file.size() > limit as u64 {
         return Err(RestoreError::Protocol(format!(
             "IPSW member {path} exceeds size limit"
@@ -181,7 +189,7 @@ fn read_zip_member<R: Read + Seek>(
     let read_limit = (limit as u64).saturating_add(1);
     file.take(read_limit)
         .read_to_end(&mut bytes)
-        .map_err(|e| RestoreError::Protocol(format!("read IPSW member {path}: {e}")))?;
+        .map_err(|e| native_io("read IPSW member", e))?;
     if bytes.len() > limit {
         return Err(RestoreError::Protocol(format!(
             "IPSW member {path} exceeds size limit"
@@ -339,8 +347,13 @@ pub fn firmware_response_messages<'a>(
             "DataChunkSize must be positive".into(),
         ));
     }
-    let data_size = i64::try_from(firmware.len())
-        .map_err(|_| RestoreError::Protocol("FirmwareData exceeds signed DataSize".into()))?;
+    let data_size = i64::try_from(firmware.len()).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidInput,
+            "convert firmware DataSize",
+            error,
+        )
+    })?;
     let chunk_size = requested_chunk_size.min(256 * 1024);
     let header = XpcValue::Dictionary(IndexMap::from([
         ("FirmwareResponseData".into(), XpcValue::Dictionary(header)),

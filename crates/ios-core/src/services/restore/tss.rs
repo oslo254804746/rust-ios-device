@@ -4,8 +4,12 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
 
+use super::error_mapping::{native_error, native_http};
 use super::RestoreError;
 use crate::xpc::XpcValue;
+
+#[cfg(test)]
+mod native_source_contract_tests;
 
 const TSS_URL: &str = "https://gs.apple.com/TSS/controller?action=2";
 const MAX_TSS_RESPONSE: usize = 16 * 1024 * 1024;
@@ -246,10 +250,15 @@ pub async fn sign_tss_request(
 ) -> Result<plist::Dictionary, RestoreError> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|error| RestoreError::Protocol(format!("TSS client setup failed: {error}")))?;
+        .timeout(Duration::from_secs(120));
+    let client = build_tss_client(client)?;
     sign_tss_request_with_client(&client, TSS_URL, request).await
+}
+
+fn build_tss_client(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, RestoreError> {
+    builder
+        .build()
+        .map_err(|error| native_http("build restore TSS client", error))
 }
 
 /// Sign against a specified endpoint, useful for local protocol simulation.
@@ -263,8 +272,13 @@ pub async fn sign_tss_request_with_client(
     if body.overflowed {
         return Err(RestoreError::Protocol("TSS request exceeds 4 MiB".into()));
     }
-    encoded
-        .map_err(|error| RestoreError::Protocol(format!("TSS request encode failed: {error}")))?;
+    encoded.map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidInput,
+            "encode restore TSS request",
+            error,
+        )
+    })?;
     let mut response = client
         .post(url)
         .header("Content-Type", "text/xml; charset=\"utf-8\"")
@@ -272,7 +286,7 @@ pub async fn sign_tss_request_with_client(
         .body(body.bytes)
         .send()
         .await
-        .map_err(|error| RestoreError::Protocol(format!("TSS HTTP request failed: {error}")))?;
+        .map_err(|error| native_http("send restore TSS request", error))?;
     if !response.status().is_success() {
         return Err(RestoreError::Protocol(format!(
             "TSS returned HTTP {}",
@@ -283,7 +297,7 @@ pub async fn sign_tss_request_with_client(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| RestoreError::Protocol(format!("TSS response read failed: {error}")))?
+        .map_err(|error| native_http("read restore TSS response", error))?
     {
         if chunk.len() > MAX_TSS_RESPONSE - body.len() {
             return Err(RestoreError::Protocol("TSS response exceeds 16 MiB".into()));
@@ -325,8 +339,13 @@ impl Write for LimitedWriter {
 }
 
 fn parse_tss_response(body: &[u8]) -> Result<plist::Dictionary, RestoreError> {
-    let body = std::str::from_utf8(body)
-        .map_err(|_| RestoreError::Protocol("TSS response is not UTF-8".into()))?;
+    let body = std::str::from_utf8(body).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode restore TSS UTF-8",
+            error,
+        )
+    })?;
     let status = body
         .split('&')
         .find_map(|field| field.strip_prefix("STATUS="));
@@ -337,8 +356,13 @@ fn parse_tss_response(body: &[u8]) -> Result<plist::Dictionary, RestoreError> {
         .find("<?xml")
         .or_else(|| body.find("<plist"))
         .ok_or_else(|| RestoreError::Protocol("TSS response has no plist".into()))?;
-    let value: plist::Value = plist::from_bytes(&body.as_bytes()[start..])
-        .map_err(|error| RestoreError::Protocol(format!("TSS response plist invalid: {error}")))?;
+    let value: plist::Value = plist::from_bytes(&body.as_bytes()[start..]).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode restore TSS plist",
+            error,
+        )
+    })?;
     value
         .into_dictionary()
         .ok_or_else(|| RestoreError::Protocol("TSS response is not a dictionary".into()))

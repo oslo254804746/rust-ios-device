@@ -9,8 +9,15 @@ use crate::xpc::{XpcMessage, XpcValue};
 use indexmap::IndexMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+mod error_mapping;
 pub mod preflight;
 pub mod tss;
+use error_mapping::{native_h2, native_xpc};
+
+#[cfg(test)]
+mod native_source_contract_tests;
+#[cfg(test)]
+mod test_assets;
 
 /// RSD service name for RestoreRemoteServices.
 pub const SERVICE_NAME: &str = "com.apple.RestoreRemoteServices.restoreserviced";
@@ -194,7 +201,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
     pub async fn connect(stream: S) -> Result<Self, RestoreError> {
         let mut framer = H2Framer::connect(stream)
             .await
-            .map_err(|err| RestoreError::Protocol(format!("H2 error: {err}")))?;
+            .map_err(|err| native_h2("connect restore H2", err))?;
         bootstrap_remote_xpc(&mut framer).await?;
         Ok(Self {
             framer,
@@ -329,11 +336,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             msg_id: self.next_msg_id,
             body: Some(body),
         })
-        .map_err(|err| RestoreError::Protocol(format!("restore request encode failed: {err}")))?;
+        .map_err(|err| native_xpc("encode restore request", err))?;
         self.framer
             .write_client_server(&request)
             .await
-            .map_err(|err| RestoreError::Protocol(format!("restore request failed: {err}")))?;
+            .map_err(|err| native_h2("send restore request", err))?;
         self.next_msg_id += 1;
         let response = self.recv_control_message().await?;
         response_dict(response)
@@ -359,25 +366,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
                 return Ok(message);
             }
 
-            let frame = self.framer.read_next_data_frame().await.map_err(|err| {
-                RestoreError::Protocol(format!("restore response read failed: {err}"))
-            })?;
+            let frame = self
+                .framer
+                .read_next_data_frame()
+                .await
+                .map_err(|err| native_h2("read restore response", err))?;
             if frame.is_end_stream() && frame.payload.is_empty() {
                 continue;
             }
             if !frame.is_remote_xpc_control_stream() {
                 continue;
             }
-            self.control_messages.push(&frame.payload).map_err(|err| {
-                RestoreError::Protocol(format!("restore response buffer failed: {err}"))
-            })?;
+            self.push_control_message(&frame.payload)?;
         }
+    }
+
+    fn push_control_message(&mut self, payload: &[u8]) -> Result<(), RestoreError> {
+        self.control_messages
+            .push(payload)
+            .map_err(|err| native_xpc("buffer restore response", err))
     }
 
     fn try_take_pending_control_message(&mut self) -> Result<Option<XpcMessage>, RestoreError> {
         self.control_messages
             .try_next()
-            .map_err(|err| RestoreError::Protocol(format!("restore response decode failed: {err}")))
+            .map_err(|err| native_xpc("decode restore response", err))
     }
 }
 
@@ -453,21 +466,15 @@ where
                 msg_id: 0,
                 body: Some(XpcValue::Dictionary(IndexMap::new())),
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 1 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 1", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 1 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 1", err))?;
 
     framer
         .open_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap open stream 3 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("open restore bootstrap stream 3", err))?;
 
     framer
         .write_client_server(
@@ -476,14 +483,10 @@ where
                 msg_id: 0,
                 body: None,
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 2 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 2", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 2 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 2", err))?;
 
     framer
         .write_server_client(
@@ -493,14 +496,10 @@ where
                 msg_id: 0,
                 body: None,
             })
-            .map_err(|err| {
-                RestoreError::Protocol(format!("remote XPC bootstrap encode step 3 failed: {err}"))
-            })?,
+            .map_err(|err| native_xpc("encode restore bootstrap step 3", err))?,
         )
         .await
-        .map_err(|err| {
-            RestoreError::Protocol(format!("remote XPC bootstrap step 3 failed: {err}"))
-        })?;
+        .map_err(|err| native_h2("send restore bootstrap step 3", err))?;
 
     Ok(())
 }
