@@ -4454,3 +4454,92 @@ observation API；read-only next-batch-observation/next-converters 日志同前�
 其他 AFC/DTX/file/symbol/app/test/ZIP/GPX conversions、DProxy text、typed guards/
 created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/platform/device
 条件继续；不升级 maturity、推送/发布、改写历史或修改 reference checkout。
+
+### 大类 3：A02 TSS 批量回退失败观察交付（2026-10-03）
+
+上轮 `d1a210f2ff466ae8f9e5f281e87ebb69823092fa` / 文档
+`8d5dd2d0b6a139207765e4b05763d589c3e2f459` 后工作区 clean。本轮 PROGRESS，
+非连续阻塞；分支 `feat/device-service-updates-20260927`。实现
+`17f31a3efe91a77f6397c469cd3fd4ee3a65c0a4`，Linux x86_64，Rust 1.97.1 /
+MSRV 1.80.1，workspace Python 3.12.13。专题
+[TSS batch observations](validation/tss-batch-observations-2026-10-03.md)。
+
+确认 legacy prefetch_tss_batch 在 combined build/sign 与 individual fallback
+失败后只保留 failed_updaters，原错误及 recovered failures 无法观察。新增
+prefetch_tss_batch_preserving_errors，与 legacy 共享算法，返回 private-fields
+TssBatchOutcome / TssBatchFailure，以及从新增版本开始 non-exhaustive 的
+phase/kind enums。三阶段区分 BuildCombinedRequest / SignCombinedRequest /
+SignIndividualRequest；Error 保留原 RestoreError、typed class 与 native chain，
+MissingTicket 区分成功响应缺失/空/非 data 票据，无虚构 error/class。Whole
+combined failure index None，per-rider input index 保留 duplicate names 区别。
+独立尝试不拼成伪造的一条 Error::source chain。
+
+result/failures getters 借用，into_parts / into_error 保留独立 owned causes；
+into_result 明确丢弃观察。Recovered error/missing ticket 仍可观察，即使最终
+全部 ticket 成功；最终失败沿用 result.failed_updaters。Empty input 不调用
+signer，invalid riders 在任何 signer 前 Err。Debug 只含 metadata/counts，
+explicit original errors 遵守 source privacy，未导出为 CLI/HTTP/C/Python。
+
+四个 source files（tss.rs/new batch.rs/new batch_contract_tests.rs/public
+consumer），760 insertions/15 deletions。既有 rider/ticket/result constructible
+fields、RestoreError 三 variants、legacy signature/root/features/deps/classifier
+保持；merge/UUID/AP flags/validation/store/nonce/HTTP parsing/limits 与旧 tests
+byte-identical。Baseline extraction 的旧算法只 outcome return wrapping 后
+整份相同；最终 control-flow review 和五个分支情景检查两个入口 calls/order。
+Legacy 不分配 observations storage，忽略的 signer errors 在下一 call 前释放；
+new path 持有至 consume/drop，不对 caller-owned error payload 新设大小上限。
+无新 timeout/retry/cancel/rollback/cleanup/reuse 合同。
+
+Source diff SHA256
+`d3d10bbe8dd576ea94121d35ce77bf69583a86716ace47b619ad46844dccbf05`，
+四文件包含 staged new files。code-audit-final/baseline-audit/source-diff/original/
+baseline 日志统一 `/tmp/ios-a02-tss-batch-` 前缀；一条临时 audit assertion 的
+single-line formatting 假设以 whitespace normalization 修正，accepted source
+未变化。源码 full 前冻结并保持至文档收尾。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 新增合同 | 12 internal / 1 external |
+| all-feature Restore | after-final.log 56 PASS |
+| all-feature public consumer | public.log 32 PASS |
+| minimum restore | minimal.log 56 PASS |
+| minimum public consumer | public-minimal.log 16 PASS |
+| Core strict Clippy | clippy.log exit 0 |
+| 第 11 节 full | 首次 full.log terminal 0，2030 Rust / 13 Python，0 FAIL，2 既有 ignored |
+
+实际 owned file-open OS NotFound/code、pending future 的 Tokio Elapsed、received
+TSS UTF-8、local plist UID source 保留；real loopback reqwest timeout 在 fallback
+成功后仍可读取。Fixture timer 不是新 public TSS issued deadline。沿用 no_proxy
+50 ms HTTP helper，两 futures 2 s 内 join，peer tolerates reset，不声称逐 peer
+EOF/设备 cleanup。缺失/空/非 data、merge conflict、duplicates、六 rider guards、
+empty/full success、nonce exact/mismatch、private Debug、counted error drop 与
+public unchanged construct/destructure/exhaustive family/owned native take 验证。
+
+负控制使用新 outcome prototype 后的整份旧 extraction，观察未接入：
+before-compiled.log 3 PASS / 8 FAIL，before-public.log 0 PASS / 1 FAIL，均缺失
+failure observations；先行 result/call/validation checks 通过。before.log 与
+before-final.log 两次 preliminary compile 因 key/type inference / trait-object
+fn coercion 失败，修正后才运行 behavioral controls，不计 regressions。最后
+新增 destruction test 未另跑旧 baseline；无 guard/budget/lint 削弱。
+
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 features/四 groups、7+7
+doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI /
+3 backup contracts。14 Rust result groups 与独立 Python host group 分别计数，
+full-counts.log 可核对。Tested ios 0.1.13 debug SHA256
+`471a5dec1fbf907f30e86684fcec1e388368b9a413cc6c72722a421b107d8a3f`。
+Full launch / finish 约 3.0 / 2.4 GiB free，无 storage failure/cleanup；无额外
+Chromium/installed 3.9/3.13。文档审查独立于 accepted full/source。
+
+文档收尾更新 CHANGELOG/error/public/quality/catalog/roadmap/new topic/previous
+restore follow-up 八文件；118 capability records、历史 evidence 和 maturity
+保持，只增加受测 source 的 host entry。七个 changed Markdown 的 159 local
+links 有效（baseline 8d5dd2d），whitespace PASS；docs-catalog/docs-links 日志
+同前缀。
+A02/第三类/总体 goal active，第四类未开始，全部 31 主任务/子任务保留。
+下一确认 native input/source losses：AppService PID/plist、Testmanager PID、
+ZIP integers 与 GPX parser/time，read-only next-input-sources.log。AFC/DTX/file/
+symbols guarded converters、DProxy text、typed guards/created outcomes/stream/
+JSON/callback/bindings 与 L01/L03/A03/platform/device 条件继续。未使用真实
+device-generated requests/tickets/firmware/daemon/credentials/Apple operation；
+不升级 maturity、推送/发布、改写历史或编辑 reference。

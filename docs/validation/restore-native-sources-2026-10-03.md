@@ -146,3 +146,10 @@ fields or retry/nonce/wire policies. Read-only `next-batch-observation.log` and
 conversions, DProxy text, typed guards/created outcomes, stream/JSON/callback/
 binding and L01/L03/A03/platform/device work remain. No push/publication,
 history rewrite, reference checkout edit or physical restore/signing acceptance.
+
+Follow-up: [TSS batch observations](tss-batch-observations-2026-10-03.md), source
+`17f31a3efe91a77f6397c469cd3fd4ee3a65c0a4`, adds an owned preserving entry with
+independent combined/per-rider errors, typed missing tickets and input indices.
+Legacy result fields, callback order, nonce and wire policies stay. First full
+2030 Rust/13 Python PASS; this source-only host follow-up leaves the above
+native-adapter evidence and physical/lifecycle limitations intact.

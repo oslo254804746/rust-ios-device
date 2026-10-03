@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tss-batch-observations-17f31a3",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned callback TSS dictionaries and actual OS file-open/Elapsed/UTF-8/plist causes; real no-proxy loopback HTTP timeout retained after successful fallback; conflicting batch fields, missing/empty/non-data tickets, duplicate updater indices, nonce matching and callback/drop order; public constructible consumer and minimum restore"],
+      "required_state": ["Host synthetic riders/tickets and caller-supplied callbacks only. Private pending timer yields actual Tokio Elapsed, not a newly issued public TSS deadline. Joined local HTTP peer tolerates reset, not per-peer EOF proof. Negative control uses the exact extracted legacy algorithm behind the new outcome prototype. No real device-generated request/ticket/firmware/daemon/credentials/Apple operation or cleanup/retry/reuse certification"],
+      "tested_commit": "17f31a3efe91a77f6397c469cd3fd4ee3a65c0a4",
+      "date": "2026-10-03",
+      "location": "docs/validation/tss-batch-observations-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 additive preserving batch API owns ordered independent errors and missing-ticket observations, including recovered failures; typed phase/kind/input indices, optional original source/class and safe Debug. Legacy fields/signatures/calls/drop behavior, request merging/validation/nonce/HTTP limits and classifier remain. First full 2030 Rust/13 Python PASS with 12 new internal and one external contract test. Other A02/lifecycle/platform/device work remains; no capability maturity upgrade."
+    },
+    {
       "id": "linux-restore-native-sources-d1a210f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

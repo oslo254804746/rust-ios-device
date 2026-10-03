@@ -224,13 +224,33 @@ TSS adapters now return Io with original objects instead of Protocol strings.
 IO kinds/categories survive; local package/serialization errors become input,
 received codecs stay protocol, HTTP expiry becomes timeout and other HTTP/XPC
 categories remain. Migrate variant/text/immediate payload matches to typed
-class and bounded source inspection. There is no new public method, enum field,
-dependency or feature. Wire, 30/120s TSS budgets, body/archive/firmware bounds,
+class and bounded source inspection. That source-retention change adds no public
+method, enum field, dependency or feature. Wire, 30/120s TSS budgets, body/archive/firmware bounds,
 identity/nonce/fallback rules and successful output stay. Legacy batch fallback
-still loses per-attempt errors behind failed updater names; its observation
-contract remains work. The
+still discards per-attempt errors behind failed updater names. The
 [restore evidence](validation/restore-native-sources-2026-10-03.md) records native
 versus injected OS faults, encoding/size review and physical-operation limits.
+
+The additive `restore::tss::prefetch_tss_batch_preserving_errors` returns an
+opaque `TssBatchOutcome`. `result()` borrows the existing `TssBatchResult`;
+`failures()` observes independent attempts in encounter order. New phase/kind
+enums start non-exhaustive; retain a future-variant branch. `rider_index()` refers
+to the supplied input, preserving duplicate-name distinctions. Original errors
+and their bounded typed classes are optional; a missing, empty or non-data
+ticket has neither a fabricated error nor a guessed class. Recovered attempts
+remain visible even when all final tickets succeed. Use `failed_updaters` for
+the existing final failure semantics. `into_parts()` retains owned observations,
+`into_error()` takes a native error, and `into_result()` deliberately drops them.
+
+Existing constructible rider/ticket/result fields, exhaustive RestoreError,
+legacy signatures, request/fallback order, UUID merging and exact nonce checks
+stay. The legacy path allocates no observation storage and releases ignored
+signer errors before the next call. The new path holds those errors until
+consumed/dropped; their payload sizes are supplied by the caller's signer.
+Debug exposes metadata/counts only, while explicit error getters follow source
+privacy rules. No CLI/HTTP/C/Python output change or new cleanup/retry promise.
+The [batch observation evidence](validation/tss-batch-observations-2026-10-03.md)
+records host, minimum-feature and downstream-consumer acceptance.
 
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from

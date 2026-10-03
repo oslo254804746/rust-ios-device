@@ -205,11 +205,32 @@ The three-variant public family, signatures/fields/features/classifier, H2/XPC
 wire/state and TSS/IPSW validation/limits stay. Request/bootstrap encoding and
 firmware size conversion include source-reviewed failure branches; host checks
 do not manufacture giant inputs. Direct status/shape/size guards retain existing
-Protocol outcomes. TSS batch/per-updater fallback still intentionally consumes
-errors into failed updater names and needs a separate preserving observation
-API; this migration does not fix that partial-result contract or certify retry,
-connection reuse, restore execution or Apple signing. See the
+Protocol outcomes. The legacy TSS batch/per-updater API intentionally consumes
+errors into failed updater names; this source-retention migration alone does not
+fix that partial-result contract or certify retry, connection reuse, restore
+execution or Apple signing. See the
 [restore source evidence](validation/restore-native-sources-2026-10-03.md).
+
+TSS callers can now select `prefetch_tss_batch_preserving_errors` to retain
+failures from `BuildCombinedRequest`, `SignCombinedRequest` and
+`SignIndividualRequest`. `TssBatchFailureKind::Error` exposes the original
+RestoreError and its source chain/class without reclassification by text.
+`MissingTicket` means a successful signer response lacked a nonempty data ticket;
+its error and class are None. A whole combined failure has no rider index;
+per-rider observations carry the input index, including duplicate updater names.
+These are independent attempts, not successive links in one Error::source chain.
+
+Final tickets/failed names retain the legacy semantics. Intermediate missing
+tickets and recovered combined errors remain in the ordered observations; a
+nonempty list alone does not mean final failure. Invalid riders still return Err
+before any signing, and empty input invokes no signer. `into_parts`/`into_error`
+preserve native ownership; `into_result` deliberately discards observations.
+New Debug implementations show typed metadata/counts only. Explicit original
+sources may carry private input and follow the existing redaction policy.
+The new API adds no timeout, retry, cancellation, allocation cap on caller-owned
+error payloads, rollback or cleanup guarantee. Wire/bounds/fallback and legacy
+output stay; no CLI/HTTP/binding currently consumes this new result. See
+[batch observation evidence](validation/tss-batch-observations-2026-10-03.md).
 
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `prefetch_tss_batch_preserving_errors` with owned observations of combined
+  request construction, signing failures and missing tickets, including failures
+  recovered by fallback. Preserve native error sources, typed phases and rider
+  indices with safe Debug; keep legacy result fields, call order and nonce rules.
+
 - Retain restore H2/XPC, IPSW ZIP/read/manifest and TSS HTTP/codec causes through
   existing RestoreError::Io. Preserve native IO categories, distinguish local
   package/input failures from received protocol data and HTTP timeouts, and
