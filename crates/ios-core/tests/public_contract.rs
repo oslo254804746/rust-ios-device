@@ -8,6 +8,80 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "dproxy")]
+#[test]
+fn public_dproxy_observations_preserve_sources_and_legacy_shapes() {
+    use ios_core::dproxy::{
+        DecodeFailureKind, DecodePhase, Direction, DproxyError, ProxyEvent, ProxyProtocol,
+        StreamDecoder,
+    };
+    fn family(error: &DproxyError) -> &str {
+        match error {
+            DproxyError::Io(_) => "io",
+            DproxyError::Serde(_) => "serde",
+            DproxyError::Dtx(_) => "dtx",
+            DproxyError::Protocol(_) => "protocol",
+        }
+    }
+    let ProxyEvent {
+        timestamp_ms,
+        direction,
+        protocol,
+        summary,
+        decoded,
+    } = ProxyEvent {
+        timestamp_ms: 0,
+        direction: "host->device".into(),
+        protocol: "lockdown".into(),
+        summary: "synthetic".into(),
+        decoded: serde_json::Value::Null,
+    };
+    assert_eq!(
+        (
+            timestamp_ms,
+            direction.as_str(),
+            protocol.as_str(),
+            summary.as_str(),
+            decoded
+        ),
+        (
+            0,
+            "host->device",
+            "lockdown",
+            "synthetic",
+            serde_json::Value::Null
+        )
+    );
+    let payload = b"bplist00owned-private-invalid-plist";
+    assert!(plist::from_bytes::<plist::Value>(payload).is_err());
+    let mut bytes = (payload.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(payload);
+    let result = StreamDecoder::new(ProxyProtocol::Lockdown)
+        .push_preserving_errors(Direction::HostToDevice, &bytes);
+    assert_eq!(result.failures().len(), 1);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.phase(), DecodePhase::Lockdown);
+    assert_eq!(failure.kind(), DecodeFailureKind::Error);
+    assert_eq!(failure.event_index(), Some(0));
+    assert_eq!(failure.error_class(), Some(ios_core::ErrorClass::Protocol));
+    assert!(failure.error().unwrap().is::<plist::Error>());
+    assert!(!format!("{result:?}").contains("owned-private"));
+    let (events, mut failures, fatal) = result.into_parts();
+    assert_eq!(events.len(), 1);
+    assert!(fatal.is_none());
+    assert!(failures
+        .remove(0)
+        .into_error()
+        .unwrap()
+        .is::<plist::Error>());
+    let fatal = StreamDecoder::new(ProxyProtocol::Xpc)
+        .push_preserving_errors(Direction::HostToDevice, &[0, 0x40, 1, 0, 0, 0, 0, 0, 3]);
+    assert_eq!(family(fatal.fatal_error().unwrap()), "protocol");
+    assert_eq!(fatal.failures()[0].kind(), DecodeFailureKind::ResourceLimit);
+    assert_eq!(fatal.failures()[0].error_class(), None);
+    assert!(fatal.into_result().is_err());
+}
+
 #[tokio::test]
 async fn root_input_native_gpx_keeps_exhaustive_family_and_preflight_source() {
     use ios_core::{
