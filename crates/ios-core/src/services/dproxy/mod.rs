@@ -16,6 +16,8 @@ pub use observations::{DecodeFailure, DecodeFailureKind, DecodeOutcome, DecodePh
 
 #[cfg(test)]
 mod observation_contract_tests;
+#[cfg(test)]
+mod recording_contract_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyProtocol {
@@ -112,21 +114,57 @@ impl ProxyRecorder {
     }
 
     pub fn record_chunk(&mut self, direction: Direction, chunk: &[u8]) -> Result<(), DproxyError> {
+        self.record_chunk_impl(direction, chunk, None::<&mut fn(DecodeFailure)>)
+    }
+
+    /// Deliver independently owned decode failures without accumulating a session.
+    /// Event indices refer to decoded events in this chunk, not persisted lines.
+    /// The callback runs before event writes, including before a fatal return.
+    /// Raw-write failures skip decoding. Fatal decoding still skips event writes;
+    /// associated events may never reach disk. A callback must be quick and must
+    /// apply its own retention bound. Callback panics are not intercepted.
+    pub fn record_chunk_with_observer(
+        &mut self,
+        direction: Direction,
+        chunk: &[u8],
+        observer: &mut impl FnMut(DecodeFailure),
+    ) -> Result<(), DproxyError> {
+        self.record_chunk_impl(direction, chunk, Some(observer))
+    }
+
+    fn record_chunk_impl<F: FnMut(DecodeFailure)>(
+        &mut self,
+        direction: Direction,
+        chunk: &[u8],
+        observer: Option<&mut F>,
+    ) -> Result<(), DproxyError> {
         if chunk.is_empty() {
             return Ok(());
         }
-
-        let events = match direction {
+        let decoder = match direction {
             Direction::HostToDevice => {
                 self.host_to_device_raw.write_all(chunk)?;
-                self.host_to_device_decoder.push(direction, chunk)?
+                &mut self.host_to_device_decoder
             }
             Direction::DeviceToHost => {
                 self.device_to_host_raw.write_all(chunk)?;
-                self.device_to_host_decoder.push(direction, chunk)?
+                &mut self.device_to_host_decoder
             }
         };
-
+        let events = if let Some(observer) = observer {
+            let (events, failures, fatal) = decoder
+                .push_preserving_errors(direction, chunk)
+                .into_parts();
+            for failure in failures {
+                observer(failure);
+            }
+            if let Some(error) = fatal {
+                return Err(error);
+            }
+            events
+        } else {
+            decoder.push(direction, chunk)?
+        };
         self.write_events(events)
     }
 
@@ -147,14 +185,28 @@ impl ProxyRecorder {
     }
 
     fn write_events(&mut self, events: Vec<ProxyEvent>) -> Result<(), DproxyError> {
-        for event in events {
-            serde_json::to_writer(&mut self.events, &event)?;
-            self.events.write_all(b"\n")?;
-            eprintln!("{}", diagnostic_event_summary(&event));
-        }
-        self.events.flush()?;
-        Ok(())
+        write_events_to(&mut self.events, events, |event| {
+            write_event_diagnostic(&mut std::io::stderr().lock(), event)
+        })
     }
+}
+
+fn write_events_to(
+    writer: &mut impl Write,
+    events: Vec<ProxyEvent>,
+    mut diagnostic: impl FnMut(&ProxyEvent) -> std::io::Result<()>,
+) -> Result<(), DproxyError> {
+    for event in events {
+        serde_json::to_writer(&mut *writer, &event)?;
+        writer.write_all(b"\n")?;
+        diagnostic(&event)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_event_diagnostic(writer: &mut impl Write, event: &ProxyEvent) -> std::io::Result<()> {
+    writeln!(writer, "{}", diagnostic_event_summary(event))
 }
 
 fn diagnostic_event_summary(event: &ProxyEvent) -> String {
@@ -181,7 +233,43 @@ where
     L: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + AsyncWrite + Unpin,
 {
-    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(recorder));
+    proxy_bidirectional_impl(local, remote, recorder, None::<fn(DecodeFailure)>).await
+}
+
+/// Stream owned decode failures from both directions through one serialized
+/// synchronous callback. Returned forwarding/recording errors remain primary.
+/// The callback runs under the recording mutex before forwarding; keep it quick
+/// and bound caller-owned retention. It does not certify remote cleanup/reuse.
+pub async fn proxy_bidirectional_with_observer<L, R>(
+    local: L,
+    remote: R,
+    recorder: ProxyRecorder,
+    observer: impl FnMut(DecodeFailure) + Send,
+) -> Result<(), DproxyError>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+{
+    proxy_bidirectional_impl(local, remote, recorder, Some(observer)).await
+}
+
+struct Recording<F> {
+    recorder: ProxyRecorder,
+    observer: Option<F>,
+}
+
+async fn proxy_bidirectional_impl<L, R, F>(
+    local: L,
+    remote: R,
+    recorder: ProxyRecorder,
+    observer: Option<F>,
+) -> Result<(), DproxyError>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + AsyncWrite + Unpin,
+    F: FnMut(DecodeFailure) + Send,
+{
+    let recorder = std::sync::Arc::new(tokio::sync::Mutex::new(Recording { recorder, observer }));
     let (local_reader, local_writer) = tokio::io::split(local);
     let (remote_reader, remote_writer) = tokio::io::split(remote);
 
@@ -203,15 +291,16 @@ where
     Ok(())
 }
 
-async fn pump<R, W>(
+async fn pump<R, W, F>(
     mut reader: R,
     mut writer: W,
     direction: Direction,
-    recorder: std::sync::Arc<tokio::sync::Mutex<ProxyRecorder>>,
+    recorder: std::sync::Arc<tokio::sync::Mutex<Recording<F>>>,
 ) -> Result<(), DproxyError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
+    F: FnMut(DecodeFailure) + Send,
 {
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -222,8 +311,9 @@ where
         }
 
         {
-            let mut recorder = recorder.lock().await;
-            recorder.record_chunk(direction, &buf[..read])?;
+            let mut recording = recorder.lock().await;
+            let Recording { recorder, observer } = &mut *recording;
+            recorder.record_chunk_impl(direction, &buf[..read], observer.as_mut())?;
         }
 
         writer.write_all(&buf[..read]).await?;
@@ -264,7 +354,7 @@ impl StreamDecoder {
     /// Independent failures are not serialized into the legacy event schema.
     /// Local guards have typed kinds but no fabricated native error/class.
     /// After a DTX error, later input is explicitly marked ignored.
-    /// The recorder continues to use the legacy `push` interface.
+    /// Legacy recorder methods use `push`; observer methods opt in here.
     pub fn push_preserving_errors(&mut self, direction: Direction, chunk: &[u8]) -> DecodeOutcome {
         self.push_impl(direction, chunk, true)
     }

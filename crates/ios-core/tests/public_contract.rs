@@ -9,6 +9,56 @@ use ios_core::{
 };
 
 #[cfg(feature = "dproxy")]
+#[tokio::test]
+async fn public_dproxy_recording_observer_owns_native_error_without_device() {
+    use ios_core::dproxy::{
+        proxy_bidirectional_with_observer, DecodeFailure, Direction, DproxyError, ProxyProtocol,
+        ProxyRecorder,
+    };
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory =
+        Directory(std::env::temp_dir().join(format!("ios-public-dproxy-{}", uuid::Uuid::new_v4())));
+    let mut recorder = ProxyRecorder::new(&directory.0, ProxyProtocol::Lockdown).unwrap();
+    let payload = b"bplist00owned-private-invalid-plist";
+    assert!(plist::from_bytes::<plist::Value>(payload).is_err());
+    let mut bytes = (payload.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(payload);
+    let mut failures: Vec<DecodeFailure> = Vec::new();
+    recorder
+        .record_chunk_with_observer(Direction::HostToDevice, &bytes, &mut |failure| {
+            failures.push(failure)
+        })
+        .unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].error_class(),
+        Some(ios_core::ErrorClass::Protocol)
+    );
+    assert!(!format!("{:?}", failures[0]).contains("owned-private"));
+    assert!(failures
+        .remove(0)
+        .into_error()
+        .unwrap()
+        .is::<plist::Error>());
+    fn signature(_: impl Future<Output = Result<(), DproxyError>>) {}
+    // The proxy signature is compiled; this future is dropped before polling.
+    // Core tests separately run both owned duplex directions and fatal EOF.
+    let (local, _) = tokio::io::duplex(64);
+    let (remote, _) = tokio::io::duplex(64);
+    signature(proxy_bidirectional_with_observer(
+        local,
+        remote,
+        recorder,
+        |failure| failures.push(failure),
+    ));
+}
+
+#[cfg(feature = "dproxy")]
 #[test]
 fn public_dproxy_observations_preserve_sources_and_legacy_shapes() {
     use ios_core::dproxy::{

@@ -93,14 +93,14 @@ impl DproxyCmd {
                     .await
                     .with_context(|| format!("failed to bind {host}:{listen_port}"))?;
 
-                eprintln!(
+                crate::output::write_error_line(format_args!(
                     "dproxy listening on {}:{} for {} via {:?} ({:?})",
                     host,
                     listen_port,
                     ios_core::redaction::diagnostic_id(&service),
                     transport,
                     protocol
-                );
+                ))?;
 
                 let mut counter = 0usize;
                 loop {
@@ -117,13 +117,13 @@ impl DproxyCmd {
                         move || ios_core::dproxy::ProxyRecorder::new(&dir, protocol)
                     })
                     .await??;
-                    eprintln!(
+                    crate::output::write_error_line(format_args!(
                         "accepted {} -> capture {}",
                         ios_core::redaction::diagnostic_id(&peer.to_string()),
                         ios_core::redaction::diagnostic_id(
                             &recorder.output_dir().to_string_lossy()
                         )
-                    );
+                    ))?;
 
                     let remote = match transport {
                         TransportKind::Rsd => device.connect_rsd_service(&service).await?,
@@ -138,7 +138,13 @@ impl DproxyCmd {
                         }
                     };
 
-                    ios_core::dproxy::proxy_bidirectional(client, remote, recorder).await?;
+                    ios_core::dproxy::proxy_bidirectional_with_observer(
+                        client,
+                        remote,
+                        recorder,
+                        observe_decode_failure,
+                    )
+                    .await?;
 
                     if once {
                         break;
@@ -149,6 +155,10 @@ impl DproxyCmd {
 
         Ok(())
     }
+}
+
+fn observe_decode_failure(failure: ios_core::dproxy::DecodeFailure) {
+    tracing::debug!(observation = ?failure, "DProxy decode observation");
 }
 
 fn choose_transport(
@@ -529,6 +539,47 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn dproxy_recording_cli_observer_logs_metadata_without_payloads() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        struct Log(Arc<Mutex<Vec<u8>>>);
+        impl Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let target = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || Log(Arc::clone(&target)))
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let payload = b"bplist00owned-private-invalid-plist";
+        assert!(plist::from_bytes::<plist::Value>(payload).is_err());
+        let mut input = (payload.len() as u32).to_be_bytes().to_vec();
+        input.extend_from_slice(payload);
+        let outcome =
+            ios_core::dproxy::StreamDecoder::new(ios_core::dproxy::ProxyProtocol::Lockdown)
+                .push_preserving_errors(ios_core::dproxy::Direction::HostToDevice, &input);
+        let (_, mut failures, _) = outcome.into_parts();
+        assert!(failures[0].error().unwrap().is::<plist::Error>());
+        tracing::subscriber::with_default(subscriber, || {
+            observe_decode_failure(failures.remove(0))
+        });
+        let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("DProxy decode observation"));
+        assert!(log.contains("phase: Lockdown") && log.contains("error_class: Some(Protocol)"));
+        assert!(!log.contains("owned-private"));
+        assert!(!log.contains(&hex::encode(payload)));
+    }
 
     #[derive(Parser)]
     struct TestCli {
