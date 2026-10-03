@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `dproxy::StreamDecoder::push_preserving_errors` to retain original parser
+  errors, typed local decisions and events preceding a later fatal error.
+  Expose owned/borrowed observations and explicit ignored DTX input with safe
+  Debug; keep legacy `push`, event JSON, buffering and failure policies.
+
 - Preserve native application/test PID, fixed app plist, IPA integer and GPX
   XML/time parser sources through existing IO/XPC variants with safe context.
   Classify local input failures without text matching; keep wire/validation and

@@ -254,6 +254,33 @@ Explicit sources remain private data under the redaction policy. See
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
+DProxy callers can select `StreamDecoder::push_preserving_errors`. Its opaque
+`DecodeOutcome` keeps ordered events, independent `DecodeFailure` observations
+and the original optional fatal DproxyError. It retains original plist/DTX/XPC
+errors and the XPC length check's original IO error instead of just their text.
+The latter can be an SDK guard error with no deeper source; retaining it does
+not turn a limit decision into an OS failure. The two fixed XPC slice-conversion
+errors are retained at their existing adapters but unreachable after the header
+length check on this host.
+
+Failures expose direction, typed phase/kind, optional stream ID and an index in
+this push's events. Source-free resource limits, incomplete END_STREAM and the
+existing missing-stream decision have no fabricated native error or ErrorClass.
+Fatal guards have no corresponding event; fatal_error_class classifies the
+unchanged DproxyError independently. A fatal push can retain earlier successful
+events and nonfatal errors. Independent failures are not one source chain.
+Debug shows metadata/counts only; explicit events/errors follow source privacy.
+
+`into_parts()` owns all three branches; `into_error()` takes a failure's original
+error. `into_result()` deliberately drops observations and, on fatal error,
+preceding events, matching old `push`. Only input skipped because of a previous
+DTX failure sets `input_ignored`; partial/Binary input with no events does not.
+Existing event JSON/summary/guard text, parsing limits, clear/stop behavior and
+forwarding remain. The legacy path allocates no observation storage. Recorder
+and CLI still use that path; recorder/CLI checked stderr and error observers
+remain separate work. No new retry, reset, rollback or cleanup promise. See
+[decoder observation evidence](validation/dproxy-decoder-observations-2026-10-03.md).
+
 CLI WebInspector tasks, CDP discovery/page/browser startup and WebDriver runtime
 construction now use start_preserving_errors. A closed stream can yield an IO
 category in existing safe diagnostics instead of opaque Disabled correlation.

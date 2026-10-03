@@ -4641,3 +4641,81 @@ next-guarded-sources/next-dproxy-observations 日志同前缀，已确认本地 
 created outcomes/stream/JSON/callback/bindings 与 L01/L03/A03/platform/device
 条件保留，无真实 app/test/install/location/device/daemon/Apple/credentials
 动作、maturity 升级、推送/发布、历史改写或 reference edit。
+
+### 大类 3：A02 DProxy 解码错误与部分事件观察交付（2026-10-03）
+
+基线 `dfeb4500badf0932fe4f2df90ba1a14572f2e503`；受测 source
+`a37a80b6eb7be4cc5f6d096e45eca1a65930e133`。Branch 仍为
+`feat/device-service-updates-20260927`，Linux x86_64 / Rust 1.97.1 /
+MSRV 1.80.1 / Python 3.12.13。具体合同和证据见
+[DProxy decoder observations](validation/dproxy-decoder-observations-2026-10-03.md)。
+
+新增 `StreamDecoder::push_preserving_errors` 和 opaque DecodeOutcome /
+DecodeFailure。保留 events、独立原始 errors 和原 fatal DproxyError；同一次
+push 先解码成功或 nonfatal error、随后 H2 fatal 时，前面的事件与来源仍可取出。
+Direction/phase/kind/event_index/stream_id 均可程序化查询；新 enums
+non-exhaustive。Metadata/count-only Debug 不输出 events/error payload。
+into_parts 保留三条 owned branches，into_error 取原始对象；into_result 明确
+丢弃 observations，并在 fatal 时丢弃之前 events，沿用旧 push 合同。
+input_ignored 仅标记之前 DTX failure 导致本次跳过，普通 partial/Binary
+无事件不等于 ignored。
+
+六个原 error-discard adapters：plist、DTX、XPC length IO、XpcError 和两个
+固定 TryFromSliceError。前四个有 runtime coverage，两个 fixed slices 在
+>=24-byte guard 后不可失败，仅源码审查。u64::MAX body length 在本 64-bit
+host 保留既有 InvalidData IO guard object，没有伪造 OS/TryFromInt cause。
+Source-free decoder/Lockdown/H2/stream/message-size decisions 为 ResourceLimit；
+END_STREAM incomplete 为 IncompleteMessage；既有 missing-stream/empty DATA
+fatal 为 InvalidState，均无编造 native source/class。Fatal error class 仍由
+原 DproxyError 分类，和 guard kind 分开。
+
+四 source files，861 insertions/39 deletions。原四 variants exhaustive
+DproxyError、ProxyEvent constructible fields/JSON、Direction/ProxyProtocol
+和 root/features/deps/classifier 保持。Recorder/pump、stream limits/counting/
+clear、H2 parser/preface、summaries/JSON/old tests byte-identical；整个三个
+decoder bodies 与 admission 在观察/result-container normalization 后一致；
+XPC parser 仅换 owned adapters，legacy error/overflow text 相同。DTX sticky
+stop/ignore、XPC failed-stream clear 和 empty DATA fatal policy 保持，不将
+后者升级为协议正确性认证。Legacy 不分配 observation storage。无新 timeout/
+retry/reset/rollback/cancellation/forwarding/cleanup/reuse 保证。
+Source diff SHA256
+`9fe368edc4102b30acb4ea579462fb9e9ab173c59034b1571a33e18c207eb730`。
+
+| 验证 | 结果（日志 `/tmp/ios-a02-dproxy-observations-`） |
+| --- | --- |
+| 原算法负控制 | before-final.log 2 PASS / 11 FAIL；before-public-final.log 0 PASS / 1 FAIL |
+| all-feature / minimum dproxy | after/minimal.log 均 25 PASS |
+| public all-feature / minimum | public/public-minimal.log 35 / 16 PASS |
+| strict Core Clippy | clippy.log exit 0 |
+| 第 11 节首次 full | full.log terminal 0，2055 Rust / 13 Python，0 FAIL，2 既有 ignored |
+
+新增 13 internal / 1 external tests：真实 malformed binary plist、DTX
+bad magic、nested XPC UTF-8 source、existing SDK length IO、owned errors、
+native/success event 后 fatal、source-free guards、实际 33 tiny stream flood、
+64 MiB+24+1 admission、fragmented all-protocol result/state、public exhaustive
+consumer。Legacy/observed comparison 共享 final engine；另有 exact old
+algorithm prototype 和 whole-body audit 支持旧行为。Timestamps 为 wall-clock，
+不列入值相等断言。第一轮 plain-text plist fixture 被 parser 接受，其 raw
+fallback assertion 无效；改为 binary malformed 并先独立确认 is_err 后，
+两 controls 完整重跑，坏 fixture 不计 regression evidence。无 compile failure
+充作证据；audit match-arm/trailing-comma normalization 修正未改源码。
+
+Full 含 fmt/check/workspace strict Clippy/MSRV、66 feature builds/四 groups、
+7+7 doctests/三 snippets、C ABI/malformed/checked list、3.12 wheel/sdist rebuild/
+install、53 tools/118 help/38 raw、5 host workflows/22 device NOT_RUN、15 CLI /
+3 backup contracts；14 Rust groups / 独立 Python group，full-counts.log 可核对。
+无额外 Chromium/installed 3.9/3.13。受测 ios 0.1.13 debug SHA256
+`64ae2015597f0d01173a41bc135837faadebac53616e0eaa264000860e8ea096`。
+所有 source 包括 new files 在 full 前 staged，full/docs 期间冻结；本 slice
+controls 后约 67 GiB free、收尾约 60 GiB，无 cleanup/storage failure。
+
+八文档独立收尾；118 capabilities 的 implementation/maturity/history 保持，
+新增唯一 host evidence；七个 changed Markdown 的 166 local links、whitespace
+及 accepted source/binary hashes 审查通过（doc-audit.log）。
+A02/第三类/总体 goal active，第四类未开始，全部 31 主任务/子任务保持。
+下一：Recorder/CLI error observers 和三个 unchecked stderr sites；它们仍用
+legacy push，本次新 API 不代表已完成调用方集成。Read-only next-recording.log
+记录实际位置。随后 guarded AFC/DTX/file/symbol ownership/32-bit 转换；其他
+typed guards/created outcomes/stream/JSON/callback/binding 与 L01/L03/A03/
+platform/device 条件保留。无 device/proxy/daemon/credentials/Apple 实操、
+reference edit、push/publication、历史改写或 maturity upgrade。

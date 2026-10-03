@@ -139,3 +139,9 @@ stream/JSON/callback/binding and L01/L03/A03/platform/device conditions stay.
 No physical app/test/install/location workflow, daemon/credentials/Apple action,
 reference edit, push/publication, history rewrite or maturity upgrade. See
 [public contract](../public-contract.md).
+
+Follow-up: [DProxy decoder observations](dproxy-decoder-observations-2026-10-03.md)
+accept additive original errors, typed local decisions and partial events at
+source `a37a80b6eb7be4cc5f6d096e45eca1a65930e133`. Recorder/CLI adoption and
+checked stderr remain pending, as do the guarded converter and other A02 tasks.
+This follow-up does not alter the preceding source/gate or capability maturity.

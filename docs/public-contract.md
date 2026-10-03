@@ -273,6 +273,28 @@ and lifecycle/retry semantics are separate work. The
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
+The additive `dproxy::StreamDecoder::push_preserving_errors` returns opaque
+`DecodeOutcome`. Events, independent original errors and the optional fatal
+error can coexist. Borrow them through `events`/`failures`/`fatal_error`, or
+retain ownership through `into_parts` and a failure's `into_error`. New phase
+and kind enums start non-exhaustive; fields are private. Failure event indices
+refer to this push, with None for fatal guards, and XPC observations can carry
+stream IDs. Source-free decisions have no invented source/class. Debug exposes
+metadata/counts, not explicit payload/error text. `input_ignored` distinguishes
+the sticky DTX failure policy from ordinary incomplete decoding.
+
+Original ProxyEvent fields/serialization, four exhaustive DproxyError variants,
+Direction/ProxyProtocol, root paths/features/dependencies and classifier stay.
+Old `push` deliberately drops observations and preceding events on fatal error;
+the new outcome's `into_result` has the same policy. Successful JSON, parser
+limits, guard text and buffer/stream/error recovery behavior stay. Timestamps
+remain wall-clock values. The empty DATA missing-stream fatal behavior is
+preserved, not a new protocol guarantee. No recorder/CLI/binding automatically
+consumes this API, checked stderr remains pending, and there is no new resource
+cleanup/retry/reuse certification. See
+[DProxy decoder acceptance](validation/dproxy-decoder-observations-2026-10-03.md)
+for original-source versus local-guard coverage and minimum-feature consumers.
+
 ImageMounterError's six variants/fields and public downloader/TSS signatures stay
 exhaustive. Thirty-four native cache/download/ZIP/join/TSS failures move from
 Download/Tss strings to existing Io, preserving original sources and IO kinds.

@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-dproxy-decoder-observations-a37a80b",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned malformed binary plist, DTX bad magic and XPC nested UTF-8 errors, original XPC length-check IO object, valid/error events before later fatal H2, actual decoder admission and unknown-stream bounds, typed incomplete/missing-stream decisions, fragmented legacy/observed state comparison and exhaustive public consumer in minimum dproxy"],
+      "required_state": ["Decoder API is opt-in; recorder and CLI remain on legacy push with unchecked diagnostics pending. XPC length limit IO is an existing SDK guard with no deeper source on this 64-bit host. Two fixed TryFromSliceError adapters and arithmetic overflow failures are source-reviewed, not fabricated. Empty DATA fatal policy remains. No physical proxy/device/daemon/credentials/Apple operation or cleanup/retry/reuse certification"],
+      "tested_commit": "a37a80b6eb7be4cc5f6d096e45eca1a65930e133",
+      "date": "2026-10-03",
+      "location": "docs/validation/dproxy-decoder-observations-2026-10-03.md",
+      "result": "PASS",
+      "scope": "A02 additive DecodeOutcome owns independent original failures, typed source-free decisions and events preceding fatal error; direction/phase/kind/event index/stream ID, optional original class and safe Debug. Legacy push/four exhaustive error variants/event fields/schema/guards/clear/stop/counting/preface/limits remain; codec/root/dependency/classifier byte-identical and no legacy observation allocation. Corrected old-algorithm control 2 PASS/11 FAIL and public 0 PASS/1 FAIL; 13 internal/one external added; first full 2055 Rust/13 Python PASS. Recorder/CLI stderr, guarded conversions and other A02/platform/lifecycle/device work remain; no maturity upgrade."
+    },
+    {
       "id": "linux-service-input-native-sources-ab09790",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
