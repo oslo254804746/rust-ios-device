@@ -30,6 +30,56 @@ service_error!(CompanionError, between {
     Timeout(Duration),
 });
 
+#[derive(thiserror::Error)]
+#[error("companion deadline elapsed after {duration:?}")]
+struct CompanionTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+
+crate::redaction::error_debug!(CompanionTimeout);
+
+impl CompanionError {
+    /// The budget reported by a companion-issued deadline or the legacy
+    /// Timeout variant. Other IO TimedOut errors do not supply this value.
+    /// This does not acknowledge remote stop, cancellation or safe retry.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<CompanionTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> CompanionError {
+    CompanionError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+fn native_timeout(
+    duration: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> CompanionError {
+    native_error(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        CompanionTimeout { duration, source },
+    )
+}
+
 /// A client for the companion proxy plist protocol.
 pub struct CompanionProxyClient<S> {
     stream: Arc<Mutex<S>>,
@@ -280,7 +330,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
         };
         tokio::time::timeout(self.timeout, operation)
             .await
-            .map_err(|_| CompanionError::Timeout(self.timeout))?
+            .map_err(|error| native_timeout(self.timeout, "send companion request", error))?
     }
 
     async fn round_trip(
@@ -303,7 +353,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
         };
         tokio::time::timeout(self.timeout, operation)
             .await
-            .map_err(|_| CompanionError::Timeout(self.timeout))?
+            .map_err(|error| native_timeout(self.timeout, "exchange companion request", error))?
     }
 }
 
@@ -377,12 +427,12 @@ where
     ) -> Result<Option<plist::Dictionary>, CompanionError> {
         match tokio::time::timeout(timeout, self.next_event()).await {
             Ok(item) => item.transpose(),
-            Err(_) => {
+            Err(error) => {
                 // A cancelled read_exact may already have consumed part of a
                 // frame. Do not let callers resume on a desynchronized
                 // plist stream after an idle timeout.
                 self.finished = true;
-                Err(CompanionError::Timeout(timeout))
+                Err(native_timeout(timeout, "receive companion event", error))
             }
         }
     }
@@ -468,7 +518,7 @@ where
             stop_shared(Arc::clone(&self.stream), self.remote_port),
         )
         .await
-        .map_err(|_| CompanionError::Timeout(timeout))??;
+        .map_err(|error| native_timeout(timeout, "stop companion forwarding", error))??;
         self.stopped = true;
         self.stop_response = Some(response.clone());
         Ok(response)
@@ -548,18 +598,27 @@ fn validate_port(port: u16, field: &str) -> Result<(), CompanionError> {
 }
 
 fn parse_port(value: &plist::Value, field: &str) -> Result<u16, CompanionError> {
-    let number = value
-        .as_unsigned_integer()
-        .or_else(|| {
-            value
-                .as_signed_integer()
-                .and_then(|number| number.try_into().ok())
-        })
-        .ok_or_else(|| {
-            CompanionError::Protocol(format!("{field} must be a non-negative integer"))
-        })?;
-    let port = u16::try_from(number).map_err(|_| {
-        CompanionError::Protocol(format!("{field} {number} exceeds the u16 port range"))
+    let number = match value.as_unsigned_integer() {
+        Some(number) => number,
+        None => {
+            let signed = value.as_signed_integer().ok_or_else(|| {
+                CompanionError::Protocol(format!("{field} must be a non-negative integer"))
+            })?;
+            u64::try_from(signed).map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "decode companion non-negative port",
+                    error,
+                )
+            })?
+        }
+    };
+    let port = u16::try_from(number).map_err(|error| {
+        native_error(
+            std::io::ErrorKind::InvalidData,
+            "decode companion port range",
+            error,
+        )
     })?;
     validate_port(port, field)?;
     Ok(port)
@@ -611,6 +670,88 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_discovery_companion_send_request_and_stop_deadlines_keep_elapsed() {
+        let duration = Duration::from_millis(5);
+        let client = CompanionProxyClient::with_timeout(PendingStream, duration);
+        let error = client
+            .send_only(command("StartListeningForDevices"))
+            .await
+            .unwrap_err();
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(error.timeout_duration(), Some(duration));
+        let error = client
+            .round_trip(command("GetDeviceRegistry"))
+            .await
+            .unwrap_err();
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(error.timeout_duration(), Some(duration));
+        let mut handle = ForwardingHandle {
+            stream: Arc::clone(&client.stream),
+            timeout: duration,
+            remote_port: 42,
+            service_port: 43,
+            response: plist::Dictionary::new(),
+            stop_response: None,
+            stopped: false,
+        };
+        let error = handle.stop_with_timeout(duration).await.unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(!handle.is_stopped() && handle.stop_response.is_none());
+        assert_eq!(error.timeout_duration(), Some(duration));
+        assert_eq!(
+            CompanionError::Timeout(duration).timeout_duration(),
+            Some(duration)
+        );
+        assert_eq!(
+            CompanionError::Io(io::Error::new(io::ErrorKind::TimedOut, "owned-private"))
+                .timeout_duration(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn native_discovery_companion_partial_listener_expiry_keeps_elapsed_and_terminal_state() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, mut peer) = tokio::io::duplex(64);
+        peer.write_all(&[0, 0]).await.unwrap();
+        let mut listener = CompanionDeviceStream {
+            stream: Arc::new(Mutex::new(stream)),
+            timeout: Duration::from_millis(5),
+            pending: None,
+            finished: false,
+        };
+        let error = listener
+            .next_event_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(listener.finished);
+        assert!(listener.next_event().await.is_none());
+    }
+
+    #[test]
+    fn native_discovery_companion_port_conversions_keep_received_sources() {
+        for value in [
+            plist::Value::Integer((-1i64).into()),
+            plist::Value::Integer(u64::MAX.into()),
+        ] {
+            let error = parse_port(&value, "owned-private").unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+        assert!(parse_port(&plist::Value::Integer(0.into()), "port").is_err());
+        assert_eq!(
+            parse_port(&plist::Value::Integer(u16::MAX.into()), "port").unwrap(),
+            u16::MAX
+        );
+    }
 
     fn dict_frame(value: plist::Value) -> Vec<u8> {
         MockStream::plist_frame(value)
@@ -842,7 +983,10 @@ mod tests {
             .start_forwarding_service_port(1, None, Some(options))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("u16 port range"));
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+            &error
+        ));
         assert!(stream.written.is_empty());
     }
 
@@ -947,7 +1091,8 @@ mod tests {
         let mut client =
             CompanionProxyClient::with_timeout(PendingStream, Duration::from_millis(5));
         let error = client.list().await.unwrap_err();
-        assert!(matches!(error, CompanionError::Timeout(_)));
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 
     #[tokio::test]
@@ -1063,12 +1208,12 @@ mod tests {
             pending: None,
             finished: false,
         };
-        assert!(matches!(
-            pending
-                .next_event_with_timeout(Duration::from_millis(5))
-                .await,
-            Err(CompanionError::Timeout(_))
-        ));
+        let error = pending
+            .next_event_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(5)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
         assert!(pending.next_event().await.is_none());
     }
 }

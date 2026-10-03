@@ -130,13 +130,21 @@ impl AutomationSession {
             client.request_automation_session(&self.session_id, &self.application_id),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(
+                timeout_duration,
+                "request WebInspector automation session",
+                error,
+            )
+        })??;
         timeout(
             remaining_time(deadline, timeout_duration)?,
             client.request_listing(&self.application_id),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "request automation listing", error)
+        })??;
 
         let page = self
             .wait_for_automation_page(client, deadline, timeout_duration, false)
@@ -148,13 +156,17 @@ impl AutomationSession {
             client.send_socket_setup(&self.session_id, &self.application_id, page.id, true),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "attach automation socket", error)
+        })??;
         timeout(
             remaining_time(deadline, timeout_duration)?,
             client.request_listing(&self.application_id),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "refresh automation listing", error)
+        })??;
         let page = self
             .wait_for_automation_page(client, deadline, timeout_duration, true)
             .await?;
@@ -556,7 +568,13 @@ impl AutomationSession {
             self.send_command(client, method, params),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(
+                timeout_duration,
+                "send WebInspector automation command",
+                error,
+            )
+        })??;
         self.wait_for_response(client, command_id, timeout_duration)
             .await
     }
@@ -682,6 +700,31 @@ mod tests {
     use super::*;
     use tokio::io::duplex;
 
+    #[tokio::test]
+    async fn native_discovery_automation_write_deadlines_keep_elapsed() {
+        for command in [false, true] {
+            let (stream, _peer) = duplex(1);
+            let mut client = WebInspectorClient::with_connection_id(stream, "owned-private");
+            let mut session = AutomationSession::with_page(
+                "PID:42",
+                "com.apple.mobilesafari",
+                "owned-private",
+                1,
+            );
+            let duration = Duration::from_millis(5);
+            let error = if command {
+                session
+                    .send_command_and_wait(&mut client, "Runtime.evaluate", json!({}), duration)
+                    .await
+                    .unwrap_err()
+            } else {
+                session.attach(&mut client, duration).await.unwrap_err()
+            };
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        }
+    }
+
     #[test]
     fn normalized_locator_rewrites_common_dom_strategies() {
         assert_eq!(
@@ -712,6 +755,7 @@ mod tests {
             .attach(&mut client, Duration::from_millis(10))
             .await
             .expect_err("a stalled setup write must time out");
-        assert!(matches!(error, WebInspectorError::Timeout(_)));
+        assert_eq!(error.timeout_duration(), Some(Duration::from_millis(10)));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
     }
 }

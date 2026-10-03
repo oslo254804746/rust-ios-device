@@ -115,10 +115,12 @@ impl Page {
             Some(value) => plist_integer_to_u64(value).ok_or_else(|| {
                 WebInspectorError::Protocol("WIRPageIdentifierKey must be an integer".to_string())
             })?,
-            None => listing_key.parse::<u64>().map_err(|_| {
-                WebInspectorError::Protocol(format!(
-                    "missing WIRPageIdentifierKey and listing key '{listing_key}' is not numeric"
-                ))
+            None => listing_key.parse::<u64>().map_err(|error| {
+                super::native_error(
+                    std::io::ErrorKind::InvalidData,
+                    "decode WebInspector page identifier",
+                    error,
+                )
             })?,
         };
 
@@ -174,4 +176,32 @@ pub enum WebInspectorEvent {
     ApplicationDisconnected {
         application_id: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_discovery_page_id_retains_parse_source_and_explicit_id_precedence() {
+        let mut dictionary = plist::Dictionary::from_iter([(
+            "WIRTypeKey".to_string(),
+            plist::Value::String("WIRTypeWebPage".into()),
+        )]);
+        let error = Page::from_plist("owned-private", &dictionary).unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::num::ParseIntError>(
+            &error
+        ));
+        assert!(!format!("{error:?}").contains("owned-private"));
+        assert_eq!(Page::from_plist("42", &dictionary).unwrap().id, 42);
+        dictionary.insert(
+            "WIRPageIdentifierKey".into(),
+            plist::Value::Integer(7.into()),
+        );
+        assert_eq!(
+            Page::from_plist("owned-private", &dictionary).unwrap().id,
+            7
+        );
+    }
 }

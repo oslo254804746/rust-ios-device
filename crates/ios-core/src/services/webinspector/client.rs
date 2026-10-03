@@ -113,7 +113,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     ///
     /// Sends the same identifier report and consumes the same events under one
     /// deadline as [`Self::start`]. IO errors retain their original source;
-    /// elapsed deadlines use the existing typed `Timeout` variant. A timeout
+    /// elapsed timers retain their native source under `Io`, with the reported
+    /// budget available through `WebInspectorError::timeout_duration`. A timeout
     /// or EOF does not prove that Web Inspector is disabled. Failure may follow
     /// a partial identifier write; it does not acknowledge device cleanup or
     /// make retrying the supplied stream safe.
@@ -136,7 +137,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             self.report_identifier(),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "report WebInspector identifier", error)
+        })?
         .map_err(map_error)?;
         loop {
             let event = self
@@ -161,11 +164,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     ) -> Result<Vec<ApplicationPage>, WebInspectorError> {
         timeout(idle_timeout, self.request_connected_applications())
             .await
-            .map_err(|_| WebInspectorError::Timeout(idle_timeout))??;
+            .map_err(|error| {
+                super::native_timeout(idle_timeout, "request WebInspector applications", error)
+            })??;
         loop {
             match self.next_event_with_timeout(idle_timeout).await {
                 Ok(_) => continue,
-                Err(WebInspectorError::Timeout(_)) => return Ok(self.open_pages_snapshot()),
+                Err(error) if error.timeout_duration().is_some() => {
+                    return Ok(self.open_pages_snapshot())
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -351,7 +358,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     ) -> Result<WebInspectorEvent, WebInspectorError> {
         timeout(timeout_duration, self.next_event())
             .await
-            .map_err(|_| WebInspectorError::Timeout(timeout_duration))?
+            .map_err(|error| {
+                super::native_timeout(timeout_duration, "receive WebInspector event", error)
+            })?
     }
 
     pub(super) async fn next_socket_data_with_timeout(
@@ -543,7 +552,7 @@ fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
         {
             WebInspectorError::Disabled
         }
-        WebInspectorError::Timeout(_) => WebInspectorError::Disabled,
+        _ if error.timeout_duration().is_some() => WebInspectorError::Disabled,
         _ => error,
     }
 }
@@ -554,6 +563,92 @@ mod tests {
     use tokio::io::{duplex, AsyncWriteExt};
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_discovery_startup_expiry_keeps_elapsed_for_preserving_and_blocked_legacy() {
+        for (preserve, capacity) in [(false, 8), (true, 8), (true, 16 * 1024)] {
+            let (stream, _peer) = duplex(capacity);
+            let mut client = WebInspectorClient::with_connection_id(stream, "owned-private");
+            let duration = Duration::from_millis(5);
+            let error = if preserve {
+                client.start_preserving_errors(duration).await
+            } else {
+                client.start(duration).await
+            }
+            .unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
+
+    #[tokio::test]
+    async fn native_discovery_event_expiry_keeps_elapsed_and_page_quiescence_success() {
+        let (stream, _peer) = duplex(16 * 1024);
+        let mut client = WebInspectorClient::with_connection_id(stream, "owned-private");
+        let error = client
+            .next_event_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert!(client
+            .open_application_pages(Duration::from_millis(5))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_discovery_foreign_io_timeout_is_not_quiescence_or_disabled() {
+        use std::{
+            io,
+            pin::Pin,
+            task::{Context, Poll},
+        };
+        struct TimedRead;
+        impl AsyncRead for TimedRead {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                _: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "owned-private",
+                )))
+            }
+        }
+        impl AsyncWrite for TimedRead {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Ready(Ok(buf.len()))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+        for startup in [false, true] {
+            let mut client = WebInspectorClient::new(TimedRead);
+            let error = if startup {
+                client.start(Duration::from_secs(1)).await.unwrap_err()
+            } else {
+                client
+                    .open_application_pages(Duration::from_secs(1))
+                    .await
+                    .unwrap_err()
+            };
+            assert!(matches!(error, WebInspectorError::Io(_)));
+            assert_eq!(error.timeout_duration(), None);
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        }
+    }
 
     fn encode_plist(value: &plist::Value) -> Vec<u8> {
         let mut payload = Vec::new();
@@ -611,7 +706,7 @@ mod tests {
         let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
         let duration = Duration::from_millis(20);
         let error = client.start(duration).await.unwrap_err();
-        assert!(matches!(error, WebInspectorError::Timeout(value) if value == duration));
+        assert_eq!(error.timeout_duration(), Some(duration));
     }
 
     #[tokio::test]
@@ -671,7 +766,9 @@ mod tests {
         let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
         let duration = Duration::from_millis(20);
         let error = client.start_preserving_errors(duration).await.unwrap_err();
-        assert!(matches!(error, WebInspectorError::Timeout(value) if value <= duration));
+        assert!(error
+            .timeout_duration()
+            .is_some_and(|value| value <= duration));
         assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
         let report = recv_plist(&mut peer).await.unwrap();
         assert_eq!(
@@ -686,7 +783,7 @@ mod tests {
         let mut client = WebInspectorClient::with_connection_id(stream, "TEST");
         let duration = Duration::from_millis(20);
         let error = client.start_preserving_errors(duration).await.unwrap_err();
-        assert!(matches!(error, WebInspectorError::Timeout(value) if value == duration));
+        assert_eq!(error.timeout_duration(), Some(duration));
         assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
     }
 

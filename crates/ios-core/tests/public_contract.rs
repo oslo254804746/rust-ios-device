@@ -644,6 +644,83 @@ async fn public_webinspector_start_preserves_typed_io_without_changing_legacy_ap
     }
 }
 
+#[cfg(all(
+    feature = "webinspector",
+    feature = "companion",
+    feature = "notificationproxy"
+))]
+#[tokio::test]
+async fn public_discovery_deadlines_keep_native_sources_and_exhaustive_families() {
+    use ios_core::{
+        companion::{CompanionError, CompanionProxyClient},
+        notificationproxy::{NotificationProxyClient, NotificationProxyError},
+        webinspector::{WebInspectorClient, WebInspectorError},
+    };
+    use std::error::Error;
+    fn has_elapsed(error: &(dyn Error + 'static)) -> bool {
+        let mut next = Some(error);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if error.is::<tokio::time::error::Elapsed>() {
+                return true;
+            }
+            next = error.source();
+        }
+        false
+    }
+    fn web_family(error: &WebInspectorError) -> &'static str {
+        match error {
+            WebInspectorError::Io(_) => "io",
+            WebInspectorError::Plist(_) => "plist",
+            WebInspectorError::Json(_) => "json",
+            WebInspectorError::Disabled => "disabled",
+            WebInspectorError::Protocol(_) => "protocol",
+            WebInspectorError::Timeout(_) => "timeout",
+        }
+    }
+    fn companion_family(error: &CompanionError) -> &'static str {
+        match error {
+            CompanionError::Io(_) => "io",
+            CompanionError::Plist(_) => "plist",
+            CompanionError::Timeout(_) => "timeout",
+            CompanionError::Protocol(_) => "protocol",
+        }
+    }
+    fn notification_family(error: &NotificationProxyError) -> &'static str {
+        match error {
+            NotificationProxyError::Io(_) => "io",
+            NotificationProxyError::Plist(_) => "plist",
+            NotificationProxyError::Timeout => "timeout",
+            NotificationProxyError::ProxyDeath => "death",
+            NotificationProxyError::Protocol(_) => "protocol",
+        }
+    }
+    let duration = std::time::Duration::from_millis(5);
+    let (stream, _peer) = tokio::io::duplex(16 * 1024);
+    let error = WebInspectorClient::new(stream)
+        .next_event_with_timeout(duration)
+        .await
+        .unwrap_err();
+    assert_eq!(web_family(&error), "io");
+    assert!(has_elapsed(&error));
+    assert_eq!(error.timeout_duration(), Some(duration));
+    let (stream, _peer) = tokio::io::duplex(16 * 1024);
+    let error = CompanionProxyClient::with_timeout(stream, duration)
+        .list()
+        .await
+        .unwrap_err();
+    assert_eq!(companion_family(&error), "io");
+    assert!(has_elapsed(&error));
+    assert_eq!(error.timeout_duration(), Some(duration));
+    let (stream, _peer) = tokio::io::duplex(16 * 1024);
+    let error = NotificationProxyClient::new(stream)
+        .next_event(duration)
+        .await
+        .unwrap_err();
+    assert_eq!(notification_family(&error), "io");
+    assert!(has_elapsed(&error));
+}
+
 fn event_id(event: DeviceEvent) -> u32 {
     match event {
         DeviceEvent::Attached(DeviceInfo { device_id, .. })

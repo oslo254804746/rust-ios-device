@@ -86,7 +86,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
 
             let event = tokio::time::timeout(remaining, self.recv_event())
                 .await
-                .map_err(|_| NotificationProxyError::Timeout)??;
+                .map_err(|error| {
+                    NotificationProxyError::Io(crate::error::context::retained_io(
+                        std::io::ErrorKind::TimedOut,
+                        "wait for device notification",
+                        error,
+                    ))
+                })??;
 
             match event {
                 NotificationEvent::Notification(name) if name == notification => return Ok(()),
@@ -109,7 +115,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
     ) -> Result<NotificationProxyEvent, NotificationProxyError> {
         let message = tokio::time::timeout(timeout, self.recv_message())
             .await
-            .map_err(|_| NotificationProxyError::Timeout)??;
+            .map_err(|error| {
+                NotificationProxyError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "receive device notification",
+                    error,
+                ))
+            })??;
 
         match message.command.as_deref() {
             Some("RelayNotification") => message
@@ -204,6 +216,34 @@ mod tests {
     use crate::test_util::MockStream;
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_discovery_notification_deadlines_keep_elapsed_and_observations() {
+        for wait in [false, true] {
+            let (stream, _peer) = tokio::io::duplex(16 * 1024);
+            let mut client = NotificationProxyClient::new(stream);
+            let duration = Duration::from_millis(5);
+            let error = if wait {
+                client
+                    .wait_for("owned-private", duration)
+                    .await
+                    .unwrap_err()
+            } else {
+                client.next_event(duration).await.unwrap_err()
+            };
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+            if wait {
+                assert!(client.observing.contains("owned-private"));
+                let error = client
+                    .wait_for("owned-private", Duration::ZERO)
+                    .await
+                    .unwrap_err();
+                assert!(matches!(error, NotificationProxyError::Timeout));
+                assert!(!crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+            }
+        }
+    }
 
     fn plist_frame(value: plist::Value) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -358,6 +398,7 @@ mod tests {
             .wait_for("com.apple.example.ready", Duration::from_millis(10))
             .await
             .unwrap_err();
-        assert!(matches!(err, NotificationProxyError::Timeout));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Timeout);
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&err));
     }
 }

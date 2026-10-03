@@ -19,16 +19,21 @@ pub(super) async fn send_plist<S: AsyncWrite + Unpin>(
             payload.len()
         )));
     }
-    let length = u32::try_from(payload.len()).map_err(|_| {
-        WebInspectorError::Protocol(format!(
-            "plist length {} does not fit in a 32-bit frame",
-            payload.len()
-        ))
-    })?;
+    let length = checked_frame_len(payload.len())?;
     stream.write_all(&length.to_be_bytes()).await?;
     stream.write_all(&payload).await?;
     stream.flush().await?;
     Ok(())
+}
+
+fn checked_frame_len(length: usize) -> Result<u32, WebInspectorError> {
+    u32::try_from(length).map_err(|error| {
+        super::native_error(
+            std::io::ErrorKind::InvalidInput,
+            "encode WebInspector frame length",
+            error,
+        )
+    })
 }
 
 pub(super) async fn recv_plist<S: AsyncRead + Unpin>(
@@ -99,9 +104,11 @@ pub(super) fn pid_from_identifier(identifier: &str) -> Result<u64, WebInspectorE
         })?
         .parse::<u64>()
         .map_err(|error| {
-            WebInspectorError::Protocol(format!(
-                "failed to parse PID from identifier '{identifier}': {error}"
-            ))
+            super::native_error(
+                std::io::ErrorKind::InvalidData,
+                "decode WebInspector application pid",
+                error,
+            )
         })
 }
 
@@ -128,6 +135,29 @@ mod tests {
     use tokio::io::duplex;
 
     #[test]
+    fn native_discovery_pid_and_frame_conversions_keep_sources() {
+        let error = pid_from_identifier("PID:owned-private").unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::num::ParseIntError>(
+            &error
+        ));
+        assert!(!format!("{error:?}").contains("owned-private"));
+        assert_eq!(pid_from_identifier("PID:42").unwrap(), 42);
+        #[cfg(target_pointer_width = "64")]
+        {
+            let error = checked_frame_len(u32::MAX as usize + 1).unwrap_err();
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            assert!(crate::test_native::has_source::<std::num::TryFromIntError>(
+                &error
+            ));
+            assert_eq!(checked_frame_len(u32::MAX as usize).unwrap(), u32::MAX);
+        }
+    }
+
+    #[test]
     fn extract_json_payload_accepts_string_payload() {
         let dict = plist::Dictionary::from_iter([(
             "WIRMessageDataKey".to_string(),
@@ -144,9 +174,10 @@ mod tests {
     fn pid_from_identifier_rejects_non_numeric_suffix() {
         let err = pid_from_identifier("PID:not-a-number")
             .expect_err("invalid pid suffix must return an error");
-        assert!(err
-            .to_string()
-            .contains("failed to parse PID from identifier 'PID:not-a-number'"));
+        assert_eq!(crate::classify_error(&err), crate::ErrorClass::Protocol);
+        assert!(crate::test_native::has_source::<std::num::ParseIntError>(
+            &err
+        ));
     }
 
     #[tokio::test]

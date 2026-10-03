@@ -704,12 +704,17 @@ async fn inspector_idle_timeout_does_not_consume_later_socket_data() {
     let task = tokio::spawn(async move {
         let mut client = WebInspectorClient::with_connection_id(client_stream, "TEST-CONNECTION");
         let mut session = InspectorSession::with_session_id("PID:42", 1, "JS-SESSION");
-        assert!(matches!(
-            session
-                .next_raw_message(&mut client, Duration::from_millis(20))
-                .await,
-            Err(WebInspectorError::Timeout(_))
-        ));
+        let error = session
+            .next_raw_message(&mut client, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error
+            .timeout_duration()
+            .is_some_and(|value| !value.is_zero() && value <= Duration::from_millis(20)));
+        assert_eq!(
+            ios_core::classify_error(&error),
+            ios_core::ErrorClass::Timeout
+        );
         session
             .next_raw_message(&mut client, Duration::from_millis(200))
             .await

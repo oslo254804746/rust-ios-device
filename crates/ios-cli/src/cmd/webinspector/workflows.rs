@@ -98,7 +98,7 @@ pub(super) async fn wait_for_application(
             let wait = remaining_webinspector_time(deadline, timeout)?.min(PAGE_DISCOVERY_IDLE);
             match client.next_event_with_timeout(wait).await {
                 Ok(_) => continue,
-                Err(WebInspectorError::Timeout(_)) => break,
+                Err(error) if error.timeout_duration().is_some() => break,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -124,7 +124,7 @@ pub(super) async fn wait_for_inspectable_page(
             let wait = remaining_webinspector_time(deadline, timeout)?.min(PAGE_DISCOVERY_IDLE);
             match client.next_event_with_timeout(wait).await {
                 Ok(_) => continue,
-                Err(WebInspectorError::Timeout(_)) => break,
+                Err(error) if error.timeout_duration().is_some() => break,
                 Err(error) => return Err(error.into()),
             }
         }

@@ -16,9 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use ios_core::webinspector::cdp_browser::{
     self, BrowserCdpAction, BrowserCdpState, JsContextCdpAdapter,
 };
-use ios_core::webinspector::{
-    ApplicationPage, InspectorSession, WebInspectorClient, WebInspectorError, WirType,
-};
+use ios_core::webinspector::{ApplicationPage, InspectorSession, WebInspectorClient, WirType};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
@@ -208,7 +206,7 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
                                 }
                             }
                         }
-                        Err(WebInspectorError::Timeout(_)) => {},
+                        Err(error) if error.timeout_duration().is_some() => {},
                         Err(error) => return Err(error.into()),
                     }
                 }
@@ -528,7 +526,7 @@ async fn open_cdp_browser_page(
                             Ok(None) => {},
                             Err(_) => break,
                         },
-                        Err(WebInspectorError::Timeout(_)) => {},
+                        Err(error) if error.timeout_duration().is_some() => {},
                         Err(_) => break,
                     }
                 }

@@ -70,7 +70,9 @@ impl InspectorSession {
             client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, true),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "attach WebInspector session", error)
+        })??;
         if wait_for_target {
             self.wait_for_target(client, deadline, timeout_duration)
                 .await?;
@@ -91,7 +93,13 @@ impl InspectorSession {
             client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, false),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(
+                timeout_duration,
+                "attach unpaused WebInspector session",
+                error,
+            )
+        })??;
         if wait_for_target {
             self.wait_for_target(client, deadline, timeout_duration)
                 .await?;
@@ -191,7 +199,9 @@ impl InspectorSession {
             self.send_command(client, method, params),
         )
         .await
-        .map_err(|_| WebInspectorError::Timeout(timeout_duration))??;
+        .map_err(|error| {
+            super::native_timeout(timeout_duration, "send WebInspector command", error)
+        })??;
         self.wait_for_response(client, command_id, timeout_duration)
             .await
     }
@@ -441,6 +451,33 @@ impl InspectorSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_discovery_inspector_write_deadlines_keep_elapsed() {
+        for stage in 0..3 {
+            let (stream, _peer) = tokio::io::duplex(1);
+            let mut client = WebInspectorClient::with_connection_id(stream, "owned-private");
+            let mut session = InspectorSession::with_session_id("PID:42", 1, "owned-private");
+            let duration = Duration::from_millis(5);
+            let error = match stage {
+                0 => session
+                    .attach(&mut client, false, duration)
+                    .await
+                    .unwrap_err(),
+                1 => session
+                    .attach_unpaused(&mut client, false, duration)
+                    .await
+                    .unwrap_err(),
+                _ => session
+                    .send_command_and_wait(&mut client, "Runtime.enable", json!({}), duration)
+                    .await
+                    .unwrap_err(),
+            };
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+            assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+            assert!(!format!("{error:?}").contains("owned-private"));
+        }
+    }
 
     #[test]
     fn inspector_session_observe_message_updates_target_after_provisional_commit() {

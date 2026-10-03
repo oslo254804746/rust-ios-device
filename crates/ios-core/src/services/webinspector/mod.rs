@@ -36,9 +36,102 @@ service_error!(
     },
 );
 
+#[derive(thiserror::Error)]
+#[error("WebInspector deadline elapsed after {duration:?}")]
+struct WebInspectorTimeout {
+    duration: Duration,
+    #[source]
+    source: tokio::time::error::Elapsed,
+}
+
+crate::redaction::error_debug!(WebInspectorTimeout);
+
+impl WebInspectorError {
+    /// The budget reported by a WebInspector-issued deadline or the legacy
+    /// Timeout variant. Other IO TimedOut errors do not supply this value.
+    /// This identifies the issuer, not safe retry or completed cleanup.
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        if let Self::Timeout(duration) = self {
+            return Some(*duration);
+        }
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        for _ in 0..32 {
+            let Some(error) = next else { break };
+            if let Some(error) = error.downcast_ref::<WebInspectorTimeout>() {
+                return Some(error.duration);
+            }
+            next = error.source();
+        }
+        None
+    }
+}
+
+pub(super) fn native_error(
+    kind: std::io::ErrorKind,
+    phase: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> WebInspectorError {
+    WebInspectorError::Io(crate::error::context::retained_io(kind, phase, source))
+}
+
+pub(super) fn native_timeout(
+    duration: Duration,
+    phase: &'static str,
+    source: tokio::time::error::Elapsed,
+) -> WebInspectorError {
+    native_error(
+        std::io::ErrorKind::TimedOut,
+        phase,
+        WebInspectorTimeout { duration, source },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_discovery_timeout_budget_scope_is_typed_bounded_and_does_not_format() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let duration = Duration::from_millis(5);
+        let elapsed = tokio::time::timeout(duration, std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        let error = native_timeout(duration, "owned deadline", elapsed);
+        assert_eq!(error.timeout_duration(), Some(duration));
+        assert!(crate::test_native::has_source::<tokio::time::error::Elapsed>(&error));
+        assert_eq!(
+            WebInspectorError::Timeout(duration).timeout_duration(),
+            Some(duration)
+        );
+        let elapsed = tokio::time::timeout(duration, std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        let unissued =
+            WebInspectorError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed));
+        assert_eq!(crate::classify_error(&unissued), crate::ErrorClass::Timeout);
+        assert_eq!(unissued.timeout_duration(), None);
+        #[derive(Debug)]
+        struct Cycle(Arc<AtomicUsize>);
+        impl std::fmt::Display for Cycle {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private source must never be formatted")
+            }
+        }
+        impl std::error::Error for Cycle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Some(self)
+            }
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let cycle = WebInspectorError::Io(std::io::Error::other(Cycle(Arc::clone(&reads))));
+        assert_eq!(cycle.timeout_duration(), None);
+        assert!(reads.load(Ordering::SeqCst) > 0 && reads.load(Ordering::SeqCst) <= 32);
+    }
 
     #[test]
     fn disabled_error_renders_clear_action() {
