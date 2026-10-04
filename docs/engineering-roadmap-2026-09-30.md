@@ -5089,3 +5089,50 @@ backup 的 MissingValue 文本决策、debugserver 的 InvalidService 文本决�
 owner-issued source-free guards（含 accessibility empty traversal timeout）的有限复核。
 平台/真机/部署/fixture 与 L01/L03/A03 条件保留；本轮不更改 capability maturity，
 不操作真实 device/daemon/credentials/Apple、reference、push/publication 或 history。
+
+### 大类 3：A02 Lockdown 响应码与 CLI 决策交付（2026-10-04）
+
+实现提交 `08df6533265656b394b58a829653b15dfa7d197f`，前置文档基线
+`b2f81b2a07dfac6e9c4a7ed9f2a3218a26c96eee`。十个源码文件，853 insertions/
+33 deletions。专题：[Lockdown 响应码与主机验收](validation/lockdown-response-codes-2026-10-04.md)。
+
+新增 opaque `LockdownResponseError`，保留 owned operation/code，公开 typed getter
+及最多32层的 source 查询；Debug/Display 隐去原始码。GetValue/MissingValue 归类
+NotFound，StartService/InvalidService 归类 ServiceMissing，其余明确失败为
+ServiceFailure，不推断 DDI/设备支持/重试。新的 preserving Rust GetValue/StartService/
+ConnectedDevice API 共享既有传输；旧 API 保留 Protocol(String)、exhaustive families
+和成功结果。新 GetValue profile 拒绝 non-string Error，旧方法行为保持。
+
+Backup 三个 WillEncrypt 查询仅对 observed exact MissingValue 默认 false，其他原始
+error 继续传播。Debugserver 保留候选顺序，仅 exact InvalidService 回退，两次缺失
+返回最后 owned response error。文本 substring 决策移除；machine v1/exit1 保持，
+class/Display/source/correlation 可迁移。不是所有 API 都已产生 response observation。
+
+新增七测试（Core 三内部/一公开，CLI 三），迁移一旧文本断言。实际 owned duplex
+检验公开旧/新请求和错误优先级；GetValue 比 exact bytes，StartService 比 parsed
+objects。实际内存 rustls QueryType/StartSession/GetValue 经过 backup resolver，
+debugserver 实际 private candidate loop 验证两顺序/一或两次请求/最终错误/安全渲染。
+测试还覆盖边界32/cycle/panic-on-format、非字符串 Error、native EOF/host NotFound。
+TLS server no-client-auth；不是 Apple pairing/trust、ConnectedDevice/usbmux 或真机
+流程验收。准备 E0283/E0505 fixture 错误已修，未运行旧实现 negative control。
+
+Linux x86_64，Rust1.97.1/MSRV1.80.1、Python3.12.13。Canonical full 命令
+`python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`，
+session83948 terminal0、final PASS；2108 Rust/13 Python，CLI689/Core1271/公开38
+PASS，zero FAIL/two old ignored。fmt/check/strict workspace Clippy/MSRV、66 features/
+four groups、7+7 doctests/three snippets、C ABI、3.12 wheel/sdist、53 tooling/118 help/
+38 raw/five host/15 CLI/three backup contracts PASS，22 device rows NOT_RUN。
+未重复 Chromium 或 installed3.9/3.13。Source SHA256
+`55b7b8dade1e7de91cc9dd4fc62cd90bbaa0e5ce57b5752ee75ceeba0e3f37f0`；
+ios debug SHA256 `2e0650178e80fb30b7f5fc6feb45388e0ea8713233d1c84319ed1fb0bd2c7616`。
+十源文件保持冻结至 full terminal，约20GiB余量，无 clean/存储失败/restart。
+日志 `/tmp/ios-a02-lockdown-codes-`；两个 reference checkout 状态及 commit 保持，
+只比较协议行为。C/Python/dependencies 和原有 error enum definitions 未改。
+
+八文档收尾，七 Markdown/191 local links、whitespace、exact hashes/full log 和 catalog
+检查 PASS；118 capability/implementation/maturity 和所有历史 evidence 保持，只增
+一项 host evidence；记录不替代真机验收。A02/第三类/总体 goal active，第四类未开始，
+完整31任务及所有子项保持。下一有限复核已定位13个 owner-issued timeout/input/
+precondition guards（含 accessibility empty traversal timeout）；不是全部 legacy error
+清单。L01/L03/A03/platform/device 条件保留，无真实设备/Apple actions、reference
+修改、push/publication、history rewrite 或 maturity upgrade。

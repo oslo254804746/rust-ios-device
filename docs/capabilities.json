@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-lockdown-response-codes-08df653",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned duplex public GetValue/StartService requests and responses; in-memory rustls QueryType/StartSession/GetValue through the backup resolver; actual debugserver candidate loop, bounded typed source lookup, malformed received fields and native EOF/host NotFound"],
+      "required_state": ["Seven new host tests, no old-implementation negative control. TLS fixture uses no client authentication and does not prove Apple pairing/trust or ConnectedDevice/usbmux startup. Source-free response observations are not native OS/parser/timer failures; legacy APIs retain Protocol strings. No real device/daemon/credential/Apple operation, remote cleanup/reuse/retry/rollback certificate or maturity upgrade"],
+      "tested_commit": "08df6533265656b394b58a829653b15dfa7d197f",
+      "date": "2026-10-04",
+      "location": "docs/validation/lockdown-response-codes-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 additive opaque Lockdown response-code observation and preserving Rust APIs; exact GetValue/MissingValue is NotFound, exact StartService/InvalidService is ServiceMissing, other codes are ServiceFailure. Backup defaults false and debugserver falls back only on observed exact codes; final native miss retained. Public exhaustive families and legacy behavior stay; preserving GetValue explicitly rejects non-string Error. Ten source files; seven new tests, final full terminal0 with 2108 Rust/13 Python and CLI689 PASS/one existing ignored, zero failures/two existing ignored; strict checks, 66 features/four groups, C ABI and 3.12 wheel/sdist pass. Thirteen identified owner-issued guard checks remain; full 31-task scope unchanged."
+    },
+    {
       "id": "linux-cli-stream-contract-64153aa",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

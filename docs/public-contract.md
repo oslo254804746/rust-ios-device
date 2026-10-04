@@ -28,6 +28,16 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+The preserving Lockdown query/service APIs add an opaque LockdownResponseError
+with private fields and bounded typed lookup. Existing exhaustive LockdownError
+and CoreError remain. Legacy methods keep Protocol/String and shape policy;
+opt-in methods expose exact device Error codes and explicitly reject a malformed
+non-string GetValue Error. Backup/debugserver use typed observations for defaults
+and fallback, preserving native failures instead of matching error text.
+Returned source/Display/class/correlation migrate; existing wire/results and CLI
+exit/v1 shapes stay. Explicit raw code access follows the private-data boundary.
+See [response-code evidence and migration](validation/lockdown-response-codes-2026-10-04.md).
+
 Existing public struct literals are legal downstream code. Adding a required
 field, making any current public field private, changing its type, or adding
 `#[non_exhaustive]` to an already constructible struct can break that code.

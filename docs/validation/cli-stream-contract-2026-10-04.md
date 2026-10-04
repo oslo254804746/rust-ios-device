@@ -121,3 +121,7 @@ source-free guard review (including accessibility's empty traversal timeout).
 The finite binding/probe review confirms the existing scoped mapped contracts,
 not platform/device/allocator exhaustion or post-upgrade lifecycle acceptance.
 Keep the [preceding native gate](cli-native-sources-2026-10-04.md).
+
+Follow-up: [Lockdown response codes](lockdown-response-codes-2026-10-04.md)
+replaces the two named text decisions with typed observations, retaining this
+gate and its stream/lifecycle limits.

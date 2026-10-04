@@ -12,7 +12,7 @@ describe their acceptance date. R04's accepted
 
 | A02 requirement | Current host evidence / remaining boundary |
 | --- | --- |
-| Typed categories and retained sources | ErrorClass and native-source migrations below; opaque/source-free legacy errors can remain unknown. Two executable CLI decisions still parse Lockdown text: backup MissingValue and debugserver InvalidService |
+| Typed categories and retained sources | ErrorClass and native-source migrations below; preserving Lockdown APIs retain response codes and replace backup/debugserver text decisions. Opaque/source-free legacy errors can remain unknown; remaining owner-issued guards need review |
 | CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current [stream inventory](validation/cli-stream-contract-2026-10-04.md). Remaining owner-issued source-free guards need review; stronger cleanup/reuse/queue contracts belong to L01 |
 | Service and probe evidence | InitialRsdProbe distinguishes not_attempted/available/failed; RsdFeatureEvidence distinguishes missing service and unavailable metadata from advertised/not_advertised. NotAdvertised is not explicit unsupported |
 | Python mapped errors | Native factories/runtime and proxy/mode preconditions have stable attributes; argument extraction keeps Python's built-in typed exceptions. Metadata delivery can itself fail with a safe cause |
@@ -64,6 +64,32 @@ protocol cleanup. Keep the original error available when caller-authorized
 details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
+
+`LockdownResponseError` observes device-issued Error strings through the additive
+`LockdownClient::get_value_preserving_errors`, `start_service_preserving_errors`
+and ConnectedDevice preserving value-query methods. Private fields expose fixed
+operation, exact code and class getters; in_error_chain examines at most 32 typed
+sources including IO custom payloads. Debug/Display omit raw codes. GetValue's
+exact MissingValue is not_found; StartService's exact InvalidService is
+service_missing; other/wrong-operation codes are service_failure. This compares
+machine fields, never error prose. No OS/parser/timer cause is invented for a
+device response outcome. Existing exhaustive errors wrap the observation in Io.
+
+Legacy get_value/start_service retain their Protocol strings, Display and shape
+policy; existing C value queries still use that profile. Their lost response
+codes cannot be reconstructed from words. Preserving GetValue explicitly rejects
+non-string Error fields even when Value exists; legacy still accepts its Value.
+Missing Value without Error remains malformed protocol, distinct from an explicit
+MissingValue. Native IO/plist errors and valid request/value/port/SSL results stay.
+
+Backup's three WillEncrypt calls now opt in. Only observed GetValue/MissingValue
+defaults false; generic host NotFound, legacy prose and similar strings propagate
+their native source. Invalid received bool shapes classify protocol. Debugserver
+keeps its two-name order, using only observed StartService/InvalidService for
+fallback, and preserves the final error after exact misses. Category/Display/
+source/correlation migrate, while success/exit/v1/effects and existing lifecycle
+policy stay. See the [response-code host evidence](validation/lockdown-response-codes-2026-10-04.md)
+for actual owned TLS/duplex versus private/default/ConnectedDevice scope.
 
 Existing Protocol strings cannot be reclassified by words such as "timeout"
 or "permission denied". Existing Other strings remain Unknown. Several older

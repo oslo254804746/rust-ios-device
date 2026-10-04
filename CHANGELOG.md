@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add preserving Lockdown value-query and service-start APIs with safe typed
+  response-code observations and bounded lookup. Backup encryption defaults and
+  debugserver fallback use exact request/code evidence; legacy APIs retain
+  their behavior. See [migration](docs/validation/lockdown-response-codes-2026-10-04.md).
+
 - Preserve original CLI service, parser, file and elapsed timeout errors through
   typed source chains. Distinguish local input from received identifiers,
   retain opaque input strings without inventing native sources, and use the
