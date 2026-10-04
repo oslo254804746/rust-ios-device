@@ -494,7 +494,10 @@ async fn run_encryption_status(udid: &str, json: bool) -> Result<()> {
     .await?;
     let will_encrypt = resolve_will_encrypt(
         device
-            .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+            .lockdown_get_value_in_domain_preserving_errors(
+                Some(BACKUP_DOMAIN),
+                Some(WILL_ENCRYPT_KEY),
+            )
             .await,
     )?;
 
@@ -530,7 +533,10 @@ async fn run_encryption(
     .await?;
     let current = resolve_will_encrypt(
         device
-            .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+            .lockdown_get_value_in_domain_preserving_errors(
+                Some(BACKUP_DOMAIN),
+                Some(WILL_ENCRYPT_KEY),
+            )
             .await,
     )?;
     let Some(mode) = mode else {
@@ -639,7 +645,10 @@ async fn run_create(
     if patch_manifest && password.is_none() {
         let will_encrypt = resolve_will_encrypt(
             device
-                .lockdown_get_value_in_domain(Some(BACKUP_DOMAIN), Some(WILL_ENCRYPT_KEY))
+                .lockdown_get_value_in_domain_preserving_errors(
+                    Some(BACKUP_DOMAIN),
+                    Some(WILL_ENCRYPT_KEY),
+                )
                 .await,
         )?;
         ensure_patch_password(patch_manifest, password, will_encrypt)?;
@@ -1463,18 +1472,19 @@ fn plist_value_to_bool(value: &plist::Value) -> Option<bool> {
 
 fn resolve_will_encrypt<E>(value: std::result::Result<plist::Value, E>) -> Result<bool>
 where
-    E: std::fmt::Display,
+    E: std::error::Error + Send + Sync + 'static,
 {
     match value {
         Ok(value) => plist_value_to_bool(&value).ok_or_else(|| {
-            anyhow::anyhow!("{WILL_ENCRYPT_KEY} was not a boolean-compatible value: {value:?}")
+            crate::output::received_decision("WillEncrypt was not a boolean-compatible value")
         }),
         Err(err) => {
-            let err = err.to_string();
-            if err.contains("MissingValue") {
+            if ios_core::LockdownResponseError::in_error_chain(&err).is_some_and(|response| {
+                response.operation() == "GetValue" && response.code() == "MissingValue"
+            }) {
                 Ok(false)
             } else {
-                Err(anyhow::anyhow!("failed to read {WILL_ENCRYPT_KEY}: {err}"))
+                Err(anyhow::Error::new(err).context("failed to read WillEncrypt"))
             }
         }
     }
@@ -1557,13 +1567,179 @@ mod tests {
     }
 
     #[test]
-    fn resolve_will_encrypt_defaults_to_false_on_lockdown_errors() {
-        let value = resolve_will_encrypt(Err(LockdownError::Protocol(
+    fn resolve_will_encrypt_rejects_legacy_missing_value_text() {
+        let error = resolve_will_encrypt(Err(LockdownError::Protocol(
             "GetValue failed for domain=Some(\"com.apple.mobile.backup\") key=Some(\"WillEncrypt\"): MissingValue".into(),
         )))
-        .expect("lockdown read failures should default to false");
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Protocol
+        );
+        assert!(error.downcast_ref::<LockdownError>().is_some());
+    }
 
-        assert!(!value);
+    #[tokio::test]
+    async fn response_codes_backup_uses_actual_tls_get_value_code() {
+        use crate::access::test_tls_material::{CA, KEY, VALID};
+        use ios_core::{
+            recv_lockdown, send_lockdown, LockdownClient, LockdownResponseError, PairRecord,
+        };
+        use std::{io::Cursor, sync::Arc};
+        let chain = rustls_pemfile::certs(&mut Cursor::new(VALID))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = rustls_pemfile::private_key(&mut Cursor::new(KEY))
+            .unwrap()
+            .unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        for code in [
+            "MissingValue",
+            "owned-private-MissingValue",
+            "InvalidService",
+        ] {
+            let record = PairRecord {
+                device_certificate: VALID.to_vec(),
+                host_certificate: VALID.to_vec(),
+                host_private_key: KEY.to_vec().into(),
+                root_certificate: CA.to_vec(),
+                host_id: "owned-host".into(),
+                system_buid: "owned-buid".into(),
+                wifi_mac_address: None,
+            };
+            let (host, mut peer) = tokio::io::duplex(65536);
+            let caller = async {
+                let mut client = LockdownClient::connect_with_stream(host, &record)
+                    .await
+                    .unwrap();
+                let error = client
+                    .get_value_preserving_errors(
+                        Some(super::BACKUP_DOMAIN),
+                        Some(super::WILL_ENCRYPT_KEY),
+                    )
+                    .await
+                    .unwrap_err();
+                drop(client);
+                error
+            };
+            let server = async {
+                for (operation, reply) in [
+                    (
+                        "QueryType",
+                        plist::Dictionary::from_iter([(
+                            "Type".to_owned(),
+                            plist::Value::String("com.apple.mobile.lockdown".into()),
+                        )]),
+                    ),
+                    (
+                        "StartSession",
+                        plist::Dictionary::from_iter([
+                            (
+                                "SessionID".to_owned(),
+                                plist::Value::String("owned-session".into()),
+                            ),
+                            ("EnableSessionSSL".to_owned(), plist::Value::Boolean(true)),
+                        ]),
+                    ),
+                ] {
+                    let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                    assert_eq!(
+                        request.as_dictionary().unwrap()["Request"].as_string(),
+                        Some(operation)
+                    );
+                    send_lockdown(&mut peer, &reply).await.unwrap();
+                }
+                let mut tls = acceptor.accept(peer).await.unwrap();
+                let request: plist::Value = recv_lockdown(&mut tls).await.unwrap();
+                let request = request.as_dictionary().unwrap();
+                assert_eq!(request["Request"].as_string(), Some("GetValue"));
+                assert_eq!(request["Domain"].as_string(), Some(super::BACKUP_DOMAIN));
+                assert_eq!(request["Key"].as_string(), Some(super::WILL_ENCRYPT_KEY));
+                send_lockdown(
+                    &mut tls,
+                    &plist::Dictionary::from_iter([(
+                        "Error".to_owned(),
+                        plist::Value::String(code.into()),
+                    )]),
+                )
+                .await
+                .unwrap();
+            };
+            let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                LockdownResponseError::in_error_chain(&error)
+                    .unwrap()
+                    .code(),
+                code
+            );
+            let result = resolve_will_encrypt::<ios_core::CoreError>(Err(error.into()));
+            if code == "MissingValue" {
+                assert!(!result.unwrap());
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::ServiceFailure
+                );
+                assert_eq!(
+                    LockdownResponseError::in_error_chain(error.as_ref())
+                        .unwrap()
+                        .code(),
+                    code
+                );
+                let envelope = crate::output::operation_failure_message(
+                    crate::output::ErrorFormat::Json,
+                    "backup",
+                    &error,
+                )
+                .unwrap();
+                assert!(!envelope.contains("owned-private"));
+            }
+        }
+    }
+
+    #[test]
+    fn response_codes_backup_does_not_treat_unobserved_not_found_as_missing_value() {
+        let native = std::fs::File::open("").unwrap_err();
+        let os_code = native.raw_os_error();
+        let error = resolve_will_encrypt(Err(native)).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::NotFound
+        );
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            os_code
+        );
+        for value in [
+            plist::Value::String("MissingValue".into()),
+            plist::Value::Array(vec![]),
+        ] {
+            let error = resolve_will_encrypt::<LockdownError>(Ok(value)).unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Protocol
+            );
+        }
+        assert!(!resolve_will_encrypt::<LockdownError>(Ok(plist::Value::Boolean(false))).unwrap());
+        assert!(
+            resolve_will_encrypt::<LockdownError>(Ok(plist::Value::Integer(7.into()))).unwrap()
+        );
     }
 
     #[test]

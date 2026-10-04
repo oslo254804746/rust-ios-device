@@ -169,6 +169,45 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    start_service_with_policy(
+        reader,
+        writer,
+        service_name,
+        super::response_error::ResponseErrorPolicy::Legacy,
+    )
+    .await
+}
+
+/// Start a service while retaining its device Error field as LockdownResponseError.
+/// The request, port/SSL result and native transport errors keep their behavior.
+pub async fn start_service_preserving_errors<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    start_service_with_policy(
+        reader,
+        writer,
+        service_name,
+        super::response_error::ResponseErrorPolicy::Preserve,
+    )
+    .await
+}
+
+async fn start_service_with_policy<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    service_name: &str,
+    policy: super::response_error::ResponseErrorPolicy,
+) -> Result<(u16, bool), LockdownError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     send_lockdown(
         writer,
         &StartServiceRequest {
@@ -182,9 +221,9 @@ where
 
     // Check if device returned an error instead of a port
     if let Some(err) = resp.error {
-        return Err(LockdownError::Protocol(format!(
-            "StartService '{service_name}' failed: {err}"
-        )));
+        return Err(policy.remote_error("StartService", err, |err| {
+            format!("StartService '{service_name}' failed: {err}")
+        }));
     }
 
     let port = resp.port.ok_or_else(|| {

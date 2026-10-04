@@ -181,6 +181,29 @@ impl ConnectedDevice {
         client.get_value(domain, key).await.map_err(CoreError::from)
     }
 
+    /// Get a value with typed device Error-field observations.
+    pub async fn lockdown_get_value_preserving_errors(
+        &self,
+        key: Option<&str>,
+    ) -> Result<plist::Value, CoreError> {
+        self.lockdown_get_value_in_domain_preserving_errors(None, key)
+            .await
+    }
+
+    /// Get a domain value with the preserving Lockdown response-error policy.
+    /// This does not change connection establishment or guarantee safe retry.
+    pub async fn lockdown_get_value_in_domain_preserving_errors(
+        &self,
+        domain: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<plist::Value, CoreError> {
+        let mut client = self.lockdown_client().await?;
+        client
+            .get_value_preserving_errors(domain, key)
+            .await
+            .map_err(CoreError::from)
+    }
+
     /// Set a lockdown value by key (domain=None for global domain).
     pub async fn lockdown_set_value(
         &self,

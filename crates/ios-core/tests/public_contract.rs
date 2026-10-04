@@ -8,6 +8,104 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[tokio::test]
+async fn response_codes_public_start_service_keeps_legacy_api_and_owned_observation() {
+    use ios_core::{
+        classify_error, recv_lockdown, send_lockdown, start_service,
+        start_service_preserving_errors, CoreError, ErrorClass, LockdownError,
+        LockdownResponseError,
+    };
+    fn family(error: &LockdownError) -> &str {
+        match error {
+            LockdownError::Io(_) => "io",
+            LockdownError::Protocol(_) => "protocol",
+            LockdownError::PairRecord(_) => "pair-record",
+        }
+    }
+    for code in [
+        Some("InvalidService"),
+        Some("MissingValue"),
+        Some("owned-private-InvalidService"),
+        None,
+    ] {
+        let mut requests = Vec::new();
+        for preserve in [false, true] {
+            let (host, mut peer) = tokio::io::duplex(4096);
+            let (mut reader, mut writer) = tokio::io::split(host);
+            let caller = async {
+                if preserve {
+                    start_service_preserving_errors(
+                        &mut reader,
+                        &mut writer,
+                        "owned-private-service",
+                    )
+                    .await
+                } else {
+                    start_service(&mut reader, &mut writer, "owned-private-service").await
+                }
+            };
+            let server = async {
+                let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                let mut reply = plist::Dictionary::from_iter([
+                    ("Port".to_owned(), plist::Value::Integer(1234.into())),
+                    ("EnableServiceSSL".to_owned(), plist::Value::Boolean(true)),
+                ]);
+                if let Some(code) = code {
+                    reply.insert("Error".into(), plist::Value::String(code.into()));
+                }
+                send_lockdown(&mut peer, &reply).await.unwrap();
+                request
+            };
+            let (result, request) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    tokio::join!(caller, server)
+                })
+                .await
+                .unwrap();
+            requests.push(request);
+            if let Some(code) = code {
+                let error = result.unwrap_err();
+                assert_eq!(family(&error), if preserve { "io" } else { "protocol" });
+                if preserve {
+                    let core = CoreError::from(error);
+                    let observed = LockdownResponseError::in_error_chain(&core).unwrap();
+                    assert_eq!(observed.operation(), "StartService");
+                    assert_eq!(observed.code(), code);
+                    assert_eq!(
+                        classify_error(&core),
+                        if code == "InvalidService" {
+                            ErrorClass::ServiceMissing
+                        } else {
+                            ErrorClass::ServiceFailure
+                        }
+                    );
+                    assert!(!format!("{observed:?} {observed} {core:?} {core}")
+                        .contains("owned-private"));
+                } else {
+                    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+                    assert!(LockdownResponseError::in_error_chain(&error).is_none());
+                    assert_eq!(
+                        error.to_string(),
+                        format!(
+                            "protocol error: StartService 'owned-private-service' failed: {code}"
+                        )
+                    );
+                }
+            } else {
+                assert_eq!(result.unwrap(), (1234, true));
+            }
+        }
+        assert_eq!(requests[0], requests[1]);
+        let request = requests[0].as_dictionary().unwrap();
+        assert_eq!(request["Request"].as_string(), Some("StartService"));
+        assert_eq!(
+            request["Service"].as_string(),
+            Some("owned-private-service")
+        );
+        assert_eq!(request["Label"].as_string(), Some("ios-rs"));
+    }
+}
+
 #[cfg(feature = "afc")]
 #[tokio::test]
 async fn public_guarded_sources_afc_rejects_received_length_with_owned_stream() {

@@ -5,6 +5,7 @@
 
 pub mod client;
 mod error_context;
+mod response_error;
 crate::redaction::error_debug!(LockdownError);
 pub(crate) mod pair_record;
 #[cfg(feature = "tunnel")]
@@ -22,9 +23,10 @@ pub use protocol::{
     StartServiceResponse, StartSessionRequest, StartSessionResponse, StopSessionRequest,
     ValueOperationResponse, LOCKDOWN_PORT,
 };
+pub use response_error::LockdownResponseError;
 pub use session::{
-    handshake_only_service_tls, start_lockdown_session, start_service, strip_service_tls,
-    wrap_service_tls, CORE_DEVICE_PROXY,
+    handshake_only_service_tls, start_lockdown_session, start_service,
+    start_service_preserving_errors, strip_service_tls, wrap_service_tls, CORE_DEVICE_PROXY,
 };
 #[cfg(feature = "supervised-pair")]
 pub use supervised_pair::{pair_supervised, save_pair_record, FullPairRecord};

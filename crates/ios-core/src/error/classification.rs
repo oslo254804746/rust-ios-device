@@ -138,6 +138,9 @@ macro_rules! typed_class {
 use typed_class;
 
 fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
+    if let Some(error) = error.downcast_ref::<crate::LockdownResponseError>() {
+        return Some(error.class());
+    }
     if let Some(error) = error.downcast_ref::<super::context::RetainedCause>() {
         return Some(error.class());
     }

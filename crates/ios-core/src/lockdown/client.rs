@@ -1,6 +1,7 @@
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use super::response_error::ResponseErrorPolicy;
 use crate::lockdown::pair_record::PairRecord;
 use crate::lockdown::protocol::*;
 use crate::lockdown::session::start_lockdown_session;
@@ -36,6 +37,28 @@ impl LockdownClient {
         domain: Option<&str>,
         key: Option<&str>,
     ) -> Result<plist::Value, LockdownError> {
+        self.get_value_with_policy(domain, key, ResponseErrorPolicy::Legacy)
+            .await
+    }
+
+    /// Get a value while retaining device Error fields as LockdownResponseError.
+    /// Requests and successful values retain the legacy policy. A present
+    /// non-string Error field is rejected as malformed received protocol data.
+    pub async fn get_value_preserving_errors(
+        &mut self,
+        domain: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<plist::Value, LockdownError> {
+        self.get_value_with_policy(domain, key, ResponseErrorPolicy::Preserve)
+            .await
+    }
+
+    async fn get_value_with_policy(
+        &mut self,
+        domain: Option<&str>,
+        key: Option<&str>,
+        policy: ResponseErrorPolicy,
+    ) -> Result<plist::Value, LockdownError> {
         send_lockdown(
             &mut self.writer,
             &GetValueRequest {
@@ -47,7 +70,12 @@ impl LockdownClient {
         )
         .await?;
         let resp: plist::Value = recv_lockdown(&mut self.reader).await?;
-        extract_get_value(resp, domain, key)
+        match policy {
+            ResponseErrorPolicy::Legacy => extract_get_value(resp, domain, key),
+            ResponseErrorPolicy::Preserve => {
+                extract_get_value_with_policy(resp, domain, key, policy)
+            }
+        }
     }
 
     /// Set a lockdown value.
@@ -268,11 +296,30 @@ fn extract_get_value(
     domain: Option<&str>,
     key: Option<&str>,
 ) -> Result<plist::Value, LockdownError> {
+    extract_get_value_with_policy(response, domain, key, ResponseErrorPolicy::Legacy)
+}
+
+fn extract_get_value_with_policy(
+    response: plist::Value,
+    domain: Option<&str>,
+    key: Option<&str>,
+    policy: ResponseErrorPolicy,
+) -> Result<plist::Value, LockdownError> {
     if let plist::Value::Dictionary(mut values) = response {
-        if let Some(plist::Value::String(error)) = values.remove("Error") {
-            return Err(LockdownError::Protocol(format!(
-                "GetValue failed for domain={domain:?} key={key:?}: {error}"
-            )));
+        if let Some(error) = values.remove("Error") {
+            match error {
+                plist::Value::String(error) => {
+                    return Err(policy.remote_error("GetValue", error, |error| {
+                        format!("GetValue failed for domain={domain:?} key={key:?}: {error}")
+                    }))
+                }
+                _ if matches!(policy, ResponseErrorPolicy::Preserve) => {
+                    return Err(LockdownError::Protocol(
+                        "GetValue Error field is not a string".into(),
+                    ))
+                }
+                _ => {}
+            }
         }
 
         if let Some(value) = values.remove("Value") {
@@ -296,6 +343,167 @@ mod tests {
     use std::error::Error;
 
     use super::*;
+
+    #[tokio::test]
+    async fn response_codes_get_value_preserves_wire_code_and_legacy_policy() {
+        use crate::{classify_error, ErrorClass, LockdownResponseError};
+        for code in [
+            "MissingValue",
+            "InvalidService",
+            "owned-private-MissingValue",
+            "",
+        ] {
+            let mut requests = Vec::new();
+            for preserve in [false, true] {
+                let (host, mut peer) = tokio::io::duplex(4096);
+                let (reader, writer) = tokio::io::split(host);
+                let mut client = LockdownClient {
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    session_id: None,
+                };
+                let caller = async {
+                    let error = if preserve {
+                        client
+                            .get_value_preserving_errors(Some("owned-domain"), Some("owned-key"))
+                            .await
+                    } else {
+                        client
+                            .get_value(Some("owned-domain"), Some("owned-key"))
+                            .await
+                    }
+                    .unwrap_err();
+                    drop(client);
+                    error
+                };
+                let server = async {
+                    let request = recv_frame(&mut peer).await.unwrap();
+                    let reply = plist::Dictionary::from_iter([
+                        ("Error".to_string(), plist::Value::String(code.into())),
+                        ("Value".to_string(), plist::Value::Boolean(true)),
+                    ]);
+                    send_lockdown(&mut peer, &reply).await.unwrap();
+                    request
+                };
+                let (error, request) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                        tokio::join!(caller, server)
+                    })
+                    .await
+                    .unwrap();
+                requests.push(request);
+                if preserve {
+                    let observed = LockdownResponseError::in_error_chain(&error).unwrap();
+                    assert_eq!(observed.operation(), "GetValue");
+                    assert_eq!(observed.code(), code);
+                    assert_eq!(
+                        classify_error(&error),
+                        if code == "MissingValue" {
+                            ErrorClass::NotFound
+                        } else {
+                            ErrorClass::ServiceFailure
+                        }
+                    );
+                    assert!(observed.source().is_none());
+                    assert!(!format!("{error:?} {error}").contains("owned-private"));
+                } else {
+                    assert!(LockdownResponseError::in_error_chain(&error).is_none());
+                    assert_eq!(classify_error(&error), ErrorClass::Protocol);
+                    let LockdownError::Protocol(text) = error else {
+                        panic!("legacy variant changed")
+                    };
+                    assert_eq!(text, format!("GetValue failed for domain=Some(\"owned-domain\") key=Some(\"owned-key\"): {code}"));
+                }
+            }
+            assert_eq!(requests[0], requests[1]);
+            let request: plist::Value = plist::from_bytes(&requests[0]).unwrap();
+            let request = request.as_dictionary().unwrap();
+            assert_eq!(request["Request"].as_string(), Some("GetValue"));
+            assert_eq!(request["Label"].as_string(), Some("ios-rs"));
+            assert_eq!(request["Domain"].as_string(), Some("owned-domain"));
+            assert_eq!(request["Key"].as_string(), Some("owned-key"));
+        }
+    }
+
+    #[tokio::test]
+    async fn response_codes_get_value_retains_success_shapes_and_native_io() {
+        use crate::{classify_error, ErrorClass, LockdownResponseError};
+        for reply in [
+            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                "Value".to_owned(),
+                plist::Value::Boolean(false),
+            )])),
+            plist::Value::Dictionary(plist::Dictionary::new()),
+            plist::Value::Array(vec![]),
+            // Legacy accepts the Value; preserving refuses this malformed Error.
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("Error".to_owned(), plist::Value::Integer(7.into())),
+                ("Value".to_owned(), plist::Value::Boolean(true)),
+            ])),
+        ] {
+            let mut results = Vec::new();
+            for preserve in [false, true] {
+                let mut client = LockdownClient {
+                    reader: Box::new(MockStream::with_response(reply.clone())),
+                    writer: Box::new(MockStream::eof()),
+                    session_id: None,
+                };
+                let result = if preserve {
+                    client.get_value_preserving_errors(None, None).await
+                } else {
+                    client.get_value(None, None).await
+                };
+                match result {
+                    Ok(value) => results.push(Ok(value)),
+                    Err(error) => {
+                        assert_eq!(classify_error(&error), ErrorClass::Protocol);
+                        assert!(LockdownResponseError::in_error_chain(&error).is_none());
+                        results.push(Err(error.to_string()));
+                    }
+                }
+            }
+            if reply
+                .as_dictionary()
+                .is_some_and(|reply| reply.contains_key("Error"))
+            {
+                assert_eq!(results[0], Ok(plist::Value::Boolean(true)));
+                assert_eq!(
+                    results[1],
+                    Err("protocol error: GetValue Error field is not a string".to_owned())
+                );
+            } else {
+                assert_eq!(results[0], results[1]);
+            }
+        }
+        let (host, mut peer) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(host);
+        let mut client = LockdownClient {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+            session_id: None,
+        };
+        let caller = async {
+            client
+                .get_value_preserving_errors(None, None)
+                .await
+                .unwrap_err()
+        };
+        let server = async {
+            let _: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+            drop(peer);
+        };
+        let (error, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert_eq!(classify_error(&error), ErrorClass::Io);
+        let LockdownError::Io(io) = &error else {
+            panic!("native IO changed")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(LockdownResponseError::in_error_chain(&error).is_none());
+    }
 
     #[tokio::test]
     async fn actual_product_version_parse_retains_semver_source_and_normalization() {
