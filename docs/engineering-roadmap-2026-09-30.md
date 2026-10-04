@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown 与 DeviceLink client 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink 与 MobileBackup2 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5659,3 +5659,80 @@ Raw borrowed sessions、setup/service/多请求 totals、其他服务/longstream
 ownership、blocking-worker/resource bounds、L02–L04/Q04/platform/device 条件保留。
 取消 host spawn_blocking 的 await 不等于 worker 已停止；未操作设备/credentials/Apple、
 未改 reference、push/publication/history。
+
+### 大类 4：L01 MobileBackup2 complete operation ownership 交付（2026-10-04）
+
+受测实现 `d2828b802e697ff4d1069744e89d7a1eb31214c7`，基线
+`65cf7384eafac8fb36ecd0cd09b105faaf119830`；明确七个授权源码/测试文件，
+1280 insertions/77 deletions。Linux x86_64、Rust1.97.1/MSRV1.80.1、项目
+Python3.12.13。主机交付，不升级 device maturity。
+索引：[MobileBackup2 gate](validation/backup-lifecycle-2026-10-04.md)、
+[生命周期](lifecycle-contract.md)、[兼容](public-contract.md)、
+[错误](error-contract.md)、[备份](backup-contract.md)。
+
+Mobilebackup2Client 新增 is_usable/set_operation_timeout；一个 absolute budget
+覆盖 version/Hello、command、host work、raw upload/download 和 cleanup。
+Ordinary defaultNone 保留 unbounded timing，Unback/Extract 保留300s ceiling，
+更短 configured budget clamp。Zero/overflow 在 IO/host work 前拒绝，actual expiry
+保留 Elapsed；同步 encode/decode 和已运行 blocking worker 仍为 cooperative 边界。
+Private accepted-byte transport/operation guard 拒绝未完成有进度的取消/失败及 native
+IO/EOF 后复用，九个 public operations 不再读取 late reply；释放私有 diagnostic/
+filter/discarded-path state。Empty idle、unpolled/local pre-IO failure 可保留状态。
+Boxed future 直接 owned，无新增 background tasks/queues。
+
+完整 DLMessageProcessMessage 在业务 dictionary/ErrorCode 校验前标 terminal，
+保持既有 bounded disconnect。Cleanup 共享 total deadline 和 DeviceLink5s cap；
+operation expiry 不再启动 late disconnect，abandoned raw transfer 不插入 control。
+完整 terminal reply 后预期 BrokenPipe/ConnectionAborted/ConnectionReset/
+NotConnected/UnexpectedEof 保留旧 completion policy，但 local transport unusable。
+其他 cleanup error 包括成功后的失败均报告。新增 opaque SessionCleanupFailure /
+cleanup_failure，32 typed sources（含 IO payload）有界查找，借用两个原 error。
+Dual failure 用既有 Io，source/category 跟随 primary；cleanup await 期间 primary
+仍 owned，outer expiry drop body 不丢失。这明确替换旧 cleanup-timeout-first 分类。
+四个 public error variants 保留；无 asyncDrop/remoteACK/rollback/retry/workerstop 保证。
+
+十二 new tests（十一 internal/一 external），最终 full/no-default minimum 各十二
+PASS；backup lib107 PASS/一既有 ignore、integration11、DeviceLink14、旧 CLI 五项
+16KiB stack、backup CLI21、strictCore/CLI Clippy/fmt PASS。覆盖 preflight/idle、
+version后zero-byte Hello wait、sent/fragmented late reply、negotiation/host/final
+reply total、raw两方向取消、hostwait与hostcleanup expiry、native/actual5s cleanup
+双分支、cycle/context lookup、public九个Send/exhaustive四variant。
+Controlled worker release 不证明任意 spawn_blocking stop/join；无 old-source negative
+control、benchmark、真机或其他平台验收。
+
+交接旧回归95PASS/1FAIL/1ignored，terminal标记已提前；最新交接source仅fmt/diff。
+本次 narrow68597 terminal101 为测试 E0283，显式 plist::Value 修正；74098 terminal0
+十二PASS，lib89356 terminal0 107PASS/一ignore。Pipeline11316 在 explicit integration
+3PASS/8FAIL 停101：终止reply后的预期断连被新 checked cleanup 报错。恢复原准确
+suppressible IO-kind policy，未改 integration/session 断言；最终 pipeline82468
+terminal0 全部上述 narrow/minimum/regression/CLI/Clippy/fmt。源码审计确认原 transfer/
+host-command tail 除已审查terminal marker外字节保持，Hello parser、旧session/
+integration/publicconsumer保持；旧 native fixture count 保持，显式迁移 no-late-
+disconnect 与 primary优先。DeviceLink仅private getter；protocol/host_fs/manifest/
+root/enums/classifier/frontends/deps 和只读refs HEAD/status保持。
+
+第11节 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session1410 terminal0，
+validation/full PASS：2216Rust/13Python、0FAIL/two existing ignored，CLI706/
+Core1354/public46。Rust/Python拆分；workspacefmt/check/strictClippy/MSRV、
+66features/fourgroups、7+7docs/3snips、CABI、3.12wheel/sdist/install、53tooling/
+118actual-help/38raw/5host/15CLI/3backup合同全部PASS。Frozen source SHA256
+`64e0009837d0f74c146897ab3f3e01312b088659f83d23efcdcd7d10fb61d36c`；ios debug SHA256
+`235f77ff5cfd61afa1b3838c0b048fe929a499800f8a4c71d2f4cfa0027a45c1`。
+Source冻结至完整gate和实现commit；full前约6.0GiB/后4.2GiB，无clean/storagefailure。
+本地日志/audits `/tmp/ios-l01-backup-lifecycle-`，结果保存在本节及专题。
+
+九文档收尾审计PASS：八Markdown/280 local links，testedcommit/frozen source/binary、
+full/narrow/minimum/regression/CLI/preparation及只读refs一致；Capability118源目录及
+actual CLI help检查PASS，正文/maturity/history仅追加hostevidence。全部31任务/
+subtasks/历史精确保留，除L01overview行外旧roadmap prefix相等，新记录位于末尾。
+文档收尾未改产品source。
+
+总体仍9项完成、11项未开始、11项进行中/待验收/待条件；完整31任务及全部subtasks
+保留。L01/第四类/总体goal active；下一独立owner NotificationProxy framing/idle/
+subscription/shutdown，再继续其他协议/cleanup、borrowedrawsessions、setup/service/
+多request总预算、longstreams/manualpairing、blockingworker/resources、L02–L04/Q04
+和第五至九类。22device rows NOT_RUN；Chromium/installed3.9/3.13未重跑，Capability118
+正文/maturity/history保持，仅增hostevidence。平台/设备/credentials/协议条件如实保留，
+不猜协议、不把主机验收当真机。无设备/Apple操作、reference edits、push/publication/
+history rewrite。

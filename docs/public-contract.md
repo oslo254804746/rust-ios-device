@@ -28,6 +28,29 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+Mobilebackup2Client adds is_usable and set_operation_timeout(Option<Duration>).
+Default None keeps ordinary operations unbounded; DeviceUnback/Extract retain
+their five-minute ceiling, shortened by a configured total budget. The owner
+covers negotiation, command, host work, raw transfer and final cleanup. Zero or
+overflow rejects before I/O; actual expiry retains Elapsed. Interrupted progress
+and native failures reject all later operations before I/O; an empty idle wait
+or local pre-I/O failure can remain usable. No late disconnect is sent after
+operation expiry or during an abandoned raw transfer. Complete terminal business
+validation still permits the bounded disconnect attempt. Expected peer closure
+after that reply preserves the previous completion policy but prevents reuse.
+
+Mobilebackup2Error keeps its four variants and adds cleanup_failure(), borrowing
+an opaque SessionCleanupFailure with operation_error()/cleanup_error(). Dual
+failure uses existing Io, retains both original objects and follows the primary
+in its source chain/category. This replaces the former cleanup-timeout-first
+classification for affected dual failures. An outer expiry while cleanup waits
+also preserves an earlier operation error. The older device_operation_timeout()
+getter remains, with bounded source lookup. Successful disconnect closes local
+reuse; no asynchronous Drop, remote ACK, rollback or safe retry is implied.
+Cancelled blocking awaiters may leave workers running. Wire, parsers, transfer
+limits, frontend schemas and dependencies remain. See
+[MobileBackup2 host acceptance and migration](validation/backup-lifecycle-2026-10-04.md).
+
 DeviceLinkClient adds is_usable, set_operation_timeout(Option<Duration>) and
 call_process_message. Default None keeps unbounded message/idle timing. One
 absolute budget covers a complete version exchange or process send/reply;

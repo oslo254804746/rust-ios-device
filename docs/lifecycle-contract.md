@@ -7,7 +7,9 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `ddd3620f058c6c23649a083d209dceb41f0eb472`; the XPC client profile is
 `09ed113e2d19489259a43c3a35de9e00caacb1a6`; borrowed RSD bootstrap/read ownership is
 `85b8621f069b164d7da251a9531faf43b3456691`; Lockdown client ownership is
-`79f750e78b4550909c440fc4697b592101878935`. This contract records implemented profiles and
+`79f750e78b4550909c440fc4697b592101878935`; DeviceLink message/handshake ownership is
+`3db5c1835ad73bf881c1c6a334674bc566cfe641`; MobileBackup2 operation ownership is
+`d2828b802e697ff4d1069744e89d7a1eb31214c7`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -214,12 +216,37 @@ DeviceLink; its valid-connection timeout-retention fixtures remain.
 
 Public stream_mut and into_inner retain their signatures and transfer raw
 framing/cancellation responsibility to the caller. They bypass tracking and do
-not restore an unusable transport. MobileBackup2 still needs an outer owner for
-its Hello/command/host-work gaps, raw upload/download bytes and complete operation
-cleanup. Existing five-minute Unback/Extract deadline policy is unchanged;
-blocking filesystem work is not certified stopped by cancelling its await.
-Screenshot and other raw plist helpers remain separate profiles. See
+not restore an unusable transport. MobileBackup2 now supplies the outer operation
+owner described below. Screenshot and other raw plist helpers remain separate
+profiles. See
 [DeviceLink fixtures and migration](validation/device-link-lifecycle-2026-10-04.md).
+
+Mobilebackup2Client guards the complete public operation across version/Hello,
+command, host work, raw upload/download and cleanup. Optional operation timeout
+is one absolute budget; default None retains ordinary unbounded timing, while
+DeviceUnback/Extract keep their five-minute ceiling. Zero/overflow rejects before
+I/O or host work. Actual expiry retains Elapsed, with typed operation evidence
+for Unback/Extract. Boxing the directly owned future preserves CLI stack bounds.
+
+Cancellation/failure after accepted bytes before terminal completion, native
+transport failures and EOF invalidate. All nine operation paths then reject
+before I/O; private filter, diagnostic and discarded-path state is released.
+Empty idle cancellation, unpolled futures and local pre-I/O failures can preserve
+reuse. A complete DLMessageProcessMessage marks terminal completion before its
+business dictionary validation, retaining the existing disconnect attempt.
+Cleanup shares the total deadline and DeviceLink's independent five-second cap;
+expiry does not start another disconnect or interleave it with a raw transfer.
+Expected terminal peer closure retains prior completion policy, with unusable
+local transport. Other cleanup failure is returned, including after success.
+
+SessionCleanupFailure retains both original errors under existing Io; its main
+source/category follows the primary and cleanup_error borrows the separate
+branch. The primary remains owned while cleanup awaits, including outer expiry
+that drops that body. Lookup is bounded to 32 typed sources. No background task,
+async Drop, remote cleanup ACK, retry or rollback guarantee is added. Host
+spawn_blocking jobs can outlive a dropped awaiter; the controlled released-worker
+fixture does not establish stop/join for arbitrary filesystem work. See
+[MobileBackup2 fixtures and migration](validation/backup-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

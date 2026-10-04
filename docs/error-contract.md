@@ -65,6 +65,21 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+MobileBackup2's current operation owner retains both failures through
+Mobilebackup2Error::cleanup_failure() and its opaque SessionCleanupFailure.
+operation_error()/cleanup_error() borrow the original objects. Existing Io wraps
+dual failure; its source chain and category follow the primary, including when
+outer expiry drops a pending cleanup body. Cleanup expiry after an earlier
+protocol error therefore remains protocol, with issued Elapsed in the separately
+borrowed cleanup branch. Single failures keep their original object; unexpected
+cleanup failure after success is reported. Lookup inspects at most 32 typed
+sources, including custom IO payloads. The four error variants remain.
+Zero/overflow admission precedes I/O; native failure or interrupted progress
+rejects reuse. Total expiry starts no late disconnect. Expected peer closure
+after a complete terminal reply preserves the existing completion policy while
+local reuse becomes unavailable. No remote cleanup/retry claim follows. See
+[current backup lifecycle evidence](validation/backup-lifecycle-2026-10-04.md).
+
 DeviceLink operation expiry retains actual Elapsed in existing Io.get_ref;
 zero budget is source-free TimedOut and unrepresentable ordinary budgets are
 InvalidInput. Disconnect clamps its configured budget to five seconds, including
@@ -74,8 +89,8 @@ framing reusable, while an aborted version handshake after progress invalidates.
 MobileBackup2 native EOF now returns its original DeviceLink::Io directly rather
 than issuing a later cleanup timeout: invalid DeviceLink rejects disconnect
 before another write. Existing cleanup-timeout retention on valid business/
-success/pending paths remains. Raw transfer/session-wide ownership and other
-cleanup failures still require their surrounding caller's policy. See
+success/pending paths was retained in that DeviceLink increment. The subsequent
+MobileBackup2 owner above supplies raw/session ownership and primary retention. See
 [DeviceLink lifecycle evidence](validation/device-link-lifecycle-2026-10-04.md).
 
 LockdownClient request/close expiry retains actual Elapsed in existing
@@ -296,7 +311,8 @@ blocking-work behavior stay. Source retention does not add bounds, rollback or
 cleanup guarantees. The [DDI/TSS evidence](validation/image-assets-native-sources-2026-10-03.md)
 records native/local-injected faults, corrected baseline fixtures and limits.
 
-MobileBackup2 Unback/Extract retain actual operation and disconnect `Elapsed`
+Historical A02 MobileBackup2 profile (superseded for lifecycle/dual-failure
+precedence by the current owner above): Unback/Extract retain actual operation and disconnect `Elapsed`
 under the existing Io variant, changing their former Protocol class to timeout.
 `Mobilebackup2Error::device_operation_timeout()` inspects at most 32 typed
 sources for issued `DeviceOperationTimeout` evidence. Its `operation()`,

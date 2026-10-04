@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-backup-lifecycle-d2828b8",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex negotiation, sent/fragmented replies, raw upload/download cancellation, late reply rejection, controlled host worker waits, shared total budget and native/actual five-second cleanup failures; bounded source lookup and external Send/exhaustive error contract"],
+      "required_state": ["Seven source/test files; twelve new full/no-default tests PASS, backup107/one existing ignored, integration11, DeviceLink14, CLI stack5 and backup CLI21 PASS. Default ordinary None; Unback/Extract300s ceiling. No background tasks/async Drop/remote ACK or arbitrary blocking-worker stop/join. Expected terminal peer closure retains prior success policy while local reuse fails. All31 tasks/subtasks/history/maturity retained; 22 device NOT_RUN"],
+      "tested_commit": "d2828b802e697ff4d1069744e89d7a1eb31214c7",
+      "date": "2026-10-04",
+      "location": "docs/validation/backup-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "MobileBackup2 owns negotiation/command/host work/raw transfer/cleanup with optional absolute budget, accepted-byte invalidation and no late disconnect after expiry. Dual failure retains primary and cleanup under existing Io; primary drives source/category even when expiry drops cleanup body. Four error variants, original parsers/session/integration assertions/limits/frontends/dependencies/read-only references preserved, with explicit old deadline migration. Full1410 terminal0: 2216 Rust/13 Python, zero FAIL/two existing ignored and all section11 split gates PASS. No device/other-platform/benchmark acceptance or maturity upgrade; L01/class4/all31 active."
+    },
+    {
       "id": "linux-device-link-lifecycle-3db5c18",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

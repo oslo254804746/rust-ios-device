@@ -7,6 +7,17 @@ compiled; `backup2-manifest` enables local index/filter/extraction operations.
 Public local filesystem functions remain synchronous. Async core/CLI callers
 use owned blocking jobs for disk operations and retain original error sources.
 
+Mobilebackup2Client now reports local is_usable and accepts an optional total
+operation budget. It owns negotiation, host work, raw transfer and cleanup;
+interrupted progress requires a fresh transport. Ordinary default timing remains
+unbounded; Unback/Extract retain their five-minute ceiling. Cleanup respects the
+remaining total budget and the independent five-second disconnect cap, retaining
+both primary and unexpected cleanup failures through cleanup_failure(). Expected
+peer closure after a complete terminal reply retains the prior completion policy.
+Drop cannot await disconnect or stop an already running blocking worker. These
+are host-tested ownership rules, with device backup/restore acceptance pending.
+See [lifecycle evidence and migration](validation/backup-lifecycle-2026-10-04.md).
+
 `ios backup list-local <BACKUP_DIRECTORY> --source <IDENTIFIER>` defaults to a
 pretty JSON array with `file_id`, `domain`, `relative_path`, integer `mode`,
 integer `size` and `link_target` (null when absent). With global `--no-json`, each

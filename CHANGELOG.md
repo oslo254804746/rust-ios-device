@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard MobileBackup2 operations across negotiation, host work and raw transfer
+  cancellation. Add optional total budgets and local usable state; retain both
+  primary and cleanup failures. Preserve expected peer closure after a complete
+  terminal reply. See [backup lifecycle migration](docs/validation/backup-lifecycle-2026-10-04.md).
+
 - Guard DeviceLink message and version-exchange ownership across cancellation.
   Add optional operation budgets, local usable state and a process call sharing
   send/reply timing. Bound disconnect writes to five seconds and reject reuse
