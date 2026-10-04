@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-lockdown-lifecycle-79f750e",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex request zero/overflow/unpolled/local serialization, complete sent cancellation/expiry and late reply, partial reply, 512-byte blocked 4096-byte send with 125ms send/125ms complete reply under 200ms total; private prefilled 64-byte empty write and cached four-byte length; business error then success, native EOF/bad plist/oversize; StopSession exact successful/idempotent close, native error, caller cancellation, short expiry and actual default5s expiry; real QueryType/StartSession/TLS upgrade with synthetic material then public expired query; external signatures/exhaustive family"],
+      "required_state": ["Three source/test files; ten new tests, nine internal/one external, final all-features/default minimum ten PASS, Lockdown73 and five original CLI stack-budget checks PASS. External test checks getter/setter/eight named Send futures/exhaustive three-variant family, without a device session. Synthetic TLS has no client authentication/Apple trust. No old-source negative control, benchmark or platform/device acceptance. Request default None, no new setup budget/raw-helper guard; manual close5s with shorter configured clamp, local closed state without ACK, separate caller-owned primary/cleanup results. All 31 tasks/subtasks/maturity/history retained"],
+      "tested_commit": "79f750e78b4550909c440fc4697b592101878935",
+      "date": "2026-10-04",
+      "location": "docs/validation/lockdown-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "LockdownClient guards shared send/flush/reply deadlines and accepted-byte ownership, rejects cached/late reuse after interrupted requests while keeping original failures and complete business reply policy. Zero/local pre-I/O errors/empty writes can retain state; native transport error/EOF invalidates. Stop success marks closed/repeat local no-op; failed or cancelled close retains uncertain private identifier. Transport/opaque buffers stay owned until Drop without async stop/tasks/cleanup ACK/safe retry. First full session36426 terminal0: 2192 Rust/13 Python, CLI706/Core1332/public44 PASS, zero failures/two existing ignored and all full gates pass. Old assertions retained, six private client initializers only gain default state; envelopes/parsers after mechanical consolidation, raw4MiB framing/TLS/session/device/root/enums/classifiers/frontends/dependencies/references unchanged. L01/class4/all31 goal active; other ownership/cleanup/totals and device/platform conditions remain."
+    },
+    {
       "id": "linux-rsd-lifecycle-85b8621",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard Lockdown requests with optional shared send/reply budgets and local
+  usable state. Reject reuse after interrupted requests while preserving
+  complete business replies. Bound StopSession writes to five seconds, retain
+  uncertain session ownership on failure, and close the client after a successful
+  write. See [Lockdown lifecycle migration](docs/validation/lockdown-lifecycle-2026-10-04.md).
+
 - Guard borrowed RSD bootstrap and wrapper reads across cancellation after a
   complete send or consumed header. Reject reuse of interrupted initialization,
   including empty response waits, while preserving normal handshake completion

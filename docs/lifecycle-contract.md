@@ -6,7 +6,8 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `c4b471d33b1260736a295e8718d3c47ee6562165`; the internal H2 framer profile is
 `ddd3620f058c6c23649a083d209dceb41f0eb472`; the XPC client profile is
 `09ed113e2d19489259a43c3a35de9e00caacb1a6`; borrowed RSD bootstrap/read ownership is
-`85b8621f069b164d7da251a9531faf43b3456691`. This contract records implemented profiles and
+`85b8621f069b164d7da251a9531faf43b3456691`; Lockdown client ownership is
+`79f750e78b4550909c440fc4697b592101878935`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -160,6 +161,33 @@ Manual-pairing bootstrap uses the guarded initialization, while its later
 protocol exchanges still need their own ownership policy. Transport stays
 owned until Drop; borrowed raw transports must not bypass invalid state. See
 [RSD fixtures and migration](validation/rsd-lifecycle-2026-10-04.md).
+
+LockdownClient guards complete query/value/service/activation send-reply
+transactions. Optional set_request_timeout uses an absolute per-request budget
+through encoding/send/flush/decoding; default None keeps unbounded requests.
+Zero/unrepresentable request budgets reject before I/O, actual expiry retains
+Elapsed. Synchronous work cannot be preempted. Constructor/setup timing remains
+caller-owned. This is not a total budget across several separately completed
+requests or post-reply convenience parsing.
+
+Accepted read/write bytes include buffered TLS halves. Cancellation/failure
+after progress, transport errors/native EOF and frame decoding failures reject
+later requests before reading a cached/late reply. No pending queue is added;
+opaque I/O halves and their buffers stay owned until client Drop. Empty write
+wait/unpolled futures and local serialization failure before I/O can preserve
+reuse. Complete business replies keep the existing response parser and reuse
+policy, independently of their returned error category.
+
+StopSession uses an independent five-second write/flush budget, clamped by a
+shorter configured request budget. It retains the session identifier until a
+successful write, then marks closed; repeated stop is a local no-op and other
+requests reject. Failed/cancelled close after bytes requires a fresh transport;
+an empty write expiry can preserve state for another attempt. There is no ACK,
+automatic stop, async Drop or primary/cleanup aggregate; manual callers own
+both results. Generic borrowed raw/session helpers are unchanged. Device-side
+fresh sessions remain owned by their surrounding operation, without new setup/
+service totals or remote release guarantees. See
+[Lockdown fixtures and migration](validation/lockdown-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

@@ -65,6 +65,21 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+LockdownClient request/close expiry retains actual Elapsed in existing
+LockdownError::Io.get_ref. Zero is a source-free TimedOut decision; unrepresentable
+request budgets are InvalidInput. Original transport/codec causes and complete
+business reply errors retain their objects/categories. Later invalid/closed
+client requests reject with existing Protocol. A local pre-I/O serialization
+error and an empty cancelled/expired write wait can preserve reuse; transport
+failure/native EOF invalidates even without accepted application bytes.
+Successful StopSession means a complete write/flush, not a remote cleanup ACK.
+It marks closed and repeated stop is a local no-op. Interrupted close keeps the
+private session identifier uncertain; it does not establish that the remote
+session remains active. Manual cleanup returns its own result; retaining an
+earlier primary error alongside it remains caller-owned. No error enum, raw
+borrowed helper policy or frontend schema changes. See
+[Lockdown lifecycle evidence](validation/lockdown-lifecycle-2026-10-04.md).
+
 Borrowed RSD guards return original operation errors and leave existing stage
 expiry's native Elapsed/context intact. Later invalid-framer reuse returns the
 existing H2-to-XPC Protocol family, separately from that original failure.

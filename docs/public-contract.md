@@ -28,6 +28,21 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+LockdownClient adds is_usable and set_request_timeout(Option<Duration>). Default
+None keeps unbounded request timing; a configured budget shares send/flush/reply
+decoding. Zero/overflow reject before I/O; actual expiry retains Elapsed.
+Interrupted requests with accepted bytes and transport/frame-decode failures
+reject reuse; complete business replies keep the existing legacy/preserving
+error policy and framing. Local serialization failure before I/O remains usable.
+StopSession now has a separate five-second write budget, clamped by a shorter
+configured request budget. Successful write marks the client closed; subsequent
+requests return existing Protocol, while repeated stop returns Ok without I/O.
+Failed/abandoned stop retains uncertain session ownership rather than reporting
+an idempotent close. No remote ACK is awaited. Existing constructor, raw borrowed
+APIs, error variants, wire and frontend shapes stay; no automatic stop or new
+setup budget is installed. See
+[Lockdown migration and host acceptance](validation/lockdown-lifecycle-2026-10-04.md).
+
 Borrowed internal RSD initialization, bootstrap queuing and wrapper/handshake
 reads now reject reuse after cancellation or failure following a complete send
 or consumed header/message. Empty idle waits and successful completions preserve

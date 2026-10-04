@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC 与 borrowed RSD 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD 与 Lockdown client 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5517,4 +5517,68 @@ actual-help capability118目录均通过；源码未改，全部31任务/subtask
 history不改，仅增hostevidence。L01/第四类/完整31goal active；下一LockdownClient及
 device侧borrowedLockdownsession、DeviceLink/plist、manualpairing后续、其他splitrequests/
 owner总预算/cleanup/longstreams。L02–L04/Q04/platform/device条件保留。无设备/credentials/
+Apple操作、reference edits、push/publication/historyrewrite。
+
+### 大类 4：L01 Lockdown request/session-close ownership 交付（2026-10-04）
+
+Source `79f750e78b4550909c440fc4697b592101878935`，baseline
+`0f4c31fc99440e7698a78716db028c59dbb81cdd`，分支
+`feat/device-service-updates-20260927`。三source/test文件，769 insertions/38 deletions；
+Linux x86_64、Rust1.97.1/MSRV1.80.1、Python3.12.13。详细边界见
+[Lockdown host gate](validation/lockdown-lifecycle-2026-10-04.md)、
+[生命周期](lifecycle-contract.md)、[兼容](public-contract.md)、[分类](error-contract.md)。
+
+LockdownClient新增is_usable/set_request_timeout，defaultNone保持request timing
+unbounded。Optional absolute预算覆盖encode/send/flush/replydecode，zero/overflow在IO前
+拒绝，expiry保留原Elapsed in Io.get_ref。Query/value/startservice/activation统一guard，
+bufferedhalves acceptedbytes也记录；取消/失败有progress或nativeIO/EOF失败则拒绝后续
+cached/late replies。Local serialize failure在IO前可复用；完整business回复在原parser
+之外保持legacy/preserving分类和reuse。Opaquehalves/buffers到Drop前仍持有，无queue/task。
+
+StopSession独立5s写/flush预算，被更短requestbudget clamp；SID直到成功写才清除，
+成功后clientclosed，其余requests Protocol，repeatstop localOk无IO。失败/取消有bytes
+则SID保持uncertain、clientinvalid，不再假装repeatclose成功；emptywait expiry可保留
+复用。成功write不代表remoteACK/release/rollback/retry。无automaticstop/asyncDrop或
+primarycleanupaggregate，manualcaller需保留两result。Setupconstructor、rawborrowed
+protocol/session helpers、device侧freshownedsession路径保持；未增加全操作/setup预算。
+
+新增10tests：9internal/1external，最终allfeatures/defaultminimum各10PASS；Lockdown73
+回归、旧CLI5项16KiB stack、strictCoreCLIClippy/fmt PASS。实际TLS QueryType/StartSession/
+upgrade后fullysentGetValue expiry+latecomplete reply+无secondrequest、duplex部分reply/迟到
+reply拒绝、512B背压下4096B请求（peer125ms后读、再125ms后完整reply）共享200ms期限、
+privateprefilled64B emptywrite vs accepted64B、cached4Blen/bodywait取消、完整MissingValue/
+InvalidService后successreuse、nativeEOF/plistdecode/oversize、stop正常/idempotent/partial
+callerCancel/IO/shortruleexpiry及实际default5s expiry均覆盖。一般ownedfixture1s bound，
+TLS2s/defaultcleanup6s；无新增fixturetasks。Publicconsumer只编译getter/setter、八项Send
+future及three-variant exhaustive match；TLSruntime内部经publicconstructor，fakecert/
+no-client-auth不是Apple认证证据。No old-source negative control/benchmark/device证据。
+
+首次narrow14654 terminal0八tests，fixture unusedmut修正后32392 terminal0九internal/
+oneexternal；86481 terminal0 narrowpipeline。之后补stopcallerCancel，14991 terminal0；
+总预算夹具从晚到partialprefix改为512B可容完整reply，10951 terminal0最终10；临时audit
+排除publicfixture时endoffset修正，源码未因此修改。旧assertions/输入/policy保持，六旧
+clientfixture仅补默认privateState；原请求envelopes/responseparsers机械合并前后相等，
+rawframing4MiB/TLS/session/device/root/errorenum/classifier/frontends/deps/refs未改。
+
+第11节首次 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session36426 terminal0，
+validation/full PASS：2192Rust/13Python、0FAIL/two old ignored，CLI706/Core1332/
+public44；workspacefmt/check/strictClippy/MSRV、66features/fourgroups、7+7docs/3snips、
+CABI、3.12wheel/sdist、53tooling/118help/38raw/5host/15CLI/3backup合同均PASS。
+最终defaultminimum14987 terminal0十tests再次验证最后fixture，未再改源码。
+Frozen source SHA256
+`a1a3730a55e5d55bc6ba3b86778a65a46b011a268c9a980806f304c98dee4a3f`；ios debug SHA256
+`82571798d8abdfe8c6dada926616ad15ca760f4e2d02388ee468709ef378e755`。
+Source冻结至full/minimumterminal，余量约7.4GiB，无clean/storagefailure，日志
+`/tmp/ios-l01-lockdown-`。
+
+八文档收尾审计PASS：七Markdown/256 local links、whitespace、准确testedcommit/
+frozen source/binary、full/finalnarrow/minimum/regression/stack/preparation与只读refs、
+actual-help capability118目录通过。临时文档审计匹配sourceaudit日志文字修正，
+未改源码/断言；全部31任务/subtasks和既有history保留。
+
+22device rows NOT_RUN，Chromium/installed3.9/3.13未重跑；Capability118正文/maturity/
+history不改，仅增hostevidence。L01/第四类/完整31goal active；下一DeviceLink/plist及
+backup rawownership、borrowedrawsession调用方、setup/service/多request总预算、其他清理/
+longstreams与manualpairing后续；L02–L04/Q04/platform/device条件保留。无设备/credentials/
 Apple操作、reference edits、push/publication/historyrewrite。
