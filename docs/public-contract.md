@@ -28,6 +28,12 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+CLI owner-issued timeout guards use typed input/timeout decisions. A private CLI
+state marker maps to precondition only in the final machine envelope; it does
+not request confirmation, and remains Unknown to the general Core classifier.
+No public API/enum/binding/schema changed. Partial accessibility traversal and
+the original source-scan budget remain. See [owner-guard migration](validation/cli-owner-guards-2026-10-04.md).
+
 The preserving Lockdown query/service APIs add an opaque LockdownResponseError
 with private fields and bounded typed lookup. Existing exhaustive LockdownError
 and CoreError remain. Legacy methods keep Protocol/String and shape policy;

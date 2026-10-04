@@ -2,8 +2,8 @@
 
 日期：2026-09-30；代码基线：`572c297`。
 
-状态：第一、二类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
-其余平台、部署、真机及 fixture 子项保留待条件/待验收。接续第三类，实际证据见第 14 节。
+状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。接续第四类，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -106,7 +106,7 @@
 | R03 | 收敛 device 模块的文本包含结构 | P2 | B03 | 完成 |
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
-| A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 进行中 |
+| A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 待开始 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
@@ -5136,3 +5136,52 @@ ios debug SHA256 `2e0650178e80fb30b7f5fc6feb45388e0ea8713233d1c84319ed1fb0bd2c76
 precondition guards（含 accessibility empty traversal timeout）；不是全部 legacy error
 清单。L01/L03/A03/platform/device 条件保留，无真实设备/Apple actions、reference
 修改、push/publication、history rewrite 或 maturity upgrade。
+
+### 大类 3：A02 owner-issued guards 与 Linux 主机范围交付（2026-10-04）
+
+实现提交 `fe0c0927418157cff83e2ebb41934d80cd12fae1`，前置文档基线
+`75b0f32dcdc375d8caa5fe9983193400f1da1709`。九个 CLI 文件，284 insertions/
+29 deletions。专题：[owner guards 与主机范围](validation/cli-owner-guards-2026-10-04.md)。
+13处既有 guard 有限复核：11期限输入为 source-free InvalidInput，一空 accessibility
+traversal idle-limit 为 source-free Timeout，一不可达 crash missing deadline 为
+private CLI Precondition。没有伪造 OS code/parser/Elapsed。后者仅 CLI machine mapping
+为 precondition，Core classifier 对该私有类型保持 Unknown，不要求 confirmation。
+与 ForceRequired 共用32 source有界扫描，human fixed message/exit1/v1/effects 保持。
+
+Accessibility 的第五次连续 idle：空集合失败，有已收集项正常结束，focus重置计数；
+move_focus/limit/dedup/cleanup保留。七 new tests、两 strengthened old tests，包括
+actual zero/overflow command/helper、empty/partial/reset policy、安全 envelope 和
+31/32 depth。Secondary deadline guards 和不可达 crash state 仅 source review。
+初次 seven tests PASS，但完整 CLI/first full 暴露 extra walk 使 cyclic-source 总访问
+超过既有128预算（CLI695 PASS/one FAIL/one ignored，full exit1）；合并进原扫描后
+17 output tests与 CLI696 PASS/one ignored，未放宽断言或制造旧实现 negative control。
+
+修正 canonical full：session12108 terminal0/final PASS，Linux x86_64 Rust1.97.1/
+MSRV1.80.1 Python3.12.13。命令
+`python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`。
+2115 Rust/13 Python，CLI696/Core1271/public38，zero FAIL/two existing ignored；
+fmt/check/strict workspace Clippy/MSRV、66 features/four groups、7+7 doctests/three
+snippets、C ABI、3.12 wheel/sdist、53 tooling/118 help/38 raw/five host/15 CLI/three
+backup contracts PASS。22 device rows NOT_RUN；未重复 Chromium/installed3.9/3.13。
+七 actual final-binary CLI cases：HID/display zero、RunXCTest zero/max、Companion/
+Crash/OS Trace max；均 exit1/invalid_input/canonical phase/effects unknown、empty
+stdout、raw capture clear、zero loopback usbmux trap connections、owned child cleanup。
+Display overflow仍在setup后，只有helper实际验证；没有device流程/remote cleanup证明。
+Source SHA256 `8299147db966f80a805ff1de460d4ad9e0a86c3dd70e6cd1dcc8fd4ec48819c3`；
+ios debug SHA256 `933b59e94d44e209d525059bc11056da53369f340e29c7ba0da723a90adce78e`。
+九源冻结至full terminal；Core/C/Python/deps byte exact。约19GiB余量，无clean/存储失败。
+日志 `/tmp/ios-a02-owner-guards-`，首失败与修正证据均保留。
+
+第三类 R01–R04、A01–A02 当前 Linux 主机范围交付。A02有限 acceptance matrix 覆盖
+typed native/classifications、response/probe区分、stdout/stderr/stream/partial semantics、
+mapped Python/C/HTTP及安全 machine输出；明确 legacy Unknown/void/zero/ALLOC profiles
+保持兼容，不把 absence/metadata/NotAdvertised 推断为设备不支持。不是所有 legacy
+错误都已转换，也不是平台或真机验收。118 capability/implementation/maturity 及历史
+保持，仅增host证据；前置所有31任务/子项和待条件项继续保留。八文档/七 Markdown/
+198 local links、whitespace、exact hashes/full/binary/capability audit PASS。
+
+总体goal active，按第13节接续第四类 L01–L04/Q04。先 L01期限角色/失败后复用、取消/
+清理主错误与有界队列；已定位 FPS unbounded channel/output early-return reader ownership
+及 DTX caller cancellation/partial-frame reuse 边界，使用 InstallCoordination 契约作参考，
+逐协议验证，不以错误归类替代生命周期保证。没有真实设备/daemon/credentials/Apple
+操作、reference修改、push/publication、history rewrite 或maturity upgrade。

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Classify CLI-owned invalid timeout inputs and empty accessibility traversal
+  expiry, with a bounded typed CLI precondition mapping. Preserve partial
+  traversal/confirmation policies and original error-chain scan budgets.
+  See [guard acceptance](docs/validation/cli-owner-guards-2026-10-04.md).
+
 - Add preserving Lockdown value-query and service-start APIs with safe typed
   response-code observations and bounded lookup. Backup encryption defaults and
   debugserver fallback use exact request/code evidence; legacy APIs retain

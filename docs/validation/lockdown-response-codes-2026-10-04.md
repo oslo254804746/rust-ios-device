@@ -125,3 +125,7 @@ next is the identified thirteen owner-issued timeout/input/precondition guards,
 including accessibility's empty traversal timeout. This is not an exhaustive
 inventory of all untyped legacy errors. Lifecycle/reuse/cleanup/resource and
 platform/device conditions remain with L01/L03/A03 and their owners.
+
+Follow-up: [CLI owner guards](cli-owner-guards-2026-10-04.md) delivers the
+identified guard review and final Linux host acceptance, retaining this gate
+and its device/legacy compatibility limits.

@@ -1,10 +1,10 @@
 # Error and machine-output contract
 
-A02 is in progress. Additive Rust classification, opt-in final CLI machine
+A02's current Linux host profiles are delivered. Additive Rust classification, opt-in final CLI machine
 errors, Python factory/proxy metadata, caller-thread C categories, checked C
 projections, protected router HTTP headers and initial RSD probe observations
-are implemented. The current scoped acceptance and remaining executable
-decisions are recorded below; historical pending notes in individual slices
+are implemented. The current scoped acceptance and compatibility/platform/device
+limits are recorded below; historical pending notes in individual slices
 describe their acceptance date. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
 
@@ -12,14 +12,14 @@ describe their acceptance date. R04's accepted
 
 | A02 requirement | Current host evidence / remaining boundary |
 | --- | --- |
-| Typed categories and retained sources | ErrorClass and native-source migrations below; preserving Lockdown APIs retain response codes and replace backup/debugserver text decisions. Opaque/source-free legacy errors can remain unknown; remaining owner-issued guards need review |
-| CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current [stream inventory](validation/cli-stream-contract-2026-10-04.md). Remaining owner-issued source-free guards need review; stronger cleanup/reuse/queue contracts belong to L01 |
+| Typed categories and retained sources | ErrorClass and native-source migrations below; preserving Lockdown APIs retain response codes and replace backup/debugserver text decisions. The [thirteen identified owner guards](validation/cli-owner-guards-2026-10-04.md) have typed outcomes; source-reviewed unreachable guards and opaque legacy Unknown profiles remain explicit |
+| CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current [stream inventory](validation/cli-stream-contract-2026-10-04.md). Accessibility empty/partial traversal semantics and issued timeout/input guards accepted; stronger cleanup/reuse/queue contracts belong to L01 |
 | Service and probe evidence | InitialRsdProbe distinguishes not_attempted/available/failed; RsdFeatureEvidence distinguishes missing service and unavailable metadata from advertised/not_advertised. NotAdvertised is not explicit unsupported |
 | Python mapped errors | Native factories/runtime and proxy/mode preconditions have stable attributes; argument extraction keeps Python's built-in typed exceptions. Metadata delivery can itself fail with a safe cause |
 | C mapped errors | Calling-thread category plus checked list/runtime/port/consuming cleanup; legacy void/zero and ALLOC ambiguity remain explicit compatibility profiles. ALLOC alone stays unknown, not inferred memory exhaustion |
 | Protected HTTP errors | Existing statuses/body plus safe machine headers within protected routers; framework/opaque outcomes stay unknown. Protocol-native CDP/WebSocket messages after upgrade retain their separate protocol fields |
 
-This inventory records scoped acceptance, not complete A02 or device acceptance.
+This inventory records the delivered Linux host profiles, not platform or device acceptance.
 Explicitly unsupported typed outcomes are separate from skipped local probes,
 absent capability metadata and a missing entry in an obtained RSD snapshot.
 Legacy C cached zero and permissive supports_feature do not provide that
@@ -536,7 +536,7 @@ produce no final failure object. Help/version use normal Clap success output.
 | JSON v1 field | Meaning |
 | --- | --- |
 | `schema_version` | Integer `1`; consumers should retain a version/fallback branch and ignore additional fields in this new extensible schema |
-| `error.class` | Stable ErrorClass code from typed sources; a typed CLI confirmation guard maps to `precondition`, opaque strings remain `unknown` |
+| `error.class` | Stable ErrorClass code from typed sources; typed CLI confirmation/state guards map to `precondition`, opaque strings remain `unknown` |
 | `error.phase` | Parser's canonical root command or fixed `argument_parsing` / `help/version output`; no user command value is copied here |
 | `error.diagnostic` | Opaque safe diagnostic/correlation; do not parse it for a category or assume correlation persists across processes |
 | `error.exit_code` | Integer `1` for operation/help-output failure or `2` for argument failure; matches the original process status |
@@ -564,9 +564,16 @@ confirmation check or authorize any device action.
 Existing safe diagnostic messages remain useful for correlation but must not
 be parsed as stable natural-language categories.
 
-Stream framing, ordinary stderr progress/callback failure, partial-operation
-status, and JSON commands that currently emit human status text remain under
-review. A partial stream or an output error can follow completed operations;
+The current [stream framing inventory](validation/cli-stream-contract-2026-10-04.md)
+records ordinary stderr progress/callbacks and partial-operation semantics.
+Eleven invalid timeout inputs classify invalid_input; empty accessibility
+traversal expiry is a source-free timeout. A private CLI state marker maps to
+precondition within the same 32-source walk as confirmation, with no force hint
+or confirmation_required flag. The general Core classifier remains Unknown for
+that CLI-only type. The current missing-crash-deadline branch is unreachable by
+construction; its mapping is an adapter fixture/source review, not a device
+fault. See [owner-guard acceptance](validation/cli-owner-guards-2026-10-04.md).
+A partial stream or an output error can follow completed operations;
 no rollback, automatic retry or device cleanup acknowledgement is promised.
 L01 retains the stronger lifecycle/deadline acceptance.
 

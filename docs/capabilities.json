@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-owner-guards-fe0c092",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual zero/overflow command entries and private deadline helpers; actual empty/partial/reset focus traversal policy; bounded private CLI state marker; seven final-binary subprocesses with owned loopback usbmux traps and complete cleanup"],
+      "required_state": ["Thirteen reviewed guards: eleven input, one issued timeout, one CLI precondition. Missing crash deadline is unreachable under current construction; secondary deadline additions are source-reviewed after validation, not forced runtime failures. Focus fixture is not full DTX/device cleanup and display overflow still occurs after setup. Core/C/Python/dependencies byte-identical; legacy opaque profiles/platform/device and L01/L03/A03 conditions remain, no maturity upgrade"],
+      "tested_commit": "fe0c0927418157cff83e2ebb41934d80cd12fae1",
+      "date": "2026-10-04",
+      "location": "docs/validation/cli-owner-guards-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 owner-issued timeout inputs and empty accessibility timeout typed without invented native causes; CLI precondition does not request confirmation, general Core Unknown retained. Partial traversal/zero/None/budgets/wire/output/cleanup policies stay. Seven new tests plus two strengthened existing; extra source walk regression caused first full CLI695 PASS/one FAIL, corrected without relaxing original 128-access assertion. Final full terminal0, 2115 Rust/13 Python, CLI696 PASS/one existing ignored and zero failures/two existing ignored; all full gates and seven actual CLI input captures pass. Class3 Linux host profiles delivered, class4 lifecycle next; all31 tasks/subtasks retained."
+    },
+    {
       "id": "linux-lockdown-response-codes-08df653",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
