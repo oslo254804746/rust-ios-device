@@ -655,7 +655,10 @@ mod tests {
             .unwrap();
         assert!(matches!(cast, zerocopy::ConvertError::Size(_)));
         assert_eq!(cast.clone().into_src().as_ref(), &[0x81; 39]);
-        assert!(!format!("{error:?} {:?}", io.get_ref()).contains("129"));
+        let raw_source = format!("{:?}", cast.clone().into_src());
+        // A process-keyed correlation can contain a short numeric substring;
+        // check the actual source representation rather than three digits.
+        assert!(!format!("{error:?} {:?}", io.get_ref()).contains(&raw_source));
         // Production reads exactly 40 bytes and this header has alignment 1:
         // the short-source fixture tests ownership, not a reachable recv fault.
         assert_eq!(std::mem::size_of::<AfcHeader>(), AfcHeader::SIZE);
