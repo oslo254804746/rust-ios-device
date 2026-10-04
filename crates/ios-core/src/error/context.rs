@@ -77,6 +77,37 @@ pub(crate) fn received_io(
     )
 }
 
+pub(crate) fn deadline_io(
+    phase: &'static str,
+    budget: std::time::Duration,
+    source: tokio::time::error::Elapsed,
+) -> io::Error {
+    #[derive(thiserror::Error)]
+    #[error("{phase} timed out (budget={budget:?}): {source}")]
+    struct DeadlineCause {
+        phase: &'static str,
+        budget: std::time::Duration,
+        #[source]
+        source: tokio::time::error::Elapsed,
+    }
+    impl std::fmt::Debug for DeadlineCause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ConnectionDeadline")
+                .field("phase", &self.phase)
+                .field("budget", &self.budget)
+                .finish_non_exhaustive()
+        }
+    }
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        DeadlineCause {
+            phase,
+            budget,
+            source,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

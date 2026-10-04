@@ -78,10 +78,11 @@ pub(super) async fn connect_lockdown_port(
                 TcpStream::connect((host.as_str(), port)),
             )
             .await
-            .map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("lockdown dial to {host}:{port} timed out"),
+            .map_err(|source| {
+                crate::error::context::deadline_io(
+                    "lockdown TCP dial",
+                    crate::tunnel::TUNNEL_CONNECT_TIMEOUT,
+                    source,
                 )
             })??;
             Ok(Box::new(stream))

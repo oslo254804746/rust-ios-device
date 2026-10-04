@@ -695,10 +695,11 @@ async fn read_proxy_preamble(
     let mut preamble = [0u8; LOCAL_PROXY_PREAMBLE_LEN];
     client.read_exact(&mut preamble).await?;
     let remote_port = u32::from_le_bytes(preamble[16..20].try_into().expect("fixed preamble"));
-    let remote_port = u16::try_from(remote_port).map_err(|_| {
-        std::io::Error::new(
+    let remote_port = u16::try_from(remote_port).map_err(|source| {
+        crate::error::context::retained_io(
             std::io::ErrorKind::InvalidInput,
-            format!("userspace proxy port is outside u16 range: {remote_port}"),
+            "decode userspace proxy port",
+            source,
         )
     })?;
     let mut remote_addr = [0u8; 16];
@@ -745,6 +746,41 @@ async fn proxy_local_client(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn connection_native_proxy_port_keeps_real_conversion_and_local_eof() {
+        use std::error::Error;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let caller = async move {
+                let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+                client
+                    .write_all(&proxy_preamble([0; 16], u32::MAX))
+                    .await
+                    .unwrap();
+                client.shutdown().await.unwrap();
+                let mut reply = Vec::new();
+                client.read_to_end(&mut reply).await.unwrap();
+                assert!(reply.is_empty());
+            };
+            let server = async move {
+                let (mut peer, _) = listener.accept().await.unwrap();
+                let error = super::read_proxy_preamble(&mut peer).await.unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+                assert_eq!(
+                    crate::classify_error(&error),
+                    crate::ErrorClass::InvalidInput
+                );
+                assert!(error.source().unwrap().is::<std::num::TryFromIntError>());
+                drop(peer);
+            };
+            tokio::join!(caller, server);
+        })
+        .await
+        .unwrap();
+    }
+
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::task::{Context, Poll};

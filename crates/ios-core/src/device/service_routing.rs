@@ -141,10 +141,11 @@ where
 {
     tokio::time::timeout(timeout, rsd_checkin(stream))
         .await
-        .map_err(|_| {
-            CoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("RSD check-in timed out after {} ms", timeout.as_millis()),
+        .map_err(|source| {
+            CoreError::Io(crate::error::context::deadline_io(
+                "RSD check-in",
+                timeout,
+                source,
             ))
         })?
 }
@@ -422,6 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn rsd_checkin_times_out_when_peer_stalls() {
+        use std::error::Error;
         let (mut client, _server) = duplex(4096);
 
         let err = rsd_checkin_with_timeout(&mut client, std::time::Duration::from_millis(20))
@@ -433,5 +435,10 @@ mod tests {
             CoreError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::TimedOut
         ));
         assert!(err.to_string().contains("RSD check-in timed out"));
+        assert_eq!(err.class(), crate::ErrorClass::Timeout);
+        let CoreError::Io(io) = &err else {
+            unreachable!()
+        };
+        assert!(io.source().unwrap().is::<tokio::time::error::Elapsed>());
     }
 }

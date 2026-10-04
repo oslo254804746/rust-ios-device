@@ -8,6 +8,15 @@ use tokio_stream::Stream;
 use crate::error::CoreError;
 
 #[cfg(feature = "mdns")]
+fn mdns_error(phase: &'static str, source: mdns_sd::Error) -> CoreError {
+    CoreError::Io(crate::error::context::retained_io(
+        std::io::ErrorKind::Other,
+        phase,
+        source,
+    ))
+}
+
+#[cfg(feature = "mdns")]
 #[path = "discovery_auth.rs"]
 pub(crate) mod auth;
 
@@ -126,7 +135,7 @@ pub async fn watch_devices() -> Result<impl Stream<Item = Result<DeviceEvent, Co
 pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-    let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
+    let mdns = ServiceDaemon::new().map_err(|error| mdns_error("create mDNS daemon", error))?;
 
     let service_type = "_remoted._tcp.local.";
     let guard = BonjourBrowseGuard {
@@ -136,7 +145,7 @@ pub async fn discover_mdns() -> Result<impl Stream<Item = MdnsDevice>, CoreError
     let receiver = guard
         .daemon
         .browse(service_type)
-        .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
+        .map_err(|error| mdns_error("start mDNS browse", error))?;
 
     // Convert mdns_sd sync channel to async stream
     let stream = async_stream::stream! {
@@ -242,7 +251,7 @@ async fn browse_bonjour_service(
 ) -> Result<Vec<BonjourService>, CoreError> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-    let mdns = ServiceDaemon::new().map_err(|e| CoreError::Other(format!("mDNS daemon: {e}")))?;
+    let mdns = ServiceDaemon::new().map_err(|error| mdns_error("create mDNS daemon", error))?;
     let guard = BonjourBrowseGuard {
         daemon: mdns,
         service_type,
@@ -250,7 +259,7 @@ async fn browse_bonjour_service(
     let receiver = guard
         .daemon
         .browse(service_type)
-        .map_err(|e| CoreError::Other(format!("mDNS browse: {e}")))?;
+        .map_err(|error| mdns_error("start mDNS browse", error))?;
 
     let deadline = Instant::now() + timeout;
     let mut services = HashMap::<String, BonjourService>::new();
@@ -343,6 +352,32 @@ impl DeviceEventMapper {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "mdns")]
+    #[test]
+    fn connection_native_mdns_keeps_opaque_backend_object_without_guessing_io() {
+        use std::error::Error;
+        for source in [
+            mdns_sd::Error::Again,
+            mdns_sd::Error::Msg("owned-private-mdns".into()),
+            mdns_sd::Error::ParseIpAddr("owned-private-mdns".into()),
+        ] {
+            // Backend objects exercise the exact four callers' shared adapter;
+            // no real multicast daemon or OS failure is manufactured here.
+            let expected = source.clone();
+            let error = super::mdns_error("create mDNS daemon", source);
+            assert_eq!(error.class(), crate::ErrorClass::Unknown);
+            let crate::CoreError::Io(io) = &error else {
+                panic!("backend lost")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::Other);
+            assert_eq!(
+                io.source().unwrap().downcast_ref::<mdns_sd::Error>(),
+                Some(&expected)
+            );
+            assert!(!format!("{error:?} {:?}", io.get_ref()).contains("owned-private"));
+        }
+    }
+
     use super::*;
 
     #[test]

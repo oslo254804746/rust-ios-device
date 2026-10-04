@@ -28,18 +28,52 @@ pub const MAX_TUNNEL_MTU: u32 = u16::MAX as u32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValidatedMtu(u16);
 
+fn invalid_mtu(
+    value: u32,
+    reason: String,
+    source: Option<std::num::TryFromIntError>,
+) -> TunnelError {
+    #[derive(thiserror::Error)]
+    #[error("invalid tunnel MTU {value}: {reason}")]
+    struct MtuInput {
+        value: u32,
+        reason: String,
+        #[source]
+        source: Option<std::num::TryFromIntError>,
+    }
+    impl std::fmt::Debug for MtuInput {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TunnelMtuInput")
+                .field("value", &self.value)
+                .finish_non_exhaustive()
+        }
+    }
+    TunnelError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        MtuInput {
+            value,
+            reason,
+            source,
+        },
+    ))
+}
+
 impl ValidatedMtu {
     pub(crate) fn new(value: u32) -> Result<Self, TunnelError> {
         if value < IPV6_MIN_MTU {
-            return Err(TunnelError::Protocol(format!(
-                "invalid tunnel MTU {value}: IPv6 requires at least {IPV6_MIN_MTU} bytes"
-            )));
+            return Err(invalid_mtu(
+                value,
+                format!("IPv6 requires at least {IPV6_MIN_MTU} bytes"),
+                None,
+            ));
         }
 
-        let value = u16::try_from(value).map_err(|_| {
-            TunnelError::Protocol(format!(
-                "invalid tunnel MTU {value}: exceeds the supported maximum {MAX_TUNNEL_MTU} bytes"
-            ))
+        let value = u16::try_from(value).map_err(|source| {
+            invalid_mtu(
+                value,
+                format!("exceeds the supported maximum {MAX_TUNNEL_MTU} bytes"),
+                Some(source),
+            )
         })?;
         Ok(Self(value))
     }
