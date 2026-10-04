@@ -273,6 +273,18 @@ and lifecycle/retry semantics are separate work. The
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
+CLI status writes retain native I/O errors instead of panicking. Ordinary
+status write failures return through the existing exit-1 boundary; six diagnostic
+sites keep an already-failed operation primary. A failed status can follow output
+or effects. Sysmontap CPU read errors now return failure after the existing stop
+attempt, preserving prior rows; JSON rejects non-finite CPU load before that row.
+Successful finite JSON/human records retain their formatting. Stop errors remain
+best effort, with no new cleanup/reuse guarantee. Machine error schema and
+stdout/stderr roles stay; final reporting can itself fail on closed stderr.
+Unix directory path conversions retain original NulError with existing input
+classification and fixed safe context. No public SDK shape changes. See
+[diagnostic acceptance](validation/cli-diagnostic-sources-2026-10-04.md).
+
 Discovery/connection native causes now survive fifteen adapters under existing
 CoreError/TunnelError::Io or IO. Root error families/signatures/fields/exports,
 feature/dependency lists, classifier and binding fields remain. The handshake

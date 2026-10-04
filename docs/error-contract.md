@@ -254,6 +254,24 @@ Explicit sources remain private data under the redaction policy. See
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
+CLI's sixty direct status/diagnostic eprintln sites use the checked stderr
+writer: fifty-four return native IO failures, six retain a prior primary failure
+when its diagnostic also fails. Status failure now reaches normal exit 1 rather
+than panic; final reporting remains best effort on unavailable stderr. Existing
+line arguments/redaction and stdout/stderr roles stay. Prior output/effects can
+exist before a status write; no general no-effects or rollback guarantee follows.
+
+Sysmontap CPU read failure now returns its original DtxError after the existing
+stop attempt, preserving prior records and the primary over reporting failure.
+Normal count/deadline/Ok(None) completion and ignored stop errors stay. Finite
+record formatting stays; non-finite CPU JSON is rejected before that record as
+source-free InvalidData/Protocol. Existing successful human formatting stays.
+Unix directory source/destination CString errors retain native NulError and
+owned path bytes with fixed safe context, existing InvalidInput and no rename.
+Explicit source access is private data. Root/binding schemas stay; migrate
+panic/success assumptions to typed error/exit handling. See
+[CLI diagnostic evidence](validation/cli-diagnostic-sources-2026-10-04.md).
+
 Fifteen discovery/connection adapters retain original mDNS, integer, JSON,
 returned TunnelError and Elapsed objects through existing Io with fixed private
 context. Opaque mdns-sd errors remain Unknown, including its Msg strings; the

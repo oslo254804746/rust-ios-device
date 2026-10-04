@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Return native I/O failures from CLI status writes instead of panicking, while
+  preserving an existing primary failure if its diagnostic cannot be written.
+  Report sysmontap CPU read failures after partial output, reject non-finite
+  CPU JSON values, and retain original directory-path NUL conversion sources.
+
 - Preserve original mDNS, CDTunnel, RSD check-in, lockdown dial and userspace
   proxy conversion/deadline causes. Distinguish local MTU input from received
   protocol data and real elapsed deadlines, retain configured budgets with safe

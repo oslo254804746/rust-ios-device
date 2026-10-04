@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-diagnostics-5f259b8",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned Linux test child with actual global stderr /dev/full ENOSPC before pairing discovery; real DTX/recursive archive and SysmontapService over joined owned duplex, partial legal JSON then actual EOF and stop frame; non-finite JSON guard; native source/destination directory NUL; four actual CLI broken-stderr children"],
+      "required_state": ["54 status failures propagate, six failed-operation diagnostics preserve primary. Status can follow output/effects. Injected diagnostic PermissionDenied is not an actual sink syscall. Native path NUL is input validation before rename, not OS rename failure. Old CPU prototype control is not the original whole CLI. Stop error remains ignored; local stop frame/EOF is not remote cleanup/reuse. No physical device, discovery daemon, pairing or credential action"],
+      "tested_commit": "5f259b8f90dd40f973085a00b401a37a62066ac1",
+      "date": "2026-10-04",
+      "location": "docs/validation/cli-diagnostic-sources-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 sixty CLI diagnostic replacements retain native IO or existing primary; CPU partial read errors now fail, JSON rejects non-finite load before that row, two directory NUL conversions retain original source with existing Input. Successful line arguments and finite formatting, root/classifier/dependencies/bindings/wire stay. Three CLI/one core tests; real old eprintln control 0 PASS/1 FAIL, CPU old-behavior prototype 0 PASS/2 FAIL, restored CLI 667 PASS/1 existing ignored. First full terminal 0, 2082 Rust/13 Python PASS and four real CLI children exit 1/empty stdout. Other A02/lifecycle/platform/device work remains, no maturity upgrade."
+    },
+    {
       "id": "linux-connection-native-sources-4b3a9cb",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

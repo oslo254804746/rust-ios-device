@@ -4920,3 +4920,57 @@ filesystem native adapters/checked CLI diagnostics，并有限审查typed decisi
 stream/JSON/binding范围；L01/L03/A03/platform/device保留。无实际设备/daemon/
 credentials/Apple action、reference edits、push/publication、history rewrite、
 maturity upgrade。
+
+### 大类 3：A02 CLI diagnostics、CPU partial 与目录 NUL 来源交付（2026-10-04）
+
+从 clean `d12449c810fe6564e0f3cfcd32ac0f15cef223db` 继续，分支不变；本轮属于
+已验证进展。源码 `5f259b8f90dd40f973085a00b401a37a62066ac1` 已聚焦本地提交，
+17 文件、467 insertions/103 deletions。Linux x86_64、Rust 1.97.1/MSRV 1.80.1、
+Python 3.12.13；[专题证据](validation/cli-diagnostic-sources-2026-10-04.md)。
+
+60 个直接 eprintln 改为既有 checked stderr helper，54 处传播原生 write/flush
+IO，6 处保留已有主失败（credential partial、accessibility cleanup、CDP 两处、
+screenshot callback、CPU read）。14 份完整 production body 与 reviewed replacement
+比较一致；60 组原诊断参数保持，CPU callback 仅 local borrow 名变化。CPU 私有
+renderer/loop 等价提取单独审查；共享 writer 只增加 crate visibility，body 不变。
+目录两个 CString adapter 保留 original owned NulError、Input 与 fixed safe context，
+原 bytes/position 可显式检查；syscalls/path policy 不变，拒绝在 rename 前发生。
+
+CPU read 原 break/stop/Ok 改为同一 stop attempt 后返回 original DtxError，已有
+JSON row 保留，diagnostic secondary 不覆盖主失败。finite JSON/human format 保持；
+NaN/±infinity JSON 在该行输出前 source-free Protocol 拒绝。Count/deadline/Ok(None)
+正常完成、ignored stop error 和 stdout failure 原返回位置保持。不承诺 remote
+cleanup ACK/reuse/retry/rollback。Stderr failure 从 panic 转正常 exit1，partial CPU
+read 从 false success 转 exit1；schema/roles 不变，普通状态可能已在 effects 后。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 新增测试 | 3 CLI/1 core；actual ENOSPC child、owned DTX partial EOF/stop、nonfinite 与 NUL 来源 |
+| 原实现/旧行为对照 | 原 eprintln 已编译后 0 PASS/1 FAIL；CPU extracted prototype 0 PASS/2 FAIL，后逐字恢复 |
+| 相关检查 | CLI 667 PASS/1 既有 ignored；filesystem 4/minimum 新测试 1 PASS；fmt/strict core+CLI Clippy terminal0 |
+| 第 11 节 full | 首次 full.log terminal0，2082 Rust/13 Python、0 FAIL、2 既有 ignored |
+| 实际 binary 子进程 | pair/pair wifi × human/JSON，stderr /dev/full：4 PASS，exit1/stdout0，在发现前失败 |
+
+CPU fixture preparation 的 E0283、错误 hardcoded identifiers 与非递归 archive 已修正，
+不算行为 negative control。真实 peer EOF/native DtxError、原 row、stop frame 与
+注入 reporting PermissionDenied 的 primary 保留在一秒 joined duplex 内检查；并非
+设备/remote cleanup。Actual binary child 3 秒限额，不因 missing stderr envelope 宣称
+成功。Cargo/root/classifier/public consumer/DTX/C/Python 与 binding schema 保持。
+
+Full 同前统一命令，14 Rust/1 Python groups、66 feature/four groups、7+7 doctests/
+three snippets、C ABI/malformed/checked list、3.12 wheel/sdist、53 tooling/118 help/
+38 raw/five host/22 device NOT_RUN/15 CLI/three backup contracts 全 PASS。
+未重复 Chromium 或 installed 3.9/3.13。日志 `/tmp/ios-a02-cli-diagnostics-` 前缀。
+Source diff SHA256 `423b46a2737982713d06d837e25829a1d9530cdbc10ae2e6bb911e85411c6e85`；
+ios debug SHA256 `1f45befb8217367d540337f251b7b390feac03074ccbf2967f0114cbad926d4b`。
+Narrow handles 全停后 official cargo clean -p ios-cli 清理 6336 files/16.8 GiB，
+无手删 target；full 前约30GiB/后27GiB，未 storage failure/restart。Source staged
+并冻结，全验收后提交；八文档收尾保持 118 capabilities/maturity 与完整既有 evidence。
+七 Markdown/178 local links、whitespace 与 exact source/binary hash 检查 PASS，
+catalog 只增加一项 host entry，implementation/maturity/history 保持。
+
+A02/第三类/总体 goal active，第四类未开始，完整31任务/子任务保持。下一批处理
+剩余 CLI native/Elapsed adapters，再有限审查 source-free decisions/stream/binding
+验收；110 处 map_err/anyhow 盘点含 unit/取消决策，须依据真实类型处理，不按自然
+语言分类。L01/L03/A03/platform/device 条件保持，无实际设备/daemon/credentials/
+Apple action、reference edits、push/publication、history rewrite 或 maturity upgrade。

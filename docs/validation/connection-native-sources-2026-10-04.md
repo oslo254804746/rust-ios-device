@@ -121,3 +121,7 @@ L01/L03/A03/platform/device conditions stay. No physical device/daemon/
 credentials/Apple action, reference edit, push/publication, history rewrite or
 maturity upgrade. See the [public contract](../public-contract.md) and
 [preceding guarded gate](guarded-native-sources-2026-10-03.md).
+
+Follow-up: [CLI diagnostics and directory sources](cli-diagnostic-sources-2026-10-04.md)
+accepts the path NUL adapters, checked status writes and partial CPU failure
+contract. This earlier source commit and its evidence remain unchanged.
