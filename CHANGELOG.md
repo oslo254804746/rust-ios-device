@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard XPC message, call, stream and file ownership across cancellation.
+  Add local usable state and shared call/single-read deadline APIs; clear
+  pending replies before reuse of an interrupted connection. Preserve finite
+  Pasteboard replies and explicit CoreDevice stream completion. See
+  [XPC lifecycle migration](docs/validation/xpc-lifecycle-2026-10-04.md).
+
 - Reject H2 connection reuse after transport failure or cancellation with
   reported wire bytes. Clear retained frame state, preserve empty idle waits
   and stream-local shutdown behavior, and add internal operation budgets for

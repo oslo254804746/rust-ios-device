@@ -28,13 +28,24 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+XpcClient adds is_usable, call_with_timeout,
+call_recv_client_server_with_timeout, recv_with_timeout,
+recv_client_server_with_timeout and recv_any_with_timeout. Calls share one
+send/flow-control/reply budget; single reads have explicit idle budgets.
+Legacy entries retain unbounded timing. Interrupted committed calls/messages,
+raw stream invocation Drop and announced file cancellation now require a
+fresh transport and reject cached replies. Empty idle reads remain reusable;
+complete finite Pasteboard replies/business errors and CoreDevice
+finishStreaming preserve normal reuse. Existing error enums/wire/frontends stay.
+See [XPC migration and host acceptance](validation/xpc-lifecycle-2026-10-04.md).
+
 H2 frame operations now reject reuse after transport failure or cancellation
 with reported bytes. Empty idle cancellation and fully processed stream-local
 reset/EOF/GOAWAY retain their previous behavior. This affects existing public
 XpcClient operations when their lower-level frame operation is interrupted;
 the H2 type/configuration remains crate-internal, with no new root export,
-CLI option or default deadline. XPC message consumption, sent-call ownership
-and pending-reply invalidation still need their own guards. See
+CLI option or default deadline. The later XPC profile above supplies message,
+sent-call and pending-reply ownership beyond this H2-only slice. See
 [H2 host acceptance and migration](validation/h2-lifecycle-2026-10-04.md).
 
 AfcClient adds is_usable and set_request_timeout(Option<Duration>). The optional

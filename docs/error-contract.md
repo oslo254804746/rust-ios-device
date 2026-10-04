@@ -65,13 +65,23 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+XPC configured expiry retains original Elapsed in existing XpcError::Io.get_ref;
+zero is source-free TimedOut, unrepresentable deadlines are InvalidInput.
+Cancelled committed operations and lower H2 failure clear pending replies and
+reject reuse through the existing typed H2-to-XPC adapter. Empty idle expiry is
+distinct from cancellation after a wrapper header or sent request. Complete
+service business errors parsed outside the transport guard keep their original
+objects/categories and reuse rules. Raw stream Drop/announced-file failure do
+not await remote cleanup; split send/recv remain caller-owned operations. See
+[XPC lifecycle boundaries](validation/xpc-lifecycle-2026-10-04.md).
+
 H2 native transport errors keep their existing Io objects and kinds. Internal
 configured expiry retains actual Elapsed in H2Error::Io's get_ref; zero budget
 is source-free TimedOut and an unrepresentable budget is InvalidInput. Existing
 H2-to-XPC adapters retain these typed causes. Rejected reuse returns the existing
 Protocol family, separately from the original operation's error. Complete
 stream-local errors do not globally invalidate H2. This profile does not yet
-clear upper XPC pending replies or guard an entire call; see
+clear upper XPC pending replies or guard an entire call on its own; see
 [H2 lifecycle evidence](validation/h2-lifecycle-2026-10-04.md).
 
 AFC request/cleanup expiry retains original Elapsed in AfcError::Io's get_ref

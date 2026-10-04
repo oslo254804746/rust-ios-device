@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX、FPS、AFC 与 H2 framer 主机 profiles 已交付；上层 XPC、其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2 与 XPC client 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5397,3 +5397,68 @@ wrapper header/body、sent-call waiting-zero-reply、pending replies与stream/fi
 的取消/期限；本轮H2guard不能替代这些logical boundaries，不能声明所有XpcClient
 queued replies均拒绝或整个call共享预算。其他服务清理/L02–L04/Q04/platform/device
 保持待条件；无设备/credentials/Apple操作、reference edits、push/publication/historyrewrite。
+
+### 大类 4：L01 XPC message/call/stream/file ownership 交付（2026-10-04）
+
+Source `09ed113e2d19489259a43c3a35de9e00caacb1a6`，baseline
+`b58816f64cfe1871dd97b50eaf9b0dac00699ded`，分支
+`feat/device-service-updates-20260927`。六source/test文件，1242 insertions/72 deletions；
+Linux x86_64、Rust1.97.1/MSRV1.80.1、Python3.12.13。详细迁移与fixture边界见
+[XPC host gate](validation/xpc-lifecycle-2026-10-04.md)、
+[生命周期](lifecycle-contract.md)、[兼容](public-contract.md)、[分类](error-contract.md)。
+
+XpcClient新增is_usable、two call-with-timeout/three single-read-timeout entry；前者整次
+send/flush/flow-control/unmatched/correlated reply共享absolute budget，后者明确idle
+读取，legacy timing仍unbounded。Zero在IO/IDs前source-free TimedOut，unrepresentable
+InvalidInput，实际expiry保留原Elapsed in XpcIo.get_ref。Timer不抢占同步encoding/
+parsing/allocation。Guard跟踪已成功发送与已消费24B wrapper header，包括早先H2
+buffer里的header；取消/失败在commit后或lowerH2invalid，清pending replies/memory
+budget并失效H2，cached/wire后续均拒绝。Empty idle/unpolled保留复用；完整stream-local
+失败在未commit时保留其他流，abandoned committed call需freshtransport。CounterMAX
+不wrap/panic/IO，receive framing仍可用；getter不是peer liveness/每流availability。
+
+Raw stream跨yield持有请求，send后Drop需freshtransport；next() poll取消保留stream
+内部future。CoreDevice以原有finishStreaming parser显式完成guard，正常终止仍可复用。
+Pasteboard有限PULL/SET/RESOLVE改用一次guarded uncorrelated send/nonempty reply，原
+empty ACK过滤、business parser与timeout wrapper保持，正常回复及Service error可复用。
+File sender从announced preamble到hostreader/chunks/sizecheck/FIN持有guard，read间隙
+取消/错误也失效；成功FIN保留receivehalf。原twoGiB/64KiB/IDs/streammapping/wire保持，
+无newfile/reader预算、async FIN/cleanup/task；transport保留到clientDrop，无remoteACK/
+release/rollback/safe retry保证。
+
+新增16tests：15internal/1external fullPASS；minimum tunnel11internal/1external PASS。
+XPC117/Pasteboard30/CoreDevice10回归PASS，旧tests/assertions byte-identical。Owned
+joins/1s bound，无新增fixturetasks。实际publicbootstrap/blocked4096Bsend/lateReply、
+200ms总预算下peer125ms后drainsend再125ms后reply、已buffered24Bheader的emptybody
+取消、rawpartial/nativeEOF/badwrapper清seededqueues、streamreset/counterinjection、
+rawstream两yield间Drop、实际announce+hostIO/readercancel与content/FIN、CoreDevice
+正常finish及PasteboardServiceError后secondPULL均通过。Private seams不是设备流量。
+
+准备期两Vec/Bytes fixture错误、CoreDevice input应XpcValue而非IndexMap、minimum
+缺CoreDevice gate、Clippy multipleboundlocations分别修正类型/feature条件/bound位置，
+未放宽旧断言/生命周期policy。Finitecaller审查后在full前补normalcompletion适配，
+无old-source negative control/benchmark。最终narrow/minimum/strictCoreCLIClippy/fmt
+通过，原CLI stack预算测试及最终full保留，源有Box持有future，无detachedreader。
+
+第11节首次 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session34637 terminal0，
+validation/full PASS：2175Rust/13Python、0FAIL/two old ignored，CLI706/Core1316/
+public43；fmt/check/strictworkspaceClippy/MSRV、66features/fourgroups、7+7docs/3snips、
+CABI、3.12wheel/sdist、53tooling/118help/38raw/5host/15CLI/3backup合同均PASS。
+Frozen source SHA256
+`5742b3a91ffedae8a0978d52ee10049f9ae19a08669f384732e2e24d60237cfa`；ios debug SHA256
+`5f4c39cf383a877365c38286a312b17788dee61746f8cd0c47b23757f7b37dd5`。
+Source冻结至fullterminal；RSDbootstrap/bodyreader/wire、pendingbudget/queuehelper、
+CoreDevicegrammar/Pasteboardparser未改，filemove移除marker/borrow调整后相等；H2仅
+invalidatorvisibility，root/errorenum/codec/classifier/frontend/deps/refs保持。余量约
+9GiB，无clean/storagefailure，日志 `/tmp/ios-l01-xpc-`。
+
+八文档收尾审计PASS：七Markdown/238 local links、whitespace、准确source/binary/full/
+narrow/minimum/regression/preparation与只读refs、actual-help capability118目录均通过；
+源码未改，31任务/subtasks及既有evidence保留。
+
+22device rows NOT_RUN；Chromium/installed3.9/3.13未重跑。Capability118正文/maturity/
+history保持，仅增hostevidence。L01/第四类/完整31goal active，下一borrowedRSD
+bootstrap/handshake、split send/recv/otherownertotals、其他protocol/service deadlines/
+cleanup/orderedownership；L02–L04/Q04/platform/device条件继续。无设备/credentials/
+Apple操作、reference edits、push/publication/historyrewrite。

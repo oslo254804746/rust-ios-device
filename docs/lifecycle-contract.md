@@ -4,7 +4,8 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `940c4c673e7fe023503b97197777354c7f44e253`; the FPS owner profile is
 `dcec5a2032f2994ed45678cb838447607abee65b`; AFC request/file ownership is
 `c4b471d33b1260736a295e8718d3c47ee6562165`; the internal H2 framer profile is
-`ddd3620f058c6c23649a083d209dceb41f0eb472`. This contract records implemented profiles and
+`ddd3620f058c6c23649a083d209dceb41f0eb472`; the XPC client profile is
+`09ed113e2d19489259a43c3a35de9e00caacb1a6`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -102,10 +103,41 @@ cleanup. The held operation future is boxed before the timeout wrapper to keep
 nested service/bootstrap futures within the existing CLI stack test. It is
 still owned directly, without a background reader/task.
 
-The upper XPC layer still needs guards after consuming a wrapper header, while
-waiting after a sent request, and around pending replies/stream/file ownership.
-Those boundaries cannot be inferred from the H2 byte guard. See
+Those logical XPC boundaries cannot be inferred from the H2 byte guard. See
 [H2 fixtures and limits](validation/h2-lifecycle-2026-10-04.md).
+
+XpcClient now reports local is_usable and adds two call_with_timeout variants
+(stream 3/stream 1) and three single-read timeout variants (stream 3/1/any).
+Each owns one absolute budget; a call includes send/flow control, unmatched
+replies and reception. Zero/unrepresentable budgets reject before I/O or IDs,
+actual expiry retains Elapsed. Legacy timing stays unbounded. A single-read
+budget is an explicit idle policy, not a lifetime deadline for a long stream.
+
+The XPC operation guard tracks consumed wrapper headers and successful sends,
+including headers already buffered by a previous H2 operation. Cancellation or
+failure after that commitment, or lower H2 invalidation, clears pending replies/
+budgets and rejects cached/wire reuse. Empty waits and unpolled futures remain
+usable. Complete stream-local failure before message/request commitment can
+preserve other streams; an abandoned committed call requires a fresh transport.
+Message-ID exhaustion rejects without wrapping while leaving receive framing
+usable. The getter does not prove peer liveness or every stream's availability.
+
+Raw stream invocations retain ownership across yielded messages; dropping the
+stream after send invalidates the client. Cancelling a next() poll alone keeps
+the stream's held read future. The CoreDevice owner completes only after its
+existing parser recognizes finishStreaming. Finite Pasteboard send/reply uses
+one guarded uncorrelated operation, skips existing empty ACK forms, and parses
+business errors after the completed boundary. Existing service timeout wrappers
+remain; these normal completions preserve reuse.
+
+Announced Cryptex file sends guard ownership between H2 writes, including host
+reader work. Failure/cancellation after the preamble invalidates; successful FIN
+preserves the response half. Default timing remains unbounded and there is no
+new host-reader/whole-file budget or async cancel/FIN task. Transport stays
+owned until Drop; no ACK, cleanup, rollback, safe retry or device acceptance is
+implied. Public split send/recv and borrowed RSD bootstrap/handshake or other
+multi-service totals require their owner's contract. See
+[XPC fixtures and migration](validation/xpc-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
