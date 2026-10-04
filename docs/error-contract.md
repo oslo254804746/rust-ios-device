@@ -254,6 +254,25 @@ Explicit sources remain private data under the redaction policy. See
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
+CLI retains 105 native objects previously formatted/discarded: 81 service,
+plan and clock errors, 13 Elapsed, six local input errors, three received
+hex/integer errors and two file IO errors. Service objects retain their original
+typed category, including Unknown for opaque or unclassified sources. Actual
+Elapsed is Timeout. Local input IO wrappers use InvalidInput, received-data
+wrappers InvalidData/Protocol, with fixed private Debug and original source.
+These wrapper kinds express owner provenance and are not OS fault evidence.
+
+Four upstream input Strings remain owned opaque data with no native source;
+four unit-returning URL adapters and five input/received decisions have no
+fabricated cause. Three cancellation paths use existing OperationCancelled.
+HID distinguishes successful signal cancellation from native signal-registration
+failure. Its budget and select policy stay; no new cleanup/reuse guarantee.
+Machine schemas/exit policies and finite successful output stay, but classes,
+Display/immediate source and diagnostic correlation can change. GPX/P12/coordinate
+contexts omit raw input/path text; explicit sources/opaque Display remain private
+data. Migrate string/Unknown/cancellation assumptions to typed categories. See
+[CLI native evidence](validation/cli-native-sources-2026-10-04.md).
+
 CLI's sixty direct status/diagnostic eprintln sites use the checked stderr
 writer: fifty-four return native IO failures, six retain a prior primary failure
 when its diagnostic also fails. Status failure now reaches normal exit 1 rather

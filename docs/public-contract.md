@@ -273,6 +273,18 @@ and lifecycle/retry semantics are separate work. The
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
+CLI's native service/parser/file/Elapsed adapters retain their original objects
+instead of formatted text. Owning input and received-data wrappers classify
+Input/Protocol without changing Core/root/FFI/Python APIs or schemas. Unknown
+remains valid for opaque native causes. Legacy input Strings are retained as
+opaque data with no invented native source. Existing OperationCancelled now
+identifies three CLI cancellation paths; HID returns signal-registration IO
+failure separately. Request order, configured budgets, buffers and successful
+output stay. Returned category/Display/source/correlation may migrate; final
+exit 1 and unknown effects do not authorize retry or rollback. Source/privacy
+and exact host boundaries are in
+[CLI native acceptance](validation/cli-native-sources-2026-10-04.md).
+
 CLI status writes retain native I/O errors instead of panicking. Ordinary
 status write failures return through the existing exit-1 boundary; six diagnostic
 sites keep an already-failed operation primary. A failed status can follow output

@@ -117,3 +117,7 @@ and finite stream/binding acceptance review. L01/L03/A03 and platform/device
 conditions remain. This gate does not certify physical services, remote cleanup
 or maturity. No reference edit, push/publication or history rewrite. The
 [preceding connection gate](connection-native-sources-2026-10-04.md) is retained.
+
+Follow-up: [CLI native source acceptance](cli-native-sources-2026-10-04.md)
+preserves service/parser/file/elapsed objects and typed cancellation. This
+diagnostic source commit and its accepted evidence remain unchanged.

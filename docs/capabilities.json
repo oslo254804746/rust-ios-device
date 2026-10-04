@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-native-sources-03c71b5",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual CLI coordinate/received identifier/bool/hex parsing, native Duration overflow, pending zero-budget timers and empty-path file IO; private original native/opaque input context and XCTest plan; owned signal futures with captured actual file-open OS error; six real CLI machine failures with owned loopback usbmux traps"],
+      "required_state": ["105 original native adapters, four opaque Strings and four unit adapters; original opaque sources stay Unknown and cannot be reconstructed. Three cancellation markers; signal fault is an injected file-open OS error, not actual signal registration failure. URL unit guards source-reviewed only. Some parsing follows device setup; typed class is not universal preflight. No real device/daemon/credential/DDI/TSS/Apple operation or remote cleanup/reuse certification"],
+      "tested_commit": "03c71b53cfd653636733662cbf3a241a4c7ed10f",
+      "date": "2026-10-04",
+      "location": "docs/validation/cli-native-sources-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 81 service/plan/clock, 13 native Elapsed, six local input, three received hex/integer and two file causes retain original objects; owner Input/Protocol, original native category/Unknown and Timeout. Opaque String data and five direct decisions have no fabricated native source. Existing typed cancellation and native HID signal IO remain distinct. 27 production bodies/113 exact callback audit with controlled private helpers/decisions; Core/root/classifier/consumer/dependencies/C/Python and success/wire/budgets/cleanup stay. Eleven new tests; old five 0 PASS/5 FAIL; final full terminal0, 2093 Rust/13 Python, 678 CLI PASS/1 existing ignored; six actual machine cases exit1/typed class/phase/no trap connection/stdout/raw data. No maturity upgrade; finite A02 acceptance/lifecycle/platform/device work remains."
+    },
+    {
       "id": "linux-cli-diagnostics-5f259b8",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

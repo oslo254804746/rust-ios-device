@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve original CLI service, parser, file and elapsed timeout errors through
+  typed source chains. Distinguish local input from received identifiers,
+  retain opaque input strings without inventing native sources, and use the
+  existing typed cancellation marker. Return HID signal-registration errors
+  instead of treating them as cancellation; keep successful requests and output.
+
 - Return native I/O failures from CLI status writes instead of panicking, while
   preserving an existing primary failure if its diagnostic cannot be written.
   Report sysmontap CPU read failures after partial output, reject non-finite

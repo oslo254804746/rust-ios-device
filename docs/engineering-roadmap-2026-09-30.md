@@ -4974,3 +4974,57 @@ A02/第三类/总体 goal active，第四类未开始，完整31任务/子任务
 验收；110 处 map_err/anyhow 盘点含 unit/取消决策，须依据真实类型处理，不按自然
 语言分类。L01/L03/A03/platform/device 条件保持，无实际设备/daemon/credentials/
 Apple action、reference edits、push/publication、history rewrite 或 maturity upgrade。
+
+### 大类 3：A02 CLI 原生来源与 typed cancellation 交付（2026-10-04）
+
+从 clean `1f0b67fba777e53fcee2fe44fb3b5b2e869ee2be` 继续，本轮为已验进展。
+源码 `03c71b53cfd653636733662cbf3a241a4c7ed10f` 已本地提交；同一分支，27 CLI
+文件、567 insertions/137 deletions。Linux x86_64、Rust 1.97.1/MSRV 1.80.1、
+Python 3.12.13；[专题证据](validation/cli-native-sources-2026-10-04.md)。
+
+105 original objects：81 service/plan/clock，13 actual Elapsed，六 local input
+（coordinate2/IPv6/profile/bool/float Duration），三 received（focus hex/DDI2），
+两 file IO（GPX/P12）。Native service 保留 original category/Unknown，timer 为
+Timeout；local/received wrappers 为 Input/Protocol，fixed private Debug 保留 native
+source，kind 是 provenance 而非 OS fault。四 legacy parser String 保留 owned opaque
+data/sourceNone，四 URL unit adapters 与五 direct decisions 不制造 native cause。
+三个取消入口使用 existing OperationCancelled；HID signal 注册 IO failure 不再当
+取消。预算、select order、request/wire/limits/success/cleanup 不变，没有新的
+remote ACK/reuse/retry/rollback/no-effects 保证。Display/source/category/correlation
+迁移；GPX/P12/coordinate fixed contexts 去 raw input/path，schemas/exit policy 保持。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 新增测试 | 11 PASS；original five 已编译后 0 PASS/5 FAIL，随后恢复 PASS |
+| 准备/审查修正 | typed-plan fixture 缺 --xctest 导致 9 PASS/1 FAIL；Clippy needless_return 已修；focus 来自 received event，full 前修正 Protocol provenance |
+| 相关检查 | 早期 CLI 677 PASS/1 既有 ignored；最终 new11/fmt/strict CLI Clippy terminal0 |
+| 第 11 节 full | 首次 full.log terminal0，2093 Rust/13 Python、0 FAIL、2 既有 ignored；最终 CLI678 PASS/1 ignored |
+| Actual CLI machine fixtures | six PASS：lat/lon/GPX missing/native Duration overflow/nonfinite guard/native plan，exit1/class/phase 正确，stdout/raw0，trap connection0，owned child reaped |
+
+Actual pending timers、native parser objects、host profile builder/plan error 与 actual
+empty-path OS file failure 受测；signal future 注入 captured file-open OS error，
+不是 signal-registration syscall fault。Opaque data/native contexts 的安全 Debug 与
+source-free guards sourceNone 有证据。Old location control 首个 Input assertion 已
+失败，后面的 file subcase 未在该 negative control 到达。无设备或 DDI/TSS 验收。
+
+Code audit 113 callback changes 逐项对照（native105/opaque4/unit4），27 complete
+production token bodies 在 reviewed adapters/五 guards/三取消/two private extractions/
+unused import/one formatter comma 以外一致。Audit script 修正 continued strings/
+char literals/closure block/comma 的解析，没有改 frozen product source。Core/root/
+classifier/public consumer/deps/C/Python byte-identical，所有源码 staged 后冻结。
+
+Full 同前统一命令，14 Rust/1 Python groups、66 feature/four groups、7+7 doctests/
+three snippets、MSRV、C ABI/malformed/checked list、3.12 wheel/sdist、53 tooling/
+118 help/38 raw/five host/22 device NOT_RUN/15 CLI/three backup contracts 全 PASS。
+未重复 Chromium 或 installed 3.9/3.13。日志 `/tmp/ios-a02-cli-native-` 前缀。
+Source SHA256 `8fe550bf0579e62bd038ca0438f23a2b44d229fdfe710fdb431a926ad3c0a4cb`；
+ios debug SHA256 `863bce33663dde0d69643f1bc08bf4090a03caee72e0f8f4f8e7582f3212e2c0`。
+Full前约24GiB/后21GiB，未cleanup/storage failure/restart。八文档收尾保持118
+capabilities/implementation/maturity 与完整历史，只新增一项 host evidence。
+七 Markdown/181 local links、whitespace 与 exact source/binary 检查 PASS。
+
+A02/第三类/总体 goal active，第四类未开始，31任务及所有子项保持。下一步有限
+核对 source-free decisions、stream/JSON 和 binding projection 的真实合同验收，
+再按依赖进入 lifecycle 类；L01/L03/A03/platform/device 条件保留。没有实际设备/
+daemon/credentials/Apple actions、reference edits、push/publication、history rewrite
+或 maturity upgrade。
