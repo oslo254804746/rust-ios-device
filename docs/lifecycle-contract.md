@@ -13,7 +13,9 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `db732437a945c75096d05f67b9e2063838756c97`; notification CLI cleanup ownership is
 `9b2c488ec9052d2899de91a68622b00be207446c`; notification CLI discovery/setup,
 send/total deadlines and operator signal ownership is
-`e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec`. This contract records implemented profiles and
+`e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec`; Companion shared request/listener/forwarding
+ownership is `7a0ed63d99f04d99971004b177dd68e1cdf3b3bb`.
+This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -312,6 +314,40 @@ futures add no reader task/queue or asynchronous Drop. Host fixtures include
 actual Linux SIGINT during an owned fake ListDevices wait; actual device signal,
 service cleanup and other platforms remain pending. See
 [CLI control fixtures and migration](validation/notification-cli-control-2026-10-04.md).
+
+CompanionProxyClient's additive is_usable reports shared local admission across
+the client, listener and forwarding handles. Requests keep the ten-second default
+and share one checked absolute budget across mutex wait, send/flush and reply.
+Zero rejects before polling with legacy Timeout(duration); overflow is existing
+Io InvalidInput. Actual expiry retains the native Elapsed/duration wrapper.
+Admission is checked again after acquiring the mutex, so an owner queued before
+another failed operation cannot read its late reply.
+
+Cancellation after accepted send/read bytes, a committed unanswered request,
+native transport error/EOF or frame decoding failure invalidates all shared
+owners. Empty blocked sends/lock waits, unpolled futures and pre-I/O local errors
+can preserve state. Complete business replies are parsed outside the guard and
+retain the original local reuse policy. Opaque transport/buffers stay until all
+shared owners drop. A local query does not prove peer liveness or safe retry.
+
+The listener keeps one directly owned pending read across cancelled next polls,
+including a partial header. Actual idle timeout preserves the existing terminal
+policy even for empty reads, now drops pending immediately and invalidates the
+shared connection. Whole-listener Drop also invalidates, preventing another
+shared owner from consuming a subscription event as a reply. Finished reads
+return None; active zero/overflow admission does not finish or start a read.
+
+All forwarding stop paths have an independent five-second cap, shortened by
+their configured/explicit budget; MAX is safe after this clamp. Successful
+explicit stop remains cached/idempotent even with later zero/MAX input. Complete
+business failure may retain reuse; abandoned/native/codec failure requires a
+new connection. Existing ForwardingHandle Drop still schedules a bounded
+best-effort task when runtime/state permit; stopped/invalid/zero-configured state
+skips it, and the task checks shared state after locking. It is not an awaited
+join or remote stop guarantee. A business-failed explicit stop can still trigger
+the pre-existing Drop attempt; CLI ownership/disarm and primary retention remain
+separate work. No new reader task/queue, protocol acknowledgement or cleanup
+aggregate is added. See [Companion fixtures and migration](validation/companion-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

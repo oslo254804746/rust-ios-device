@@ -65,6 +65,23 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+Companion's shared operation guard preserves the original native/frame error
+while invalidating local client/listener/forwarding reuse. Later guarded paths
+return static Protocol before I/O, including owners already queued on the mutex.
+Complete device business replies are parsed after the guard and keep original
+sources/categories and reuse; is_usable does not assert retry safety.
+
+Request and active-idle zero admission uses source-free legacy Timeout(duration).
+Overflow is existing Io InvalidInput, without fabricated Elapsed. Actual request,
+idle and stop expiry retains the existing native Elapsed/duration wrapper; stop
+reports its effective min(supplied budget,5s). Terminal idle expiry now drops the
+owned read and invalidates shared state. Successful cached stop/finished listener
+outcomes remain local no-ops independent of later input budgets. Existing Drop
+cleanup errors remain best-effort and unreported; awaited CLI primary/cleanup
+retention and task/disarm policy are separate pending ownership work. The four
+variants, safe diagnostics and automatic v1 fields stay. See
+[Companion lifecycle evidence](validation/companion-lifecycle-2026-10-04.md).
+
 NotificationProxy actual expiry retains Elapsed through existing Io/retained
 context, including budget exhaustion between complete unrelated events: an
 already due timer is polled before reading another frame. Zero admission uses

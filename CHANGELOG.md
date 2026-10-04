@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard shared Companion request/listener/forwarding state after cancelled or
+  failed I/O, reject late replies and release terminal listener reads. Add local
+  is_usable, checked budgets and a five-second forwarding cleanup cap while
+  retaining the existing best-effort Drop policy. See
+  [Companion lifecycle migration](docs/validation/companion-lifecycle-2026-10-04.md).
 - Bound notification default discovery/service setup and send stages at 30
   seconds; share finite command totals from before subscription writes and keep
   one Ctrl+C owner through setup/capture. Reject zero/overflow before selection,

@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-companion-lifecycle-7a0ed63",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex zero/MAX/unpolled, empty/partial sends, shared200ms send125ms/reply125ms, committed cancellation/late reply and waiting forwarding owner, buffered partial reply, all six invalid client paths, mutex budget, native EOF/BrokenPipe and typed plist/oversize, complete business reuse/cached stop, actual explicit/default Drop5s cleanup expiry, held listener next/terminal idle/read release/shared stop skip/whole listener EOF; synthetic active forwarding handles and external Send/signature/exhaustive consumer"],
+      "required_state": ["Four core source/test files; sixteen internal/one external new tests full/minimum17 PASS, Companion32/CLI7/corrected stack5/strict gates PASS. Original tests/assertions preserved after three private state initializations; business/port/frame parsers and protocol strings/default10s/4MiB cap unchanged. Initial wrong stack filter matched0; corrected original filter matches5. No Watch/iPhone, actual start/forwarding/remote stop, OS signal, benchmark, old-source negative control or platform acceptance; maturity unchanged"],
+      "tested_commit": "7a0ed63d99f04d99971004b177dd68e1cdf3b3bb",
+      "date": "2026-10-04",
+      "location": "docs/validation/companion-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "Shared local usability guards request send/reply and mutex admission across clients/listeners/forwarding handles; cancelled commitment/native/codec errors reject late reuse while complete business replies retain parsing. Checked request/idle budgets preserve zero legacy Timeout, overflow InvalidInput and actual Elapsed duration. Listener held next poll survives cancellation; terminal idle/whole Drop releases and invalidates shared state. Stop cap5s/shorter clamp/MAX safe; successful cached stop remains idempotent. Existing Drop best-effort task remains, checks invalid state after lock and may still follow a complete business-failed explicit stop; CLI primary/disarm/setup/total/signal remain separate. Full76233 terminal0:2274Rust/13Python, CLI734/Core1382/public48, zero failures/two existing ignored; section11 split gates PASS,56tooling/39CLI. All31 and L01/L02–L04/Q04 remain active with22device NOT_RUN."
+    },
+    {
       "id": "linux-notification-cli-control-e3ab42b",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

@@ -28,6 +28,36 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+CompanionProxyClient adds is_usable without changing existing constructors,
+signatures or its four error variants. Shared client/listener/forwarding owners
+reject further wire work after interrupted progress, a committed unanswered
+request, native IO/EOF or malformed frame. A queued owner rechecks state after
+the mutex; late replies are not consumed. Complete business failures retain
+their former parsing/reuse policy. Empty send/lock cancellation and unpolled
+futures can remain usable. The getter is local admission, not peer liveness or
+retry authorization; opaque buffers live until all shared owners drop.
+
+The configured ten-second request default remains. Request totals include mutex
+wait/send/reply. Zero now rejects before any ready I/O as legacy Timeout(duration);
+unrepresentable request/active-idle deadlines become Io InvalidInput rather than
+panicking. Issued expiry retains native Elapsed/duration evidence. Listener next
+poll cancellation retains its owned read; actual idle expiry stays terminal and
+now releases that read/mutex immediately and invalidates shared reuse. Dropping
+the whole listener invalidates too. Active zero/overflow idle rejection keeps
+the listener intact; already finished reads keep their None outcome.
+
+Forwarding stop via client, explicit handle and existing Drop task now has an
+independent five-second cap, with shorter configured/explicit limits. A MAX stop
+budget safely clamps to five seconds; this is a timing migration from the old
+request/caller cap. Explicit completed success remains cached/idempotent for
+zero/MAX later calls. Abandoned stop invalidates; complete business error can
+retain reuse. The existing best-effort Drop task stays, skips stopped/invalid/
+zero-configured state and rechecks after lock; it is not awaited cleanup or a
+remote guarantee. Complete business-failed explicit stop can still receive its
+old Drop attempt. No new protocol key/selector, task/queue, ACK, primary aggregate
+or CLI setup/signal owner is introduced. See
+[Companion host acceptance](validation/companion-lifecycle-2026-10-04.md).
+
 NotificationProxyClient adds is_usable and set_operation_timeout(Option<Duration>).
 Default None retains unbounded sends/idle reads. Explicit waits use the shorter
 configured budget; wait_for now includes ObserveNotification in one absolute
