@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-fps-lifecycle-dcec5a2",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex public CoreProfile connect/start/config/timebase, partial frame across ticks, 10,000 ready frames with counted reads, native EOF, blocked 64-byte stop, Linux /dev/full, caller cancellation; iterator/appender and external minimum-instruments consumer; actual CLI zero-window with explicit UDID and endpoint trap"],
+      "required_state": ["Twelve new tests; no device/usbmux startup, actual signal-registration fault or old-implementation negative control. Cap uses a prefilled parser/appender boundary, not an oversized wire capture. Setup excludes outer default-device resolution. Timers do not interrupt synchronous output/CPU work; partial read cancellation may prevent stop, successful write is not ACK. Other L01/L02-L04/Q04/platform/device conditions remain, no maturity upgrade"],
+      "tested_commit": "dcec5a2032f2994ed45678cb838447607abee65b",
+      "date": "2026-10-04",
+      "location": "docs/validation/fps-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "FPS future owns its session/read without a background task/event queue. Due windows precede ready events, in-flight reads survive ticks; 262,144 timestamps/window with CLI-only bounded resource_limit mapping and additive iterator. Setup30s/stop5s, native failures/Elapsed retained; dual failure owns cleanup with primary source, cleanup-only failure is returned. Five source/test files, other instruments/calculator/root/errors/dependencies/C/Python unchanged. Preparatory fixture failures corrected without relaxing production DTX state. Final full session88111 terminal0: 2138 Rust/13 Python, CLI706/Core1282/public40 PASS, zero failures/two existing ignored; all full gates and final-binary zero-window trap capture pass. L01/class4/all31 goal active."
+    },
+    {
       "id": "linux-dtx-lifecycle-940c4c6",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

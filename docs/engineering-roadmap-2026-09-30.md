@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX 总预算/失效/空闲复用主机范围已交付；其他协议、FPS 队列/任务、清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX 总预算/失效/空闲复用与 FPS ownership/窗口上限/cleanup 主机范围已交付；其他协议、清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5243,3 +5243,50 @@ capability catalog PASS。
 下一已定位 FPS 无界channel、时间戳累积/窗口deadline starvation、output early-return
 reader detach及stop/join budgets；继续其他协议/清理primary retention，再L02–L04/Q04。
 没有真实device/daemon/credentials/Apple操作、reference edits、push/publication或historyrewrite。
+
+### 大类 4：L01 FPS ownership、采样窗口与限时清理交付（2026-10-04）
+
+实现提交 `dcec5a2032f2994ed45678cb838447607abee65b`，基线
+`f3bbf4afcd523de6b6d94b7d73e5c898eebabecc`；五 source/test files，869 insertions/
+119 deletions。原无界 event channel/background reader 改为 capture future 直接持有
+session/read future；采样 ticks 不取消 partial DTX read，stop/已到期 absolute window
+优先于 ready events。每 window 最多262,144 timestamps，下一条 typed CLI ResourceLimit，
+不静默丢帧；additive iterator 避免另一 collection，legacy Vec parser/FPS calculator 保持。
+[生命周期合同](lifecycle-contract.md)、[FPS 验收](validation/fps-lifecycle-2026-10-04.md)。
+
+Setup 30s 覆盖 connect_instruments + public CoreProfile connect/start；外层 default
+device resolver 不在其中。Stop 独立5s；实际 timeout 保留 Elapsed。主操作失败和 cleanup
+失败同时发生时保留两个原对象、source 指向 primary；count/stop 成功但 cleanup 失败
+现在返回失败。退出时取消 partial frame 可使 DTX unusable，stop 因而失败；whole-future
+cancellation drop transport，不执行 async stop，没有 reader detach。Synchronous stdout/
+parsing 不被 Tokio timer 硬中断，wire stop 不是 Apple ACK，保留真实验收边界。
+
+新增12tests（9 CLI instruments/1 output/1 core/1 external），CLI新增10 PASS，output18
+PASS且原 cyclic-source<=128 assertion 保留，full/minimum instruments iterator/consumer
+各1 PASS。Owned public connect/start fixture 验证两 channel、machTimeInfo/config/start；
+partial16-byte header 跨 sampling tick 后完整处理；10,000 ready frames + actual read counter
+证实发出窗口时未清空backlog。真实 /dev/full ENOSPC 后保留上一行和 primary，64-byte
+stop backpressure 保留 cleanup Elapsed；native EOF、cleanup-only timeout、operator stop、
+injected native signal IO与caller cancellation EOF各有证据。Cap为prefilled边界/appender
+测试，不声称full16MiB oversized wire/device workflow；signal IO非实际registration故障。
+
+准备期 Bytes/Vec type、machTimeInfo ACK/Response与source-free IO get_ref assertion 修正；
+首轮narrow2 PASS/7 FAIL，修正后8 PASS/1 FAIL发现backlogfixture错要求partial cancellation
+后仍成功stop。改为sampler fairness/drop证据，production DTX invalidation未放宽。
+最终 canonical full session88111 terminal0，validation/full PASS：2138 Rust/13 Python，
+CLI706/Core1282/public40 PASS，0 FAIL/2既有ignored；fmt/check/strict workspace Clippy/
+MSRV、66features/4groups、7+7doctests/3snips、CABI/3.12wheel/sdist、53tooling/118help/
+38raw/5host/15CLI/3backup PASS。另 actual final binary + explicit UDID zero-window
+InvalidInput/exit1、stdout0/trap0/childcleanup PASS；不外推defaultresolver。
+Source SHA256 `3a597ba373e6999143308542a1c93a10d1b036cb28711ded50654263403920a5`；
+ios debug SHA256 `ddd91930c66b50ed5dffb69c1e4f2083146b758982a0823b818acef5a44b7b16`。
+Source frozen throughout full，约17GiB余量，无clean；日志 `/tmp/ios-l01-fps-`。
+
+八文档收尾审计 PASS：七Markdown/213 local links、whitespace、exact source/binary/
+full/narrow/binary trap logs 与 actual-help capability catalog；源码冻结至收尾。
+
+22device rows NOT_RUN，未重跑Chromium/installed3.9/3.13，capability118正文/maturity/
+history保持，只增host evidence。其他instruments production、root/errors/dependencies/
+C/Python source保持。L01/第四类/完整31goal active；下一AFC transaction及H2/XPC流控/
+回复关联的期限与取消状态，再L02–L04/Q04；平台/真机条件保留。无真实设备/credentials/
+Apple操作、reference编辑、push/publication或historyrewrite。

@@ -65,6 +65,16 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+FPS capture retains native setup/read/signal/output failures and actual cleanup
+Elapsed. If both capture and stop fail, a private wrapper keeps the primary in
+its source chain and owns cleanup separately; successful count with failed stop
+now fails. A source-free private resource decision for the timestamp cap maps to
+resource_limit only in the CLI's existing 32-source scan, without confirmation;
+general Core classification for it remains Unknown. Deeper/opaque errors retain
+their previous fallback. Final schema v1 and effects unknown remain. See the
+[FPS lifecycle migration](validation/fps-lifecycle-2026-10-04.md); a failed or
+completed stop write does not establish device cleanup or safe retry.
+
 DTX shared-budget expiry retains actual Elapsed in existing DtxError::Io;
 zero budget is an issued source-free timeout. The new is_usable getter reports
 local framing/correlation state after failure or cancellation. An unusable

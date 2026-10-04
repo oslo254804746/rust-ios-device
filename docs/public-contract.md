@@ -28,6 +28,17 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+The instruments feature adds iter_frame_commit_timestamps, an allocation-free
+iterator borrowing the input chunk and copying Mach timebase values. Existing
+parse_frame_commit_timestamps still returns Vec with the same conversion/filter
+policy. FPS CLI keeps flags, sample calculation, NDJSON fields and human rows;
+zero windows now fail as InvalidInput, timestamp overflow as CLI resource_limit,
+and failed cleanup after count/stop is reported instead of ignored. Setup/stop
+budgets are 30/five seconds and the owned capture future has no background
+reader. Whole-future cancellation drops the transport; a partial DTX read may
+prevent a successful stop. Existing errors/C/Python interfaces remain. See
+[migration and host acceptance](validation/fps-lifecycle-2026-10-04.md).
+
 DTX adds request_channel_with_timeout, method_call_with_timeout,
 recv_with_timeout and is_usable. Existing unbounded methods retain their timing
 profile; errors or cancellation after wire progress now reject further I/O and

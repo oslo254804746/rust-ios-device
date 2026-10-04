@@ -1,7 +1,8 @@
 # Deadlines, cancellation and connection state
 
 L01/class 4 is in progress. The DTX profile's accepted implementation is
-`940c4c673e7fe023503b97197777354c7f44e253`. This contract records implemented profiles and
+`940c4c673e7fe023503b97197777354c7f44e253`; the FPS owner profile is
+`dcec5a2032f2994ed45678cb838447607abee65b`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -50,8 +51,24 @@ Host fixtures and limits: [DTX lifecycle gate](validation/dtx-lifecycle-2026-10-
 Compatibility: [public contract](public-contract.md); classification/effects:
 [error contract](error-contract.md).
 
+FPS capture owns the session/read future directly, without an event queue or
+background reader. A sample tick preserves an in-flight partial read; operator
+stop and an already due absolute window take priority over ready events.
+Setup shares 30 seconds across service connect/CoreProfile connect/start after
+the outer device resolver. stop has a separate five-second cleanup budget.
+Timestamp retention is capped at 262,144 per window; the next record fails with
+a CLI resource_limit decision. The additive iterator avoids another collection;
+the legacy Vec parser remains uncapped and compatible.
+
+Cleanup after success can fail; after a primary failure both original errors
+remain owned and the primary drives the final category. Count/stop during a
+partial read can invalidate DTX and make cleanup fail. Whole-future cancellation
+drops transport without async stop or a detached reader. Successful stop is a
+wire write, not an ACK. Synchronous output/decoding cannot be interrupted by a
+Tokio timer. See [FPS host fixtures and migration](validation/fps-lifecycle-2026-10-04.md).
+
 Remaining L01 work includes other service/protocol deadlines and cancellation
-state, cleanup-primary retention, bounded stream/task ownership (including FPS),
+state, cleanup-primary retention and bounded stream/task ownership for other clients,
 and late/fragmented/blocked-send cases for each owner. L02–L04/Q04 and platform/
 device evidence remain separate tasks. A local category or is_usable value is
 not evidence of device recovery or remote cleanup.

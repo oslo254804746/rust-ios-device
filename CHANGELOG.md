@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound FPS capture timestamp retention and setup/cleanup budgets. Own the
+  session without a background event queue, preserve partial reads across
+  sample ticks and emit due windows before ready events. Keep primary failures
+  when stop also fails and report cleanup failure after successful sampling.
+  Add an allocation-free frame timestamp iterator while preserving the existing
+  parser/output. See [FPS migration](docs/validation/fps-lifecycle-2026-10-04.md).
+
 - Add shared DTX request/read deadlines and local connection-state inspection.
   Interrupted operations with wire progress reject reuse and release decoding
   state; empty idle polling remains usable. Partial initial/idle frames fail
