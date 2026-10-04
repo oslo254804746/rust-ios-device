@@ -170,7 +170,105 @@ def cli_help_closed_output(binary, flag, *, machine=False):
     return report
 
 
-def interrupted_launch(binary):
+def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=True, machine=True):
+    """Reject finite timeout input before selection/setup; trap any device contact."""
+    private_device = b"synthetic-notification-private-device"
+    private_name = b"synthetic-notification-private-name"
+    with socket.socket() as trap:
+        trap.bind(("127.0.0.1", 0))
+        trap.listen()
+        env = os.environ.copy()
+        env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(trap.getsockname()[1])
+        command = [str(binary)] + (["--error-format=json"] if machine else [])
+        if explicit:
+            env["IOS_UDID"] = private_device.decode()
+            command += ["--udid", private_device.decode()]
+        else:
+            env.pop("IOS_UDID", None)
+        command += ["notify", subcommand]
+        if subcommand != "springboard":
+            command += [private_name.decode()]
+        command += ["--timeout", str(timeout)]
+        result = capture(command, env=env, timeout=5)
+        trap.setblocking(False)
+        device_connections = 0
+        while True:
+            try:
+                connection, _ = trap.accept()
+            except BlockingIOError:
+                break
+            connection.close()
+            device_connections += 1
+    report = assess(result, secret_variants(private_device) | secret_variants(private_name), 1)
+    if machine:
+        contract = machine_error_contract(result, error_class="invalid_input", phase="notify",
+                                          exit_code=1, effects="unknown")
+    else:
+        contract = (not result.stdout and result.stderr.startswith(b"notify failed:") and
+                    b"io/InvalidInput" in result.stderr and b"panicked" not in result.stderr)
+    report["device_connections"] = device_connections
+    report["contract"] = contract and device_connections == 0
+    report["passed"] = report["passed"] and report["contract"]
+    return report
+
+
+def cli_notification_empty_default(binary):
+    """Serve one empty discovery reply to a valid default-selection command."""
+    valid, errors = [], []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(5)
+
+        def serve():
+            try:
+                with listener.accept()[0] as connection:
+                    connection.settimeout(3)
+                    length, version, kind, tag = struct.unpack("<IIII", read_exact(connection, 16))
+                    if not 16 < length <= 16384 or version != 1 or kind != 8:
+                        raise ValueError("fixture-request")
+                    request = plistlib.loads(read_exact(connection, length - 16))
+                    if request.get("MessageType") != "ListDevices":
+                        raise ValueError("fixture-operation")
+                    payload = plistlib.dumps(dict(DeviceList=[]))
+                    connection.sendall(struct.pack("<IIII", 16 + len(payload), 1, 8, tag) + payload)
+                    valid.append(True)
+            except Exception:
+                errors.append(True)
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        env = os.environ.copy()
+        env.pop("IOS_UDID", None)
+        env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
+        private_name = b"synthetic-notification-private-name"
+        try:
+            result = capture([str(binary), "--error-format=json", "notify", "wait",
+                              private_name.decode(), "--timeout", "1"], env=env, timeout=5)
+        finally:
+            worker.join(timeout=5)
+        if worker.is_alive() or errors or valid != [True]:
+            raise ValueError("fixture-server-failed")
+        listener.setblocking(False)
+        unexpected_connections = 0
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except BlockingIOError:
+                break
+            connection.close()
+            unexpected_connections += 1
+    report = assess(result, secret_variants(private_name), 1)
+    report["contract"] = machine_error_contract(result, error_class="unknown", phase="notify",
+                                                 exit_code=1, effects="unknown")
+    report["contract"] = report["contract"] and unexpected_connections == 0
+    report["passed"] = report["passed"] and report["contract"]
+    report["list_requests"] = len(valid)
+    report["unexpected_connections"] = unexpected_connections
+    return report
+
+
+def interrupted_launch(binary, *, notification_setup=False):
     """Interrupt only an owned CLI blocked on its sole ListDevices endpoint."""
     process = None
     try:
@@ -180,8 +278,14 @@ def interrupted_launch(binary):
             listener.settimeout(3)
             env = os.environ.copy()
             env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
-            process = subprocess.Popen([str(binary), "--error-format=json", "-u",
-                                        "synthetic-private-cancel-device", "webinspector", "launch"], env=env)
+            if notification_setup:
+                env.pop("IOS_UDID", None)
+                command = [str(binary), "--error-format=json", "notify", "wait",
+                           "synthetic-notification-private-name", "--timeout", "5"]
+            else:
+                command = [str(binary), "--error-format=json", "-u",
+                           "synthetic-private-cancel-device", "webinspector", "launch"]
+            process = subprocess.Popen(command, env=env)
             with listener.accept()[0] as connection:
                 connection.settimeout(3)
                 length, version, kind, _tag = struct.unpack("<IIII", read_exact(connection, 16))
@@ -211,10 +315,12 @@ def interrupted_launch(binary):
                 process.wait(timeout=0.5)
 
 
-def cli_launch_cancellation(binary):
-    result = capture([sys.executable, str(Path(__file__).resolve()), "--interrupt-launch",
+def cli_launch_cancellation(binary, *, notification_setup=False):
+    flag = "--interrupt-notification-setup" if notification_setup else "--interrupt-launch"
+    result = capture([sys.executable, str(Path(__file__).resolve()), flag,
                       "--binary", str(binary)], timeout=6)
-    report = assess(result, secret_variants(b"synthetic-private-cancel-device"), 0)
+    report = assess(result, secret_variants(b"synthetic-private-cancel-device") |
+                    secret_variants(b"synthetic-notification-private-name"), 0)
     try:
         trace = json.loads(result.stdout)
     except (ValueError, TypeError):
@@ -222,7 +328,7 @@ def cli_launch_cancellation(binary):
     report["contract"] = (trace == {"child_exit": 1, "list_request": True, "peer_eof": True,
                                     "signal": "SIGINT"} and
                           machine_error_contract(replace(result, stdout=b"", returncode=1),
-                                                 error_class="cancelled", phase="webinspector",
+                                                 error_class="cancelled", phase="notify" if notification_setup else "webinspector",
                                                  exit_code=1, effects="unknown"))
     report["passed"] = report["passed"] and report["contract"]
     return report
@@ -235,13 +341,14 @@ def main():
     parser.add_argument("--human", action="store_true", help="internal owned human output probe")
     parser.add_argument("--machine-errors", action="store_true", help="internal owned JSON failure probe")
     parser.add_argument("--interrupt-launch", action="store_true", help="internal owned SIGINT probe")
+    parser.add_argument("--interrupt-notification-setup", action="store_true", help="internal owned notification SIGINT probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
-    if args.interrupt_launch:
+    if args.interrupt_launch or args.interrupt_notification_setup:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
             return 1
-        return 0 if interrupted_launch(args.binary) else 1
+        return 0 if interrupted_launch(args.binary, notification_setup=args.interrupt_notification_setup) else 1
     if args.closed_output:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
@@ -255,8 +362,17 @@ def main():
     reports["list-with-json-errors-malformed-reply"] = cli_list(args.binary, error_json=True, malformed_reply=True)
     reports["argument-error-human"] = cli_argument_error(args.binary)
     reports["argument-error-json"] = cli_argument_error(args.binary, machine=True)
+    reports["notification-empty-default"] = cli_notification_empty_default(args.binary)
+    for subcommand in ["roundtrip", "observe", "wait", "springboard", "stream"]:
+        for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
+            for explicit in [False, True]:
+                key = f"notification-{subcommand}-{kind}-{'explicit' if explicit else 'default'}-json"
+                reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout, explicit=explicit)
+    for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
+        reports[f"notification-wait-{kind}-human"] = cli_notification_deadline_error(args.binary, "wait", timeout, machine=False)
     if sys.platform.startswith("linux"):
         reports["launch-cancel-json-error"] = cli_launch_cancellation(args.binary)
+        reports["notification-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, notification_setup=True)
         for human in (False, True):
             reports[f"list-{'human' if human else 'json'}-closed-output"] = cli_list(args.binary, human=human, close_stdout=True)
         for flag in ["help", "version"]:

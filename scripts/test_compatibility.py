@@ -89,5 +89,43 @@ class ClosedOutputContracts(unittest.TestCase):
             self.assertTrue(report["cleanup_complete"])
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned process group")
+class NotificationAdmissionContracts(unittest.TestCase):
+    def probe(self, prefix="", diagnostic="'error:synthetic'"):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "owned-notification-admission-fixture"
+            body = ("import json, os, socket, sys\n" + prefix +
+                    "print(json.dumps({'schema_version':1, 'error':{'class':'invalid_input', "
+                    "'phase':'notify', 'exit_code':1, 'effects':'unknown', "
+                    "'confirmation_required':False, 'diagnostic':" + diagnostic + "}}), file=sys.stderr)\n"
+                    "sys.exit(1)\n")
+            binary.write_text("#!" + sys.executable + "\n" + body)
+            binary.chmod(0o700)
+            return compatibility.cli_notification_deadline_error(binary, "wait", 0)
+
+    def test_expected_error_without_contact_is_accepted(self):
+        report = self.probe()
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["device_connections"], 0)
+        self.assertTrue(report["cleanup_complete"])
+
+    def test_device_contact_fails_even_with_a_valid_error(self):
+        report = self.probe("address = os.environ['USBMUXD_SOCKET_ADDRESS'].removeprefix('tcp://')\n"
+                            "host, port = address.rsplit(':', 1)\n"
+                            "with socket.create_connection((host, int(port)), timeout=1): pass\n")
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["contract"])
+        self.assertEqual(report["device_connections"], 1)
+        self.assertTrue(report["cleanup_complete"])
+
+    def test_private_diagnostic_fails_even_when_the_error_contract_matches(self):
+        report = self.probe(diagnostic="'error:' + os.environ['IOS_UDID']")
+        self.assertTrue(report["contract"])
+        self.assertFalse(report["passed"])
+        self.assertGreater(report["raw_hits"], 0)
+        self.assertEqual(report["device_connections"], 0)
+        self.assertTrue(report["cleanup_complete"])
+
+
 if __name__ == "__main__":
     unittest.main()
