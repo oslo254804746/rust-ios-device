@@ -254,25 +254,25 @@ impl FileCmd {
                 } => {
                     // Checked before the transfer so a doomed pull costs nothing.
                     ensure_local_overwrite_allowed(Path::new(&local), force)?;
-                    eprintln!(
+                    crate::output::write_error_line(format_args!(
                         "Downloading {} → {}",
                         ios_core::redaction::diagnostic_id(&remote),
                         ios_core::redaction::diagnostic_id(&local)
-                    );
+                    ))?;
                     let data = afc.read_file_follow_links(&remote).await?;
                     write_local_bytes_atomic(Path::new(&local), &data, force).await?;
-                    eprintln!("Done ({} bytes)", data.len());
+                    crate::output::write_error_line(format_args!("Done ({} bytes)", data.len()))?;
                 }
                 FileSub::Push { local, remote } => {
-                    eprintln!(
+                    crate::output::write_error_line(format_args!(
                         "Uploading {} → {}",
                         ios_core::redaction::diagnostic_id(&local),
                         ios_core::redaction::diagnostic_id(&remote)
-                    );
+                    ))?;
                     let data = fs::read(&local).await?;
                     let len = data.len();
                     afc.write_file(&remote, &data).await?;
-                    eprintln!("Done ({len} bytes)");
+                    crate::output::write_error_line(format_args!("Done ({len} bytes)"))?;
                 }
                 FileSub::Rm { path, recursive } => {
                     if recursive {
@@ -280,19 +280,25 @@ impl FileCmd {
                     } else {
                         afc.remove(&path).await?;
                     }
-                    eprintln!("Removed {}", ios_core::redaction::diagnostic_id(&path));
+                    crate::output::write_error_line(format_args!(
+                        "Removed {}",
+                        ios_core::redaction::diagnostic_id(&path)
+                    ))?;
                 }
                 FileSub::Mkdir { path } => {
                     afc.make_dir(&path).await?;
-                    eprintln!("Created {}", ios_core::redaction::diagnostic_id(&path));
+                    crate::output::write_error_line(format_args!(
+                        "Created {}",
+                        ios_core::redaction::diagnostic_id(&path)
+                    ))?;
                 }
                 FileSub::Mv { from, to } => {
                     afc.rename(&from, &to).await?;
-                    eprintln!(
+                    crate::output::write_error_line(format_args!(
                         "Moved {} -> {}",
                         ios_core::redaction::diagnostic_id(&from),
                         ios_core::redaction::diagnostic_id(&to)
-                    );
+                    ))?;
                 }
                 FileSub::DeviceInfo => {
                     let info = afc.device_info().await?;
@@ -638,11 +644,11 @@ fn run_coredevice_subcommand<'a>(
             force,
         } => Box::pin(async move {
             ensure_local_overwrite_allowed(Path::new(&local), force)?;
-            eprintln!(
+            crate::output::write_error_line(format_args!(
                 "Downloading {} -> {}",
                 ios_core::redaction::diagnostic_id(&remote),
                 ios_core::redaction::diagnostic_id(&local)
-            );
+            ))?;
             ensure_coredevice_rsd_service_available(
                 device.rsd(),
                 ios_core::fileservice::DATA_SERVICE_NAME,
@@ -655,7 +661,7 @@ fn run_coredevice_subcommand<'a>(
                 .download_file_to_writer(&remote, &mut data_stream, &mut output.file)
                 .await?;
             output.commit().await?;
-            eprintln!("Done ({bytes} bytes)");
+            crate::output::write_error_line(format_args!("Done ({bytes} bytes)"))?;
             Ok(())
         }),
         FileSub::Push { local, remote } => Box::pin(async move {
@@ -668,11 +674,11 @@ fn run_coredevice_subcommand<'a>(
 
             let file_size = metadata.len();
             let options = ios_core::fileservice::FileWriteOptions::mobile_defaults_now();
-            eprintln!(
+            crate::output::write_error_line(format_args!(
                 "Uploading {} -> {}",
                 ios_core::redaction::diagnostic_id(&local),
                 ios_core::redaction::diagnostic_id(&remote)
-            );
+            ))?;
             if file_size == 0 {
                 fileservice.propose_empty_file(&remote, options).await?;
             } else if file_size <= ios_core::fileservice::MAX_INLINE_DATA_SIZE {
@@ -696,12 +702,15 @@ fn run_coredevice_subcommand<'a>(
                     .upload_file_data(&mut data_stream, &ticket, &mut input, file_size)
                     .await?;
             }
-            eprintln!("Done ({file_size} bytes)");
+            crate::output::write_error_line(format_args!("Done ({file_size} bytes)"))?;
             Ok(())
         }),
         FileSub::Rm { path, recursive } => Box::pin(async move {
             fileservice.remove_item(&path, recursive).await?;
-            eprintln!("Removed {}", ios_core::redaction::diagnostic_id(&path));
+            crate::output::write_error_line(format_args!(
+                "Removed {}",
+                ios_core::redaction::diagnostic_id(&path)
+            ))?;
             Ok(())
         }),
         FileSub::Mkdir { path } => Box::pin(async move {
@@ -710,16 +719,19 @@ fn run_coredevice_subcommand<'a>(
                 ..ios_core::fileservice::FileWriteOptions::mobile_defaults_now()
             };
             fileservice.create_directory(&path, options).await?;
-            eprintln!("Created {}", ios_core::redaction::diagnostic_id(&path));
+            crate::output::write_error_line(format_args!(
+                "Created {}",
+                ios_core::redaction::diagnostic_id(&path)
+            ))?;
             Ok(())
         }),
         FileSub::Mv { from, to } => Box::pin(async move {
             fileservice.rename_item(&from, &to).await?;
-            eprintln!(
+            crate::output::write_error_line(format_args!(
                 "Moved {} -> {}",
                 ios_core::redaction::diagnostic_id(&from),
                 ios_core::redaction::diagnostic_id(&to)
-            );
+            ))?;
             Ok(())
         }),
         FileSub::DeviceInfo | FileSub::Stat { .. } | FileSub::Tree { .. } => {

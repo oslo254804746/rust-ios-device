@@ -270,12 +270,12 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
     };
 
     if !script_mode {
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Starting {mode} tunnel for {}...",
             ios_core::redaction::diagnostic_id(udid)
-        );
+        ))?;
     } else {
-        eprintln!("tunnel: connecting ({mode})...");
+        crate::output::write_error_line(format_args!("tunnel: connecting ({mode})..."))?;
     }
 
     let connect_timeout = Duration::from_secs(30);

@@ -364,7 +364,7 @@ pub(crate) fn write_line(arguments: std::fmt::Arguments<'_>) -> std::io::Result<
     write_line_to(&mut stdout.lock(), arguments)
 }
 
-fn write_line_to(
+pub(crate) fn write_line_to(
     writer: &mut impl std::io::Write,
     arguments: std::fmt::Arguments<'_>,
 ) -> std::io::Result<()> {

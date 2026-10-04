@@ -391,7 +391,9 @@ async fn run_cpu(
         ..Default::default()
     };
 
-    eprintln!("Starting sysmontap (rate={rate})... Ctrl+C to stop");
+    crate::output::write_error_line(format_args!(
+        "Starting sysmontap (rate={rate})... Ctrl+C to stop"
+    ))?;
 
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
         .await
@@ -399,6 +401,66 @@ async fn run_cpu(
 
     let deadline =
         timeout_secs.map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs(secs));
+    consume_cpu_samples(
+        &mut svc,
+        count,
+        deadline,
+        |sample, received| {
+            let stdout = std::io::stdout();
+            write_cpu_sample_to(&mut stdout.lock(), sample, received, json_output)?;
+            Ok(())
+        },
+        |error| {
+            crate::output::write_error_line(format_args!(
+                "sysmontap failed: {}",
+                ios_core::redaction::diagnostic_error(error),
+            ))
+        },
+    )
+    .await
+}
+
+fn write_cpu_sample_to(
+    writer: &mut impl std::io::Write,
+    sample: &ios_core::instruments::CpuSample,
+    received: u64,
+    json_output: bool,
+) -> std::io::Result<()> {
+    if json_output {
+        if !sample.cpu_total_load.is_finite() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "sysmontap received non-finite CPU load",
+            ));
+        }
+        crate::output::write_line_to(
+            writer,
+            format_args!(
+                "{{\"cpu_total_load\":{:.2},\"cpu_count\":{},\"enabled_cpus\":{}}}",
+                sample.cpu_total_load, sample.cpu_count, sample.enabled_cpus,
+            ),
+        )
+    } else {
+        crate::output::write_line_to(
+            writer,
+            format_args!(
+                "[{:>4}] CPU: {:>6.2}%  ({}/{} cores)",
+                received, sample.cpu_total_load, sample.enabled_cpus, sample.cpu_count,
+            ),
+        )
+    }
+}
+
+async fn consume_cpu_samples<S>(
+    svc: &mut ios_core::instruments::SysmontapService<S>,
+    count: u64,
+    deadline: Option<tokio::time::Instant>,
+    mut emit: impl FnMut(&ios_core::instruments::CpuSample, u64) -> Result<()>,
+    mut report: impl FnMut(&ios_core::dtx::DtxError) -> std::io::Result<()>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
     let mut received = 0u64;
     loop {
         if count > 0 && received >= count {
@@ -422,30 +484,13 @@ async fn run_cpu(
         match sample {
             Ok(Some(s)) => {
                 received += 1;
-                if json_output {
-                    crate::output::outln!(
-                        "{{\"cpu_total_load\":{:.2},\"cpu_count\":{},\"enabled_cpus\":{}}}",
-                        s.cpu_total_load,
-                        s.cpu_count,
-                        s.enabled_cpus
-                    );
-                } else {
-                    crate::output::outln!(
-                        "[{:>4}] CPU: {:>6.2}%  ({}/{} cores)",
-                        received,
-                        s.cpu_total_load,
-                        s.enabled_cpus,
-                        s.cpu_count
-                    );
-                }
+                emit(&s, received)?;
             }
             Ok(None) => break,
             Err(e) => {
-                eprintln!(
-                    "sysmontap failed: {}",
-                    ios_core::redaction::diagnostic_error(&e)
-                );
-                break;
+                let _ = report(&e);
+                svc.stop().await.ok();
+                return Err(e.into());
             }
         }
     }
@@ -509,7 +554,7 @@ async fn run_ps(
             p.name
         );
     }
-    eprintln!("Total: {} processes", procs.len());
+    crate::output::write_error_line(format_args!("Total: {} processes", procs.len()))?;
     Ok(())
 }
 
@@ -1160,7 +1205,9 @@ async fn run_sysmon_process(
         .await
         .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
 
-    eprintln!("Monitoring per-process stats... Ctrl+C to stop");
+    crate::output::write_error_line(format_args!(
+        "Monitoring per-process stats... Ctrl+C to stop"
+    ))?;
 
     let mut emitted = 0u64;
     let mut first = true;
@@ -1267,7 +1314,9 @@ async fn run_sysmon_threshold(
         .await
         .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
 
-    eprintln!("Monitoring processes with CPU > {threshold:.1}%... Ctrl+C to stop");
+    crate::output::write_error_line(format_args!(
+        "Monitoring processes with CPU > {threshold:.1}%... Ctrl+C to stop"
+    ))?;
 
     let mut emitted = 0u64;
     let mut first = true;
@@ -1345,6 +1394,180 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn diagnostic_sources_cpu_json_rejects_nonfinite_before_writing_row() {
+        for load in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let sample = ios_core::instruments::CpuSample {
+                cpu_count: 2,
+                enabled_cpus: 2,
+                end_mach_abs_time: 1,
+                cpu_total_load: load,
+                sample_type: 43,
+            };
+            let mut output = b"previous row\n".to_vec();
+            let error = write_cpu_sample_to(&mut output, &sample, 2, true).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert_eq!(
+                ios_core::classify_error(&error),
+                ios_core::ErrorClass::Protocol
+            );
+            assert_eq!(output, b"previous row\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_sources_cpu_owned_dtx_keeps_partial_row_primary_and_stop() {
+        use ios_core::archive_dict;
+        use ios_core::dtx::{
+            decode_dtx_message_from_bytes, encode_dtx, read_dtx_frame, DtxError, DtxPayload,
+        };
+        use ios_core::instruments::{SysmontapConfig, SysmontapService};
+        use std::error::Error;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for count in [0, 1] {
+            let mut sample = plist::Dictionary::new();
+            sample.insert("CPUCount".into(), plist::Value::Integer(2.into()));
+            sample.insert("EnabledCPUs".into(), plist::Value::Integer(2.into()));
+            sample.insert("Type".into(), plist::Value::Integer(43.into()));
+            sample.insert(
+                "SystemCPUUsage".into(),
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "CPU_TotalLoad".to_owned(),
+                    plist::Value::Real(25.0),
+                )])),
+            );
+            // The dictionary encoder recursively archives the nested array and
+            // dictionaries. Re-root its generated document at that array.
+            let archived = archive_dict(vec![(
+                "samples".to_owned(),
+                plist::Value::Array(vec![plist::Value::Dictionary(sample)]),
+            )]);
+            let mut document = plist::Value::from_reader(std::io::Cursor::new(archived)).unwrap();
+            let root = document.as_dictionary().unwrap()["$top"]
+                .as_dictionary()
+                .unwrap()["root"]
+                .as_uid()
+                .unwrap()
+                .get();
+            let array_root = document.as_dictionary().unwrap()["$objects"]
+                .as_array()
+                .unwrap()[usize::try_from(root).unwrap()]
+            .as_dictionary()
+            .unwrap()["NS.objects"]
+                .as_array()
+                .unwrap()[0]
+                .clone();
+            document.as_dictionary_mut().unwrap()["$top"]
+                .as_dictionary_mut()
+                .unwrap()
+                .insert("root".to_owned(), array_root);
+            let mut payload = Vec::new();
+            document.to_writer_binary(&mut payload).unwrap();
+            // Check the owned fixture with the actual public codec before use.
+            let sample_frame = encode_dtx(10, 0, 1, false, 3, &payload, &[]);
+            let decoded = decode_dtx_message_from_bytes(&sample_frame)
+                .unwrap()
+                .unwrap()
+                .0;
+            assert!(matches!(
+                decoded.payload,
+                DtxPayload::Response(ios_core::dtx::NSObject::Array(_))
+            ));
+            let (stream, mut peer) = tokio::io::duplex(8192);
+            let caller = async move {
+                let mut service =
+                    SysmontapService::start(stream, &SysmontapConfig::default(), None, None)
+                        .await
+                        .unwrap();
+                let mut rows = Vec::new();
+                let mut reports = 0;
+                let result = consume_cpu_samples(
+                    &mut service,
+                    count,
+                    None,
+                    |sample, received| {
+                        write_cpu_sample_to(&mut rows, sample, received, true).map_err(Into::into)
+                    },
+                    |_| {
+                        reports += 1;
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "owned-private-diagnostic",
+                        ))
+                    },
+                )
+                .await;
+                assert_eq!(
+                    rows,
+                    b"{\"cpu_total_load\":25.00,\"cpu_count\":2,\"enabled_cpus\":2}\n"
+                );
+                let parsed: serde_json::Value = serde_json::from_slice(&rows).unwrap();
+                assert_eq!(parsed["cpu_total_load"], 25.0);
+                assert_eq!(reports, usize::from(count == 0));
+                if count == 0 {
+                    let error = result.unwrap_err();
+                    assert_eq!(
+                        ios_core::classify_error(error.as_ref()),
+                        ios_core::ErrorClass::Io
+                    );
+                    let DtxError::Io(io) = error.downcast_ref::<DtxError>().unwrap() else {
+                        panic!("primary replaced")
+                    };
+                    assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+                    assert!(io.source().is_none());
+                } else {
+                    result.unwrap();
+                }
+                drop(service);
+            };
+            let server = async move {
+                let mut messages = Vec::new();
+                for _ in 0..2 {
+                    let request = read_dtx_frame(&mut peer).await.unwrap();
+                    peer.write_all(&encode_dtx(
+                        request.identifier,
+                        1,
+                        request.channel_code,
+                        false,
+                        3,
+                        &[],
+                        &[],
+                    ))
+                    .await
+                    .unwrap();
+                    messages.push(request);
+                }
+                messages.push(read_dtx_frame(&mut peer).await.unwrap());
+                peer.write_all(&sample_frame).await.unwrap();
+                peer.shutdown().await.unwrap();
+                let mut bytes = Vec::new();
+                peer.read_to_end(&mut bytes).await.unwrap();
+                let mut offset = 0;
+                while offset < bytes.len() {
+                    let (message, size) = decode_dtx_message_from_bytes(&bytes[offset..])
+                        .unwrap()
+                        .unwrap();
+                    offset += size;
+                    messages.push(message);
+                }
+                assert_eq!(messages.len(), 4);
+                assert_eq!(
+                    messages.iter().map(|m| m.identifier).collect::<Vec<_>>(),
+                    [5, 6, 7, 8]
+                );
+                let DtxPayload::MethodInvocation { selector, .. } = &messages[3].payload else {
+                    panic!("stop missing")
+                };
+                assert_eq!(selector, "stop");
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                tokio::join!(caller, server);
+            })
+            .await
+            .unwrap();
+        }
+    }
 
     #[derive(Parser)]
     struct TestCli {

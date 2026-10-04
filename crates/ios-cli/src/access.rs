@@ -353,7 +353,7 @@ impl AuthCmd {
                     // transaction. Preserve the new policy and every existing
                     // file instead of unlinking by a path another writer could
                     // have changed. The operator can inspect their two paths.
-                    eprintln!("Manager policy was created but client credential creation failed; inspect both requested paths before retrying.");
+                    let _ = crate::output::write_error_line(format_args!("Manager policy was created but client credential creation failed; inspect both requested paths before retrying."));
                     return Err(error)
                         .context("client credential creation failed after policy publication");
                 }

@@ -58,7 +58,7 @@ impl RunTestCmd {
                 "--junit-output requires --wait because an early XCTest startup result is not a complete test report"
             ));
         }
-        eprintln!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet.");
+        crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
 
         let device = match connect_testmanager_device(&udid).await {
             Ok(device) => device,

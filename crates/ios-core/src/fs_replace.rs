@@ -252,10 +252,19 @@ pub(crate) fn move_directory_no_replace(source: &Path, destination: &Path) -> io
     {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
-        let source = CString::new(source.as_os_str().as_bytes())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
-        let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
+        let source = CString::new(source.as_os_str().as_bytes()).map_err(|error| {
+            crate::error::context::retained_io(
+                io::ErrorKind::InvalidInput,
+                "source path contains NUL",
+                error,
+            )
+        })?;
+        let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|error| {
+            crate::error::context::retained_io(
+                io::ErrorKind::InvalidInput,
+                "destination path contains NUL",
+                error,
+            )
         })?;
         #[cfg(target_os = "linux")]
         // SAFETY: owned C strings live for the call. AT_FDCWD intentionally
@@ -292,6 +301,37 @@ pub(crate) fn move_directory_no_replace(source: &Path, destination: &Path) -> io
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn diagnostic_sources_directory_nul_retains_owned_source_before_rename() {
+        use std::error::Error;
+        use std::os::unix::ffi::OsStrExt;
+        for source_is_invalid in [true, false] {
+            let raw = std::ffi::OsStr::from_bytes(b"owned-private-path\0suffix");
+            let invalid = std::path::Path::new(raw);
+            let valid = std::path::Path::new("unused-directory");
+            let error = if source_is_invalid {
+                super::move_directory_no_replace(invalid, valid)
+            } else {
+                super::move_directory_no_replace(valid, invalid)
+            }
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::InvalidInput
+            );
+            let native = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::ffi::NulError>()
+                .unwrap();
+            assert_eq!(native.nul_position(), 18);
+            assert_eq!(native.clone().into_vec(), b"owned-private-path\0suffix");
+            assert!(!format!("{error:?} {:?}", error.get_ref()).contains("owned-private"));
+        }
+    }
+
     use super::*;
 
     fn unique_test_directory(name: &str) -> std::path::PathBuf {

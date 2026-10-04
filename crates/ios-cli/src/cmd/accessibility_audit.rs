@@ -306,7 +306,9 @@ async fn run_navigate(udid: &str, direction: &str, timeout: u64, json: bool) -> 
                 }
             }
             None => {
-                eprintln!("No focus change received within timeout");
+                crate::output::write_error_line(format_args!(
+                    "No focus change received within timeout"
+                ))?;
             }
         }
         Ok(())
@@ -387,7 +389,9 @@ async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
                 }
             }
             None => {
-                eprintln!("No focused element found within timeout");
+                crate::output::write_error_line(format_args!(
+                    "No focused element found within timeout"
+                ))?;
             }
         }
         Ok(())
@@ -420,7 +424,9 @@ async fn finish_inspection(
         Ok(()) => cleanup,
         Err(error) => {
             if cleanup.is_err() {
-                eprintln!("Accessibility inspector cleanup also failed");
+                let _ = crate::output::write_error_line(format_args!(
+                    "Accessibility inspector cleanup also failed"
+                ));
             }
             Err(error)
         }

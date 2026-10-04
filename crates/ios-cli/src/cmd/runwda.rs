@@ -31,7 +31,7 @@ impl RunWdaCmd {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runwda"))?;
         crate::access::loopback_address(&self.host)?;
         crate::cmd::forward::validate_forward_ports(self.host_port, self.device_port)?;
-        eprintln!("UNTESTED: WebDriverAgent startup and port proxy are implemented from reference flows, but have not been real-device validated in this workspace.");
+        crate::output::write_error_line(format_args!("UNTESTED: WebDriverAgent startup and port proxy are implemented from reference flows, but have not been real-device validated in this workspace."))?;
 
         let device = crate::cmd::runtest::connect_testmanager_device(&udid).await?;
         let runner =

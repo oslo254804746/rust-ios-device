@@ -64,21 +64,23 @@ impl ScreenshotCmd {
         let address = crate::access::loopback_address(&self.host)?;
         let listener = TcpListener::bind((address, self.port)).await?;
         let bind_addr = listener.local_addr()?;
-        eprintln!("Serving screenshot stream on http://{bind_addr}/");
+        crate::output::write_error_line(format_args!(
+            "Serving screenshot stream on http://{bind_addr}/"
+        ))?;
 
         loop {
             let (socket, peer) = listener.accept().await?;
-            eprintln!(
+            crate::output::write_error_line(format_args!(
                 "Screenshot stream client connected: {}",
                 ios_core::redaction::diagnostic_id(&peer.to_string())
-            );
+            ))?;
             let udid = udid.to_string();
             tokio::spawn(async move {
                 if let Err(err) = serve_stream_client(socket, &udid).await {
-                    eprintln!(
+                    let _ = crate::output::write_error_line(format_args!(
                         "screenshot stream client error: {}",
                         crate::output::error_message(&err)
-                    );
+                    ));
                 }
             });
         }
@@ -216,7 +218,7 @@ async fn take_legacy_screenshot(udid: &str) -> Result<ScreenshotImage> {
         .connect_service(ios_core::screenshot::SERVICE_NAME)
         .await?;
 
-    eprintln!("Capturing screenshot (legacy screenshotr)...");
+    crate::output::write_error_line(format_args!("Capturing screenshot (legacy screenshotr)..."))?;
     Ok(ios_core::screenshot::take_screenshot(&mut stream).await?)
 }
 
@@ -267,12 +269,12 @@ fn print_screenshot_result(
             }))?
         );
     } else {
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Saved {} bytes -> {output} (via {transport}, {}, {})",
             image.byte_len(),
             format_label(image.format),
             image.mime_type()
-        );
+        ))?;
     }
     Ok(())
 }

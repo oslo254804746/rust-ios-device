@@ -158,7 +158,7 @@ fn print_shell_error(expression: &str, error: &str, json_output: bool) -> Result
             }))?
         );
     } else {
-        eprintln!("{error}");
+        crate::output::write_error_line(format_args!("{error}"))?;
     }
     Ok(())
 }

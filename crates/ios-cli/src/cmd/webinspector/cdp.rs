@@ -140,10 +140,10 @@ async fn cdp_page_ws(
                 .run(handle_cdp_socket(socket, &state, &page_id))
                 .await
             {
-                eprintln!(
+                let _ = crate::output::write_error_line(format_args!(
                     "cdp bridge closed with error: {}",
                     crate::output::error_message(&error)
-                );
+                ));
             }
         }))
 }
@@ -280,10 +280,10 @@ async fn cdp_browser_ws(
                 .run(handle_cdp_browser_socket(socket, &state))
                 .await
             {
-                eprintln!(
+                let _ = crate::output::write_error_line(format_args!(
                     "cdp browser bridge closed with error: {}",
                     crate::output::error_message(&error)
-                );
+                ));
             }
         }))
 }

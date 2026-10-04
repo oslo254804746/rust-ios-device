@@ -115,8 +115,12 @@ impl PairCmd {
         let device_addr: std::net::Ipv6Addr = if let Some(addr) = self.address {
             addr.parse()?
         } else {
-            eprintln!("Scanning for iOS 17+ devices via mDNS...");
-            eprintln!("(Make sure the device is connected via USB-Ethernet or Wi-Fi)");
+            crate::output::write_error_line(format_args!(
+                "Scanning for iOS 17+ devices via mDNS..."
+            ))?;
+            crate::output::write_error_line(format_args!(
+                "(Make sure the device is connected via USB-Ethernet or Wi-Fi)"
+            ))?;
             let mdns_stream = ios_core::discover_mdns().await?;
             tokio::pin!(mdns_stream);
 
@@ -126,7 +130,7 @@ impl PairCmd {
                 mdns_stream.next(),
             ).await {
                 Ok(Some(dev)) => {
-                    eprintln!("Found: {} ({})", ios_core::redaction::diagnostic_id(&dev.name), ios_core::redaction::diagnostic_id(&dev.ipv6.to_string()));
+                    crate::output::write_error_line(format_args!("Found: {} ({})", ios_core::redaction::diagnostic_id(&dev.name), ios_core::redaction::diagnostic_id(&dev.ipv6.to_string())))?;
                     dev.ipv6
                 }
                 Ok(None) => anyhow::bail!("mDNS stream ended without finding a device"),
@@ -134,11 +138,13 @@ impl PairCmd {
             }
         };
 
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Connecting to {}...",
             ios_core::redaction::diagnostic_id(&device_addr.to_string())
-        );
-        eprintln!("*** Please press 'Trust' on the device when prompted ***");
+        ))?;
+        crate::output::write_error_line(format_args!(
+            "*** Please press 'Trust' on the device when prompted ***"
+        ))?;
 
         // Run SRP pairing
         let creds = ios_core::pair_new_device(device_addr).await?;
@@ -197,7 +203,9 @@ async fn wifi_pair(
     let device_addr: std::net::Ipv6Addr = if let Some(addr) = address {
         addr.parse()?
     } else {
-        eprintln!("Scanning for WiFi pairing services via Bonjour...");
+        crate::output::write_error_line(format_args!(
+            "Scanning for WiFi pairing services via Bonjour..."
+        ))?;
         let mut services =
             ios_core::browse_remotepairing(std::time::Duration::from_secs(15)).await?;
 
@@ -211,10 +219,10 @@ async fn wifi_pair(
             .next()
             .ok_or_else(|| anyhow::anyhow!("No WiFi pairing services found via Bonjour"))?;
 
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Found: {}",
             ios_core::redaction::diagnostic_id(&svc.instance)
-        );
+        ))?;
 
         // Extract an IPv6 address from the discovered service
         svc.addresses
@@ -230,11 +238,13 @@ async fn wifi_pair(
             })?
     };
 
-    eprintln!(
+    crate::output::write_error_line(format_args!(
         "Connecting to {}...",
         ios_core::redaction::diagnostic_id(&device_addr.to_string())
-    );
-    eprintln!("*** Please press 'Trust' on the device when prompted ***");
+    ))?;
+    crate::output::write_error_line(format_args!(
+        "*** Please press 'Trust' on the device when prompted ***"
+    ))?;
 
     // Run SRP pairing
     let creds = ios_core::pair_new_device(device_addr).await?;
@@ -314,10 +324,10 @@ async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: b
     //    WiFi address can be obtained separately if needed.
 
     // 5. Run supervised pairing protocol
-    eprintln!(
+    crate::output::write_error_line(format_args!(
         "Starting supervised pairing for device {}...",
         ios_core::redaction::diagnostic_id(&serial)
-    );
+    ))?;
     let (pair_record, escrow_bag) =
         ios_core::pair_supervised(&mut stream, &p12_bytes, password, &buid).await?;
 
@@ -380,4 +390,60 @@ fn show_pair_record(udid: &str, json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn diagnostic_sources_pair_stderr_failure_returns_before_discovery() {
+        const TEST: &str =
+            "cmd::pair::tests::diagnostic_sources_pair_stderr_failure_returns_before_discovery";
+        if std::env::var_os("IOS_A02_PAIR_STDERR_CHILD").is_some() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let error = runtime
+                .block_on(super::wifi_pair(None, None, None))
+                .unwrap_err();
+            let native = error.downcast_ref::<std::io::Error>().unwrap();
+            assert_eq!(native.raw_os_error(), Some(28));
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Io
+            );
+            println!("A02 pair stderr native ENOSPC retained before discovery");
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("IOS_A02_PAIR_STDERR_CHILD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            )
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("owned diagnostic child exceeded its budget");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .contains("A02 pair stderr native ENOSPC retained before discovery"));
+    }
 }

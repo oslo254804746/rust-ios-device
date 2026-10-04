@@ -18,7 +18,7 @@ pub struct DebugCmd {
 impl DebugCmd {
     pub async fn run(self, udid: Option<String>) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for debug"))?;
-        eprintln!("UNTESTED: LLDB workflow generation is implemented from go-ios/pymobiledevice3 references, but no debugserver-capable device is available in this workspace.");
+        crate::output::write_error_line(format_args!("UNTESTED: LLDB workflow generation is implemented from go-ios/pymobiledevice3 references, but no debugserver-capable device is available in this workspace."))?;
 
         let probe = ios_core::connect(
             &udid,

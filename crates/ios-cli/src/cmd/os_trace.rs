@@ -548,7 +548,9 @@ async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
         Err(termination) => return finish_termination(termination, args.timeout),
     };
 
-    eprintln!("Streaming os_trace activity (Ctrl+C to stop)...");
+    crate::output::write_error_line(format_args!(
+        "Streaming os_trace activity (Ctrl+C to stop)..."
+    ))?;
     let mut received = 0u64;
 
     loop {

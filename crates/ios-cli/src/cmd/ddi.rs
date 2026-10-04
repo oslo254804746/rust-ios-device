@@ -486,7 +486,7 @@ async fn run_mount(
     let device = ios_core::connect(&udid, opts).await?;
 
     let version = device.product_version().await?;
-    eprintln!("Device iOS version: {version}");
+    crate::output::write_error_line(format_args!("Device iOS version: {version}"))?;
     if uses_cryptex(&version) {
         let device = connect_cryptex_device(&udid).await?;
         let installed = ios_core::cryptex::auto_install_ddi(
@@ -495,11 +495,11 @@ async fn run_mount(
             cache_dir.as_deref(),
         )
         .await?;
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Installed DDI Cryptex {} {}.",
             ios_core::redaction::diagnostic_id(&installed.identifier),
             ios_core::redaction::diagnostic_id(&installed.version)
-        );
+        ))?;
         return Ok(());
     }
 
@@ -510,7 +510,9 @@ async fn run_mount(
             .await?;
         let mut client = ImageMounterClient::new(&mut *stream);
         if client.is_image_mounted().await? {
-            eprintln!("Developer disk image is already mounted.");
+            crate::output::write_error_line(format_args!(
+                "Developer disk image is already mounted."
+            ))?;
             return Ok(());
         }
     }
@@ -632,10 +634,10 @@ async fn mount_standard(
         let signature = tokio::fs::read(path.join("DeveloperDiskImage.dmg.signature")).await?;
         (image, signature)
     } else {
-        eprintln!(
+        crate::output::write_error_line(format_args!(
             "Downloading DDI for iOS {}.{}...",
             version.major, version.minor
-        );
+        ))?;
         let downloader = DdiDownloader::new(cache_dir);
         let ddi = downloader
             .download_standard(version)
@@ -644,7 +646,10 @@ async fn mount_standard(
         (ddi.image, ddi.signature)
     };
 
-    eprintln!("Uploading and mounting DDI ({} bytes)...", image.len());
+    crate::output::write_error_line(format_args!(
+        "Uploading and mounting DDI ({} bytes)...",
+        image.len()
+    ))?;
     let mut stream = device
         .connect_service(ios_core::imagemounter::protocol::SERVICE_NAME)
         .await?;
@@ -654,7 +659,7 @@ async fn mount_standard(
         .await
         .map_err(|e| anyhow::anyhow!("mount failed: {e}"))?;
 
-    eprintln!("Developer disk image mounted successfully.");
+    crate::output::write_error_line(format_args!("Developer disk image mounted successfully."))?;
     Ok(())
 }
 
@@ -671,7 +676,7 @@ async fn mount_personalized(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    eprintln!("Parsing BuildManifest...");
+    crate::output::write_error_line(format_args!("Parsing BuildManifest..."))?;
     let manifest = BuildManifest::parse(&ddi.build_manifest).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Get personalization identifiers from device
@@ -697,19 +702,24 @@ async fn mount_personalized(
         .await
         .map_err(|e| anyhow::anyhow!("query nonce: {e}"))?;
 
-    eprintln!("Requesting TSS ticket from Apple...");
+    crate::output::write_error_line(format_args!("Requesting TSS ticket from Apple..."))?;
     let tss_request = tss::build_tss_request(&ids, &nonce, identity);
     let ticket = tss::get_tss_ticket(&tss_request)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    eprintln!("Mounting personalized DDI ({} bytes)...", ddi.image.len());
+    crate::output::write_error_line(format_args!(
+        "Mounting personalized DDI ({} bytes)...",
+        ddi.image.len()
+    ))?;
     client
         .mount_personalized(&ddi.trustcache, &ddi.build_manifest, &ddi.image, &ticket)
         .await
         .map_err(|e| anyhow::anyhow!("mount failed: {e}"))?;
 
-    eprintln!("Personalized developer disk image mounted successfully.");
+    crate::output::write_error_line(format_args!(
+        "Personalized developer disk image mounted successfully."
+    ))?;
     Ok(())
 }
 

@@ -58,11 +58,14 @@ pub async fn run_port_forward(
     let address = crate::access::loopback_address(&host)?;
     let connector = resolve_forward_connector(udid).await?;
     let listener = TcpListener::bind((address, host_port)).await?;
-    eprintln!("{}", connector.describe(&host, host_port, device_port));
+    crate::output::write_error_line(format_args!(
+        "{}",
+        connector.describe(&host, host_port, device_port)
+    ))?;
     if once {
-        eprintln!("Waiting for one connection...");
+        crate::output::write_error_line(format_args!("Waiting for one connection..."))?;
     } else {
-        eprintln!("Press Ctrl+C to stop.");
+        crate::output::write_error_line(format_args!("Press Ctrl+C to stop."))?;
     }
 
     loop {
