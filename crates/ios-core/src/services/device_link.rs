@@ -1,9 +1,15 @@
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::time::{error::Elapsed, Instant};
 
 service_error!(DeviceLinkError);
 
 const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl From<super::plist_frame::PlistFrameError> for DeviceLinkError {
     fn from(error: super::plist_frame::PlistFrameError) -> Self {
@@ -15,21 +21,192 @@ impl From<super::plist_frame::PlistFrameError> for DeviceLinkError {
     }
 }
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 pub struct DeviceLinkClient<S> {
     stream: S,
+    state: DeviceLinkState,
+}
+
+struct DeviceLinkState {
+    usable: bool,
+    operation_timeout: Option<Duration>,
+    progressed: bool,
+    failed: bool,
+}
+
+impl Default for DeviceLinkState {
+    fn default() -> Self {
+        Self {
+            usable: true,
+            operation_timeout: None,
+            progressed: false,
+            failed: false,
+        }
+    }
+}
+
+// Count logical bytes, including reads from or writes into a caller's buffered
+// transport. A failed operation cannot leave its remainder for a new caller.
+struct DeviceLinkIo<'a, S> {
+    inner: &'a mut S,
+    state: &'a mut DeviceLinkState,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for DeviceLinkIo<'_, S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        self.state.progressed |= buf.filled().len() > before;
+        self.state.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for DeviceLinkIo<'_, S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut *self.inner).poll_write(cx, bytes);
+        self.state.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        self.state.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut *self.inner).poll_flush(cx);
+        self.state.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut *self.inner).poll_shutdown(cx);
+        self.state.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+struct DeviceLinkOperation<'a, S> {
+    client: &'a mut DeviceLinkClient<S>,
+    deadline: Option<Instant>,
+    completed: bool,
+}
+
+impl<S> DeviceLinkOperation<'_, S> {
+    fn finish<T>(
+        mut self,
+        result: Result<Result<T, DeviceLinkError>, Elapsed>,
+    ) -> Result<T, DeviceLinkError> {
+        match result {
+            Ok(result) => {
+                self.completed = true;
+                if self.client.state.failed || (result.is_err() && self.client.state.progressed) {
+                    self.client.state.usable = false;
+                }
+                result
+            }
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
+        }
+    }
+}
+
+impl<S> Drop for DeviceLinkOperation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.client.state.progressed || self.client.state.failed) {
+            self.client.state.usable = false;
+        }
+    }
+}
+
+fn await_device_link_operation<T>(
+    deadline: Option<Instant>,
+    operation: impl std::future::Future<Output = Result<T, DeviceLinkError>>,
+) -> impl std::future::Future<Output = Result<Result<T, DeviceLinkError>, Elapsed>> {
+    // Box before creating the awaiting state, keeping callers' future stacks small.
+    let operation = Box::pin(operation);
+    async move {
+        match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        }
+    }
 }
 
 impl<S> DeviceLinkClient<S> {
     pub fn new(stream: S) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            state: DeviceLinkState::default(),
+        }
     }
 
+    /// Whether tracked DeviceLink operations permit local reuse. This does not
+    /// establish peer liveness, remote cleanup or safe retry of a side effect.
+    pub fn is_usable(&self) -> bool {
+        self.state.usable
+    }
+
+    /// Share an absolute budget across one message, complete version exchange
+    /// or process call. None preserves unbounded timing, including idle reads.
+    /// Serialization and decoding are cooperative and cannot be preempted.
+    pub fn set_operation_timeout(&mut self, budget: Option<Duration>) {
+        self.state.operation_timeout = budget;
+    }
+
+    /// Transfer the raw stream and responsibility for its current protocol
+    /// state to the caller. This does not restore an unusable connection.
     pub fn into_inner(self) -> S {
         self.stream
     }
 
+    /// Access the raw transport. Raw I/O bypasses DeviceLink progress tracking;
+    /// the caller must own cancellation, framing and total-operation policy.
     pub fn stream_mut(&mut self) -> &mut S {
         &mut self.stream
+    }
+
+    fn begin_operation(
+        &mut self,
+        budget: Option<Duration>,
+    ) -> Result<DeviceLinkOperation<'_, S>, DeviceLinkError> {
+        if !self.is_usable() {
+            return Err(DeviceLinkError::Protocol(
+                "device link connection is unusable; reconnect before another operation".into(),
+            ));
+        }
+        let deadline = match budget {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "device link operation budget is zero",
+                )
+                .into());
+            }
+            Some(budget) => Some(Instant::now().checked_add(budget).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "device link operation deadline is too large",
+                )
+            })?),
+            None => None,
+        };
+        self.state.progressed = false;
+        self.state.failed = false;
+        Ok(DeviceLinkOperation {
+            client: self,
+            deadline,
+            completed: false,
+        })
     }
 }
 
@@ -38,7 +215,17 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     pub async fn version_exchange(&mut self) -> Result<u64, DeviceLinkError> {
-        let response = self.recv_message().await?;
+        let operation = self.begin_operation(self.state.operation_timeout)?;
+        let result = await_device_link_operation(
+            operation.deadline,
+            operation.client.version_exchange_inner(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn version_exchange_inner(&mut self) -> Result<u64, DeviceLinkError> {
+        let response = self.recv_message_inner().await?;
         let message = response.as_array().ok_or_else(|| {
             DeviceLinkError::Protocol(format!(
                 "device link version exchange expected array, got {response:?}"
@@ -71,14 +258,14 @@ where
                 ))
             })?;
 
-        self.send_message(&vec![
+        self.send_message_inner(&vec![
             plist::Value::String("DLMessageVersionExchange".into()),
             plist::Value::String("DLVersionsOk".into()),
             plist::Value::Integer(version.into()),
         ])
         .await?;
 
-        let ready = self.recv_message().await?;
+        let ready = self.recv_message_inner().await?;
         let ready_message = ready.as_array().ok_or_else(|| {
             DeviceLinkError::Protocol(format!("device ready expected array, got {ready:?}"))
         })?;
@@ -107,6 +294,33 @@ where
 
     pub async fn recv_process_message(&mut self) -> Result<plist::Dictionary, DeviceLinkError> {
         let response = self.recv_message().await?;
+        Self::parse_process_message(response)
+    }
+
+    /// Send a process request and receive its reply under one budget and
+    /// cancellation owner. Separate send/receive calls have separate ownership.
+    pub async fn call_process_message<T>(
+        &mut self,
+        message: &T,
+    ) -> Result<plist::Dictionary, DeviceLinkError>
+    where
+        T: Serialize,
+    {
+        let operation = self.begin_operation(self.state.operation_timeout)?;
+        let result = await_device_link_operation(operation.deadline, async {
+            operation
+                .client
+                .send_message_inner(&("DLMessageProcessMessage", message))
+                .await?;
+            operation.client.recv_message_inner().await
+        })
+        .await;
+        // A complete decoded reply keeps legacy service-envelope validation
+        // separate from transport framing failure.
+        Self::parse_process_message(operation.finish(result)?)
+    }
+
+    fn parse_process_message(response: plist::Value) -> Result<plist::Dictionary, DeviceLinkError> {
         let message = response.as_array().ok_or_else(|| {
             DeviceLinkError::Protocol(format!("process message expected array, got {response:?}"))
         })?;
@@ -140,23 +354,75 @@ where
     where
         T: Serialize,
     {
-        super::plist_frame::write_xml_plist_frame(&mut self.stream, message, MAX_PLIST_SIZE)
-            .await
-            .map_err(DeviceLinkError::from)
+        let operation = self.begin_operation(self.state.operation_timeout)?;
+        let result = await_device_link_operation(
+            operation.deadline,
+            operation.client.send_message_inner(message),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn send_message_inner<T: Serialize>(
+        &mut self,
+        message: &T,
+    ) -> Result<(), DeviceLinkError> {
+        super::plist_frame::write_xml_plist_frame(
+            &mut DeviceLinkIo {
+                inner: &mut self.stream,
+                state: &mut self.state,
+            },
+            message,
+            MAX_PLIST_SIZE,
+        )
+        .await
+        .map_err(DeviceLinkError::from)
     }
 
     pub async fn recv_message(&mut self) -> Result<plist::Value, DeviceLinkError> {
-        super::plist_frame::read_plist_frame(&mut self.stream, MAX_PLIST_SIZE)
-            .await
-            .map_err(DeviceLinkError::from)
+        let operation = self.begin_operation(self.state.operation_timeout)?;
+        let result =
+            await_device_link_operation(operation.deadline, operation.client.recv_message_inner())
+                .await;
+        operation.finish(result)
     }
 
-    pub async fn disconnect(&mut self) -> Result<(), DeviceLinkError> {
-        self.send_message(&vec![
-            plist::Value::String("DLMessageDisconnect".into()),
-            plist::Value::String("___EmptyParameterString___".into()),
-        ])
+    async fn recv_message_inner(&mut self) -> Result<plist::Value, DeviceLinkError> {
+        super::plist_frame::read_plist_frame(
+            &mut DeviceLinkIo {
+                inner: &mut self.stream,
+                state: &mut self.state,
+            },
+            MAX_PLIST_SIZE,
+        )
         .await
+        .map_err(DeviceLinkError::from)
+    }
+
+    /// Send the existing disconnect message with a five-second cleanup cap,
+    /// clamped by a shorter configured budget. Success closes local reuse; no
+    /// acknowledgement or remote cleanup is inferred. Drop performs no I/O.
+    pub async fn disconnect(&mut self) -> Result<(), DeviceLinkError> {
+        let budget = self
+            .state
+            .operation_timeout
+            .map_or(DISCONNECT_TIMEOUT, |budget| budget.min(DISCONNECT_TIMEOUT));
+        let operation = self.begin_operation(Some(budget))?;
+        let result = await_device_link_operation(operation.deadline, async {
+            operation
+                .client
+                .send_message_inner(&vec![
+                    plist::Value::String("DLMessageDisconnect".into()),
+                    plist::Value::String("___EmptyParameterString___".into()),
+                ])
+                .await
+        })
+        .await;
+        let result = operation.finish(result);
+        if result.is_ok() {
+            self.state.usable = false;
+        }
+        result
     }
 }
 

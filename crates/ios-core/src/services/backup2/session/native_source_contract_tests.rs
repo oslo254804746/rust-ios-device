@@ -196,8 +196,20 @@ async fn disconnect_timeout(operation: DeviceOperation, completion: Completion) 
         tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(run, remote) })
             .await
             .expect("owned peers must finish");
-    assert!(blocked_writes.load(Ordering::SeqCst) > 0);
     let error = result.unwrap_err();
+    if matches!(completion, Completion::Eof) {
+        // Native EOF invalidates DeviceLink before cleanup. Keep the original
+        // failure directly and never try another write on that connection.
+        assert_eq!(blocked_writes.load(Ordering::SeqCst), 0);
+        assert!(!client.device_link.is_usable());
+        assert!(has_source::<io::Error>(&error));
+        assert!(
+            matches!(&error, Mobilebackup2Error::DeviceLink(DeviceLinkError::Io(io)) if io.kind() == ErrorKind::UnexpectedEof)
+        );
+        assert!(error.device_operation_timeout().is_none());
+        return;
+    }
+    assert!(blocked_writes.load(Ordering::SeqCst) > 0);
     let timeout = evidence(
         &error,
         operation,
@@ -213,13 +225,7 @@ async fn disconnect_timeout(operation: DeviceOperation, completion: Completion) 
             assert_eq!(crate::classify_error(original), ErrorClass::Protocol);
             assert!(original.device_operation_timeout().is_none());
         }
-        Completion::Eof => {
-            let original = timeout.operation_error().expect("prior native failure");
-            assert!(has_source::<io::Error>(original));
-            assert!(
-                matches!(original, Mobilebackup2Error::DeviceLink(DeviceLinkError::Io(io)) if io.kind() == ErrorKind::UnexpectedEof)
-            );
-        }
+        Completion::Eof => unreachable!("EOF returns its original failure without cleanup I/O"),
         Completion::Success => assert!(timeout.operation_error().is_none()),
         Completion::Pending => {
             let original = timeout.operation_error().expect("prior operation timeout");

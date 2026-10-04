@@ -4,6 +4,44 @@ use std::collections::HashMap;
 use std::future::Future;
 
 #[test]
+fn lifecycle_device_link_public_state_budget_and_send_futures_keep_exhaustive_errors() {
+    use ios_core::device_link::{DeviceLinkClient, DeviceLinkError};
+    use std::time::Duration;
+    use tokio::io::DuplexStream;
+    let _: fn(&DeviceLinkClient<DuplexStream>) -> bool = DeviceLinkClient::is_usable;
+    let _: fn(&mut DeviceLinkClient<DuplexStream>, Option<Duration>) =
+        DeviceLinkClient::set_operation_timeout;
+    let _: fn(DeviceLinkClient<DuplexStream>) -> DuplexStream = DeviceLinkClient::into_inner;
+    let _: fn(&mut DeviceLinkClient<DuplexStream>) -> &mut DuplexStream =
+        DeviceLinkClient::stream_mut;
+    fn send<F: Future + Send>(future: F) {
+        drop(future);
+    }
+    fn operations(client: &mut DeviceLinkClient<DuplexStream>) {
+        let message = plist::Dictionary::new();
+        send(client.version_exchange());
+        send(client.send_message(&message));
+        send(client.recv_message());
+        send(client.send_process_message(&message));
+        send(client.recv_process_message());
+        send(client.call_process_message(&message));
+        send(client.disconnect());
+    }
+    let _: fn(&mut DeviceLinkClient<DuplexStream>) = operations;
+    fn family(error: DeviceLinkError) -> &'static str {
+        match error {
+            DeviceLinkError::Io(_) => "io",
+            DeviceLinkError::Plist(_) => "plist",
+            DeviceLinkError::Protocol(_) => "protocol",
+        }
+    }
+    assert_eq!(
+        family(DeviceLinkError::Protocol("owned".into())),
+        "protocol"
+    );
+}
+
+#[test]
 fn lifecycle_lockdown_public_state_budget_and_send_future_signatures_keep_exhaustive_errors() {
     use ios_core::{LockdownClient, LockdownError};
     use std::time::Duration;
