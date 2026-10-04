@@ -113,16 +113,13 @@ async fn operation_timeout(operation: DeviceOperation, duration: Duration) {
     )
     .operation_error()
     .is_none());
-    // The held peer sends no version response. Disconnect is immediately writable
-    // even if the shared absolute deadline has expired.
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), tests::read_test_frame(&mut peer))
+    // No transport bytes were accepted; retain idle framing, but never send
+    // disconnect after the total deadline (including the genuine zero timer).
+    assert!(client.is_usable());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(5), peer.read(&mut [0]))
             .await
-            .expect("disconnect frame must arrive"),
-        plist::Value::Array(vec![
-            plist::Value::String("DLMessageDisconnect".into()),
-            plist::Value::String("___EmptyParameterString___".into()),
-        ])
+            .is_err()
     );
 }
 
@@ -209,6 +206,22 @@ async fn disconnect_timeout(operation: DeviceOperation, completion: Completion) 
         assert!(error.device_operation_timeout().is_none());
         return;
     }
+    if matches!(completion, Completion::Pending) {
+        // A complete request is still owned during an empty receive wait.
+        // Its expired operation rejects cleanup instead of issuing a second
+        // timer while attempting another message on that abandoned session.
+        assert_eq!(blocked_writes.load(Ordering::SeqCst), 0);
+        assert!(!client.is_usable());
+        assert!(evidence(
+            &error,
+            operation,
+            DeviceOperationTimeoutPhase::Operation,
+            duration,
+        )
+        .operation_error()
+        .is_none());
+        return;
+    }
     assert!(blocked_writes.load(Ordering::SeqCst) > 0);
     let timeout = evidence(
         &error,
@@ -227,16 +240,7 @@ async fn disconnect_timeout(operation: DeviceOperation, completion: Completion) 
         }
         Completion::Eof => unreachable!("EOF returns its original failure without cleanup I/O"),
         Completion::Success => assert!(timeout.operation_error().is_none()),
-        Completion::Pending => {
-            let original = timeout.operation_error().expect("prior operation timeout");
-            let earlier = evidence(
-                original,
-                operation,
-                DeviceOperationTimeoutPhase::Operation,
-                duration,
-            );
-            assert!(earlier.operation_error().is_none());
-        }
+        Completion::Pending => unreachable!("expired sent operation performs no cleanup I/O"),
     }
 }
 
@@ -261,6 +265,6 @@ async fn native_source_success_then_disconnect_timeout_has_no_prior_error() {
 }
 
 #[tokio::test]
-async fn native_source_double_timeout_retains_both_elapsed_values() {
+async fn native_source_sent_operation_timeout_keeps_elapsed_without_disconnect() {
     disconnect_timeout(DeviceOperation::Extract, Completion::Pending).await;
 }

@@ -21,6 +21,7 @@ use crate::services::device_link::DeviceLinkError;
 
 use super::deadline::{timeout_error, DeviceOperation, DeviceOperationTimeoutPhase};
 use super::filter::should_preserve_backup_file;
+use super::lifecycle::{await_operation, finish_results};
 #[cfg(feature = "backup2-manifest")]
 use super::manifest::patch_backup_directory;
 use super::protocol::{
@@ -44,6 +45,8 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 #[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
 mod native_source_contract_tests;
 
 const MAX_DEVICE_TRANSFER_FILES: u64 = 1_000_000;
@@ -63,6 +66,16 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     pub async fn version_exchange(&mut self) -> Result<VersionExchange, Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation.client.version_exchange_inner(),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn version_exchange_inner(&mut self) -> Result<VersionExchange, Mobilebackup2Error> {
         // A client can be reused for several operations in tests or by higher-level callers;
         // diagnostics from a previous DeviceLink session must not leak into the next one.
         self.reported_free_space = None;
@@ -73,14 +86,14 @@ where
         let device_link_version = self.device_link.version_exchange().await?;
         let local_versions = SUPPORTED_PROTOCOL_VERSIONS.to_vec();
 
-        self.device_link
-            .send_process_message(&HelloRequest {
+        let response = self
+            .device_link
+            .call_process_message(&HelloRequest {
                 message_name: "Hello",
                 supported_protocol_versions: local_versions.clone(),
             })
             .await?;
 
-        let response = self.device_link.recv_process_message().await?;
         let error_code = response
             .get("ErrorCode")
             .and_then(plist_number_to_u64)
@@ -145,6 +158,29 @@ where
         info_plist: &plist::Dictionary,
         options: BackupOptions,
     ) -> Result<BackupResult, Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation.client.backup_with_options_inner(
+                backup_root,
+                target_identifier,
+                full,
+                info_plist,
+                options,
+            ),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn backup_with_options_inner(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        full: bool,
+        info_plist: &plist::Dictionary,
+        options: BackupOptions,
+    ) -> Result<BackupResult, Mobilebackup2Error> {
         #[cfg(feature = "backup2-manifest")]
         let mut options = options;
         #[cfg(feature = "backup2-manifest")]
@@ -161,7 +197,7 @@ where
                 "manifest patching requires the ios-core backup2-manifest feature".into(),
             ));
         }
-        let version = self.version_exchange().await?;
+        let version = self.version_exchange_inner().await?;
         self.backup_filter = options.filter.clone();
         self.discarded_files.clear();
         let layout = {
@@ -185,12 +221,10 @@ where
         let session_result = self.finish_session(run_result).await;
         self.backup_filter = None;
         let discarded_files = std::mem::take(&mut self.discarded_files);
-        let cleanup_result = with_layout(&layout, move |layout| {
+        let cleanup = with_layout(&layout, move |layout| {
             cleanup_discarded_files(&layout, &discarded_files)
-        })
-        .await;
-        let _content = session_result?;
-        cleanup_result?;
+        });
+        let _content = self.finish_host_cleanup(session_result, cleanup).await?;
 
         #[cfg(feature = "backup2-manifest")]
         if options.patch_manifest {
@@ -219,8 +253,29 @@ where
         old_password: Option<&str>,
         new_password: Option<&str>,
     ) -> Result<(), Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation.client.change_password_inner(
+                backup_root,
+                target_identifier,
+                old_password,
+                new_password,
+            ),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn change_password_inner(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        old_password: Option<&str>,
+        new_password: Option<&str>,
+    ) -> Result<(), Mobilebackup2Error> {
         validate_backup_identifier(target_identifier)?;
-        let _ = self.version_exchange().await?;
+        let _ = self.version_exchange_inner().await?;
         let layout = {
             let root = backup_root.to_path_buf();
             let id = target_identifier.to_owned();
@@ -242,6 +297,23 @@ where
     }
 
     pub async fn restore(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        options: RestoreOptions<'_>,
+    ) -> Result<RestoreResult, Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation
+                .client
+                .restore_inner(backup_root, target_identifier, options),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn restore_inner(
         &mut self,
         backup_root: &Path,
         target_identifier: &str,
@@ -278,7 +350,7 @@ where
         } else {
             None
         };
-        let version = self.version_exchange().await?;
+        let version = self.version_exchange_inner().await?;
 
         self.device_link
             .send_process_message(&RestoreRequest {
@@ -311,11 +383,28 @@ where
         target_identifier: &str,
         source_identifier: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation
+                .client
+                .info_inner(backup_root, target_identifier, source_identifier),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn info_inner(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        source_identifier: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         validate_backup_identifier(target_identifier)?;
         if let Some(source_identifier) = source_identifier {
             validate_backup_identifier(source_identifier)?;
         }
-        let _ = self.version_exchange().await?;
+        let _ = self.version_exchange_inner().await?;
         let layout_identifier = source_identifier.unwrap_or(target_identifier);
         let layout = {
             let root = backup_root.to_path_buf();
@@ -345,11 +434,28 @@ where
         target_identifier: &str,
         source_identifier: Option<&str>,
     ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
+        let operation = self.begin_operation(self.operation_timeout())?;
+        let result = await_operation(
+            operation.deadline,
+            operation
+                .client
+                .list_inner(backup_root, target_identifier, source_identifier),
+        )
+        .await;
+        operation.finish_timed(result)
+    }
+
+    async fn list_inner(
+        &mut self,
+        backup_root: &Path,
+        target_identifier: &str,
+        source_identifier: Option<&str>,
+    ) -> Result<Option<plist::Value>, Mobilebackup2Error> {
         validate_backup_identifier(target_identifier)?;
         if let Some(source_identifier) = source_identifier {
             validate_backup_identifier(source_identifier)?;
         }
-        let _ = self.version_exchange().await?;
+        let _ = self.version_exchange_inner().await?;
         let source_identifier = source_identifier.unwrap_or(target_identifier);
         let layout = {
             let root = backup_root.to_path_buf();
@@ -419,7 +525,7 @@ where
             .await?
         };
 
-        self.version_exchange().await?;
+        self.version_exchange_inner().await?;
         self.device_link
             .send_process_message(&UnbackRequest {
                 message_name: "Unback",
@@ -468,54 +574,96 @@ where
             DeviceOperationRequest::Unback(_) => DeviceOperation::Unback,
             DeviceOperationRequest::Extract(_) => DeviceOperation::Extract,
         };
-        let deadline = tokio::time::Instant::now() + duration;
-        let result = match tokio::time::timeout_at(deadline, async {
+        let configured_budget = self.operation_timeout();
+        let duration = configured_budget.map_or(duration, |budget| budget.min(duration));
+        if duration.is_zero() && configured_budget != Some(Duration::ZERO) {
+            // Retain the existing issuer's genuine zero-duration timer, while
+            // rejecting before negotiation, host work or disconnect I/O.
+            let guard = self.begin_operation(None)?;
+            let elapsed = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+                .await
+                .expect_err("a pending zero-budget operation expires");
+            return guard.finish(Err(timeout_error(
+                operation,
+                DeviceOperationTimeoutPhase::Operation,
+                duration,
+                elapsed,
+                None,
+            )));
+        }
+        let guard = self.begin_operation(Some(duration))?;
+        let deadline = guard.deadline.expect("device operation has a total budget");
+        let result = match await_operation(Some(deadline), async {
             match request {
                 DeviceOperationRequest::Unback(request) => {
-                    self.run_device_unback(
-                        backup_root,
-                        request.target_identifier,
-                        request.source_identifier,
-                        request.password,
-                    )
-                    .await
+                    guard
+                        .client
+                        .run_device_unback(
+                            backup_root,
+                            request.target_identifier,
+                            request.source_identifier,
+                            request.password,
+                        )
+                        .await
                 }
                 DeviceOperationRequest::Extract(request) => {
-                    self.run_device_extract(
-                        backup_root,
-                        request.target_identifier,
-                        request.domain_name,
-                        request.relative_path,
-                        request.source_identifier,
-                        request.password,
-                    )
-                    .await
+                    guard
+                        .client
+                        .run_device_extract(
+                            backup_root,
+                            request.target_identifier,
+                            request.domain_name,
+                            request.relative_path,
+                            request.source_identifier,
+                            request.password,
+                        )
+                        .await
                 }
             }
         })
         .await
         {
             Ok(result) => result,
-            Err(elapsed) => Err(timeout_error(
-                operation,
-                DeviceOperationTimeoutPhase::Operation,
-                duration,
-                elapsed,
-                None,
-            )),
+            Err(elapsed) => {
+                // The total budget has expired. Never emit a new cleanup
+                // message beyond it or on an abandoned raw transfer.
+                return guard.finish(Err(timeout_error(
+                    operation,
+                    DeviceOperationTimeoutPhase::Operation,
+                    duration,
+                    elapsed,
+                    None,
+                )));
+            }
         };
+        if result.is_err() {
+            guard.client.reject_incomplete_failure();
+        }
+        if !guard.client.is_usable() || !guard.client.device_link.stream_ref().state.progressed {
+            return guard.finish(result);
+        }
         // Keep the operation result outside the timed future: dropping a stalled
         // disconnect must not drop the earlier failure along with that future.
-        match tokio::time::timeout_at(deadline, self.disconnect_best_effort()).await {
-            Ok(()) => result,
-            Err(elapsed) => Err(timeout_error(
-                operation,
-                DeviceOperationTimeoutPhase::Disconnect,
-                duration,
-                elapsed,
-                result.err(),
-            )),
-        }
+        let result = match await_operation(Some(deadline), guard.client.disconnect_checked()).await
+        {
+            Ok(cleanup) => {
+                if cleanup.is_err() {
+                    guard.client.device_link.stream_mut().state.usable = false;
+                }
+                finish_results(result, cleanup)
+            }
+            Err(elapsed) => {
+                guard.client.device_link.stream_mut().state.usable = false;
+                Err(timeout_error(
+                    operation,
+                    DeviceOperationTimeoutPhase::Disconnect,
+                    duration,
+                    elapsed,
+                    result.err(),
+                ))
+            }
+        };
+        guard.finish(result)
     }
 
     async fn run_device_extract(
@@ -549,7 +697,7 @@ where
             .await?
         };
 
-        self.version_exchange().await?;
+        self.version_exchange_inner().await?;
         self.device_link
             .send_process_message(&ExtractRequest {
                 message_name: "Extract",
@@ -563,20 +711,38 @@ where
         self.run_loop(&layout).await
     }
 
-    async fn disconnect_best_effort(&mut self) {
+    async fn disconnect_checked(&mut self) -> Result<(), Mobilebackup2Error> {
         if let Err(err) = self.device_link.disconnect().await {
-            if !should_suppress_disconnect_error(&err) {
-                warn!(error = %crate::redaction::diagnostic_error(&err), "backup2 disconnect failed");
+            if should_suppress_disconnect_error(&err) {
+                // A complete terminal reply may be followed by peer closure.
+                // Preserve that existing completion policy; local reuse still
+                // follows the failed transport and DeviceLink state.
+                return Ok(());
             }
+            warn!(error = %crate::redaction::diagnostic_error(&err), "backup2 disconnect failed");
+            return Err(err.into());
         }
+        Ok(())
     }
 
     async fn finish_session<T>(
         &mut self,
         result: Result<T, Mobilebackup2Error>,
     ) -> Result<T, Mobilebackup2Error> {
-        self.disconnect_best_effort().await;
-        result
+        if result.is_err() {
+            self.reject_incomplete_failure();
+        }
+        if !self.is_usable() || !self.device_link.stream_ref().state.progressed {
+            return result;
+        }
+        // Keep an earlier failure in the client while cleanup awaits. An outer
+        // total timeout can then retain it after dropping this body future.
+        let value = self.retain_cleanup_result(result);
+        let cleanup = self.disconnect_checked().await;
+        if cleanup.is_err() {
+            self.device_link.stream_mut().state.usable = false;
+        }
+        finish_results(self.recover_cleanup_result(value), cleanup)
     }
 
     async fn run_loop(
@@ -603,6 +769,10 @@ where
                 })?;
             match command {
                 "DLMessageProcessMessage" => {
+                    // The existing terminal control-message branch returns
+                    // after this complete envelope, including business-field
+                    // validation errors. It permits the disconnect attempt.
+                    self.device_link.stream_mut().state.terminal_reply = true;
                     let payload = parts
                         .get(1)
                         .and_then(plist::Value::as_dictionary)

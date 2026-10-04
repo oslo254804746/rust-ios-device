@@ -5,6 +5,7 @@ use crate::services::device_link::{DeviceLinkClient, DeviceLinkError};
 
 mod deadline;
 mod host_fs;
+mod lifecycle;
 mod protocol;
 mod session;
 pub use deadline::{DeviceOperation, DeviceOperationTimeout, DeviceOperationTimeoutPhase};
@@ -13,6 +14,7 @@ pub use host_fs::{
     initialize_backup_directory, load_backup_applications, should_do_full_backup,
     validate_backup_identifier,
 };
+pub use lifecycle::SessionCleanupFailure;
 
 mod filter;
 pub use filter::{build_backup_filter, BackupFilter, BackupSelection, BackupSelectionRule};
@@ -134,7 +136,7 @@ service_error!(
 );
 
 pub struct Mobilebackup2Client<S> {
-    device_link: DeviceLinkClient<S>,
+    device_link: DeviceLinkClient<lifecycle::BackupTransport<S>>,
     // DeviceLink reports free space before asking the host to purge. Keeping the last pair lets
     // us turn the device's follow-up MBErrorDomain/105 into a useful diagnostic.
     reported_free_space: Option<u64>,
@@ -148,7 +150,7 @@ pub struct Mobilebackup2Client<S> {
 impl<S> Mobilebackup2Client<S> {
     pub fn new(stream: S) -> Self {
         Self {
-            device_link: DeviceLinkClient::new(stream),
+            device_link: DeviceLinkClient::new(lifecycle::BackupTransport::new(stream)),
             reported_free_space: None,
             required_free_space: None,
             backup_filter: None,
@@ -156,6 +158,22 @@ impl<S> Mobilebackup2Client<S> {
             transfer_files: 0,
             transfer_bytes: 0,
         }
+    }
+
+    /// Local session/framing ownership permits reuse. This does not prove peer
+    /// liveness, remote cleanup or safe retry after a partially applied backup.
+    pub fn is_usable(&self) -> bool {
+        self.device_link.is_usable()
+            && self.device_link.stream_ref().state.usable
+            && !self.device_link.stream_ref().state.failed
+    }
+
+    /// Configure one total budget across negotiation, host work, transfers and
+    /// cleanup. None preserves unbounded ordinary operations. Device-side
+    /// Unback/Extract additionally retain their existing five-minute ceiling.
+    /// Blocking filesystem work may outlive cancellation of its await.
+    pub fn set_operation_timeout(&mut self, budget: Option<std::time::Duration>) {
+        self.device_link.stream_mut().state.operation_timeout = budget;
     }
 }
 

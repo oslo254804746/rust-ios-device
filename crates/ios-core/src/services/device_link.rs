@@ -175,6 +175,10 @@ impl<S> DeviceLinkClient<S> {
         &mut self.stream
     }
 
+    pub(crate) fn stream_ref(&self) -> &S {
+        &self.stream
+    }
+
     fn begin_operation(
         &mut self,
         budget: Option<Duration>,

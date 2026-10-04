@@ -4,6 +4,71 @@ use std::collections::HashMap;
 use std::future::Future;
 
 #[test]
+fn lifecycle_backup2_public_budget_state_cleanup_and_send_futures_keep_exhaustive_errors() {
+    use ios_core::backup2::{
+        BackupOptions, Mobilebackup2Client, Mobilebackup2Error, RestoreOptions,
+        SessionCleanupFailure,
+    };
+    use std::{path::Path, time::Duration};
+    use tokio::io::DuplexStream;
+    let _: fn(&Mobilebackup2Client<DuplexStream>) -> bool = Mobilebackup2Client::is_usable;
+    let _: fn(&mut Mobilebackup2Client<DuplexStream>, Option<Duration>) =
+        Mobilebackup2Client::set_operation_timeout;
+    let _: fn(&Mobilebackup2Error) -> Option<&SessionCleanupFailure> =
+        Mobilebackup2Error::cleanup_failure;
+    let _: fn(&SessionCleanupFailure) -> &Mobilebackup2Error =
+        SessionCleanupFailure::operation_error;
+    let _: fn(&SessionCleanupFailure) -> &Mobilebackup2Error = SessionCleanupFailure::cleanup_error;
+    fn send<F: Future + Send>(future: F) {
+        drop(future);
+    }
+    fn operations(client: &mut Mobilebackup2Client<DuplexStream>) {
+        let root = Path::new("owned-backup");
+        let info = plist::Dictionary::new();
+        send(client.version_exchange());
+        send(client.backup(root, "owned-device", false, &info));
+        send(client.backup_with_options(
+            root,
+            "owned-device",
+            false,
+            &info,
+            BackupOptions::default(),
+        ));
+        send(client.change_password(root, "owned-device", None, None));
+        send(client.restore(
+            root,
+            "owned-device",
+            RestoreOptions {
+                system: false,
+                reboot: false,
+                copy: false,
+                settings: false,
+                remove: false,
+                password: None,
+                source_identifier: None,
+            },
+        ));
+        send(client.info(root, "owned-device", None));
+        send(client.list(root, "owned-device", None));
+        send(client.unback(root, "owned-device", None, None));
+        send(client.extract(root, "owned-device", "HomeDomain", "file", None, None));
+    }
+    let _: fn(&mut Mobilebackup2Client<DuplexStream>) = operations;
+    fn family(error: Mobilebackup2Error) -> &'static str {
+        match error {
+            Mobilebackup2Error::DeviceLink(_) => "device-link",
+            Mobilebackup2Error::Io(_) => "io",
+            Mobilebackup2Error::Plist(_) => "plist",
+            Mobilebackup2Error::Protocol(_) => "protocol",
+        }
+    }
+    assert_eq!(
+        family(Mobilebackup2Error::Protocol("owned".into())),
+        "protocol"
+    );
+}
+
+#[test]
 fn lifecycle_device_link_public_state_budget_and_send_futures_keep_exhaustive_errors() {
     use ios_core::device_link::{DeviceLinkClient, DeviceLinkError};
     use std::time::Duration;
