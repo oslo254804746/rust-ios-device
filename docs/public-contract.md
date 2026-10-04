@@ -28,6 +28,22 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+DeviceLinkClient adds is_usable, set_operation_timeout(Option<Duration>) and
+call_process_message. Default None keeps unbounded message/idle timing. One
+absolute budget covers a complete version exchange or process send/reply;
+separately completed send/receive calls keep separate ownership. Zero/overflow
+reject before I/O, actual expiry retains Elapsed in existing Io.get_ref.
+Interrupted operations after accepted bytes and transport/frame-decode failures
+reject reuse; complete process-envelope validation keeps its existing policy.
+Disconnect now caps write/flush at five seconds, clamped by a shorter configured
+budget. Success closes local reuse and subsequent disconnect also returns
+existing Protocol; there is no remote ACK or asynchronous Drop. Native EOF in
+MobileBackup2 now retains the original error directly and prevents a cleanup
+write on that invalid DeviceLink connection. Raw stream_mut/into_inner signatures
+stay available with caller-owned framing/cancellation; they do not repair an
+invalid transport. No wire, codec limit, error enum, frontend or dependency
+change. See [DeviceLink migration and acceptance](validation/device-link-lifecycle-2026-10-04.md).
+
 LockdownClient adds is_usable and set_request_timeout(Option<Duration>). Default
 None keeps unbounded request timing; a configured budget shares send/flush/reply
 decoding. Zero/overflow reject before I/O; actual expiry retains Elapsed.

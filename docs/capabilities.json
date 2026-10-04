@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-device-link-lifecycle-3db5c18",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex message/process/version preflight, local serialization/oversize, empty idle/partial/buffered reads, prefilled empty/accepted partial sends, complete process cancellation and late reply; shared 200ms process budget with 4096B request/512B backpressure and 125ms send/125ms complete reply, shared version budget with 125ms initial/125ms ready and caller cancellation after VersionsOk; complete envelope reuse/native EOF/BrokenPipe/bad plist/oversize/wrong handshake; exact terminal disconnect, MAX clamp, short partial cancellation/expiry and actual default5s cleanup expiry; external signatures/Send/error-family contract"],
+      "required_state": ["Four source/test files; twelve new tests, eleven internal/one external, final full/no-default minimum twelve PASS, DeviceLink14 and backup96/one existing ignore, five original CLI 16KiB stack checks PASS. Existing backup native EOF fixture explicitly migrates to direct original cause/unusable state/zero cleanup writes rather than cleanup timeout; other old bodies/inputs/assertions remain. No new fixture tasks, old-source negative control, benchmark or device/other-platform acceptance. Default None operations, shared version/process owner and capped5s disconnect without ACK; public raw accessors remain caller-owned. All 31 tasks/subtasks/maturity/history retained"],
+      "tested_commit": "3db5c1835ad73bf881c1c6a334674bc566cfe641",
+      "date": "2026-10-04",
+      "location": "docs/validation/device-link-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "DeviceLink tracks accepted framed bytes across full version/process calls, rejects late/cached reuse after interrupted progress and native/codec failure, preserves idle/pre-I/O state and complete process-envelope validation policy. Optional absolute budgets retain actual Elapsed; disconnect success marks closed/repeat rejects, partial abort remains uncertain. Opaque stream stays owned until Drop; raw accessors bypass tracking without repair or remote release/safe retry claims. First full24485 terminal0: 2204 Rust/13 Python, CLI706/Core1343/public45, zero failures/two existing ignored and every full gate PASS. Original DeviceLink/public consumers/version/parser/error mapping preserved apart from mechanical consolidation; only backup EOF fixture migrates. Raw plist/backup production/screenshot/root/enums/classifiers/frontends/dependencies/read-only reference HEAD/status unchanged. L01/class4/all31 active; complete backup/raw/host-work ownership and other cleanup/totals/device/platform conditions remain."
+    },
+    {
       "id": "linux-lockdown-lifecycle-79f750e",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

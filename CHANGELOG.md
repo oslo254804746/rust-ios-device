@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard DeviceLink message and version-exchange ownership across cancellation.
+  Add optional operation budgets, local usable state and a process call sharing
+  send/reply timing. Bound disconnect writes to five seconds and reject reuse
+  after successful close or interrupted framing. See
+  [DeviceLink migration](docs/validation/device-link-lifecycle-2026-10-04.md).
+
 - Guard Lockdown requests with optional shared send/reply budgets and local
   usable state. Reject reuse after interrupted requests while preserving
   complete business replies. Bound StopSession writes to five seconds, retain

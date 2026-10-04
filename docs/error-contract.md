@@ -65,6 +65,19 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+DeviceLink operation expiry retains actual Elapsed in existing Io.get_ref;
+zero budget is source-free TimedOut and unrepresentable ordinary budgets are
+InvalidInput. Disconnect clamps its configured budget to five seconds, including
+Duration::MAX. Original native/codec causes remain intact; later invalid/closed
+reuse rejects with existing Protocol. Complete process-envelope errors keep
+framing reusable, while an aborted version handshake after progress invalidates.
+MobileBackup2 native EOF now returns its original DeviceLink::Io directly rather
+than issuing a later cleanup timeout: invalid DeviceLink rejects disconnect
+before another write. Existing cleanup-timeout retention on valid business/
+success/pending paths remains. Raw transfer/session-wide ownership and other
+cleanup failures still require their surrounding caller's policy. See
+[DeviceLink lifecycle evidence](validation/device-link-lifecycle-2026-10-04.md).
+
 LockdownClient request/close expiry retains actual Elapsed in existing
 LockdownError::Io.get_ref. Zero is a source-free TimedOut decision; unrepresentable
 request budgets are InvalidInput. Original transport/codec causes and complete

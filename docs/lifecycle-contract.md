@@ -189,6 +189,38 @@ fresh sessions remain owned by their surrounding operation, without new setup/
 service totals or remote release guarantees. See
 [Lockdown fixtures and migration](validation/lockdown-lifecycle-2026-10-04.md).
 
+DeviceLinkClient guards single framed sends/reads and the entire version
+exchange. Optional set_operation_timeout shares an absolute budget through
+encoding/send/flush/read/decoding; call_process_message owns its send and reply
+together. Default None keeps unbounded timing, including idle reads. Separately
+completed public sends/reads do not become one operation. Zero/unrepresentable
+ordinary budgets reject before I/O and actual expiry retains Elapsed; synchronous
+serialization/decoding remains cooperative.
+
+Accepted bytes include caller-buffered reads/writes. Cancellation/failure after
+progress, native transport failure/EOF and frame decoding errors invalidate local
+reuse. Empty idle/write waits, unpolled futures and local pre-I/O errors can
+preserve state. Complete process envelopes retain their existing validation and
+reuse policy; failed version negotiation after progress invalidates. No pending
+queue is added and the opaque stream/buffers remain owned until Drop.
+
+Disconnect has an independent five-second write/flush cap, shortened by a smaller
+configured budget. Success marks locally closed; all later tracked operations,
+including another disconnect, reject. Interrupted close after bytes is uncertain
+and requires a fresh transport. No ACK, asynchronous shutdown/Drop, automatic
+disconnect or primary/cleanup aggregate is added. MobileBackup2 native EOF now
+keeps the original error directly and attempts no cleanup write on invalid
+DeviceLink; its valid-connection timeout-retention fixtures remain.
+
+Public stream_mut and into_inner retain their signatures and transfer raw
+framing/cancellation responsibility to the caller. They bypass tracking and do
+not restore an unusable transport. MobileBackup2 still needs an outer owner for
+its Hello/command/host-work gaps, raw upload/download bytes and complete operation
+cleanup. Existing five-minute Unback/Extract deadline policy is unchanged;
+blocking filesystem work is not certified stopped by cancelling its await.
+Screenshot and other raw plist helpers remain separate profiles. See
+[DeviceLink fixtures and migration](validation/device-link-lifecycle-2026-10-04.md).
+
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
 and late/fragmented/blocked-send cases for each owner. L02–L04/Q04 and platform/
