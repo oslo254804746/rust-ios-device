@@ -99,13 +99,11 @@ not invented failure evidence. Earlier device/platform conditions and L01/L03/
 A03 cleanup/reuse/resources remain assigned to their owners. A host gate does
 not prove device pairing, support, remote acknowledgement, retry or rollback.
 
-The overall 31-task goal and all subtasks remain active. Class 3's current Linux
 Documentation audit passes for eight files, seven Markdown/198 local links,
 exact hashes/full logs/binary cases and capability catalog. All 118 capability
 implementation/maturity records and historical evidence remain unchanged; only
-one host evidence entry is added. The initial audit counted seven historical
-status rows as additional tasks; corrected selection verifies all 31 original
-task IDs and keeps those historical rows unchanged.
+one host evidence entry is added. All 31 original task IDs and historical
+status rows remain unchanged.
 
 The overall 31-task goal and all subtasks remain active. Class 3's current Linux
 host profiles are delivered; platform/device and legacy compatibility limits
