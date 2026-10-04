@@ -77,116 +77,186 @@ impl NotificationCmd {
             .await?;
         let mut client = ios_core::notificationproxy::NotificationProxyClient::new(stream);
 
-        match self.sub {
-            NotificationSub::Post { notification } => {
-                client.post(&notification).await?;
-                crate::output::outln!("Posted notification: {notification}");
-            }
-            NotificationSub::Roundtrip {
-                notification,
-                timeout,
-                json,
-            } => {
-                client.observe(&notification).await?;
-                client.post(&notification).await?;
-                client
-                    .wait_for(&notification, Duration::from_secs(timeout))
-                    .await?;
-                crate::output::outln!("{}", render_notification_output(&notification, json, None)?);
-            }
-            NotificationSub::Observe {
-                notification,
-                count,
-                timeout,
-                json,
-            } => {
-                client.observe(&notification).await?;
-                let limit = count.unwrap_or(u64::MAX);
-                let timeout = Duration::from_secs(timeout);
-                let mut seen = 0u64;
-                while seen < limit {
-                    match client.next_event(timeout).await? {
-                        ios_core::notificationproxy::NotificationProxyEvent::Notification(name) => {
-                            if name == notification {
-                                seen += 1;
-                                crate::output::outln!(
-                                    "{}",
-                                    render_notification_output(&name, json, Some(seen))?
-                                );
-                            }
-                        }
-                        ios_core::notificationproxy::NotificationProxyEvent::ProxyDeath => {
-                            return Err(anyhow::Error::new(
-                                ios_core::notificationproxy::NotificationProxyError::ProxyDeath,
-                            )
-                            .context("notification proxy closed before notification arrived"));
-                        }
-                    }
+        let operation = Box::pin(async {
+            match self.sub {
+                NotificationSub::Post { notification } => {
+                    client.post(&notification).await?;
+                    crate::output::outln!("Posted notification: {notification}");
                 }
-            }
-            NotificationSub::Wait {
-                notification,
-                timeout,
-                json,
-            } => {
-                client
-                    .wait_for(&notification, Duration::from_secs(timeout))
-                    .await?;
-                crate::output::outln!("{}", render_notification_output(&notification, json, None)?);
-            }
-            NotificationSub::Stream {
-                notifications,
-                timeout,
-                count,
-                json,
-            } => {
-                for notification in &notifications {
-                    client.observe(notification).await?;
-                }
-
-                let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs(secs));
-                let mut received = 0u64;
-                loop {
-                    let remaining = match deadline {
-                        Some(deadline) => {
-                            let remaining = deadline.saturating_duration_since(Instant::now());
-                            if remaining.is_zero() {
-                                break;
-                            }
-                            Some(remaining)
-                        }
-                        None => None,
-                    };
-                    let name = next_stream_notification(&mut client, remaining).await?;
-                    received += 1;
+                NotificationSub::Roundtrip {
+                    notification,
+                    timeout,
+                    json,
+                } => {
+                    client.observe(&notification).await?;
+                    client.post(&notification).await?;
+                    client
+                        .wait_for(&notification, Duration::from_secs(timeout))
+                        .await?;
                     crate::output::outln!(
                         "{}",
-                        render_notification_output(&name, json, Some(received))?
+                        render_notification_output(&notification, json, None)?
                     );
-                    if count.is_some_and(|limit| received >= limit) {
-                        break;
+                }
+                NotificationSub::Observe {
+                    notification,
+                    count,
+                    timeout,
+                    json,
+                } => {
+                    client.observe(&notification).await?;
+                    let limit = count.unwrap_or(u64::MAX);
+                    let timeout = Duration::from_secs(timeout);
+                    let mut seen = 0u64;
+                    while seen < limit {
+                        match client.next_event(timeout).await? {
+                            ios_core::notificationproxy::NotificationProxyEvent::Notification(
+                                name,
+                            ) => {
+                                if name == notification {
+                                    seen += 1;
+                                    crate::output::outln!(
+                                        "{}",
+                                        render_notification_output(&name, json, Some(seen))?
+                                    );
+                                }
+                            }
+                            ios_core::notificationproxy::NotificationProxyEvent::ProxyDeath => {
+                                return Err(anyhow::Error::new(
+                                    ios_core::notificationproxy::NotificationProxyError::ProxyDeath,
+                                )
+                                .context("notification proxy closed before notification arrived"));
+                            }
+                        }
                     }
                 }
-            }
-            NotificationSub::Springboard { timeout, json } => {
-                client
-                    .wait_for_springboard(Duration::from_secs(timeout))
-                    .await?;
-                crate::output::outln!(
-                    "{}",
-                    render_notification_output(
-                        ios_core::notificationproxy::SPRINGBOARD_FINISHED_STARTUP,
-                        json,
-                        None
-                    )?
-                );
-            }
-        }
+                NotificationSub::Wait {
+                    notification,
+                    timeout,
+                    json,
+                } => {
+                    client
+                        .wait_for(&notification, Duration::from_secs(timeout))
+                        .await?;
+                    crate::output::outln!(
+                        "{}",
+                        render_notification_output(&notification, json, None)?
+                    );
+                }
+                NotificationSub::Stream {
+                    notifications,
+                    timeout,
+                    count,
+                    json,
+                } => {
+                    for notification in &notifications {
+                        client.observe(notification).await?;
+                    }
 
-        client.shutdown().await.ok();
-        Ok(())
+                    let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs(secs));
+                    let mut received = 0u64;
+                    loop {
+                        let remaining = match deadline {
+                            Some(deadline) => {
+                                let remaining = deadline.saturating_duration_since(Instant::now());
+                                if remaining.is_zero() {
+                                    break;
+                                }
+                                Some(remaining)
+                            }
+                            None => None,
+                        };
+                        let name = next_stream_notification(&mut client, remaining).await?;
+                        received += 1;
+                        crate::output::outln!(
+                            "{}",
+                            render_notification_output(&name, json, Some(received))?
+                        );
+                        if count.is_some_and(|limit| received >= limit) {
+                            break;
+                        }
+                    }
+                }
+                NotificationSub::Springboard { timeout, json } => {
+                    client
+                        .wait_for_springboard(Duration::from_secs(timeout))
+                        .await?;
+                    crate::output::outln!(
+                        "{}",
+                        render_notification_output(
+                            ios_core::notificationproxy::SPRINGBOARD_FINISHED_STARTUP,
+                            json,
+                            None
+                        )?
+                    );
+                }
+            }
+
+            Ok(())
+        })
+        .await;
+        finish_notification_session(&mut client, operation).await
     }
 }
+
+async fn finish_notification_session<S>(
+    client: &mut ios_core::notificationproxy::NotificationProxyClient<S>,
+    operation: Result<()>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    // A partial/failed frame or ProxyDeath cannot safely receive another wire
+    // command. The enclosing command still owns and drops that transport.
+    let cleanup = if client.is_usable() {
+        client
+            .shutdown()
+            .await
+            .map_err(|error| anyhow::Error::new(error).context("notification proxy cleanup failed"))
+    } else {
+        Ok(())
+    };
+    match (operation, cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(NotificationCleanupFailure { primary, cleanup }.into()),
+    }
+}
+
+struct NotificationCleanupFailure {
+    primary: anyhow::Error,
+    cleanup: anyhow::Error,
+}
+
+impl std::fmt::Display for NotificationCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("notification operation failed; cleanup also failed")
+    }
+}
+
+impl std::fmt::Debug for NotificationCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotificationCleanupFailure")
+            .field(
+                "primary_class",
+                &ios_core::classify_error(self.primary.as_ref()),
+            )
+            .field(
+                "cleanup_class",
+                &ios_core::classify_error(self.cleanup.as_ref()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::error::Error for NotificationCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.primary.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 async fn next_stream_notification<S>(
     client: &mut ios_core::notificationproxy::NotificationProxyClient<S>,
