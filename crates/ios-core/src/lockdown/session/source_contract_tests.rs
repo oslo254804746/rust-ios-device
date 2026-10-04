@@ -289,3 +289,99 @@ async fn actual_service_tls_success_keeps_existing_verifier_and_application_io()
     .await
     .expect("bounded successful TLS handshake");
 }
+
+#[tokio::test]
+async fn lifecycle_lockdown_owned_tls_bootstrap_and_sent_expiry_reject_late_reply() {
+    use crate::LockdownClient;
+    let record = dummy_pair_record(TEST_CERT_PEM, TEST_KEY_PEM);
+    let certs = rustls_pemfile::certs(&mut Cursor::new(TEST_CERT_PEM))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let key = rustls_pemfile::private_key(&mut Cursor::new(TEST_KEY_PEM))
+        .unwrap()
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(certs, key)
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let (host, mut peer) = tokio::io::duplex(65_536);
+    let (late_sent, late_ready) = tokio::sync::oneshot::channel();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let ((), ()) = tokio::join!(
+            async {
+                let mut client = LockdownClient::connect_with_stream(host, &record)
+                    .await
+                    .unwrap();
+                assert!(client.is_usable());
+                client.set_request_timeout(Some(Duration::from_millis(5)));
+                let error = client.get_value(None, Some("OwnedKey")).await.unwrap_err();
+                outer(&error, io::ErrorKind::TimedOut, ErrorClass::Timeout);
+                native::<tokio::time::error::Elapsed>(&error);
+                assert!(!client.is_usable());
+                late_ready.await.unwrap();
+                assert_eq!(
+                    classify_error(&client.get_value(None, None).await.unwrap_err()),
+                    ErrorClass::Protocol
+                );
+                assert_eq!(
+                    classify_error(&client.stop_session().await.unwrap_err()),
+                    ErrorClass::Protocol
+                );
+                drop(client);
+            },
+            async {
+                for (operation, reply) in [
+                    (
+                        "QueryType",
+                        plist::Dictionary::from_iter([(
+                            "Type",
+                            plist::Value::String("com.apple.mobile.lockdown".into()),
+                        )]),
+                    ),
+                    (
+                        "StartSession",
+                        plist::Dictionary::from_iter([
+                            ("SessionID", plist::Value::String("owned-session".into())),
+                            ("EnableSessionSSL", plist::Value::Boolean(true)),
+                        ]),
+                    ),
+                ] {
+                    let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                    assert_eq!(
+                        request.as_dictionary().unwrap()["Request"].as_string(),
+                        Some(operation)
+                    );
+                    send_lockdown(&mut peer, &reply).await.unwrap();
+                }
+                let mut peer = acceptor.accept(peer).await.unwrap();
+                let request: plist::Value = recv_lockdown(&mut peer).await.unwrap();
+                assert_eq!(
+                    request.as_dictionary().unwrap()["Key"].as_string(),
+                    Some("OwnedKey")
+                );
+                tokio::time::sleep(Duration::from_millis(15)).await;
+                send_lockdown(&mut peer, &plist::Dictionary::from_iter([("Value", true)]))
+                    .await
+                    .unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(5), peer.read(&mut [0]))
+                        .await
+                        .is_err()
+                );
+                late_sent.send(()).unwrap();
+                match peer.read(&mut [0]).await {
+                    Ok(0) => {}
+                    Err(error) => assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof),
+                    other => panic!("unexpected application bytes after invalid client: {other:?}"),
+                }
+            }
+        );
+    })
+    .await
+    .unwrap();
+}

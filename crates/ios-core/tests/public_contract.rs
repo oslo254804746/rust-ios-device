@@ -3,6 +3,36 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+#[test]
+fn lifecycle_lockdown_public_state_budget_and_send_future_signatures_keep_exhaustive_errors() {
+    use ios_core::{LockdownClient, LockdownError};
+    use std::time::Duration;
+    let _: fn(&LockdownClient) -> bool = LockdownClient::is_usable;
+    let _: fn(&mut LockdownClient, Option<Duration>) = LockdownClient::set_request_timeout;
+    fn send<F: Future + Send>(future: F) {
+        drop(future);
+    }
+    fn requests(client: &mut LockdownClient) {
+        send(client.get_value(None, None));
+        send(client.get_value_preserving_errors(None, None));
+        send(client.set_value(None, None, false));
+        send(client.remove_value(None, None));
+        send(client.start_service("owned-service"));
+        send(client.deactivate());
+        send(client.stop_session());
+        send(client.product_version());
+    }
+    let _: fn(&mut LockdownClient) = requests;
+    fn family(error: LockdownError) -> &'static str {
+        match error {
+            LockdownError::Io(_) => "io",
+            LockdownError::Protocol(_) => "protocol",
+            LockdownError::PairRecord(_) => "pair-record",
+        }
+    }
+    assert_eq!(family(LockdownError::Protocol("owned".into())), "protocol");
+}
+
 use ios_core::{
     ConnectOptions, CoreError, DeviceEvent, DeviceInfo, RsdHandshake, ServiceDescriptor, TunMode,
     TunnelInfo, XpcMessage, XpcValue,
