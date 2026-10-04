@@ -605,8 +605,39 @@ ignored its result. Dual failure owns both original errors in a private CLI
 aggregate; source/category follows the primary, and automatic Display/Debug
 never formats either cause. Existing JSON fields, help, parameters, event
 selection and success bytes remain. Whole-future cancellation drops owned
-transport without asynchronous cleanup. Setup/total/signal ownership is still
-pending; see [cleanup host acceptance](validation/notification-cli-cleanup-2026-10-04.md).
+transport without asynchronous cleanup. See
+[cleanup host acceptance](validation/notification-cli-cleanup-2026-10-04.md).
+
+The notification CLI control migration rejects finite --timeout 0 and
+unrepresentable deadlines as invalid_input (exit1, phase notify) before explicit
+or default device selection. Arguments/help/defaults and v1 JSON fields remain.
+Default discovery, device connect and NotificationProxy service connect share
+one 30-second setup budget. First-device selection and empty-default failure
+remain; device selection for other commands is unchanged. No pairing or retry
+is introduced. Setup Ctrl+C now returns typed cancellation.
+
+After setup, Post and each full subscription stage have a 30-second send cap.
+Roundtrip/Wait/Springboard and Stream --timeout now share the user budget from
+before subscription writes; slow observe/post/all-subscription writes consume
+that same total. Setup and independent five-second cleanup are separate.
+Observe keeps its per-event idle timeout; unrelated complete events start the
+next idle wait as before. Stream without --timeout remains unbounded and
+cancellable. Stream total expiry now consistently ends successfully unless
+cleanup fails; its old idle-read expiry could fail while between-frame expiry
+succeeded. This timing/exit change is deliberate.
+
+One pinned signal future is shared through setup/capture. Ctrl+C during
+Stream/Observe ends normally subject to cleanup, while other commands return
+typed cancellation. Ready control wins before another ready event is emitted.
+Event filtering/order, JSON/human success lines and original count0 behavior
+remain: Observe emits zero; Stream stops after its first event. Yielding occurs
+at complete frame/output boundaries. A partial-frame stop drops an invalid
+transport without unsafe Shutdown. Cleanup-primary retention remains as above.
+Synchronous output/decode and running blocking workers remain cooperative;
+there is no async Drop, ACK, rollback or safe-retry promise. Actual Linux SIGINT
+at an owned synthetic discovery endpoint and injected writer errors are host
+evidence; device stdout/signal/cleanup acceptance remains pending. See
+[notification CLI control acceptance](validation/notification-cli-control-2026-10-04.md).
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation
 behavior unless an explicit migration says otherwise. Adding an opt-in command

@@ -85,8 +85,27 @@ after success is returned, including actual default five-second expiry. Display
 is static and Debug exposes only categories; safe v1 output retains its fields.
 Already invalid/ProxyDeath transport skips cleanup rather than manufacturing a
 secondary error or sending late control bytes. Drop closes owned transport;
-setup/total/signal owners and remote cleanup remain separate conditions. See
+the subsequent setup/total/signal owner is described below; remote cleanup remains
+a separate condition. See
 [notification CLI cleanup evidence](validation/notification-cli-cleanup-2026-10-04.md).
+
+Notification CLI finite zero/overflow admission is existing InvalidInput before
+device selection/I/O, without fabricated Elapsed. Setup, send and finite total
+expiry retain a real issued Tokio Elapsed with fixed phase context. The same
+pinned signal survives default discovery/setup into capture. Setup/finite-command
+operator stop uses existing OperationCancelled; Stream/Observe stop and Stream
+total expiry return ordinary completion subject to cleanup. Native signal-wait
+failure retains its original IO cause. Output errors and any later cleanup
+failure retain the primary category/source through the existing CLI aggregate.
+
+Actual CLI v1 admission errors remain class invalid_input, phase notify, exit1
+and conservative effects unknown; no new field or cause formatting is added.
+Human diagnostics retain the existing io/InvalidInput label. Linux host SIGINT
+during a fake default ListDevices wait yields cancelled/notify/exit1 and owned
+peer EOF. No physical service is contacted. Injected write_line_to permission
+faults exercise actual command consumption, without claiming OS stdout failure
+or device cleanup acceptance. See
+[notification CLI control evidence](validation/notification-cli-control-2026-10-04.md).
 
 MobileBackup2's current operation owner retains both failures through
 Mobilebackup2Error::cleanup_failure() and its opaque SessionCleanupFailure.

@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy 与 notification CLI cleanup 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy 与 notification CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5849,3 +5849,61 @@ blockingresources、L02–L04/Q04及第五至九类。Capability118正文/maturi
 仅追加hostevidence；22device NOT_RUN，Chromium/installed3.9/3.13未重跑，真实设备/
 平台/credentials/协议条件保持。无设备/Apple操作/refs修改/subagents/push/publication/
 historyrewrite。
+
+### 大类 4：L01 notification CLI discovery/total/signal ownership 交付（2026-10-04）
+
+受测实现 `e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec`，基线
+`7e901d6f8c38b8f856797c1a453c686d1c5e626f`；六CLI/source/verifier测试文件，
+1295 insertions/141 deletions。Linux x86_64、Rust1.97.1/MSRV1.80.1、项目Python3.12.13。
+专题：[notification CLI control gate](validation/notification-cli-control-2026-10-04.md)，
+对应[lifecycle](lifecycle-contract.md)/[兼容](public-contract.md)/[errors](error-contract.md)。
+
+Finite zero/MAX在任何explicit/default设备选择前InvalidInput；默认ListDevices、device/
+serviceconnect共享checked30s setup，一个pinnedCtrlC贯穿setup/capture，device owner
+保留至cleanup。Post及完整subscriptionstage另有30s cap；Roundtrip/Wait/Springboard/
+StreamSome总期限从第一subscription写入前开始，覆盖observe/post/全部subscription/
+receive/output；setup前置、cleanup独立5s。Observe保留每事件idle，StreamNone无限期。
+Ready stop/到期优先；完整frame/output边界yield防ready traffic饿死control，不tick取消
+partialread。Stream/ObserveCtrlC及Stream总到期正常结束（仍可能cleanup失败）；finite/
+setupCtrlC保留OperationCancelled、实际setup/send/finite到期保留真实Elapsed。Stream旧
+idle到期失败/事件间到期成功现统一normalstop，是显式迁移。主错误/dualcleanup保留。
+Partialinvalid/ProxyDeath不lateShutdown，无task/queue/asyncDrop/ACK/rollback/retry。
+
+十九newRust fixtures最终pipeline76076 terminal0：narrow19、notificationCLI36、minimum
+CLI all-target/no-default check、旧16KiB stack5、strictCore/CLIClippy/fmt PASS；Python
+verifier11（三new含contact/private诊断negativecontrols）及实际CLI39 PASS。新24case：
+五命令×zero/MAX×explicit/default共20JSON，加两human，22均0deviceconnections；有效
+emptydefault只1ListDevices/0extra；Linux真实SIGINT仅发送自有CLI childPID，阻塞于
+syntheticListDevices，cancelled/notify/exit1、peerEOF/ownedprocesscleanup PASS。实际39
+rawhits0/完整capture，无物理设备/service/pairing/credentials/Apple操作。
+
+准备阶段 `cargo clean -p ios-cli --profile dev` terminal0，删除4238构建缓存文件/
+10.9GiB，free由2.6至约12GiB；此时无构建进程。首expanded37CLI检查35PASS/2humanFAIL，
+因verifier误期望human label；修正为现有io/InvalidInput后37PASS，后续扩展至39PASS。
+产品formatter未改。最新源码冻结后再full，无运行中编辑/重复验证。
+
+第11节 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session13402 terminal0，
+validation/full PASS：2257Rust/13Python、0FAIL/two existing ignored，CLI734/Core1366/
+public47。Rust/Python拆分；workspacefmt/check/strictClippy/MSRV、66features/fourgroups、
+7+7docs/3snips、CABI、3.12wheel/sdist/install、56tooling/118help/38raw/5host/39CLI/
+3backup合同均PASS。Frozen source SHA256
+`5329b8ccbc98417797eb15f0ce3a5ab3a1ee01e3368d27a04e920ec4e70531c2`；ios debug SHA256
+`50f09b7fb0fe78eca75e945485e4d3a09b231f61ce08dae0e1e5023dbcc7ef64`。
+Source冻结至full/commit，full后free4.3GiB，无storagefailure。源码audit旧clap/help、
+cleanup/streamhelper/renderer/tests、其他main与原Python测试字节相等；core/API/enums/
+protocol/deps/refs保持。日志/audits `/tmp/ios-l01-notification-cli-control-`。
+
+八文档收尾审计PASS：七Markdown/305 local links，testedcommit/frozen source/binary/
+full/narrow/preparation/只读refs一致；Capability118源目录及actualCLIhelp PASS，正文/
+maturity/既有evidence保持。全部31任务/subtasks/historyprefix精确保持，仅L01overview
+行和末尾交付追加；文档期间产品source未改。
+
+全部31任务/subtasks/history保持，总览9完成/11未开始/11进行中或待验收/条件不变。
+L01/class4/overallgoal active；下一Companion共享连接/request/listener/forwardingcleanup
+owner，随后其他L01协议/rawborrowedsessions/multi-requesttotals/longstreams/manualpairing/
+blockingresources、L02–L04/Q04及第五至九类。Capability118正文/maturity/history保持，仅
+追加hostevidence；22device NOT_RUN，Chromium/installed3.9/3.13未重跑。Cooperative
+timers不preempt同步encode/decode/output或已运行blockingworker；injectedwriter不是OS
+stdoutfault，hostSIGINT不代替device信号/cleanup验收。平台/设备/凭据/协议条件继续；
+无referencecheckout编辑/subagents/push/publication/historyrewrite。

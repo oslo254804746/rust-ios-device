@@ -11,7 +11,9 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `3db5c1835ad73bf881c1c6a334674bc566cfe641`; MobileBackup2 operation ownership is
 `d2828b802e697ff4d1069744e89d7a1eb31214c7`; NotificationProxy framed-event ownership is
 `db732437a945c75096d05f67b9e2063838756c97`; notification CLI cleanup ownership is
-`9b2c488ec9052d2899de91a68622b00be207446c`. This contract records implemented profiles and
+`9b2c488ec9052d2899de91a68622b00be207446c`; notification CLI discovery/setup,
+send/total deadlines and operator signal ownership is
+`e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -267,7 +269,7 @@ independent five-second write/flush cap with shorter configured clamp and safe
 MAX handling; success closes reuse, including repeat shutdown. Empty blocked
 shutdown may remain usable; partial aborted shutdown requires a new transport.
 No queue/task/automatic cleanup/ACK/async Drop is added; opaque buffers stay until
-Drop. CLI overall budgets and signal ownership remain independent work. See
+Drop. CLI overall budgets and signal ownership are supplied by the owner below. See
 [notification fixtures](validation/notification-lifecycle-2026-10-04.md).
 
 Notification CLI now awaits the entire command body before deciding cleanup,
@@ -277,8 +279,39 @@ unsafe control writes. Cleanup failure after success is returned. Dual failure
 keeps both originals under a private CLI aggregate, with primary source/category
 and static Display/category-only Debug. Boxing the command body preserves stack
 bounds without a task/queue. Whole-future cancellation still drops transport
-without asynchronous cleanup. This does not change setup, command timers or
-signal handling. See [CLI cleanup fixtures](validation/notification-cli-cleanup-2026-10-04.md).
+without asynchronous cleanup. That cleanup profile leaves setup, command timers
+and signal handling unchanged. See [CLI cleanup fixtures](validation/notification-cli-cleanup-2026-10-04.md).
+
+The subsequent notification CLI control owner validates finite zero/overflow
+timeouts before any device selection or I/O. It shares a 30-second setup budget
+across default usbmux discovery, device connect and service connect. Explicit
+UDID and the original first-device selection use the same setup owner. One
+pinned Ctrl+C future survives setup into capture; setup stop returns the existing
+typed OperationCancelled. The device owner stays alive through cleanup.
+
+Post sends and each command's complete subscription stage have a 30-second send
+cap. Roundtrip/Wait/Springboard and Stream with --timeout share one absolute
+user budget from before their first subscription write through reception/output;
+setup precedes this budget and cleanup remains independently capped at five
+seconds. Roundtrip includes observe and post; Stream includes all subscriptions.
+Observe retains its per-complete-event idle timeout, including unrelated events;
+it has no new total budget. Stream without --timeout waits indefinitely until
+count, operator stop, failure or caller cancellation.
+
+Ready operator stop and an already due total take priority over operation polls.
+Stream/Observe operator stop and Stream total expiry are ordinary completion,
+subject to cleanup failure. Finite command stop retains typed cancellation;
+actual setup/send/finite-total expiry retains real Tokio Elapsed. Complete event
+boundaries yield before output and the next read, so continuously ready stream
+traffic cannot starve control. Interrupted partial frames remain invalid and
+skip unsafe late Shutdown. No timer tick interrupts an arbitrary partial read.
+
+These are cooperative budgets: synchronous serialization, decoding, output and
+already running blocking workers cannot be preempted. Directly owned boxed
+futures add no reader task/queue or asynchronous Drop. Host fixtures include
+actual Linux SIGINT during an owned fake ListDevices wait; actual device signal,
+service cleanup and other platforms remain pending. See
+[CLI control fixtures and migration](validation/notification-cli-control-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

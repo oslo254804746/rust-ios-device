@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound notification default discovery/service setup and send stages at 30
+  seconds; share finite command totals from before subscription writes and keep
+  one Ctrl+C owner through setup/capture. Reject zero/overflow before selection,
+  retain Observe idle timing and unbounded Stream, and complete Stream total
+  expiry consistently. See [notification CLI control migration](docs/validation/notification-cli-control-2026-10-04.md).
 - Attempt bounded notification shutdown after returned command failures on a
   usable connection. Report cleanup failure after success and retain both causes
   on dual failure, with the primary category preserved. See

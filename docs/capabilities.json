@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-notification-cli-control-e3ab42b",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex slow subscribe/post and late relay totals, per-event Observe idle/JSON bytes, unbounded Stream with owned stop, shared pinned setup/capture signal, ready-event fairness, empty/partial sends and stop, typed finite cancellation/native signal fault, injected writer fault/dual cleanup, owned caller Drop/EOF; actual Linux SIGINT during fake default usbmux ListDevices wait"],
+      "required_state": ["Six CLI/source/verifier test files; nineteen new Rust fixtures, notificationCLI36/minimum check/stack5/strict gates PASS. Three new verifier checks include negative contact and private diagnostic controls; tooling56/actualCLI39 PASS. Existing clap/help, cleanup/stream helper/renderer/tests and non-notification main bytes preserved. No physical device, OS stdout fault, old-source negative control, benchmark or other-platform acceptance; capability bodies/maturity unchanged"],
+      "tested_commit": "e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec",
+      "date": "2026-10-04",
+      "location": "docs/validation/notification-cli-control-2026-10-04.md",
+      "result": "PASS",
+      "scope": "Notification CLI shares checked30s discovery/connect/service setup and one pinned signal; send stages30s, finite totals begin before subscriptions, Observe retains per-event idle and Stream None remains unbounded. Ready stop/deadline wins, finite stop retains cancellation, issued expiry retains Elapsed, partial invalid state skips unsafe cleanup, primary/native/output errors survive cleanup. Full13402 terminal0:2257Rust/13Python, CLI734/Core1366/public47, zero failures/two existing ignored; all section11 split gates PASS. Twenty-two admission probes contact no synthetic endpoint, valid empty default performs one ListDevices/no additional connection; actual host SIGINT yields cancelled/notify and peer EOF. Cooperative limits remain; all31 and otherL01/L02–L04/Q04 active with22device NOT_RUN."
+    },
+    {
       "id": "linux-notification-cli-cleanup-9b2c488",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
