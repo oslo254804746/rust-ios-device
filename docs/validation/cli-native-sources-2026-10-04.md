@@ -125,3 +125,7 @@ and subtasks stay. Next: finite acceptance of remaining source-free decisions,
 stream/JSON and binding projections; lifecycle/platform/device requirements
 remain with L01/L03/A03 and their owners. The
 [preceding diagnostic gate](cli-diagnostic-sources-2026-10-04.md) is retained.
+
+Follow-up: [stream sources and framing acceptance](cli-stream-contract-2026-10-04.md)
+retains this gate and documents additional native match/channel boundaries,
+issued deadlines and the JSON interactive prompt correction.

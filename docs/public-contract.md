@@ -285,6 +285,17 @@ exit 1 and unknown effects do not authorize retry or rollback. Source/privacy
 and exact host boundaries are in
 [CLI native acceptance](validation/cli-native-sources-2026-10-04.md).
 
+CLI stream adapters also retain Pcap/FPS native errors and XCTest/notification/
+CrashReport Elapsed. Notification ProxyDeath is typed disconnected; issued
+Companion/OS Trace deadlines are source-free timeout. Failed signal waits in
+OS Trace/crash/power hold propagate IO rather than completing successfully.
+Normal operator stops retain success. JSON WebInspector shell omits interactive
+prompts/EOF presentation bytes; existing result records stay. Categories,
+Display, source traversal and safe correlation can migrate. Prior valid records
+or file/device effects can precede exit 1; no rollback/retry/cleanup certificate.
+The [stream inventory and host evidence](validation/cli-stream-contract-2026-10-04.md)
+records compact/pretty/aggregate formats and the retained stop policies.
+
 CLI status writes retain native I/O errors instead of panicking. Ordinary
 status write failures return through the existing exit-1 boundary; six diagnostic
 sites keep an already-failed operation primary. A failed status can follow output

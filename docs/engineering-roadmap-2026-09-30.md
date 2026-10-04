@@ -5028,3 +5028,64 @@ A02/第三类/总体 goal active，第四类未开始，31任务及所有子项�
 再按依赖进入 lifecycle 类；L01/L03/A03/platform/device 条件保留。没有实际设备/
 daemon/credentials/Apple actions、reference edits、push/publication、history rewrite
 或 maturity upgrade。
+
+### 大类 3：A02 CLI 流错误与 framing 合同交付（2026-10-04）
+
+实现提交 `64153aae931a2b2b147ef4611ba1d5f36f9ea661`，前置文档基线
+`bc8614ba29aaba30d1fe22635a4885c83e30b40d`。Linux x86_64，Rust 1.97.1/
+MSRV 1.80.1、Python 3.12.13；九个 CLI 文件 340 insertions/53 deletions。
+专题：[流错误、framing 与主机证据](validation/cli-stream-contract-2026-10-04.md)。
+
+Pcap 原 native read error 和 FPS reader→channel→CLI 的 DtxError 不再转 String；
+两处 XCTest wait、notification stream 与 CrashReport version 的 actual Elapsed
+保留。OS Trace 两个 signal wait、crash watch、power assertion hold 区分 actual
+signal IO failure 与正常 operator stop。共十条原 native source-loss paths；
+crash/power 信号分支仅 source-reviewed，不制造生产 syscall fault 证据。
+
+Notification observe/stream 的 ProxyDeath event 使用现有 typed closed-proxy error，
+class disconnected，无虚构 IO cause。Companion/OS Trace 的 issued deadline 是
+source-free IO TimedOut，无 OS code/Elapsed。既有 operator stop success、count/
+capture window 和 native failure exit 保留。JSON WebInspector shell 去掉交互 prompt
+与 EOF presentation newline；human/成功 JSON records 保留。此两 guard 的行为为
+source-reviewed，无 PTY/真机交互验收。返回 class/Display/source/correlation 可变，
+machine v1/exit 1/unknown effects 保持。先前有效 records 或文件/设备 effects 可存在。
+
+新增八测试：actual owned duplex Pcap expiry/EOF、notification escaping/framed
+ProxyDeath/Elapsed/EOF/safe machine envelope，actual DTX EOF 经过 owned FPS channel，
+actual timers→private XCTest/Crash adapter，issued source-free markers，OS Trace
+两 deadline modes 注入 actual empty-path file-open IO 作为 owned signal future。
+不是完整 CoreProfile setup/reader/stop，不向 parent 发 signal，也不是真实 signal
+registration 失败。首个 fixture 错用 private Core module 出 E0603，改为 fixture 自有
+plist framing 后通过；没有 old-algorithm negative control 或 test-only public export。
+
+两最后 signal/prompt guards 前 CLI 全量 686 PASS/one old ignored；final fmt/strict CLI
+与 first canonical full terminal0。Full 2101 Rust/13 Python、CLI686 PASS/one old ignored、
+zero FAIL/two old ignored；14 Rust/1 Python groups、66 feature/four groups、7+7 doctests/
+three snippets、MSRV/check/workspace strict Clippy、C ABI/malformed/checked listing、
+3.12 wheel/sdist、53 tooling/118 help/38 raw/five host/15 CLI/three backup contracts PASS，
+22 device rows NOT_RUN。未重复 Chromium 或 installed 3.9/3.13。
+命令 `python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`，
+session27804 terminal0；日志 `/tmp/ios-a02-stream-native-` 前缀。
+Source SHA256 `2a95e4665c28c5215b0e1147d08845810e280410af99e5566b90c151188fb3c8`；
+ios debug SHA256 `837a8d2d7b609a745c2821665cc2f39fb989c0b64e01003378df8a59b817197f`。
+九 source files staged/frozen through full；Core/C/Python/deps byte exact。Production
+diff reviewed；hash 是 freeze evidence，不是所有 device operations 的行为证明。
+Full前后约21GiB，未cleanup/storage failure/restart。
+
+专题登记 NDJSON、successive pretty documents、aggregate summaries、per-record partial
+failure 和 existing stop policy；error-format=json 只约定 final stderr error，不将
+progress/tracing stderr 整体声明 JSON。绑定/probe 的现有 scoped mapped profiles 复核：
+C ALLOC 的 NUL/alloc ambiguity 保持 unknown，Python native metadata/typed builtin args
+与 RSD initial/skipped/metadata/service-missing 的 evidence 不推断 device unsupported。
+FPS unbounded channel/task ownership、stop/join/flush placement 与更强 reuse/cleanup
+继续属于 L01，不把分类结果解释为 remote ACK/retry/rollback。
+
+八文档收尾，七 Markdown/187 local links、whitespace、exact source/binary/full log
+与 catalog PASS；118 capability/implementation/maturity 和完整历史保持，仅增一项
+host evidence。文档不替代 device maturity/真机验收。
+
+A02/第三类/总体 goal active，第四类未开始，31任务及所有子项保持。已定位的下一步：
+backup 的 MissingValue 文本决策、debugserver 的 InvalidService 文本决策，以及
+owner-issued source-free guards（含 accessibility empty traversal timeout）的有限复核。
+平台/真机/部署/fixture 与 L01/L03/A03 条件保留；本轮不更改 capability maturity，
+不操作真实 device/daemon/credentials/Apple、reference、push/publication 或 history。

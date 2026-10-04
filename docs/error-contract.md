@@ -1,11 +1,29 @@
 # Error and machine-output contract
 
 A02 is in progress. Additive Rust classification, opt-in final CLI machine
-errors, Python factory/proxy metadata, caller-thread C categories and protected
-router HTTP headers are implemented; the roadmap keeps remaining HTTP/Python/C
-boundaries, stream semantics, probe observations
-and remaining information-loss fixes pending. R04's accepted
+errors, Python factory/proxy metadata, caller-thread C categories, checked C
+projections, protected router HTTP headers and initial RSD probe observations
+are implemented. The current scoped acceptance and remaining executable
+decisions are recorded below; historical pending notes in individual slices
+describe their acceptance date. R04's accepted
 [stdout/encoding migration](plist-json-contract.md) remains independent.
+
+## Current acceptance boundaries
+
+| A02 requirement | Current host evidence / remaining boundary |
+| --- | --- |
+| Typed categories and retained sources | ErrorClass and native-source migrations below; opaque/source-free legacy errors can remain unknown. Two executable CLI decisions still parse Lockdown text: backup MissingValue and debugserver InvalidService |
+| CLI output and partial failure | Checked stdout/stderr, final safe v1 errors, syslog/apps/install/CPU and the current [stream inventory](validation/cli-stream-contract-2026-10-04.md). Remaining owner-issued source-free guards need review; stronger cleanup/reuse/queue contracts belong to L01 |
+| Service and probe evidence | InitialRsdProbe distinguishes not_attempted/available/failed; RsdFeatureEvidence distinguishes missing service and unavailable metadata from advertised/not_advertised. NotAdvertised is not explicit unsupported |
+| Python mapped errors | Native factories/runtime and proxy/mode preconditions have stable attributes; argument extraction keeps Python's built-in typed exceptions. Metadata delivery can itself fail with a safe cause |
+| C mapped errors | Calling-thread category plus checked list/runtime/port/consuming cleanup; legacy void/zero and ALLOC ambiguity remain explicit compatibility profiles. ALLOC alone stays unknown, not inferred memory exhaustion |
+| Protected HTTP errors | Existing statuses/body plus safe machine headers within protected routers; framework/opaque outcomes stay unknown. Protocol-native CDP/WebSocket messages after upgrade retain their separate protocol fields |
+
+This inventory records scoped acceptance, not complete A02 or device acceptance.
+Explicitly unsupported typed outcomes are separate from skipped local probes,
+absent capability metadata and a missing entry in an obtained RSD snapshot.
+Legacy C cached zero and permissive supports_feature do not provide that
+distinction; migrate to the observations/checked profiles described here.
 
 ## Rust classification
 
@@ -525,6 +543,19 @@ status, and JSON commands that currently emit human status text remain under
 review. A partial stream or an output error can follow completed operations;
 no rollback, automatic retry or device cleanup acknowledgement is promised.
 L01 retains the stronger lifecycle/deadline acceptance.
+
+Pcap/FPS native read failures, XCTest/notification/CrashReport Elapsed and
+OS Trace/crash/power signal errors now retain typed sources through the CLI.
+Notification ProxyDeath events use the existing typed closed-proxy error.
+Companion/OS Trace issued deadline decisions classify timeout with no invented
+Elapsed or OS cause. Existing successful operator stops and count/capture-window
+policy remain. JSON WebInspector shell suppresses interactive prompts and its
+EOF presentation newline. Returned category/Display/source/correlation migrate;
+failure exits and v1 schema/effects stay. The
+[stream acceptance and framing inventory](validation/cli-stream-contract-2026-10-04.md)
+distinguishes NDJSON, successive pretty documents, aggregate summaries and
+per-record partial failure. It records source-reviewed guards separately from
+owned reader/channel/timer/signal tests; no device cleanup/retry is certified.
 
 `ios syslog` success stdout is newline-delimited JSON by default: one compact
 object per matching relay message, retaining the existing parsed/raw fields.

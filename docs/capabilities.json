@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-stream-contract-64153aa",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned Pcap/notification duplex EOF, framed notification and ProxyDeath, DTX EOF through owned FPS channel, actual zero-budget timers, owned OS Trace signal futures carrying an actual file-open OS failure, source-free issued outcomes and source-reviewed prompt/crash/power guards"],
+      "required_state": ["Eight tests added; private adapters/channel are not whole device startup/reader/stop flows. OS Trace signal IO is injected host IO, not a real signal-registration fault. Crash/power signal and interactive JSON prompt guards are source-reviewed, not PTY/device runtime proof. No actual device/daemon/credentials/Apple action; existing budgets/stop/join/queue/flush placement stay; no remote cleanup/reuse/retry/rollback certificate"],
+      "tested_commit": "64153aae931a2b2b147ef4611ba1d5f36f9ea661",
+      "date": "2026-10-04",
+      "location": "docs/validation/cli-stream-contract-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 ten native source paths, typed notification closure and source-free issued stream deadlines; JSON shell suppresses interactive prompt/EOF presentation bytes, output records and count/capture policy retained. Nine CLI files; Core/C/Python/dependencies byte-identical. Eight new tests, final full terminal0 with 2101 Rust/13 Python and CLI686 PASS/one existing ignored, zero failure/two existing ignored; strict CLI, 66 features/four groups, C ABI and 3.12 wheel/sdist pass. Stream framing inventory and scoped binding/probe acceptance documented; backup/debugserver text decisions and owner-issued guard review remain. No maturity upgrade."
+    },
+    {
       "id": "linux-cli-native-sources-03c71b5",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

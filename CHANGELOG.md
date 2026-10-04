@@ -278,6 +278,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve native Pcap/FPS stream errors and XCTest/notification/CrashReport
+  timeout sources. Propagate failed OS Trace/crash/power signal waits; expose
+  typed notification closure and issued stream deadlines. Keep existing stops,
+  result data and partial effects. JSON WebInspector shell omits interactive
+  prompt/EOF presentation bytes; see the [stream migration](docs/validation/cli-stream-contract-2026-10-04.md).
+
 - Preserve typed timeout sources through WebInspector CLI connection, launch,
   application-list and expired-budget contexts. Keep timer values, human
   context text and existing failure exits; legacy Core startup remapping and
