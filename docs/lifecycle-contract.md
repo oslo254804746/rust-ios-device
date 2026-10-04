@@ -2,7 +2,8 @@
 
 L01/class 4 is in progress. The DTX profile's accepted implementation is
 `940c4c673e7fe023503b97197777354c7f44e253`; the FPS owner profile is
-`dcec5a2032f2994ed45678cb838447607abee65b`. This contract records implemented profiles and
+`dcec5a2032f2994ed45678cb838447607abee65b`; AFC request/file ownership is
+`c4b471d33b1260736a295e8718d3c47ee6562165`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -66,6 +67,24 @@ partial read can invalidate DTX and make cleanup fail. Whole-future cancellation
 drops transport without async stop or a detached reader. Successful stop is a
 wire write, not an ACK. Synchronous output/decoding cannot be interrupted by a
 Tokio timer. See [FPS host fixtures and migration](validation/fps-lifecycle-2026-10-04.md).
+
+AfcClient has a shared send/flush/reply guard at every request site. Optional
+set_request_timeout(Some(budget)) uses one absolute per-request budget; default
+None retains legacy unbounded request timing. Zero/unrepresentable deadlines
+reject before I/O, actual expiry retains Elapsed in IO.get_ref. Cancelled
+zero-byte requests remain usable; completed IO/codec errors and cancellation
+after bytes reject reuse. Complete ordinary Status errors preserve framing.
+is_usable also reports automatic file-helper ownership; it is not a remote ACK.
+
+Automatic reads/writes attempt file close after returned operation failure and
+success, with an independent five-second budget (or a shorter configured request
+budget). Failed close or transfer cancellation after open requires a fresh
+transport, including cancellation between requests while waiting for a host
+reader. Dual failure keeps original primary and cleanup objects; the primary
+drives classification. Drop does not await close, manually opened handles remain
+caller-owned, and borrowed raw transports must not bypass invalid state. Existing
+packet-number acceptance and frame/whole-file limits remain. See
+[AFC fixture boundaries and migration](validation/afc-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard AFC send/reply ownership and expose optional shared request deadlines
+  and local usable state. Refuse reuse after interrupted wire operations;
+  preserve complete device Status errors. Attempt file cleanup after read/write
+  failures within a separate budget, retain primary and cleanup causes, and
+  invalidate cancelled transfers with open handles. See
+  [AFC migration](docs/validation/afc-lifecycle-2026-10-04.md).
+
 - Bound FPS capture timestamp retention and setup/cleanup budgets. Own the
   session without a background event queue, preserve partial reads across
   sample ticks and emit due windows before ready events. Keep primary failures

@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-afc-lifecycle-c4b471d",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex public AFC requests, zero/overflow/unpolled/counter/stalled-write states, sent cancellation and complete unread late reply, partial header/body/native EOF/bad magic, blocked 16-byte send, complete Status reuse and short handle; public file read/write/close and actual host IO, production five-second cleanup expiry, host-reader cancellation between requests; minimum-afc external consumer"],
+      "required_state": ["Twelve new tests and AFC31 regressions, no old-implementation negative control or device/usbmux/HouseArrest startup/filesystem evidence. Optional request budget defaults None; no whole-file/host-reader/setup budget. Transfer Drop does not await close, manually opened handles are caller-owned, transport stays owned until client Drop and failed ownership requires fresh transport. Response packet-number policy unchanged; timers do not preempt blocking/CPU work. Other L01/L02-L04/Q04/platform/device conditions remain; no maturity upgrade"],
+      "tested_commit": "c4b471d33b1260736a295e8718d3c47ee6562165",
+      "date": "2026-10-04",
+      "location": "docs/validation/afc-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "AFC twelve request sites share send/flush/reply guard and optional absolute budget; zero-byte cancellation remains reusable, completed IO/codec or interrupted bytes reject later I/O. Automatic read/write cleanup is independently limited to five seconds and retains both original failures with primary source/category; cancellation after open or failed close invalidates ownership. Existing enum/codec/wire/caps/chunks/helpers and other frontend/root/classifier/dependencies unchanged. Two source/test files, twelve full/minimum tests; first narrow7 PASS/4 FAIL corrected timer helper from source to get_ref without production weakening. Full session55322 terminal0: 2150 Rust/13 Python, CLI706/Core1293/public41 PASS, zero failures/two existing ignored; all full gates pass. L01/class4/all31 goal active."
+    },
+    {
       "id": "linux-fps-lifecycle-dcec5a2",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

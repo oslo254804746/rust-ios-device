@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX 总预算/失效/空闲复用与 FPS ownership/窗口上限/cleanup 主机范围已交付；其他协议、清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX、FPS 与 AFC request/file ownership/cleanup 主机 profiles 已交付；H2/XPC、其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5290,3 +5290,49 @@ history保持，只增host evidence。其他instruments production、root/errors
 C/Python source保持。L01/第四类/完整31goal active；下一AFC transaction及H2/XPC流控/
 回复关联的期限与取消状态，再L02–L04/Q04；平台/真机条件保留。无真实设备/credentials/
 Apple操作、reference编辑、push/publication或historyrewrite。
+
+### 大类 4：L01 AFC request/file ownership 与清理期限交付（2026-10-04）
+
+实现提交 `c4b471d33b1260736a295e8718d3c47ee6562165`，基线
+`24663c7327238461e4d67e8ddc6a7fdd02da1de0`；两 source/test files，966 insertions/
+52 deletions。十二 request sites 同一send/flush/reply guard，optional setter配置absolute
+per-request budget，default None维持legacy unbounded request timing，非whole-file/setup/
+host-reader budget。Zero/overflow deadline无IO/ID advance，actualElapsed保留IO.get_ref；
+cancelled zero-byte send可复用（已poll可跳过ID），unpolled不变。已有wire bytes、完成IO/
+codec失败拒绝后续请求，late reply不被消费；counter exhaustion不wrap/panic。普通完整
+Status业务错误可复用，short FileRefOpenResult失效，response packet-number policy未更改。
+[生命周期合同](lifecycle-contract.md)、[AFC 验收](validation/afc-lifecycle-2026-10-04.md)。
+
+Read_file与write_file_from_reader在返回operation failure/success后统一close，独立5s预算
+与更短request budget夹限。Cleanup失败后client失效；只有一个失败时原variant/object保持，
+两个失败通过existingIo拥有primary+cleanup并source指primary，category保持。Primary Status
+在dual-failure path可迁移为外层Io，明确兼容迁移。Opened-file transfer在requests之间取消
+也失效；Drop不await close、不spawn task，manual handles归caller，transport保持至Drop。
+没有remote handle release/rollback/retry/Apple cleanup保证，也不硬中断CPU/host blocking。
+Codec/256MiB caps/chunk/mode/path/wire、原tests/assertions、CLI/C/Python/root/errors/
+classifier/dependencies保持。只读refs py38fbd227/go ced7e53d，原uv.lock/go.mod状态未改。
+
+新增12tests（11 internal/1 external），full/minimum afc各12 PASS，AFC全31 PASS，
+strict Core/CLI/fmt PASS。真实public requests、Status后复用、nativeEOF/badmagic/partial
+header/body、16-byte send backpressure、zero-byte stalled adapter、十四public入口拒绝、
+late frame仍未读、actual open/read/close与host native FileOpen IO、production独立5s cleanup
+timer及transfer cancel between requests都有owned duplex证据；无fixture tasks。首narrow
+7 PASS/4 FAIL是helper误从IO.source找Elapsed（实际IO.get_ref），修正只改helper，原timer
+object保留。没有old-implementation negative control或device startup/filesystem证据。
+
+Canonical full session55322 terminal0，validation/full PASS：2150 Rust/13 Python，
+CLI706/Core1293/public41 PASS，0 FAIL/2既有ignored；fmt/check/workspace strict Clippy/
+MSRV、66features/4groups、7+7doctests/3snips、CABI/3.12wheel/sdist、53tooling/118help/
+38raw/5host/15CLI/3backup PASS。Source SHA256
+`edf675e1b7eaa0a4c514ac1d8d9475f75010af2934ced87c5c714e4d556d1a17`；ios debug SHA256
+`c506bf709ac1db3aca9adeada84d7bc6042fe5ffb42781764df918486481750c`。
+Source冻结至full结束；余量约14GiB，无clean/storage failure，日志 `/tmp/ios-l01-afc-`。
+
+八文档收尾审计 PASS：七Markdown/220 local links、whitespace、exact source/binary/
+full/narrow/minimum/regression与refs状态、actual-help capability catalog；源码保持冻结。
+
+22device rows NOT_RUN；Chromium/installed3.9/3.13未重跑。Capability118正文/maturity/
+history保持，仅增host evidence。L01/第四类/完整31goal active；下一H2/XPC流控等待、
+本地message consumption与call send/reply的取消/期限ownership，再其他服务清理/L02–L04/
+Q04。设备/platform条件保留；没有设备/credentials/Apple操作、reference edits、push/
+publication或historyrewrite。

@@ -28,6 +28,18 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+AfcClient adds is_usable and set_request_timeout(Option<Duration>). The optional
+budget covers each complete send/reply request; constructor default None keeps
+legacy unbounded requests, without a new whole-file/setup/reader budget. All
+requests reject after IO/codec failure or cancellation with bytes; complete
+ordinary Status errors still permit reuse. Automatic file reads/writes now close
+on returned failure with a separate five-second budget and invalidate ownership
+on failed close or cancellation after open. Dual failure can return existing Io
+instead of primary Status, while retaining both originals and the primary's
+category; single failures retain their original variants. Drop cannot await
+close. Existing error enums/wire/limits/C/Python interfaces stay. See
+[AFC migration and host acceptance](validation/afc-lifecycle-2026-10-04.md).
+
 The instruments feature adds iter_frame_commit_timestamps, an allocation-free
 iterator borrowing the input chunk and copying Mach timebase values. Existing
 parse_frame_commit_timestamps still returns Vec with the same conversion/filter

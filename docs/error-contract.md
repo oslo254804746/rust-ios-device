@@ -65,6 +65,17 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+AFC request/cleanup expiry retains original Elapsed in AfcError::Io's get_ref
+payload; zero budget and oversized deadline are issued source-free Timeout/
+InvalidInput decisions. Unusable client rejection is Protocol, separate from
+the original failure. Ordinary complete device Status errors keep reuse, while
+failed automatic-file cleanup or cancellation after open prevents it. Dual
+transfer/close failure wraps both original objects in existing Io with the
+primary as source and a safe fixed Display/Debug; a primary Status may change
+outer variant on this path but keeps its precise category. Cleanup-only failure
+returns its original object. No extra public error variant or retry/rollback/
+device cleanup claim. See [AFC migration](validation/afc-lifecycle-2026-10-04.md).
+
 FPS capture retains native setup/read/signal/output failures and actual cleanup
 Elapsed. If both capture and stop fail, a private wrapper keeps the primary in
 its source chain and owns cleanup separately; successful count with failed stop
