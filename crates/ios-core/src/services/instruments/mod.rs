@@ -39,7 +39,10 @@ pub use core_profile_session::{
 pub use deviceinfo::{DeviceInfoClient, RunningProcess};
 pub use devicestate::{ConditionProfile, ConditionProfileType, DeviceStateClient};
 pub use energy::EnergyMonitorClient;
-pub use fps::{parse_frame_commit_timestamps, FpsSample, FpsWindowCalculator, MachTimeInfo};
+pub use fps::{
+    iter_frame_commit_timestamps, parse_frame_commit_timestamps, FpsSample, FpsWindowCalculator,
+    MachTimeInfo,
+};
 pub use graphics::GraphicsMonitorClient;
 pub use network::{
     ConnectionDetectionEvent, ConnectionUpdateEvent, InterfaceDetectionEvent, NetworkMonitorClient,

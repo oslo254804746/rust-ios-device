@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ios_core::device::{ConnectedDevice, ServiceStream};
 use ios_core::instruments::{SERVICE_IOS14, SERVICE_IOS17, SERVICE_LEGACY};
 
@@ -909,124 +909,226 @@ async fn run_trace(
 }
 
 async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) -> Result<()> {
-    use ios_core::instruments::{
-        parse_frame_commit_timestamps, CoreProfileConfig, CoreProfileEvent,
-        CoreProfileSessionClient, FpsSample, FpsWindowCalculator,
-    };
+    use ios_core::instruments::{CoreProfileConfig, CoreProfileSessionClient};
+    let window = fps_window(window_ms)?;
+    let (_device, session) = fps_setup(FPS_SETUP_BUDGET, async {
+        let (device, stream) = connect_instruments(&udid).await?;
+        let mut session = CoreProfileSessionClient::connect(stream)
+            .await
+            .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
+        session
+            .start(&CoreProfileConfig::fps_defaults())
+            .await
+            .map_err(|e| anyhow::Error::new(e).context("core profile start error"))?;
+        Ok((device, session))
+    })
+    .await?;
+    capture_fps(
+        session,
+        count,
+        window,
+        |sample, index| {
+            let stdout = std::io::stdout();
+            write_fps_sample_to(&mut stdout.lock(), sample, index, json_output)
+        },
+        tokio::signal::ctrl_c(),
+        FPS_CLEANUP_BUDGET,
+    )
+    .await
+}
 
-    let (_device, stream) = connect_instruments(&udid).await?;
-    let mut session = CoreProfileSessionClient::connect(stream)
-        .await
-        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
-    session
-        .start(&CoreProfileConfig::fps_defaults())
-        .await
-        .map_err(|e| anyhow::Error::new(e).context("core profile start error"))?;
-    let mach_time_info = session.mach_time_info().clone();
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ProfileEventResult>();
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let reader = tokio::spawn(async move {
-        let mut stop_rx = stop_rx;
-        loop {
-            tokio::select! {
-                _ = &mut stop_rx => break,
-                event = session.next_event() => {
-                    match event {
-                        Ok(event) => {
-                            if event_tx.send(Ok(event)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ = event_tx.send(Err(error));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+const FPS_SETUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+const FPS_CLEANUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const FPS_TIMESTAMP_LIMIT: usize = 262_144;
 
-        session.stop().await.ok();
-    });
-
+fn fps_window(window_ms: u64) -> Result<std::time::Duration> {
     let window = std::time::Duration::from_millis(window_ms);
+    if window.is_zero() {
+        return Err(crate::output::input_decision(
+            "--window-ms must be greater than zero",
+        ));
+    }
+    fps_deadline(tokio::time::Instant::now(), window)?;
+    Ok(window)
+}
+
+fn fps_deadline(
+    now: tokio::time::Instant,
+    window: std::time::Duration,
+) -> Result<tokio::time::Instant> {
+    now.checked_add(window)
+        .ok_or_else(|| crate::output::input_decision("FPS window deadline is too large"))
+}
+
+async fn fps_setup<T>(
+    budget: std::time::Duration,
+    setup: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(budget, setup)
+        .await
+        .context("core profile setup timed out")?
+}
+
+fn append_fps_timestamps(
+    timestamps: &mut Vec<i64>,
+    chunk: &[u8],
+    info: &ios_core::instruments::MachTimeInfo,
+) -> Result<()> {
+    for timestamp in ios_core::instruments::iter_frame_commit_timestamps(chunk, info) {
+        if timestamps.len() >= FPS_TIMESTAMP_LIMIT {
+            return Err(crate::output::resource_decision(
+                "FPS window timestamp limit exceeded",
+            ));
+        }
+        timestamps.push(timestamp);
+    }
+    Ok(())
+}
+
+async fn consume_fps_events<S>(
+    session: &mut ios_core::instruments::CoreProfileSessionClient<S>,
+    count: u64,
+    window: std::time::Duration,
+    mut emit: impl FnMut(&ios_core::instruments::FpsSample, u64) -> Result<()>,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    use ios_core::instruments::{CoreProfileEvent, FpsSample, FpsWindowCalculator};
+    let info = session.mach_time_info().clone();
+    let window_ms = window.as_millis() as f64;
     let mut calculator = FpsWindowCalculator::new();
     let mut timestamps = Vec::new();
-    let mut next_deadline = tokio::time::Instant::now() + window;
+    let mut next_deadline = fps_deadline(tokio::time::Instant::now(), window)?;
     let mut emitted = 0u64;
-
+    tokio::pin!(stop);
     loop {
-        if count > 0 && emitted >= count {
-            break;
-        }
-
-        let now = tokio::time::Instant::now();
-        let remaining = next_deadline.saturating_duration_since(now);
-
-        match tokio::time::timeout(remaining, event_rx.recv()).await {
-            Ok(Some(Ok(CoreProfileEvent::Notice(_)))) => {}
-            Ok(Some(Ok(CoreProfileEvent::RawChunk(chunk)))) => {
-                timestamps.extend(parse_frame_commit_timestamps(&chunk, &mach_time_info));
-            }
-            Ok(Some(Err(error))) => {
-                let _ = stop_tx.send(());
-                let _ = reader.await;
-                return Err(profile_event_failure(error));
-            }
-            Ok(None) => {
-                let _ = stop_tx.send(());
-                let _ = reader.await;
-                return Err(anyhow::anyhow!(
-                    "core profile event stream closed unexpectedly"
-                ));
-            }
-            Err(_) => {
-                let sample = if timestamps.is_empty() {
-                    FpsSample {
-                        fps: 0.0,
-                        jank: 0,
-                        big_jank: 0,
-                        stutter: 0.0,
-                        frame_count: 0,
-                        window_ms: window_ms as f64,
+        // Keep the same read future across window ticks: cancelling a partial
+        // DTX read for each sample would invalidate its framing state.
+        let event: ProfileEventResult = {
+            let next_event = session.next_event();
+            tokio::pin!(next_event);
+            loop {
+                tokio::select! {
+                    biased;
+                    signal = &mut stop => {
+                        signal.context("failed to wait for Ctrl+C")?;
+                        return Ok(());
                     }
-                } else {
-                    calculator
-                        .push_timestamps(&timestamps)
-                        .unwrap_or(FpsSample {
+                    _ = tokio::time::sleep_until(next_deadline) => {
+                        let empty = FpsSample {
                             fps: 0.0,
                             jank: 0,
                             big_jank: 0,
                             stutter: 0.0,
                             frame_count: 0,
-                            window_ms: window_ms as f64,
-                        })
-                };
-
-                emitted += 1;
-                if json_output {
-                    crate::output::outln!("{}", serde_json::to_string(&sample)?);
-                } else {
-                    crate::output::outln!(
-                        "[{:>4}] FPS: {:>5.1} | Jank: {} | BigJank: {} | Stutter: {:>5.1}% | Frames: {} | Window: {:.0}ms",
-                        emitted,
-                        sample.fps,
-                        sample.jank,
-                        sample.big_jank,
-                        sample.stutter * 100.0,
-                        sample.frame_count,
-                        sample.window_ms
-                    );
+                            window_ms,
+                        };
+                        let sample = if timestamps.is_empty() {
+                            empty
+                        } else {
+                            calculator.push_timestamps(&timestamps).unwrap_or(empty)
+                        };
+                        emitted += 1;
+                        emit(&sample, emitted)?;
+                        timestamps.clear();
+                        if count > 0 && emitted >= count {
+                            return Ok(());
+                        }
+                        next_deadline = fps_deadline(next_deadline, window)?;
+                    }
+                    event = &mut next_event => break event,
                 }
-
-                timestamps.clear();
-                next_deadline += window;
             }
+        };
+        match event {
+            Ok(CoreProfileEvent::Notice(_)) => {}
+            Ok(CoreProfileEvent::RawChunk(chunk)) => {
+                append_fps_timestamps(&mut timestamps, &chunk, &info)?
+            }
+            Err(error) => return Err(profile_event_failure(error)),
         }
     }
+}
 
-    let _ = stop_tx.send(());
-    let _ = reader.await;
+async fn capture_fps<S>(
+    mut session: ios_core::instruments::CoreProfileSessionClient<S>,
+    count: u64,
+    window: std::time::Duration,
+    emit: impl FnMut(&ios_core::instruments::FpsSample, u64) -> Result<()>,
+    stop: impl std::future::Future<Output = std::io::Result<()>>,
+    cleanup_budget: std::time::Duration,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    let operation = consume_fps_events(&mut session, count, window, emit, stop).await;
+    let cleanup = match tokio::time::timeout(cleanup_budget, session.stop()).await {
+        Ok(result) => {
+            result.map_err(|error| anyhow::Error::new(error).context("core profile cleanup failed"))
+        }
+        Err(elapsed) => Err(anyhow::Error::new(elapsed).context("core profile cleanup timed out")),
+    };
+    finish_fps_capture(operation, cleanup)
+}
+
+struct FpsCleanupFailure {
+    primary: anyhow::Error,
+    cleanup: anyhow::Error,
+}
+
+impl std::fmt::Display for FpsCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FPS capture failed; cleanup also failed")
+    }
+}
+
+impl std::fmt::Debug for FpsCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FpsCleanupFailure")
+            .field(
+                "primary_class",
+                &ios_core::classify_error(self.primary.as_ref()),
+            )
+            .field(
+                "cleanup_class",
+                &ios_core::classify_error(self.cleanup.as_ref()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::error::Error for FpsCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.primary.as_ref())
+    }
+}
+
+fn finish_fps_capture(operation: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (operation, cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(FpsCleanupFailure { primary, cleanup }.into()),
+    }
+}
+
+fn write_fps_sample_to(
+    writer: &mut impl std::io::Write,
+    sample: &ios_core::instruments::FpsSample,
+    index: u64,
+    json: bool,
+) -> Result<()> {
+    if json {
+        writeln!(writer, "{}", serde_json::to_string(sample)?)?;
+    } else {
+        writeln!(
+            writer,
+            "[{:>4}] FPS: {:>5.1} | Jank: {} | BigJank: {} | Stutter: {:>5.1}% | Frames: {} | Window: {:.0}ms",
+            index, sample.fps, sample.jank, sample.big_jank, sample.stutter * 100.0, sample.frame_count, sample.window_ms
+        )?;
+    }
+    writer.flush()?;
     Ok(())
 }
 
@@ -1402,6 +1504,531 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    async fn fps_fixture<S>(
+        stream: S,
+        mut peer: tokio::io::DuplexStream,
+    ) -> (
+        ios_core::instruments::CoreProfileSessionClient<S>,
+        tokio::io::DuplexStream,
+    )
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxPayload};
+        use ios_core::instruments::{CoreProfileConfig, CoreProfileSessionClient};
+        use tokio::io::AsyncWriteExt;
+        let caller = async {
+            let mut session = CoreProfileSessionClient::connect(stream).await.unwrap();
+            assert_eq!(session.mach_time_info().numer, 1);
+            assert_eq!(session.mach_time_info().denom, 1);
+            session
+                .start(&CoreProfileConfig::fps_defaults())
+                .await
+                .unwrap();
+            session
+        };
+        let server = async {
+            for (channel, service) in [
+                (1, ios_core::instruments::DEVICE_INFO_SVC),
+                (2, ios_core::instruments::CORE_PROFILE_SESSION_SVC),
+            ] {
+                let request = read_dtx_frame(&mut peer).await.unwrap();
+                let DtxPayload::MethodInvocation { selector, args } = request.payload else {
+                    panic!("expected channel request")
+                };
+                assert_eq!(selector, "_requestChannelWithCode:identifier:");
+                assert_eq!(args[0], ios_core::dtx::NSObject::Int(channel));
+                assert_eq!(args[1], ios_core::dtx::NSObject::String(service.into()));
+                peer.write_all(&encode_dtx(request.identifier, 1, 0, false, 0, &[], &[]))
+                    .await
+                    .unwrap();
+            }
+            let request = read_dtx_frame(&mut peer).await.unwrap();
+            assert!(
+                matches!(request.payload, DtxPayload::MethodInvocation { selector, .. } if selector == "machTimeInfo")
+            );
+            let payload = ios_core::archive_array(vec![
+                plist::Value::Integer(0.into()),
+                plist::Value::Integer(1.into()),
+                plist::Value::Integer(1.into()),
+            ]);
+            peer.write_all(&encode_dtx(
+                request.identifier,
+                1,
+                1,
+                false,
+                3,
+                &payload,
+                &[],
+            ))
+            .await
+            .unwrap();
+            for selector in ["setConfig:", "start"] {
+                let request = read_dtx_frame(&mut peer).await.unwrap();
+                assert_eq!(request.channel_code, 2);
+                assert!(
+                    matches!(request.payload, DtxPayload::MethodInvocation { selector: actual, .. } if actual == selector)
+                );
+            }
+            peer.write_all(&fps_raw_frame(&[])).await.unwrap();
+            peer
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap()
+    }
+
+    fn fps_raw_frame(chunk: &[u8]) -> bytes::Bytes {
+        ios_core::dtx::encode_dtx(100, 0, -2, false, 1, chunk, &[])
+    }
+
+    struct FpsReadCounter {
+        stream: tokio::io::DuplexStream,
+        bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl tokio::io::AsyncRead for FpsReadCounter {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let before = buffer.filled().len();
+            let result = std::pin::Pin::new(&mut self.stream).poll_read(cx, buffer);
+            self.bytes.fetch_add(
+                buffer.filled().len() - before,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            result
+        }
+    }
+
+    impl tokio::io::AsyncWrite for FpsReadCounter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::pin::Pin::new(&mut self.stream).poll_write(cx, bytes)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+
+    fn fps_record(timestamp: u64) -> [u8; 64] {
+        let mut record = [0; 64];
+        record[..8].copy_from_slice(&timestamp.to_le_bytes());
+        record[48..52].copy_from_slice(&0x3180_0318u32.to_le_bytes());
+        record
+    }
+
+    async fn fps_expect_stop(peer: &mut tokio::io::DuplexStream) {
+        let request = ios_core::dtx::read_dtx_frame(peer).await.unwrap();
+        assert_eq!(request.channel_code, 2);
+        assert!(
+            matches!(request.payload, ios_core::dtx::DtxPayload::MethodInvocation { selector, .. } if selector == "stop")
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_input_output_and_timestamp_admission() {
+        use std::error::Error;
+        let error = run_fps("owned-device".into(), 1, 0, true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert!(error
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .source()
+            .is_none());
+        assert!(fps_deadline(tokio::time::Instant::now(), std::time::Duration::MAX).is_err());
+        let sample = ios_core::instruments::FpsSample {
+            fps: 60.0,
+            jank: 1,
+            big_jank: 0,
+            stutter: 0.25,
+            frame_count: 6,
+            window_ms: 100.0,
+        };
+        let mut output = Vec::new();
+        write_fps_sample_to(&mut output, &sample, 2, true).unwrap();
+        assert_eq!(output, b"{\"fps\":60.0,\"jank\":1,\"big_jank\":0,\"stutter\":0.25,\"frame_count\":6,\"window_ms\":100.0}\n");
+        output.clear();
+        write_fps_sample_to(&mut output, &sample, 2, false).unwrap();
+        assert_eq!(output, b"[   2] FPS:  60.0 | Jank: 1 | BigJank: 0 | Stutter:  25.0% | Frames: 6 | Window: 100ms\n");
+        let info = ios_core::instruments::MachTimeInfo { numer: 1, denom: 1 };
+        let mut timestamps = vec![0; FPS_TIMESTAMP_LIMIT - 1];
+        append_fps_timestamps(&mut timestamps, &fps_record(16_000_000), &info).unwrap();
+        assert_eq!(timestamps.len(), FPS_TIMESTAMP_LIMIT);
+        let error =
+            append_fps_timestamps(&mut timestamps, &fps_record(32_000_000), &info).unwrap_err();
+        assert_eq!(timestamps.len(), FPS_TIMESTAMP_LIMIT);
+        assert_eq!(timestamps.last(), Some(&16_000_000));
+        let envelope = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "instruments",
+            &error,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&envelope).unwrap()["error"]["class"],
+            "resource_limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_setup_timeout_drops_owned_public_client_transport() {
+        use tokio::io::AsyncReadExt;
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let caller = fps_setup(std::time::Duration::from_millis(20), async {
+            ios_core::instruments::CoreProfileSessionClient::connect(stream)
+                .await
+                .map_err(anyhow::Error::new)
+        });
+        let server = async {
+            let request = ios_core::dtx::read_dtx_frame(&mut peer).await.unwrap();
+            assert!(
+                matches!(request.payload, ios_core::dtx::DtxPayload::MethodInvocation { selector, .. } if selector == "_requestChannelWithCode:identifier:")
+            );
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        let error = result.err().unwrap();
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_count_emits_exact_rows_and_sends_stop() {
+        let (stream, peer) = tokio::io::duplex(4096);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        let mut output = Vec::new();
+        let caller = capture_fps(
+            session,
+            2,
+            std::time::Duration::from_millis(5),
+            |sample, index| write_fps_sample_to(&mut output, sample, index, true),
+            std::future::pending(),
+            std::time::Duration::from_secs(1),
+        );
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(caller, fps_expect_stop(&mut peer))
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        let row = b"{\"fps\":0.0,\"jank\":0,\"big_jank\":0,\"stutter\":0.0,\"frame_count\":0,\"window_ms\":5.0}\n";
+        assert_eq!(output, [row.as_slice(), row.as_slice()].concat());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_partial_frame_survives_sampling_ticks() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, peer) = tokio::io::duplex(4096);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        let frame = fps_raw_frame(&[fps_record(0), fps_record(16_000_000)].concat());
+        peer.write_all(&frame[..16]).await.unwrap();
+        let (tick, first_tick) = tokio::sync::oneshot::channel();
+        let mut tick = Some(tick);
+        let mut rows = Vec::new();
+        let caller = capture_fps(
+            session,
+            3,
+            std::time::Duration::from_millis(20),
+            |sample, index| {
+                rows.push(sample.clone());
+                if index == 1 {
+                    tick.take().unwrap().send(()).unwrap();
+                }
+                Ok(())
+            },
+            std::future::pending(),
+            std::time::Duration::from_secs(1),
+        );
+        let server = async {
+            first_tick.await.unwrap();
+            peer.write_all(&frame[16..]).await.unwrap();
+            fps_expect_stop(&mut peer).await;
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].frame_count, 0);
+        assert_eq!(rows.iter().map(|row| row.frame_count).sum::<u32>(), 1);
+        assert!(rows
+            .iter()
+            .any(|row| row.fps == 62.5 && row.window_ms == 16.0));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_ready_backlog_cannot_starve_elapsed_windows() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (stream, peer) = tokio::io::duplex(1_048_576);
+        let bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut session, mut peer) = fps_fixture(
+            FpsReadCounter {
+                stream,
+                bytes: bytes.clone(),
+            },
+            peer,
+        )
+        .await;
+        bytes.store(0, std::sync::atomic::Ordering::Relaxed);
+        let frame = fps_raw_frame(&[]);
+        for _ in 0..10_000 {
+            peer.write_all(&frame).await.unwrap();
+        }
+        let mut indices = Vec::new();
+        let caller = consume_fps_events(
+            &mut session,
+            3,
+            std::time::Duration::from_millis(1),
+            |_, index| {
+                indices.push(index);
+                assert!(
+                    bytes.load(std::sync::atomic::Ordering::Relaxed) < 10_000 * frame.len(),
+                    "window waited for the ready backlog to drain"
+                );
+                // Make the next absolute window due while events remain ready.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                Ok(())
+            },
+            std::future::pending(),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), caller)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(indices, vec![1, 2, 3]);
+        // Completion may cancel a partially read ready frame. It must not
+        // assert that such a DTX stream can send a successful stop request.
+        drop(session);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn lifecycle_fps_native_output_failure_keeps_primary_and_cleanup_timeout() {
+        use tokio::io::AsyncReadExt;
+        let (stream, peer) = tokio::io::duplex(64);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        let mut full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let mut output = Vec::new();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            capture_fps(
+                session,
+                0,
+                std::time::Duration::from_millis(5),
+                |sample, index| {
+                    if index == 1 {
+                        write_fps_sample_to(&mut output, sample, index, true)
+                    } else {
+                        write_fps_sample_to(&mut full, sample, index, true)
+                    }
+                },
+                std::future::pending(),
+                std::time::Duration::from_millis(20),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 1);
+        let failure = error.downcast_ref::<FpsCleanupFailure>().unwrap();
+        let native = failure.primary.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(native.raw_os_error(), Some(28));
+        assert!(failure
+            .cleanup
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Io
+        );
+        assert!(!format!("{failure:?}").contains("No space"));
+        let mut cleanup_prefix = Vec::new();
+        peer.read_to_end(&mut cleanup_prefix).await.unwrap();
+        assert_eq!(cleanup_prefix.len(), 64);
+        let envelope = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "instruments",
+            &error,
+        )
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        assert_eq!(envelope["error"]["class"], "io");
+        assert_eq!(envelope["error"]["effects"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_operator_stop_and_native_signal_failure_send_stop() {
+        for fail in [false, true] {
+            let (stream, peer) = tokio::io::duplex(4096);
+            let (session, mut peer) = fps_fixture(stream, peer).await;
+            let native = if fail {
+                Err(std::fs::File::open("").unwrap_err())
+            } else {
+                Ok(())
+            };
+            let caller = capture_fps(
+                session,
+                0,
+                std::time::Duration::from_secs(1),
+                |_, _| panic!("stopped before sample"),
+                std::future::ready(native),
+                std::time::Duration::from_secs(1),
+            );
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(caller, fps_expect_stop(&mut peer))
+            })
+            .await
+            .unwrap();
+            if fail {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                    std::io::ErrorKind::NotFound
+                );
+                assert_eq!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::NotFound
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_terminal_read_and_cleanup_failures_are_reported() {
+        use tokio::io::AsyncReadExt;
+        for eof in [true, false] {
+            let (stream, peer) = tokio::io::duplex(64);
+            let (session, peer) = fps_fixture(stream, peer).await;
+            let mut peer = Some(peer);
+            if eof {
+                drop(peer.take());
+            }
+            let mut emitted = 0;
+            let error = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                capture_fps(
+                    session,
+                    1,
+                    std::time::Duration::from_millis(5),
+                    |_, _| {
+                        emitted += 1;
+                        Ok(())
+                    },
+                    std::future::pending(),
+                    std::time::Duration::from_millis(20),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            if eof {
+                assert_eq!(emitted, 0);
+                let failure = error.downcast_ref::<FpsCleanupFailure>().unwrap();
+                let native = failure
+                    .primary
+                    .downcast_ref::<ios_core::dtx::DtxError>()
+                    .unwrap();
+                let ios_core::dtx::DtxError::Io(io) = native else {
+                    panic!("native EOF flattened")
+                };
+                assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+                assert_eq!(
+                    ios_core::classify_error(failure.cleanup.as_ref()),
+                    ios_core::ErrorClass::Protocol
+                );
+                assert_eq!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::Io
+                );
+            } else {
+                assert_eq!(emitted, 1);
+                assert!(error
+                    .chain()
+                    .any(|source| source.is::<tokio::time::error::Elapsed>()));
+                assert_eq!(
+                    ios_core::classify_error(error.as_ref()),
+                    ios_core::ErrorClass::Timeout
+                );
+                let mut prefix = Vec::new();
+                peer.as_mut()
+                    .unwrap()
+                    .read_to_end(&mut prefix)
+                    .await
+                    .unwrap();
+                assert_eq!(prefix.len(), 64);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fps_caller_cancellation_closes_partial_read_without_detached_task() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (stream, peer) = tokio::io::duplex(4096);
+        let (session, mut peer) = fps_fixture(stream, peer).await;
+        peer.write_all(&fps_raw_frame(&fps_record(16_000_000))[..16])
+            .await
+            .unwrap();
+        let caller = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            capture_fps(
+                session,
+                0,
+                std::time::Duration::from_secs(1),
+                |_, _| panic!("cancelled before sample"),
+                std::future::pending(),
+                std::time::Duration::from_secs(1),
+            ),
+        );
+        let server = async {
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+    }
 
     #[tokio::test]
     async fn stream_contract_fps_channel_retains_original_decoder_error() {

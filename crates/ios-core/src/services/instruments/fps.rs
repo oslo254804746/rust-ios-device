@@ -132,21 +132,28 @@ impl FpsWindowCalculator {
 }
 
 pub fn parse_frame_commit_timestamps(chunk: &[u8], time_info: &MachTimeInfo) -> Vec<i64> {
-    if time_info.denom == 0 {
-        return Vec::new();
-    }
+    iter_frame_commit_timestamps(chunk, time_info).collect()
+}
 
+/// Iterate without allocating a timestamp collection. Consumers can enforce
+/// their own admission limit before retaining a large trace window. The
+/// conversion and truncated-record policy match `parse_frame_commit_timestamps`.
+pub fn iter_frame_commit_timestamps<'a>(
+    chunk: &'a [u8],
+    time_info: &MachTimeInfo,
+) -> impl Iterator<Item = i64> + 'a {
+    let (numer, denom) = (time_info.numer, time_info.denom);
     chunk
         .chunks_exact(KPERF_RECORD_SIZE)
-        .filter_map(|record| {
+        .filter_map(move |record| {
             let mach_time = u64::from_le_bytes(record[0..8].try_into().ok()?);
             let debug_id = u32::from_le_bytes(record[48..52].try_into().ok()?);
             if !is_frame_commit_event(debug_id) {
                 return None;
             }
-            Some(((mach_time as f64) * (time_info.numer as f64) / (time_info.denom as f64)) as i64)
+            Some(((mach_time as f64) * (numer as f64) / (denom as f64)) as i64)
         })
-        .collect()
+        .take(if denom == 0 { 0 } else { usize::MAX })
 }
 
 fn is_frame_commit_event(debug_id: u32) -> bool {
@@ -190,6 +197,43 @@ mod tests {
         );
 
         assert_eq!(timestamps, vec![41_666, 83_333]);
+    }
+
+    #[test]
+    fn timestamp_iterator_preserves_filter_truncation_and_numeric_edges() {
+        let mut chunk = build_record(1_000, FRAME_COMMIT_DEBUG_ID | 3);
+        chunk.extend(build_record(2_000, 0x3180_031c));
+        chunk.extend(build_record(u64::MAX, FRAME_COMMIT_DEBUG_ID));
+        chunk.extend_from_slice(&[0xff; 63]);
+        let info = MachTimeInfo {
+            numer: 125,
+            denom: 3,
+        };
+        let expected = vec![41_666, i64::MAX];
+        assert_eq!(
+            iter_frame_commit_timestamps(&chunk, &info).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(parse_frame_commit_timestamps(&chunk, &info), expected);
+        assert_eq!(
+            iter_frame_commit_timestamps(&chunk, &info)
+                .take(1)
+                .collect::<Vec<_>>(),
+            vec![41_666]
+        );
+        assert_eq!(
+            iter_frame_commit_timestamps(&chunk, &MachTimeInfo { numer: 0, denom: 1 })
+                .collect::<Vec<_>>(),
+            vec![0, 0]
+        );
+        assert!(
+            iter_frame_commit_timestamps(&chunk, &MachTimeInfo { numer: 1, denom: 0 })
+                .next()
+                .is_none()
+        );
+        assert!(
+            parse_frame_commit_timestamps(&chunk, &MachTimeInfo { numer: 1, denom: 0 }).is_empty()
+        );
     }
 
     #[test]

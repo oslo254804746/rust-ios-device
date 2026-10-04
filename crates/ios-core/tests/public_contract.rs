@@ -8,6 +8,25 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "instruments")]
+#[test]
+fn lifecycle_fps_public_iterator_borrows_chunk_and_copies_timebase() {
+    use ios_core::instruments::{
+        iter_frame_commit_timestamps, parse_frame_commit_timestamps, MachTimeInfo,
+    };
+    let mut chunk = [0u8; 64];
+    chunk[..8].copy_from_slice(&12u64.to_le_bytes());
+    chunk[48..52].copy_from_slice(&0x3180_0318u32.to_le_bytes());
+    let iterator = {
+        let info = MachTimeInfo { numer: 5, denom: 2 };
+        iter_frame_commit_timestamps(&chunk, &info)
+    };
+    assert_eq!(iterator.collect::<Vec<_>>(), vec![30]);
+    let legacy: Vec<i64> =
+        parse_frame_commit_timestamps(&chunk, &MachTimeInfo { numer: 5, denom: 2 });
+    assert_eq!(legacy, vec![30]);
+}
+
 #[cfg(feature = "dtx")]
 #[tokio::test]
 async fn lifecycle_dtx_public_deadlines_keep_exhaustive_errors_and_success_reuse() {

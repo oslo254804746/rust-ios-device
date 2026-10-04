@@ -101,6 +101,21 @@ pub(crate) fn precondition_decision(phase: &'static str) -> anyhow::Error {
     OperationPrecondition(phase).into()
 }
 
+#[derive(Debug)]
+struct ResourceLimitDecision(&'static str);
+
+impl std::fmt::Display for ResourceLimitDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ResourceLimitDecision {}
+
+pub(crate) fn resource_decision(phase: &'static str) -> anyhow::Error {
+    ResourceLimitDecision(phase).into()
+}
+
 /// Opt-in machine errors leave the existing result stream and human default
 /// unchanged. The command parser owns selection and input validation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -136,18 +151,24 @@ impl std::error::Error for ForceRequired {}
 const MAX_CONFIRMATION_SOURCES: usize = 32;
 
 fn confirmation_required(error: &anyhow::Error) -> bool {
-    cli_preconditions(error).0
+    cli_decisions(error).0
 }
 
-fn cli_preconditions(error: &anyhow::Error) -> (bool, bool) {
-    let mut precondition = false;
+fn cli_decisions(error: &anyhow::Error) -> (bool, Option<ios_core::ErrorClass>) {
+    let mut class = None;
     for source in error.chain().take(MAX_CONFIRMATION_SOURCES) {
         if source.is::<ForceRequired>() {
-            return (true, true);
+            return (true, Some(ios_core::ErrorClass::Precondition));
         }
-        precondition |= source.is::<OperationPrecondition>();
+        if class.is_none() {
+            if source.is::<OperationPrecondition>() {
+                class = Some(ios_core::ErrorClass::Precondition);
+            } else if source.is::<ResourceLimitDecision>() {
+                class = Some(ios_core::ErrorClass::ResourceLimit);
+            }
+        }
     }
-    (false, precondition)
+    (false, class)
 }
 
 #[derive(serde::Serialize)]
@@ -199,12 +220,8 @@ pub(crate) fn operation_failure_message(
     if format == ErrorFormat::Human {
         return Ok(format!("{phase} failed: {diagnostic}"));
     }
-    let (confirmation_required, precondition) = cli_preconditions(error);
-    let class = if precondition {
-        ios_core::ErrorClass::Precondition
-    } else {
-        ios_core::classify_error(error.as_ref())
-    };
+    let (confirmation_required, decision) = cli_decisions(error);
+    let class = decision.unwrap_or_else(|| ios_core::classify_error(error.as_ref()));
     machine_failure(
         class,
         phase,
@@ -290,6 +307,46 @@ pub fn require_force(force: bool, operation: &str, consequence: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lifecycle_fps_resource_marker_is_bounded_private_and_source_free() {
+        use std::error::Error;
+        for depth in [0, 31, 32] {
+            let mut error = super::resource_decision("owned-private-window-limit");
+            for _ in 0..depth {
+                error = error.context("owned-private-context");
+            }
+            let message =
+                super::operation_failure_message(super::ErrorFormat::Json, "instruments", &error)
+                    .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(
+                value["error"]["class"],
+                if depth < 32 {
+                    "resource_limit"
+                } else {
+                    "unknown"
+                }
+            );
+            assert_eq!(value["error"]["confirmation_required"], false);
+            assert_eq!(value["error"]["effects"], "unknown");
+            assert!(!message.contains("owned-private"));
+            assert!(!error.chain().any(|source| source.is::<std::io::Error>()));
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Unknown
+            );
+        }
+        assert!(super::ResourceLimitDecision("window limit")
+            .source()
+            .is_none());
+        let opaque = anyhow::anyhow!("FPS window timestamp limit exceeded resource_limit");
+        let message =
+            super::operation_failure_message(super::ErrorFormat::Json, "instruments", &opaque)
+                .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(value["error"]["class"], "unknown");
+    }
     #[test]
     fn owner_guards_precondition_is_bounded_typed_and_distinct_from_confirmation() {
         use std::error::Error;
