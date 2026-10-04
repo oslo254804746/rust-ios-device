@@ -46,7 +46,9 @@ pub(crate) async fn run_heartbeat(
         let message = match timeout {
             Some(timeout) => tokio::time::timeout(Duration::from_secs(timeout), client.ping())
                 .await
-                .map_err(|_| anyhow::anyhow!("timed out waiting for heartbeat"))??,
+                .map_err(|error| {
+                    anyhow::Error::new(error).context("timed out waiting for heartbeat")
+                })??,
             None => client.ping().await?,
         };
         messages.push(message);

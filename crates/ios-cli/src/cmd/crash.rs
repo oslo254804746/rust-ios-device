@@ -492,7 +492,9 @@ async fn connect_with_deadline(
         Some(deadline) => {
             let device = tokio::time::timeout_at(deadline, connect(udid, options))
                 .await
-                .map_err(|_| anyhow::anyhow!("crash service connection timed out"))??;
+                .map_err(|error| {
+                    anyhow::Error::new(error).context("crash service connection timed out")
+                })??;
             Ok(device)
         }
         None => Ok(connect(udid, options).await?),
@@ -524,7 +526,9 @@ async fn connect_crash_service_until(
             } else {
                 tokio::time::timeout_at(deadline, device.connect_service(classic_service)).await
             };
-            Ok(result.map_err(|_| anyhow::anyhow!("crash service connection timed out"))??)
+            Ok(result.map_err(|error| {
+                anyhow::Error::new(error).context("crash service connection timed out")
+            })??)
         }
         None => connect_crash_service(device, classic_service, rsd_service).await,
     }

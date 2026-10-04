@@ -37,11 +37,11 @@ impl MemlimitoffCmd {
                 let (_device, stream) = super::instruments::connect_instruments(&udid).await?;
                 let mut info = DeviceInfoClient::connect(stream)
                     .await
-                    .map_err(|err| anyhow::anyhow!("DeviceInfo error: {err}"))?;
+                    .map_err(|err| anyhow::Error::new(err).context("DeviceInfo error"))?;
                 let processes = info
                     .running_processes()
                     .await
-                    .map_err(|err| anyhow::anyhow!("runningProcesses error: {err}"))?;
+                    .map_err(|err| anyhow::Error::new(err).context("runningProcesses error"))?;
                 resolve_process_pid(&processes, name)?
             }
             _ => return Err(anyhow::anyhow!("provide exactly one of PID or --process")),
@@ -49,11 +49,11 @@ impl MemlimitoffCmd {
         let (_device, stream) = super::instruments::connect_instruments(&udid).await?;
         let mut pc = ios_core::instruments::process_control::ProcessControl::connect(stream)
             .await
-            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))?;
+            .map_err(|err| anyhow::Error::new(err).context("DTX error"))?;
         let disabled = pc
             .disable_memory_limit(pid)
             .await
-            .map_err(|err| anyhow::anyhow!("disableMemoryLimit error: {err}"))?;
+            .map_err(|err| anyhow::Error::new(err).context("disableMemoryLimit error"))?;
         if !disabled {
             return Err(anyhow::anyhow!(
                 "device refused to disable memory limit for pid {}",

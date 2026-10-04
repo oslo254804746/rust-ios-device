@@ -257,19 +257,50 @@ pub(super) fn runtime_evaluate_params(expression: &str) -> JsonValue {
 
 pub(super) fn duration_from_secs(seconds: f64) -> Result<Duration> {
     if !seconds.is_finite() || seconds < 0.0 {
-        return Err(anyhow!("--timeout must be a finite non-negative number"));
+        return Err(crate::output::input_decision(
+            "--timeout must be a finite non-negative number",
+        ));
     }
-    Duration::try_from_secs_f64(seconds.max(0.1)).map_err(|_| anyhow!("--timeout is too large"))
+    Duration::try_from_secs_f64(seconds.max(0.1))
+        .map_err(|error| crate::output::input_error("--timeout is too large", error))
 }
 
 pub(super) fn webinspector_deadline(timeout: Duration) -> Result<Instant> {
     Instant::now()
         .checked_add(timeout)
-        .ok_or_else(|| anyhow!("--timeout is too large for the system clock"))
+        .ok_or_else(|| crate::output::input_decision("--timeout is too large for the system clock"))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_duration_distinguishes_native_overflow_from_guards() {
+        use std::error::Error;
+        let error = super::duration_from_secs(f64::MAX).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<std::time::TryFromFloatSecsError>()));
+        for seconds in [f64::NAN, f64::INFINITY, -1.0] {
+            let error = super::duration_from_secs(seconds).unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            assert!(error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .source()
+                .is_none());
+        }
+        assert_eq!(
+            super::duration_from_secs(0.0).unwrap(),
+            std::time::Duration::from_millis(100)
+        );
+    }
     use super::*;
     use ios_core::webinspector::{Application, AutomationAvailability};
 

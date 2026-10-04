@@ -158,7 +158,7 @@ async fn run_status(udid: String, json: bool) -> Result<()> {
     let mounted = client
         .is_image_mounted()
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -188,11 +188,11 @@ async fn run_list(udid: String, json: bool) -> Result<()> {
     let developer = client
         .lookup_image_signatures("Developer")
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
     let personalized = client
         .lookup_image_signatures("Personalized")
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -230,7 +230,7 @@ async fn run_lookup(udid: String, json: bool, image_type: String) -> Result<()> 
     let signatures = client
         .lookup_image_signatures(&image_type)
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -264,7 +264,7 @@ async fn run_devices(udid: String, json: bool) -> Result<()> {
     let entries = client
         .copy_devices()
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -298,7 +298,7 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
     let entries = client
         .copy_devices()
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     let queries = personalization_manifest_queries(&entries);
     let mut manifests = Vec::with_capacity(queries.len());
@@ -306,7 +306,7 @@ async fn run_personalization_manifests(udid: String, json: bool) -> Result<()> {
         let manifest = client
             .query_personalization_manifest(&personalized_image_type, &image_signature)
             .await
-            .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
         manifests.push(ManifestResult {
             personalized_image_type,
             image_signature,
@@ -346,7 +346,7 @@ async fn run_devmode_status(udid: String, json: bool) -> Result<()> {
     let enabled = client
         .query_developer_mode_status()
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -379,7 +379,7 @@ async fn run_nonce(udid: String, json: bool, image_type: String) -> Result<()> {
     let nonce = client
         .query_nonce_with_type(&image_type)
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!("{}", serde_json::to_string_pretty(&nonce_to_json(&nonce))?);
@@ -408,7 +408,7 @@ async fn run_personalization_identifiers(
     let identifiers = client
         .query_personalization_identifiers_with_type(&image_type)
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     if json {
         crate::output::outln!(
@@ -452,11 +452,11 @@ async fn run_unmount(udid: String) -> Result<()> {
     let developer = client
         .lookup_image_signatures("Developer")
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
     let personalized = client
         .lookup_image_signatures("Personalized")
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
     if developer.is_empty() && personalized.is_empty() {
         crate::output::outln!("No developer disk images mounted.");
         return Ok(());
@@ -465,7 +465,7 @@ async fn run_unmount(udid: String) -> Result<()> {
     client
         .unmount_image(mount_path)
         .await
-        .map_err(|e| anyhow::anyhow!("image mounter: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("image mounter"))?;
 
     crate::output::outln!("Unmounted developer disk image from {mount_path}.");
     Ok(())
@@ -642,7 +642,7 @@ async fn mount_standard(
         let ddi = downloader
             .download_standard(version)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(anyhow::Error::new)?;
         (ddi.image, ddi.signature)
     };
 
@@ -657,7 +657,7 @@ async fn mount_standard(
     client
         .mount_standard(&image, &signature)
         .await
-        .map_err(|e| anyhow::anyhow!("mount failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("mount failed"))?;
 
     crate::output::write_error_line(format_args!("Developer disk image mounted successfully."))?;
     Ok(())
@@ -674,10 +674,10 @@ async fn mount_personalized(
     let ddi = downloader
         .download_personalized()
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::new)?;
 
     crate::output::write_error_line(format_args!("Parsing BuildManifest..."))?;
-    let manifest = BuildManifest::parse(&ddi.build_manifest).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let manifest = BuildManifest::parse(&ddi.build_manifest).map_err(anyhow::Error::new)?;
 
     // Get personalization identifiers from device
     let mut stream = device
@@ -688,25 +688,25 @@ async fn mount_personalized(
     let ids = client
         .query_personalization_identifiers()
         .await
-        .map_err(|e| anyhow::anyhow!("query identifiers: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("query identifiers"))?;
 
     let board_id = extract_id(&ids, "BoardId")?;
     let chip_id = extract_id(&ids, "ChipID")?;
 
     let identity = manifest
         .find_identity(board_id, chip_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::new)?;
 
     let nonce = client
         .query_nonce()
         .await
-        .map_err(|e| anyhow::anyhow!("query nonce: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("query nonce"))?;
 
     crate::output::write_error_line(format_args!("Requesting TSS ticket from Apple..."))?;
     let tss_request = tss::build_tss_request(&ids, &nonce, identity);
     let ticket = tss::get_tss_ticket(&tss_request)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(anyhow::Error::new)?;
 
     crate::output::write_error_line(format_args!(
         "Mounting personalized DDI ({} bytes)...",
@@ -715,7 +715,7 @@ async fn mount_personalized(
     client
         .mount_personalized(&ddi.trustcache, &ddi.build_manifest, &ddi.image, &ticket)
         .await
-        .map_err(|e| anyhow::anyhow!("mount failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("mount failed"))?;
 
     crate::output::write_error_line(format_args!(
         "Personalized developer disk image mounted successfully."
@@ -726,19 +726,27 @@ async fn mount_personalized(
 fn extract_id(ids: &std::collections::HashMap<String, plist::Value>, key: &str) -> Result<u64> {
     let val = ids
         .get(key)
-        .ok_or_else(|| anyhow::anyhow!("missing {key} in personalization identifiers"))?;
+        .ok_or_else(|| crate::output::received_decision("missing personalization identifier"))?;
     match val {
-        plist::Value::Integer(n) => n
-            .as_unsigned()
-            .ok_or_else(|| anyhow::anyhow!("{key} is not an unsigned integer")),
+        plist::Value::Integer(n) => n.as_unsigned().ok_or_else(|| {
+            crate::output::received_decision(
+                "personalization identifier is not an unsigned integer",
+            )
+        }),
         plist::Value::String(s) => {
             if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                u64::from_str_radix(hex, 16).map_err(|e| anyhow::anyhow!("parse {key} hex: {e}"))
+                u64::from_str_radix(hex, 16).map_err(|e| {
+                    crate::output::received_error("parse personalization identifier hex", e)
+                })
             } else {
-                s.parse().map_err(|e| anyhow::anyhow!("parse {key}: {e}"))
+                s.parse::<u64>().map_err(|e| {
+                    crate::output::received_error("parse personalization identifier", e)
+                })
             }
         }
-        _ => Err(anyhow::anyhow!("{key} has unexpected type")),
+        _ => Err(crate::output::received_decision(
+            "personalization identifier has unexpected type",
+        )),
     }
 }
 
@@ -877,6 +885,30 @@ fn plist_to_json(value: &Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_personalization_identifier_retains_received_parse_error() {
+        for value in ["0xowned-private-identifier", "18446744073709551616"] {
+            let ids = std::collections::HashMap::from([(
+                "ApChipID".to_owned(),
+                plist::Value::String(value.to_owned()),
+            )]);
+            let error = super::extract_id(&ids, "ApChipID").unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Protocol
+            );
+            assert!(error
+                .chain()
+                .any(|source| source.is::<std::num::ParseIntError>()));
+            let json = crate::output::operation_failure_message(
+                crate::output::ErrorFormat::Json,
+                "ddi",
+                &error,
+            )
+            .unwrap();
+            assert!(!json.contains("owned-private"));
+        }
+    }
     use clap::Parser;
 
     use super::*;

@@ -340,9 +340,24 @@ async fn run_with_deadline<F>(timeout: Duration, operation: F) -> Result<()>
 where
     F: std::future::Future<Output = Result<()>>,
 {
+    run_with_deadline_and_signal(timeout, operation, tokio::signal::ctrl_c()).await
+}
+
+async fn run_with_deadline_and_signal<F, C>(
+    timeout: Duration,
+    operation: F,
+    signal: C,
+) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+    C: std::future::Future<Output = std::io::Result<()>>,
+{
     tokio::select! {
-        result = tokio::time::timeout(timeout, operation) => result.map_err(|_| anyhow::anyhow!("HID operation exceeded its absolute deadline"))?,
-        _ = tokio::signal::ctrl_c() => anyhow::bail!("HID operation cancelled by Ctrl+C"),
+        result = tokio::time::timeout(timeout, operation) => result.map_err(|error| anyhow::Error::new(error).context("HID operation exceeded its absolute deadline"))?,
+        signal = signal => {
+            signal?;
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("HID operation cancelled by Ctrl+C"))
+        },
     }
 }
 
@@ -379,6 +394,54 @@ fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: b
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cli_native_sources_hid_signal_error_is_distinct_from_cancel() {
+        let error = super::run_with_deadline_and_signal(
+            std::time::Duration::from_secs(1),
+            std::future::pending(),
+            async { std::fs::File::open("").map(|_| ()) },
+        )
+        .await
+        .unwrap_err();
+        let native = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(native.kind(), std::io::ErrorKind::NotFound);
+        assert!(native.raw_os_error().is_some());
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::NotFound
+        );
+        assert!(!error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+
+        let error = super::run_with_deadline_and_signal(
+            std::time::Duration::from_secs(1),
+            std::future::pending(),
+            async { Ok(()) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Cancelled
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<ios_core::OperationCancelled>()));
+    }
+    #[tokio::test]
+    async fn cli_native_sources_hid_deadline_retains_actual_elapsed() {
+        let error = super::run_with_deadline(std::time::Duration::ZERO, std::future::pending())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
     use clap::Parser;
 
     use super::*;

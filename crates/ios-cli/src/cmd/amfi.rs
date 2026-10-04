@@ -37,7 +37,7 @@ async fn reveal_developer_mode(udid: &str, json: bool) -> Result<()> {
     let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
     ios_core::amfi::reveal_developer_mode(&mut stream)
         .await
-        .map_err(|e| anyhow::anyhow!("amfi reveal-developer-mode failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("amfi reveal-developer-mode failed"))?;
 
     if json {
         crate::output::outln!(
@@ -65,7 +65,7 @@ async fn enable_developer_mode(udid: &str, json: bool) -> Result<()> {
     let mut stream = device.connect_service(ios_core::amfi::SERVICE_NAME).await?;
     ios_core::amfi::enable_developer_mode(&mut stream)
         .await
-        .map_err(|e| anyhow::anyhow!("amfi enable-developer-mode failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("amfi enable-developer-mode failed"))?;
 
     if json {
         crate::output::outln!(

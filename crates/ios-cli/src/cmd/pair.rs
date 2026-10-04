@@ -300,7 +300,7 @@ struct PairRecordSummary {
 async fn supervised_pair_cmd(udid: &str, p12_path: &str, password: &str, json: bool) -> Result<()> {
     // 1. Read P12 file
     let p12_bytes = std::fs::read(p12_path)
-        .map_err(|e| anyhow::anyhow!("failed to read P12 file '{}': {}", p12_path, e))?;
+        .map_err(|e| anyhow::Error::new(e).context("failed to read P12 file"))?;
 
     // 2. Connect to usbmuxd and find the device
     let mut mux = MuxClient::connect().await?;

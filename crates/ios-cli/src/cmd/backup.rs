@@ -1168,10 +1168,9 @@ async fn run_change_password(
 }
 
 async fn build_backup_info_plist(device: &ios_core::ConnectedDevice) -> Result<plist::Dictionary> {
-    let lockdown_values = device
-        .lockdown_get_value(None)
-        .await
-        .map_err(|err| anyhow::anyhow!("read lockdown values for backup metadata: {err}"))?;
+    let lockdown_values = device.lockdown_get_value(None).await.map_err(|err| {
+        anyhow::Error::new(err).context("read lockdown values for backup metadata")
+    })?;
     let values = lockdown_values.as_dictionary().ok_or_else(|| {
         anyhow::anyhow!("lockdown GetValue(None, None) did not return a dictionary")
     })?;

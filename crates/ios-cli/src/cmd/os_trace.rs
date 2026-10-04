@@ -470,7 +470,7 @@ impl std::error::Error for TracePidConversionError {
 
 async fn run_stream(udid: &str, args: StreamArgs, json: bool) -> Result<()> {
     let level_filter = ios_core::ostrace::parse_level_filter(&args.level)
-        .map_err(|error| anyhow::anyhow!("invalid --level value: {error}"))?;
+        .map_err(|message| crate::output::input_message("invalid --level value", message))?;
     let pid = args
         .pid
         .map(|pid| {

@@ -88,7 +88,7 @@ impl WifiCmd {
             } => {
                 let password = zeroize::Zeroizing::new(password);
                 let profile = build_wifi_profile(&ssid, password.as_str(), &encryption_type)
-                    .map_err(|err| anyhow::anyhow!("invalid Wi-Fi profile: {err}"))?;
+                    .map_err(|err| crate::output::input_error("invalid Wi-Fi profile", err))?;
                 let result = client
                     .prepare_wifi(&ssid, password.as_str(), &encryption_type)
                     .await?;

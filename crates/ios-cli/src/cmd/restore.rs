@@ -161,7 +161,9 @@ where
             client.next_lifecycle_event(),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for restore lifecycle event"))??;
+        .map_err(|error| {
+            anyhow::Error::new(error).context("timed out waiting for restore lifecycle event")
+        })??;
         let finished = matches!(
             event,
             ios_core::restore::RestoreLifecycleEvent::Status { finished: true, .. }

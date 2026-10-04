@@ -226,7 +226,7 @@ async fn connect_via_usbmux(device_id: u32, device_port: u16) -> Result<ServiceS
 fn parse_ipv6_bytes(addr: &str) -> Result<[u8; 16]> {
     let addr: std::net::Ipv6Addr = addr
         .parse()
-        .map_err(|e| anyhow::anyhow!("invalid IPv6 address '{addr}': {e}"))?;
+        .map_err(|e| crate::output::input_error("invalid IPv6 address", e))?;
     Ok(addr.octets())
 }
 

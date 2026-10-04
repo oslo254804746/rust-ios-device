@@ -173,7 +173,7 @@ fn manager_base_url(host: &str, port: u16) -> Result<reqwest::Url> {
 fn manager_tunnels_url(host: &str, port: u16) -> Result<String> {
     let mut url = manager_base_url(host, port)?;
     url.path_segments_mut()
-        .map_err(|_| anyhow::anyhow!("tunnel manager URL cannot be a base"))?
+        .map_err(|_| crate::output::input_decision("tunnel manager URL cannot be a base"))?
         .push("tunnels");
     Ok(url.to_string())
 }
@@ -181,7 +181,7 @@ fn manager_tunnels_url(host: &str, port: u16) -> Result<String> {
 fn manager_tunnel_url(host: &str, port: u16, udid: &str) -> Result<String> {
     let mut url = manager_base_url(host, port)?;
     url.path_segments_mut()
-        .map_err(|_| anyhow::anyhow!("tunnel manager URL cannot be a base"))?
+        .map_err(|_| crate::output::input_decision("tunnel manager URL cannot be a base"))?
         .extend(["tunnel", udid]);
     Ok(url.to_string())
 }
@@ -984,7 +984,7 @@ fn remote_connect_url(target: &RemoteTarget, query: &ConnectQuery) -> Result<req
     let mut url = reqwest::Url::parse(&target.upstream)?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
-        .map_err(|_| anyhow::anyhow!("cannot use upstream URL for WebSocket"))?;
+        .map_err(|_| crate::output::input_decision("cannot use upstream URL for WebSocket"))?;
     url.set_path("/connect");
     url.query_pairs_mut()
         .append_pair("udid", &query.udid)

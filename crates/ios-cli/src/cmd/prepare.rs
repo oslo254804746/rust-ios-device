@@ -80,7 +80,7 @@ fn run_create_cert(
     json: bool,
 ) -> Result<()> {
     let identity = ios_core::prepare::generate_supervision_identity(common_name, password)
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
+        .map_err(anyhow::Error::new)?;
 
     if let Some(parent) = output_prefix.parent() {
         if !parent.as_os_str().is_empty() {
@@ -181,9 +181,7 @@ async fn run_prepare(
     }
     mcinstall.hello_host_identifier().await?;
     mcinstall
-        .install_profile(
-            &ios_core::prepare::build_initial_profile().map_err(|err| anyhow::anyhow!("{err}"))?,
-        )
+        .install_profile(&ios_core::prepare::build_initial_profile().map_err(anyhow::Error::new)?)
         .await?;
 
     configure_lockdown(&device, language, locale, time_zone).await?;
@@ -256,7 +254,7 @@ async fn configure_lockdown(
         .await?;
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|err| anyhow::anyhow!("system clock before unix epoch: {err}"))?
+        .map_err(|err| anyhow::Error::new(err).context("system clock before unix epoch"))?
         .as_secs() as i64;
     device
         .lockdown_set_value(

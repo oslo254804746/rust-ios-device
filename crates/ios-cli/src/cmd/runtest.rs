@@ -181,7 +181,9 @@ impl RunTestCmd {
             start_test_plan(&udid, plan),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for XCTest startup"))??;
+        .map_err(|error| {
+            anyhow::Error::new(error).context("timed out waiting for XCTest startup")
+        })??;
 
         crate::output::outln!(
             "{}",
@@ -320,7 +322,7 @@ impl ActiveTestPlan {
                 ._testmanager
                 .recv_execution_event()
                 .await
-                .map_err(|err| anyhow::anyhow!("XCTest result stream error: {err}"))?;
+                .map_err(|err| anyhow::Error::new(err).context("XCTest result stream error"))?;
             let finished = event.is_finished_plan();
             recorder.apply(event);
             if finished {
@@ -408,7 +410,7 @@ async fn start_test_plan_session_inner(
     let mut testmanager = run_stage(deadline, "requesting testmanager DTX channels", async {
         TestmanagerClient::connect(session_stream, control_stream)
             .await
-            .map_err(|err| anyhow::anyhow!("DTX error: {err}"))
+            .map_err(|err| anyhow::Error::new(err).context("DTX error"))
     })
     .await?;
 
@@ -445,7 +447,7 @@ async fn start_test_plan_session_inner(
                     .initiate_control_session_with_capabilities(capabilities.clone())
                     .await
                     .map(|_| ())
-                    .map_err(|err| anyhow::anyhow!("control session error: {err}"))
+                    .map_err(|err| anyhow::Error::new(err).context("control session error"))
             },
         )
         .await?;
@@ -455,7 +457,7 @@ async fn start_test_plan_session_inner(
             .initiate_session_with_capabilities(session_id, capabilities)
             .await
             .map(|_| ())
-            .map_err(|err| anyhow::anyhow!("session init error: {err}"))
+            .map_err(|err| anyhow::Error::new(err).context("session init error"))
     })
     .await?;
 
@@ -482,7 +484,7 @@ async fn start_test_plan_session_inner(
                 let pid = appservice
                     .launch_application_with_options(&plan.runner.bundle_id, &options)
                     .await
-                    .map_err(|error| anyhow::anyhow!("CoreDevice launch error: {error}"))?
+                    .map_err(|error| anyhow::Error::new(error).context("CoreDevice launch error"))?
                     .ok_or_else(|| {
                         anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner")
                     })?;
@@ -508,7 +510,7 @@ async fn start_test_plan_session_inner(
             async {
                 ProcessControl::connect(instruments_stream)
                     .await
-                    .map_err(|err| anyhow::anyhow!("process control error: {err}"))
+                    .map_err(|err| anyhow::Error::new(err).context("process control error"))
             },
         )
         .await?;
@@ -524,7 +526,7 @@ async fn start_test_plan_session_inner(
                     &launch_options,
                 )
                 .await
-                .map_err(|err| anyhow::anyhow!("launch error: {err}"))
+                .map_err(|err| anyhow::Error::new(err).context("launch error"))
         })
         .await
         {
@@ -559,7 +561,7 @@ async fn start_test_plan_session_inner(
                     })
                     .await
                     .map(|_| ())
-                    .map_err(|err| anyhow::anyhow!("control session error: {err}"))
+                    .map_err(|err| anyhow::Error::new(err).context("control session error"))
             },
         )
         .await;
@@ -576,7 +578,7 @@ async fn start_test_plan_session_inner(
         testmanager
             .authorize_and_start_test_plan_with_configuration(pid, configuration)
             .await
-            .map_err(|err| anyhow::anyhow!("startup handshake error: {err}"))
+            .map_err(|err| anyhow::Error::new(err).context("startup handshake error"))
     })
     .await
     {
@@ -621,7 +623,10 @@ where
     let result = match deadline {
         Some(deadline) => tokio::time::timeout_at(deadline, future)
             .await
-            .map_err(|_| anyhow::anyhow!("XCTest deadline expired while {operation}"))?,
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(format!("XCTest deadline expired while {operation}"))
+            })?,
         None => future.await,
     };
     result.with_context(|| format!("XCTest {operation} failed"))
@@ -872,6 +877,23 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cli_native_sources_testmanager_stage_keeps_actual_elapsed() {
+        let error = super::run_stage(
+            Some(tokio::time::Instant::now()),
+            "owned stalled stage",
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{

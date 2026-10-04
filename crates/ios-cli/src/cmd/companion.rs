@@ -212,7 +212,7 @@ async fn connect_companion(
     if let Some(deadline) = deadline {
         tokio::time::timeout_at(deadline, operation)
             .await
-            .map_err(|_| anyhow::anyhow!("companion connection timed out"))?
+            .map_err(|error| anyhow::Error::new(error).context("companion connection timed out"))?
     } else {
         operation.await
     }

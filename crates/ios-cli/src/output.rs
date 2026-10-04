@@ -2,6 +2,89 @@
 
 use anyhow::Result;
 
+struct BoundaryCause {
+    phase: &'static str,
+    native: Option<Box<dyn std::error::Error + Send + Sync>>,
+    opaque: Option<String>,
+}
+
+impl std::fmt::Debug for BoundaryCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundaryCause")
+            .field("phase", &self.phase)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for BoundaryCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.phase)?;
+        if let Some(native) = &self.native {
+            write!(f, ": {native}")?;
+        } else if let Some(opaque) = &self.opaque {
+            write!(f, ": {opaque}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for BoundaryCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.native.as_deref().map(|source| source as _)
+    }
+}
+
+pub(crate) fn input_error(
+    phase: &'static str,
+    native: impl std::error::Error + Send + Sync + 'static,
+) -> anyhow::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        BoundaryCause {
+            phase,
+            native: Some(Box::new(native)),
+            opaque: None,
+        },
+    )
+    .into()
+}
+
+pub(crate) fn received_error(
+    phase: &'static str,
+    native: impl std::error::Error + Send + Sync + 'static,
+) -> anyhow::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        BoundaryCause {
+            phase,
+            native: Some(Box::new(native)),
+            opaque: None,
+        },
+    )
+    .into()
+}
+
+/// An upstream String is retained as opaque data; it has no native source.
+pub(crate) fn input_message(phase: &'static str, opaque: String) -> anyhow::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        BoundaryCause {
+            phase,
+            native: None,
+            opaque: Some(opaque),
+        },
+    )
+    .into()
+}
+
+pub(crate) fn input_decision(phase: &'static str) -> anyhow::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, phase).into()
+}
+
+pub(crate) fn received_decision(phase: &'static str) -> anyhow::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, phase).into()
+}
+
 /// Opt-in machine errors leave the existing result stream and human default
 /// unchanged. The command parser owns selection and input validation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -183,6 +266,56 @@ pub fn require_force(force: bool, operation: &str, consequence: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_boundary_keeps_original_objects_and_safe_opaque_data() {
+        use std::error::Error;
+        let native = ios_core::mcinstall::build_wifi_profile("", "", "").unwrap_err();
+        let error = super::input_error("invalid Wi-Fi profile", native);
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<ios_core::mcinstall::McInstallError>()));
+
+        let error = super::input_message("opaque input", "owned-private-original".to_owned());
+        let io = error.downcast_ref::<std::io::Error>().unwrap();
+        assert!(io.source().is_none());
+        let cause = io
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<super::BoundaryCause>()
+            .unwrap();
+        assert_eq!(cause.opaque.as_deref(), Some("owned-private-original"));
+        assert!(!format!("{io:?} {cause:?}").contains("owned-private"));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        let json =
+            super::operation_failure_message(super::ErrorFormat::Json, "device-control", &error)
+                .unwrap();
+        assert!(!json.contains("owned-private"));
+
+        for (error, class) in [
+            (
+                super::input_decision("local input guard"),
+                ios_core::ErrorClass::InvalidInput,
+            ),
+            (
+                super::received_decision("received guard"),
+                ios_core::ErrorClass::Protocol,
+            ),
+        ] {
+            assert!(error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .source()
+                .is_none());
+            assert_eq!(ios_core::classify_error(error.as_ref()), class);
+        }
+    }
     use super::*;
     use clap::Parser;
 

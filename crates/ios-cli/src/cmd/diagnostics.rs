@@ -121,7 +121,9 @@ impl DiagnosticsCmd {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
                 tokio::time::timeout_at(deadline, ios_core::diagnostics::shutdown(&mut *stream))
                     .await
-                    .map_err(|_| anyhow::anyhow!("shutdown timed out after 30 seconds"))??;
+                    .map_err(|error| {
+                        anyhow::Error::new(error).context("shutdown timed out after 30 seconds")
+                    })??;
                 if json {
                     crate::output::outln!(
                         "{}",

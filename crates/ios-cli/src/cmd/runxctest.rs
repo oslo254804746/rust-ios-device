@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ios_core::testmanager::workflow::{RunXcTestPlan, RunXcTestPlanError, TestLaunchPlan};
+use ios_core::testmanager::workflow::{RunXcTestPlan, TestLaunchPlan};
 use tokio::time::Instant;
 
 use crate::cmd::runtest::{
@@ -98,9 +98,7 @@ impl RunXcTestCmd {
                 .ok_or_else(|| anyhow::anyhow!("--env expects KEY=VALUE, got {entry:?}"))?;
             builder = builder.env(key, value);
         }
-        builder
-            .build()
-            .map_err(|error: RunXcTestPlanError| anyhow::anyhow!("{error}"))
+        builder.build().map_err(anyhow::Error::new)
     }
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
@@ -255,12 +253,53 @@ where
 {
     tokio::time::timeout_at(deadline, future)
         .await
-        .map_err(|_| anyhow::anyhow!("XCTest deadline expired while {operation}"))?
+        .map_err(|error| {
+            anyhow::Error::new(error).context(format!("XCTest deadline expired while {operation}"))
+        })?
         .with_context(|| format!("XCTest {operation} failed"))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_xctest_plan_keeps_original_typed_input_error() {
+        let mut command = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+        ])
+        .command;
+        command.test_runner_bundle_id.clear();
+        let error = command.build_plan().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ios_core::RunXcTestPlanError>(),
+            Some(ios_core::RunXcTestPlanError::MissingRunnerBundleId)
+        ));
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+    }
+    #[tokio::test]
+    async fn cli_native_sources_xctest_deadline_retains_actual_elapsed() {
+        let error = super::until(
+            tokio::time::Instant::now(),
+            "owned-private-operation",
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    }
     use std::path::PathBuf;
     use std::time::Duration;
 

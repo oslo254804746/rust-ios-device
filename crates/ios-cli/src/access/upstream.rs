@@ -152,7 +152,7 @@ impl UpstreamClient {
             _ => anyhow::bail!("unsupported upstream request scheme"),
         };
         root.set_scheme(scheme)
-            .map_err(|_| anyhow::anyhow!("invalid upstream request scheme"))?;
+            .map_err(|_| crate::output::input_decision("invalid upstream request scheme"))?;
         root.set_path("/");
         root.set_query(None);
         root.set_fragment(None);

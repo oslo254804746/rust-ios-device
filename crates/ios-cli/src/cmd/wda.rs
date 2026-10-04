@@ -336,7 +336,10 @@ impl WdaHttpClient {
 
         tokio::time::timeout(self.timeout, fut)
             .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for WDA device port {port}"))?
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(format!("timed out waiting for WDA device port {port}"))
+            })?
     }
 
     fn url(base_url: &str, path: &str) -> String {

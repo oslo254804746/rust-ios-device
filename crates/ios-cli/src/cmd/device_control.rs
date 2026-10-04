@@ -290,7 +290,7 @@ async fn capture_display(
         Ok(())
         } => result,
         signal = tokio::signal::ctrl_c() => {
-            signal.map_err(anyhow::Error::from).and_then(|()| Err(anyhow::anyhow!("display capture cancelled")))
+            signal.map_err(anyhow::Error::from).and_then(|()| Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("display capture cancelled")))
         }
     };
     let stop_result: Result<(), anyhow::Error> = session
@@ -446,8 +446,9 @@ impl ConfigurationCmd {
                 let (mut client, _device) = connect_configuration(udid).await?;
                 let result_value = match setting {
                     ConfigurationSetting::Style => {
-                        let style: UserInterfaceStyle =
-                            value.parse().map_err(anyhow::Error::msg)?;
+                        let style: UserInterfaceStyle = value.parse().map_err(|message| {
+                            crate::output::input_message("invalid user interface style", message)
+                        })?;
                         client.set_user_interface_style(style.clone()).await?;
                         serde_json::json!(style.to_string())
                     }
@@ -456,7 +457,9 @@ impl ConfigurationCmd {
                         let filter_type = filter_type
                             .map(|value| value.parse::<ColorFilterType>())
                             .transpose()
-                            .map_err(anyhow::Error::msg)?;
+                            .map_err(|message| {
+                                crate::output::input_message("invalid color filter type", message)
+                            })?;
                         let filter_type_name = filter_type.as_ref().map(ToString::to_string);
                         client
                             .set_color_filter(enabled, filter_type, intensity)
@@ -473,7 +476,9 @@ impl ConfigurationCmd {
                         result
                     }
                     ConfigurationSetting::TextSize => {
-                        let size: DeviceTextSize = value.parse().map_err(anyhow::Error::msg)?;
+                        let size: DeviceTextSize = value.parse().map_err(|message| {
+                            crate::output::input_message("invalid device text size", message)
+                        })?;
                         client.set_device_text_size(size.clone()).await?;
                         serde_json::json!(size.to_string())
                     }
@@ -584,9 +589,9 @@ async fn connect_orientation(
 }
 
 fn parse_bool(value: &str) -> Result<bool> {
-    value
-        .parse::<bool>()
-        .map_err(|_| anyhow::anyhow!("boolean value must be 'true' or 'false', got {value:?}"))
+    value.parse::<bool>().map_err(|error| {
+        crate::output::input_error("boolean value must be 'true' or 'false'", error)
+    })
 }
 
 fn setting_name(setting: ConfigurationSetting) -> &'static str {
@@ -652,6 +657,24 @@ fn print_orientation(direction: RotationDirection, state: &OrientationState) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_boolean_retains_original_parser_error() {
+        let error = super::parse_bool("owned-private-boolean").unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<std::str::ParseBoolError>()));
+        let json = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "device-control",
+            &error,
+        )
+        .unwrap();
+        assert!(!json.contains("owned-private"));
+    }
     use clap::Parser;
 
     use super::*;

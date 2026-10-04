@@ -287,7 +287,7 @@ async fn run_notifications(_udid: String, _count: u64, _timeout_secs: u64) -> Re
     let (_device, stream) = connect_instruments(&_udid).await?;
     let mut client = NotificationClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut received = 0u64;
     loop {
@@ -301,13 +301,15 @@ async fn run_notifications(_udid: String, _count: u64, _timeout_secs: u64) -> Re
                 client.next_notification(),
             )
             .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for notification"))?
-            .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?
+            .map_err(|error| {
+                anyhow::Error::new(error).context("timed out waiting for notification")
+            })?
+            .map_err(|e| anyhow::Error::new(e).context("DTX error"))?
         } else {
             client
                 .next_notification()
                 .await
-                .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?
+                .map_err(|e| anyhow::Error::new(e).context("DTX error"))?
         };
 
         received += 1;
@@ -397,7 +399,7 @@ async fn run_cpu(
 
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let deadline =
         timeout_secs.map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs(secs));
@@ -510,12 +512,12 @@ async fn run_ps(
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut di = DeviceInfoClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let procs = di
         .running_processes()
         .await
-        .map_err(|e| anyhow::anyhow!("runningProcesses error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("runningProcesses error"))?;
 
     // Sort by pid
     let mut procs = procs;
@@ -564,16 +566,16 @@ async fn run_device_info_attrs(udid: String, system: bool, json_output: bool) ->
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut di = DeviceInfoClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let attrs = if system {
         di.system_attributes()
             .await
-            .map_err(|e| anyhow::anyhow!("system_attributes error: {e}"))?
+            .map_err(|e| anyhow::Error::new(e).context("system_attributes error"))?
     } else {
         di.process_attributes()
             .await
-            .map_err(|e| anyhow::anyhow!("process_attributes error: {e}"))?
+            .map_err(|e| anyhow::Error::new(e).context("process_attributes error"))?
     };
 
     if json_output {
@@ -608,14 +610,14 @@ async fn run_launch(udid: String, bundle_id: String, args: Vec<String>) -> Resul
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut pc = ProcessControl::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let env = HashMap::new();
     let pid = pc
         .launch(&bundle_id, &args_ref, &env)
         .await
-        .map_err(|e| anyhow::anyhow!("launch error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("launch error"))?;
 
     crate::output::outln!("Launched {bundle_id} with PID {pid}");
     Ok(())
@@ -627,11 +629,11 @@ async fn run_kill(udid: String, pid: u64) -> Result<()> {
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut pc = ProcessControl::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     pc.kill(pid)
         .await
-        .map_err(|e| anyhow::anyhow!("kill error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("kill error"))?;
 
     crate::output::outln!("Sent SIGKILL to PID {pid}");
     Ok(())
@@ -643,11 +645,11 @@ async fn run_apps(udid: String, json_output: bool) -> Result<()> {
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = ApplicationListingClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
     let apps = client
         .installed_applications()
         .await
-        .map_err(|e| anyhow::anyhow!("application listing error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("application listing error"))?;
 
     if json_output {
         crate::output::outln!("{}", serde_json::to_string_pretty(&apps)?);
@@ -699,7 +701,7 @@ async fn run_energy(udid: String, pids: Vec<i32>, count: u64, json_output: bool)
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = EnergyMonitorClient::connect(stream, &pids)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut received = 0u64;
     loop {
@@ -710,7 +712,7 @@ async fn run_energy(udid: String, pids: Vec<i32>, count: u64, json_output: bool)
         let sample = client
             .sample()
             .await
-            .map_err(|e| anyhow::anyhow!("energy sample error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("energy sample error"))?;
         received += 1;
 
         if json_output {
@@ -734,7 +736,7 @@ async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> 
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = NetworkMonitorClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut received = 0u64;
     loop {
@@ -745,7 +747,7 @@ async fn run_network(udid: String, count: u64, json_output: bool) -> Result<()> 
         let event = client
             .next_event()
             .await
-            .map_err(|e| anyhow::anyhow!("network event error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("network event error"))?;
         received += 1;
 
         if json_output {
@@ -802,7 +804,7 @@ async fn run_gpu(udid: String, count: u64, json_output: bool) -> Result<()> {
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = GraphicsMonitorClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut received = 0u64;
     loop {
@@ -813,7 +815,7 @@ async fn run_gpu(udid: String, count: u64, json_output: bool) -> Result<()> {
         let sample = client
             .next_sample()
             .await
-            .map_err(|e| anyhow::anyhow!("gpu sample error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("gpu sample error"))?;
         received += 1;
 
         if json_output {
@@ -844,7 +846,7 @@ async fn run_trace(
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut client = ActivityTraceClient::connect(stream, pid, enable_har)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut received = 0u64;
     loop {
@@ -855,7 +857,7 @@ async fn run_trace(
         let entry = client
             .next_entry()
             .await
-            .map_err(|e| anyhow::anyhow!("activity trace error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("activity trace error"))?;
         received += 1;
 
         if json_output {
@@ -915,11 +917,11 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut session = CoreProfileSessionClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
     session
         .start(&CoreProfileConfig::fps_defaults())
         .await
-        .map_err(|e| anyhow::anyhow!("core profile start error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("core profile start error"))?;
     let mach_time_info = session.mach_time_info().clone();
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<std::result::Result<CoreProfileEvent, String>>();
@@ -1041,7 +1043,7 @@ async fn run_kdebug(
     let (_device, stream) = connect_instruments(&udid).await?;
     let mut session = CoreProfileSessionClient::connect(stream)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     let mut config = CoreProfileConfig::fps_defaults();
     // Use all-events filter by default (u32::MAX)
@@ -1050,7 +1052,7 @@ async fn run_kdebug(
     session
         .start(&config)
         .await
-        .map_err(|e| anyhow::anyhow!("core profile start error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("core profile start error"))?;
     let mach_time_info = session.mach_time_info().clone();
 
     let has_class_filter = !class_filter.is_empty();
@@ -1082,7 +1084,7 @@ async fn run_kdebug(
         let event = session
             .next_event()
             .await
-            .map_err(|e| anyhow::anyhow!("core profile event error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("core profile event error"))?;
 
         match event {
             CoreProfileEvent::Notice(_) => continue,
@@ -1203,7 +1205,7 @@ async fn run_sysmon_process(
     let cfg = SysmontapConfig::default();
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     crate::output::write_error_line(format_args!(
         "Monitoring per-process stats... Ctrl+C to stop"
@@ -1219,7 +1221,7 @@ async fn run_sysmon_process(
         let snapshot = svc
             .next_process_snapshot(&proc_attr_names)
             .await
-            .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
         let snapshot = match snapshot {
             Some(s) => s,
@@ -1312,7 +1314,7 @@ async fn run_sysmon_threshold(
     let cfg = SysmontapConfig::default();
     let mut svc = SysmontapService::start(stream, &cfg, sys_attrs, proc_attrs)
         .await
-        .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
     crate::output::write_error_line(format_args!(
         "Monitoring processes with CPU > {threshold:.1}%... Ctrl+C to stop"
@@ -1328,7 +1330,7 @@ async fn run_sysmon_threshold(
         let snapshot = svc
             .next_process_snapshot(&proc_attr_names)
             .await
-            .map_err(|e| anyhow::anyhow!("DTX error: {e}"))?;
+            .map_err(|e| anyhow::Error::new(e).context("DTX error"))?;
 
         let snapshot = match snapshot {
             Some(s) => s,

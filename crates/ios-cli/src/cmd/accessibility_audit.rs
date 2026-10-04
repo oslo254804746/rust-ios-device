@@ -336,8 +336,7 @@ async fn run_tap(udid: &str, timeout: u64, json: bool) -> Result<()> {
         let focus = client.next_focus_change_with_idle_timeout(timeout).await?;
         match focus {
             Some(focus) => {
-                let element_bytes = hex::decode(&focus.platform_identifier)
-                    .map_err(|e| anyhow::anyhow!("invalid platform identifier: {e}"))?;
+                let element_bytes = decode_focus_identifier(&focus.platform_identifier)?;
                 client.perform_action_activate(&element_bytes).await?;
                 if json {
                     crate::output::outln!(
@@ -400,6 +399,11 @@ async fn run_describe(udid: &str, timeout: u64, json: bool) -> Result<()> {
     finish_inspection(&mut client, result).await
 }
 
+fn decode_focus_identifier(value: &str) -> Result<Vec<u8>> {
+    hex::decode(value)
+        .map_err(|error| crate::output::received_error("invalid platform identifier", error))
+}
+
 async fn inspection_or_cancel(
     operation: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
@@ -407,7 +411,7 @@ async fn inspection_or_cancel(
         result = operation => result,
         signal = tokio::signal::ctrl_c() => {
             signal?;
-            anyhow::bail!("accessibility inspection cancelled");
+            Err(anyhow::Error::new(ios_core::OperationCancelled::new()).context("accessibility inspection cancelled"))
         }
     }
 }
@@ -418,7 +422,9 @@ async fn finish_inspection(
 ) -> Result<()> {
     let cleanup = tokio::time::timeout(Duration::from_secs(3), client.disable_inspector())
         .await
-        .map_err(|_| anyhow::anyhow!("accessibility inspector cleanup timed out"))
+        .map_err(|error| {
+            anyhow::Error::new(error).context("accessibility inspector cleanup timed out")
+        })
         .and_then(|result| result.map_err(Into::into));
     match result {
         Ok(()) => cleanup,
@@ -510,6 +516,26 @@ fn print_focus(index: usize, focus: &FocusElement) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_native_sources_focus_identifier_is_received_data() {
+        let error = super::decode_focus_identifier("owned-private-identifier").unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Protocol
+        );
+        assert!(error.chain().any(|source| source.is::<hex::FromHexError>()));
+        assert_eq!(
+            super::decode_focus_identifier("0001ff").unwrap(),
+            [0, 1, 255]
+        );
+        let json = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "accessibility-audit",
+            &error,
+        )
+        .unwrap();
+        assert!(!json.contains("owned-private"));
+    }
     use clap::Parser;
 
     use super::{parse_direction, AccessibilityAuditSub, FocusElement, FocusTraversal};

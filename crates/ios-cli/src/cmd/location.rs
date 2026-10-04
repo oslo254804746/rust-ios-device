@@ -32,10 +32,10 @@ impl LocationCmd {
             } => {
                 latitude
                     .parse::<f64>()
-                    .map_err(|e| anyhow::anyhow!("invalid latitude '{latitude}': {e}"))?;
+                    .map_err(|e| crate::output::input_error("invalid latitude", e))?;
                 longitude
                     .parse::<f64>()
-                    .map_err(|e| anyhow::anyhow!("invalid longitude '{longitude}': {e}"))?;
+                    .map_err(|e| crate::output::input_error("invalid longitude", e))?;
 
                 let opts = ConnectOptions {
                     tun_mode: TunMode::Userspace,
@@ -48,13 +48,13 @@ impl LocationCmd {
                     .await?;
                 ios_core::simlocation::set_location(&mut *stream, &latitude, &longitude)
                     .await
-                    .map_err(|e| anyhow::anyhow!("simlocation set failed: {e}"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("simlocation set failed"))?;
                 crate::output::outln!("Location simulation set to {latitude}, {longitude}");
             }
             LocationSub::Gpx { file } => {
-                let gpx = fs::read_to_string(&file).await.map_err(|e| {
-                    anyhow::anyhow!("failed to read GPX file '{}': {e}", file.display())
-                })?;
+                let gpx = fs::read_to_string(&file)
+                    .await
+                    .map_err(|e| anyhow::Error::new(e).context("failed to read GPX file"))?;
 
                 let opts = ConnectOptions {
                     tun_mode: TunMode::Userspace,
@@ -67,7 +67,7 @@ impl LocationCmd {
                     .await?;
                 let count = ios_core::simlocation::replay_gpx_route(&mut *stream, &gpx)
                     .await
-                    .map_err(|e| anyhow::anyhow!("simlocation GPX replay failed: {e}"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("simlocation GPX replay failed"))?;
                 crate::output::outln!("Replayed {count} GPX point(s) from {}", file.display());
             }
             LocationSub::Reset => {
@@ -82,7 +82,7 @@ impl LocationCmd {
                     .await?;
                 ios_core::simlocation::reset_location(&mut *stream)
                     .await
-                    .map_err(|e| anyhow::anyhow!("simlocation reset failed: {e}"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("simlocation reset failed"))?;
                 crate::output::outln!("Location simulation reset.");
             }
         }
@@ -96,6 +96,55 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn cli_native_sources_location_input_and_file_fail_before_connection() {
+        for (latitude, longitude) in [
+            ("owned-private-latitude", "1"),
+            ("1", "owned-private-longitude"),
+        ] {
+            let command = LocationCmd {
+                sub: LocationSub::Set {
+                    latitude: latitude.to_owned(),
+                    longitude: longitude.to_owned(),
+                },
+            };
+            let error = command
+                .run(Some("owned-private-device".to_owned()))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            assert!(error
+                .chain()
+                .any(|source| source.is::<std::num::ParseFloatError>()));
+            let json = crate::output::operation_failure_message(
+                crate::output::ErrorFormat::Json,
+                "location",
+                &error,
+            )
+            .unwrap();
+            assert!(!json.contains("owned-private"));
+        }
+        let command = LocationCmd {
+            sub: LocationSub::Gpx {
+                file: PathBuf::from(""),
+            },
+        };
+        let error = command
+            .run(Some("owned-private-device".to_owned()))
+            .await
+            .unwrap_err();
+        let native = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(native.kind(), std::io::ErrorKind::NotFound);
+        assert!(native.raw_os_error().is_some());
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::NotFound
+        );
+    }
 
     #[derive(Parser)]
     struct TestCli {
