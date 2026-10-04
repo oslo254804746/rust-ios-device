@@ -3,7 +3,8 @@
 L01/class 4 is in progress. The DTX profile's accepted implementation is
 `940c4c673e7fe023503b97197777354c7f44e253`; the FPS owner profile is
 `dcec5a2032f2994ed45678cb838447607abee65b`; AFC request/file ownership is
-`c4b471d33b1260736a295e8718d3c47ee6562165`. This contract records implemented profiles and
+`c4b471d33b1260736a295e8718d3c47ee6562165`; the internal H2 framer profile is
+`ddd3620f058c6c23649a083d209dceb41f0eb472`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -85,6 +86,26 @@ drives classification. Drop does not await close, manually opened handles remain
 caller-owned, and borrowed raw transports must not bypass invalid state. Existing
 packet-number acceptance and frame/whole-file limits remain. See
 [AFC fixture boundaries and migration](validation/afc-lifecycle-2026-10-04.md).
+
+H2Framer guards its frame I/O entries and the borrowed finish-connect stage.
+Cancellation after reported bytes, transport errors and native EOF invalidate
+local framing, clear retained H2 buffers/queues/accounting and reject further
+framer I/O. The handle stays owned until Drop; borrowed transports must not
+bypass this state. Zero-byte cancellation/expiry and unpolled futures remain
+usable. Completed stream-local reset/EOF/GOAWAY keep their previous isolation.
+
+Internal set_operation_timeout configures one absolute budget across a framer
+operation's HEADERS/DATA/flush/flow-control reads. Default None and all current
+production callers retain unbounded framer timing. This adds no public raw-H2
+export or frontend option, connect budget, whole XPC-call deadline or async
+cleanup. The held operation future is boxed before the timeout wrapper to keep
+nested service/bootstrap futures within the existing CLI stack test. It is
+still owned directly, without a background reader/task.
+
+The upper XPC layer still needs guards after consuming a wrapper header, while
+waiting after a sent request, and around pending replies/stream/file ownership.
+Those boundaries cannot be inferred from the H2 byte guard. See
+[H2 fixtures and limits](validation/h2-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

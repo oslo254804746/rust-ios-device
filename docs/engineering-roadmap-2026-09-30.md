@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX、FPS 与 AFC request/file ownership/cleanup 主机 profiles 已交付；H2/XPC、其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX、FPS、AFC 与 H2 framer 主机 profiles 已交付；上层 XPC、其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5336,3 +5336,64 @@ history保持，仅增host evidence。L01/第四类/完整31goal active；下一
 本地message consumption与call send/reply的取消/期限ownership，再其他服务清理/L02–L04/
 Q04。设备/platform条件保留；没有设备/credentials/Apple操作、reference edits、push/
 publication或historyrewrite。
+
+### 大类 4：L01 H2 帧取消、流控等待与内部期限交付（2026-10-04）
+
+本地 source `ddd3620f058c6c23649a083d209dceb41f0eb472`，baseline
+`529f65e0dd81a7bfa86170cfd6ac3a986cf3b6b9`，分支
+`feat/device-service-updates-20260927`。两 source/test 文件，578 insertions/9 deletions；
+Linux x86_64、Rust1.97.1/MSRV1.80.1、Python3.12.13。细节与边界见
+[H2 host gate](validation/h2-lifecycle-2026-10-04.md)、
+[统一生命周期](lifecycle-contract.md)、[兼容](public-contract.md)、[分类](error-contract.md)。
+
+H2 read_stream/read_next_data_frame/buffer_next_data_stream/write_stream/open_stream/
+finish_stream及borrowed finish_connect各自持有字节进度守卫；nested open不重置外层。
+实际transport error/EOF或cancelled reported bytes使framer失效，清除retained H2 buffers/
+DATA queue/byte accounting/stream-window集合；后续framer操作在IO前拒绝，需fresh
+transport。Handle保留到Drop，borrowed transport不可绕过失效状态，Drop不await
+shutdown/cleanup，不spawn reader/task。Zero-byte取消/expiry与unpolled保持可复用；
+complete stream-local RST/EOF/GOAWAY isolation及既有connection Protocol政策保持。
+
+Internal set_operation_timeout共享一次HEADERS/DATA/flush/flow-control的absolute budget；
+zero在IO/state前返回source-free TimedOut，unrepresentable返回InvalidInput，实际
+expiry在既有H2ErrorIo.get_ref保留Elapsed。H2 parent module私有；无新root export/
+XpcClient option/frontend default，所有production callers仍None。这不是connect/
+whole-XPC-call deadline。Cooperative timer不抢占同步工作。
+
+新增八internal/一external测试，full九PASS、minimum dproxy八PASS，XPC regressions
+102PASS。实际partial4/11B raw header/body、late完整帧保持未读、native EOF/BrokenPipe、
+4/16B blocked HEADERS/DATA、注入0/2B flow windows及实际peer credit/DATA/partial
+WINDOW_UPDATE、completeRST/END_STREAM的其他流复用均通过；public XpcClient完成
+实际H2/RemoteXPC bootstrap后partial raw frame取消，后续recv/send拒绝。Private
+framer/window injection不当成physical negotiation；concurrent peer exchange是owned
+join/1s bound，无新增fixture tasks。
+
+准备期首次external import私有H2路径编译失败，改为public XPC fixture，无export；
+次轮7PASS/1FAIL因测试错误假设native read_exactEOF无customIOpayload，改查original
+kind/OS-code，未改变原错误满足测试。首次full session57967 terminal1，在Rust阶段
+CLI dispatch-file stack overflow/SIGABRT；inline async deadline wrapper放大nested
+future。Source改为进入async wrapper前Box持有future，原CLI stack test/16KiB断言和
+环境未放宽，相关测试恢复PASS，final narrow/minimum/regression/strictCoreCLIClippy/
+fmt通过。无old-source negative control/benchmark；Linuxhost不代替Windows。
+
+第11节最终 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session10807 terminal0，
+validation/full PASS：2159Rust/13Python、0FAIL/two old ignored，CLI706/Core1301/
+public42；fmt/check/strictworkspaceClippy/MSRV、66features/fourgroups、7+7docs/3snips、
+CABI、3.12wheel/sdist、53tooling/118help/38raw/5host/15CLI/3backup合同均PASS。
+Frozen source SHA256
+`e7a60ac94d78611310df7e4fb326b6f7b98b481594707b1e67e15b442d7a3e20`；ios debug SHA256
+`33da543e42db13bcc0454d2a3deaa6784834d6421f650498b17b61a6ff690d0c`。
+Source冻结至full结束；wire constants/preface/bootstrap/raw decoder/builders/error enum/
+全部旧H2tests byte-identical审计PASS，root/frontend/classifier/deps/refs未改；余量约
+11GiB，无clean/storage failure，日志 `/tmp/ios-l01-h2-`。
+
+八文档收尾审计PASS：七Markdown/229 local links、whitespace、exact source/binary/
+full/narrow/minimum/regression/stack及refs状态，actual-help capability118目录；源码未改。
+
+22device rows NOT_RUN；Chromium/installed3.9/3.13未重跑。Capability118正文/maturity/
+history保持，仅增host evidence。L01/第四类/完整31goal active。下一上层XPC consumed
+wrapper header/body、sent-call waiting-zero-reply、pending replies与stream/file ownership
+的取消/期限；本轮H2guard不能替代这些logical boundaries，不能声明所有XpcClient
+queued replies均拒绝或整个call共享预算。其他服务清理/L02–L04/Q04/platform/device
+保持待条件；无设备/credentials/Apple操作、reference edits、push/publication/historyrewrite。

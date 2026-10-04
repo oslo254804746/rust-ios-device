@@ -28,6 +28,15 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+H2 frame operations now reject reuse after transport failure or cancellation
+with reported bytes. Empty idle cancellation and fully processed stream-local
+reset/EOF/GOAWAY retain their previous behavior. This affects existing public
+XpcClient operations when their lower-level frame operation is interrupted;
+the H2 type/configuration remains crate-internal, with no new root export,
+CLI option or default deadline. XPC message consumption, sent-call ownership
+and pending-reply invalidation still need their own guards. See
+[H2 host acceptance and migration](validation/h2-lifecycle-2026-10-04.md).
+
 AfcClient adds is_usable and set_request_timeout(Option<Duration>). The optional
 budget covers each complete send/reply request; constructor default None keeps
 legacy unbounded requests, without a new whole-file/setup/reader budget. All

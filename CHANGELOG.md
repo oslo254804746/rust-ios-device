@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reject H2 connection reuse after transport failure or cancellation with
+  reported wire bytes. Clear retained frame state, preserve empty idle waits
+  and stream-local shutdown behavior, and add internal operation budgets for
+  flow-control waits. See [H2 lifecycle boundaries](docs/validation/h2-lifecycle-2026-10-04.md).
+
 - Guard AFC send/reply ownership and expose optional shared request deadlines
   and local usable state. Refuse reuse after interrupted wire operations;
   preserve complete device Status errors. Attempt file cleanup after read/write

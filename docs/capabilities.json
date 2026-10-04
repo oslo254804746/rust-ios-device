@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-h2-lifecycle-ddd3620",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex partial H2 header/body and unread late frame, native EOF/BrokenPipe, four/sixteen-byte blocked HEADERS/DATA, injected zero/two-byte flow windows with actual peer DATA/partial WINDOW_UPDATE, complete stream reset/END_STREAM reuse, internal zero/overflow/idle deadlines, public XpcClient bootstrap and partial frame cancellation"],
+      "required_state": ["Eight internal tests, one external public XPC consumer and 102 XPC regressions; minimum dproxy runs the eight internal tests. H2 type/deadline setter remains internal and all production callers keep None. Upper XPC consumed-header, sent-call, pending-reply, stream/file guards remain pending. No old-implementation negative control, physical H2/XPC or remote cleanup acceptance. Cooperative timers do not interrupt synchronous work; borrowed transport must not bypass invalid state. L01/L02-L04/Q04 and all device/platform conditions remain; maturity unchanged"],
+      "tested_commit": "ddd3620f058c6c23649a083d209dceb41f0eb472",
+      "date": "2026-10-04",
+      "location": "docs/validation/h2-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "H2 frame I/O guards invalidate after transport errors/native EOF or cancelled byte progress and clear retained H2 state; zero-byte waits and complete stream-local shutdown stay reusable. Internal optional deadline shares HEADERS/DATA/flush/flow-control budget, with legacy None unchanged. Boxed owned operation avoids nested-future stack growth without spawning a task. Existing wire/constants/decoder/builders/error enum/old H2 tests and root/frontend/dependencies unchanged. Two source/test files, nine tests. First full failed with CLI stack overflow; source boxing fix preserves the original test/budget. Final session10807 terminal0: 2159 Rust/13 Python, CLI706/Core1301/public42, zero failures/two existing ignored; complete gates PASS. L01/class4/all31 goal active."
+    },
+    {
       "id": "linux-afc-lifecycle-c4b471d",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

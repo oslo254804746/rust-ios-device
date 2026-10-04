@@ -65,6 +65,15 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+H2 native transport errors keep their existing Io objects and kinds. Internal
+configured expiry retains actual Elapsed in H2Error::Io's get_ref; zero budget
+is source-free TimedOut and an unrepresentable budget is InvalidInput. Existing
+H2-to-XPC adapters retain these typed causes. Rejected reuse returns the existing
+Protocol family, separately from the original operation's error. Complete
+stream-local errors do not globally invalidate H2. This profile does not yet
+clear upper XPC pending replies or guard an entire call; see
+[H2 lifecycle evidence](validation/h2-lifecycle-2026-10-04.md).
+
 AFC request/cleanup expiry retains original Elapsed in AfcError::Io's get_ref
 payload; zero budget and oversized deadline are issued source-free Timeout/
 InvalidInput decisions. Unusable client rejection is Protocol, separate from
