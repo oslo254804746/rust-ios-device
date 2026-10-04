@@ -10,9 +10,14 @@
 crate::redaction::error_debug!(H2Error);
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::time::{error::Elapsed, Instant};
 
 use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPER_MAGIC};
 
@@ -120,7 +125,8 @@ pub const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// operations on one framer and must not run an independent reader against its
 /// stream.
 pub struct H2Framer<S> {
-    stream: S,
+    stream: H2Stream<S>,
+    operation_timeout: Option<Duration>,
     // Accumulated data from stream 1 (clientServer)
     client_server_buf: BytesMut,
     // Accumulated data from stream 3 (serverClient)
@@ -172,6 +178,142 @@ pub struct H2Framer<S> {
     connection_error: Option<String>,
 }
 
+// Track progress at the transport boundary, including read_exact/write_all
+// calls whose local partial frame disappears when their future is dropped.
+struct H2Stream<S> {
+    inner: S,
+    progressed: bool,
+    failed: bool,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for H2Stream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let requested = buf.remaining() > 0;
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.progressed |= buf.filled().len() > before;
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (requested && matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() == before);
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for H2Stream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, bytes);
+        self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (!bytes.is_empty() && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.failed |= matches!(result, Poll::Ready(Err(_)));
+        result
+    }
+}
+
+struct H2Operation<'a, S> {
+    framer: &'a mut H2Framer<S>,
+    deadline: Option<Instant>,
+    completed: bool,
+}
+
+impl<S> H2Operation<'_, S> {
+    fn finish<T>(mut self, result: Result<Result<T, H2Error>, Elapsed>) -> Result<T, H2Error> {
+        match result {
+            Ok(result) => {
+                self.completed = true;
+                if self.framer.stream.failed {
+                    self.framer.invalidate();
+                }
+                result
+            }
+            Err(elapsed) => Err(H2Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                elapsed,
+            ))),
+        }
+    }
+}
+
+impl<S> Drop for H2Operation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.framer.stream.progressed || self.framer.stream.failed) {
+            self.framer.invalidate();
+        }
+    }
+}
+
+fn await_operation<T>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = Result<T, H2Error>>,
+) -> impl Future<Output = Result<Result<T, H2Error>, Elapsed>> {
+    // Box before constructing the async timeout branches. Keeping a copy of
+    // the inline operation in this future amplifies nested service/bootstrap
+    // futures enough to overflow an ordinary CLI thread's stack.
+    let operation = Box::pin(operation);
+    async move {
+        match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        }
+    }
+}
+
+impl<S> H2Framer<S> {
+    /// Whether another operation can use this connection's local framing state.
+    /// Stream-local shutdown may still reject an individual stream.
+    pub fn is_usable(&self) -> bool {
+        self.connection_error.is_none()
+    }
+
+    /// Set one absolute budget per public framer operation, including writes,
+    /// flushes and flow-control reads. None keeps legacy unbounded timing.
+    /// This does not cover connect or a sequence of XPC message operations.
+    // The raw framer is crate-internal. Higher-level owner deadline APIs are
+    // separate from this opt-in configuration; current callers keep None.
+    #[allow(dead_code)]
+    pub fn set_operation_timeout(&mut self, budget: Option<Duration>) {
+        self.operation_timeout = budget;
+    }
+
+    fn invalidate(&mut self) {
+        self.connection_error.get_or_insert_with(|| {
+            "H2 connection is unusable; reconnect before another operation".into()
+        });
+        self.client_server_buf.clear();
+        self.server_client_buf.clear();
+        self.stream_bufs.clear();
+        self.pending_data_frames.clear();
+        self.buffered_bytes = 0;
+        self.pending_window_updates.clear();
+        self.peer_open_streams.clear();
+        self.locally_open_streams.clear();
+        self.outbound_stream_windows.clear();
+        self.locally_finished_streams.clear();
+        self.closed_streams.clear();
+        self.closed_unknown_order.clear();
+        self.reset_streams.clear();
+        self.reset_unknown_order.clear();
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GoAwayState {
     last_stream_id: u32,
@@ -201,7 +343,12 @@ impl DataFrame {
 impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     fn new(stream: S) -> Self {
         Self {
-            stream,
+            stream: H2Stream {
+                inner: stream,
+                progressed: false,
+                failed: false,
+            },
+            operation_timeout: None,
             client_server_buf: BytesMut::new(),
             server_client_buf: BytesMut::new(),
             stream_bufs: HashMap::new(),
@@ -225,6 +372,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             goaway: None,
             connection_error: None,
         }
+    }
+
+    fn begin_operation(&mut self) -> Result<H2Operation<'_, S>, H2Error> {
+        self.ensure_connection_open()?;
+        let deadline = match self.operation_timeout {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "H2 operation budget is zero",
+                )
+                .into());
+            }
+            Some(budget) => Some(Instant::now().checked_add(budget).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "H2 operation deadline is too large",
+                )
+            })?),
+            None => None,
+        };
+        self.stream.progressed = false;
+        self.stream.failed = false;
+        Ok(H2Operation {
+            framer: self,
+            deadline,
+            completed: false,
+        })
     }
 
     /// Perform the HTTP/2 handshake and return a framer ready for use.
@@ -257,7 +431,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Receive and acknowledge the peer SETTINGS after the local preface.
     pub(crate) async fn finish_connect(&mut self) -> Result<(), H2Error> {
-        self.read_until_settings_ack_needed().await
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.read_until_settings_ack_needed(),
+        )
+        .await;
+        operation.finish(result)
     }
 
     async fn read_until_settings_ack_needed(&mut self) -> Result<(), H2Error> {
@@ -329,6 +509,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Read data from any stream, blocking until `n` bytes are available.
     pub async fn read_stream(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.read_stream_inner(stream_id, n),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn read_stream_inner(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
         self.ensure_stream_available(stream_id)?;
         self.ensure_peer_stream_not_reused(stream_id)?;
         self.drain_pending_data_frames();
@@ -429,9 +619,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     fn ensure_connection_open(&self) -> Result<(), H2Error> {
-        self.connection_error
-            .as_ref()
-            .map_or(Ok(()), |message| Err(H2Error::Protocol(message.clone())))
+        if self.is_usable() {
+            Ok(())
+        } else {
+            Err(H2Error::Protocol(
+                self.connection_error.as_ref().unwrap().clone(),
+            ))
+        }
     }
 
     fn connection_protocol_error(&mut self, message: String) -> H2Error {
@@ -795,6 +989,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Read the next DATA frame from any stream, skipping non-DATA frames.
     #[allow(dead_code)]
     pub async fn read_next_data_frame(&mut self) -> Result<DataFrame, H2Error> {
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.read_next_data_frame_inner(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn read_next_data_frame_inner(&mut self) -> Result<DataFrame, H2Error> {
         self.ensure_connection_open()?;
         if let Some(frame) = self.pending_data_frames.pop_front() {
             self.buffered_bytes = self.buffered_bytes.saturating_sub(frame.payload.len());
@@ -874,6 +1078,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// returned once its 24-byte wrapper is buffered so the XPC layer can
     /// consume the body in bounded chunks.
     pub async fn buffer_next_data_stream(&mut self) -> Result<u32, H2Error> {
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.buffer_next_data_stream_inner(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn buffer_next_data_stream_inner(&mut self) -> Result<u32, H2Error> {
         self.ensure_connection_open()?;
         if !self.pending_data_frames.is_empty() {
             self.drain_pending_data_frames();
@@ -1002,7 +1216,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Write data to any stream, opening it with an empty HEADERS frame first.
     pub async fn write_stream(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
-        self.open_stream(stream_id).await?;
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.write_stream_inner(stream_id, data),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn write_stream_inner(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
+        self.open_stream_inner(stream_id).await?;
         self.ensure_stream_available(stream_id)?;
         if data.is_empty() {
             self.stream
@@ -1036,6 +1260,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
     /// Open an arbitrary stream with an empty HEADERS frame if it is not open yet.
     pub async fn open_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.open_stream_inner(stream_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn open_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
         self.ensure_connection_open()?;
         if self.locally_finished_streams.contains(&stream_id) {
             return Err(H2Error::Protocol(format!(
@@ -1082,7 +1316,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// An empty END_STREAM frame consumes no flow-control credit.
     #[cfg(any(feature = "cryptex", test))]
     pub async fn finish_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
-        self.open_stream(stream_id).await?;
+        let operation = self.begin_operation()?;
+        let result = await_operation(
+            operation.deadline,
+            operation.framer.finish_stream_inner(stream_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    #[cfg(any(feature = "cryptex", test))]
+    async fn finish_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
+        self.open_stream_inner(stream_id).await?;
         self.stream
             .write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, stream_id, &[]))
             .await?;
@@ -1487,6 +1732,252 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use super::*;
+
+    fn lifecycle_timeout(error: H2Error) {
+        let H2Error::Io(io) = error else {
+            panic!("deadline must preserve the IO variant")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(crate::classify_error(&io), crate::ErrorClass::Timeout);
+        assert!(io.get_ref().unwrap().is::<Elapsed>());
+    }
+
+    async fn lifecycle_rejects_without_io(framer: &mut H2Framer<tokio::io::DuplexStream>) {
+        assert!(!framer.is_usable());
+        assert!(framer.read_stream(1, 0).await.is_err());
+        assert!(framer.read_next_data_frame().await.is_err());
+        assert!(framer.buffer_next_data_stream().await.is_err());
+        assert!(framer.write_stream(1, b"late").await.is_err());
+        assert!(framer.open_stream(5).await.is_err());
+        assert!(framer.finish_stream(1).await.is_err());
+        assert!(framer.finish_connect().await.is_err());
+        assert!(framer.client_server_buf.is_empty());
+        assert!(framer.server_client_buf.is_empty());
+        assert!(framer.stream_bufs.is_empty());
+        assert!(framer.pending_data_frames.is_empty());
+        assert_eq!(framer.buffered_bytes, 0);
+        assert!(framer.outbound_stream_windows.is_empty());
+        assert!(framer.pending_window_updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_zero_large_and_unpolled_operations_preserve_state() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.set_operation_timeout(Some(Duration::ZERO));
+        for error in [
+            framer.write_stream(1, b"request").await.unwrap_err(),
+            framer.read_stream(1, 1).await.unwrap_err(),
+            framer.open_stream(5).await.unwrap_err(),
+            framer.finish_stream(1).await.unwrap_err(),
+            framer.read_next_data_frame().await.unwrap_err(),
+            framer.buffer_next_data_stream().await.unwrap_err(),
+        ] {
+            let H2Error::Io(io) = error else {
+                panic!("zero budget")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+            assert!(io.get_ref().unwrap().source().is_none());
+        }
+        framer.set_operation_timeout(Some(Duration::MAX));
+        let H2Error::Io(io) = framer.open_stream(1).await.unwrap_err() else {
+            panic!("unrepresentable budget")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+        framer.set_operation_timeout(None);
+        drop(framer.write_stream(1, b"unpolled"));
+        assert!(framer.is_usable());
+        assert!(!framer.client_server_open);
+        assert!(framer.outbound_stream_windows.is_empty());
+        let mut byte = [0];
+        assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+            .await
+            .is_err());
+        peer.write_all(&build_data_frame(1, b"ok")).await.unwrap();
+        assert_eq!(framer.read_stream(1, 2).await.unwrap().as_ref(), b"ok");
+        assert!(framer.is_usable());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_empty_idle_timeout_and_cancellation_allow_the_next_frame() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.set_operation_timeout(Some(Duration::from_millis(5)));
+        lifecycle_timeout(framer.read_next_data_frame().await.unwrap_err());
+        assert!(framer.is_usable());
+        framer.set_operation_timeout(None);
+        assert!(timeout(Duration::from_millis(5), framer.read_stream(1, 2))
+            .await
+            .is_err());
+        assert!(framer.is_usable());
+        peer.write_all(&build_data_frame(1, b"ok")).await.unwrap();
+        assert_eq!(framer.read_stream(1, 2).await.unwrap().as_ref(), b"ok");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_partial_header_and_body_reject_late_frames_after_timeout_or_cancel() {
+        for partial_len in [4, 11] {
+            for caller_cancel in [false, true] {
+                let (client, mut peer) = tokio::io::duplex(128);
+                let mut framer = H2Framer::new(client);
+                framer.append_stream_data(3, b"retained").unwrap();
+                let frame = build_data_frame(1, b"owned-body");
+                peer.write_all(&frame[..partial_len]).await.unwrap();
+                if caller_cancel {
+                    assert!(timeout(Duration::from_millis(5), framer.read_stream(1, 10))
+                        .await
+                        .is_err());
+                } else {
+                    framer.set_operation_timeout(Some(Duration::from_millis(5)));
+                    lifecycle_timeout(framer.read_stream(1, 10).await.unwrap_err());
+                }
+                let late = build_data_frame(1, b"late");
+                peer.write_all(&late).await.unwrap();
+                lifecycle_rejects_without_io(&mut framer).await;
+                // Inspect the owned transport only in this fixture: rejection
+                // did not consume a byte of a later peer frame.
+                let mut unread = vec![0; late.len()];
+                framer.stream.inner.read_exact(&mut unread).await.unwrap();
+                assert_eq!(unread, late);
+                let mut byte = [0];
+                assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+                    .await
+                    .is_err());
+                drop(framer);
+                assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_native_eof_and_write_failure_invalidate_without_flattening_io() {
+        for write in [false, true] {
+            let (client, peer) = tokio::io::duplex(64);
+            let mut framer = H2Framer::new(client);
+            drop(peer);
+            let error = if write {
+                framer.write_stream(1, b"request").await.unwrap_err()
+            } else {
+                framer.read_next_data_frame().await.unwrap_err()
+            };
+            let H2Error::Io(io) = error else {
+                panic!("native IO")
+            };
+            assert_eq!(
+                io.kind(),
+                if write {
+                    std::io::ErrorKind::BrokenPipe
+                } else {
+                    std::io::ErrorKind::UnexpectedEof
+                }
+            );
+            assert_eq!(io.raw_os_error(), None);
+            lifecycle_rejects_without_io(&mut framer).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_backpressured_headers_and_data_require_new_transport() {
+        for data in [false, true] {
+            let capacity = if data { 16 } else { 4 };
+            let (client, mut peer) = tokio::io::duplex(capacity);
+            let mut framer = H2Framer::new(client);
+            if data {
+                framer.open_stream(1).await.unwrap();
+                assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+            }
+            framer.set_operation_timeout(Some(Duration::from_millis(5)));
+            lifecycle_timeout(framer.write_stream(1, &[42; 64]).await.unwrap_err());
+            assert_eq!(framer.outbound_connection_window, DEFAULT_PEER_WINDOW_SIZE);
+            lifecycle_rejects_without_io(&mut framer).await;
+            let expected = if data {
+                build_data_frame(1, &[42; 64])
+            } else {
+                build_headers_frame(1)
+            };
+            let mut prefix = vec![0; capacity];
+            peer.read_exact(&mut prefix).await.unwrap();
+            assert_eq!(prefix, expected[..capacity]);
+            drop(framer);
+            let mut remainder = Vec::new();
+            peer.read_to_end(&mut remainder).await.unwrap();
+            assert!(remainder.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_flow_wait_shares_send_budget_and_clears_queued_business_data() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        framer.outbound_connection_window = 2;
+        framer.outbound_stream_windows.insert(1, 2);
+        framer.set_operation_timeout(Some(Duration::from_millis(30)));
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(framer.write_stream(1, b"four"), async {
+                let first = read_wire_frame(&mut peer).await;
+                assert_eq!(first.payload, b"fo");
+                peer.write_all(&build_data_frame(3, b"business"))
+                    .await
+                    .unwrap();
+                peer.write_all(&build_window_update_frame(0, 2)[..4])
+                    .await
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
+        lifecycle_timeout(result.unwrap_err());
+        assert_eq!(framer.outbound_connection_window, 0);
+        lifecycle_rejects_without_io(&mut framer).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_zero_byte_flow_wait_can_resume_with_credit() {
+        let (client, mut peer) = tokio::io::duplex(128);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        framer.outbound_connection_window = 0;
+        framer.outbound_stream_windows.insert(1, 0);
+        framer.set_operation_timeout(Some(Duration::from_millis(5)));
+        lifecycle_timeout(framer.write_stream(1, b"ok").await.unwrap_err());
+        assert!(framer.is_usable());
+        framer.set_operation_timeout(None);
+        peer.write_all(&build_window_update_frame(0, 2))
+            .await
+            .unwrap();
+        peer.write_all(&build_window_update_frame(1, 2))
+            .await
+            .unwrap();
+        framer.write_stream(1, b"ok").await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.payload, b"ok");
+        assert!(framer.is_usable());
+        assert_eq!(framer.outbound_connection_window, 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_h2_complete_stream_shutdown_preserves_other_stream_operations() {
+        let (client, mut peer) = tokio::io::duplex(256);
+        let mut framer = H2Framer::new(client);
+        framer.open_stream(1).await.unwrap();
+        read_wire_frame(&mut peer).await;
+        peer.write_all(&build_frame(FRAME_RST_STREAM, 0, 1, &8u32.to_be_bytes()))
+            .await
+            .unwrap();
+        assert!(framer.read_stream(1, 1).await.is_err());
+        assert!(framer.is_usable());
+        peer.write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, 3, b"done"))
+            .await
+            .unwrap();
+        assert_eq!(framer.read_stream(3, 4).await.unwrap().as_ref(), b"done");
+        assert!(framer.read_stream(3, 1).await.is_err());
+        assert!(framer.is_usable());
+        framer.write_stream(5, b"new").await.unwrap();
+        assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
+        assert_eq!(read_wire_frame(&mut peer).await.payload, b"new");
+    }
 
     #[cfg(target_pointer_width = "64")]
     #[tokio::test]

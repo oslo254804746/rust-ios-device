@@ -8,6 +8,84 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "tunnel")]
+#[tokio::test]
+async fn lifecycle_h2_public_xpc_partial_frame_cancellation_rejects_reuse() {
+    use ios_core::{encode_xpc_message, xpc_message_flags, XpcClient, XpcError};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    fn family(error: &XpcError) -> &str {
+        match error {
+            XpcError::Io(_) => "io",
+            XpcError::NotConnected => "not_connected",
+            XpcError::ServiceNotFound(_) => "missing",
+            XpcError::Tls(_) => "tls",
+        }
+    }
+    async fn read_frame(peer: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        peer.read_exact(&mut header).await.unwrap();
+        let size = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+        let mut body = vec![0; size];
+        peer.read_exact(&mut body).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            body,
+        )
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let (client, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(XpcClient::connect_stream(stream), async {
+            let mut bootstrap = [0; 58];
+            peer.read_exact(&mut bootstrap).await.unwrap();
+            assert_eq!(&bootstrap[..24], b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+            peer.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+            assert_eq!(read_frame(&mut peer).await, (4, 0, vec![]));
+            for (index, stream_id) in [1u32, 1, 3].into_iter().enumerate() {
+                if index < 2 {
+                    let opened_stream = if index == 0 { 1 } else { 3 };
+                    assert_eq!(read_frame(&mut peer).await, (1, opened_stream, vec![]));
+                }
+                let (kind, sent_stream, _) = read_frame(&mut peer).await;
+                assert_eq!((kind, sent_stream), (0, stream_id));
+                let reply = encode_xpc_message(&XpcMessage {
+                    flags: xpc_message_flags::ALWAYS_SET,
+                    msg_id: 0,
+                    body: None,
+                })
+                .unwrap();
+                let mut frame = vec![0, 0, reply.len() as u8, 0, 0];
+                frame.extend_from_slice(&stream_id.to_be_bytes());
+                frame.extend_from_slice(&reply);
+                peer.write_all(&frame).await.unwrap();
+            }
+        })
+    })
+    .await
+    .unwrap();
+    let mut client = client.unwrap();
+    peer.write_all(&[0, 0, 1, 0]).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(5), client.recv())
+            .await
+            .is_err()
+    );
+    let error = client.recv().await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Protocol
+    );
+    assert!(client
+        .send(XpcValue::Dictionary(Default::default()))
+        .await
+        .is_err());
+    drop(client);
+    let mut byte = [0];
+    assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+}
+
 #[cfg(feature = "instruments")]
 #[test]
 fn lifecycle_fps_public_iterator_borrows_chunk_and_copies_timebase() {
