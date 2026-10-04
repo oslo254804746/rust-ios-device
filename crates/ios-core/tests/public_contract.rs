@@ -1989,6 +1989,51 @@ async fn public_discovery_deadlines_keep_native_sources_and_exhaustive_families(
     assert!(has_elapsed(&error));
 }
 
+#[cfg(feature = "companion")]
+#[tokio::test]
+async fn lifecycle_companion_public_shared_state_budget_send_and_exhaustive_families() {
+    use ios_core::companion::{CompanionError, CompanionProxyClient};
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    fn family(error: &CompanionError) -> &'static str {
+        match error {
+            CompanionError::Io(_) => "io",
+            CompanionError::Plist(_) => "plist",
+            CompanionError::Protocol(_) => "protocol",
+            CompanionError::Timeout(_) => "timeout",
+        }
+    }
+    fn send<T: Send>(_: &T) {}
+    for budget in [Duration::ZERO, Duration::MAX] {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = CompanionProxyClient::with_timeout(stream, budget);
+        let query: fn(&CompanionProxyClient<tokio::io::DuplexStream>) -> bool =
+            CompanionProxyClient::is_usable;
+        assert!(query(&client));
+        assert_eq!(client.timeout(), budget);
+        let request = client.list();
+        send(&request);
+        let error = request.await.unwrap_err();
+        assert_eq!(
+            family(&error),
+            if budget.is_zero() { "timeout" } else { "io" }
+        );
+        assert!(client.is_usable());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.read_u8())
+                .await
+                .is_err()
+        );
+    }
+    let (stream, _peer) = tokio::io::duplex(4096);
+    let mut client = CompanionProxyClient::with_timeout(stream, Duration::from_millis(5));
+    let error = client.list().await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert!(!client.is_usable());
+    assert_eq!(family(&client.list().await.unwrap_err()), "protocol");
+}
+
 #[cfg(feature = "notificationproxy")]
 #[test]
 fn lifecycle_notification_public_budget_state_send_and_exhaustive_families() {
