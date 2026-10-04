@@ -111,8 +111,9 @@ impl RunTestCmd {
             )
             .await;
             let mut session = match startup {
-                Err(_) => {
-                    let error = anyhow::anyhow!("timed out waiting for XCTest startup");
+                Err(elapsed) => {
+                    let error =
+                        xctest_wait_timeout(elapsed, "timed out waiting for XCTest startup");
                     write_junit_diagnostic(
                         self.junit_output.as_deref(),
                         &incomplete_summary(false),
@@ -137,8 +138,9 @@ impl RunTestCmd {
             )
             .await;
             let summary = match result_wait {
-                Err(_) => {
-                    let error = anyhow::anyhow!("timed out waiting for XCTest results");
+                Err(elapsed) => {
+                    let error =
+                        xctest_wait_timeout(elapsed, "timed out waiting for XCTest results");
                     write_junit_diagnostic(
                         self.junit_output.as_deref(),
                         &incomplete_summary(true),
@@ -875,8 +877,34 @@ where
     }
 }
 
+fn xctest_wait_timeout(elapsed: tokio::time::error::Elapsed, phase: &'static str) -> anyhow::Error {
+    anyhow::Error::new(elapsed).context(phase)
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stream_contract_xctest_waits_preserve_actual_elapsed() {
+        for phase in [
+            "timed out waiting for XCTest startup",
+            "timed out waiting for XCTest results",
+        ] {
+            let elapsed =
+                tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+                    .await
+                    .unwrap_err();
+            let error = super::xctest_wait_timeout(elapsed, phase);
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Timeout
+            );
+            assert!(error
+                .chain()
+                .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+            assert_eq!(error.to_string(), phase);
+        }
+    }
+
     #[tokio::test]
     async fn cli_native_sources_testmanager_stage_keeps_actual_elapsed() {
         let error = super::run_stage(

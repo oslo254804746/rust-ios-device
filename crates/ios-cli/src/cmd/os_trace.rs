@@ -36,10 +36,16 @@ fn finish_termination(termination: RunTermination, timeout: Option<u64>) -> Resu
     match termination {
         RunTermination::Cancelled => Ok(()),
         RunTermination::TimedOut => match timeout {
-            Some(seconds) => Err(anyhow::anyhow!(
-                "OS trace operation timed out after {seconds} seconds"
-            )),
-            None => Err(anyhow::anyhow!("OS trace operation timed out")),
+            Some(seconds) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("OS trace operation timed out after {seconds} seconds"),
+            )
+            .into()),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "OS trace operation timed out",
+            )
+            .into()),
         },
     }
 }
@@ -62,13 +68,19 @@ where
             return Ok(Err(RunTermination::TimedOut));
         }
         tokio::select! {
-            _ = stop.as_mut() => Ok(Err(RunTermination::Cancelled)),
+            signal = stop.as_mut() => {
+                signal.context("failed to wait for Ctrl+C")?;
+                Ok(Err(RunTermination::Cancelled))
+            },
             _ = tokio::time::sleep_until(deadline) => Ok(Err(RunTermination::TimedOut)),
             result = future => result.map(Ok).map_err(Into::into),
         }
     } else {
         tokio::select! {
-            _ = stop.as_mut() => Ok(Err(RunTermination::Cancelled)),
+            signal = stop.as_mut() => {
+                signal.context("failed to wait for Ctrl+C")?;
+                Ok(Err(RunTermination::Cancelled))
+            },
             result = future => result.map(Ok).map_err(Into::into),
         }
     }
@@ -715,6 +727,47 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn stream_contract_os_trace_signal_failure_is_not_a_clean_stop() {
+        for deadline in [
+            None,
+            Some(tokio::time::Instant::now() + Duration::from_secs(1)),
+        ] {
+            let native = std::fs::File::open("").unwrap_err();
+            let code = native.raw_os_error();
+            let mut signal: StopSignal = Box::pin(std::future::ready(Err(native)));
+            let error = wait_for_trace_stage(
+                std::future::pending::<std::io::Result<()>>(),
+                &mut signal,
+                deadline,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::NotFound
+            );
+            let io = error.downcast_ref::<std::io::Error>().unwrap();
+            assert_eq!(io.raw_os_error(), code);
+            assert_eq!(error.to_string(), "failed to wait for Ctrl+C");
+        }
+    }
+
+    #[test]
+    fn stream_contract_os_trace_issued_timeout_is_typed_without_native_cause() {
+        for budget in [None, Some(3)] {
+            let error = finish_termination(RunTermination::TimedOut, budget).unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Timeout
+            );
+            let io = error.downcast_ref::<std::io::Error>().unwrap();
+            assert!(std::error::Error::source(io).is_none());
+            assert_eq!(io.raw_os_error(), None);
+        }
+        assert!(finish_termination(RunTermination::Cancelled, Some(3)).is_ok());
+    }
 
     #[tokio::test]
     async fn native_diagnostic_os_trace_preflight_preserves_native_input() {

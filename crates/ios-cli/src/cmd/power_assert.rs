@@ -61,7 +61,7 @@ impl PowerAssertCmd {
         }
 
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            signal = tokio::signal::ctrl_c() => { signal?; }
             _ = tokio::time::sleep(std::time::Duration::from_secs(self.timeout)) => {}
         }
 

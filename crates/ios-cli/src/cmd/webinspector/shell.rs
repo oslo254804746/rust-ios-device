@@ -24,7 +24,7 @@ pub(super) async fn run_js_shell_loop<S: tokio::io::AsyncRead + tokio::io::Async
     let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
 
     loop {
-        if interactive {
+        if interactive && !json_output {
             crate::output::out!("> ");
             std::io::stdout().flush()?;
         }
@@ -37,7 +37,7 @@ pub(super) async fn run_js_shell_loop<S: tokio::io::AsyncRead + tokio::io::Async
             result = read_bounded_shell_line(&mut reader, &mut line) => result?
         };
         if bytes == 0 {
-            if interactive {
+            if interactive && !json_output {
                 crate::output::outln!();
             }
             return Ok(());

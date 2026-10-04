@@ -371,7 +371,10 @@ impl CrashCmd {
                 let mut reports = Box::pin(client.watch_reports(Some(&pattern), options));
                 loop {
                     tokio::select! {
-                        _ = tokio::signal::ctrl_c() => break,
+                        signal = tokio::signal::ctrl_c() => {
+                            signal?;
+                            break;
+                        },
                         item = reports.next() => match item {
                             Some(Ok(report)) => print_parsed_report(&report, json)?,
                             Some(Err(error)) => return Err(error.into()),
@@ -467,7 +470,7 @@ async fn connect_crash_device(
         Some(deadline) => match tokio::time::timeout_at(deadline, device.product_version()).await {
             Ok(Ok(version)) => version.major >= 17,
             Ok(Err(error)) => return Err(error.into()),
-            Err(_) => return Err(anyhow::anyhow!("crash service connection timed out")),
+            Err(elapsed) => return Err(crash_connection_timeout(elapsed)),
         },
         None => device.product_version().await?.major >= 17,
     };
@@ -492,13 +495,15 @@ async fn connect_with_deadline(
         Some(deadline) => {
             let device = tokio::time::timeout_at(deadline, connect(udid, options))
                 .await
-                .map_err(|error| {
-                    anyhow::Error::new(error).context("crash service connection timed out")
-                })??;
+                .map_err(crash_connection_timeout)??;
             Ok(device)
         }
         None => Ok(connect(udid, options).await?),
     }
+}
+
+fn crash_connection_timeout(elapsed: tokio::time::error::Elapsed) -> anyhow::Error {
+    anyhow::Error::new(elapsed).context("crash service connection timed out")
 }
 
 async fn connect_crash_service(
@@ -693,6 +698,21 @@ fn reports_to_json(reports: &[ios_core::crashreport::CrashReportEntry]) -> serde
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stream_contract_crash_version_deadline_preserves_actual_elapsed() {
+        let elapsed = tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        let error = super::crash_connection_timeout(elapsed);
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+    }
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::Parser;

@@ -923,8 +923,7 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
         .await
         .map_err(|e| anyhow::Error::new(e).context("core profile start error"))?;
     let mach_time_info = session.mach_time_info().clone();
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<std::result::Result<CoreProfileEvent, String>>();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ProfileEventResult>();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let reader = tokio::spawn(async move {
         let mut stop_rx = stop_rx;
@@ -939,7 +938,7 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
                             }
                         }
                         Err(error) => {
-                            let _ = event_tx.send(Err(error.to_string()));
+                            let _ = event_tx.send(Err(error));
                             break;
                         }
                     }
@@ -972,7 +971,7 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
             Ok(Some(Err(error))) => {
                 let _ = stop_tx.send(());
                 let _ = reader.await;
-                return Err(anyhow::anyhow!("core profile event error: {error}"));
+                return Err(profile_event_failure(error));
             }
             Ok(None) => {
                 let _ = stop_tx.send(());
@@ -1029,6 +1028,13 @@ async fn run_fps(udid: String, count: u64, window_ms: u64, json_output: bool) ->
     let _ = stop_tx.send(());
     let _ = reader.await;
     Ok(())
+}
+
+type ProfileEventResult =
+    std::result::Result<ios_core::instruments::CoreProfileEvent, ios_core::dtx::DtxError>;
+
+fn profile_event_failure(error: ios_core::dtx::DtxError) -> anyhow::Error {
+    anyhow::Error::new(error).context("core profile event error")
 }
 
 async fn run_kdebug(
@@ -1396,6 +1402,38 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn stream_contract_fps_channel_retains_original_decoder_error() {
+        let (mut stream, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let native = ios_core::dtx::read_dtx_frame(&mut stream)
+            .await
+            .unwrap_err();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<ProfileEventResult>();
+        sender.send(Err(native)).unwrap();
+        drop(sender);
+        let error = profile_event_failure(receiver.recv().await.unwrap().unwrap_err());
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Io
+        );
+        let dtx = error.downcast_ref::<ios_core::dtx::DtxError>().unwrap();
+        let ios_core::dtx::DtxError::Io(io) = dtx else {
+            panic!("native decoder error flattened")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+        let envelope = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "instruments",
+            &error,
+        )
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        assert_eq!(envelope["error"]["class"], "io");
+        assert_eq!(envelope["error"]["effects"], "unknown");
+        assert!(receiver.recv().await.is_none());
+    }
 
     #[test]
     fn diagnostic_sources_cpu_json_rejects_nonfinite_before_writing_row() {

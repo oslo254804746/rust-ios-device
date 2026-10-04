@@ -116,7 +116,10 @@ impl NotificationCmd {
                             }
                         }
                         ios_core::notificationproxy::NotificationProxyEvent::ProxyDeath => {
-                            anyhow::bail!("notification proxy closed before notification arrived");
+                            return Err(anyhow::Error::new(
+                                ios_core::notificationproxy::NotificationProxyError::ProxyDeath,
+                            )
+                            .context("notification proxy closed before notification arrived"));
                         }
                     }
                 }
@@ -144,35 +147,24 @@ impl NotificationCmd {
                 let deadline = timeout.map(|secs| Instant::now() + Duration::from_secs(secs));
                 let mut received = 0u64;
                 loop {
-                    let event = match deadline {
+                    let remaining = match deadline {
                         Some(deadline) => {
                             let remaining = deadline.saturating_duration_since(Instant::now());
                             if remaining.is_zero() {
                                 break;
                             }
-                            tokio::time::timeout(remaining, client.recv_event())
-                                .await
-                                .map_err(|_| {
-                                    anyhow::anyhow!("timed out waiting for notification")
-                                })??
+                            Some(remaining)
                         }
-                        None => client.recv_event().await?,
+                        None => None,
                     };
-
-                    match event {
-                        NotificationEvent::Notification(name) => {
-                            received += 1;
-                            crate::output::outln!(
-                                "{}",
-                                render_notification_output(&name, json, Some(received))?
-                            );
-                            if count.is_some_and(|limit| received >= limit) {
-                                break;
-                            }
-                        }
-                        NotificationEvent::ProxyDeath => {
-                            return Err(anyhow::anyhow!("notification proxy closed"));
-                        }
+                    let name = next_stream_notification(&mut client, remaining).await?;
+                    received += 1;
+                    crate::output::outln!(
+                        "{}",
+                        render_notification_output(&name, json, Some(received))?
+                    );
+                    if count.is_some_and(|limit| received >= limit) {
+                        break;
                     }
                 }
             }
@@ -193,6 +185,30 @@ impl NotificationCmd {
 
         client.shutdown().await.ok();
         Ok(())
+    }
+}
+
+async fn next_stream_notification<S>(
+    client: &mut ios_core::notificationproxy::NotificationProxyClient<S>,
+    remaining: Option<Duration>,
+) -> Result<String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let event = match remaining {
+        Some(remaining) => tokio::time::timeout(remaining, client.recv_event())
+            .await
+            .map_err(|elapsed| {
+                anyhow::Error::new(elapsed).context("timed out waiting for notification")
+            })??,
+        None => client.recv_event().await?,
+    };
+    match event {
+        NotificationEvent::Notification(name) => Ok(name),
+        NotificationEvent::ProxyDeath => Err(anyhow::Error::new(
+            ios_core::notificationproxy::NotificationProxyError::ProxyDeath,
+        )
+        .context("notification proxy closed")),
     }
 }
 
@@ -223,6 +239,76 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[tokio::test]
+    async fn stream_contract_notifications_preserve_record_death_and_deadline() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::notificationproxy::NotificationProxyClient::new(stream);
+        let name = "owned-private-notification\n\"";
+        for (command, name) in [("RelayNotification", Some(name)), ("ProxyDeath", None)] {
+            let mut reply = plist::Dictionary::new();
+            reply.insert("Command".into(), plist::Value::String(command.into()));
+            if let Some(name) = name {
+                reply.insert("Name".into(), plist::Value::String(name.into()));
+            }
+            let mut payload = Vec::new();
+            plist::to_writer_xml(&mut payload, &reply).unwrap();
+            peer.write_all(&(payload.len() as u32).to_be_bytes())
+                .await
+                .unwrap();
+            peer.write_all(&payload).await.unwrap();
+        }
+        let received = next_stream_notification(&mut client, Some(Duration::from_secs(1)))
+            .await
+            .unwrap();
+        assert_eq!(received, name);
+        let record = render_notification_output(&received, true, Some(1)).unwrap();
+        assert!(!record.contains('\n'));
+        let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(record["notification"], name);
+        let error = next_stream_notification(&mut client, Some(Duration::from_secs(1)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Disconnected
+        );
+        assert!(matches!(
+            error.downcast_ref::<ios_core::notificationproxy::NotificationProxyError>(),
+            Some(ios_core::notificationproxy::NotificationProxyError::ProxyDeath)
+        ));
+        let envelope = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "notify",
+            &error,
+        )
+        .unwrap();
+        assert!(!envelope.contains("owned-private"));
+        let elapsed = next_stream_notification(&mut client, Some(Duration::ZERO))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(elapsed.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(elapsed
+            .chain()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+        drop(peer);
+        let eof = next_stream_notification(&mut client, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(eof.as_ref()),
+            ios_core::ErrorClass::Io
+        );
+        let io = eof
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+        assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
 
     #[derive(Parser)]
     struct TestCli {

@@ -314,10 +314,16 @@ fn finish_wait(operation: &str, result: WaitResult, timeout: Option<u64>) -> Res
     match result {
         WaitResult::Cancelled => Ok(()),
         WaitResult::TimedOut => match timeout {
-            Some(seconds) => Err(anyhow::anyhow!(
-                "{operation} timed out after {seconds} seconds"
-            )),
-            None => Err(anyhow::anyhow!("{operation} timed out")),
+            Some(seconds) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{operation} timed out after {seconds} seconds"),
+            )
+            .into()),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{operation} timed out"),
+            )
+            .into()),
         },
     }
 }
@@ -335,6 +341,21 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn stream_contract_companion_issued_timeout_is_typed_without_native_cause() {
+        for budget in [None, Some(3)] {
+            let error = finish_wait("owned operation", WaitResult::TimedOut, budget).unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Timeout
+            );
+            let io = error.downcast_ref::<std::io::Error>().unwrap();
+            assert!(std::error::Error::source(io).is_none());
+            assert_eq!(io.raw_os_error(), None);
+        }
+        assert!(finish_wait("owned operation", WaitResult::Cancelled, Some(3)).is_ok());
+    }
 
     #[derive(Parser)]
     struct TestCli {
