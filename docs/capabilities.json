@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-notification-cli-cleanup-9b2c488",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex post/observe and exact Shutdown; returned permission primary plus native BrokenPipe/issued short cleanup expiry; success plus native/actual default5s expiry; partial read/ProxyDeath no-write; owned future cancellation and peer EOF; safe v1 error source/category checks"],
+      "required_state": ["Two CLI source/test files; nine new helper-level owned fixtures, CLI notification17/minimum check/stack5/strict gates PASS. Command body moved into directly owned Box, original command tokens/setup/parameters/output and stream helper/renderer/tests preserved after fmt trailing-pattern-comma normalization. No device CLI/output fault/OS signal/old-source negative control/benchmark/platform acceptance or maturity upgrade"],
+      "tested_commit": "9b2c488ec9052d2899de91a68622b00be207446c",
+      "date": "2026-10-04",
+      "location": "docs/validation/notification-cli-cleanup-2026-10-04.md",
+      "result": "PASS",
+      "scope": "CLI attempts bounded Shutdown after returned failures on usable streams, reports cleanup error after success and retains dual originals with primary source/category/static Display/category-only Debug. Invalid/ProxyDeath state skips unsafe cleanup and drops transport; caller cancellation adds no detached close. Core/API/protocol/dependencies/refs unchanged. Full78503 terminal0: 2238 Rust/13 Python, CLI715/Core1366/public47, zero failures/two existing ignored and every section11 split gate PASS. Setup/total/signal owners and all31 scope remain active;22 device NOT_RUN."
+    },
+    {
       "id": "linux-notification-lifecycle-db73243",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

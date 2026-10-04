@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2 与 NotificationProxy 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy 与 notification CLI cleanup 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5797,3 +5797,55 @@ borrowedrawsessions/setup/multi-requesttotals/longstreams/manualpairing/blocking
 L02–L04/Q04及第五至九类继续。Capability118正文/maturity/history不改，只增hostevidence；
 22device NOT_RUN，Chromium/installed3.9/3.13未重跑；平台/设备/credentials/协议条件保留。
 无设备/Apple操作、refs修改、push/publication/historyrewrite。
+
+### 大类 4：L01 notification CLI returned-error cleanup 交付（2026-10-04）
+
+受测实现 `9b2c488ec9052d2899de91a68622b00be207446c`，基线
+`a8917656824347914d9affc51b42592f97071f03`；两个CLI源码/测试文件，450 insertions/
+93 deletions。Linux x86_64、Rust1.97.1/MSRV1.80.1、项目Python3.12.13。
+专题：[notification CLI cleanup gate](validation/notification-cli-cleanup-2026-10-04.md)，
+对应[lifecycle](lifecycle-contract.md)/[兼容](public-contract.md)/[errors](error-contract.md)。
+
+Command body直接owned Box完成后持有Result再cleanup；仍usable的连接在returned success/
+failure（含output/render）后尝试core独立5s Shutdown。Invalid/ProxyDeath不发unsafe
+control，只在commandDrop释放transport；未尝试不制造secondary error也不代表remote
+release。成功后cleanup失败现在报告，旧行为suppressed；已产生output/device effects
+不回滚/不授权retry。Single primary原对象保持；dual保留两个原error，private aggregate
+source/category跟随primary，Display静态/Debug仅classes；无task/queue/asyncDrop。
+Setup/commandtimeouts/signal、parameters/help/事件选择/成功输出及core APIs/protocol保持。
+
+九new helper-owned tests，固定narrow63198 terminal0九PASS；pipeline85220 terminal0
+minimumCLI all-target/no-default check、notificationCLI17、旧16KiB stack5、strictClippy/
+fmt PASS。覆盖exactpost+Shutdown+DropEOF、primary permission/context不丢、success+
+nativeBrokenPipe、dualnative/shortissuedcleanup expiry（primaryclass/Elapsed分支）、
+actualdefault5s success-cleanup failure（6s fixturebound）、partialread/ProxyDeath no late
+write、ownedfuture取消DropEOF、安全v1/Display/Debug。其他wire等待1s有界；不是实际
+deviceCLI/stdoutfault/OSCtrlC验收，无negativecontrol/benchmark/platform证据。
+Sourceaudit旧match tokens/setup/parameters/output在fmt空白及唯一tuple-pattern trailing
+comma归一后相等，旧streamhelper/renderer/tests字节相等；core/root/APIs/deps/refs未改。
+首narrow75043 terminal101为测试E0599误用ErrorClass名，改existingPermissionDenied及
+v1 error.class后通过；temporaryaudit的fmtcomma归一修正未改产品source/断言。
+
+第11节 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session78503 terminal0，
+validation/full PASS：2238Rust/13Python、0FAIL/two existing ignored，CLI715/Core1366/
+public47。Rust/Python拆分；workspacefmt/check/strictClippy/MSRV、66features/fourgroups、
+7+7docs/3snips、CABI、3.12wheel/sdist/install、53tooling/118help/38raw/5host/15CLI/
+3backup合同均PASS。Frozen source SHA256
+`e59de42bd588c30c6507c977745398e5ebc9636179a17af2d490218467b9d3e9`；ios debug SHA256
+`56e8c8ae91f7b9c4887aa647a4ddc5268b80562722c3e79b937ed0703971377d`。
+Source冻结至full/commit；narrow期间约4.0GiB/full后2.6GiB，无clean/storagefailure。
+日志/audits `/tmp/ios-l01-notification-cli-cleanup-`，结果持久化本节/专题。
+
+八文档收尾审计PASS：七Markdown/295 local links、testedcommit/source/binary、full/
+narrow/preparation/只读refs一致；Capability118源目录/actualCLIhelp PASS，正文/
+maturity/history保持仅追加hostevidence。全部31任务/subtasks/historyprefix精确保持，
+仅L01overview行改动及末尾交付追加；文档期间产品source不变。
+
+全31任务/subtasks/history保留，总览9完成/11未开始/11进行中或待验收/条件不变。
+L01/class4/overallgoal active；下一notification CLI checkedsetup/finite totals/signal，
+随后其他L01协议/cleanup/borrowedrawsessions/multi-requesttotals/longstreams/manualpairing/
+blockingresources、L02–L04/Q04及第五至九类。Capability118正文/maturity/history保持，
+仅追加hostevidence；22device NOT_RUN，Chromium/installed3.9/3.13未重跑，真实设备/
+平台/credentials/协议条件保持。无设备/Apple操作/refs修改/subagents/push/publication/
+historyrewrite。

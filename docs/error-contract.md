@@ -73,9 +73,20 @@ Native/frame decoding errors keep their original family/cause and invalidate;
 complete business-shape errors keep reuse. ProxyDeath preserves its event/error
 and disconnected category while closing state; later invalid/closed operations
 return Protocol. Successful Shutdown is a bounded write/flush without ACK.
-No core cleanup aggregate or automatic close is added. CLI shutdown suppression
-and error-branch cleanup remain independent pending work. See
+No core cleanup aggregate or automatic close is added. The subsequent CLI owner
+below supplies returned-error cleanup and primary retention. See
 [notification lifecycle evidence](validation/notification-lifecycle-2026-10-04.md).
+
+Notification CLI now retains primary and cleanup in a private aggregate whose
+source/category follows the primary. Cleanup keeps native error or actual
+Elapsed separately; it cannot override earlier permission/protocol/output
+failure. Single failure retains its original object. Unexpected cleanup error
+after success is returned, including actual default five-second expiry. Display
+is static and Debug exposes only categories; safe v1 output retains its fields.
+Already invalid/ProxyDeath transport skips cleanup rather than manufacturing a
+secondary error or sending late control bytes. Drop closes owned transport;
+setup/total/signal owners and remote cleanup remain separate conditions. See
+[notification CLI cleanup evidence](validation/notification-cli-cleanup-2026-10-04.md).
 
 MobileBackup2's current operation owner retains both failures through
 Mobilebackup2Error::cleanup_failure() and its opaque SessionCleanupFailure.

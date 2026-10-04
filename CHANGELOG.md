@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Attempt bounded notification shutdown after returned command failures on a
+  usable connection. Report cleanup failure after success and retain both causes
+  on dual failure, with the primary category preserved. See
+  [notification CLI cleanup migration](docs/validation/notification-cli-cleanup-2026-10-04.md).
+
 - Guard NotificationProxy partial frames across cancellation, add optional
   operation budgets, and include subscription writes in wait deadlines. Preserve
   empty idle reuse and close local state after ProxyDeath or bounded Shutdown.

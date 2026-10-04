@@ -45,8 +45,8 @@ operations return existing Protocol. No ACK, automatic close or async Drop is
 added; the transport remains owned until Drop. Existing five error variants,
 both event enums, serde envelopes/typed decoder/incoming4MiB limit and frontend
 production remain. Outgoing length now checks u32 conversion before writing;
-that extreme allocation boundary is source-reviewed only. CLI cleanup/totals
-remain a separate owner. See
+that extreme allocation boundary is source-reviewed only. CLI totals/signal
+ownership remains separate; bounded cleanup is covered below. See
 [notification host acceptance and migration](validation/notification-lifecycle-2026-10-04.md).
 
 Mobilebackup2Client adds is_usable and set_operation_timeout(Option<Duration>).
@@ -595,6 +595,18 @@ The [error contract](error-contract.md) records category snapshots, changed
 contexts, remaining legacy string outcomes and host versus device scope.
 
 ## CLI and JSON
+
+Notification commands now attempt Shutdown after a returned operation/output
+failure when the core client remains usable. Partial framing/native failure and
+ProxyDeath skip that unsafe write; the command drops the transport. Unexpected
+cleanup failure after success now fails the command, even if success output is
+already written. Previously error branches skipped cleanup and final success
+ignored its result. Dual failure owns both original errors in a private CLI
+aggregate; source/category follows the primary, and automatic Display/Debug
+never formats either cause. Existing JSON fields, help, parameters, event
+selection and success bytes remain. Whole-future cancellation drops owned
+transport without asynchronous cleanup. Setup/total/signal ownership is still
+pending; see [cleanup host acceptance](validation/notification-cli-cleanup-2026-10-04.md).
 
 Keep canonical command/flag names, aliases, defaults, selection and confirmation
 behavior unless an explicit migration says otherwise. Adding an opt-in command

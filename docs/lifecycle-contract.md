@@ -10,7 +10,8 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `79f750e78b4550909c440fc4697b592101878935`; DeviceLink message/handshake ownership is
 `3db5c1835ad73bf881c1c6a334674bc566cfe641`; MobileBackup2 operation ownership is
 `d2828b802e697ff4d1069744e89d7a1eb31214c7`; NotificationProxy framed-event ownership is
-`db732437a945c75096d05f67b9e2063838756c97`. This contract records implemented profiles and
+`db732437a945c75096d05f67b9e2063838756c97`; notification CLI cleanup ownership is
+`9b2c488ec9052d2899de91a68622b00be207446c`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -266,8 +267,18 @@ independent five-second write/flush cap with shorter configured clamp and safe
 MAX handling; success closes reuse, including repeat shutdown. Empty blocked
 shutdown may remain usable; partial aborted shutdown requires a new transport.
 No queue/task/automatic cleanup/ACK/async Drop is added; opaque buffers stay until
-Drop. CLI overall budgets, signal ownership and primary/cleanup retention remain
-independent work. See [notification fixtures](validation/notification-lifecycle-2026-10-04.md).
+Drop. CLI overall budgets and signal ownership remain independent work. See
+[notification fixtures](validation/notification-lifecycle-2026-10-04.md).
+
+Notification CLI now awaits the entire command body before deciding cleanup,
+including returned output/operation errors. A still usable stream attempts the
+core five-second Shutdown; an invalid or ProxyDeath stream is dropped without
+unsafe control writes. Cleanup failure after success is returned. Dual failure
+keeps both originals under a private CLI aggregate, with primary source/category
+and static Display/category-only Debug. Boxing the command body preserves stack
+bounds without a task/queue. Whole-future cancellation still drops transport
+without asynchronous cleanup. This does not change setup, command timers or
+signal handling. See [CLI cleanup fixtures](validation/notification-cli-cleanup-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
