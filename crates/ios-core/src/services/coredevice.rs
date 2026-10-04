@@ -278,19 +278,22 @@ pub(crate) fn stream_invoke<'a>(
     let request = build_stream_request(device_identifier, feature_identifier, input);
 
     async_stream::try_stream! {
-        let mut messages = Box::pin(client.stream_invoke(request));
+        let mut messages = Box::pin(client.stream_invoke_mapped(request, crate::xpc::message::flags::WANTING_REPLY, |message| {
+            if message.body.as_ref().map_or(true, |body| {
+                matches!(body, XpcValue::Dictionary(values) if values.is_empty())
+            }) {
+                return Ok(None);
+            }
+            let status = parse_stream_status(message)?;
+            let finished = matches!(status, StreamStatus::Finished);
+            Ok(Some((status, finished)))
+        }));
         while let Some(message) = messages.next().await {
-            let message = message?;
             // RemoteXPC can interleave bodyless acknowledgements (or an empty
             // dictionary control message) before the side-channel status. The
             // reference receive_response loop discards these frames; they are
             // transport control, not an unknown stream status.
-            if message.body.as_ref().map_or(true, |body| {
-                matches!(body, XpcValue::Dictionary(values) if values.is_empty())
-            }) {
-                continue;
-            }
-            match parse_stream_status(message)? {
+            match message? {
                 StreamStatus::Elements(elements) => {
                     for element in elements {
                         yield element;

@@ -10,6 +10,150 @@ use ios_core::{
 
 #[cfg(feature = "tunnel")]
 #[tokio::test]
+async fn lifecycle_xpc_public_deadlines_state_and_exhaustive_error_contract() {
+    use ios_core::{encode_xpc_message, xpc_message_flags, XpcClient, XpcError};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    fn family(error: &XpcError) -> &str {
+        match error {
+            XpcError::Io(_) => "io",
+            XpcError::NotConnected => "not_connected",
+            XpcError::ServiceNotFound(_) => "missing",
+            XpcError::Tls(_) => "tls",
+        }
+    }
+    async fn frame(peer: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        peer.read_exact(&mut header).await.unwrap();
+        let size = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+        assert!(size <= 16_384);
+        let mut body = vec![0; size];
+        peer.read_exact(&mut body).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            body,
+        )
+    }
+    fn response(id: u64, stream: u32) -> Vec<u8> {
+        let message = encode_xpc_message(&XpcMessage {
+            flags: xpc_message_flags::ALWAYS_SET,
+            msg_id: id,
+            body: None,
+        })
+        .unwrap();
+        let mut bytes = vec![0, 0, message.len() as u8, 0, 0];
+        bytes.extend_from_slice(&stream.to_be_bytes());
+        bytes.extend_from_slice(&message);
+        bytes
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let (client, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(XpcClient::connect_stream(stream), async {
+            let mut preface = [0; 58];
+            peer.read_exact(&mut preface).await.unwrap();
+            peer.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+            assert_eq!(frame(&mut peer).await.0, 4);
+            for (index, stream) in [1u32, 1, 3].into_iter().enumerate() {
+                if index < 2 {
+                    assert_eq!(frame(&mut peer).await.0, 1);
+                }
+                assert_eq!(frame(&mut peer).await.0, 0);
+                peer.write_all(&response(0, stream)).await.unwrap();
+            }
+        })
+    })
+    .await
+    .unwrap();
+    let mut client = client.unwrap();
+    let error = client
+        .call_with_timeout(XpcValue::Bool(true), Duration::ZERO)
+        .await
+        .unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(client.is_usable());
+    let error = client
+        .recv_with_timeout(Duration::from_millis(5))
+        .await
+        .unwrap_err();
+    let XpcError::Io(io) = &error else {
+        panic!("native timer")
+    };
+    assert!(io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+    assert!(client.is_usable());
+    let (reply, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(
+            client.call_with_timeout(XpcValue::Bool(true), Duration::from_secs(1)),
+            async {
+                let (_, _, bytes) = frame(&mut peer).await;
+                let request = ios_core::decode_xpc_message(bytes.into()).unwrap();
+                assert_eq!(request.msg_id, 1);
+                peer.write_all(&response(1, 3)).await.unwrap();
+            }
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(reply.unwrap().msg_id, 1);
+    assert!(client.is_usable());
+    assert_eq!(
+        family(
+            &client
+                .call_recv_client_server_with_timeout(XpcValue::Bool(true), Duration::ZERO)
+                .await
+                .unwrap_err()
+        ),
+        "io"
+    );
+    assert_eq!(
+        family(
+            &client
+                .recv_client_server_with_timeout(Duration::ZERO)
+                .await
+                .unwrap_err()
+        ),
+        "io"
+    );
+    assert_eq!(
+        family(
+            &client
+                .recv_any_with_timeout(Duration::ZERO)
+                .await
+                .unwrap_err()
+        ),
+        "io"
+    );
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(
+            client.call_with_timeout(XpcValue::Bool(true), Duration::from_millis(5)),
+            async {
+                let (_, _, bytes) = frame(&mut peer).await;
+                assert_eq!(
+                    ios_core::decode_xpc_message(bytes.into()).unwrap().msg_id,
+                    2
+                );
+            }
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(family(&result.unwrap_err()), "io");
+    assert!(!client.is_usable());
+    peer.write_all(&response(2, 3)).await.unwrap();
+    let error = client.recv().await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Protocol
+    );
+}
+
+#[cfg(feature = "tunnel")]
+#[tokio::test]
 async fn lifecycle_h2_public_xpc_partial_frame_cancellation_rejects_reuse() {
     use ios_core::{encode_xpc_message, xpc_message_flags, XpcClient, XpcError};
     use std::time::Duration;

@@ -17,12 +17,15 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_core::Stream;
+#[cfg(test)]
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use uuid::Uuid;
 
 use crate::xpc::{XpcClient, XpcError};
-use crate::{XpcMessage, XpcValue};
+#[cfg(test)]
+use crate::XpcMessage;
+use crate::XpcValue;
 
 mod monitor;
 pub use monitor::PasteboardMonitor;
@@ -1374,9 +1377,11 @@ impl PasteboardClient {
         let timeout = self.timeout;
         let result = {
             let client = self.client.as_mut().ok_or(PasteboardError::Closed)?;
-            let responses = client.stream_invoke(request);
-            futures_util::pin_mut!(responses);
-            tokio::time::timeout(timeout, receive_reply(responses)).await
+            tokio::time::timeout(timeout, async {
+                let body = client.call_nonempty(request).await?;
+                parse_reply(body)
+            })
+            .await
         };
 
         match result {
@@ -1637,6 +1642,7 @@ fn validate_resolve_arguments(
 /// RemoteXPC may put an empty acknowledgement/control message ahead of the
 /// actual pasteboard reply. This helper intentionally ignores both a body-less
 /// message and an empty dictionary, matching go-ios/pymobiledevice3 behavior.
+#[cfg(test)]
 async fn receive_reply<S>(mut responses: S) -> Result<XpcValue, PasteboardError>
 where
     S: Stream<Item = Result<XpcMessage, XpcError>> + Unpin,
@@ -1978,10 +1984,13 @@ impl PasteboardSubscription {
         let timeout = self.timeout;
         let result = {
             let client = self.client.as_mut().ok_or(PasteboardError::Closed)?;
-            let responses =
-                client.stream_invoke(build_resolve_request(pasteboard_name, item_index, uti));
-            futures_util::pin_mut!(responses);
-            tokio::time::timeout(timeout, receive_reply(responses)).await
+            tokio::time::timeout(timeout, async {
+                let body = client
+                    .call_nonempty(build_resolve_request(pasteboard_name, item_index, uti))
+                    .await?;
+                parse_reply(body)
+            })
+            .await
         };
         let reply = match result {
             Ok(Ok(reply)) => reply,

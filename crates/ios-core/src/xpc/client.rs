@@ -26,6 +26,12 @@ pub struct XpcClient {
 }
 
 impl XpcClient {
+    /// Local framing and request ownership permit another operation. This
+    /// does not acknowledge remote cleanup or establish safe retry.
+    pub fn is_usable(&self) -> bool {
+        self.inner.is_usable()
+    }
+
     /// Connect to an XPC service at the given IPv6 address and port.
     pub async fn connect(addr: Ipv6Addr, port: u16) -> Result<Self, XpcError> {
         let sock_addr = SocketAddr::new(addr.into(), port);
@@ -99,12 +105,20 @@ impl XpcClient {
 
     /// Send an XPC dictionary and receive the response.
     pub async fn call(&mut self, body: XpcValue) -> Result<XpcMessage, XpcError> {
-        let msg_id = self
-            .inner
-            .send_with_flags(body, flags::WANTING_REPLY)
-            .await?;
         self.inner
-            .recv_reply_on_stream(crate::xpc::h2_raw::STREAM_SERVER_CLIENT, msg_id)
+            .call_on_stream(body, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, None)
+            .await
+    }
+
+    /// Share one absolute budget across send, flow control and correlated
+    /// reply reception. Zero rejects before I/O or identifier changes.
+    pub async fn call_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .call_on_stream(body, crate::xpc::h2_raw::STREAM_SERVER_CLIENT, Some(budget))
             .await
     }
 
@@ -113,12 +127,19 @@ impl XpcClient {
         &mut self,
         body: XpcValue,
     ) -> Result<XpcMessage, XpcError> {
-        let msg_id = self
-            .inner
-            .send_with_flags(body, flags::WANTING_REPLY)
-            .await?;
         self.inner
-            .recv_reply_on_stream(crate::xpc::h2_raw::STREAM_CLIENT_SERVER, msg_id)
+            .call_on_stream(body, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, None)
+            .await
+    }
+
+    /// A shared send/reply budget for a correlated response on stream 1.
+    pub async fn call_recv_client_server_with_timeout(
+        &mut self,
+        body: XpcValue,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .call_on_stream(body, crate::xpc::h2_raw::STREAM_CLIENT_SERVER, Some(budget))
             .await
     }
 
@@ -152,14 +173,43 @@ impl XpcClient {
         body: XpcValue,
         extra_flags: u32,
     ) -> impl futures_core::Stream<Item = Result<XpcMessage, XpcError>> + '_ {
+        self.stream_invoke_mapped(body, extra_flags, |message| Ok(Some((message, false))))
+    }
+
+    /// A service-owned parser can recognize a complete terminal message.
+    /// Public raw streams have no terminal grammar and retain cancellation
+    /// ownership until dropped; completion is never inferred from a yield.
+    pub(crate) fn stream_invoke_mapped<'a, T: 'a, F>(
+        &'a mut self,
+        body: XpcValue,
+        extra_flags: u32,
+        mut parse: F,
+    ) -> impl futures_core::Stream<Item = Result<T, XpcError>> + 'a
+    where
+        F: FnMut(XpcMessage) -> Result<Option<(T, bool)>, XpcError> + 'a,
+    {
         async_stream::try_stream! {
-            self.inner
+            let mut operation = self.inner.begin_operation(None)?;
+            operation
                 .send_with_flags(body, extra_flags)
                 .await?;
             loop {
-                yield self.inner.recv().await?;
+                let Some((value, finished)) = parse(operation.recv().await?)? else { continue };
+                if finished {
+                    operation.complete();
+                }
+                yield value;
+                if finished { return; }
             }
         }
+    }
+
+    /// Finite uncorrelated services skip bodyless/empty dictionary ACKs. The
+    /// service owns its total timeout and parses its business response after
+    /// this guarded send/reply boundary has completed.
+    #[cfg(feature = "pasteboard")]
+    pub(crate) async fn call_nonempty(&mut self, body: XpcValue) -> Result<XpcValue, XpcError> {
+        self.inner.call_nonempty(body).await
     }
 
     /// Send without waiting for a response.
@@ -183,42 +233,9 @@ impl XpcClient {
         size: u64,
         reader: &mut R,
     ) -> Result<(), XpcError> {
-        use tokio::io::AsyncReadExt;
-
-        if !(1..=5).contains(&transfer_id) || size == 0 || size > 2 * 1024 * 1024 * 1024 {
-            return Err(XpcError::Tls(
-                "invalid Cryptex file transfer ID or size".into(),
-            ));
-        }
-        let stream_id = 5 + (transfer_id as u32 - 1) * 2;
-        let preamble = crate::xpc::message::encode_message(&XpcMessage {
-            flags: flags::ALWAYS_SET | flags::FILE_TX_STREAM_REQUEST,
-            msg_id: transfer_id,
-            body: None,
-        })?;
-        let framer = self.inner.framer_mut();
-        framer
-            .write_stream(stream_id, &preamble)
+        self.inner
+            .send_file_transfer(transfer_id, size, reader)
             .await
-            .map_err(|e| h2_error("", e))?;
-        let mut remaining = size;
-        let mut chunk = vec![0u8; 64 * 1024];
-        while remaining > 0 {
-            let amount = remaining.min(chunk.len() as u64) as usize;
-            reader.read_exact(&mut chunk[..amount]).await?;
-            framer
-                .write_stream(stream_id, &chunk[..amount])
-                .await
-                .map_err(|e| h2_error("", e))?;
-            remaining -= amount as u64;
-        }
-        if reader.read(&mut chunk[..1]).await? != 0 {
-            return Err(XpcError::Tls("file transfer exceeds announced size".into()));
-        }
-        framer
-            .finish_stream(stream_id)
-            .await
-            .map_err(|e| h2_error("", e))
     }
 
     /// Receive the next XPC message.
@@ -226,9 +243,31 @@ impl XpcClient {
         self.inner.recv().await
     }
 
+    /// Wait for one message using an absolute idle-read budget. An empty
+    /// timeout remains usable; interruption after bytes/header consumption
+    /// requires a fresh transport. This is not a lifetime limit for a stream.
+    pub async fn recv_with_timeout(
+        &mut self,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .recv_on_stream_with_budget(crate::xpc::h2_raw::STREAM_SERVER_CLIENT, Some(budget))
+            .await
+    }
+
     /// Receive the next XPC message from stream 1.
     pub async fn recv_client_server(&mut self) -> Result<XpcMessage, XpcError> {
         self.inner.recv_client_server().await
+    }
+
+    /// Wait for one message on stream 1 with an absolute idle-read budget.
+    pub async fn recv_client_server_with_timeout(
+        &mut self,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner
+            .recv_on_stream_with_budget(crate::xpc::h2_raw::STREAM_CLIENT_SERVER, Some(budget))
+            .await
     }
 
     /// Receive the next fresh XPC message from any stream.
@@ -239,6 +278,15 @@ impl XpcClient {
     /// frames from one stream are never spliced with another stream's data.
     pub async fn recv_any(&mut self) -> Result<XpcMessage, XpcError> {
         self.inner.recv_any_stream().await
+    }
+
+    /// Wait for one fresh message from any stream with a shared selection and
+    /// body-read budget, preserving per-stream reassembly.
+    pub async fn recv_any_with_timeout(
+        &mut self,
+        budget: std::time::Duration,
+    ) -> Result<XpcMessage, XpcError> {
+        self.inner.recv_any_stream_with_budget(Some(budget)).await
     }
 }
 
@@ -261,6 +309,532 @@ mod tests {
     const STREAM_INIT: u32 = 0;
     const STREAM_CLIENT_SERVER: u32 = 1;
     const STREAM_SERVER_CLIENT: u32 = 3;
+
+    async fn lifecycle_xpc_client() -> (XpcClient, tokio::io::DuplexStream) {
+        let (stream, mut peer) = duplex(4096);
+        let (client, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(XpcClient::connect_stream(stream), async {
+                let mut preface = [0; 58];
+                peer.read_exact(&mut preface).await.unwrap();
+                assert_eq!(&preface[..24], crate::xpc::h2_raw::H2_PREFACE);
+                peer.write_all(&settings_frame()).await.unwrap();
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_SETTINGS);
+                for (index, stream_id) in [1, 1, 3].into_iter().enumerate() {
+                    if index < 2 {
+                        let frame = lifecycle_xpc_frame(&mut peer).await;
+                        assert_eq!(
+                            (frame.0, frame.1),
+                            (FRAME_HEADERS, if index == 0 { 1 } else { 3 })
+                        );
+                    }
+                    let frame = lifecycle_xpc_frame(&mut peer).await;
+                    assert_eq!((frame.0, frame.1), (FRAME_DATA, stream_id));
+                    peer.write_all(&data_frame(stream_id, &lifecycle_xpc_message(0)))
+                        .await
+                        .unwrap();
+                }
+            })
+        })
+        .await
+        .unwrap();
+        (client.unwrap(), peer)
+    }
+
+    async fn lifecycle_xpc_frame(peer: &mut tokio::io::DuplexStream) -> (u8, u32, Vec<u8>) {
+        let mut header = [0; 9];
+        peer.read_exact(&mut header).await.unwrap();
+        let size = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+        assert!(size <= 16_384);
+        let mut body = vec![0; size];
+        peer.read_exact(&mut body).await.unwrap();
+        (
+            header[3],
+            u32::from_be_bytes(header[5..9].try_into().unwrap()),
+            body,
+        )
+    }
+
+    fn lifecycle_xpc_message(id: u64) -> Bytes {
+        encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET,
+            msg_id: id,
+            body: None,
+        })
+        .unwrap()
+    }
+
+    fn lifecycle_xpc_elapsed(error: &XpcError) {
+        let XpcError::Io(io) = error else {
+            panic!("timeout must be IO")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+        assert_eq!(crate::classify_error(error), crate::ErrorClass::Timeout);
+    }
+
+    async fn lifecycle_xpc_rejected(client: &mut XpcClient) {
+        assert!(!client.is_usable());
+        assert!(client.send(XpcValue::Bool(true)).await.is_err());
+        assert!(client.call(XpcValue::Bool(true)).await.is_err());
+        assert!(client
+            .call_recv_client_server(XpcValue::Bool(true))
+            .await
+            .is_err());
+        assert!(client.recv().await.is_err());
+        assert!(client.recv_client_server().await.is_err());
+        assert!(client.recv_any().await.is_err());
+        assert!(client
+            .call_with_timeout(XpcValue::Bool(true), Duration::ZERO)
+            .await
+            .is_err());
+        assert!(client.recv_with_timeout(Duration::ZERO).await.is_err());
+        assert!(Box::pin(client.stream_invoke(XpcValue::Bool(true)))
+            .next()
+            .await
+            .unwrap()
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_public_zero_large_unpolled_and_complete_calls_keep_state() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        for error in [
+            client
+                .call_with_timeout(XpcValue::Bool(true), Duration::ZERO)
+                .await
+                .unwrap_err(),
+            client
+                .call_recv_client_server_with_timeout(XpcValue::Bool(true), Duration::ZERO)
+                .await
+                .unwrap_err(),
+            client.recv_with_timeout(Duration::ZERO).await.unwrap_err(),
+            client
+                .recv_client_server_with_timeout(Duration::ZERO)
+                .await
+                .unwrap_err(),
+            client
+                .recv_any_with_timeout(Duration::ZERO)
+                .await
+                .unwrap_err(),
+        ] {
+            let XpcError::Io(io) = error else {
+                panic!("zero budget")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+            assert!(io.get_ref().unwrap().source().is_none());
+        }
+        let XpcError::Io(io) = client
+            .call_with_timeout(XpcValue::Bool(true), Duration::MAX)
+            .await
+            .unwrap_err()
+        else {
+            panic!("unrepresentable deadline")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+        drop(client.call(XpcValue::Bool(true)));
+        drop(client.stream_invoke(XpcValue::Bool(true)));
+        assert!(client.is_usable());
+        let (reply, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                client.call_with_timeout(XpcValue::Bool(true), Duration::from_secs(1)),
+                async {
+                    let (_, stream, bytes) = lifecycle_xpc_frame(&mut peer).await;
+                    assert_eq!(stream, 1);
+                    let request = crate::xpc::message::decode_message(bytes.into()).unwrap();
+                    assert_eq!(request.msg_id, 1);
+                    assert_eq!(request.flags & flags::WANTING_REPLY, flags::WANTING_REPLY);
+                    peer.write_all(&data_frame(3, &lifecycle_xpc_message(9)))
+                        .await
+                        .unwrap();
+                    peer.write_all(&data_frame(3, &lifecycle_xpc_message(1)))
+                        .await
+                        .unwrap();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(reply.unwrap().msg_id, 1);
+        assert!(client.is_usable());
+        assert_eq!(
+            client
+                .recv_with_timeout(Duration::from_secs(1))
+                .await
+                .unwrap()
+                .msg_id,
+            9
+        );
+        let (reply, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                client.call_recv_client_server_with_timeout(
+                    XpcValue::Bool(false),
+                    Duration::from_secs(1)
+                ),
+                async {
+                    let (_, _, bytes) = lifecycle_xpc_frame(&mut peer).await;
+                    assert_eq!(
+                        crate::xpc::message::decode_message(bytes.into())
+                            .unwrap()
+                            .msg_id,
+                        2
+                    );
+                    peer.write_all(&data_frame(1, &lifecycle_xpc_message(2)))
+                        .await
+                        .unwrap();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(reply.unwrap().msg_id, 2);
+        assert!(client.is_usable());
+        peer.write_all(&data_frame(5, &lifecycle_xpc_message(92)))
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .recv_any_with_timeout(Duration::from_secs(1))
+                .await
+                .unwrap()
+                .msg_id,
+            92
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_sent_call_cancellation_and_expiry_reject_late_reply() {
+        for caller_cancel in [false, true] {
+            let (mut client, mut peer) = lifecycle_xpc_client().await;
+            let (result, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(
+                    async {
+                        if caller_cancel {
+                            assert!(timeout(
+                                Duration::from_millis(10),
+                                client.call(XpcValue::Bool(true))
+                            )
+                            .await
+                            .is_err());
+                            None
+                        } else {
+                            Some(
+                                client
+                                    .call_with_timeout(
+                                        XpcValue::Bool(true),
+                                        Duration::from_millis(10),
+                                    )
+                                    .await
+                                    .unwrap_err(),
+                            )
+                        }
+                    },
+                    async {
+                        let (_, _, request) = lifecycle_xpc_frame(&mut peer).await;
+                        assert_eq!(
+                            crate::xpc::message::decode_message(request.into())
+                                .unwrap()
+                                .msg_id,
+                            1
+                        );
+                    }
+                )
+            })
+            .await
+            .unwrap();
+            if let Some(error) = result {
+                lifecycle_xpc_elapsed(&error);
+            }
+            peer.write_all(&data_frame(3, &lifecycle_xpc_message(1)))
+                .await
+                .unwrap();
+            lifecycle_xpc_rejected(&mut client).await;
+            let mut byte = [0];
+            assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+                .await
+                .is_err());
+            drop(client);
+            assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_call_deadline_includes_blocked_send_and_reply_wait() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                client.call_with_timeout(
+                    XpcValue::Data(vec![42; 8192].into()),
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // The 4096-byte transport cannot finish this DATA until read.
+                    tokio::time::sleep(Duration::from_millis(125)).await;
+                    let (_, _, request) = lifecycle_xpc_frame(&mut peer).await;
+                    let request = crate::xpc::message::decode_message(request.into()).unwrap();
+                    assert_eq!(request.msg_id, 1);
+                    tokio::time::sleep(Duration::from_millis(125)).await;
+                    peer.write_all(&data_frame(3, &lifecycle_xpc_message(1)))
+                        .await
+                        .unwrap();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        lifecycle_xpc_elapsed(&result.unwrap_err());
+        lifecycle_xpc_rejected(&mut client).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_blocked_send_and_empty_idle_have_distinct_reuse() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        lifecycle_xpc_elapsed(
+            &client
+                .recv_with_timeout(Duration::from_millis(5))
+                .await
+                .unwrap_err(),
+        );
+        lifecycle_xpc_elapsed(
+            &client
+                .recv_any_with_timeout(Duration::from_millis(5))
+                .await
+                .unwrap_err(),
+        );
+        assert!(client.is_usable());
+        peer.write_all(&data_frame(1, &lifecycle_xpc_message(7)))
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .recv_client_server_with_timeout(Duration::from_secs(1))
+                .await
+                .unwrap()
+                .msg_id,
+            7
+        );
+        let error = client
+            .call_with_timeout(
+                XpcValue::Data(vec![42; 8192].into()),
+                Duration::from_millis(5),
+            )
+            .await
+            .unwrap_err();
+        lifecycle_xpc_elapsed(&error);
+        lifecycle_xpc_rejected(&mut client).await;
+        drop(client);
+        let mut prefix = Vec::new();
+        peer.read_to_end(&mut prefix).await.unwrap();
+        assert_eq!(prefix.len(), 4096);
+        assert_eq!(prefix[3], FRAME_DATA);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_stream_drop_between_messages_invalidates_request_ownership() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        {
+            let mut stream = Box::pin(client.stream_invoke_with_flags(XpcValue::Bool(true), 0));
+            let (message, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(stream.next(), async {
+                    let (_, _, request) = lifecycle_xpc_frame(&mut peer).await;
+                    let request = crate::xpc::message::decode_message(request.into()).unwrap();
+                    assert_eq!(request.flags & flags::WANTING_REPLY, 0);
+                    peer.write_all(&data_frame(3, &lifecycle_xpc_message(91)))
+                        .await
+                        .unwrap();
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(message.unwrap().unwrap().msg_id, 91);
+        }
+        lifecycle_xpc_rejected(&mut client).await;
+    }
+
+    #[cfg(feature = "cryptex")]
+    #[tokio::test]
+    async fn lifecycle_xpc_announced_file_cancellation_and_host_error_invalidate_owner() {
+        for cancel in [false, true] {
+            let (mut client, mut peer) = lifecycle_xpc_client().await;
+            if cancel {
+                let (mut reader, _source) = duplex(64);
+                let (result, ()) = timeout(Duration::from_secs(1), async {
+                    tokio::join!(
+                        timeout(
+                            Duration::from_millis(10),
+                            client.send_file_transfer(1, 8, &mut reader)
+                        ),
+                        async {
+                            assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_HEADERS);
+                            let (_, stream, preamble) = lifecycle_xpc_frame(&mut peer).await;
+                            assert_eq!(stream, 5);
+                            assert_eq!(
+                                crate::xpc::message::decode_message(preamble.into())
+                                    .unwrap()
+                                    .flags,
+                                flags::ALWAYS_SET | flags::FILE_TX_STREAM_REQUEST
+                            );
+                        }
+                    )
+                })
+                .await
+                .unwrap();
+                assert!(result.is_err());
+            } else {
+                struct HostFailure;
+                impl tokio::io::AsyncRead for HostFailure {
+                    fn poll_read(
+                        self: Pin<&mut Self>,
+                        _: &mut std::task::Context<'_>,
+                        _: &mut tokio::io::ReadBuf<'_>,
+                    ) -> std::task::Poll<std::io::Result<()>> {
+                        std::task::Poll::Ready(Err(std::fs::File::open("").unwrap_err()))
+                    }
+                }
+                let error = client
+                    .send_file_transfer(1, 8, &mut HostFailure)
+                    .await
+                    .unwrap_err();
+                let XpcError::Io(io) = error else {
+                    panic!("original host error")
+                };
+                let expected = std::fs::File::open("").unwrap_err();
+                assert_eq!(io.kind(), expected.kind());
+                assert_eq!(io.raw_os_error(), expected.raw_os_error());
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_HEADERS);
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.1, 5);
+            }
+            lifecycle_xpc_rejected(&mut client).await;
+            drop(client);
+            let mut remaining = Vec::new();
+            peer.read_to_end(&mut remaining).await.unwrap();
+            assert!(remaining.is_empty(), "Drop must not send a detached FIN");
+        }
+    }
+
+    #[cfg(feature = "apps")]
+    #[tokio::test]
+    async fn lifecycle_xpc_coredevice_explicit_finish_preserves_connection_reuse() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        {
+            let mut stream = Box::pin(crate::services::coredevice::stream_invoke(
+                &mut client,
+                "owned-device",
+                "owned-feature",
+                XpcValue::Dictionary(IndexMap::new()),
+            ));
+            let (result, ()) = timeout(Duration::from_secs(1), async {
+                tokio::join!(stream.next(), async {
+                    lifecycle_xpc_frame(&mut peer).await;
+                    peer.write_all(&data_frame(3, &lifecycle_xpc_message(0)))
+                        .await
+                        .unwrap();
+                    let reply = encode_message(&XpcMessage {
+                        flags: flags::ALWAYS_SET,
+                        msg_id: 99,
+                        body: Some(XpcValue::Dictionary(IndexMap::from([(
+                            "CoreDevice.XPCMessageKey.sideChannelStatus".into(),
+                            XpcValue::Dictionary(IndexMap::from([(
+                                "finishStreaming".into(),
+                                XpcValue::Bool(true),
+                            )])),
+                        )]))),
+                    })
+                    .unwrap();
+                    peer.write_all(&data_frame(3, &reply)).await.unwrap();
+                })
+            })
+            .await
+            .unwrap();
+            assert!(result.is_none());
+        }
+        assert!(client.is_usable());
+        client.send(XpcValue::Bool(true)).await.unwrap();
+        assert_eq!(lifecycle_xpc_frame(&mut peer).await.1, 1);
+    }
+
+    #[cfg(feature = "pasteboard")]
+    #[tokio::test]
+    async fn lifecycle_xpc_finite_pasteboard_replies_and_business_errors_preserve_reuse() {
+        let (client, mut peer) = lifecycle_xpc_client().await;
+        let mut pasteboard =
+            crate::pasteboard::PasteboardClient::with_timeout(client, Duration::from_secs(1));
+        let ((), ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                async {
+                    assert!(matches!(
+                        pasteboard.get().await,
+                        Err(crate::pasteboard::PasteboardError::Service { .. })
+                    ));
+                    assert!(pasteboard.get().await.is_ok());
+                },
+                async {
+                    for id in [1, 2] {
+                        let (_, _, bytes) = lifecycle_xpc_frame(&mut peer).await;
+                        let request = crate::decode_xpc_message(bytes.into()).unwrap();
+                        assert_eq!(request.msg_id, id);
+                        assert_eq!(
+                            request.body.unwrap().as_dict().unwrap()["command"].as_str(),
+                            Some("PULL")
+                        );
+                        peer.write_all(&data_frame(3, &lifecycle_xpc_message(0)))
+                            .await
+                            .unwrap();
+                        let body = if id == 1 {
+                            XpcValue::Dictionary(IndexMap::from([(
+                                "error".into(),
+                                XpcValue::Dictionary(IndexMap::from([
+                                    (
+                                        "domain".into(),
+                                        XpcValue::String("NSCocoaErrorDomain".into()),
+                                    ),
+                                    ("code".into(), XpcValue::Int64(4864)),
+                                ])),
+                            )]))
+                        } else {
+                            XpcValue::Dictionary(IndexMap::from([(
+                                "command".into(),
+                                XpcValue::String("PULL_REPLY".into()),
+                            )]))
+                        };
+                        let reply = encode_message(&XpcMessage {
+                            flags: flags::ALWAYS_SET,
+                            msg_id: 90 + id,
+                            body: Some(body),
+                        })
+                        .unwrap();
+                        peer.write_all(&data_frame(3, &reply)).await.unwrap();
+                    }
+                }
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(feature = "cryptex")]
+    #[tokio::test]
+    async fn lifecycle_xpc_successful_file_preserves_fin_and_response_half() {
+        let (mut client, mut peer) = lifecycle_xpc_client().await;
+        let mut reader = &b"content"[..];
+        let (result, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(client.send_file_transfer(1, 7, &mut reader), async {
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.0, FRAME_HEADERS);
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.1, 5);
+                assert_eq!(lifecycle_xpc_frame(&mut peer).await.2, b"content");
+                let mut fin = [0; 9];
+                peer.read_exact(&mut fin).await.unwrap();
+                assert_eq!(fin, [0, 0, 0, FRAME_DATA, 1, 0, 0, 0, 5]);
+                peer.write_all(&data_frame(3, &lifecycle_xpc_message(7)))
+                    .await
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        assert!(client.is_usable());
+        assert_eq!(client.recv().await.unwrap().msg_id, 7);
+    }
 
     fn build_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
         let len = payload.len();

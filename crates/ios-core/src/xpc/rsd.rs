@@ -972,15 +972,100 @@ pub struct XpcConnection<S> {
     msg_id: u64,
     pending_messages: HashMap<u32, VecDeque<PendingMessage>>,
     pending_budget: PendingMessageBudget,
+    operation_progressed: bool,
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) struct XpcOperation<'a, S> {
+    connection: &'a mut XpcConnection<S>,
+    deadline: Option<tokio::time::Instant>,
+    completed: bool,
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> XpcConnection<S> {
+    pub fn is_usable(&self) -> bool {
+        self.framer.is_usable()
+    }
+
+    fn invalidate(&mut self) {
+        self.framer.invalidate();
+        self.pending_messages.clear();
+        self.pending_budget.clear();
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> XpcOperation<'_, S> {
+    pub(crate) fn complete(&mut self) {
+        self.completed = true;
+    }
+
+    fn finish<T>(
+        mut self,
+        result: Result<Result<T, XpcError>, tokio::time::error::Elapsed>,
+    ) -> Result<T, XpcError> {
+        match result {
+            Ok(result) => {
+                self.completed = true;
+                if !self.connection.is_usable()
+                    || (result.is_err() && self.connection.operation_progressed)
+                {
+                    self.connection.invalidate();
+                }
+                result
+            }
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S> Drop for XpcOperation<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.connection.operation_progressed || !self.connection.is_usable())
+        {
+            self.connection.invalidate();
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+fn await_xpc_operation<T>(
+    deadline: Option<tokio::time::Instant>,
+    operation: impl std::future::Future<Output = Result<T, XpcError>>,
+) -> impl std::future::Future<Output = Result<Result<T, XpcError>, tokio::time::error::Elapsed>> {
+    // Keep nested call/bootstrap futures small without detaching their owner.
+    let operation = Box::pin(operation);
+    async move {
+        match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        }
+    }
+}
+
+#[cfg(feature = "tunnel")]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcOperation<'_, S> {
+    pub(crate) async fn send_with_flags(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> Result<u64, XpcError> {
+        self.connection
+            .send_with_flags_inner(body, extra_flags)
+            .await
+    }
+
+    pub(crate) async fn recv(&mut self) -> Result<XpcMessage, XpcError> {
+        self.connection
+            .recv_on_stream_inner(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+            .await
+    }
 }
 
 #[cfg(feature = "tunnel")]
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
-    #[cfg(feature = "cryptex")]
-    pub(crate) fn framer_mut(&mut self) -> &mut H2Framer<S> {
-        &mut self.framer
-    }
-
     pub fn new(framer: H2Framer<S>) -> Self {
         Self::with_pending_memory_limits(
             framer,
@@ -1004,6 +1089,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             msg_id: 1,
             pending_messages: HashMap::new(),
             pending_budget: PendingMessageBudget::new(per_stream_limit, connection_limit),
+            operation_progressed: false,
         }
     }
 
@@ -1013,10 +1099,51 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         self.pending_budget.total_bytes
     }
 
-    fn next_id(&mut self) -> u64 {
+    pub(crate) fn begin_operation(
+        &mut self,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcOperation<'_, S>, XpcError> {
+        if !self.is_usable() {
+            self.invalidate();
+            return Err(h2_error(
+                "",
+                H2Error::Protocol(
+                    "XPC connection is unusable; reconnect before another operation".into(),
+                ),
+            ));
+        }
+        let deadline = match budget {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "XPC operation budget is zero",
+                )
+                .into());
+            }
+            Some(budget) => Some(tokio::time::Instant::now().checked_add(budget).ok_or_else(
+                || {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "XPC operation deadline is too large",
+                    )
+                },
+            )?),
+            None => None,
+        };
+        self.operation_progressed = false;
+        Ok(XpcOperation {
+            connection: self,
+            deadline,
+            completed: false,
+        })
+    }
+
+    fn next_id(&mut self) -> Result<u64, XpcError> {
         let id = self.msg_id;
-        self.msg_id += 1;
-        id
+        self.msg_id = id
+            .checked_add(1)
+            .ok_or_else(|| XpcError::Tls("XPC message identifier exhausted".into()))?;
+        Ok(id)
     }
 
     /// Send a dictionary as an XPC message on the clientServer stream.
@@ -1031,7 +1158,23 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         body: XpcValue,
         extra_flags: u32,
     ) -> Result<u64, XpcError> {
-        let id = self.next_id();
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .send_with_flags_inner(body, extra_flags),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn send_with_flags_inner(
+        &mut self,
+        body: XpcValue,
+        extra_flags: u32,
+    ) -> Result<u64, XpcError> {
+        let id = self.next_id()?;
         let msg = XpcMessage {
             flags: flags::ALWAYS_SET | flags::DATA | extra_flags,
             msg_id: id,
@@ -1042,7 +1185,49 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .write_client_server(&bytes)
             .await
             .map_err(|e| h2_error("", e))?;
+        self.operation_progressed = true;
         Ok(id)
+    }
+
+    pub(crate) async fn call_on_stream(
+        &mut self,
+        body: XpcValue,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            let id = connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            connection.recv_reply_on_stream_inner(stream_id, id).await
+        })
+        .await;
+        operation.finish(result)
+    }
+
+    #[cfg(feature = "pasteboard")]
+    pub(crate) async fn call_nonempty(&mut self, body: XpcValue) -> Result<XpcValue, XpcError> {
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(operation.deadline, async {
+            let connection = &mut *operation.connection;
+            connection
+                .send_with_flags_inner(body, flags::WANTING_REPLY)
+                .await?;
+            loop {
+                let message = connection
+                    .recv_on_stream_inner(crate::xpc::h2_raw::STREAM_SERVER_CLIENT)
+                    .await?;
+                let Some(body) = message.body else { continue };
+                if matches!(&body, XpcValue::Dictionary(values) if values.is_empty()) {
+                    continue;
+                }
+                return Ok(body);
+            }
+        })
+        .await;
+        operation.finish(result)
     }
 
     /// Receive one XPC message from the serverClient stream.
@@ -1068,6 +1253,23 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     /// already buffered on other streams is preserved, and the framer's
     /// per-stream and connection memory limits keep applying.
     pub async fn recv_any_stream(&mut self) -> Result<XpcMessage, XpcError> {
+        self.recv_any_stream_with_budget(None).await
+    }
+
+    pub(crate) async fn recv_any_stream_with_budget(
+        &mut self,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation.connection.recv_any_stream_inner(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_any_stream_inner(&mut self) -> Result<XpcMessage, XpcError> {
         let stream_id = self
             .framer
             .buffer_next_data_stream()
@@ -1077,6 +1279,24 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     async fn recv_on_stream(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
+        self.recv_on_stream_with_budget(stream_id, None).await
+    }
+
+    pub(crate) async fn recv_on_stream_with_budget(
+        &mut self,
+        stream_id: u32,
+        budget: Option<std::time::Duration>,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(budget)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation.connection.recv_on_stream_inner(stream_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_on_stream_inner(&mut self, stream_id: u32) -> Result<XpcMessage, XpcError> {
         if let Some(message) = self.pop_next_pending_message(stream_id) {
             return Ok(message);
         }
@@ -1084,7 +1304,24 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
     }
 
     /// Receive the reply with a specific XPC message id from one stream.
+    #[allow(dead_code)]
     pub async fn recv_reply_on_stream(
+        &mut self,
+        stream_id: u32,
+        msg_id: u64,
+    ) -> Result<XpcMessage, XpcError> {
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .recv_reply_on_stream_inner(stream_id, msg_id),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    async fn recv_reply_on_stream_inner(
         &mut self,
         stream_id: u32,
         msg_id: u64,
@@ -1119,6 +1356,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
             .read_stream(stream_id, 24)
             .await
             .map_err(|e| h2_error("", e))?;
+        // The header is now owned by this future even if its bytes came from
+        // an earlier H2 operation. Cancellation must not lose that boundary.
+        self.operation_progressed = true;
         let declared_body_len = u64::from_le_bytes(header[8..16].try_into().map_err(|error| {
             crate::xpc::native_error(
                 std::io::ErrorKind::InvalidData,
@@ -1147,6 +1387,69 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> XpcConnection<S> {
         full.extend_from_slice(&header);
         full.extend_from_slice(&body);
         decode_message(full.freeze())
+    }
+
+    #[cfg(feature = "cryptex")]
+    pub(crate) async fn send_file_transfer<R: tokio::io::AsyncRead + Unpin>(
+        &mut self,
+        transfer_id: u64,
+        size: u64,
+        reader: &mut R,
+    ) -> Result<(), XpcError> {
+        if !(1..=5).contains(&transfer_id) || size == 0 || size > 2 * 1024 * 1024 * 1024 {
+            return Err(XpcError::Tls(
+                "invalid Cryptex file transfer ID or size".into(),
+            ));
+        }
+        let operation = self.begin_operation(None)?;
+        let result = await_xpc_operation(
+            operation.deadline,
+            operation
+                .connection
+                .send_file_transfer_inner(transfer_id, size, reader),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    #[cfg(feature = "cryptex")]
+    async fn send_file_transfer_inner<R: tokio::io::AsyncRead + Unpin>(
+        &mut self,
+        transfer_id: u64,
+        size: u64,
+        reader: &mut R,
+    ) -> Result<(), XpcError> {
+        use tokio::io::AsyncReadExt;
+        let stream_id = 5 + (transfer_id as u32 - 1) * 2;
+        let preamble = crate::xpc::message::encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::FILE_TX_STREAM_REQUEST,
+            msg_id: transfer_id,
+            body: None,
+        })?;
+        let framer = &mut self.framer;
+        framer
+            .write_stream(stream_id, &preamble)
+            .await
+            .map_err(|e| h2_error("", e))?;
+        self.operation_progressed = true;
+        let mut remaining = size;
+        let mut chunk = vec![0u8; 64 * 1024];
+        while remaining > 0 {
+            let amount = remaining.min(chunk.len() as u64) as usize;
+            reader.read_exact(&mut chunk[..amount]).await?;
+            framer
+                .write_stream(stream_id, &chunk[..amount])
+                .await
+                .map_err(|e| h2_error("", e))?;
+            remaining -= amount as u64;
+        }
+        if reader.read(&mut chunk[..1]).await? != 0 {
+            return Err(XpcError::Tls("file transfer exceeds announced size".into()));
+        }
+        framer
+            .finish_stream(stream_id)
+            .await
+            .map_err(|e| h2_error("", e))
     }
 
     fn push_pending_message(
@@ -1291,6 +1594,143 @@ mod tests {
     const STREAM_INIT: u32 = 0;
     const STREAM_CLIENT_SERVER: u32 = 1;
     const STREAM_SERVER_CLIENT: u32 = 3;
+
+    async fn lifecycle_xpc_connection() -> (
+        XpcConnection<tokio::io::DuplexStream>,
+        tokio::io::DuplexStream,
+    ) {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let (framer, ()) = timeout(Duration::from_secs(1), async {
+            tokio::join!(H2Framer::connect(stream), async {
+                read_test_preface(&mut peer).await;
+                peer.write_all(&settings_frame()).await.unwrap();
+                assert_eq!(read_test_frame(&mut peer).await.0, FRAME_SETTINGS);
+            })
+        })
+        .await
+        .unwrap();
+        (XpcConnection::new(framer.unwrap()), peer)
+    }
+
+    fn lifecycle_xpc_seed_pending(connection: &mut XpcConnection<tokio::io::DuplexStream>) {
+        for stream in [1, 5] {
+            connection
+                .push_pending_message(stream, pending_data_message(99, 8))
+                .unwrap();
+        }
+        assert!(connection.pending_budget.total_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_consumed_buffered_header_invalidates_even_without_new_wire_bytes() {
+        for caller_cancel in [false, true] {
+            let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+            let message = encode_message(&pending_data_message(1, 8)).unwrap();
+            peer.write_all(&data_frame(3, &message[..24]))
+                .await
+                .unwrap();
+            peer.write_all(&data_frame(1, b"x")).await.unwrap();
+            // An earlier H2 operation buffers the complete XPC header on 3.
+            assert_eq!(
+                connection.framer.read_stream(1, 1).await.unwrap().as_ref(),
+                b"x"
+            );
+            lifecycle_xpc_seed_pending(&mut connection);
+            assert!(connection.is_usable());
+            if caller_cancel {
+                assert!(timeout(Duration::from_millis(5), connection.recv())
+                    .await
+                    .is_err());
+            } else {
+                let error = connection
+                    .recv_on_stream_with_budget(3, Some(Duration::from_millis(5)))
+                    .await
+                    .unwrap_err();
+                let XpcError::Io(io) = error else {
+                    panic!("actual expiry")
+                };
+                assert!(io.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+            }
+            assert!(!connection.is_usable());
+            assert!(connection.pending_messages.is_empty());
+            assert_eq!(connection.pending_budget.total_bytes, 0);
+            assert!(connection.pending_budget.per_stream_bytes.is_empty());
+            peer.write_all(&data_frame(3, &message)).await.unwrap();
+            assert!(connection.recv().await.is_err());
+            assert!(connection.recv_client_server().await.is_err());
+            assert!(connection.recv_reply_on_stream(5, 99).await.is_err());
+            assert!(connection.recv_any_stream().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_native_eof_clears_pending_before_cached_reply_can_return() {
+        let (mut connection, peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        drop(peer);
+        let error = connection.recv().await.unwrap_err();
+        let XpcError::Io(io) = error else {
+            panic!("native EOF")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+        assert!(connection.recv_client_server().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_partial_raw_frame_cancellation_clears_upper_pending_immediately() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&[0, 0, 1, 0]).await.unwrap();
+        assert!(timeout(Duration::from_millis(5), connection.recv())
+            .await
+            .is_err());
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+        assert!(connection.recv_client_server().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_bad_wrapper_invalidates_after_header_consumption() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&data_frame(3, &[0; 24])).await.unwrap();
+        assert!(connection.recv().await.is_err());
+        assert!(!connection.is_usable());
+        assert!(connection.pending_messages.is_empty());
+        assert_eq!(connection.pending_budget.total_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_complete_stream_reset_before_message_preserves_other_pending_reply() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        connection.framer.open_stream(3).await.unwrap();
+        assert_eq!(read_test_frame(&mut peer).await.0, FRAME_HEADERS);
+        lifecycle_xpc_seed_pending(&mut connection);
+        peer.write_all(&build_frame(3, 0, 3, &8u32.to_be_bytes()))
+            .await
+            .unwrap();
+        assert!(connection.recv().await.is_err());
+        assert!(connection.is_usable());
+        assert_eq!(connection.recv_client_server().await.unwrap().msg_id, 99);
+        assert!(connection.pending_budget.total_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_xpc_counter_exhaustion_rejects_without_wrap_or_wire_io() {
+        let (mut connection, mut peer) = lifecycle_xpc_connection().await;
+        connection.msg_id = u64::MAX;
+        assert!(connection.send(XpcValue::Bool(true)).await.is_err());
+        assert_eq!(connection.msg_id, u64::MAX);
+        assert!(connection.is_usable());
+        let mut byte = [0];
+        assert!(timeout(Duration::from_millis(5), peer.read(&mut byte))
+            .await
+            .is_err());
+    }
 
     async fn read_test_frame<S: AsyncRead + Unpin>(stream: &mut S) -> (u8, u8, u32, Vec<u8>) {
         let mut header = [0; 9];

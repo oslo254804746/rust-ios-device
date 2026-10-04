@@ -293,7 +293,7 @@ impl<S> H2Framer<S> {
         self.operation_timeout = budget;
     }
 
-    fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.connection_error.get_or_insert_with(|| {
             "H2 connection is unusable; reconnect before another operation".into()
         });
