@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add shared DTX request/read deadlines and local connection-state inspection.
+  Interrupted operations with wire progress reject reuse and release decoding
+  state; empty idle polling remains usable. Partial initial/idle frames fail
+  explicitly in CoreProfile/accessibility. See [lifecycle migration](docs/lifecycle-contract.md).
+
 - Classify CLI-owned invalid timeout inputs and empty accessibility traversal
   expiry, with a bounded typed CLI precondition mapping. Preserve partial
   traversal/confirmation policies and original error-chain scan budgets.

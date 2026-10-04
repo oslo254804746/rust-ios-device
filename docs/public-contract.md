@@ -28,6 +28,15 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+DTX adds request_channel_with_timeout, method_call_with_timeout,
+recv_with_timeout and is_usable. Existing unbounded methods retain their timing
+profile; errors or cancellation after wire progress now reject further I/O and
+clear decoder state. Empty idle waits remain reusable. CoreProfile/accessibility
+partial-frame timeout now fails rather than returning an apparent success/None;
+CPU best-effort stop after EOF no longer writes on the invalid connection.
+Existing exhaustive errors/wire/success results remain. See the [L01 lifecycle profile](lifecycle-contract.md)
+and [host gate](validation/dtx-lifecycle-2026-10-04.md).
+
 CLI owner-issued timeout guards use typed input/timeout decisions. A private CLI
 state marker maps to precondition only in the final machine envelope; it does
 not request confirmation, and remains Unknown to the general Core classifier.

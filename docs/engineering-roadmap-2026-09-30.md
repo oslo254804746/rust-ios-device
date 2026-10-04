@@ -3,7 +3,7 @@
 日期：2026-09-30；代码基线：`572c297`。
 
 状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
-其余平台、部署、真机及 fixture 子项保留待条件/待验收。接续第四类，实际证据见第 14 节。
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类 L01 进行中，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 待开始 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX 总预算/失效/空闲复用主机范围已交付；其他协议、FPS 队列/任务、清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5185,3 +5185,61 @@ mapped Python/C/HTTP及安全 machine输出；明确 legacy Unknown/void/zero/AL
 及 DTX caller cancellation/partial-frame reuse 边界，使用 InstallCoordination 契约作参考，
 逐协议验证，不以错误归类替代生命周期保证。没有真实设备/daemon/credentials/Apple
 操作、reference修改、push/publication、history rewrite 或maturity upgrade。
+
+### 大类 4：L01 DTX 期限、取消与本地复用状态交付（2026-10-04）
+
+实现提交 `940c4c673e7fe023503b97197777354c7f44e253`，源码基线
+`fc204bf6a60edf15e0c54d47777091ec6034d425`，前置第三类文档
+`c0b3681470d080361e91e00ab9db0e0852f615ab`。五源码/测试文件，694 insertions/
+20 deletions；CLI只有既有测试迁移，production byte exact。契约
+[生命周期与期限角色](lifecycle-contract.md)，专题
+[DTX 本地主机验收](validation/dtx-lifecycle-2026-10-04.md)。
+
+DtxConnection private guard 与实际 AsyncRead/Write progress：已完成 IO/codec error
+或读取/写入任何字节后被取消，连接失效并释放 pending/live/outstanding/fragments/
+memory accounting；后续公开 I/O 在 wire 前拒绝，is_usable 为明确本地字段。没有字节
+进度的空闲取消仍可复用，unpolled future不改变state，完整成功仍可复用。Transport
+仍 owned until client Drop，不声称remote shutdown/ACK/rollback/retry。
+新增 channel/call/recv with_timeout 三入口共享 absolute cooperative budget，send/
+ACK/unrelated/reply/reassembly不重置；零预算不poll/不改ID/不发bytes，overflowInput，
+actual expiry原Elapsed保留。Legacy timing defaults不改，公开三variant DtxError未扩张。
+
+CoreProfile quiet500ms slot和Accessibility initial300ms slots/idle None保留。三个
+owner branch只在partial-frame expiry改为立即native Timeout，而非返回失效连接上的
+表面成功。Channel/filter/serialization/limits不改，codec前半函数/constants/root/
+classifier/deps/C/Python byte exact。Standalone read_dtx_frame仍由caller管理取消。
+
+新增11 tests：八codec、一CoreProfile、一Accessibility、一external。Actual owned
+duplex覆盖zero/overflow/unpolled、成功channel与correlated calls、旧method caller
+timeout及late reply拒绝、partialheader/fragment、16-byte blocked send/ACK、EOF/
+BadMagic、empty idle复用。Private constructed/warmed service clients验证start/idle/
+initialflush和partialframe；不是完整device handshake/startup/cleanup。All-feature
+10 internal/one external，minimumdtx八 internal/one external、strictCore/CLI PASS。
+Fixture准备E0599/E0716和channel-sign后续等待已修；已定位test进程曾SIGTERM，并增
+后续1s预算；不改变生产channel规则/断言，也无旧实现negative control。
+
+第一次 full 的旧CPU fixture期待 EOF后 stop，CLI695 PASS/one FAIL/one ignored；迁移
+为 count成功仍stop、EOF失效不写，保留原IO/source/有效JSON行和primary错误。
+首full handle恢复时missing，finalFAIL/no activeprocess证明已停，rawexit未捕获。
+第二full terminal1，Core1280 PASS/one FAIL/one ignored：既有AFC Debug forbids三位
+129，可能与process-keyed correlation碰撞。单独test-only修正提交 `fc204bf` 保留
+owned39bytes/Protocol/source检查，检查完整source表示；AFC production未改。
+
+最终full session85615 terminal0/finalPASS，Linuxx86_64 Rust1.97.1/MSRV1.80.1/
+Python3.12.13。命令
+`python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`。
+2126Rust/13Python，CLI696/Core1281/public39 PASS，zeroFAIL/two existingignored；
+fmt/check/workspace strictClippy/MSRV、66 features/fourgroups、7+7doctests/three
+snippets、CABI、3.12wheel/sdist、53tooling/118help/38raw/fivehost/15CLI/threebackup
+contracts PASS。22device rows NOT_RUN，未重复Chromium/installed3.9/3.13。
+Source SHA256 `e483b09329f51c4462d8f7de79d23b366b9ca3ca742dbad857e02fd5f602826d`；
+ios debug SHA256 `88511ed0a9f8b7d4fe5c286c418f5593c697d1bd21bba185611baf9f201c1e3d`。
+五源冻结至full结束，18→17GiB余量，无clean/storagefailure；日志 `/tmp/ios-l01-dtx-`。
+
+本轮仅交付L01的DTX profile，L01/第四类/总体31goal active，所有子项及待条件保持。
+118 capability/implementation/maturity与完整history保持，仅增host evidence。
+八文档收尾：七Markdown/206 local links、whitespace、exactsource/binary/full logs与
+capability catalog PASS。
+下一已定位 FPS 无界channel、时间戳累积/窗口deadline starvation、output early-return
+reader detach及stop/join budgets；继续其他协议/清理primary retention，再L02–L04/Q04。
+没有真实device/daemon/credentials/Apple操作、reference edits、push/publication或historyrewrite。

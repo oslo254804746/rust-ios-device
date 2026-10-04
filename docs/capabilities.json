@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-dtx-lifecycle-940c4c6",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex public DTX zero/overflow/correlated calls, blocked partial request/ACK, late reply, partial header/fragment, native EOF/bad magic, empty idle reuse; actual CoreProfile start and accessibility idle/initial stages on privately constructed/warmed clients; public minimum-dtx consumer and migrated CPU fixture"],
+      "required_state": ["Eleven new tests; no old-implementation negative control or device startup/handshake. Local invalidation clears decode state and rejects I/O, transport remains owned until client Drop; no remote cleanup/ACK/retry guarantee. Timers are cooperative, legacy timing stays unbounded. FPS queue/task/timestamp ownership and other L01/L02-L04/Q04/platform/device work remain; no maturity upgrade"],
+      "tested_commit": "940c4c673e7fe023503b97197777354c7f44e253",
+      "date": "2026-10-04",
+      "location": "docs/validation/dtx-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "L01 guard distinguishes cancelled zero-byte idle waits from partial wire progress; completed IO/codec errors invalidate DTX. Additive total-budget channel/call/read APIs, native Elapsed and zero-input policies; three partial-frame owner branches fail rather than returning apparent success. Five source/test files, CLI production/root/classifier/dependencies/C/Python byte-identical. Eleven new tests pass (minimum nine); first full migrated old CPU stop-after-EOF assertion, second exposed unrelated short AFC diagnostic collision fixed separately at fc204bf. Final full terminal0, 2126 Rust/13 Python, CLI696/Core1281/public39 PASS, zero failures/two existing ignored and all full gates pass. L01/class4/all31 goal active."
+    },
+    {
       "id": "linux-cli-owner-guards-fe0c092",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",

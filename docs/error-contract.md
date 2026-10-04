@@ -65,6 +65,15 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+DTX shared-budget expiry retains actual Elapsed in existing DtxError::Io;
+zero budget is an issued source-free timeout. The new is_usable getter reports
+local framing/correlation state after failure or cancellation. An unusable
+connection's existing Protocol error is separate from the original operation's
+retained native failure; neither permits guessing retry/rollback/remote cleanup.
+Empty idle reads remain usable, partial frames fail immediately at affected
+service entry points. See [L01 lifecycle](lifecycle-contract.md) and the
+[DTX host gate](validation/dtx-lifecycle-2026-10-04.md).
+
 `LockdownResponseError` observes device-issued Error strings through the additive
 `LockdownClient::get_value_preserving_errors`, `start_service_preserving_errors`
 and ConnectedDevice preserving value-query methods. Private fields expose fixed
