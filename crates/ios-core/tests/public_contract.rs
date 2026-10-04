@@ -27,6 +27,58 @@ fn lifecycle_fps_public_iterator_borrows_chunk_and_copies_timebase() {
     assert_eq!(legacy, vec![30]);
 }
 
+#[cfg(feature = "afc")]
+#[tokio::test]
+async fn lifecycle_afc_public_budget_state_and_exhaustive_errors() {
+    use ios_core::afc::{AfcClient, AfcError};
+    use std::error::Error;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    fn family(error: &AfcError) -> &str {
+        match error {
+            AfcError::Io(_) => "io",
+            AfcError::Status(_) => "status",
+            AfcError::Protocol(_) => "protocol",
+        }
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let mut client = AfcClient::new(stream);
+    client.set_request_timeout(Some(Duration::ZERO));
+    let error = client.list_dir("/").await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Timeout
+    );
+    let AfcError::Io(io) = &error else {
+        unreachable!()
+    };
+    assert!(io.source().is_none());
+    assert!(client.is_usable());
+    client.set_request_timeout(Some(Duration::from_secs(1)));
+    let caller = client.list_dir("/");
+    let server = async {
+        let mut request = [0; 42];
+        peer.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request[24..32], &1u64.to_le_bytes());
+        assert_eq!(&request[40..], b"/\0");
+        let mut reply = request[..40].to_vec();
+        reply[8..16].copy_from_slice(&46u64.to_le_bytes());
+        reply[16..24].copy_from_slice(&40u64.to_le_bytes());
+        reply[32..40].copy_from_slice(&2u64.to_le_bytes()); // Data
+        reply.extend_from_slice(b"entry\0");
+        peer.write_all(&reply).await.unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, server)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap(), vec!["entry"]);
+    assert!(client.is_usable());
+    client.set_request_timeout(None);
+}
+
 #[cfg(feature = "dtx")]
 #[tokio::test]
 async fn lifecycle_dtx_public_deadlines_keep_exhaustive_errors_and_success_reuse() {

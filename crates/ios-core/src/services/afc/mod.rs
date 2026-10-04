@@ -13,10 +13,13 @@
 crate::redaction::error_debug!(AfcError);
 
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use crate::proto::afc::{AfcHeader, AfcOpcode, AFC_MAGIC};
 use bytes::{Bytes, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use zerocopy::{FromBytes, IntoBytes};
 
 #[cfg(feature = "house_arrest")]
@@ -182,8 +185,121 @@ struct Packet {
 ///
 /// `S` must be a full-duplex async stream (e.g. the raw usbmux stream from lockdown).
 pub struct AfcClient<S> {
-    stream: S,
+    stream: AfcStream<S>,
     packet_num: u64,
+    usable: bool,
+    request_timeout: Option<Duration>,
+}
+
+struct AfcStream<S> {
+    inner: S,
+    progressed: bool,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for AfcStream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.progressed |= buf.filled().len() > before;
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for AfcStream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
+            self.progressed = true;
+        }
+        result
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+struct AfcRequest<'a, S> {
+    client: &'a mut AfcClient<S>,
+    completed: bool,
+}
+
+impl<S> Drop for AfcRequest<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && self.client.stream.progressed {
+            self.client.usable = false;
+        }
+    }
+}
+
+struct AfcTransfer<'a, S> {
+    client: &'a mut AfcClient<S>,
+    completed: bool,
+}
+
+impl<S> Drop for AfcTransfer<'_, S> {
+    fn drop(&mut self) {
+        // An open remote file belongs to this transfer even between requests.
+        // Drop cannot await close; require a fresh connection after cancellation.
+        if !self.completed {
+            self.client.usable = false;
+        }
+    }
+}
+
+const FILE_CLEANUP_BUDGET: Duration = Duration::from_secs(5);
+
+struct FileCleanupFailure {
+    primary: AfcError,
+    cleanup: AfcError,
+}
+
+impl std::fmt::Display for FileCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AFC transfer failed; file cleanup also failed")
+    }
+}
+
+impl std::fmt::Debug for FileCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileCleanupFailure")
+            .field("primary_class", &crate::classify_error(&self.primary))
+            .field("cleanup_class", &crate::classify_error(&self.cleanup))
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::error::Error for FileCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+
+fn finish_file_transfer<T>(
+    operation: Result<T, AfcError>,
+    cleanup: Result<(), AfcError>,
+) -> Result<T, AfcError> {
+    match (operation, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => {
+            Err(AfcError::Io(std::io::Error::other(FileCleanupFailure {
+                primary,
+                cleanup,
+            })))
+        }
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
@@ -200,15 +316,93 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         // go-ios uses atomic.Add(1) which returns 1 on first call.
         // Devices may reject packet_num=0 for some operations.
         Self {
-            stream,
+            stream: AfcStream {
+                inner: stream,
+                progressed: false,
+            },
             packet_num: 1,
+            usable: true,
+            request_timeout: None,
         }
     }
 
-    fn next_pnum(&mut self) -> u64 {
+    /// Whether framing and request ownership still permit another operation.
+    /// This is local state, not acknowledgment of remote cleanup or retry safety.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+
+    /// Set one shared send/reply budget for each AFC request. None preserves
+    /// legacy unbounded timing. This is not a whole-file or host-reader budget.
+    /// Zero and unrepresentable budgets fail before request I/O.
+    pub fn set_request_timeout(&mut self, budget: Option<Duration>) {
+        self.request_timeout = budget;
+    }
+
+    fn next_pnum(&mut self) -> Result<u64, AfcError> {
         let n = self.packet_num;
-        self.packet_num += 1;
-        n
+        self.packet_num = n
+            .checked_add(1)
+            .ok_or_else(|| AfcError::Protocol("AFC packet identifier exhausted".into()))?;
+        Ok(n)
+    }
+
+    async fn request(
+        &mut self,
+        opcode: AfcOpcode,
+        header_payload: &[u8],
+        payload: &[u8],
+    ) -> Result<Packet, AfcError> {
+        if !self.usable {
+            return Err(AfcError::Protocol(
+                "AFC connection is unusable; reconnect before another request".into(),
+            ));
+        }
+        let deadline = match self.request_timeout {
+            Some(budget) if budget.is_zero() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "AFC request budget is zero",
+                )
+                .into())
+            }
+            Some(budget) => Some(tokio::time::Instant::now().checked_add(budget).ok_or_else(
+                || {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "AFC request deadline is too large",
+                    )
+                },
+            )?),
+            None => None,
+        };
+        self.stream.progressed = false;
+        let mut request = AfcRequest {
+            client: self,
+            completed: false,
+        };
+        let operation = async {
+            request.client.send(opcode, header_payload, payload).await?;
+            request.client.recv().await
+        };
+        let result = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, operation).await {
+                Ok(result) => result,
+                Err(elapsed) => {
+                    // The cancelled operation's guard decides whether any
+                    // bytes were transferred. A zero-byte wait is reusable.
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into());
+                }
+            },
+            None => operation.await,
+        };
+        // A complete device Status consumes its entire frame and leaves the
+        // request boundary intact. IO/codec errors cannot certify that boundary.
+        request.completed = true;
+        if result.is_err() && !matches!(result, Err(AfcError::Status(_))) {
+            request.client.usable = false;
+        }
+        result
     }
 
     // ── send ─────────────────────────────────────────────────────────────────
@@ -219,7 +413,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         header_payload: &[u8],
         payload: &[u8],
     ) -> Result<(), AfcError> {
-        let pnum = self.next_pnum();
+        let pnum = self.next_pnum()?;
         let hdr = AfcHeader::new(pnum, opcode, header_payload.len(), payload.len());
         self.stream.write_all(hdr.as_bytes()).await?;
         if !header_payload.is_empty() {
@@ -342,8 +536,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub async fn list_dir(&mut self, path: &str) -> Result<Vec<String>, AfcError> {
         let mut hp = path.as_bytes().to_vec();
         hp.push(0);
-        self.send(AfcOpcode::ReadDir, &hp, &[]).await?;
-        let pkt = self.recv().await?;
+        let pkt = self.request(AfcOpcode::ReadDir, &hp, &[]).await?;
         // Filenames come in the payload section (consistent with go-ios pack.Payload)
         let entries = split_null_strings(&pkt.payload)
             .into_iter()
@@ -356,8 +549,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub async fn stat(&mut self, path: &str) -> Result<HashMap<String, String>, AfcError> {
         let mut hp = path.as_bytes().to_vec();
         hp.push(0);
-        self.send(AfcOpcode::GetFileInfo, &hp, &[]).await?;
-        let pkt = self.recv().await?;
+        let pkt = self.request(AfcOpcode::GetFileInfo, &hp, &[]).await?;
         Ok(parse_kv_pairs(&pkt.payload))
     }
 
@@ -374,8 +566,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub async fn make_dir(&mut self, path: &str) -> Result<(), AfcError> {
         let mut hp = path.as_bytes().to_vec();
         hp.push(0);
-        self.send(AfcOpcode::MakePath, &hp, &[]).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::MakePath, &hp, &[]).await?;
         Ok(())
     }
 
@@ -383,8 +574,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub async fn remove(&mut self, path: &str) -> Result<(), AfcError> {
         let mut hp = path.as_bytes().to_vec();
         hp.push(0);
-        self.send(AfcOpcode::RemovePath, &hp, &[]).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::RemovePath, &hp, &[]).await?;
         Ok(())
     }
 
@@ -392,9 +582,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     pub async fn remove_all(&mut self, path: &str) -> Result<(), AfcError> {
         let mut hp = path.as_bytes().to_vec();
         hp.push(0);
-        self.send(AfcOpcode::RemovePathAndContents, &hp, &[])
+        self.request(AfcOpcode::RemovePathAndContents, &hp, &[])
             .await?;
-        self.recv().await?;
         Ok(())
     }
 
@@ -404,8 +593,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         hp.push(0);
         hp.extend_from_slice(to.as_bytes());
         hp.push(0);
-        self.send(AfcOpcode::RenamePath, &hp, &[]).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::RenamePath, &hp, &[]).await?;
         Ok(())
     }
 
@@ -416,24 +604,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     /// reason. Use [`Self::file_read`] in a loop for anything larger.
     pub async fn read_file(&mut self, path: &str) -> Result<Bytes, AfcError> {
         let fd = self.file_open(path, Self::FILE_MODE_READ_ONLY).await?; // READ_ONLY
-        let mut data = BytesMut::new();
-        let chunk = 65536u64;
-        loop {
-            let buf = self.file_read(fd, chunk).await?;
-            if buf.is_empty() {
-                break;
+        let mut transfer = AfcTransfer {
+            client: self,
+            completed: false,
+        };
+        let result = async {
+            let mut data = BytesMut::new();
+            let chunk = 65536u64;
+            loop {
+                let buf = transfer.client.file_read(fd, chunk).await?;
+                if buf.is_empty() {
+                    break;
+                }
+                if data.len() + buf.len() > Self::MAX_IN_MEMORY_FILE {
+                    return Err(AfcError::Protocol(format!(
+                        "{path} exceeds the {} byte in-memory read limit",
+                        Self::MAX_IN_MEMORY_FILE
+                    )));
+                }
+                data.extend_from_slice(&buf);
             }
-            if data.len() + buf.len() > Self::MAX_IN_MEMORY_FILE {
-                self.file_close(fd).await?;
-                return Err(AfcError::Protocol(format!(
-                    "{path} exceeds the {} byte in-memory read limit",
-                    Self::MAX_IN_MEMORY_FILE
-                )));
-            }
-            data.extend_from_slice(&buf);
+            Ok(data.freeze())
         }
-        self.file_close(fd).await?;
-        Ok(data.freeze())
+        .await;
+        let cleanup = transfer
+            .client
+            .close_transfer_file(fd, FILE_CLEANUP_BUDGET)
+            .await;
+        if cleanup.is_err() {
+            transfer.client.usable = false;
+        }
+        transfer.completed = true;
+        finish_file_transfer(result, cleanup)
     }
 
     /// Read an entire file into memory, following a single AFC symlink.
@@ -464,6 +666,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         let fd = self
             .file_open(path, Self::FILE_MODE_WRITE_ONLY_CREATE_TRUNC)
             .await?;
+        let mut transfer = AfcTransfer {
+            client: self,
+            completed: false,
+        };
         let result = async {
             let mut buf = vec![0u8; 1024 * 1024];
             loop {
@@ -471,15 +677,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
                 if n == 0 {
                     break;
                 }
-                self.file_write(fd, &buf[..n]).await?;
+                transfer.client.file_write(fd, &buf[..n]).await?;
             }
             Ok::<(), AfcError>(())
         }
         .await;
-        let close_result = self.file_close(fd).await;
-        result?;
-        close_result?;
-        Ok(())
+        let cleanup = transfer
+            .client
+            .close_transfer_file(fd, FILE_CLEANUP_BUDGET)
+            .await;
+        if cleanup.is_err() {
+            transfer.client.usable = false;
+        }
+        transfer.completed = true;
+        finish_file_transfer(result, cleanup)
     }
 
     pub async fn open_file(&mut self, path: &str, mode: u64) -> Result<u64, AfcError> {
@@ -490,8 +701,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         let mut hp = [0u8; 16];
         hp[..8].copy_from_slice(&fd.to_le_bytes());
         hp[8..].copy_from_slice(&operation.to_le_bytes());
-        self.send(AfcOpcode::FileRefLock, &hp, &[]).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::FileRefLock, &hp, &[]).await?;
         Ok(())
     }
 
@@ -501,8 +711,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
 
     /// Get device filesystem info.
     pub async fn device_info(&mut self) -> Result<HashMap<String, String>, AfcError> {
-        self.send(AfcOpcode::GetDeviceInfo, &[], &[]).await?;
-        let pkt = self.recv().await?;
+        let pkt = self.request(AfcOpcode::GetDeviceInfo, &[], &[]).await?;
         Ok(parse_kv_pairs(&pkt.payload))
     }
 
@@ -513,9 +722,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         hp[..8].copy_from_slice(&mode.to_le_bytes());
         hp.extend_from_slice(path.as_bytes());
         hp.push(0);
-        self.send(AfcOpcode::FileRefOpen, &hp, &[]).await?;
-        let pkt = self.recv().await?;
+        let pkt = self.request(AfcOpcode::FileRefOpen, &hp, &[]).await?;
         if pkt.header_payload.len() < 8 {
+            self.usable = false;
             return Err(AfcError::Protocol(
                 "FileRefOpenResult: short response".into(),
             ));
@@ -534,24 +743,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         let mut hp = [0u8; 16];
         hp[..8].copy_from_slice(&fd.to_le_bytes());
         hp[8..].copy_from_slice(&size.to_le_bytes());
-        self.send(AfcOpcode::FileRefRead, &hp, &[]).await?;
-        let pkt = self.recv().await?;
+        let pkt = self.request(AfcOpcode::FileRefRead, &hp, &[]).await?;
         Ok(pkt.payload)
     }
 
     async fn file_write(&mut self, fd: u64, data: &[u8]) -> Result<(), AfcError> {
         let mut hp = [0u8; 8];
         hp.copy_from_slice(&fd.to_le_bytes());
-        self.send(AfcOpcode::FileRefWrite, &hp, data).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::FileRefWrite, &hp, data).await?;
         Ok(())
     }
 
     async fn file_close(&mut self, fd: u64) -> Result<(), AfcError> {
         let hp = fd.to_le_bytes();
-        self.send(AfcOpcode::FileRefClose, &hp, &[]).await?;
-        self.recv().await?;
+        self.request(AfcOpcode::FileRefClose, &hp, &[]).await?;
         Ok(())
+    }
+
+    async fn close_transfer_file(&mut self, fd: u64, budget: Duration) -> Result<(), AfcError> {
+        match tokio::time::timeout(budget, self.file_close(fd)).await {
+            Ok(result) => result,
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
+        }
     }
 
     async fn resolve_read_path(&mut self, path: &str) -> Result<String, AfcError> {
@@ -635,6 +848,655 @@ pub mod mode {
 
 #[cfg(test)]
 mod tests {
+    async fn lifecycle_read_request(
+        peer: &mut tokio::io::DuplexStream,
+        opcode: AfcOpcode,
+    ) -> (u64, Vec<u8>, Vec<u8>) {
+        let mut bytes = [0; AfcHeader::SIZE];
+        peer.read_exact(&mut bytes).await.unwrap();
+        let header = AfcHeader::ref_from_bytes(&bytes).unwrap();
+        assert_eq!(header.magic.get(), AFC_MAGIC);
+        assert_eq!(header.operation.get(), opcode as u64);
+        let mut hp = vec![0; header.this_len.get() as usize - AfcHeader::SIZE];
+        let mut data = vec![0; (header.entire_len.get() - header.this_len.get()) as usize];
+        peer.read_exact(&mut hp).await.unwrap();
+        peer.read_exact(&mut data).await.unwrap();
+        (header.packet_num.get(), hp, data)
+    }
+
+    async fn lifecycle_reply(
+        peer: &mut tokio::io::DuplexStream,
+        id: u64,
+        opcode: AfcOpcode,
+        hp: &[u8],
+        data: &[u8],
+    ) {
+        let header = AfcHeader::new(id, opcode, hp.len(), data.len());
+        peer.write_all(header.as_bytes()).await.unwrap();
+        peer.write_all(hp).await.unwrap();
+        peer.write_all(data).await.unwrap();
+    }
+
+    fn lifecycle_elapsed(error: &AfcError) -> &tokio::time::error::Elapsed {
+        let AfcError::Io(io) = error else {
+            panic!("native timeout flattened")
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        io.get_ref().unwrap().downcast_ref().unwrap()
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_zero_overflow_unpolled_have_no_io() {
+        use std::error::Error;
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AfcClient::new(stream);
+        for (budget, kind) in [
+            (Duration::ZERO, std::io::ErrorKind::TimedOut),
+            (Duration::MAX, std::io::ErrorKind::InvalidInput),
+        ] {
+            client.set_request_timeout(Some(budget));
+            let error = client.stat("owned-private-path").await.unwrap_err();
+            let AfcError::Io(io) = error else {
+                panic!("typed local decision lost")
+            };
+            assert_eq!(io.kind(), kind);
+            assert!(io.source().is_none());
+            assert!(client.is_usable());
+            assert_eq!(client.packet_num, 1);
+        }
+        client.set_request_timeout(None);
+        drop(client.list_dir("owned-private-path"));
+        assert!(client.is_usable());
+        assert_eq!(client.packet_num, 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read(&mut [0; 1]))
+                .await
+                .is_err()
+        );
+        client.packet_num = u64::MAX;
+        assert!(matches!(
+            client.list_dir("/").await,
+            Err(AfcError::Protocol(_))
+        ));
+        assert_eq!(client.packet_num, u64::MAX);
+        assert!(!client.is_usable());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read(&mut [0; 1]))
+                .await
+                .is_err()
+        );
+    }
+
+    struct LifecycleStalledWrite {
+        stream: tokio::io::DuplexStream,
+        stalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl AsyncRead for LifecycleStalledWrite {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+    impl AsyncWrite for LifecycleStalledWrite {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.stalled.load(std::sync::atomic::Ordering::Relaxed) {
+                Poll::Pending
+            } else {
+                Pin::new(&mut self.stream).poll_write(cx, bytes)
+            }
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_zero_byte_deadline_and_caller_cancel_keep_reuse() {
+        for own_budget in [true, false] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let mut client = AfcClient::new(LifecycleStalledWrite {
+                stream,
+                stalled: stalled.clone(),
+            });
+            if own_budget {
+                client.set_request_timeout(Some(Duration::from_millis(20)));
+                lifecycle_elapsed(&client.list_dir("owned path").await.unwrap_err());
+            } else {
+                assert!(tokio::time::timeout(
+                    Duration::from_millis(20),
+                    client.list_dir("owned path")
+                )
+                .await
+                .is_err());
+            }
+            assert!(client.is_usable());
+            assert_eq!(client.packet_num, 2); // no wire progress, identifier skipped
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), peer.read(&mut [0; 1]))
+                    .await
+                    .is_err()
+            );
+            stalled.store(false, std::sync::atomic::Ordering::Relaxed);
+            client.set_request_timeout(None);
+            let caller = client.list_dir("owned path");
+            let server = async {
+                let (id, hp, data) = lifecycle_read_request(&mut peer, AfcOpcode::ReadDir).await;
+                assert_eq!(id, 2);
+                assert_eq!(hp, b"owned path\0");
+                assert!(data.is_empty());
+                lifecycle_reply(&mut peer, id, AfcOpcode::Data, &[], b"entry\0").await;
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            assert_eq!(result.unwrap(), vec!["entry"]);
+            assert!(client.is_usable());
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_cancel_after_send_rejects_all_requests_and_leaves_late_reply() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AfcClient::new(stream);
+        let (cancelled, after_cancel) = tokio::sync::oneshot::channel();
+        let caller = async {
+            assert!(tokio::time::timeout(
+                Duration::from_millis(20),
+                client.list_dir("owned-private-path")
+            )
+            .await
+            .is_err());
+            assert!(!client.is_usable());
+            cancelled.send(()).unwrap();
+            assert!(matches!(
+                client.list_dir("/").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(client.stat("/").await, Err(AfcError::Protocol(_))));
+            assert!(matches!(
+                client.stat_info("/").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.make_dir("/").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.remove("/").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.remove_all("/").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.rename("/a", "/b").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.device_info().await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.open_file("/a", 1).await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.close_file(7).await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.lock_file(7, 6).await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.read_file("/a").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.read_file_follow_links("/a").await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(matches!(
+                client.write_file("/a", b"data").await,
+                Err(AfcError::Protocol(_))
+            ));
+        };
+        let server = async {
+            let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::ReadDir).await;
+            assert_eq!(id, 1);
+            assert_eq!(hp, b"owned-private-path\0");
+            after_cancel.await.unwrap();
+            let late = afc_frame(AfcOpcode::Data, &[], b"late entry\0");
+            peer.write_all(&late).await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), peer.read(&mut [0; 1]))
+                    .await
+                    .is_err()
+            );
+            late
+        };
+        let ((), late) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        // Inspect the owned raw transport only after the public client has
+        // rejected reuse: the complete late reply remains unread.
+        let mut unread = vec![0; late.len()];
+        client.stream.inner.read_exact(&mut unread).await.unwrap();
+        assert_eq!(unread, late);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_partial_header_body_eof_and_bad_magic_invalidate() {
+        for case in 0..4 {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut client = AfcClient::new(stream);
+            client.set_request_timeout(Some(Duration::from_millis(20)));
+            let caller = client.list_dir("/");
+            let server = async {
+                lifecycle_read_request(&mut peer, AfcOpcode::ReadDir).await;
+                let mut frame = afc_frame(AfcOpcode::Data, &[], b"names\0");
+                match case {
+                    0 => peer.write_all(&frame[..13]).await.unwrap(),
+                    1 => peer.write_all(&frame[..AfcHeader::SIZE + 1]).await.unwrap(),
+                    2 => {
+                        drop(peer);
+                        return None;
+                    }
+                    _ => {
+                        frame[0] ^= 1;
+                        peer.write_all(&frame).await.unwrap();
+                    }
+                }
+                Some(peer)
+            };
+            let (result, _peer) = tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            if case < 2 {
+                lifecycle_elapsed(&error);
+            } else if case == 2 {
+                assert!(
+                    matches!(&error, AfcError::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof)
+                );
+            } else {
+                assert!(matches!(&error, AfcError::Protocol(_)));
+            }
+            assert!(!client.is_usable());
+            assert!(matches!(client.stat("/").await, Err(AfcError::Protocol(_))));
+            assert!(!format!("{error:?}").contains("names"));
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_blocked_partial_send_shares_request_budget() {
+        let (stream, mut peer) = tokio::io::duplex(16);
+        let mut client = AfcClient::new(stream);
+        client.set_request_timeout(Some(Duration::from_millis(20)));
+        lifecycle_elapsed(&client.list_dir("owned path").await.unwrap_err());
+        assert!(!client.is_usable());
+        assert!(matches!(
+            client.make_dir("/").await,
+            Err(AfcError::Protocol(_))
+        ));
+        drop(client);
+        let mut prefix = Vec::new();
+        peer.read_to_end(&mut prefix).await.unwrap();
+        assert_eq!(prefix.len(), 16);
+        assert_eq!(
+            prefix,
+            AfcHeader::new(1, AfcOpcode::ReadDir, b"owned path\0".len(), 0).as_bytes()[..16]
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_complete_device_status_remains_reusable() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AfcClient::new(stream);
+        client.set_request_timeout(Some(Duration::from_secs(1)));
+        let caller = async {
+            assert!(matches!(
+                client.remove("owned path").await,
+                Err(AfcError::Status(AfcStatusCode::ObjectNotFound))
+            ));
+            assert!(client.is_usable());
+            assert_eq!(client.list_dir("/").await.unwrap(), vec!["entry"]);
+            assert!(client.is_usable());
+            assert!(matches!(
+                client.open_file("owned path", 1).await,
+                Err(AfcError::Protocol(_))
+            ));
+            assert!(!client.is_usable());
+        };
+        let server = async {
+            let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::RemovePath).await;
+            assert_eq!(hp, b"owned path\0");
+            lifecycle_reply(&mut peer, id, AfcOpcode::Status, &8u64.to_le_bytes(), &[]).await;
+            let (next, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::ReadDir).await;
+            assert_eq!(next, id + 1);
+            lifecycle_reply(&mut peer, next, AfcOpcode::Data, &[], b"entry\0").await;
+            let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+            assert_eq!(id, next + 1);
+            lifecycle_reply(&mut peer, id, AfcOpcode::FileRefOpenResult, &[0; 7], &[]).await;
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_read_failure_closes_handle_and_retains_both_statuses() {
+        for close_fails in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut client = AfcClient::new(stream);
+            let caller = client.read_file("owned-private-path");
+            let server = async {
+                let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+                assert_eq!(
+                    &hp[..8],
+                    &AfcClient::<tokio::io::DuplexStream>::FILE_MODE_READ_ONLY.to_le_bytes()
+                );
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::FileRefOpenResult,
+                    &7u64.to_le_bytes(),
+                    &[],
+                )
+                .await;
+                let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefRead).await;
+                assert_eq!(&hp[..8], &7u64.to_le_bytes());
+                assert_eq!(&hp[8..], &65536u64.to_le_bytes());
+                lifecycle_reply(&mut peer, id, AfcOpcode::Status, &8u64.to_le_bytes(), &[]).await;
+                let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefClose).await;
+                assert_eq!(hp, 7u64.to_le_bytes());
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::Status,
+                    &(if close_fails { 10u64 } else { 0 }).to_le_bytes(),
+                    &[],
+                )
+                .await;
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::NotFound);
+            assert_eq!(client.is_usable(), !close_fails);
+            if close_fails {
+                let AfcError::Io(io) = &error else {
+                    panic!("cleanup cause lost")
+                };
+                let failure = io
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<FileCleanupFailure>()
+                    .unwrap();
+                assert!(matches!(
+                    failure.primary,
+                    AfcError::Status(AfcStatusCode::ObjectNotFound)
+                ));
+                assert!(matches!(
+                    failure.cleanup,
+                    AfcError::Status(AfcStatusCode::PermDenied)
+                ));
+                assert!(!format!("{failure:?}").contains("owned-private"));
+            } else {
+                assert!(matches!(
+                    error,
+                    AfcError::Status(AfcStatusCode::ObjectNotFound)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_read_success_and_cleanup_only_failure() {
+        for close_fails in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut client = AfcClient::new(stream);
+            let caller = client.read_file("owned path");
+            let server = async {
+                let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::FileRefOpenResult,
+                    &7u64.to_le_bytes(),
+                    &[],
+                )
+                .await;
+                for data in [b"content".as_slice(), b"".as_slice()] {
+                    let (id, _, _) =
+                        lifecycle_read_request(&mut peer, AfcOpcode::FileRefRead).await;
+                    lifecycle_reply(&mut peer, id, AfcOpcode::Data, &[], data).await;
+                }
+                let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefClose).await;
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::Status,
+                    &(if close_fails { 10u64 } else { 0 }).to_le_bytes(),
+                    &[],
+                )
+                .await;
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            if close_fails {
+                assert!(matches!(
+                    result,
+                    Err(AfcError::Status(AfcStatusCode::PermDenied))
+                ));
+            } else {
+                assert_eq!(result.unwrap().as_ref(), b"content");
+            }
+            assert_eq!(client.is_usable(), !close_fails);
+        }
+    }
+
+    struct LifecycleFailingReader(Option<std::io::Error>);
+    impl AsyncRead for LifecycleFailingReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(self.0.take().unwrap()))
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_host_reader_failure_closes_file_without_flattening() {
+        for close_fails in [false, true] {
+            let native = std::fs::File::open("").unwrap_err();
+            let code = native.raw_os_error();
+            let mut reader = LifecycleFailingReader(Some(native));
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut client = AfcClient::new(stream);
+            let caller = client.write_file_from_reader("owned-private-path", &mut reader);
+            let server = async {
+                let (id, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+                assert_eq!(
+                    &hp[..8],
+                    &AfcClient::<tokio::io::DuplexStream>::FILE_MODE_WRITE_ONLY_CREATE_TRUNC
+                        .to_le_bytes()
+                );
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::FileRefOpenResult,
+                    &7u64.to_le_bytes(),
+                    &[],
+                )
+                .await;
+                let (id, hp, data) =
+                    lifecycle_read_request(&mut peer, AfcOpcode::FileRefClose).await;
+                assert_eq!(hp, 7u64.to_le_bytes());
+                assert!(data.is_empty());
+                lifecycle_reply(
+                    &mut peer,
+                    id,
+                    AfcOpcode::Status,
+                    &(if close_fails { 10u64 } else { 0 }).to_le_bytes(),
+                    &[],
+                )
+                .await;
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            let AfcError::Io(io) = &error else {
+                panic!("native host IO lost")
+            };
+            let original = if close_fails {
+                let failure = io
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<FileCleanupFailure>()
+                    .unwrap();
+                assert!(matches!(
+                    failure.cleanup,
+                    AfcError::Status(AfcStatusCode::PermDenied)
+                ));
+                let AfcError::Io(primary) = &failure.primary else {
+                    panic!("native primary lost")
+                };
+                primary
+            } else {
+                io
+            };
+            assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+            assert_eq!(original.raw_os_error(), code);
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::NotFound);
+            assert_eq!(client.is_usable(), !close_fails);
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_public_read_cleanup_has_independent_five_second_budget() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AfcClient::new(stream); // legacy requests are unbounded
+        let caller = client.read_file("owned path");
+        let server = async {
+            let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+            lifecycle_reply(
+                &mut peer,
+                id,
+                AfcOpcode::FileRefOpenResult,
+                &7u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+            let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefRead).await;
+            lifecycle_reply(&mut peer, id, AfcOpcode::Status, &8u64.to_le_bytes(), &[]).await;
+            let (_, hp, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefClose).await;
+            assert_eq!(hp, 7u64.to_le_bytes());
+            peer // keep the transport alive, deliberately withhold close reply
+        };
+        let (result, mut peer) = tokio::time::timeout(Duration::from_secs(6), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        let error = result.unwrap_err();
+        let AfcError::Io(io) = &error else {
+            panic!("dual failure lost")
+        };
+        let failure = io
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<FileCleanupFailure>()
+            .unwrap();
+        assert!(matches!(
+            failure.primary,
+            AfcError::Status(AfcStatusCode::ObjectNotFound)
+        ));
+        lifecycle_elapsed(&failure.cleanup);
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::NotFound);
+        assert!(!client.is_usable());
+        assert!(matches!(
+            client.close_file(7).await,
+            Err(AfcError::Protocol(_))
+        ));
+        drop(client);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_afc_transfer_cancel_between_requests_invalidates_owner() {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let (mut reader, _reader_peer) = tokio::io::duplex(64);
+        let mut client = AfcClient::new(stream);
+        let caller = tokio::time::timeout(
+            Duration::from_millis(20),
+            client.write_file_from_reader("owned path", &mut reader),
+        );
+        let server = async {
+            let (id, _, _) = lifecycle_read_request(&mut peer, AfcOpcode::FileRefOpen).await;
+            lifecycle_reply(
+                &mut peer,
+                id,
+                AfcOpcode::FileRefOpenResult,
+                &7u64.to_le_bytes(),
+                &[],
+            )
+            .await;
+            peer
+        };
+        let (result, mut peer) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(caller, server)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert!(!client.is_usable());
+        assert!(matches!(
+            client.list_dir("/").await,
+            Err(AfcError::Protocol(_))
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), peer.read(&mut [0; 1]))
+                .await
+                .is_err()
+        );
+        drop(client);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
     #[test]
     fn guarded_sources_afc_cast_owns_original_short_source_and_keeps_protocol_role() {
         use super::*;
