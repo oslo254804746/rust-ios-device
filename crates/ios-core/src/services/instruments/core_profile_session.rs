@@ -99,7 +99,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
                 Ok(())
             }
             Ok(Err(error)) => Err(error),
-            Err(_) => Ok(()),
+            Err(_) if self.conn.is_usable() => Ok(()),
+            Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
         }
     }
 
@@ -497,6 +498,64 @@ fn default_config_uuid() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn lifecycle_dtx_profile_start_distinguishes_empty_idle_from_partial_notice() {
+        for partial in [false, true] {
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let mut session = CoreProfileSessionClient {
+                conn: DtxConnection::new(stream),
+                device_info_channel: 1,
+                core_profile_channel: 2,
+                mach_time_info: MachTimeInfo { numer: 1, denom: 1 },
+                pending_event: None,
+            };
+            let config = CoreProfileConfig::fps_defaults();
+            let caller = session.start(&config);
+            let server = async {
+                for _ in 0..2 {
+                    read_dtx_frame(&mut peer).await.unwrap();
+                }
+                if partial {
+                    let frame =
+                        encode_dtx(91, 0, -2, false, MSG_UNKNOWN_TYPE_ONE, b"owned chunk", &[]);
+                    peer.write_all(&frame[..8]).await.unwrap();
+                }
+                peer
+            };
+            let (result, mut peer) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(caller, server)
+            })
+            .await
+            .unwrap();
+            if partial {
+                let error = result.unwrap_err();
+                assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+                assert!(
+                    matches!(error, DtxError::Io(ref io) if io.get_ref().unwrap().is::<tokio::time::error::Elapsed>())
+                );
+                assert!(!session.conn.is_usable());
+            } else {
+                result.unwrap();
+                assert!(session.conn.is_usable());
+                peer.write_all(&encode_dtx(
+                    91,
+                    0,
+                    -2,
+                    false,
+                    MSG_UNKNOWN_TYPE_ONE,
+                    b"owned chunk",
+                    &[],
+                ))
+                .await
+                .unwrap();
+                assert!(
+                    matches!(tokio::time::timeout(Duration::from_secs(1), session.next_event()).await.unwrap().unwrap(), CoreProfileEvent::RawChunk(ref chunk) if chunk.as_ref() == b"owned chunk")
+                );
+                assert!(session.conn.is_usable());
+            }
+        }
+    }
+
     use crate::proto::nskeyedarchiver_encode;
     use plist::Value;
     use tokio::io::AsyncWriteExt;

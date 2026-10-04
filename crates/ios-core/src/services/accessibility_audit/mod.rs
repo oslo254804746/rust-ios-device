@@ -160,7 +160,14 @@ where
             let message =
                 match tokio::time::timeout(Duration::from_millis(300), self.conn.recv()).await {
                     Ok(result) => result?,
-                    Err(_) => continue, // slot timed out; keep iterating remaining slots
+                    Err(_) if self.conn.is_usable() => continue, // empty idle slot
+                    Err(elapsed) => {
+                        return Err(DtxError::from(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            elapsed,
+                        ))
+                        .into())
+                    }
                 };
             if message.expects_reply {
                 self.conn.send_ack(&message).await?;
@@ -490,7 +497,14 @@ where
         loop {
             let event = match tokio::time::timeout(idle_timeout, self.next_event()).await {
                 Ok(event) => event?,
-                Err(_) => return Ok(None),
+                Err(_) if self.conn.is_usable() => return Ok(None),
+                Err(elapsed) => {
+                    return Err(DtxError::from(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        elapsed,
+                    ))
+                    .into())
+                }
             };
             if event.selector != EVENT_FOCUS_CHANGED {
                 continue;
@@ -802,6 +816,41 @@ fn passthrough_value(value: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn lifecycle_dtx_accessibility_idle_and_partial_frame_have_distinct_outcomes() {
+        use tokio::io::AsyncWriteExt;
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AccessibilityAuditClient::new_rsd(stream, 17);
+        client.published_capabilities = true;
+        client.initial_messages_flushed = true;
+        assert!(client
+            .next_focus_change_with_idle_timeout(Duration::from_millis(10))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client.conn.is_usable());
+        let frame = crate::services::dtx::encode_dtx(91, 0, 1, false, 0, &[], &[]);
+        peer.write_all(&frame[..8]).await.unwrap();
+        let error = client
+            .next_focus_change_with_idle_timeout(Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(
+            matches!(error, AccessibilityAuditError::Dtx(DtxError::Io(ref io)) if io.get_ref().unwrap().is::<tokio::time::error::Elapsed>())
+        );
+        assert!(!client.conn.is_usable());
+
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let mut client = AccessibilityAuditClient::new_rsd(stream, 17);
+        client.published_capabilities = true;
+        peer.write_all(&frame[..8]).await.unwrap();
+        let error = client.ensure_ready().await.unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);
+        assert!(!client.conn.is_usable());
+        assert!(!client.initial_messages_flushed);
+    }
+
     use serde_json::json;
 
     use super::*;

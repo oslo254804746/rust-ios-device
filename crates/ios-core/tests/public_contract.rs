@@ -8,6 +8,49 @@ use ios_core::{
     TunnelInfo, XpcMessage, XpcValue,
 };
 
+#[cfg(feature = "dtx")]
+#[tokio::test]
+async fn lifecycle_dtx_public_deadlines_keep_exhaustive_errors_and_success_reuse() {
+    use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxConnection, DtxError};
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    fn family(error: &DtxError) -> &str {
+        match error {
+            DtxError::Io(_) => "io",
+            DtxError::BadMagic(_) => "magic",
+            DtxError::Protocol(_) => "protocol",
+        }
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let mut connection = DtxConnection::new(stream);
+    let zero = connection
+        .request_channel_with_timeout("owned service", Duration::ZERO)
+        .await
+        .unwrap_err();
+    assert_eq!(family(&zero), "io");
+    assert_eq!(
+        ios_core::classify_error(&zero),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(connection.is_usable());
+    let caller =
+        connection.method_call_with_timeout(1, "owned operation", &[], Duration::from_secs(1));
+    let server = async {
+        let request = read_dtx_frame(&mut peer).await.unwrap();
+        assert_eq!(request.identifier, 5);
+        peer.write_all(&encode_dtx(request.identifier, 1, 1, false, 0, &[], &[]))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, server)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap().identifier, 5);
+    assert!(connection.is_usable());
+}
+
 #[tokio::test]
 async fn response_codes_public_start_service_keeps_legacy_api_and_owned_observation() {
     use ios_core::{

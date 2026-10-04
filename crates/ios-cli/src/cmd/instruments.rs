@@ -1591,15 +1591,23 @@ mod tests {
                     offset += size;
                     messages.push(message);
                 }
-                assert_eq!(messages.len(), 4);
+                // A completed EOF now invalidates DTX before best-effort
+                // stop. Count completion still sends stop on a usable stream.
+                assert_eq!(messages.len(), if count == 0 { 3 } else { 4 });
                 assert_eq!(
                     messages.iter().map(|m| m.identifier).collect::<Vec<_>>(),
-                    [5, 6, 7, 8]
+                    if count == 0 {
+                        vec![5, 6, 7]
+                    } else {
+                        vec![5, 6, 7, 8]
+                    }
                 );
-                let DtxPayload::MethodInvocation { selector, .. } = &messages[3].payload else {
-                    panic!("stop missing")
-                };
-                assert_eq!(selector, "stop");
+                if count > 0 {
+                    let DtxPayload::MethodInvocation { selector, .. } = &messages[3].payload else {
+                        panic!("stop missing")
+                    };
+                    assert_eq!(selector, "stop");
+                }
             };
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
                 tokio::join!(caller, server);
