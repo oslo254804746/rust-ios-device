@@ -1989,6 +1989,55 @@ async fn public_discovery_deadlines_keep_native_sources_and_exhaustive_families(
     assert!(has_elapsed(&error));
 }
 
+#[cfg(feature = "notificationproxy")]
+#[test]
+fn lifecycle_notification_public_budget_state_send_and_exhaustive_families() {
+    use ios_core::notificationproxy::{
+        NotificationEvent, NotificationProxyClient, NotificationProxyError, NotificationProxyEvent,
+    };
+    use std::time::Duration;
+    fn send<T: Send>(_: T) {}
+    fn error_family(error: &NotificationProxyError) -> &'static str {
+        match error {
+            NotificationProxyError::Io(_) => "io",
+            NotificationProxyError::Plist(_) => "plist",
+            NotificationProxyError::Protocol(_) => "protocol",
+            NotificationProxyError::ProxyDeath => "death",
+            NotificationProxyError::Timeout => "timeout",
+        }
+    }
+    fn event_family(event: NotificationEvent) -> &'static str {
+        match event {
+            NotificationEvent::Notification(_) => "notification",
+            NotificationEvent::ProxyDeath => "death",
+        }
+    }
+    fn next_family(event: NotificationProxyEvent) -> &'static str {
+        match event {
+            NotificationProxyEvent::Notification(_) => "notification",
+            NotificationProxyEvent::ProxyDeath => "death",
+        }
+    }
+    let (stream, _peer) = tokio::io::duplex(4096);
+    let mut client = NotificationProxyClient::new(stream);
+    let usable: fn(&NotificationProxyClient<tokio::io::DuplexStream>) -> bool =
+        NotificationProxyClient::is_usable;
+    let setter: fn(&mut NotificationProxyClient<tokio::io::DuplexStream>, Option<Duration>) =
+        NotificationProxyClient::set_operation_timeout;
+    setter(&mut client, Some(Duration::from_secs(1)));
+    send(client.observe("owned"));
+    send(client.post("owned"));
+    send(client.wait_for("owned", Duration::from_secs(1)));
+    send(client.wait_for_springboard(Duration::from_secs(1)));
+    send(client.next_event(Duration::from_secs(1)));
+    send(client.recv_event());
+    send(client.shutdown());
+    assert!(usable(&client));
+    assert_eq!(error_family(&NotificationProxyError::Timeout), "timeout");
+    assert_eq!(event_family(NotificationEvent::ProxyDeath), "death");
+    assert_eq!(next_family(NotificationProxyEvent::ProxyDeath), "death");
+}
+
 #[cfg(all(feature = "crashreport", feature = "ostrace"))]
 #[tokio::test]
 async fn public_diagnostic_services_keep_native_sources_and_exhaustive_families() {

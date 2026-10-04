@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
 
+mod lifecycle;
+use lifecycle::{await_notification_operation, NotificationState, SHUTDOWN_TIMEOUT};
+
+#[cfg(test)]
+mod lifecycle_tests;
+
 pub const SERVICE_NAME: &str = "com.apple.mobile.notification_proxy";
 pub const RSD_SERVICE_NAME: &str = "com.apple.mobile.notification_proxy.shim.remote";
 pub const SPRINGBOARD_FINISHED_STARTUP: &str = "com.apple.springboard.finishedstartup";
@@ -38,6 +44,7 @@ pub enum NotificationProxyEvent {
 pub struct NotificationProxyClient<S> {
     stream: S,
     observing: HashSet<String>,
+    state: NotificationState,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
@@ -45,10 +52,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         Self {
             stream,
             observing: HashSet::new(),
+            state: NotificationState::default(),
         }
     }
 
     pub async fn observe(&mut self, notification: &str) -> Result<(), NotificationProxyError> {
+        let deadline = self.deadline(None)?;
+        await_notification_operation(
+            deadline,
+            "observe device notification",
+            self.observe_inner(notification),
+        )
+        .await
+    }
+
+    async fn observe_inner(&mut self, notification: &str) -> Result<(), NotificationProxyError> {
         if self.observing.contains(notification) {
             return Ok(());
         }
@@ -63,10 +81,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
     }
 
     pub async fn post(&mut self, notification: &str) -> Result<(), NotificationProxyError> {
-        self.send_request(NotificationProxyRequest {
-            command: "PostNotification",
-            name: Some(notification),
-        })
+        let deadline = self.deadline(None)?;
+        await_notification_operation(
+            deadline,
+            "post device notification",
+            self.send_request(NotificationProxyRequest {
+                command: "PostNotification",
+                name: Some(notification),
+            }),
+        )
         .await
     }
 
@@ -75,24 +98,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         notification: &str,
         timeout: Duration,
     ) -> Result<(), NotificationProxyError> {
-        self.observe(notification).await?;
+        let deadline = self.deadline(Some(timeout))?;
+        await_notification_operation(
+            deadline,
+            "wait for device notification",
+            self.wait_for_inner(notification, deadline),
+        )
+        .await
+    }
 
-        let deadline = Instant::now() + timeout;
+    async fn wait_for_inner(
+        &mut self,
+        notification: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(), NotificationProxyError> {
+        self.observe_inner(notification).await?;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(NotificationProxyError::Timeout);
+            if let Some(deadline) = deadline.filter(|deadline| Instant::now() >= *deadline) {
+                // Do not consume a ready unrelated frame after the total budget.
+                // Poll the already due timer to retain its actual Elapsed.
+                return await_notification_operation(
+                    Some(deadline),
+                    "wait for device notification",
+                    std::future::pending(),
+                )
+                .await;
             }
 
-            let event = tokio::time::timeout(remaining, self.recv_event())
-                .await
-                .map_err(|error| {
-                    NotificationProxyError::Io(crate::error::context::retained_io(
-                        std::io::ErrorKind::TimedOut,
-                        "wait for device notification",
-                        error,
-                    ))
-                })??;
+            let event = self.recv_event_inner().await?;
 
             match event {
                 NotificationEvent::Notification(name) if name == notification => return Ok(()),
@@ -113,15 +146,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         &mut self,
         timeout: Duration,
     ) -> Result<NotificationProxyEvent, NotificationProxyError> {
-        let message = tokio::time::timeout(timeout, self.recv_message())
-            .await
-            .map_err(|error| {
-                NotificationProxyError::Io(crate::error::context::retained_io(
-                    std::io::ErrorKind::TimedOut,
-                    "receive device notification",
-                    error,
-                ))
-            })??;
+        let deadline = self.deadline(Some(timeout))?;
+        await_notification_operation(
+            deadline,
+            "receive device notification",
+            self.next_event_inner(),
+        )
+        .await
+    }
+
+    async fn next_event_inner(&mut self) -> Result<NotificationProxyEvent, NotificationProxyError> {
+        let message = self.recv_message().await?;
 
         match message.command.as_deref() {
             Some("RelayNotification") => message
@@ -139,14 +174,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
     }
 
     pub async fn shutdown(&mut self) -> Result<(), NotificationProxyError> {
-        self.send_request(NotificationProxyRequest {
-            command: "Shutdown",
-            name: None,
-        })
-        .await
+        let deadline = self.deadline(Some(SHUTDOWN_TIMEOUT))?;
+        await_notification_operation(
+            deadline,
+            "shutdown notification proxy",
+            self.send_request(NotificationProxyRequest {
+                command: "Shutdown",
+                name: None,
+            }),
+        )
+        .await?;
+        self.invalidate();
+        Ok(())
     }
 
     pub async fn recv_event(&mut self) -> Result<NotificationEvent, NotificationProxyError> {
+        let deadline = self.deadline(None)?;
+        await_notification_operation(
+            deadline,
+            "receive device notification",
+            self.recv_event_inner(),
+        )
+        .await
+    }
+
+    async fn recv_event_inner(&mut self) -> Result<NotificationEvent, NotificationProxyError> {
         let message = self.recv_message().await?;
         match message.command.as_deref() {
             Some("RelayNotification") => Ok(NotificationEvent::Notification(
@@ -168,29 +220,50 @@ impl<S: AsyncRead + AsyncWrite + Unpin> NotificationProxyClient<S> {
         &mut self,
         request: NotificationProxyRequest<'_>,
     ) -> Result<(), NotificationProxyError> {
-        let mut buf = Vec::new();
-        plist::to_writer_xml(&mut buf, &request)?;
-        self.stream
-            .write_all(&(buf.len() as u32).to_be_bytes())
-            .await?;
-        self.stream.write_all(&buf).await?;
-        self.stream.flush().await?;
-        Ok(())
+        let mut guard = self.begin_frame()?;
+        let result = async {
+            let mut buf = Vec::new();
+            plist::to_writer_xml(&mut buf, &request)?;
+            let len = u32::try_from(buf.len()).map_err(|error| {
+                NotificationProxyError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::InvalidInput,
+                    "notification request length",
+                    error,
+                ))
+            })?;
+            let mut stream = guard.io();
+            stream.write_all(&len.to_be_bytes()).await?;
+            stream.write_all(&buf).await?;
+            stream.flush().await?;
+            Ok(())
+        }
+        .await;
+        guard.finish(result)
     }
 
     async fn recv_message(&mut self) -> Result<NotificationProxyMessage, NotificationProxyError> {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
-        if len > MAX_PLIST_SIZE {
-            return Err(NotificationProxyError::Protocol(format!(
-                "plist length {len} exceeds max {MAX_PLIST_SIZE}"
-            )));
+        let mut guard = self.begin_frame()?;
+        let result = async {
+            let mut stream = guard.io();
+            let mut len_buf = [0u8; 4];
+            stream.read_exact(&mut len_buf).await?;
+            let len = u32::from_be_bytes(len_buf) as usize;
+            const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+            if len > MAX_PLIST_SIZE {
+                return Err(NotificationProxyError::Protocol(format!(
+                    "plist length {len} exceeds max {MAX_PLIST_SIZE}"
+                )));
+            }
+            let mut buf = vec![0u8; len];
+            stream.read_exact(&mut buf).await?;
+            Ok(plist::from_bytes(&buf)?)
         }
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await?;
-        Ok(plist::from_bytes(&buf)?)
+        .await;
+        let message: NotificationProxyMessage = guard.finish(result)?;
+        if message.command.as_deref() == Some("ProxyDeath") {
+            self.invalidate();
+        }
+        Ok(message)
     }
 }
 

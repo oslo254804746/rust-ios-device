@@ -285,6 +285,20 @@ mod tests {
         )
         .unwrap();
         assert!(!envelope.contains("owned-private"));
+        assert!(!client.is_usable());
+        let rejected = next_stream_notification(&mut client, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            rejected.downcast_ref::<ios_core::notificationproxy::NotificationProxyError>(),
+            Some(ios_core::notificationproxy::NotificationProxyError::Protocol(_))
+        ));
+        drop(client);
+        drop(peer);
+        // ProxyDeath now closes tracked reuse. Preserve the original issued
+        // idle-timeout/native-EOF assertions on a fresh owned connection.
+        let (stream, peer) = tokio::io::duplex(4096);
+        let mut client = ios_core::notificationproxy::NotificationProxyClient::new(stream);
         let elapsed = next_stream_notification(&mut client, Some(Duration::ZERO))
             .await
             .unwrap_err();
