@@ -65,6 +65,18 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+NotificationProxy actual expiry retains Elapsed through existing Io/retained
+context, including budget exhaustion between complete unrelated events: an
+already due timer is polled before reading another frame. Zero admission uses
+source-free existing Timeout; ordinary deadline overflow is Io InvalidInput.
+Native/frame decoding errors keep their original family/cause and invalidate;
+complete business-shape errors keep reuse. ProxyDeath preserves its event/error
+and disconnected category while closing state; later invalid/closed operations
+return Protocol. Successful Shutdown is a bounded write/flush without ACK.
+No core cleanup aggregate or automatic close is added. CLI shutdown suppression
+and error-branch cleanup remain independent pending work. See
+[notification lifecycle evidence](validation/notification-lifecycle-2026-10-04.md).
+
 MobileBackup2's current operation owner retains both failures through
 Mobilebackup2Error::cleanup_failure() and its opaque SessionCleanupFailure.
 operation_error()/cleanup_error() borrow the original objects. Existing Io wraps

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard NotificationProxy partial frames across cancellation, add optional
+  operation budgets, and include subscription writes in wait deadlines. Preserve
+  empty idle reuse and close local state after ProxyDeath or bounded Shutdown.
+  See [notification lifecycle migration](docs/validation/notification-lifecycle-2026-10-04.md).
+
 - Guard MobileBackup2 operations across negotiation, host work and raw transfer
   cancellation. Add optional total budgets and local usable state; retain both
   primary and cleanup failures. Preserve expected peer closure after a complete

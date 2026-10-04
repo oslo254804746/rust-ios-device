@@ -28,6 +28,27 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+NotificationProxyClient adds is_usable and set_operation_timeout(Option<Duration>).
+Default None retains unbounded sends/idle reads. Explicit waits use the shorter
+configured budget; wait_for now includes ObserveNotification in one absolute
+budget, with unrelated events unable to restart it. Zero returns existing Timeout
+before I/O, including next_event's formerly issued zero timer; overflowing
+ordinary budgets return Io InvalidInput. Actual expiry retains Elapsed.
+Interrupted partial frames/native IO/EOF/typed plist decoding failures reject
+all later operations before I/O; complete business-shape errors preserve reuse.
+Empty idle expiry/cancellation retains completed subscriptions and late events.
+
+ProxyDeath still returns the existing event/error, then closes local reuse.
+Shutdown caps writes/flush at five seconds (shorter configured clamp, MAX safely
+clamped); success closes reuse, including repeat shutdown. These subsequent
+operations return existing Protocol. No ACK, automatic close or async Drop is
+added; the transport remains owned until Drop. Existing five error variants,
+both event enums, serde envelopes/typed decoder/incoming4MiB limit and frontend
+production remain. Outgoing length now checks u32 conversion before writing;
+that extreme allocation boundary is source-reviewed only. CLI cleanup/totals
+remain a separate owner. See
+[notification host acceptance and migration](validation/notification-lifecycle-2026-10-04.md).
+
 Mobilebackup2Client adds is_usable and set_operation_timeout(Option<Duration>).
 Default None keeps ordinary operations unbounded; DeviceUnback/Extract retain
 their five-minute ceiling, shortened by a configured total budget. The owner

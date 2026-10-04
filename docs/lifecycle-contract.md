@@ -9,7 +9,8 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `85b8621f069b164d7da251a9531faf43b3456691`; Lockdown client ownership is
 `79f750e78b4550909c440fc4697b592101878935`; DeviceLink message/handshake ownership is
 `3db5c1835ad73bf881c1c6a334674bc566cfe641`; MobileBackup2 operation ownership is
-`d2828b802e697ff4d1069744e89d7a1eb31214c7`. This contract records implemented profiles and
+`d2828b802e697ff4d1069744e89d7a1eb31214c7`; NotificationProxy framed-event ownership is
+`db732437a945c75096d05f67b9e2063838756c97`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -247,6 +248,26 @@ async Drop, remote cleanup ACK, retry or rollback guarantee is added. Host
 spawn_blocking jobs can outlive a dropped awaiter; the controlled released-worker
 fixture does not establish stop/join for arbitrary filesystem work. See
 [MobileBackup2 fixtures and migration](validation/backup-lifecycle-2026-10-04.md).
+
+NotificationProxyClient owns each complete frame with accepted-byte tracking,
+including buffered reads. Optional operation budgets and explicit waits share
+one absolute deadline; wait_for includes subscription writes and unrelated
+complete events do not reset timing. Default None preserves unbounded sends/
+idle receives. Zero/overflow rejects before I/O. Actual timer expiry, including
+an already due timer between complete events, retains Elapsed.
+
+Empty idle cancellation/expiry keeps completed subscriptions and valid late
+notifications. One-way subscription completion is not an abandoned request/
+reply. Partial frame cancellation, native IO/EOF and typed plist decoding failure
+invalidate, clear subscription names and reject all seven public paths before
+I/O. Complete business-shape errors remain outside the frame guard. ProxyDeath
+returns its original event/error and closes local state. Shutdown has an
+independent five-second write/flush cap with shorter configured clamp and safe
+MAX handling; success closes reuse, including repeat shutdown. Empty blocked
+shutdown may remain usable; partial aborted shutdown requires a new transport.
+No queue/task/automatic cleanup/ACK/async Drop is added; opaque buffers stay until
+Drop. CLI overall budgets, signal ownership and primary/cleanup retention remain
+independent work. See [notification fixtures](validation/notification-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

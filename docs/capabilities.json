@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-notification-lifecycle-db73243",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex zero/overflow/unpolled, idle subscription/late event reuse, fragmented/cached header cancellation/expiry, empty/accepted partial writes, shared 200ms subscribe+wait with 125ms send/125ms reply, complete business-shape reuse/terminal ProxyDeath, native EOF/BrokenPipe/bad plist/typed decoding/oversize, exact bounded Shutdown/MAX/empty and partial cancel/actual default5s expiry; external signatures/Send/exhaustive families"],
+      "required_state": ["Five source/test files; thirteen new all-feature/no-default notificationproxy tests PASS, notification22/CLI8/stack5 PASS. Existing core tests/parsers/serde and frontend production preserved. CLI terminal ProxyDeath fixture explicitly uses a fresh connection for original idle-timer/EOF assertions. Outgoing u32 length guard is source-reviewed without extreme allocation fixture. No old-source negative control/benchmark/device/platform acceptance or maturity upgrade"],
+      "tested_commit": "db732437a945c75096d05f67b9e2063838756c97",
+      "date": "2026-10-04",
+      "location": "docs/validation/notification-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "NotificationProxy guards each full frame, preserves completed subscriptions across empty idle cancellation/expiry, rejects partial/native/codec invalid reuse and closes local state after ProxyDeath/successful Shutdown. Optional total budgets cover subscribe and unrelated waits; actual issued expiry retains Elapsed, zero is source-free Timeout, overflow InvalidInput. Shutdown5s with shorter clamp/MAX safe; no queue/task/ACK/async Drop or safe retry. Full80002 terminal0: 2229 Rust/13 Python, CLI706/Core1366/public47, zero failures/two existing ignored and every section11 gate PASS. Five error variants, both event enums, incoming4MiB/direct typed decoder and read-only refs unchanged. CLI cleanup/signal/totals remain separate; all31 scope active with22 device NOT_RUN."
+    },
+    {
       "id": "linux-backup-lifecycle-d2828b8",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
