@@ -28,6 +28,16 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+Borrowed internal RSD initialization, bootstrap queuing and wrapper/handshake
+reads now reject reuse after cancellation or failure following a complete send
+or consumed header/message. Empty idle waits and successful completions preserve
+local framing; a stream-local reset before logical commitment still permits
+other streams. Existing caller budgets, owned fresh-transport fallback order,
+wire/ACK acceptance and error sources remain. There are no new root exports,
+public signatures, error variants or frontend options. Separately completed
+bootstrap/read helpers remain caller-owned stages. See
+[RSD migration and host acceptance](validation/rsd-lifecycle-2026-10-04.md).
+
 XpcClient adds is_usable, call_with_timeout,
 call_recv_client_server_with_timeout, recv_with_timeout,
 recv_client_server_with_timeout and recv_any_with_timeout. Calls share one

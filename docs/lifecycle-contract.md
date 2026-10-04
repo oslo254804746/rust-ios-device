@@ -5,7 +5,8 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `dcec5a2032f2994ed45678cb838447607abee65b`; AFC request/file ownership is
 `c4b471d33b1260736a295e8718d3c47ee6562165`; the internal H2 framer profile is
 `ddd3620f058c6c23649a083d209dceb41f0eb472`; the XPC client profile is
-`09ed113e2d19489259a43c3a35de9e00caacb1a6`. This contract records implemented profiles and
+`09ed113e2d19489259a43c3a35de9e00caacb1a6`; borrowed RSD bootstrap/read ownership is
+`85b8621f069b164d7da251a9531faf43b3456691`. This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
 | Deadline role | Meaning |
@@ -135,9 +136,30 @@ reader work. Failure/cancellation after the preamble invalidates; successful FIN
 preserves the response half. Default timing remains unbounded and there is no
 new host-reader/whole-file budget or async cancel/FIN task. Transport stays
 owned until Drop; no ACK, cleanup, rollback, safe retry or device acceptance is
-implied. Public split send/recv and borrowed RSD bootstrap/handshake or other
-multi-service totals require their owner's contract. See
+implied. Public split send/recv and other multi-service totals require their
+owner's contract. See
 [XPC fixtures and migration](validation/xpc-lifecycle-2026-10-04.md).
+
+Borrowed RSD initialization/queued bootstrap retains ownership after its first
+complete send. Raw stream-1/stream-3 reads retain a consumed 24-byte wrapper
+header, including one buffered by an earlier H2 operation. Discovery retains
+completed messages while skipping non-handshake replies with its existing
+six-message parser policy. Cancellation/failure after that commitment, or lower
+H2 invalidation, invalidates the borrowed framer and clears its H2 state.
+Empty idle/unpolled futures, successful completion and complete stream-local
+failure before commitment preserve local framing as applicable. This does not
+prove that every stream remains available.
+
+Existing RSD dial/bootstrap/response/outer timers and fresh-connection fallback
+order remain. There is no new deadline setter, task, async shutdown or cleanup
+ACK. Helper futures are boxed before their await state and remain owned
+directly. Separately completed queue/send/read stages are not combined into a
+new request budget; owned discovery attempts already drop their transport on
+failure/cancellation. The single-write host handshake retains its H2 guard.
+Manual-pairing bootstrap uses the guarded initialization, while its later
+protocol exchanges still need their own ownership policy. Transport stays
+owned until Drop; borrowed raw transports must not bypass invalid state. See
+[RSD fixtures and migration](validation/rsd-lifecycle-2026-10-04.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

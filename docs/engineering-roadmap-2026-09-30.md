@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2 与 XPC client 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC 与 borrowed RSD 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5461,4 +5461,60 @@ narrow/minimum/regression/preparation与只读refs、actual-help capability118�
 history保持，仅增hostevidence。L01/第四类/完整31goal active，下一borrowedRSD
 bootstrap/handshake、split send/recv/otherownertotals、其他protocol/service deadlines/
 cleanup/orderedownership；L02–L04/Q04/platform/device条件继续。无设备/credentials/
+Apple操作、reference edits、push/publication/historyrewrite。
+
+### 大类 4：L01 borrowed RSD bootstrap/read ownership 交付（2026-10-04）
+
+Source `85b8621f069b164d7da251a9531faf43b3456691`，baseline
+`2088e739f04134e60341346cfdb1d4ca93e86f8d`，分支
+`feat/device-service-updates-20260927`。单文件rsd.rs，543 insertions/2 deletions；
+Linux x86_64、Rust1.97.1/MSRV1.80.1、Python3.12.13。详细边界见
+[RSD host gate](validation/rsd-lifecycle-2026-10-04.md)、
+[生命周期](lifecycle-contract.md)、[兼容](public-contract.md)、[分类](error-contract.md)。
+
+Borrowed初始化/queuedbootstrap在首个完整send后持有logicalguard，raw stream1/3
+在消费24B wrapper后commit，包括早先H2buffer中的header；handshake在完整读取消息
+后跨原有six-message非handshake过滤保持ownership。Commit后取消/返回错误或lowerH2
+失效，使用原invalidator清H2 buffers/queues/accounting并拒绝复用；原error/source
+不改，后续拒绝是existingH2-to-XPC Protocol。Empty idle/unpolled、成功完成及未commit
+的完整stream-local失败保持framing/其他流。不是peer liveness/所有流availability/
+remoteACK/release/rollback/safe retry；transport到Drop前仍由caller持有，无asynccleanup。
+
+没有新publicentry/enum/frontend/deps/RSDtimer。现有dial/bootstrap/response/outer预算、
+freshtransport重试顺序和singlewritehosthandshake保持；分别已完成的queue/send/read
+不自动合成预算。既有ownedRSDattempt在取消/失败后丢弃transport，manualpairingbootstrap
+使用受保护init，而其后directprotocol exchanges仍需owner规则。Future在awaitstate前
+Box且directlyowned，五项旧CLI16KiB stack预算测试通过，无任务/reader/queue增加。
+
+新增7internal tests，allfeatures/minimum tunnel各7PASS，XPC124回归PASS。Owned joins/
+1s bounds，无fixture任务。实际duplex首次init完整发送后的callerCancel/Elapsed及late
+reply、stream1/3已bufferedheader的zero-new-wire bodyCancel/Elapsed、精确duplexcapacity
+使首条DATA写完而HEADERS3尚无byte时取消、skippedACK后取消、badwrapper/oversize、
+RST在commit前后不同reuse、成功init/queue的原wire/宽松discardACK/handshake/followup
+均覆盖。Cached stream5剩余byte在失效后拒绝；Drop前peer仍等待，Drop后EOF。原parser、
+bootstrap/rawbody移除marker后byte相等，全部旧tests/assertions、XpcConnection和budgets
+byte-identical。No old-source negative control/benchmark/device证据。
+
+准备期firstnarrow session88918 terminal101 E0061，旧test调用原private读取入口；保留
+其signature，把guard置于该入口并移body到inner，未修改/放宽旧tests。Secondnarrow
+session19913 terminal0；minimum/regression/stack/strictCoreCLIClippy/fmt pipeline53566
+terminal0，全部PASS。第11节首次 `python3 scripts/validate.py full --python
+/home/oslo/projects/rust-ios-device/.venv/bin/python`，session91844 terminal0，
+validation/full PASS：2182Rust/13Python、0FAIL/two old ignored，CLI706/Core1323/
+public43；workspacefmt/check/strictClippy/MSRV、66features/fourgroups、7+7docs/3snips、
+CABI、3.12wheel/sdist、53tooling/118help/38raw/5host/15CLI/3backup合同均PASS。
+Frozen source SHA256
+`bedc6cff1eb4bbd50c5539416cc877c10a6f203644bf78d82677f1c6ff614341`；ios debug SHA256
+`685fee93dad137cd7b89c0c66384539ca5742c67a0831cefe31062f8f9110027`。
+Source冻结至fullterminal，余量约7.7GiB，无clean/storagefailure；日志
+`/tmp/ios-l01-rsd-`。H2/codecs/errorenums/classifier/frontends/deps/refs未改。
+
+八文档收尾审计PASS：七Markdown/247 local links、whitespace、准确testedcommit/
+frozen source/binary、full/narrow/minimum/regression/stack/preparation与只读refs、
+actual-help capability118目录均通过；源码未改，全部31任务/subtasks及history保留。
+
+22device rows NOT_RUN，Chromium/installed3.9/3.13未重跑；Capability118正文/maturity/
+history不改，仅增hostevidence。L01/第四类/完整31goal active；下一LockdownClient及
+device侧borrowedLockdownsession、DeviceLink/plist、manualpairing后续、其他splitrequests/
+owner总预算/cleanup/longstreams。L02–L04/Q04/platform/device条件保留。无设备/credentials/
 Apple操作、reference edits、push/publication/historyrewrite。

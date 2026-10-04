@@ -65,6 +65,18 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+Borrowed RSD guards return original operation errors and leave existing stage
+expiry's native Elapsed/context intact. Later invalid-framer reuse returns the
+existing H2-to-XPC Protocol family, separately from that original failure.
+Commitment includes a complete initialization send, a consumed wrapper header
+already buffered by H2, or a completed message skipped during discovery.
+Cancellation/failure after commitment invalidates H2 and clears its retained
+state; there is no upper XpcConnection pending map in these bootstrap helpers.
+Empty idle and normal completion retain reuse; a complete stream-local error
+before commitment can preserve other streams. No new RSD timer/zero-budget API,
+remote cleanup or retry guarantee is added. See
+[RSD lifecycle evidence](validation/rsd-lifecycle-2026-10-04.md).
+
 XPC configured expiry retains original Elapsed in existing XpcError::Io.get_ref;
 zero is source-free TimedOut, unrepresentable deadlines are InvalidInput.
 Cancelled committed operations and lower H2 failure clear pending replies and

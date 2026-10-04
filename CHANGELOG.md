@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard borrowed RSD bootstrap and wrapper reads across cancellation after a
+  complete send or consumed header. Reject reuse of interrupted initialization,
+  including empty response waits, while preserving normal handshake completion
+  and idle framing. Keep existing wire and caller deadlines. See
+  [RSD lifecycle boundaries](docs/validation/rsd-lifecycle-2026-10-04.md).
+
 - Guard XPC message, call, stream and file ownership across cancellation.
   Add local usable state and shared call/single-read deadline APIs; clear
   pending replies before reuse of an interrupted connection. Preserve finite

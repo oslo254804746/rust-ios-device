@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-rsd-lifecycle-85b8621",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex borrowed initialization cancellation/expiry after full send and complete late response; previously buffered wrapper headers on streams 1/3 with zero-new-wire body waits, cached stream-5 rejection; exact capacity blocks HEADERS3 before its first byte after first complete bootstrap DATA; skipped ACK/malformed wrapper/oversized length; stream-local reset before/after commitment; exact successful initialization/queue/directory/follow-up wire"],
+      "required_state": ["One source/test file and seven new internal tests, each passing in all-features/minimum tunnel; XPC124 and five original CLI stack-budget regressions pass. No new timer/API/defaults/tasks or combined budget across separately completed helpers. Existing owned fresh-transport discovery policy, single-write host guard and discard/parser acceptance retained. Original tests/wire/budgets unchanged; no old-source negative control, device/platform/throughput/remote cleanup acceptance. All 31 tasks/subtasks and capability maturity/history retained"],
+      "tested_commit": "85b8621f069b164d7da251a9531faf43b3456691",
+      "date": "2026-10-04",
+      "location": "docs/validation/rsd-lifecycle-2026-10-04.md",
+      "result": "PASS",
+      "scope": "Borrowed bootstrap/read guard retains complete-send/consumed-header/skipped-message ownership across empty waits; cancellation/failure after commitment invalidates H2 and rejects later cached/wire reuse while preserving original failure. Empty idle/normal completion/uncommitted stream-local errors retain local framing as applicable. Transport remains owned until Drop, without remote ACK/cleanup/safe retry guarantees. First full session91844 terminal0: 2182 Rust/13 Python, CLI706/Core1323/public43 PASS, zero failures/two existing ignored; all full gates pass. Preparation E0061 fixed by preserving original private read entry, without changing old assertions. Source/H2/codecs/enums/classifiers/frontends/dependencies/references intact beyond one rsd.rs file. L01/class4/all31 goal active; other protocol/service ownership and platform/device conditions remain."
+    },
+    {
       "id": "linux-xpc-lifecycle-09ed113",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
