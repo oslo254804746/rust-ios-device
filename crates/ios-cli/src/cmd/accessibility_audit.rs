@@ -174,11 +174,8 @@ async fn run_list_items(udid: &str, limit: usize, timeout: u64, json: bool) -> R
                     }
                 }
                 None => {
-                    if !traversal.record_timeout() {
-                        if !traversal.is_empty() {
-                            break;
-                        }
-                        return Err(anyhow::anyhow!("timed out waiting for focus change"));
+                    if !traversal.continue_after_timeout()? {
+                        break;
                     }
                     client.move_focus(MoveDirection::Next).await?;
                 }
@@ -259,6 +256,20 @@ impl FocusTraversal {
     fn record_timeout(&mut self) -> bool {
         self.consecutive_timeouts += 1;
         self.consecutive_timeouts < MAX_CONSECUTIVE_FOCUS_TIMEOUTS
+    }
+
+    fn continue_after_timeout(&mut self) -> Result<bool> {
+        if self.record_timeout() {
+            Ok(true)
+        } else if self.is_empty() {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out waiting for focus change",
+            )
+            .into())
+        } else {
+            Ok(false)
+        }
     }
 
     fn into_items(self) -> Vec<FocusElement> {
@@ -516,6 +527,53 @@ fn print_focus(index: usize, focus: &FocusElement) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_guards_empty_focus_timeout_retains_partial_traversal_policy() {
+        let mut empty = super::FocusTraversal::default();
+        for _ in 1..super::MAX_CONSECUTIVE_FOCUS_TIMEOUTS {
+            assert!(empty.continue_after_timeout().unwrap());
+        }
+        let error = empty.continue_after_timeout().unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        let io = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+        assert!(io.raw_os_error().is_none());
+        assert!(io.get_ref().unwrap().source().is_none());
+        assert!(!error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
+        let message = crate::output::operation_failure_message(
+            crate::output::ErrorFormat::Json,
+            "accessibility-audit",
+            &error,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(value["error"]["class"], "timeout");
+        assert_eq!(value["error"]["effects"], "unknown");
+
+        let mut partial = super::FocusTraversal::default();
+        assert!(partial.record_focus(test_focus("owned-focus")));
+        for _ in 1..super::MAX_CONSECUTIVE_FOCUS_TIMEOUTS {
+            assert!(partial.continue_after_timeout().unwrap());
+        }
+        assert!(!partial.continue_after_timeout().unwrap());
+        assert_eq!(partial.into_items().len(), 1);
+
+        let mut reset = super::FocusTraversal::default();
+        for _ in 1..super::MAX_CONSECUTIVE_FOCUS_TIMEOUTS {
+            assert!(reset.continue_after_timeout().unwrap());
+        }
+        assert!(reset.record_focus(test_focus("owned-focus")));
+        for _ in 1..super::MAX_CONSECUTIVE_FOCUS_TIMEOUTS {
+            assert!(reset.continue_after_timeout().unwrap());
+        }
+        assert!(!reset.continue_after_timeout().unwrap());
+    }
+
     #[test]
     fn cli_native_sources_focus_identifier_is_received_data() {
         let error = super::decode_focus_identifier("owned-private-identifier").unwrap_err();

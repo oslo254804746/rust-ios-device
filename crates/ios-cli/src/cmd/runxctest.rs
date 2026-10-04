@@ -103,7 +103,9 @@ impl RunXcTestCmd {
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         if self.timeout_secs == 0 {
-            return Err(anyhow::anyhow!("--timeout must be greater than zero"));
+            return Err(crate::output::input_decision(
+                "--timeout must be greater than zero",
+            ));
         }
         if self.junit_output.is_some() && !self.wait {
             return Err(anyhow::anyhow!(
@@ -118,7 +120,7 @@ impl RunXcTestCmd {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for runxctest"))?;
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(self.timeout_secs))
-            .ok_or_else(|| anyhow::anyhow!("--timeout is too large"))?;
+            .ok_or_else(|| crate::output::input_decision("--timeout is too large"))?;
         let junit_output = self.junit_output.as_deref();
 
         let device = match until(
@@ -261,6 +263,34 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_guards_xctest_invalid_timeout_precedes_connection() {
+        for timeout in ["0", "18446744073709551615"] {
+            let command = TestCli::parse_from([
+                "runxctest",
+                "--xctest",
+                "--test-runner-bundle-id",
+                "com.example.Runner",
+                "--xctest-config",
+                "DemoTests.xctest",
+                "--timeout",
+                timeout,
+            ])
+            .command;
+            let error = command
+                .run(Some("owned-private-device".to_owned()), true)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            let io = error.downcast_ref::<std::io::Error>().unwrap();
+            assert!(io.raw_os_error().is_none());
+            assert!(io.get_ref().unwrap().source().is_none());
+        }
+    }
+
     #[test]
     fn cli_native_sources_xctest_plan_keeps_original_typed_input_error() {
         let mut command = TestCli::parse_from([

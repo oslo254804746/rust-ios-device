@@ -85,6 +85,22 @@ pub(crate) fn received_decision(phase: &'static str) -> anyhow::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, phase).into()
 }
 
+#[derive(Debug)]
+struct OperationPrecondition(&'static str);
+
+impl std::fmt::Display for OperationPrecondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for OperationPrecondition {}
+
+/// A CLI-owned state requirement, without an invented underlying IO failure.
+pub(crate) fn precondition_decision(phase: &'static str) -> anyhow::Error {
+    OperationPrecondition(phase).into()
+}
+
 /// Opt-in machine errors leave the existing result stream and human default
 /// unchanged. The command parser owns selection and input validation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -120,10 +136,18 @@ impl std::error::Error for ForceRequired {}
 const MAX_CONFIRMATION_SOURCES: usize = 32;
 
 fn confirmation_required(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .take(MAX_CONFIRMATION_SOURCES)
-        .any(|source| source.is::<ForceRequired>())
+    cli_preconditions(error).0
+}
+
+fn cli_preconditions(error: &anyhow::Error) -> (bool, bool) {
+    let mut precondition = false;
+    for source in error.chain().take(MAX_CONFIRMATION_SOURCES) {
+        if source.is::<ForceRequired>() {
+            return (true, true);
+        }
+        precondition |= source.is::<OperationPrecondition>();
+    }
+    (false, precondition)
 }
 
 #[derive(serde::Serialize)]
@@ -175,8 +199,8 @@ pub(crate) fn operation_failure_message(
     if format == ErrorFormat::Human {
         return Ok(format!("{phase} failed: {diagnostic}"));
     }
-    let confirmation_required = confirmation_required(error);
-    let class = if confirmation_required {
+    let (confirmation_required, precondition) = cli_preconditions(error);
+    let class = if precondition {
         ios_core::ErrorClass::Precondition
     } else {
         ios_core::classify_error(error.as_ref())
@@ -266,6 +290,46 @@ pub fn require_force(force: bool, operation: &str, consequence: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_guards_precondition_is_bounded_typed_and_distinct_from_confirmation() {
+        use std::error::Error;
+        for depth in [0, 31, 32] {
+            let mut error = super::precondition_decision("owned-private-state");
+            for _ in 0..depth {
+                error = error.context("owned-private-context");
+            }
+            let message =
+                super::operation_failure_message(super::ErrorFormat::Json, "crash", &error)
+                    .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+            assert_eq!(
+                value["error"]["class"],
+                if depth < 32 {
+                    "precondition"
+                } else {
+                    "unknown"
+                }
+            );
+            assert_eq!(value["error"]["confirmation_required"], false);
+            assert_eq!(value["error"]["exit_code"], 1);
+            assert_eq!(value["error"]["effects"], "unknown");
+            assert!(!message.contains("owned-private"));
+            assert!(!error.chain().any(|source| source.is::<std::io::Error>()));
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Unknown
+            );
+        }
+        let marker = super::OperationPrecondition("missing deadline");
+        assert!(marker.source().is_none());
+        let opaque = anyhow::anyhow!("missing deadline precondition confirmation required");
+        let message =
+            super::operation_failure_message(super::ErrorFormat::Json, "crash", &opaque).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(value["error"]["class"], "unknown");
+        assert_eq!(value["error"]["confirmation_required"], false);
+    }
+
     #[test]
     fn cli_native_sources_boundary_keeps_original_objects_and_safe_opaque_data() {
         use std::error::Error;

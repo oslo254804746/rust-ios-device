@@ -520,14 +520,14 @@ fn checked_timeout(seconds: u64) -> Result<Duration> {
     tokio::time::Instant::now()
         .checked_add(duration)
         .map(|_| duration)
-        .ok_or_else(|| anyhow::anyhow!("timeout is too large"))
+        .ok_or_else(|| crate::output::input_decision("timeout is too large"))
 }
 
 fn absolute_deadline(seconds: u64) -> Result<tokio::time::Instant> {
     let duration = checked_timeout(seconds)?;
     tokio::time::Instant::now()
         .checked_add(duration)
-        .ok_or_else(|| anyhow::anyhow!("timeout is too large"))
+        .ok_or_else(|| crate::output::input_decision("timeout is too large"))
 }
 
 async fn with_deadline_at<F, T, E>(
@@ -631,6 +631,23 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn owner_guards_activation_unrepresentable_deadline_is_input() {
+        for error in [
+            checked_timeout(u64::MAX).unwrap_err(),
+            absolute_deadline(u64::MAX).unwrap_err(),
+        ] {
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            assert_failure(&error, "invalid_input");
+            assert_eq!(error.to_string(), "timeout is too large");
+        }
+        assert!(checked_timeout(0).unwrap().is_zero());
+        assert!(absolute_deadline(1).is_ok());
+    }
 
     fn assert_failure(error: &anyhow::Error, class: &str) {
         let message = crate::output::operation_failure_message(

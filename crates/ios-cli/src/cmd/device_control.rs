@@ -209,6 +209,14 @@ async fn connect_display(
     ))
 }
 
+fn capture_deadline(timeout: u64) -> Result<tokio::time::Instant> {
+    tokio::time::Instant::now()
+        .checked_add(Duration::from_secs(timeout))
+        .ok_or_else(|| {
+            crate::output::input_decision("--timeout is too large for a capture deadline")
+        })
+}
+
 async fn capture_display(
     udid: &str,
     kind: MediaKind,
@@ -219,7 +227,9 @@ async fn capture_display(
         anyhow::bail!("--max-units must be greater than zero");
     }
     if capture.timeout == 0 {
-        anyhow::bail!("--timeout must be greater than zero");
+        return Err(crate::output::input_decision(
+            "--timeout must be greater than zero",
+        ));
     }
     // The userspace tunnel currently exposes only a TCP proxy. A host kernel
     // UDP socket cannot receive packets injected into that private stack, so
@@ -242,9 +252,7 @@ async fn capture_display(
         sender_ip,
         ..MediaStreamOptions::default()
     };
-    let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(capture.timeout))
-        .ok_or_else(|| anyhow::anyhow!("--timeout is too large for a capture deadline"))?;
+    let deadline = capture_deadline(capture.timeout)?;
     let mut output = capture.output.map(AtomicOutput::new).transpose()?;
     let mut session = match kind {
         MediaKind::Video => MediaStreamSession::start_video(client, options).await?,
@@ -657,6 +665,35 @@ fn print_orientation(direction: RotationDirection, state: &OrientationState) -> 
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_guards_display_deadline_retains_validation_and_capture_placement() {
+        let command = MediaCaptureCmd {
+            sender_ip: None,
+            receiver_ip: None,
+            max_units: 1,
+            timeout: 0,
+            output: None,
+        };
+        let error = capture_display("owned-private-device", MediaKind::Video, command, true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "--timeout must be greater than zero");
+        let error = capture_deadline(u64::MAX).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(
+            error.to_string(),
+            "--timeout is too large for a capture deadline"
+        );
+        assert!(capture_deadline(1).is_ok());
+    }
+
     #[test]
     fn cli_native_sources_boolean_retains_original_parser_error() {
         let error = super::parse_bool("owned-private-boolean").unwrap_err();

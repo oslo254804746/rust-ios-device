@@ -102,7 +102,9 @@ impl HidCmd {
         }
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for hid"))?;
         let timeout = if self.timeout == 0 {
-            anyhow::bail!("--timeout must be greater than zero");
+            return Err(crate::output::input_decision(
+                "--timeout must be greater than zero",
+            ));
         } else {
             Duration::from_secs(self.timeout)
         };
@@ -394,6 +396,24 @@ fn print_result(json_output: bool, operation: &str, reports: usize, sensitive: b
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn owner_guards_hid_zero_timeout_is_input_before_operation() {
+        let command =
+            TestCli::parse_from(["hid", "--confirm", "--timeout", "0", "key", "enter"]).command;
+        let error = command
+            .run(Some("owned-private-device".to_owned()), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "--timeout must be greater than zero");
+        let io = error.downcast_ref::<std::io::Error>().unwrap();
+        assert!(io.raw_os_error().is_none());
+        assert!(io.get_ref().unwrap().source().is_none());
+    }
+
     #[tokio::test]
     async fn cli_native_sources_hid_signal_error_is_distinct_from_cancel() {
         let error = super::run_with_deadline_and_signal(

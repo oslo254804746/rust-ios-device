@@ -242,7 +242,7 @@ fn operation_deadline(timeout: Option<u64>) -> Result<Option<tokio::time::Instan
             let duration = seconds_duration(seconds)?;
             tokio::time::Instant::now()
                 .checked_add(duration)
-                .ok_or_else(|| anyhow::anyhow!("--timeout is too large"))
+                .ok_or_else(|| crate::output::input_decision("--timeout is too large"))
         })
         .transpose()
 }
@@ -333,7 +333,7 @@ fn seconds_duration(seconds: u64) -> Result<Duration> {
     tokio::time::Instant::now()
         .checked_add(duration)
         .map(|_| duration)
-        .ok_or_else(|| anyhow::anyhow!("--timeout is too large"))
+        .ok_or_else(|| crate::output::input_decision("--timeout is too large"))
 }
 
 #[cfg(test)]
@@ -394,8 +394,19 @@ mod tests {
 
     #[test]
     fn timeout_deadline_overflow_is_rejected() {
-        assert!(seconds_duration(u64::MAX).is_err());
-        assert!(operation_deadline(Some(u64::MAX)).is_err());
+        for error in [
+            seconds_duration(u64::MAX).unwrap_err(),
+            operation_deadline(Some(u64::MAX)).unwrap_err(),
+        ] {
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::InvalidInput
+            );
+            assert_eq!(error.to_string(), "--timeout is too large");
+        }
+        assert!(seconds_duration(0).unwrap().is_zero());
+        assert!(operation_deadline(None).unwrap().is_none());
+        assert!(operation_deadline(Some(0)).unwrap().is_some());
         assert!(finish_wait("test", WaitResult::TimedOut, Some(2)).is_err());
         assert!(finish_wait("test", WaitResult::Cancelled, Some(2)).is_ok());
     }

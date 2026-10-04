@@ -308,8 +308,9 @@ impl CrashCmd {
                     flush_deadline,
                 )
                 .await?;
-                let deadline = flush_deadline
-                    .ok_or_else(|| anyhow::anyhow!("missing crash operation deadline"))?;
+                let deadline = flush_deadline.ok_or_else(|| {
+                    crate::output::precondition_decision("missing crash operation deadline")
+                })?;
                 flush_crash_reports(&mut mover, use_rsd, deadline).await?;
                 if json {
                     crate::output::outln!(r#"{{"flushed":true}}"#);
@@ -564,7 +565,7 @@ async fn flush_crash_reports(
 fn flush_deadline(timeout: u64) -> Result<tokio::time::Instant> {
     tokio::time::Instant::now()
         .checked_add(Duration::from_secs(timeout))
-        .ok_or_else(|| anyhow::anyhow!("flush timeout is too large"))
+        .ok_or_else(|| crate::output::input_decision("flush timeout is too large"))
 }
 
 /// Read a local report without allowing a sparse or growing file to bypass the
@@ -857,7 +858,12 @@ mod tests {
 
     #[test]
     fn flush_deadline_rejects_duration_overflow() {
-        assert!(super::flush_deadline(u64::MAX).is_err());
+        let error = super::flush_deadline(u64::MAX).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "flush timeout is too large");
         assert!(super::flush_deadline(0).is_ok());
         assert!(super::flush_deadline(1).is_ok());
     }

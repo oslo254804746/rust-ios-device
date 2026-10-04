@@ -19,7 +19,7 @@ fn trace_deadline(timeout: Option<u64>) -> Result<Option<tokio::time::Instant>> 
         .map(|seconds| {
             tokio::time::Instant::now()
                 .checked_add(Duration::from_secs(seconds))
-                .ok_or_else(|| anyhow::anyhow!("--timeout is too large"))
+                .ok_or_else(|| crate::output::input_decision("--timeout is too large"))
         })
         .transpose()
 }
@@ -724,6 +724,18 @@ fn plist_to_json(value: &plist::Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_guards_os_trace_deadline_keeps_optional_and_zero_policy() {
+        let error = super::trace_deadline(Some(u64::MAX)).unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::InvalidInput
+        );
+        assert_eq!(error.to_string(), "--timeout is too large");
+        assert!(super::trace_deadline(None).unwrap().is_none());
+        assert!(super::trace_deadline(Some(0)).unwrap().is_some());
+    }
+
     use clap::Parser;
 
     use super::*;
