@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-03",
+  "updated": "2026-10-04",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-connection-native-sources-4b3a9cb",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1",
+      "device": null,
+      "ios": null,
+      "transport": ["Constructed native mdns-sd backend objects through shared private adapter; actual local MTU overflow/minimum decisions, received malformed JSON/port/MTU with joined owned duplex requests/EOF, actual CDTunnel/RSD timer expiry and bounded owned loopback proxy port/EOF; minimum mdns,tunnel-userspace and existing public consumers"],
+      "required_state": ["Backend-object fixture is not an actual multicast daemon/OS failure; mdns-sd already erases deeper OS causes. Fixed numeric JSON encoding and <=255-byte body-length conversion cannot fail under current guards. Lockdown TCP dial expiry is source-reviewed at unchanged 15s, not a black-hole/device run. Local EOF is not remote cleanup/reuse. Candidate private-path consumer failed E0603 and was removed without an export; no physical device/daemon/credentials/Apple action"],
+      "tested_commit": "4b3a9cbe40b696b01cbfdb65ba8a7d614795e9fc",
+      "date": "2026-10-04",
+      "location": "docs/validation/connection-native-sources-2026-10-04.md",
+      "result": "PASS",
+      "scope": "A02 fifteen original discovery/connection causes retained through existing Io/private safe contexts; Unknown backend, local InvalidInput, received Protocol and actual Timeout roles. Three original TunnelError variants/root/consumers/features/dependencies/classifier and wire/budgets/limits/cleanup/success stay; returned-variant/Display/source/class migration recorded. Five new internal tests; six old handshake assertions migrated after 9 PASS/6 FAIL. First full 2078 Rust/13 Python PASS final marker; resumed process handle missing with no active workspace build, raw shell exit not captured. Other A02/lifecycle/platform/device work remains; no maturity upgrade."
+    },
     {
       "id": "linux-guarded-native-sources-37b09e0",
       "level": "host-unit/protocol",

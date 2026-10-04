@@ -104,3 +104,7 @@ device conditions remain. No physical device/daemon/credentials/Apple operation,
 reference edit, push, publication, history rewrite or maturity upgrade.
 See the [public contract](../public-contract.md) and
 [preceding recorder gate](dproxy-recording-observations-2026-10-03.md).
+
+Follow-up: [connection native sources](connection-native-sources-2026-10-04.md)
+accepts the listed mDNS/CDTunnel/RSD/dial/proxy scope. The original guarded
+slice's source/binary/counts and narrower-host NOT_RUN evidence remain.

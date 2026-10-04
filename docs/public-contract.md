@@ -273,6 +273,20 @@ and lifecycle/retry semantics are separate work. The
 records 9 internal/2 external tests and public zero-write versus private scalar/
 header/helper coverage.
 
+Discovery/connection native causes now survive fifteen adapters under existing
+CoreError/TunnelError::Io or IO. Root error families/signatures/fields/exports,
+feature/dependency lists, classifier and binding fields remain. The handshake
+helpers stay behind the existing private tunnel module; no new SDK export.
+Opaque mDNS backend objects retain Unknown; local MTU validation is InvalidInput
+and received-data wrappers retain Protocol. Real handshake Elapsed migrates
+from Protocol to Timeout; RSD check-in/lockdown dial retain Timeout with original
+Elapsed and configured Duration. The minimum-MTU guard has no fabricated source.
+Native objects and safe private context replace text flattening, so returned
+variant, Display/immediate-source and diagnostic correlation can change. Use
+typed classes and bounded source traversal. Wire, limits, shared budgets,
+task/stream/daemon policy and success stay; no new retry/cleanup/reuse promise.
+See [connection acceptance](validation/connection-native-sources-2026-10-04.md).
+
 The eight guarded AFC/DTX/FileService/symbol adapters use existing Io variants
 to retain original cast/integer/slice sources, with Protocol classification
 through InvalidData and safe private context. Their public exhaustive families,

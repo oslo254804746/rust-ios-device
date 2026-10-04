@@ -4863,3 +4863,60 @@ A02/第三类/总体goal active，第四类未开始，全部31主任务与所�
 stream/JSON/callback/binding；L01/L03/A03/platform/device条件保留。未操作物理
 设备/daemon/credentials/Apple、未修改reference、未push/publish/rewrite history或
 升级成熟度。
+
+### 大类 3：A02 discovery/connection 原始来源交付（2026-10-04）
+
+受测实现：`4b3a9cbe40b696b01cbfdb65ba8a7d614795e9fc`，基线
+`a2c726785a0fcb3601468619dfb74369366a0139`，分支保持。
+[专题证据](validation/connection-native-sources-2026-10-04.md)区分实际wire/timer、
+构造backend对象与source-reviewed TCP expiry；检查启动于10-03、验收于10-04。
+
+15原始对象保留：mDNS create/browse4、MTU1、handshake7（包括原 .ok 丢失的
+port overflow）、userspace port1、RSD check-in1、lockdown dial1。既有Io/private
+fixed context，mDNS opaque仍Unknown；本地MTU为InvalidInput（minimum guard无
+native source，overflow保留TryInt/full u32）；received port/MTU/JSON仍Protocol，
+包括收到的MTU套住原始本地validation error。真实CDTunnel Elapsed从文本Protocol
+转Timeout，RSD/dial仍Timeout，保留configured Duration/native Elapsed。Debug不含
+任意native/address，dial文本不再包含raw host/port。variant/Display/source/class
+迁移记录；3 TunnelError variants/root/fields/signatures/binding schemas保持。
+
+七源文件393 insertions/106 deletions；whole production仅callback/minimum guard
+error representation/private helper归一化后与baseline一致，port展开单独核对u16/
+missing/zero/success等价。wire/requests/magic/ranges/limits/allocation/shared budget/
+read/write/task/daemon/cleanup保持，classifier/deps/features/public consumer/layout/
+AFC+DTX/H2+XPC保持。无新SDK export、deadline/retry/invalidation/reuse保证。
+Fixed numeric JSON into Vec及<=255后的u16 length failure不可达，未伪造覆盖。
+TCP dial expiry只审查原15s，没有black-hole/device运行；mdns对象fixture不能证明
+真实multicast daemon或已被mdns-sd擦除的深层OS cause。
+
+五新增内部tests：joined owned duplex实际坏JSON/port/MTU/native chains、exact
+request/EOF、真实zero-budget CDTunnel/旧20ms RSD Elapsed；owned loopback preamble
+u32 overflow/native/empty reply/EOF。1秒joins，不声明remote清理ack。旧握手先
+9PASS/6FAIL（variant断言），迁移六项后15PASS；候选private-path external consumer
+两E0603后移除，原public文件byte-identical，没有扩大API；这不是behavior control。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 新内部 all/minimum mdns,tunnel-userspace | 5/5 PASS |
+| handshake/discovery/routing/lockdown/userspace | 15/9/11/4/16 PASS |
+| existing public all/minimum | 37/17 PASS |
+| strict core Clippy | terminal exit0 |
+| first canonical full | 最终PASS marker；2078 Rust/13 Python PASS、0FAIL、2既有ignored |
+
+日志 `/tmp/ios-a02-connection-native-`。Full第11节fmt/check/strict workspace
+Clippy/MSRV、66feature/四组、7+7doctest/三snippets、C ABI/malformed/checked list、
+3.12wheel/sdist、53tooling/118help/38raw/五host/22device NOT_RUN/15CLI/三backup
+合同PASS。无额外Chromium/installed3.9/3.13。续接后原handle missing，最终PASS
+marker及workspace无live build已核对；原shell exit未跨续接捕获，脚本仅全scope
+成功才输出该marker后normal return；未重启同一full。所有source staged后冻结。
+Source diff SHA256 `d7fa5e8225c0eeccaeae4fe531eb535aec3d70db82d3c6b80210ce049f0f30aa`；
+ios0.1.13 debug SHA256 `2efdd42e0b320ce98f0356c3f44ba3a8761ecee0ad406e567ddec76639b078c3`。
+Full前33GiB/后20GiB，未cleanup/storage failure。八文档收尾，七MD/179 local
+links与hash/whitespace通过；118capabilities/implementation/maturity/history保持，
+仅新增host entry并更新catalog日期。
+
+A02/第三类/总体goal active，第四类未开始，31任务与所有子项保持。下一remaining
+filesystem native adapters/checked CLI diagnostics，并有限审查typed decisions/
+stream/JSON/binding范围；L01/L03/A03/platform/device保留。无实际设备/daemon/
+credentials/Apple action、reference edits、push/publication、history rewrite、
+maturity upgrade。

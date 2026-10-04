@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve original mDNS, CDTunnel, RSD check-in, lockdown dial and userspace
+  proxy conversion/deadline causes. Distinguish local MTU input from received
+  protocol data and real elapsed deadlines, retain configured budgets with safe
+  private context, and keep discovery, wire, timeout and cleanup policies.
+
 - Retain guarded AFC/DTX/FileService/symbol conversion sources through existing
   IO variants with a received-data Protocol role and safe fixed context.
   Own AFC's original cast bytes on error and enable zerocopy's existing std

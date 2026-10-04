@@ -254,6 +254,27 @@ Explicit sources remain private data under the redaction policy. See
 for private injected encoding versus public consumer and unreachable 64-bit
 conversion branches.
 
+Fifteen discovery/connection adapters retain original mDNS, integer, JSON,
+returned TunnelError and Elapsed objects through existing Io with fixed private
+context. Opaque mdns-sd errors remain Unknown, including its Msg strings; the
+backend's own erased OS causes cannot be reconstructed. Local MTU rejection is
+InvalidInput, with an original TryFromIntError only for the upper overflow;
+the minimum-MTU decision has no invented native cause. Received port/MTU/JSON
+errors remain Protocol through InvalidData, including an originally returned
+local MTU error wrapped with received-data provenance.
+
+CDTunnel's actual Elapsed now classifies Timeout instead of textual Protocol.
+RSD check-in and lockdown dial keep Timeout and their original Elapsed, fixed
+phase and configured Duration. Context Debug hides native text and addresses;
+explicit getters/sources remain private data. Returned variants, Display and
+immediate-source/diagnostic correlation can change. Existing three TunnelError
+variants, root paths, binding schemas and success output remain; migrate text
+matches to typed class and bounded source traversal. No new deadline, retry,
+invalidation, daemon-close acknowledgement or safe-reuse rule. See
+[connection source evidence](validation/connection-native-sources-2026-10-04.md)
+for actual owned timer/duplex/loopback versus private backend-object fixtures,
+unreachable fixed encoding adapters and source-reviewed TCP dial expiry.
+
 Eight guarded AFC/DTX/FileService/symbol conversion adapters retain their native
 objects through existing Io with private fixed context, optional full-width
 declared u64 and InvalidData. Classification stays Protocol: the container
