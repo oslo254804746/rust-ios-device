@@ -1739,3 +1739,15 @@ the private page loop after upgrade; it adds no error headers or unsafe error
 data to WebSocket frames. Setup totals, cleanup errors, browser child results
 and server cancellation remain separate work. See
 [CDP page fixtures](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+
+CDP discovery/page/browser-page and WebDriver runtime constructors now share
+one absolute setup deadline from before lock/source admission through their
+final setup step. Expiry retains native Elapsed; private zero/clock overflow
+rejects before source contact under the existing typed families. Source/native
+failures stay primary. Exact target discovery waits within the total and retries
+only reusable idle; a missing target can now time out rather than fail after
+one snapshot. Full-list/automation discovery keeps a separate500ms quiet window.
+Returned setup failure or caller cancellation drops the owned stream/lock,
+without guessed incomplete-attach recovery. Existing active, cleanup, HTTP
+publication and server signal error handling remain outside this profile.
+See [server setup fixtures](validation/webinspector-server-setup-2026-10-05.md).

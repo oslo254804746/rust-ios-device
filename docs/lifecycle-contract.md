@@ -535,3 +535,22 @@ cleanup, server cancellation, stored-session revocation and joined child
 ownership remain. The stored-session100ms and browser-page2s cleanup policies
 were not changed. Host page-loop acceptance does not complete any of those
 owners, other protocols, L02–L04/Q04 or classes5–9.
+
+CDP full-page discovery, page/browser-page constructors and WebDriver runtime
+construction now share one checked absolute setup total from before lock/source
+contact through final attach/context creation. Every stage caps the client to
+the remaining total. Exact CDP targets attach on an admitted match; only usable
+idle can retry. Full-page and WebDriver discovery keep500ms quiet collection
+inside the total. Successful constructors clear their cap for existing active
+policies. Late success/caller cancellation follow the already accepted private
+controller; no new async Drop or detached source worker is added.
+
+Fifteen owned fixtures verify source, lock and writer expiry, stage remainder,
+zero/overflow, actual Automation context creation/use and caller cancellation
+after real attach/create frames. Stream Drop, peer EOF and page-lock reacquisition
+are observed. Incomplete attach drops without guessing teardown. Constructor
+primary cleanup after a fully attached/business-failed step, server signals,
+HTTP publication/output, active request totals, revocation and joined child/
+stored task ownership still need work. The existing100ms/2s cleanup policies
+stay; the successful WebDriver fixture observes context stop and zero forwarding
+teardowns. See [server setup evidence](validation/webinspector-server-setup-2026-10-05.md).

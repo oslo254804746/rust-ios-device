@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6522,3 +6522,73 @@ policy 未改；无remoteACK/retry/rollback/other-platform/benchmark/RSS/decoder
 task/subtask/history prefix及118capability正文/maturity/prior evidence保持。
 真实commit/source/binary/15gates/full36134/five tests匹配，文档期间无product
 edit，refsHEAD/status不变。实现与文档分开提交，接着server/其他独立工作。
+
+### 大类 4：L01 CDP/WebDriver server setup totals（2026-10-05，整体进行中）
+
+实现 `82db3a8699f99de4d7275baa896e408e543023ed`，基于
+`3a5a1d9c1b6c5a697bc20f79a26db0ab08d30b9f`；明确9source/test files，781+/116-。
+证据见 [WebInspector server setup](validation/webinspector-server-setup-2026-10-05.md)。
+CDP full-page discovery、page/browser-page constructor 和 WebDriver runtime
+constructor 各自从 lock/source 前到 startup/discovery/attach/context creation
+共用 checked absolute total；每阶段 cap 更新为 remainder，成功后清除 setup cap，
+保持 active 的既有政策。复用既有 frontend controller，无公开 API/协议猜测。
+
+精确 CDP target 在 actual admitted match 后 attach，不再等全量 snapshot quiescence。
+Missing target 在 setup total 内等待；只有 usable idle 可继续，invalid errors 原样返回。
+全量 CDP list 与 WebDriver discovery 使用独立500ms quiet window，由 setup total
+约束；原 server timeout 不再逐阶段重启，短预算可真实失败。CLI parser/listener
+admission、startup/signal/output/publication、active command totals 仍待，不把私有
+ServerState zero/overflow fixtures 描述成 actual CLI zero admission。
+Browser incomplete attach 不再尝试猜测 teardown；stream/device/lock 随 owner Drop。
+Fully attached/business-failed constructor 的 primary cleanup、取消后的异步收尾、
+stored-session revocation 和 joined child ownership 仍待；100ms/2s cleanup policy未改。
+
+15 actual owned fixtures（CDP9/WebDriver6）覆盖 Source200ms vs admitted50ms、
+zero/clock overflow source-free、真实 blocked writer/page lock、600ms total 中的
+200ms connect/500ms startup wait、connection/startup/discovery remainder，以及
+caller cancel after actual attach/create frames 的 stream Drop/EOF/lock reacquire。
+既有 Automation peer 验证 create/get/close，750ms setup 后 idle 和400ms active reply
+证明 cap 不泄漏；650ms total 约束 committed context creation 的未回复等待。
+Stop 既有只关闭 context，测试实际 teardown0，不伪造 forwarding/Apple cleanup。
+Actual local WebSocket/private source 不替代新 admission 或 external-client/device验收。
+
+Before-product69631 terminal101/0PASS4FAIL，四个 private source 均在预算后返回；
+这证明 frontend seam 缺少 total guard，不声称 production DeviceSource 无单次cap。
+42493 terminal0/4PASS，91234 terminal0/CLI108；33735 terminal0/14PASS，最后增加
+browser attach caller-cancel，18610 terminal0/15PASS。无 compile/test failure after
+product change。Atomic patch context failure 未应用；audit 首次仅因 rustfmt trailing
+comma normalization 失败，核对实际 diff 后只修 ignored audit，source 未改。
+
+Frozen pipeline42886 terminal0，全部16gates PASS：narrow/minCLI15/15、page5/finite21/
+shell31/CLI119/Core96+public5+integration1=102/coreonlycachemin17/minCLIalltargets/
+originalstack5/strictCoreCLI/fmt/targetedtooling22/actualCLI95。第11节完整拆分全部PASS：
+2436Rust/13Python，CLI831/Core1443/public52，0FAIL/2既有ignored。Workspacefmt/check/
+strictClippy/MSRV1.80.1、66features/4groups、7+7doctests/3snippets、CABI、3.12wheel/
+sdistbuild/install/import、tooling67/help118/raw38/host5/CLI95/backup3全部PASS。
+22device NOT_RUN，Chromium/installed3.9/3.13未重跑。所有build终止后才改源码或启动
+新验证；观察超时不等于退出。无cacheclean。
+
+所有原 CDP/WebDriver/task/assertion modules、五个 CDP lifecycle functions、finite/
+shell/control tests 与 active cleanup/security 保持；controller 只改 private visibility/
+新增 cap，原logic保持。Shared bridge fixture 100ms→1s 为500ms quiet stage留预算，
+旧assertions不变；cfg(test) source/peer增加 delayed ownership/creation stall/context
+delay 并复用既有 selectors，默认行为保持。Core/public/bindings/dependencies不变。
+Timing/selection/missing-target/error cleanup corrections 留待 pre-1.0 release review。
+
+Frozen patch SHA256：
+`46b1ebad6e7a3de57aa19ef2f2451621c905c1b274c9f0945eca41e9f8ed41c7`。
+Actual ios binary SHA256：
+`b05e520c44307f686a9b0f3de2565a07627583f8056bd1da8f87c84f8e83c499`。
+Actualcommit 等于 frozen tested patch；日志/元数据/audits 在 ignored
+`target/validation/webinspector-server-setup-2026-10-05/`。RefsHEAD/status保持。
+
+L01/class4/all31 active。其余 server startup/pinned signal/request/output/publication/
+primary cleanup/revocation/join、其他 L01协议清理、L02–L04/Q04与第五至九类继续。
+Cooperative timer 不证明 hard preemption/Apple ACK/rollback/retry/other-platform/
+benchmark/RSS/decoderpeak。全部31任务/subtasks/history及118capability正文/maturity/
+prior evidence保持，9完成/11未开始/11进行中或待条件不变，不缩减总体目标。
+
+文档audit PASS：8documents/7Markdown/373locallinks与actualhelp118；all31
+task/subtask/history prefix、118capability正文/maturity/prior evidence保持。
+真实source/binary/16gates/full42886/current15 tests匹配，文档期间无product edit，
+refsHEAD/status不变。实现和文档独立提交后继续 cleanup/server/其他工作，goal active。

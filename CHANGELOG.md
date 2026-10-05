@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Share one checked setup deadline across CDP discovery/attachment and WebDriver
+  runtime construction. Exact CDP targets attach when discovered; full lists
+  retain a separate 500ms quiet period inside the total. See
+  [WebInspector server setup migration](docs/validation/webinspector-server-setup-2026-10-05.md).
 - Preserve a CDP page bridge's original timeout after partial input or blocked
   automatic listing invalidates its WebInspector connection. Healthy empty idle
   still resumes. See [CDP page lifecycle evidence](docs/validation/cdp-page-idle-lifecycle-2026-10-05.md).

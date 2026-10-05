@@ -1019,3 +1019,18 @@ with no new public source selector or physical-device/browser acceptance.
 This error-behavior correction needs pre-1.0 release review; setup/request totals,
 cleanup results and joined server/browser ownership remain pending. See
 [CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+
+CDP discovery/attachment and WebDriver runtime setup now consume one configured
+total, including lock/connection, startup, discovery and attachment/context
+creation. The timeout previously restarted across those stages. Full lists
+and automation discovery use a500ms quiet window inside the total; insufficient
+totals can fail even when an individual stage would previously complete.
+Exact CDP targets proceed when actually discovered, and absent targets wait
+within that total. Successful owners clear the setup cap before existing active
+operations; no stale setup allowance becomes a request limit. Incomplete browser
+attachment now drops without guessing teardown. These timing/selection/failure
+corrections need pre-1.0 release review. Public grammar/output/API/access policy
+stay; private zero fixtures do not prove CLI listener admission. Server startup,
+signal, publication, active request/output, primary cleanup and joined task
+contracts remain pending. See
+[WebInspector server setup](validation/webinspector-server-setup-2026-10-05.md).

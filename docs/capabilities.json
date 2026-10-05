@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-server-setup-82db3a8",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned private InspectorSource/actual plist streams and local page WebSocket; delayed connection, blocked writer and actual page lock; shared existing Automation create/get/close peer; caller cancellation after committed attach/create frames"],
+      "required_state": ["Nine source/test files,15 new tests. Before-product69631 terminal101:0 PASS/4 FAIL, all four private sources returned after their admitted setup budget. Corrected owner42493 four PASS; initial regression91234 CLI108 PASS; expanded33735 fourteen PASS; final18610 fifteen PASS. Frozen pipeline42886 terminal0/all16 gates:15/min15/page5/finite21/shell31/CLI119/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tooling22/actualCLI95/full PASS. All original assertion functions and checked controller logic preserved; shared bridge fixture100ms→1s to allow500ms quiet collection. Source/peer extensions remain cfg(test); no public backend, forged device, core/public/binding/dependency/access change; maturity unchanged."],
+      "tested_commit": "82db3a8699f99de4d7275baa896e408e543023ed",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-server-setup-2026-10-05.md",
+      "result": "PASS",
+      "scope": "CDP full discovery, page/browser-page constructors and WebDriver runtime constructor each share one checked absolute total before lock/source through startup/discovery/attach and context creation. Each client stage caps to the remaining total; successful owners clear setup cap for existing active policies. Exact page discovery returns on admitted match and retries only reusable idle; missing targets wait within total. Full lists/WebDriver retain500ms quiet collection; tight totals can expire. Incomplete browser attachment drops without guessed teardown. Source/lock/write expiry and caller cancellation release owned streams/locks; actual successful Automation active use and stalled creation covered. Full2436Rust/13Python,CLI831/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Server startup/signal, HTTP publication/output, active request totals, primary/independent cleanup and joined browser/stored tasks remain; existing100ms/2s cleanup policies unchanged. Private zero/overflow is not CLI listener admission.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/retry/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 remain active."
+    },
+    {
       "id": "linux-cdp-page-idle-lifecycle-2e22aaf",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
