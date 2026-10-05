@@ -14,22 +14,22 @@ use tokio::sync::Mutex;
 
 use crate::access::Principal;
 
-struct RevocationTask(tokio::task::JoinHandle<()>);
-
-impl Drop for RevocationTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+mod task_owner;
+use task_owner::TaskOwner;
 
 struct Entry<T> {
     resource: Arc<Mutex<T>>,
     principal: Principal,
-    _revocation: RevocationTask,
+    revocation: Arc<TaskOwner>,
+}
+
+struct Store<T> {
+    entries: HashMap<String, Entry<T>>,
+    retiring: Vec<Arc<TaskOwner>>,
 }
 
 pub(super) struct Sessions<T> {
-    entries: Arc<Mutex<HashMap<String, Entry<T>>>>,
+    entries: Arc<Mutex<Store<T>>>,
 }
 
 impl<T> Clone for Sessions<T> {
@@ -43,7 +43,10 @@ impl<T> Clone for Sessions<T> {
 impl<T> Default for Sessions<T> {
     fn default() -> Self {
         Self {
-            entries: Arc::new(Mutex::new(HashMap::new())),
+            entries: Arc::new(Mutex::new(Store {
+                entries: HashMap::new(),
+                retiring: Vec::new(),
+            })),
         }
     }
 }
@@ -59,23 +62,41 @@ impl<T: Send + 'static> Sessions<T> {
         F: Future<Output = ()> + Send + 'static,
         C: FnOnce(Arc<Mutex<T>>) -> F + Send + 'static,
     {
+        self.reap_finished().await;
         let weak = Arc::downgrade(&self.entries);
         let lease = principal.clone();
         let resource = Arc::new(Mutex::new(resource));
+        let watched_resource = Arc::downgrade(&resource);
         // Keep publication serialized with the revocation task. A lease can
         // already be revoked here, but cannot leave an orphan entry behind.
-        let mut entries = self.entries.lock().await;
+        let mut store = self.entries.lock().await;
         let task_id = id.clone();
         let revocation = tokio::spawn(async move {
             lease.revoked().await;
-            let entry = match weak.upgrade() {
-                Some(entries) => entries.lock().await.remove(&task_id),
+            let resource = match weak.upgrade() {
+                Some(entries) => {
+                    let mut store = entries.lock().await;
+                    let same = store.entries.get(&task_id).is_some_and(|entry| {
+                        watched_resource.ptr_eq(&Arc::downgrade(&entry.resource))
+                    });
+                    if same {
+                        store.entries.remove(&task_id).map(|entry| {
+                            // The store keeps this actor's handle; the actor must
+                            // neither abort nor join itself. No strong store owner
+                            // or global lock survives into protocol cleanup.
+                            store.retiring.push(entry.revocation);
+                            entry.resource
+                        })
+                    } else {
+                        None
+                    }
+                }
                 None => None,
             };
-            if let Some(entry) = entry {
+            if let Some(resource) = resource {
                 // Remove admission first. Cleanup cannot keep an expired
                 // resource addressable or hold its map lock across I/O.
-                if tokio::time::timeout(super::SESSION_CLEANUP_MAX, cleanup(entry.resource.clone()))
+                if tokio::time::timeout(super::SESSION_CLEANUP_MAX, cleanup(resource))
                     .await
                     .is_err()
                 {
@@ -83,41 +104,89 @@ impl<T: Send + 'static> Sessions<T> {
                 }
             }
         });
-        entries.insert(
+        let replaced = store.entries.insert(
             id,
             Entry {
                 resource,
                 principal,
-                _revocation: RevocationTask(revocation),
+                revocation: Arc::new(TaskOwner::new(revocation)),
             },
         );
+        let replaced = replaced.map(|entry| {
+            entry.revocation.abort();
+            store.retiring.push(entry.revocation.clone());
+            entry.revocation
+        });
+        drop(store);
+        if let Some(owner) = replaced {
+            self.join_retired(owner).await;
+        }
     }
 
     pub(super) async fn get(&self, id: &str) -> Option<Arc<Mutex<T>>> {
+        self.reap_finished().await;
         self.entries
             .lock()
             .await
+            .entries
             .get(id)
             .filter(|entry| entry.principal.current())
             .map(|entry| entry.resource.clone())
     }
 
     pub(super) async fn remove(&self, id: &str) -> Option<Arc<Mutex<T>>> {
-        self.entries
-            .lock()
-            .await
-            .remove(id)
-            .map(|entry| entry.resource)
+        self.reap_finished().await;
+        let entry = {
+            let mut store = self.entries.lock().await;
+            store.entries.remove(id).inspect(|entry| {
+                entry.revocation.abort();
+                store.retiring.push(entry.revocation.clone());
+            })
+        };
+        if let Some(entry) = entry {
+            self.join_retired(entry.revocation).await;
+            Some(entry.resource)
+        } else {
+            None
+        }
     }
 
     async fn principal(&self, id: &str) -> Option<Principal> {
+        self.reap_finished().await;
         self.entries
             .lock()
             .await
+            .entries
             .get(id)
             .map(|entry| entry.principal.clone())
     }
+
+    async fn reap_finished(&self) {
+        let owners = self.entries.lock().await.retiring.clone();
+        for owner in owners {
+            if let Some(result) = owner.join_if_finished().await {
+                task_owner::report(result);
+                self.forget_joined(&owner).await;
+            }
+        }
+    }
+
+    async fn join_retired(&self, owner: Arc<TaskOwner>) {
+        task_owner::report(owner.join().await);
+        self.forget_joined(&owner).await;
+    }
+
+    async fn forget_joined(&self, owner: &Arc<TaskOwner>) {
+        self.entries
+            .lock()
+            .await
+            .retiring
+            .retain(|other| !Arc::ptr_eq(owner, other));
+    }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 /// Guard operations with the stored session's original lease as well as the
 /// request's debug grant. A second valid debug credential cannot revive a
