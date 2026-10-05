@@ -1089,3 +1089,16 @@ reply, event, route, policy/admission field or public grammar changes. This
 timing/diagnostic correction needs pre-1.0 release review and device evidence.
 Generic caller/server Drop and stored-session joins remain. See
 [browser lease migration](validation/cdp-browser-lease-2026-10-05.md).
+
+### WebDriver DELETE failure migration (2026-10-05)
+
+Successful and repeated DELETE retain200 and `{"value":null}`. Cleanup failure
+now uses the existing HTTP500/safe unknown-error body and schema1 machine
+headers. Previously it was hidden behind successful deletion. The100ms total
+starts at handler entry, covers admission removal, runtime mutex and original
+Automation context/forwarding cleanup; it does not include preceding HTTP
+authorization middleware or response delivery. Known business error remains
+primary through cleanup expiry. Routes, parameters, successful payloads and
+public Rust/C/Python surfaces stay. Review this error/timing change for the
+pre-1.0 release; real-device evidence and in-flight request/registry ownership
+remain pending. See [DELETE migration](validation/webdriver-delete-2026-10-05.md).

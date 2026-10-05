@@ -1813,3 +1813,21 @@ WebSocket error frames are sent. Child detach replies and healthy traffic stay.
 This supersedes the earlier browser principal/retiring-owner limitation; generic
 caller/server Drop and stored registry remain. See
 [browser lease errors](validation/cdp-browser-lease-2026-10-05.md).
+
+### WebDriver DELETE cleanup errors (2026-10-05)
+
+DELETE now returns an actual cleanup failure through the existing AppError:
+HTTP500, unchanged safe WebDriver unknown-error body and schema1 machine
+headers with WebInspector phase/unknown effects. A native forwarding flush IO
+retains PermissionDenied; actual mutex or cleanup expiry retains native Elapsed
+and Timeout. An already received business-close Protocol error stays primary
+if forwarding cleanup subsequently fails or expires. Both original causes stay
+owned in the private result until the existing HTTP projection classifies it.
+
+Previously DELETE ignored its outer timeout and the unit cleanup callback
+logged failures, so these cases returned200/null. Success and repeat deletion
+still return200/null without error headers. The new private Result helper
+shares the entry deadline and avoids an outer competing cleanup timer. Legacy
+revocation callback, registry join and active request Arcs remain separate.
+This pre-1.0 error/timing migration needs release review and device evidence;
+see [DELETE errors](validation/webdriver-delete-2026-10-05.md).

@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webdriver-delete-731bdb0",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Six actual protected POST/DELETE cases with synthetic policy and owned Automation plist streams; three private actual Result-helper observers of native business/IO/Elapsed causes. Source calls1, stream Drop, original create/close IDs1/2, matching forwarding close, mutex admission removal and safe machine HTTP errors observed."
+      ],
+      "required_state": [
+        "Four source files/nine new tests.12436 first compile four Response.json fixture errors/no tests; corrected negative log1PASS5FAIL, numeric handle/exit lost across compaction and not invented; verified final log/no live process.45035 post6PASS;40794 expanded9PASS. Frozen91290 terminal0/all22 gates:9/min9/browser23/lease7/WD8/direct5/setup15/page5/finite21/shell31/CLI171/access29/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tools22/CLI95/full. Original runtime.stop/callback/constructor/active/assertion bodies and shared cleanup body retained; private cfg/helper visibility only."
+      ],
+      "tested_commit": "731bdb0ac96d30013a17c083fd7c9f19c8a85a81",
+      "date": "2026-10-05",
+      "location": "docs/validation/webdriver-delete-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Checked100ms total at DELETE handler entry through map removal/runtime mutex/original context+forwarding cleanup; one original Automation context and command IDs, once-only cleanup disarm/unusable-client skip. No outer competing cleanup timeout; original business primary plus native IO/issued Elapsed retained privately. Existing AppError500/safe body/schema1 machineheaders now reports failures previously hidden by200null; success/repeat keep200null. Full2488Rust/13Python,CLI883/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Handler only; registry joins/revocation callback/active Arcs/server Drop/constructor primary/active totals/terminal retention remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
+    },
+    {
       "id": "linux-cdp-browser-lease-d73514f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

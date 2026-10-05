@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6879,4 +6879,62 @@ All31 tasks/subtasks/history精确保留，只L01overview/末尾记录与单项h
 无Apple ACK/rollback/retry/asyncDrop/server join/platform/benchmark/RSS/decoder
 peak认证。实现后独立文档提交，继续WebDriver DELETE清理错误、stored registry
 任务join/server与其他owners，再其他L01/L02–L04/Q04及第五至九类，goal active。
+无subagent/push/publication/history rewrite/reference edits/device/Apple操作。
+
+### 大类 4：L01 WebDriver DELETE total / cleanup errors（2026-10-05）
+
+受测实现：`731bdb0ac96d30013a17c083fd7c9f19c8a85a81`，基于
+`e188f1f8bbf06b7a4c266ef05c75c580258c76f9`。Linux x86_64，Rust1.97.1/
+MSRV1.80.1，Python3.12.13。[专题证据](validation/webdriver-delete-2026-10-05.md)。
+只交付 DELETE handler 主机范围；L01/第四类/全部31项继续 active。
+
+DELETE handler entry 创建一个 checked100ms Budget，map removal、runtime mutex
+等待、原 Automation context close 和 forwarding close 共用同一绝对 deadline。
+先移除地址能力再协议I/O；原session/command IDs保持，cleanup开始disarm一次，
+invalid client跳过。Result helper不以外层竞争timer覆盖已知business主错误；
+shared cleanup body只增加private visibility。原runtime.stop、unit revocation
+callback、constructor/active methods与八个既有cleanup assertions不变，fixture
+只增加cfg visibility。Core/public/access/registry/dependencies/其他owners不变。
+
+此前 outer timeout 和 unit callback 隐藏失败，DELETE仍返回200/null。现在经既有
+AppError500/safe unknown-error/schema1 machine headers报告原PermissionDenied、
+Elapsed/Timeout或business Protocol主错误，双causes保留到HTTP projection。
+成功/重复DELETE仍200/null无错误headers。期限不包含先行HTTP授权middleware或
+response delivery；failure200→500与timing修正保留pre-1.0 release review/真机条件。
+
+九个新测试：六个actual protected POST/DELETE覆盖normal/repeat、native flushIO、
+real default100ms expiry、business primary+expiry、mutex占满预算零cleanup请求、
+观察removal后85ms mutex等待不足完成30ms forwarding flush；三个private actual
+Result observers保留business+nativeIO、business+Elapsed与mutex Elapsed，不作
+HTTP/admission声明。源调用1、原create/close IDs1/2、close identity、Drop/peer/
+listener join被观察；fixture Arc显式释放不代表取消所有in-flight requests，
+fixture joins不代表product registry/server监督，close/flush不代表Apple ACK。
+
+首编译12436 terminal101：四个Response.json fixture E0599，无tests；依现有
+bytes+serde_json修正，不改reqwest feature。修正后before-product log 1PASS/5FAIL，
+五项均200而非500；该次numeric handle/exit在compaction后缺失，如实未填精确
+exit code。确认最终FAIL log与无live builds后才编辑源码。45035 terminal0：6PASS；
+40794 terminal0：9PASS。Frozen pipeline91290 terminal0，全部22gates PASS。
+
+9/min9、browser23/pagelease7/WDcleanup8/direct5/setup15/page5/finite21/shell31、
+CLI171/access29/Core102/core-min17、minimumCLIalltargets/原stack5/strict Clippy/
+fmt、.venv tooling22/binary/actualCLI95及§11 full全部PASS。完整入口按Rust/Python
+拆分：2488 Rust/13 Python，CLI883/Core1443/public52，0FAIL/2既有ignored。
+Workspace fmt/check/strict Clippy/MSRV、66features/4groups、7+7docs/3snippets、
+CABI、Python3.12wheel/sdist build/install/import、tooling67/help118/raw38/host5/
+CLI95/backup3 PASS；22device NOT_RUN，Chromium/installed3.9/3.13未重跑。
+
+Source patch SHA256：
+`c0d345de35ad32ba9d86bb8f62504f4f76e50fbaf2c12143b72da480a61cd54a`。
+Actual ios binary SHA256：
+`b0d4a5a156df6c9751d3ad3c8db4a06a97992ef9b4a95d3c6a7627423f89c3fb`。
+Commit=frozen source；durable history/logs/audits在ignored
+`target/validation/webdriver-delete-2026-10-05/`，referenceHEAD/status不变。
+
+全部31项/子任务/history、118capability正文/maturity/prior证据与9完成/11未开始/
+11进行中或待条件保持。Stored registry join/revocation callback/active Arcs、
+generic caller/server Drop、constructor primary cleanup、active request/output
+totals、terminal retention与其他L01/L02–L04/Q04/第五至九类继续。无Apple ACK/
+rollback/retry/asyncDrop/server join/platform/benchmark/RSS/decoder peak认证。
+代码后独立文档收尾提交，再继续任务所有权等可执行范围；goal active，
 无subagent/push/publication/history rewrite/reference edits/device/Apple操作。

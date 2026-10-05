@@ -656,3 +656,30 @@ This covers the earlier browser principal/removed-owner gap. Generic caller or
 server Drop still only aborts; no product server supervisor join is certified.
 Constructor primary cleanup, active request/output totals, stored registry,
 terminal event retention, other L01, L02–L04/Q04 and classes5–9 continue.
+
+### WebDriver DELETE handler total (2026-10-05)
+
+DELETE creates one checked100ms Budget at handler entry. Map removal, runtime
+mutex admission, context close and forwarding close consume that same absolute
+deadline. Removal precedes protocol I/O. Cleanup disarms its once-only flag
+when it starts and skips an unusable original client; it borrows the original
+Automation session and command IDs. Existing native context/socket cleanup
+body is shared unchanged, with private visibility only. Its combined result
+has no competing outer timer that could discard an already observed primary.
+
+Six actual protected POST/DELETE host fixtures verify success/repeat, native
+flush IO, real default100ms expiry, business primary after expiry, mutex wait
+with zero cleanup requests and85ms mutex time leaving insufficient forwarding
+flush time. Three private owned-result fixtures retain original business+IO,
+business+Elapsed and mutex Elapsed. These observers make no HTTP/admission
+claim. The routed fixtures use synthetic authorization and actual owned plist
+streams; listener/peer joins are fixture supervision, not product registry join.
+
+Accepted runtime.stop, unit revocation callback, constructor/active methods and
+eight prior cleanup assertion functions remain. Explicitly held fixture Arcs
+release after removal; DELETE does not thereby cancel all in-flight request
+Arcs. Stored revocation tasks still lack explicit joins. Generic caller/server
+Drop, constructor primary cleanup, active request/output totals, terminal event
+retention and remaining L01/L02–L04/Q04/classes5–9 continue. No async Drop,
+Apple ACK/rollback/retry, platform or performance acceptance. See
+[DELETE lifecycle evidence](validation/webdriver-delete-2026-10-05.md).

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Return WebDriver DELETE cleanup failures through the existing HTTP error
+  contract. Session removal, mutex wait, context close and forwarding close
+  share one 100ms total; known primary and cleanup causes remain owned.
+  See [DELETE migration](docs/validation/webdriver-delete-2026-10-05.md).
 - Keep CDP browser lease cancellation inside its resource owner. Removed pages
   stay owned during interrupted cleanup; completed joins and issued errors
   survive, and remaining pages share one 2s cleanup total. See
