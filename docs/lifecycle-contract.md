@@ -395,10 +395,37 @@ the preserving API keeps originals. Effective operation budget replaces varying
 startup response remainder in the native getter. Page discovery quiescence now
 requires empty usable idle; partial/routing and configured total expiry fail.
 Raw helpers, protocol strings/models/16MiB framing and six public variants remain.
-Inspector/Automation correlated totals/attach ownership and retained cache limits,
-plus frontend/server setup/total/signal/join/output cleanup, remain subsequent
-owners. No task/queue, remote cleanup/ACK/retry or measured memory claim is added.
+That client-only profile deferred Inspector/Automation correlated ownership,
+retained cache limits and frontend/server setup/total/signal/join/output cleanup.
+No task/queue, remote cleanup/ACK/retry or measured memory claim was added.
 See [WebInspector client fixtures](validation/webinspector-client-lifecycle-2026-10-05.md).
+
+Inspector/Automation correlated commands and attach now own one checked total
+across send/flush and the expected response/target/page. A completed outgoing
+request commits the owner: abandoned or failed waits invalidate the client even
+after unrelated complete events followed by empty IO. Other sessions/clones on
+that client reject a late complete reply. Frame failures still preserve original
+sources. Matched business failures complete the wire obligation and retain their
+original reuse/error policy. Automation page_id is assigned after full attach.
+Send-only attach(false)/command/bridge APIs remain local write-completion owners;
+session metadata is not transferable recovery when a new client is needed.
+
+Pending/skipped events share1024/16MiB compact-JSON caps, counting existing pending
+state before append/restoration. Complete owners restore original ordering;
+committed cancellation discards skipped state and drops pending capacity. Cached
+pop releases its byte accounting. Typed private local limits remain ResourceLimit
+under Io; checked u64 counters admit MAX once and never wrap/reuse. Logical bytes
+are not RSS/peak-memory evidence. Application/page metadata remains a separate
+bounded-state task.
+
+Finite scopes inherit their original absolute deadline through nested sends,
+startup, timed socket/event reads and automatic listing writes. Scope Drop restores
+the prior policy without an async task. Zero rejects before ready IO; effective
+overflow is Io InvalidInput, native expiry keeps original effective total/Elapsed.
+Due priority and cooperative codecs stay. No remote ACK/cleanup/retry or reader
+task is added; frontend/server setup/total/signal/join/output/primary-cleanup and
+multi-command workflow owners remain pending. See
+[WebInspector session fixtures](validation/webinspector-session-lifecycle-2026-10-05.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

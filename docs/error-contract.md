@@ -75,10 +75,31 @@ reports its effective budget rather than a changing response remainder; legacy
 send/response Disabled mappings and the preserving API stay. Discovery idle
 quiescence requires usable empty input; partial/routing or configured total
 expiry cannot return a successful snapshot. Existing correlated business parsing
-after a returned event is untouched; correlated cancellation, retained-state
-resource rejection and frontend primary/cleanup owners remain separate work.
+after a returned event was untouched by that client-only profile; correlated
+ownership is covered by the subsequent profile below. Metadata cache limits
+and frontend primary/cleanup owners remain separate work.
 Local admission never proves device settings, cleanup or retry safety. See
 [WebInspector client error evidence](validation/webinspector-client-lifecycle-2026-10-05.md).
+
+Correlated Inspector/Automation now preserve the primary native/JSON/Protocol
+failure while invalidating an incomplete committed client. Matched Inspector
+business replies remain response objects; matched Automation failures keep the
+original Protocol message and do not invalidate solely for that business error.
+Skipped restoration keeps order on complete responses; a restoration failure
+cannot replace an existing primary error. Incomplete/cancelled owners discard
+their events with the invalid client, preventing late reply reuse.
+
+Private WebInspectorLimit classifies ResourceLimit for local retained-event
+count/compact-JSON byte and exhausted-ID admission under Io, using a feature-
+gated typed rule. Generic IO OutOfMemory and unrelated decoder errors are not
+repurposed. The six variants remain exhaustive. Session zero is source-free
+Timeout, effective overflow migrates from internal Protocol to Io InvalidInput;
+actual expiry keeps original effective total/Elapsed without synthesis. Nested
+finite deadline scopes avoid independently overflowing configured MAX, and
+scope exit restores the previous policy. Existing matching/selection/business
+rules, startup Disabled mapping and safe diagnostics stay. Local categories or
+queue release do not certify remote cleanup, retry or measured memory. See
+[WebInspector session error evidence](validation/webinspector-session-lifecycle-2026-10-05.md).
 
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths

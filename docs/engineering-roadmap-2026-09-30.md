@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6135,3 +6135,100 @@ longstreams/manualpairing/blockingresources、L02–L04/Q04及第五至九类继
 正文/maturity/history保持仅增hostevidence；22device NOT_RUN，Chromium/installed3.9/
 3.13未重跑。平台/设备/凭据/协议条件继续；无reference编辑/subagents/push/publication/
 historyrewrite，host profile不完成L01、第四类或总体goal。
+
+### 大类 4：L01 WebInspector correlated session / retained event ownership（2026-10-05）
+
+| 字段 | 交付记录 |
+| --- | --- |
+| 任务与范围 | L01；承接 client profile，覆盖 Inspector/Automation correlated command/attach、committed late reply isolation、pending/skipped count+logical bytes、u64 counter exhaustion、nested deadline inheritance；不完成 L01/第四类/31任务总体目标 |
+| 实际实现提交 | `8011749571e2ae2a70ca8728984d0d93b56651bc`，基于 `4b8256684fbc15a125524f5a96d2616c0f5f3cbd`；12个source/test文件，独立本地实现提交，实际patch与受测freeze精确一致 |
+| 实际行为 | send/flush/unrelated events/matching reply共用一个effective absolute deadline；complete command/setup/request后的abandoned owner失效client/drop owned metadata/events，其他session/clone不能消费late complete reply；原matched business error/reuse与event order保留；LOCAL pending+skipped1024/16MiB compact JSON caps；full u64 MAX一次后拒绝exhaustion，不wrap/reuse；finite scope继承到nested sends/startup/timed socket/events/automatic listings，退出恢复旧policy |
+| 精确专题合同 | [验收与迁移](validation/webinspector-session-lifecycle-2026-10-05.md)、[生命周期](lifecycle-contract.md)、[公开接入](public-contract.md)、[错误](error-contract.md)、CHANGELOG/quality/Q01单项host evidence；所有主任务和子任务保留 |
+| 主机验证 | Linux x86_64/Rust1.97.1/MSRV1.80.1/Python3.12.13；full70542 terminal0，第11节Rust/Python拆分全部PASS：2340Rust/13Python，CLI752/Core1427/public51，0FAIL/2既有ignored。Final narrow/minimum26；Core80+public4+integration1=85/CLI40/minCLIalltargets/actualoriginalstack5/strictCoreCLIClippy/fmt PASS；tooling59/actualhelp118/raw38/host5/CLI55/backup3与全部制品/文档/C检查PASS |
+| 真实剩余条件 | Application/page缓存count+logical bytes/替换与disconnect释放仍待；WebInspector CLI/CDP/WebDriver/server setup/whole-flow total/pinned signal/join/output/primary cleanup继续；其他L01协议/raw borrowed/multi-request/long streams/manual pairing/blocking资源、L02–L04/Q04及第五至九类继续。22device NOT_RUN；Chromium/installed3.9/3.13未重跑；host不替代platform/device/credentials/protocol证据 |
+
+Inspector send_command_and_wait与Automation command helper不再发送后重启timeout。
+Inspector attach/unpaused包括setup/optional target；Automation attach包括request、两次
+listing、socket setup和final connection-ID，page_id仅full attach成功后赋值。
+Optional client cap与explicit budget取较短值，整个correlated wait用原absolute deadline。
+
+Logical guard在complete outgoing command/setup/request后commit，cancel/expiry/错误即使
+最后emptyread、前面unrelated frame已完成仍失效client并drop owned metadata/pending。
+其他session/clone在该client上reject beforeIO，setterNone不能revive。Partial send/flush/
+read继续由原frameguard持有，native/JSON/Protocol primary保留；unpolled/empty blocked
+write/preIO admission可保留。无reader task/detachedcleanup/guessed ACK/reattach/retry。
+
+Matched business response先完成wire obligation，再维持原业务处理：Inspector返回
+error response object，Automation保留原Protocol message/reuse。Complete owner将skipped
+events按原顺序restorefront；incomplete/drop将skipped与invalidclient一起丢弃，避免
+消费late reply；restorefailure不替换已有primary。Matching、transportACK discard规则和
+业务parser未改。Send-only attach(false)/command/bridge仍只承诺localwritecompletion；
+session getters不是remote liveness，client失效后须new client+new session，不认证cached
+target/page ID跨transport recovery。多command workflow整体预算留给后续owner。
+
+Pending+skipped共享LOCAL1024events/16MiB compact JSON预算，已有pending计入combined
+count+bytes，tags/keys/escaping/values由counting writer计数且不复制encoded payload。
+Append/restore前检查；cached pop释放byteaccount，committeddrop清owned queuecapacity。
+独立于旧16MiB wirecap；不是RSS/allocator/peakdecode memory/throughput/latency测量。
+Application/page cache仍待本地有界化，不将该slice冒称all retainedclientstate有界。
+Private WebInspectorLimit经feature-gated typed rule在既有Io下分类ResourceLimit，未加
+publicvariant/stringclassification/借用无关decodererror。Command/transport u64 MAX可用
+一次，None表示exhaustion；Inspector两counter先admit后consume，无panic/wrap/reuse。
+Wirefixture证明原localu64域，不证明device支持MAX。
+
+Scoped inherited deadline覆盖correlatedhelpers、startup、timedsocket、directtimedevent及
+automaticlisting实际write，finitecap admission后nestedcall不再独立检查MAX造成overflow。
+成功/错误/cancelscope退出恢复先前deadlinepolicy，独立effectiveMAX仍reject。Zero在
+readyinput/IO前返回sourcefreeTimeout；effectiveoverflow由旧internalProtocol迁移到
+IoInvalidInput，实际expiry保留originaleffective total/真实Elapsed，不restart/remainder/
+fabricate。Nominaldue抑制readywork，codec/counting保持cooperative。Oldtiminghelper
+assertions作为test-only bytes保持；6variants/constructors/signatures/rootpaths/defaultNone/
+model/serde/wire/selectors/startDisabledmapping/businessparser/frontends/deps/reference
+HEAD/status保持。这些pre1.0 timing/reuse/resource迁移已登记，不加unsafebypass/alias。
+
+新25internal/1external tests。Actual Inspector/Automation125ms firstwritepoll block+
+125ms late replyunder200ms；committed callcancel/expiryafterunrelatedframe/emptyread、
+latecomplete和其他session/clone拒用；businessoriginal/order/nextID2；paused/unpaused
+setupcancel/late target、targetshapeProtocol与Automation request/listingcancel/page未赋值；
+nestedTarget malformedJSON originalsource；两session实际1025wireevents超限；combined
+pending/skippedcount、exact16MiB/escaping/Unicode/cachedpop/re-admission/restore/drop；
+zero/MAXreadyinput、unpolled/emptywritecancel/due真实timer；actual nested command/
+startup/idle/automaticlisting MAXfinitecaps；actualdirect/Target/Automation fullu64 IDs/
+exhaustion/transportfailure不consumecommandid；externalSend/6exhaustivevariants/native
+timeout/clone/queuedlate/noIO。3s outerbound、SHORT20ms，无baselinewideoldsource
+negativecontrol/device/browser/OSsignal/benchmark/otherplatform claim。
+
+First narrow54036 terminal0为21PASS。补nestedcapfixture后18677 terminal101是2个
+test-only E0283 dictionaryvalue类型诊断，该次无test执行；明确plistValue后72903为
+25PASS，firstpipeline87754为minimum25/Core84/CLI40/stack5/strictgates PASS。补direct
+eventinheritance及actualautomaticlistingfixture后product有变，95858为26PASS，pipeline
+21871 terminal0为minimum26/Core85/CLI40/minCLI/stack5/strictClippy/fmt PASS。最后仅
+newfixture file将125msdelay起点改为firstactualwritepoll，防止setup/scheduler提前
+消耗阻塞阶段；product/public SHA与21871一致。Supplement57845 terminal0再次
+narrow26/minimum26/strictClippy/fmt PASS，再冻结source。Sourceedit/追加build-test-check
+pipeline前已有build/test进程均terminal；独立readonlyaudit不编辑source。
+
+No livebuild时focused cargo clean -p ios-cli --profile dev首次清1657files/6.6GiB，约
+1.1GiB free清前；full前再清778files/3.0GiB，约3.2GiB before/6.1GiB after；无source/
+reference删除或storagefailure，full结束约1.9GiB free。第11节统一入口
+`python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python`
+执行full70542 terminal0：2340Rust/13Python，CLI752/Core1427/public51，0FAIL/2既有
+ignored，fmt/check/strictClippy/MSRV、66features/4runtimegroups、7+7doctests/3snippets、
+CABI、3.12wheel/sdist build/install/import、59tooling/118actualhelp/38raw/5host/55CLI/
+3backup全部PASS。Frozen12-file source SHA256
+`93ce28b9c0926b4dc0b81991ca77f0f85e9495a17d89118957b823246cf3b8c2`，finaliosbinary
+SHA256 `ec4f0d0e9b0eab456dd5e34e549ac372e8a41d90e5f0638c581f33a0d1cb534e`。
+Actualimplementationpatch与freeze/full精确一致。Logs/audits为/tmp/ios-l01-webinspector-session-。
+
+八文档audit PASS：7Markdown/330locallinks；source/actualCLIhelp inventory PASS。
+All31tasks/subtasks/旧historyprefix保留，仅L01overview与末尾交付追加；Capability118
+正文/maturity/既有evidence保持仅增hostentry。精确commit/source/binary/full/narrow/
+compile2diagnostics/fixtureonlysupplement/cachecleanup和readonlyreferences匹配，文档
+期间产品source未改。
+
+所有31主任务/subtasks及历史prefix保持，总览9完成/11未开始/11进行中或待验收/条件
+不变；L01/class4/overallgoal active。接着application/pagecache bounds，再frontend/
+server lifecycle，然后其他L01、L02–L04/Q04及第五至九类。Capability118正文/maturity/
+既有evidence不变，只追加hostevidence。22device NOT_RUN，Chromium/installed3.9/3.13
+未重跑；platform/device/credentials/protocol条件继续。无subagents/referenceedit/push/
+publication/historyrewrite，hostprofile不完成L01/第四类/总体goal。

@@ -47,8 +47,33 @@ configured total expiry now fails. Opaque stream stays until Drop and getters
 are local admission, not retry authorization. Six variants/models/serde/wire
 strings/16MiB/raw helpers and original consumer assertions stay. These pre-1.0
 source/reuse/timing migrations need release review; no bypass/deprecation alias.
-Correlated sessions/cache bounds/frontend owners remain separate. See
+The client-only profile deferred correlated sessions/cache bounds/frontend
+owners. See
 [WebInspector client acceptance](validation/webinspector-client-lifecycle-2026-10-05.md).
+
+The subsequent session profile keeps all Inspector/Automation public signatures
+and six error variants. Correlated command and attach send/reply stages now
+share one effective absolute total and invalidate a committed client on caller
+cancellation, expiry or failure before the expected result. Another session or
+clone cannot read a late reply on that client. Explicit matched business failures
+retain the original response/error and local reuse policy; successful unrelated
+events return in their original order. Empty blocked sends and unpolled calls
+can preserve reuse. Discard sessions when reconnecting; their cached target/page
+getters do not authorize recovery on another transport.
+
+Pending plus skipped events cap at1024/16MiB compact JSON, including existing
+pending state and restoration; rejection retains a private typed ResourceLimit
+under Io. IDs admit the full existing u64 domain once, then reject exhaustion
+before IO without wrap/reuse. Local limits are not inferred device limits or
+RSS/peak-memory measurements. Zero is source-free Timeout, effective overflow
+Io InvalidInput; native expiry retains Elapsed and the original effective total.
+Finite scopes inherit through nested sends/startup/timed reads/automatic listing,
+so MAX can be clamped without inner overflow; exiting restores independent
+configuration. Old internal timing assertions remain test-only. Default None,
+wire/models/selectors/business parsers/frontends and old consumers stay. These
+pre-1.0 timing/reuse/resource migrations need release review. Application/page
+cache bounds, multi-command workflows and frontend cleanup remain pending. See
+[WebInspector session acceptance](validation/webinspector-session-lifecycle-2026-10-05.md).
 
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners

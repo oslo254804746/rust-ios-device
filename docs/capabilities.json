@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-session-lifecycle-8011749",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned Inspector/Automation actual125ms blocked send plus125ms late reply under200ms; committed command/attach cancellation after unrelated frames and empty waits; late complete reply rejected by another session/clone; original matched business errors/ordered restored events and subsequent successful ID2; actual1025 wire-event rejection and combined pending/skipped1024/16MiB compact-JSON accounting/escape/release/restore/drop; full-domain u64 identifiers/exhaustion; nested finite MAX caps through actual commands/startup/idle/automatic listing; external Send/exhaustive/native timeout"],
+      "required_state": ["Twelve source/test files; twenty-five internal/one external new tests. First narrow21 PASS, then two test-only E0283 compile diagnostics with no tests, corrected25 PASS. First pipeline minimum25/Core84; actual event inheritance changed product, final pipeline minimum26/Core85/CLI40/stack5/minimum CLI/strict gates PASS. Fixture-only first-write-delay supplement26/minimum26/strict PASS with identical product/public hashes. Old assertions/wire/models/incoming routing/business matching/parsers/startup mapping/six variants/frontends/dependencies/references preserved. No device/browser/OS signal/baseline-wide old-source control/benchmark/RSS/other-platform acceptance; maturity unchanged"],
+      "tested_commit": "8011749571e2ae2a70ca8728984d0d93b56651bc",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-session-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "One checked absolute correlated-command/attach total; abandoned committed requests invalidate/drop owned client metadata/events and reject late replies on other supplied-client sessions/clones. Explicit matched business responses preserve original error/reuse and ordered events. Pending+skipped LOCAL caps1024/16MiB logical compact JSON; precise typed ResourceLimit under existing Io. Checked u64 MAX once then pre-IO exhaustion, no wrap/reuse. Nested deadlines inherit finite caps over configured MAX and restore prior policy on scope exit; zero legacyTimeout/overflow Io InvalidInput/native actual Elapsed with original effective total. Full70542 terminal0:2340Rust/13Python, CLI752/Core1427/public51, zero failures/two existing ignored and every section11 split gate PASS. No task/ACK/remote cleanup/retry/measured-memory guarantee. Application/page bounds and frontend/server whole-flow owners remain pending; all31/L01–L04/Q04/classes5–9 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
+    },
+    {
       "id": "linux-webinspector-client-lifecycle-30fb63f",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

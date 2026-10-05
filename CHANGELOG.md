@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Share one WebInspector correlated-command/attach deadline across sends and
+  replies; invalidate abandoned committed sessions to reject late responses.
+  Bound pending/skipped events by count and logical JSON bytes, check full-range
+  identifier exhaustion, and inherit finite caps through nested wire operations.
+  Preserve matched business errors, public variants and successful wire/output.
+  See [WebInspector session migration](docs/validation/webinspector-session-lifecycle-2026-10-05.md).
 - Guard WebInspector client frames, startup and automatic event-routing writes
   across cancellation. Add local is_usable and optional operation budgets,
   reject invalid cached reuse, and require empty usable idle for discovery
