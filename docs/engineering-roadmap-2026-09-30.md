@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion 与 notification CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -5971,3 +5971,83 @@ L02–L04/Q04及第五至九类。Capability118正文/maturity/history保持仅�
 encode/decode/已运行worker；无Watch/iPhone/OSsignal/startforward/remoteStop/performance/
 otherplatform验收。平台/设备/凭据/协议条件继续；无reference编辑/subagents/push/
 publication/historyrewrite。
+
+### 大类 4：L01 Companion CLI discovery/total/signal/cleanup ownership 交付（2026-10-05）
+
+实现与受测提交：`c2fa6fb60c9bdd2f56514b7b4844fe39f596bc3d`，基于
+`968dabbacf9d45e024c87cf8670791d9374dd634`。九份source/test/verifier文件，
+1371 insertions/239 deletions，Linux x86_64/Rust1.97.1/MSRV1.80.1/项目Python3.12.13。
+专题：[Companion CLI 生命周期与迁移](validation/companion-cli-control-2026-10-05.md)。
+
+Finite Listen/Forward/Stop zero/MAX在显式或默认设备选择前拒绝InvalidInput；
+clap/help/flags/defaults、classic/RSD routes及输出serde/newlines保持。Setup上限30s，
+有限total从default discovery前开始，覆盖connect/start/wait/output且不重启。
+同一pinned Ctrl+C覆盖全部阶段；setup及有限request-stage stop为typed cancellation，
+开始后的Listen/Forward operator stop保持graceful。List/Get保留core10s请求；
+无total监听使用unbounded next_event，不把request诊断期限当作idle timer。
+
+Ready signal/due nominal deadline优先；每次operation poll先检查nominal deadline，
+定时器注册尚未ready的间隙也不运行ready work，最终由原生timer提供实际Elapsed。
+Finite expiry仍返回失败，旧synthetic TimedOut迁移为native Elapsed。Listener在完整
+event/output后yield，ready流不饿死control；无新增reader/task/queue。Cooperative
+timer不preempt同步codec/render/output/已运行worker。
+
+Additive ForwardingHandle close/close_with_timeout消费handle，在创建future时立即
+disarm旧Drop fallback，未poll/cancel也不晚发Stop。CLI在start后、output/wait前创建
+该future，primary返回或graceful stop后独立await最多5s Stop，即使total已到期；
+client/device持有到cleanup结束。Invalid session跳过unsafe cleanup，不伪造二次失败。
+成功后cleanup失败返回cleanup；双失败私有aggregate保留两个original，source/category
+沿primary，Display静态/Debug仅类别。Cleanup UnexpectedEof保留native object和既有Io，
+business失败Protocol，issued cleanup expiry独立native duration/Elapsed。旧borrowed
+stop/stop_with_timeout/Drop行为保留，可在business-failed explicit stop后继续旧fallback；
+新consumed close无detached fallback。无remote stop/rollback/retry/ACK/join保证或
+猜测StopListening。Zero保持core source-free Timeout；MAX安全clamp5s。
+
+23个新Rust tests：CLI18/Core4/public1。最终narrow80528 terminal0为40PASS
+(18/20/2)，minimum companion22(Core20/public2)。Pipeline26213 terminal0：Core
+Companion36加public2、CLI Companion26(25command+既有main clap)、minimum CLI
+alltargets check、实际匹配original stack5、严格Core/CLI Clippy及fmt通过。
+Owned wire2s bound、SHORT20ms、actual5s cleanup用6s bound。200ms包含125mssetup及
+125ms后续stage；是helper total证据，不冒称物理route。实际write_line_to注入writer，
+不是Companion OS stdout故障验收。覆盖ready stop/expiry、pinned signal、partiallistener、
+exact Start/Stop、primary output/native/timer与business/EOF/actual5s cleanup双失败、
+setup/start/wait/committedcleanup wholecallerDrop/no follow-up、公开Send/unpolled close。
+
+Verifier新增3个positive/contact/private-diagnostic controls，test_compatibility14PASS。
+实际CLI39→55PASS，旧39保持；新16为12JSON Listen/Forward/Stop zero/MAX explicit/default、
+2human admission、empty default及actual Linux SIGINT。14admission no endpoint contact；
+empty只一次ListDevices/no extra connection；SIGINT仅owned fake ListDevices，
+cancelled/companion/exit1与peerEOF，无设备service/pairing/Apple操作。
+
+Preparation：首narrow50503 terminal101为测试bytearray条件长度不一致，改slice；
+次73066 compiled为CLI13PASS/2FAIL，不能计Core/public通过。实际nominaldeadline/ready
+work优先级问题已修复；另一项为UnexpectedEof误写Disconnected，改既有Io并检查native
+kind。之后补3个CLI case，最终18全通过。每次源码编辑前进程已退出；无old-source
+baseline-wide negativecontrol。无live build时focused cargo clean -p ios-cli --profile dev
+清1917 cachefiles/7.3GiB，非source/reference清理；无storage failure。约3.7GiB清前、
+8.7GiB清后、6.2GiB full前。
+
+Full62300 terminal0，第11节Rust/Python拆分全部PASS：2297Rust/13Python，
+CLI752/Core1386/public49，0FAIL/2既有ignored。Fmt/check/strictClippy/MSRV、66features/
+4runtimegroups、7+7doctests/3snippets、CABI、3.12wheel/sdist/install、59tooling/
+118actualhelp/38raw/5host/55CLI/3backup通过。Frozen source SHA256
+`2363413f3539ee2a33f627aafe383fc00f7890d8ae87669aac73e7dace23e4ae`，
+最终ios binary SHA256
+`a3910bf0bf0656c18463b8904b98edbb29c0154fcaf4bb51e197c3ad54c1126c`。
+九文件patch从freeze到full不变，并精确匹配实际实现commit；旧core assertions/privateflag
+初始化以外、lifecycle helpers、borrowedstop/parsers/errors/default10s/4MiB/publicconsumer
+保留；CLI clap/help/connect/route与5个旧tests保持，2个timing tests明确迁移zero/source。
+无关compatibility helpers、reference HEAD/status保持。Logs/audits为/tmp/ios-l01-companion-cli-。
+
+八文档收尾audit PASS：7Markdown/319local links、source/actualCLIhelp inventory PASS，
+精确commit/frozen source/binary/full/narrow/preparation及readonlyreferences匹配。全部
+31tasks/subtasks/旧history prefix精确保持，仅L01overview行和末尾交付追加；Capability118
+正文/maturity/既有evidence保持，只增一项hostevidence。文档期间产品source未改。
+
+全部31任务/subtasks/history保持，总览9完成/11未开始/11进行中或待验收/条件不变。
+L01/class4/overallgoal active；下一WebInspector frame/client/correlatedsessions/bounded
+caches，其他L01协议/rawborrowedsessions/multi-requesttotals/longstreams/manualpairing/
+blockingresources，L02–L04/Q04及第五至九类。Capability118正文/maturity/history保持仅增
+hostevidence；22device NOT_RUN，Chromium/installed3.9/3.13未重跑。平台/设备/凭据/协议
+条件继续，无reference编辑/subagents/push/publication/historyrewrite；host acceptance不
+完成L01、第四类或总体goal。

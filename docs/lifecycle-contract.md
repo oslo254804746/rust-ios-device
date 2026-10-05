@@ -344,10 +344,31 @@ business failure may retain reuse; abandoned/native/codec failure requires a
 new connection. Existing ForwardingHandle Drop still schedules a bounded
 best-effort task when runtime/state permit; stopped/invalid/zero-configured state
 skips it, and the task checks shared state after locking. It is not an awaited
-join or remote stop guarantee. A business-failed explicit stop can still trigger
-the pre-existing Drop attempt; CLI ownership/disarm and primary retention remain
-separate work. No new reader task/queue, protocol acknowledgement or cleanup
-aggregate is added. See [Companion fixtures and migration](validation/companion-lifecycle-2026-10-04.md).
+join or remote stop guarantee. A business-failed borrowed stop can still trigger
+the pre-existing Drop attempt. That core profile adds no reader task/queue,
+protocol acknowledgement or cleanup aggregate. See
+[Companion fixtures and migration](validation/companion-lifecycle-2026-10-04.md).
+
+The subsequent Companion CLI owner checks finite zero/overflow before explicit
+or default discovery. Setup caps at30s; a finite total starts before discovery
+and spans connection/start/wait/output without restart. One pinned Ctrl+C future
+serves every stage. Setup and finite request stages return typed cancellation;
+started Listen/Forward keep graceful operator stop. List/Get retain core10s
+requests, while unbounded listener next_event does not inherit a request idle
+timer. Ready stop/due total precedes work, including the nominal-deadline timer
+registration gap, and actual expiry retains Elapsed. Event delivery yields only
+after complete reads/output. Synchronous work remains cooperative.
+
+Additive consuming ForwardingHandle::close/close_with_timeout disarm Drop when
+the future is created, even if unpolled. CLI creates that future immediately
+after start, before output/wait, then awaits one independent5s Stop after a
+returned primary or graceful stop, even past the total deadline. Invalid state
+skips unsafe cleanup. Cleanup failure after success is returned; dual failure
+retains both originals with primary source/category and safe static diagnostics.
+Whole-command or close cancellation leaves no detached fallback. Legacy borrowed
+stop/Drop policies remain; shared owners retain the stream. No remote release,
+rollback, retry or guessed stop-listen command is claimed. See
+[Companion CLI fixtures and migration](validation/companion-cli-control-2026-10-05.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

@@ -54,9 +54,29 @@ zero/MAX later calls. Abandoned stop invalidates; complete business error can
 retain reuse. The existing best-effort Drop task stays, skips stopped/invalid/
 zero-configured state and rechecks after lock; it is not awaited cleanup or a
 remote guarantee. Complete business-failed explicit stop can still receive its
-old Drop attempt. No new protocol key/selector, task/queue, ACK, primary aggregate
-or CLI setup/signal owner is introduced. See
+old Drop attempt. That core profile introduces no new protocol key/selector,
+task/queue, ACK, primary aggregate or CLI setup/signal owner. See
 [Companion host acceptance](validation/companion-lifecycle-2026-10-04.md).
+
+The later Companion CLI profile adds consuming ForwardingHandle::close and
+close_with_timeout. Creating either future immediately disarms best-effort Drop,
+including an unpolled or cancelled future; one awaited stop caps at5s (shorter
+supplied budget, zero legacy Timeout, MAX safe). Borrowed stop/Drop remain.
+Other shared owners keep the stream; no remote cleanup or safe retry is implied.
+
+Companion CLI finite zero now rejects as InvalidInput before discovery, with
+overflow also checked before default/explicit selection. Existing flags/help/
+defaults, routes, success output/newlines and error v1 fields stay. Setup now
+caps at30s and shares a pinned signal with all later work. Finite totals begin
+before discovery; None still allows unbounded listener/forwarding wait. Setup
+and finite request stop return typed cancellation; started Listen/Forward retain
+graceful Ctrl+C. Issued expiry remains a failure but now retains actual Elapsed
+instead of synthetic TimedOut. Forwarding cleanup is one independently awaited
+5s attempt after returned failures or stop, even past the total; output/signal/
+timer primary errors survive cleanup and whole caller Drop spawns no fallback.
+These timing/error-source/ownership migrations require release review; there is
+no bypass alias. See
+[Companion CLI acceptance](validation/companion-cli-control-2026-10-05.md).
 
 NotificationProxyClient adds is_usable and set_operation_timeout(Option<Duration>).
 Default None retains unbounded sends/idle reads. Explicit waits use the shorter

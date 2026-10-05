@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound Companion default discovery/service setup at30 seconds and share one
+  finite total and pinned Ctrl+C owner through command work. Reject zero/overflow
+  before selection, retain actual timer/signal sources and await independent5s
+  forwarding cleanup while preserving primary errors. Add consuming handle
+  close APIs that disarm Drop at future creation; legacy borrowed stop/Drop
+  remain. See [Companion CLI migration](docs/validation/companion-cli-control-2026-10-05.md).
 - Guard shared Companion request/listener/forwarding state after cancelled or
   failed I/O, reject late replies and release terminal listener reads. Add local
   is_usable, checked budgets and a five-second forwarding cleanup cap while

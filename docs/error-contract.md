@@ -77,10 +77,24 @@ idle and stop expiry retains the existing native Elapsed/duration wrapper; stop
 reports its effective min(supplied budget,5s). Terminal idle expiry now drops the
 owned read and invalidates shared state. Successful cached stop/finished listener
 outcomes remain local no-ops independent of later input budgets. Existing Drop
-cleanup errors remain best-effort and unreported; awaited CLI primary/cleanup
-retention and task/disarm policy are separate pending ownership work. The four
-variants, safe diagnostics and automatic v1 fields stay. See
+cleanup errors remain best-effort and unreported on the legacy handle path. The
+four variants, safe diagnostics and automatic v1 fields stay. See
 [Companion lifecycle evidence](validation/companion-lifecycle-2026-10-04.md).
+
+The subsequent consuming close API schedules no Drop fallback, even on an
+unpolled/cancelled future or complete business error. Companion CLI rejects
+finite zero/overflow as InvalidInput before discovery. Actual setup/total expiry
+retains native Elapsed and signal cancellation uses OperationCancelled; native
+signal IO retains its original kind. Finite expiry's previous synthetic
+TimedOut payload is deliberately migrated. Started listener/forwarding operator
+stop remains graceful; a forwarding cleanup failure after success is returned.
+On dual failure a private aggregate owns both originals but source/category
+follows the primary, with static Display and category-only Debug. Native cleanup
+UnexpectedEof remains Io with its original object, while business failure keeps
+Protocol and issued cleanup expiry has its own native duration/Elapsed. An
+invalid session skips unsafe cleanup without inventing another error. Neither
+category nor successful local close proves remote release or safe retry. See
+[Companion CLI error evidence](validation/companion-cli-control-2026-10-05.md).
 
 NotificationProxy actual expiry retains Elapsed through existing Io/retained
 context, including budget exhaustion between complete unrelated events: an

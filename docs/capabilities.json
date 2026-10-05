@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-04",
+  "updated": "2026-10-05",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-companion-cli-control-c2fa6fb",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex setup/shared200ms total, same pinned signal, due timer priority, exact Start/Stop and original output, primary/native/output plus business/EOF/default5s cleanup expiry, ready raw event fairness/partial listener EOF, whole caller cancellation during setup/start/wait/cleanup, consuming-close signature/Send/unpolled/cancelled ownership; actual CLI no-contact admission traps/one empty fake ListDevices/owned Linux SIGINT"],
+      "required_state": ["Nine source/test/verifier files; eighteen CLI/four core/one external new Rust tests. Narrow40/minimum22, Core Companion36 plus2 public/CLI26/stack5/minimum check/strict gates PASS. Three new verifier negative/control tests, tooling59 and actualCLI55 PASS; original39 CLI cases retain acceptance. Original core assertions/lifecycle helpers/legacy stop/parsers/errors/default10s/4MiB preserved after private flag initialization; original CLI clap/help/route helpers and five legacy tests stay, two timing tests explicitly migrate zero/source policy. No device Watch/iPhone/forwarding/stop, Companion OS stdout fault, old-source baseline, benchmark or other-platform acceptance; maturity unchanged"],
+      "tested_commit": "c2fa6fb60c9bdd2f56514b7b4844fe39f596bc3d",
+      "date": "2026-10-05",
+      "location": "docs/validation/companion-cli-control-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Companion CLI setup caps30s and finite totals start before default discovery; zero/overflow reject before selection. One pinned signal spans all stages, ready stop/due nominal total precedes operation while native Elapsed supplies expiry; unbounded listen uses held raw event reads and complete-event/output yields. Forward creates consuming close before output/wait, disarms Drop at future creation and awaits one independent5s Stop even after total expiry. Dual failure retains both originals with primary category/source; native UnexpectedEof remains Io. Legacy borrowed Stop/Drop remains, no remote release/retry/ACK/task/queue claim. Full62300 terminal0:2297Rust/13Python, CLI752/Core1386/public49, zero failures/two existing ignored and every section11 split gate PASS. Fourteen new admission probes contact no endpoint, valid empty discovery sends one ListDevices/no extra connection, actual host SIGINT retains cancelled/companion/exit1 and EOF. All31/otherL01/L02–L04/Q04/classes5–9 active with22device NOT_RUN; Chromium/installed3.9/3.13 not rerun."
+    },
     {
       "id": "linux-companion-lifecycle-7a0ed63",
       "level": "host-unit/protocol",
