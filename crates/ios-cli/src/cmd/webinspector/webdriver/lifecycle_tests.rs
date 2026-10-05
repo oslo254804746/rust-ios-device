@@ -111,7 +111,7 @@ async fn lifecycle_server_setup_webdriver_success_clears_setup_cap_for_active_ru
             "Automation.closeBrowsingContext"
         ]
     );
-    assert_eq!(teardowns, 0); // Existing stop does not close the forwarding socket.
+    assert_eq!(teardowns, 1); // Stop now also closes its owned forwarding socket.
     assert!(source.dropped.load(Ordering::SeqCst));
     assert_eq!(source.calls.load(Ordering::SeqCst), 1);
 }

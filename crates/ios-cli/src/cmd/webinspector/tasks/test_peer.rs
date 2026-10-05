@@ -19,24 +19,24 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 
-pub(super) const BUNDLE: &str = "com.apple.mobilesafari";
-pub(super) const APP: &str = "PID:42";
-pub(super) const URL: &str = "https://example.invalid/";
-pub(super) const TITLE: &str = "Synthetic page";
-pub(super) const BOUND: Duration = Duration::from_secs(4);
+pub(in crate::cmd::webinspector) const BUNDLE: &str = "com.apple.mobilesafari";
+pub(in crate::cmd::webinspector) const APP: &str = "PID:42";
+pub(in crate::cmd::webinspector) const URL: &str = "https://example.invalid/";
+pub(in crate::cmd::webinspector) const TITLE: &str = "Synthetic page";
+pub(in crate::cmd::webinspector) const BOUND: Duration = Duration::from_secs(4);
 
-pub(super) async fn bounded<T>(operation: impl Future<Output = T>) -> T {
+pub(in crate::cmd::webinspector) async fn bounded<T>(operation: impl Future<Output = T>) -> T {
     tokio::time::timeout(BOUND, operation)
         .await
         .expect("owned command fixture stalled")
 }
 
-pub(super) fn pending_signal() -> impl Future<Output = std::io::Result<()>> {
+pub(in crate::cmd::webinspector) fn pending_signal() -> impl Future<Output = std::io::Result<()>> {
     std::future::pending()
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) enum FlushFault {
+pub(in crate::cmd::webinspector) enum FlushFault {
     #[default]
     None,
     TeardownIo,
@@ -121,16 +121,16 @@ impl AsyncWrite for OwnedStream {
     }
 }
 
-pub(super) struct FixtureSource {
-    pub(super) stream: Mutex<Option<ServiceStream>>,
-    pub(super) devices: Vec<DeviceInfo>,
-    pub(super) lists: AtomicUsize,
-    pub(super) connects: Mutex<Vec<String>>,
-    pub(super) connect_delay: Duration,
-    pub(super) list_error: bool,
-    pub(super) connect_error: bool,
-    pub(super) uses_rsd: bool,
-    pub(super) dropped: Arc<AtomicBool>,
+pub(in crate::cmd::webinspector) struct FixtureSource {
+    pub(in crate::cmd::webinspector) stream: Mutex<Option<ServiceStream>>,
+    pub(in crate::cmd::webinspector) devices: Vec<DeviceInfo>,
+    pub(in crate::cmd::webinspector) lists: AtomicUsize,
+    pub(in crate::cmd::webinspector) connects: Mutex<Vec<String>>,
+    pub(in crate::cmd::webinspector) connect_delay: Duration,
+    pub(in crate::cmd::webinspector) list_error: bool,
+    pub(in crate::cmd::webinspector) connect_error: bool,
+    pub(in crate::cmd::webinspector) uses_rsd: bool,
+    pub(in crate::cmd::webinspector) dropped: Arc<AtomicBool>,
 }
 
 impl Source for FixtureSource {
@@ -164,7 +164,7 @@ impl Source for FixtureSource {
     }
 }
 
-pub(super) fn fixture(fault: FlushFault) -> (FixtureSource, DuplexStream) {
+pub(in crate::cmd::webinspector) fn fixture(fault: FlushFault) -> (FixtureSource, DuplexStream) {
     let (stream, peer) = tokio::io::duplex(16 * 1024);
     let dropped = Arc::new(AtomicBool::new(false));
     let stream: ServiceStream = Box::new(OwnedStream {
@@ -204,21 +204,23 @@ pub(super) fn fixture(fault: FlushFault) -> (FixtureSource, DuplexStream) {
     )
 }
 
-pub(super) fn strings(entries: &[(&str, &str)]) -> Dictionary {
+pub(in crate::cmd::webinspector) fn strings(entries: &[(&str, &str)]) -> Dictionary {
     entries
         .iter()
         .map(|(key, value)| ((*key).to_owned(), Value::String((*value).into())))
         .collect()
 }
 
-pub(super) fn envelope(selector: &str, argument: Dictionary) -> Value {
+pub(in crate::cmd::webinspector) fn envelope(selector: &str, argument: Dictionary) -> Value {
     Value::Dictionary(Dictionary::from_iter([
         ("__selector".to_owned(), Value::String(selector.into())),
         ("__argument".to_owned(), Value::Dictionary(argument)),
     ]))
 }
 
-pub(super) async fn read_frame(stream: &mut DuplexStream) -> Result<Option<Dictionary>> {
+pub(in crate::cmd::webinspector) async fn read_frame(
+    stream: &mut DuplexStream,
+) -> Result<Option<Dictionary>> {
     let mut prefix = [0; 4];
     if stream.read(&mut prefix[..1]).await? == 0 {
         return Ok(None);
@@ -231,7 +233,10 @@ pub(super) async fn read_frame(stream: &mut DuplexStream) -> Result<Option<Dicti
     Ok(Some(plist::from_bytes(&body)?))
 }
 
-pub(super) async fn write_frame(stream: &mut DuplexStream, message: Value) -> Result<()> {
+pub(in crate::cmd::webinspector) async fn write_frame(
+    stream: &mut DuplexStream,
+    message: Value,
+) -> Result<()> {
     let mut body = Vec::new();
     plist::to_writer_xml(&mut body, &message)?;
     stream
@@ -241,7 +246,10 @@ pub(super) async fn write_frame(stream: &mut DuplexStream, message: Value) -> Re
     Ok(())
 }
 
-pub(super) async fn send_json(stream: &mut DuplexStream, message: JsonValue) -> Result<()> {
+pub(in crate::cmd::webinspector) async fn send_json(
+    stream: &mut DuplexStream,
+    message: JsonValue,
+) -> Result<()> {
     let mut argument = strings(&[("WIRApplicationIdentifierKey", APP)]);
     argument.insert(
         "WIRMessageDataKey".to_owned(),
@@ -271,30 +279,36 @@ fn application() -> Dictionary {
 }
 
 #[derive(Default)]
-pub(super) struct Trace {
-    pub(super) selectors: Vec<String>,
-    pub(super) methods: Vec<String>,
-    pub(super) session: Option<String>,
-    pub(super) connection: Option<String>,
-    pub(super) teardowns: usize,
+pub(in crate::cmd::webinspector) struct Trace {
+    pub(in crate::cmd::webinspector) selectors: Vec<String>,
+    pub(in crate::cmd::webinspector) methods: Vec<String>,
+    pub(in crate::cmd::webinspector) command_ids: Vec<u64>,
+    pub(in crate::cmd::webinspector) session: Option<String>,
+    pub(in crate::cmd::webinspector) connection: Option<String>,
+    pub(in crate::cmd::webinspector) teardowns: usize,
 }
 
 #[derive(Default)]
-pub(super) struct PeerPolicy {
-    pub(super) create_stall: Option<Arc<tokio::sync::Notify>>,
-    pub(super) context_delay: Duration,
-    pub(super) eval_error: bool,
-    pub(super) eval_protocol_error: bool,
-    pub(super) stop_error: bool,
-    pub(super) eval_stall: Option<Arc<tokio::sync::Notify>>,
-    pub(super) setup_stall: Option<Arc<tokio::sync::Notify>>,
-    pub(super) expressions: Vec<String>,
-    pub(super) eval_delay: Duration,
-    pub(super) eval_disconnect: bool,
-    pub(super) eval_invalid: bool,
+pub(in crate::cmd::webinspector) struct PeerPolicy {
+    pub(in crate::cmd::webinspector) create_stall: Option<Arc<tokio::sync::Notify>>,
+    pub(in crate::cmd::webinspector) context_delay: Duration,
+    pub(in crate::cmd::webinspector) eval_error: bool,
+    pub(in crate::cmd::webinspector) eval_protocol_error: bool,
+    pub(in crate::cmd::webinspector) stop_error: bool,
+    pub(in crate::cmd::webinspector) stop_delay: Duration,
+    pub(in crate::cmd::webinspector) stop_stall: Option<Arc<tokio::sync::Notify>>,
+    pub(in crate::cmd::webinspector) eval_stall: Option<Arc<tokio::sync::Notify>>,
+    pub(in crate::cmd::webinspector) setup_stall: Option<Arc<tokio::sync::Notify>>,
+    pub(in crate::cmd::webinspector) expressions: Vec<String>,
+    pub(in crate::cmd::webinspector) eval_delay: Duration,
+    pub(in crate::cmd::webinspector) eval_disconnect: bool,
+    pub(in crate::cmd::webinspector) eval_invalid: bool,
 }
 
-pub(super) async fn peer(mut stream: DuplexStream, policy: PeerPolicy) -> Result<Trace> {
+pub(in crate::cmd::webinspector) async fn peer(
+    mut stream: DuplexStream,
+    policy: PeerPolicy,
+) -> Result<Trace> {
     let mut trace = Trace::default();
     let mut setup = false;
     while let Some(message) = read_frame(&mut stream).await? {
@@ -440,6 +454,7 @@ pub(super) async fn peer(mut stream: DuplexStream, policy: PeerPolicy) -> Result
                 };
                 let method = command["method"].as_str().unwrap();
                 trace.methods.push(method.into());
+                trace.command_ids.push(command["id"].as_u64().unwrap());
                 let result = match method {
                     "Runtime.evaluate" => {
                         let index = trace
@@ -515,6 +530,17 @@ pub(super) async fn peer(mut stream: DuplexStream, policy: PeerPolicy) -> Result
                     }
                     "Automation.closeBrowsingContext" => {
                         assert_eq!(command["params"]["handle"], "owned-context");
+                        if let Some(notify) = &policy.stop_stall {
+                            notify.notify_one();
+                            assert!(
+                                read_frame(&mut stream).await?.is_none(),
+                                "abandoned context close must not retry or teardown"
+                            );
+                            return Ok(trace);
+                        }
+                        if !policy.stop_delay.is_zero() {
+                            tokio::time::sleep(policy.stop_delay).await;
+                        }
                         json!({})
                     }
                     _ => panic!("unexpected actual finite command: {method}"),

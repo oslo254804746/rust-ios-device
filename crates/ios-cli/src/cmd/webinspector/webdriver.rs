@@ -23,17 +23,33 @@ const WD_ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 #[cfg(test)]
 mod lifecycle_tests;
 
+#[cfg(test)]
+mod cleanup_tests;
+
 pub(super) struct SeleniumRuntime {
     _device: Option<ConnectedDevice>,
     client: WebInspectorClient<ServiceStream>,
     automation: AutomationSession,
+    application_id: String,
+    cleanup_armed: bool,
     elements: HashMap<String, JsonValue>,
 }
 
 impl SeleniumRuntime {
     async fn stop(&mut self) -> Result<()> {
-        self.automation.stop_session(&mut self.client).await?;
-        Ok(())
+        if !self.cleanup_armed {
+            return Ok(());
+        }
+        // Once cleanup starts, neither a failure nor caller cancellation may
+        // authorize a second close against an uncertain session.
+        self.cleanup_armed = false;
+        super::tasks::session_owner::cleanup_automation(
+            &mut self.client,
+            &mut self.automation,
+            &self.application_id,
+            SESSION_CLEANUP_MAX,
+        )
+        .await
     }
 
     async fn current_url(&mut self) -> Result<Option<String>> {
@@ -517,6 +533,8 @@ async fn build_selenium_runtime(server: &ServerState) -> Result<SeleniumRuntime>
                     _device: device,
                     client,
                     automation,
+                    application_id: application.id,
+                    cleanup_armed: true,
                     elements: HashMap::new(),
                 })
             }),

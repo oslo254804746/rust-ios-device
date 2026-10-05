@@ -76,42 +76,64 @@ pub(in crate::cmd::webinspector) async fn cleanup(
             session,
             application_id,
             ..
-        } => {
-            let stop = budget
-                .drive(
-                    Box::pin(async {
-                        cap(client, budget)?;
-                        session
-                            .stop_session(client)
-                            .await
-                            .map_err(anyhow::Error::from)
-                    }),
-                    std::future::pending::<std::io::Result<()>>(),
-                )
-                .await;
-            let socket = if client.is_usable() {
-                budget
-                    .drive(
-                        Box::pin(async {
-                            cap(client, budget)?;
-                            client
-                                .send_socket_teardown(
-                                    session.session_id(),
-                                    application_id,
-                                    session.page_id(),
-                                )
-                                .await
-                                .map_err(anyhow::Error::from)
-                        }),
-                        std::future::pending::<std::io::Result<()>>(),
-                    )
-                    .await
-            } else {
-                Ok(())
-            };
-            control::finish(stop, socket)
-        }
+        } => cleanup_automation_with_budget(client, session, application_id, budget).await,
         Session::None => Ok(()),
     };
     result.context("webinspector session cleanup failed")
+}
+
+pub(in crate::cmd::webinspector) async fn cleanup_automation(
+    client: &mut WebInspectorClient<ServiceStream>,
+    session: &mut AutomationSession,
+    application_id: &str,
+    duration: Duration,
+) -> Result<()> {
+    if !client.is_usable() {
+        return Ok(());
+    }
+    let budget = Budget::new(duration, "cleanup")?;
+    cleanup_automation_with_budget(client, session, application_id, budget)
+        .await
+        .context("webinspector session cleanup failed")
+}
+
+async fn cleanup_automation_with_budget(
+    client: &mut WebInspectorClient<ServiceStream>,
+    session: &mut AutomationSession,
+    application_id: &str,
+    budget: Budget,
+) -> Result<()> {
+    let stop = budget
+        .drive(
+            Box::pin(async {
+                cap(client, budget)?;
+                session
+                    .stop_session(client)
+                    .await
+                    .map_err(anyhow::Error::from)
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await;
+    let socket = if client.is_usable() {
+        budget
+            .drive(
+                Box::pin(async {
+                    cap(client, budget)?;
+                    client
+                        .send_socket_teardown(
+                            session.session_id(),
+                            application_id,
+                            session.page_id(),
+                        )
+                        .await
+                        .map_err(anyhow::Error::from)
+                }),
+                std::future::pending::<std::io::Result<()>>(),
+            )
+            .await
+    } else {
+        Ok(())
+    };
+    control::finish(stop, socket)
 }

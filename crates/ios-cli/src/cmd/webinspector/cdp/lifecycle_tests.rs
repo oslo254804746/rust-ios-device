@@ -182,7 +182,10 @@ impl Server {
     }
 }
 
-pub(in crate::cmd::webinspector) fn state(source: Arc<Source>, timeout: Duration) -> ServerState {
+pub(in crate::cmd::webinspector) fn state(
+    source: Arc<dyn InspectorSource>,
+    timeout: Duration,
+) -> ServerState {
     ServerState {
         udid: "owned-cdp-device".into(),
         timeout,

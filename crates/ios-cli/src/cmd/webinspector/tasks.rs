@@ -21,7 +21,7 @@ mod oneshot;
 pub(super) mod session_owner;
 mod source;
 #[cfg(test)]
-mod test_peer;
+pub(super) mod test_peer;
 
 #[cfg(test)]
 pub(super) async fn automation_test_peer(
