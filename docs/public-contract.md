@@ -1055,3 +1055,15 @@ DELETE grammar, response shape and its existing result-discard policy stay;
 routed failure handling remains pending. This forwarding/timing correction needs
 pre-1.0 release review and device evidence. See
 [WebDriver cleanup migration](validation/webdriver-cleanup-2026-10-05.md).
+
+Direct CDP page policy expiry/reload now stops page work, returns typed
+cancellation and waits for existing independent2s cleanup before release. The
+connection can remain owned during that cleanup; no further business messages
+are processed. Previously outer lease cancellation dropped the handler without
+cleanup or diagnostics. Revocation now uses the existing safe diagnostic line,
+retaining primary and cleanup failures without sending new WebSocket errors.
+This timing/diagnostic correction needs pre-1.0 release review. Admission,
+tickets, policy fields, successful messages and public grammar stay. The earlier
+direct-page lease gap is covered; generic caller/server Drop, browser children,
+stored-session joins and device evidence remain. See
+[CDP page lease migration](validation/cdp-page-lease-2026-10-05.md).

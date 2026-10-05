@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Keep a direct CDP page's lease cancellation inside its resource owner. Policy
+  expiry/reload stops page work and awaits independent cleanup before release;
+  native cancellation/cleanup causes survive through existing safe diagnostics.
+  See [CDP page lease migration](docs/validation/cdp-page-lease-2026-10-05.md).
 - Close WebDriver's owned forwarding socket after its Automation context, with
   one 100ms cleanup total and retained context/socket failures. Starting stop
   disarms duplicate cleanup after success, failure or cancellation. See

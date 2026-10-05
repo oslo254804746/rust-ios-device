@@ -1771,3 +1771,13 @@ These are runtime-result fixtures: HTTP DELETE still ignores its cleanup result,
 and outer revocation timeouts retain their existing handling. Request/registry
 ownership and routed error projection remain separate work. See
 [WebDriver cleanup fixtures](validation/webdriver-cleanup-2026-10-05.md).
+
+Direct CDP page lease expiry/reload now becomes a returned typed
+OperationCancelled inside the owner, followed by independent cleanup. If cleanup
+also fails, the existing wrapper retains Cancelled as primary and the native
+cleanup cause. Previously outer Principal.run discarded ScopeDenied and dropped
+the handler before cleanup. Revocation now reaches the existing safe diagnostic
+formatter; it sends no new error frames or headers and exposes no credentials.
+This supersedes the earlier principal-cancellation limitation for direct pages.
+Generic caller/server cancellation and browser/stored task joins remain separate.
+See [CDP page lease fixtures](validation/cdp-page-lease-2026-10-05.md).

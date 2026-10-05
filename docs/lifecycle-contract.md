@@ -587,3 +587,24 @@ remote ACK or registry-task join proof. HTTP DELETE result swallowing, outer
 timeouts, lock admission, active Arc races, constructor primary cleanup and
 joined revocation/server ownership remain. See
 [WebDriver cleanup evidence](validation/webdriver-cleanup-2026-10-05.md).
+
+Direct CDP page ownership now includes one pinned principal.revoked future across
+setup and active work. Checked setup drives source/start/discovery/attach beside
+that signal; active work runs behind biased lease control. Each message turn
+yields while the existing inner traffic selection stays unbiased. Returned
+revocation has typed cancellation and awaits the existing independent2s session
+cleanup without polling the completed signal again. Device/client/page lock
+remain owned through cleanup. Invalid partial-read clients skip recovery writes.
+
+Six actual admitted page fixtures use synthetic policy expiry/reload and owned
+streams; a private observer verifies Cancelled/native cleanup dual causes.
+Source cancellation, observed read bytes, close identity, delayed/default-expiring
+flush, stream Drop/EOF and actual lock-key reacquisition are covered. Existing
+safe diagnostic output now runs on revocation. Local flush is not a remote ACK;
+cooperative timers cannot preempt synchronous work. See
+[CDP page lease evidence](validation/cdp-page-lease-2026-10-05.md).
+
+This supersedes the earlier direct-page principal-cancellation gap. Generic
+caller/server Drop still has no async cleanup guarantee. Constructor primary
+cleanup, active request/output totals, joined browser children, stored-session
+revocation, other L01, L02–L04/Q04 and classes5–9 remain.

@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6699,3 +6699,58 @@ asyncDrop/join验收。118capability正文/maturity/prior evidence与9完成/11�
 文档audit PASS：8documents/7Markdown/385locallinks与actualhelp118，all31任务/
 subtasks/history prefix、118capability正文/maturity/prior evidence保持；actualsource/
 binary/18gates/full96261匹配，docs期间无product edit，refsHEAD/status不变。
+
+### 大类 4：L01 direct CDP page lease ownership（2026-10-05，整体进行中）
+
+实现 `5ecb565633179185c77ecce9a688eb148ad62235`，基于
+`fded0b0e50b8a8d858babae3261ab04a3cfdb1b7`；明确3source/test files，399+/10-。
+证据见 [CDP page lease](validation/cdp-page-lease-2026-10-05.md)。Direct page将
+principal.revoked的一条pinned future放入setup/active owner；原outerPrincipal.run
+丢ScopeDenied并直接Drop，绕过cleanup。Setup沿用checkedBudget.drive；active采用
+biased outercontrol与每消息轮次yield，保留原innerunbiased流量选择。返回typed
+OperationCancelled后等待既有独立2s cleanup，保留primary/native cleanup，不重复
+poll已完成lease。Device/client/page lock持有到cleanup结束，invalid不猜恢复写。
+撤销后停止业务处理，但连接可在cleanup中继续持有。现有safe diagnostic会记录
+revocation，原outerwrapper静默；timing/diagnostic migration留待pre-1.0 review。
+
+7新增tests：6actual cdp_router/admission/syntheticPolicy expiry/reload fixtures，
+1private handler Cancelled/native IO cause observer。实际TargetCreated后观察
+Runtime.enable frame证明已attach；close identity/source1/Drop/EOF/实际lock key
+reacquire、80msflush独立于50ms active policy、观察2bytes之后partialcancel无恢复、
+pending1sSource在返回前取消且无wire、真实2s Pendingcleanup不重poll signal均覆盖。
+私有adapter核对授权syntheticDEVICE后仅委托ownedSource别名，不接真实设备/凭据。
+Private收到字节counter/ownedstopfixture默认Pending；原五个lifecycle assertions、
+traffic branch bodies、setupoperation/returnedcleanup/browser/otherowners/controller/
+core/public/bindings/access/deps保持。Testlistener/peer join不是产品supervisor join。
+
+Before-product24664 terminal101/1PASS3FAIL：partialcancelPASS，三个已attach撤销
+均缺close frame。84618 terminal0/4PASS，expanded98632 terminal0/7PASS，无postfix
+compile/test failure。一次sourcepatch context mismatch未应用；修正后继续，outer/
+inner selection布局在首次post-product compile前定稿，原trafficchoice保持。
+
+Frozen53535 terminal0，全20gates PASS：7/min7/WD8/direct5/setup15/page5/finite21/
+shell31/CLI139/access29/Core96+public5+integration1=102/coreonlycachemin17/
+minCLIalltargets/originalstack5/strictCoreCLI/fmt/targetedtools22/actualCLI95。
+第11节完整拆分PASS：2456Rust/13Python，CLI851/Core1443/public52，0FAIL/2既有ignored。
+Workspacefmt/check/strictClippy/MSRV1.80.1、66features/4groups、7+7doctests/3snippets、
+CABI、3.12wheel/sdistbuild/install/import、tooling67/help118/raw38/host5/CLI95/backup3
+全部PASS。22device NOT_RUN，Chromium/installed3.9/3.13未重跑；所有build终止后才
+改源码/启动新验证，观察超时不等于退出。无cacheclean，refsHEAD/status保持。
+
+Frozen source patch SHA256：
+`d54f0345641659b337a1411bf35b0e9ad02afcee909d4201a7e76d8847bcb2ec`。
+Actual ios binary SHA256：
+`1ce215b1d7e9bb3c6e7e77a65fc925ffc56812527eb5fe09b96278b415543071`。
+Actualcommit等于frozen tested patch；证据在ignored
+`target/validation/cdp-page-lease-2026-10-05/`。
+
+仅directpagelease owner。Genericcaller/serverDrop、constructorprimarycleanup、
+active request/outputtotals、joinedbrowserchildren/storedsession owners继续。
+其他L01、L02–L04/Q04与第五至九类/all31子任务保留；无Apple ACK/rollback/retry/
+asyncDrop/join/platform/benchmark/RSS/decoderpeak验收。118capability正文/maturity/
+prior evidence与9完成/11未开始/11进行中或待条件不变；实现文档独立提交后继续
+browser/stored/server/其他owner工作，总体goal active。
+
+文档audit PASS：8documents/7Markdown/391locallinks与actualhelp118，all31任务/
+subtasks/history prefix、118capability正文/maturity/prior evidence保持；actualsource/
+binary/20gates/full53535匹配，docs期间无product edit，refsHEAD/status不变。
