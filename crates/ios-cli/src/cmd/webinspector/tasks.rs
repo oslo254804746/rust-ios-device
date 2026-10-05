@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::time::Duration;
 
-mod control;
+pub(super) mod control;
 mod input;
 mod interactive;
 mod oneshot;
@@ -22,6 +22,24 @@ mod session_owner;
 mod source;
 #[cfg(test)]
 mod test_peer;
+
+#[cfg(test)]
+pub(super) async fn automation_test_peer(
+    stream: tokio::io::DuplexStream,
+    create_stall: Option<std::sync::Arc<tokio::sync::Notify>>,
+    context_delay: Duration,
+) -> Result<(Vec<String>, usize)> {
+    let trace = test_peer::peer(
+        stream,
+        test_peer::PeerPolicy {
+            create_stall,
+            context_delay,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((trace.methods, trace.teardowns))
+}
 
 #[derive(Debug, Serialize)]
 struct OpenedTabRow {

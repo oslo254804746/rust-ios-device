@@ -2,6 +2,7 @@
 //! Protocol execution remains in the core AutomationSession.
 use super::connection::InspectorConnection;
 use super::http::{serve, server_state, webdriver_reload_policy, AppError, ServerState};
+use super::tasks::control::Budget;
 use super::SESSION_CLEANUP_MAX;
 use crate::access::{Admission, HttpBoundaryArgs, Principal, ServerAccessArgs};
 use anyhow::{anyhow, Result};
@@ -18,6 +19,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const WD_ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 pub(super) struct SeleniumRuntime {
     _device: Option<ConnectedDevice>,
@@ -467,38 +471,58 @@ async fn get_runtime(
 }
 
 async fn build_selenium_runtime(server: &ServerState) -> Result<SeleniumRuntime> {
-    let timeout = server.timeout;
-    let InspectorConnection { device, stream } =
-        server.source.connect(&server.udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(timeout).await?;
-    client.open_application_pages(timeout).await?;
+    let budget = Budget::new(server.timeout, "WebDriver setup")?;
+    budget
+        .drive(
+            Box::pin(async {
+                let InspectorConnection { device, stream } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                budget.cap(&mut client)?;
+                client
+                    .open_application_pages(super::PAGE_DISCOVERY_IDLE)
+                    .await?;
 
-    let application = match client.application_by_bundle(SAFARI_BUNDLE_ID) {
-        Some(application) => application.clone(),
-        None => {
-            client.request_application_launch(SAFARI_BUNDLE_ID).await?;
-            client.open_application_pages(timeout).await?;
-            client
-                .application_by_bundle(SAFARI_BUNDLE_ID)
-                .cloned()
-                .ok_or_else(|| anyhow!("Safari is not currently inspectable"))?
-        }
-    };
+                let application = match client.application_by_bundle(SAFARI_BUNDLE_ID) {
+                    Some(application) => application.clone(),
+                    None => {
+                        budget.cap(&mut client)?;
+                        client.request_application_launch(SAFARI_BUNDLE_ID).await?;
+                        budget.cap(&mut client)?;
+                        client
+                            .open_application_pages(super::PAGE_DISCOVERY_IDLE)
+                            .await?;
+                        client
+                            .application_by_bundle(SAFARI_BUNDLE_ID)
+                            .cloned()
+                            .ok_or_else(|| anyhow!("Safari is not currently inspectable"))?
+                    }
+                };
 
-    let mut automation = AutomationSession::new(
-        application.id.clone(),
-        application.bundle_identifier.clone(),
-    );
-    automation.attach(&mut client, timeout).await?;
-    automation.start_session(&mut client).await?;
+                let mut automation = AutomationSession::new(
+                    application.id.clone(),
+                    application.bundle_identifier.clone(),
+                );
+                let remaining = budget.cap(&mut client)?;
+                automation.attach(&mut client, remaining).await?;
+                budget.cap(&mut client)?;
+                automation.start_session(&mut client).await?;
+                client.set_operation_timeout(None);
 
-    Ok(SeleniumRuntime {
-        _device: device,
-        client,
-        automation,
-        elements: HashMap::new(),
-    })
+                Ok(SeleniumRuntime {
+                    _device: device,
+                    client,
+                    automation,
+                    elements: HashMap::new(),
+                })
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await
 }
 
 fn parse_by(value: &str) -> Result<By, AppError> {

@@ -116,7 +116,7 @@ async fn start(source: Arc<SyntheticSource>, cdp: bool) -> (u16, ServerTask, Pol
     let bound = listener.local_addr().unwrap();
     let state = ServerState {
         udid: DEVICE.into(),
-        timeout: Duration::from_millis(100),
+        timeout: Duration::from_secs(1),
         cdp_host: "127.0.0.1".to_string(),
         cdp_port: bound.port(),
         access: AccessControl::from_file(policy.path.clone()).await.unwrap(),

@@ -6,14 +6,17 @@ use ios_core::webinspector::WebInspectorError;
 use tokio::time::Instant;
 
 #[derive(Clone, Copy)]
-pub(super) struct Budget {
+pub(in crate::cmd::webinspector) struct Budget {
     pub(super) deadline: Instant,
     pub(super) duration: Duration,
     phase: &'static str,
 }
 
 impl Budget {
-    pub(super) fn new(duration: Duration, phase: &'static str) -> Result<Self> {
+    pub(in crate::cmd::webinspector) fn new(
+        duration: Duration,
+        phase: &'static str,
+    ) -> Result<Self> {
         if duration.is_zero() {
             return Err(anyhow::Error::new(WebInspectorError::Timeout(duration))
                 .context(format!("webinspector {phase} timed out after {duration:?}")));
@@ -25,11 +28,20 @@ impl Budget {
         })
     }
 
-    pub(super) fn remaining(self) -> Result<Duration> {
+    pub(in crate::cmd::webinspector) fn remaining(self) -> Result<Duration> {
         super::remaining_webinspector_time(self.deadline, self.duration)
     }
 
-    pub(super) async fn drive<T>(
+    pub(in crate::cmd::webinspector) fn cap(
+        self,
+        client: &mut ios_core::webinspector::WebInspectorClient<ios_core::device::ServiceStream>,
+    ) -> Result<Duration> {
+        let remaining = self.remaining()?;
+        client.set_operation_timeout(Some(remaining));
+        Ok(remaining)
+    }
+
+    pub(in crate::cmd::webinspector) async fn drive<T>(
         self,
         operation: impl Future<Output = Result<T>>,
         signal: impl Future<Output = std::io::Result<()>>,

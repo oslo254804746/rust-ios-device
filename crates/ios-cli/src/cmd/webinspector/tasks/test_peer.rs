@@ -281,6 +281,8 @@ pub(super) struct Trace {
 
 #[derive(Default)]
 pub(super) struct PeerPolicy {
+    pub(super) create_stall: Option<Arc<tokio::sync::Notify>>,
+    pub(super) context_delay: Duration,
     pub(super) eval_error: bool,
     pub(super) eval_protocol_error: bool,
     pub(super) stop_error: bool,
@@ -482,13 +484,28 @@ pub(super) async fn peer(mut stream: DuplexStream, policy: PeerPolicy) -> Result
                             json!({"result":{"type":"number","value":42}})
                         }
                     }
-                    "Automation.createBrowsingContext" => json!({"handle":"owned-context"}),
+                    "Automation.createBrowsingContext" => {
+                        if let Some(notify) = &policy.create_stall {
+                            notify.notify_one();
+                            assert!(
+                                read_frame(&mut stream).await?.is_none(),
+                                "abandoned setup must not issue teardown or retry"
+                            );
+                            return Ok(trace);
+                        }
+                        json!({"handle":"owned-context"})
+                    }
                     "Automation.navigateBrowsingContext" => {
                         assert_eq!(command["params"]["url"], URL);
                         assert_eq!(command["params"]["handle"], "owned-context");
                         json!({})
                     }
-                    "Automation.getBrowsingContext" => json!({"context":{"url":URL}}),
+                    "Automation.getBrowsingContext" => {
+                        if !policy.context_delay.is_zero() {
+                            tokio::time::sleep(policy.context_delay).await;
+                        }
+                        json!({"context":{"url":URL}})
+                    }
                     "Automation.evaluateJavaScriptFunction" => {
                         assert_eq!(
                             command["params"]["function"],

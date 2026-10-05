@@ -73,32 +73,45 @@ impl AsyncWrite for OwnedStream {
     }
 }
 
-struct Source {
+pub(in crate::cmd::webinspector) struct Source {
     stream: StdMutex<Option<ServiceStream>>,
-    calls: AtomicUsize,
-    dropped: Arc<AtomicBool>,
-    stall: Arc<AtomicBool>,
-    blocked: Arc<AtomicUsize>,
+    pub(in crate::cmd::webinspector) calls: AtomicUsize,
+    pub(in crate::cmd::webinspector) dropped: Arc<AtomicBool>,
+    pub(in crate::cmd::webinspector) returned: AtomicBool,
+    connect_delay: Duration,
+    pub(in crate::cmd::webinspector) stall: Arc<AtomicBool>,
+    pub(in crate::cmd::webinspector) blocked: Arc<AtomicUsize>,
 }
 impl InspectorSource for Source {
     fn connect<'a>(&'a self, udid: &'a str, _timeout: Duration) -> ConnectionFuture<'a> {
         Box::pin(async move {
             assert_eq!(udid, "owned-cdp-device");
             self.calls.fetch_add(1, Ordering::SeqCst);
+            let stream = self
+                .stream
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one owned connection");
+            if !self.connect_delay.is_zero() {
+                tokio::time::sleep(self.connect_delay).await;
+            }
+            self.returned.store(true, Ordering::SeqCst);
             Ok(InspectorConnection {
                 device: None,
-                stream: self
-                    .stream
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .expect("one owned connection"),
+                stream,
             })
         })
     }
 }
 
 fn source() -> (Arc<Source>, DuplexStream) {
+    source_with_delay(Duration::ZERO)
+}
+
+pub(in crate::cmd::webinspector) fn source_with_delay(
+    connect_delay: Duration,
+) -> (Arc<Source>, DuplexStream) {
     let (stream, peer) = tokio::io::duplex(16 * 1024);
     let dropped = Arc::new(AtomicBool::new(false));
     let stall = Arc::new(AtomicBool::new(false));
@@ -112,6 +125,8 @@ fn source() -> (Arc<Source>, DuplexStream) {
                 blocked: blocked.clone(),
             }))),
             calls: AtomicUsize::new(0),
+            returned: AtomicBool::new(false),
+            connect_delay,
             dropped,
             stall,
             blocked,
@@ -120,9 +135,9 @@ fn source() -> (Arc<Source>, DuplexStream) {
     )
 }
 
-struct Server {
-    port: u16,
-    result: oneshot::Receiver<Result<()>>,
+pub(super) struct Server {
+    pub(super) port: u16,
+    pub(super) result: oneshot::Receiver<Result<()>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -132,24 +147,37 @@ impl Drop for Server {
     }
 }
 impl Server {
-    async fn finish(mut self) {
+    pub(super) async fn finish(mut self) {
         self.shutdown.take().unwrap().send(()).unwrap();
         bounded(&mut self.task).await.unwrap();
     }
 }
 
-async fn start(source: Arc<Source>, page: u64) -> Server {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let state = ServerState {
+pub(in crate::cmd::webinspector) fn state(source: Arc<Source>, timeout: Duration) -> ServerState {
+    ServerState {
         udid: "owned-cdp-device".into(),
-        timeout: REQUEST,
+        timeout,
         cdp_host: "127.0.0.1".into(),
-        cdp_port: port,
+        cdp_port: 0,
         access: AccessControl::trusted_test_local(),
         selenium_sessions: Sessions::default(),
         source,
-    };
+    }
+}
+
+pub(super) async fn start(source: Arc<Source>, page: u64) -> Server {
+    start_with_timeout(source, page, REQUEST).await
+}
+
+pub(super) async fn start_with_timeout(
+    source: Arc<Source>,
+    page: u64,
+    timeout: Duration,
+) -> Server {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut state = state(source, timeout);
+    state.cdp_port = port;
     let (tx, result) = oneshot::channel();
     let tx = Arc::new(StdMutex::new(Some(tx)));
     // This cfg(test) route observes the actual private page loop's returned
@@ -186,7 +214,7 @@ async fn start(source: Arc<Source>, page: u64) -> Server {
     }
 }
 
-fn app() -> Dictionary {
+pub(in crate::cmd::webinspector) fn app() -> Dictionary {
     let mut app = strings(&[
         ("WIRApplicationIdentifierKey", "PID:42"),
         (
@@ -210,6 +238,11 @@ fn app() -> Dictionary {
 }
 
 async fn setup(peer: &mut DuplexStream, page: u64) {
+    setup_before_target(peer, page).await;
+    send_json(peer, json!({"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"owned-cdp-target"}}})).await.unwrap();
+}
+
+pub(super) async fn setup_before_target(peer: &mut DuplexStream, page: u64) {
     loop {
         let message = read_frame(peer)
             .await
@@ -270,7 +303,6 @@ async fn setup(peer: &mut DuplexStream, page: u64) {
                     Some(page)
                 );
                 assert_eq!(argument["WIRAutomaticallyPause"].as_boolean(), Some(false));
-                send_json(peer, json!({"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"owned-cdp-target"}}})).await.unwrap();
                 return;
             }
             other => panic!("unexpected actual setup selector: {other}"),
@@ -278,7 +310,7 @@ async fn setup(peer: &mut DuplexStream, page: u64) {
     }
 }
 
-async fn no_more_requests(peer: &mut DuplexStream) {
+pub(in crate::cmd::webinspector) async fn no_more_requests(peer: &mut DuplexStream) {
     let mut bytes = Vec::new();
     bounded(peer.read_to_end(&mut bytes)).await.unwrap();
     assert!(

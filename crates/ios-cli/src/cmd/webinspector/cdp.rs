@@ -3,6 +3,7 @@
 use super::connection::InspectorConnection;
 use super::diagnostics::diagnostic_cdp_response;
 use super::http::{cdp_reload_policy, serve, server_state, AppError, ServerState};
+use super::tasks::control::Budget;
 use super::workflows::{find_page_by_id, is_inspectable_page_type, page_target_id};
 use super::PAGE_DISCOVERY_IDLE;
 use crate::access::{Admission, HttpBoundaryArgs, Principal, ServerAccessArgs};
@@ -150,19 +151,36 @@ async fn cdp_page_ws(
 
 async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &str) -> Result<()> {
     let timeout = server.timeout;
-    let _page_guard = lock_cdp_page(page_id, timeout).await?;
-    let InspectorConnection {
-        device: _device,
-        stream,
-    } = server.source.connect(&server.udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(timeout).await?;
-    client.open_application_pages(timeout).await?;
-    let (application_id, page) = find_page_by_id(&client, page_id)?;
-    let mut session = InspectorSession::new(application_id, page.id);
-    let mut js_adapter = (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
-    session
-        .attach_unpaused(&mut client, page.page_type != WirType::JavaScript, timeout)
+    let budget = Budget::new(timeout, "CDP page setup")?;
+    let (_page_guard, _device, mut client, mut session, mut js_adapter) = budget
+        .drive(
+            Box::pin(async {
+                let guard = lock_cdp_page(page_id, budget.remaining()?).await?;
+                let InspectorConnection { device, stream } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                let (application_id, page) =
+                    discover_cdp_page(&mut client, page_id, budget).await?;
+                let mut session = InspectorSession::new(application_id, page.id);
+                let js_adapter =
+                    (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
+                let remaining = budget.cap(&mut client)?;
+                session
+                    .attach_unpaused(
+                        &mut client,
+                        page.page_type != WirType::JavaScript,
+                        remaining,
+                    )
+                    .await?;
+                client.set_operation_timeout(None);
+                Ok((guard, device, client, session, js_adapter))
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
         .await?;
 
     let (mut sender, mut receiver) = socket.split();
@@ -450,34 +468,37 @@ async fn open_cdp_browser_page(
     (mpsc::Sender<JsonValue>, watch::Sender<bool>),
     tokio::task::JoinHandle<()>,
 )> {
-    let guard = lock_cdp_page(target_id, server.timeout).await?;
-    let InspectorConnection { device, stream } =
-        server.source.connect(&server.udid, server.timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(server.timeout).await?;
-    client.open_application_pages(PAGE_DISCOVERY_IDLE).await?;
-    let (application_id, page) = find_page_by_id(&client, target_id)?;
-    let mut inspector = InspectorSession::new(application_id, page.id);
-    let mut js_adapter = (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
-    if let Err(error) = inspector
-        .attach_unpaused(
-            &mut client,
-            page.page_type != WirType::JavaScript,
-            server.timeout,
+    let budget = Budget::new(server.timeout, "CDP browser page setup")?;
+    let (guard, device, mut client, mut inspector, mut js_adapter) = budget
+        .drive(
+            Box::pin(async {
+                let guard = lock_cdp_page(target_id, budget.remaining()?).await?;
+                let InspectorConnection { device, stream } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                let (application_id, page) =
+                    discover_cdp_page(&mut client, target_id, budget).await?;
+                let mut inspector = InspectorSession::new(application_id, page.id);
+                let js_adapter =
+                    (page.page_type == WirType::JavaScript).then(JsContextCdpAdapter::default);
+                let remaining = budget.cap(&mut client)?;
+                inspector
+                    .attach_unpaused(
+                        &mut client,
+                        page.page_type != WirType::JavaScript,
+                        remaining,
+                    )
+                    .await?;
+                client.set_operation_timeout(None);
+                Ok((guard, device, client, inspector, js_adapter))
+            }),
+            std::future::pending::<std::io::Result<()>>(),
         )
-        .await
-    {
-        let _ = tokio::time::timeout(
-            server.timeout,
-            client.send_socket_teardown(
-                inspector.session_id(),
-                inspector.application_id(),
-                inspector.page_id(),
-            ),
-        )
-        .await;
-        return Err(error.into());
-    }
+        .await?;
     let (input, mut receiver) = mpsc::channel(CDP_PAGE_CHANNEL);
     let (cancel, mut cancellation) = watch::channel(false);
     let timeout = server.timeout;
@@ -549,17 +570,57 @@ async fn open_cdp_browser_page(
 }
 
 async fn load_open_pages(server: &ServerState) -> Result<Vec<ApplicationPage>> {
-    let timeout = server.timeout;
-    let InspectorConnection {
-        device: _device,
-        stream,
-    } = server.source.connect(&server.udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(timeout).await?;
-    client
-        .open_application_pages(timeout)
+    let budget = Budget::new(server.timeout, "CDP discovery")?;
+    budget
+        .drive(
+            Box::pin(async {
+                let InspectorConnection {
+                    device: _device,
+                    stream,
+                } = server
+                    .source
+                    .connect(&server.udid, budget.remaining()?)
+                    .await?;
+                let mut client = WebInspectorClient::new(stream);
+                let remaining = budget.cap(&mut client)?;
+                client.start_preserving_errors(remaining).await?;
+                budget.cap(&mut client)?;
+                client
+                    .open_application_pages(PAGE_DISCOVERY_IDLE)
+                    .await
+                    .map_err(Into::into)
+            }),
+            std::future::pending::<std::io::Result<()>>(),
+        )
         .await
-        .map_err(Into::into)
+}
+
+/// A selected target can attach once its exact cached page is admitted. The
+/// target listing is not a request for a quiescent snapshot of every page.
+async fn discover_cdp_page(
+    client: &mut WebInspectorClient<ios_core::device::ServiceStream>,
+    page_id: &str,
+    budget: Budget,
+) -> Result<(String, ios_core::webinspector::Page)> {
+    budget.cap(client)?;
+    client.request_connected_applications().await?;
+    loop {
+        let remaining = budget.cap(client)?;
+        if let Ok(page) = find_page_by_id(client, page_id) {
+            return Ok(page);
+        }
+        match client
+            .next_event_with_timeout(remaining.min(PAGE_DISCOVERY_IDLE))
+            .await
+        {
+            Ok(_) => tokio::task::yield_now().await,
+            Err(error) if error.timeout_duration().is_some() && client.is_usable() => {
+                budget.cap(client)?;
+                client.request_connected_applications().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn cdp_target_descriptors(
@@ -593,7 +654,10 @@ fn cdp_target_descriptors(
 }
 
 #[cfg(test)]
-mod lifecycle_tests;
+pub(super) mod lifecycle_tests;
+
+#[cfg(test)]
+mod setup_tests;
 
 #[cfg(test)]
 mod tests {
