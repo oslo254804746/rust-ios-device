@@ -1034,3 +1034,14 @@ stay; private zero fixtures do not prove CLI listener admission. Server startup,
 signal, publication, active request/output, primary cleanup and joined task
 contracts remain pending. See
 [WebInspector server setup](validation/webinspector-server-setup-2026-10-05.md).
+
+The direct CDP page bridge now retains teardown errors after normal WebSocket
+shutdown and after a primary failure. Cleanup has an independent 2s budget;
+previously it used the active timeout and discarded the result. A successful
+page close can therefore produce a cleanup failure in the existing diagnostic
+path. Primary classification and native sources survive when both stages fail.
+This error/timing correction needs pre-1.0 release review. Wire selectors, page
+messages and public grammar stay. Constructor cleanup, outer lease cancellation,
+server shutdown and joined browser/stored tasks remain pending; this is not an
+async Drop guarantee. See
+[CDP page cleanup migration](validation/cdp-page-cleanup-2026-10-05.md).

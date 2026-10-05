@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain CDP page teardown failures after WebSocket shutdown. Cleanup uses an
+  independent 2s budget; an existing primary error and the cleanup error both
+  remain owned. See [CDP page cleanup migration](docs/validation/cdp-page-cleanup-2026-10-05.md).
 - Share one checked setup deadline across CDP discovery/attachment and WebDriver
   runtime construction. Exact CDP targets attach when discovered; full lists
   retain a separate 500ms quiet period inside the total. See

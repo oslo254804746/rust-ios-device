@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6592,3 +6592,56 @@ prior evidence保持，9完成/11未开始/11进行中或待条件不变，不�
 task/subtask/history prefix、118capability正文/maturity/prior evidence保持。
 真实source/binary/16gates/full42886/current15 tests匹配，文档期间无product edit，
 refsHEAD/status不变。实现和文档独立提交后继续 cleanup/server/其他工作，goal active。
+
+### 大类 4：L01 direct CDP page cleanup（2026-10-05，整体进行中）
+
+实现 `221a0c4fc6ed90e864694a3ec7d634808329bc52`，基于
+`f10d0152204d4bb12b42ee38efb402410b48dc13`；明确6source/test files，213+/19-。
+证据见 [CDP page cleanup](validation/cdp-page-cleanup-2026-10-05.md)。
+Direct page loop 返回后，device guard/stream/page lock 持有到独立2s cleanup结束；
+复用既有 session owner/control::finish，仅扩大 WebInspector 内的私有可见范围。
+原 teardown 继承 active timeout 并吞掉结果；现在正常关闭可返回 cleanup failure，
+已有主错误时保留两条cause与原primary分类/native来源。Error/timing migration
+保留 pre-1.0 release review。仅 fully attached/usable 发既有 forwarding close，
+invalid clients Drop，不猜恢复请求；local flush 不是 Apple ACK。
+
+5 actual private page WebSocket/owned plist fixtures：正常关闭 native PermissionDenied、
+JSON primary+native cleanup、真实默认2s Pending flush expiry、JSON+native Elapsed，
+以及80ms flush 在50ms active idle policy之外完成。每项观察一次source call、既有
+close frame、stream Drop/EOF且无额外请求。无product test route/public backend/forged
+ConnectedDevice。原assertion functions、page/browser/setup active行为、shared cleanup/
+controller logic不变；cfg(test) Source加 flush fault/counters，默认保持normal。
+Core/public/bindings/access/dependencies不变；stored100ms/browser2s政策保持。
+
+Before-product88897 terminal101/0PASS5FAIL；正常关闭错返Ok、双失败丢cleanup，
+delayed flush未完成。修复后15775 terminal0/5PASS，无compile/test failure afterfix。
+计时从close admission前开始，避免观察race。一次文档patch context mismatch未应用，
+修正文档上下文后继续，未改product source。
+
+Frozen pipeline81951 terminal0，全部17gates PASS：5/min5/setup15/page5/finite21/
+shell31/CLI124/Core96+public5+integration1=102/coreonlycachemin17/minCLIalltargets/
+originalstack5/strictCoreCLI/fmt/targetedtooling22/actualCLI95。第11节完整拆分PASS：
+2441Rust/13Python，CLI836/Core1443/public52，0FAIL/2既有ignored。Workspacefmt/check/
+strictClippy/MSRV1.80.1、66features/4groups、7+7doctests/3snippets、CABI、3.12wheel/
+sdistbuild/install/import、tooling67/help118/raw38/host5/CLI95/backup3全部PASS。
+22device NOT_RUN，Chromium/installed3.9/3.13未重跑。所有build终止后才改源码或启动
+新验证；观察超时不等于退出。无cacheclean。
+
+Frozen source patch SHA256：
+`fcc622d1602b58f3fb7d5acfb4a9869a526c3366cf5857cb43a3c073b8780499`。
+Actual ios binary SHA256：
+`794a218696162073a0779d466d408d1fac534df1eb6431b6446a56f418862b03`。
+Actual commit 精确匹配 frozen/tested patch；日志/元数据/audits 在 ignored
+`target/validation/cdp-page-cleanup-2026-10-05/`，refsHEAD/status保持。
+
+此路径只处理 returned bridge result；outer principal/server cancellation仍会Drop
+handler，未证明取消后的异步cleanup或join。Constructor primary cleanup、active request/
+output totals、HTTP publication、server signals、joined browser/stored owners继续。
+其他 L01协议/清理、L02–L04/Q04与第五至九类仍保留。无remote ACK/rollback/retry/
+other-platform/benchmark/RSS/decoderpeak/async Drop验收。All31任务/subtasks/history、
+118capability正文/maturity/prior evidence保持；9完成/11未开始/11进行中或待条件
+不变。实现和文档独立提交后继续其他cleanup/server工作，goal active。
+
+文档audit PASS：8documents/7Markdown/379locallinks与actualhelp118；all31任务/
+subtasks/history prefix及118capability正文/maturity/prior evidence保持。实际source/
+binary/17gates/full81951匹配，docs期间无product edit，refsHEAD/status不变。

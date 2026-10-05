@@ -1751,3 +1751,14 @@ Returned setup failure or caller cancellation drops the owned stream/lock,
 without guessed incomplete-attach recovery. Existing active, cleanup, HTTP
 publication and server signal error handling remain outside this profile.
 See [server setup fixtures](validation/webinspector-server-setup-2026-10-05.md).
+
+Direct CDP page shutdown now returns a failed forwarding close instead of
+discarding it. Cleanup receives an independent 2s total, rather than inheriting
+the active page timeout. Native IO/Elapsed sources remain. If the page already
+failed, the existing private cleanup wrapper owns both errors and exposes the
+original primary through its source chain and classification. Diagnostic output
+continues to use the existing safe formatter; no new error frames are sent.
+Invalid clients skip recovery writes. Five actual WebSocket/owned-stream fixtures
+cover this returned-error profile. Principal/server cancellation still drops the
+handler and is not covered by this cleanup path. See
+[CDP page cleanup fixtures](validation/cdp-page-cleanup-2026-10-05.md).

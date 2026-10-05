@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cdp-page-cleanup-221a0c4",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned localhost page WebSocket/private InspectorSource and plist stream; native flush failure, real pending flush expiry and delayed successful flush; original JSON primary plus cleanup cause"],
+      "required_state": ["Six source/test files, five new tests. Before-product88897 terminal101:0 PASS/5 FAIL; corrected15775 terminal0:5 PASS. Frozen pipeline81951 terminal0/all17 gates:5/min5/setup15/page5/finite21/shell31/CLI124/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tooling22/actualCLI95/full PASS. Existing assertions, active page/browser/setup behavior and shared cleanup/controller logic remain; only private visibility and cfg(test) flush controls/counters added. Core/public/bindings/access/dependencies unchanged; maturity unchanged."],
+      "tested_commit": "221a0c4fc6ed90e864694a3ec7d634808329bc52",
+      "date": "2026-10-05",
+      "location": "docs/validation/cdp-page-cleanup-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Direct CDP page returned cleanup now uses an independent2s total through existing owned session cleanup and retains native IO/Elapsed. Successful WebSocket shutdown can return cleanup failure; prior JSON primary and cleanup errors both remain owned, with primary classification. Only attached usable clients send the existing close; invalid clients drop without recovery writes. Real80ms flush completes despite50ms active idle policy. Full2441Rust/13Python,CLI836/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Constructor cleanup, principal/server cancellation, HTTP publication, active request/output totals and joined browser/stored tasks remain; stored100ms/browser2s policies stay. Private handler results are not new admission, device, Apple ACK or async Drop proof.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 remain active."
+    },
+    {
       "id": "linux-webinspector-server-setup-82db3a8",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

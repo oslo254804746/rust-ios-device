@@ -554,3 +554,18 @@ HTTP publication/output, active request totals, revocation and joined child/
 stored task ownership still need work. The existing100ms/2s cleanup policies
 stay; the successful WebDriver fixture observes context stop and zero forwarding
 teardowns. See [server setup evidence](validation/webinspector-server-setup-2026-10-05.md).
+
+After a direct CDP page loop returns, its device guard, stream and page lock stay
+owned through independent 2s cleanup. The existing session owner sends the
+forwarding close only for an attached usable client; invalid clients drop without
+recovery writes. A normal close retains cleanup failure, and a failed page retains
+both primary and cleanup causes through the existing private wrapper. Actual
+native flush faults, default expiry and an 80ms successful flush under a 50ms
+active idle policy are covered. Write/flush completion is not an Apple ACK.
+See [CDP page cleanup evidence](validation/cdp-page-cleanup-2026-10-05.md).
+
+This returned-error path does not execute if outer principal/server cancellation
+drops the handler. Constructor primary cleanup, finite sends/output, joined
+browser children and stored-session revocation still need owner work. Existing
+stored100ms and browser-page2s policies remain. Other L01, L02–L04/Q04 and
+classes5–9 stay in the engineering scope.
