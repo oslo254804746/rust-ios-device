@@ -5,7 +5,7 @@ use super::http::{serve, server_state, webdriver_reload_policy, AppError, Server
 use super::tasks::control::Budget;
 use super::SESSION_CLEANUP_MAX;
 use crate::access::{Admission, HttpBoundaryArgs, Principal, ServerAccessArgs};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -25,6 +25,9 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod cleanup_tests;
+
+#[cfg(test)]
+mod delete_tests;
 
 pub(super) struct SeleniumRuntime {
     _device: Option<ConnectedDevice>,
@@ -50,6 +53,24 @@ impl SeleniumRuntime {
             SESSION_CLEANUP_MAX,
         )
         .await
+    }
+
+    async fn stop_until(&mut self, budget: Budget) -> Result<()> {
+        if !self.cleanup_armed {
+            return Ok(());
+        }
+        self.cleanup_armed = false;
+        if !self.client.is_usable() {
+            return Ok(());
+        }
+        super::tasks::session_owner::cleanup_automation_with_budget(
+            &mut self.client,
+            &mut self.automation,
+            &self.application_id,
+            budget,
+        )
+        .await
+        .context("webinspector session cleanup failed")
     }
 
     async fn current_url(&mut self) -> Result<Option<String>> {
@@ -259,10 +280,33 @@ async fn webdriver_delete_session(
     State(state): State<ServerState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<JsonValue>, AppError> {
-    if let Some(runtime) = state.selenium_sessions.remove(&session_id).await {
-        let _ = tokio::time::timeout(SESSION_CLEANUP_MAX, stop_selenium_runtime(runtime)).await;
+    let budget = Budget::new(SESSION_CLEANUP_MAX, "WebDriver deletion")?;
+    let runtime = budget
+        .drive(
+            async { Ok(state.selenium_sessions.remove(&session_id).await) },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await?;
+    if let Some(runtime) = runtime {
+        stop_selenium_runtime_until(runtime, budget).await?;
     }
     Ok(Json(json!({ "value": null })))
+}
+
+async fn stop_selenium_runtime_until(
+    runtime: Arc<Mutex<SeleniumRuntime>>,
+    budget: Budget,
+) -> Result<()> {
+    let mut runtime = budget
+        .drive(
+            async { Ok(runtime.lock().await) },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await?;
+    // The cleanup stages keep native primary and secondary causes. An outer
+    // timeout around their combined result could discard an already known
+    // business failure while the forwarding close is pending.
+    runtime.stop_until(budget).await
 }
 
 async fn stop_selenium_runtime(runtime: Arc<Mutex<SeleniumRuntime>>) {

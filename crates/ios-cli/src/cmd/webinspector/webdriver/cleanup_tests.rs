@@ -14,10 +14,10 @@ use std::sync::{
     Mutex as StdMutex,
 };
 
-struct Source {
+pub(super) struct Source {
     stream: StdMutex<Option<ServiceStream>>,
-    calls: AtomicUsize,
-    dropped: Arc<AtomicBool>,
+    pub(super) calls: AtomicUsize,
+    pub(super) dropped: Arc<AtomicBool>,
 }
 impl InspectorSource for Source {
     fn connect<'a>(&'a self, udid: &'a str, _timeout: Duration) -> ConnectionFuture<'a> {
@@ -37,7 +37,7 @@ impl InspectorSource for Source {
     }
 }
 
-fn fixture(fault: FlushFault) -> (Arc<Source>, tokio::io::DuplexStream) {
+pub(super) fn fixture(fault: FlushFault) -> (Arc<Source>, tokio::io::DuplexStream) {
     let (source, peer) = test_peer::fixture(fault);
     let stream = source.stream.lock().unwrap().take();
     (

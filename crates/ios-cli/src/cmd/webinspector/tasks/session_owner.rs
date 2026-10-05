@@ -97,7 +97,7 @@ pub(in crate::cmd::webinspector) async fn cleanup_automation(
         .context("webinspector session cleanup failed")
 }
 
-async fn cleanup_automation_with_budget(
+pub(in crate::cmd::webinspector) async fn cleanup_automation_with_budget(
     client: &mut WebInspectorClient<ServiceStream>,
     session: &mut AutomationSession,
     application_id: &str,
