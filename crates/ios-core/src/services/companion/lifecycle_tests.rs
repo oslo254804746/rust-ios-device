@@ -53,6 +53,7 @@ fn forwarding<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         response: plist::Dictionary::new(),
         stop_response: None,
         stopped: false,
+        drop_cleanup: true,
     }
 }
 
@@ -572,4 +573,113 @@ async fn lifecycle_companion_whole_listener_drop_releases_read_and_prevents_shar
     ));
     drop(handle);
     assert_eq!(bounded(peer.read(&mut [0; 1])).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn lifecycle_companion_consumed_close_never_falls_back_after_business_failure() {
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let client = CompanionProxyClient::new(stream);
+    let (result, ()) = bounded(async {
+        tokio::join!(forwarding(&client).close(), async {
+            assert_eq!(
+                request(&mut peer).await["Command"].as_string(),
+                Some("StopForwardingServicePort")
+            );
+            reply(&mut peer, dictionary("Error", "denied".into())).await;
+        })
+    })
+    .await;
+    assert!(matches!(result, Err(CompanionError::Protocol(_))));
+    assert!(client.is_usable());
+    assert!(tokio::time::timeout(SHORT, peer.read_u8()).await.is_err());
+    drop(client);
+    assert_eq!(bounded(peer.read(&mut [0; 1])).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn lifecycle_companion_unpolled_close_and_zero_admission_schedule_no_drop_stop() {
+    for zero in [false, true] {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let client = CompanionProxyClient::new(stream);
+        if zero {
+            let error = bounded(forwarding(&client).close_with_timeout(Duration::ZERO))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, CompanionError::Timeout(Duration::ZERO)));
+        } else {
+            drop(forwarding(&client).close());
+        }
+        tokio::task::yield_now().await;
+        assert!(client.is_usable());
+        assert!(tokio::time::timeout(SHORT, peer.read_u8()).await.is_err());
+        drop(client);
+        assert_eq!(bounded(peer.read(&mut [0; 1])).await.unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_companion_cancelled_consumed_close_releases_empty_or_committed_owner() {
+    for committed in [false, true] {
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let client = CompanionProxyClient::new(stream);
+        let shared = Arc::clone(&client.stream);
+        let lock = if committed {
+            None
+        } else {
+            Some(shared.lock().await)
+        };
+        let mut closing = Box::pin(forwarding(&client).close());
+        if committed {
+            bounded(async {
+                tokio::select! {
+                    result = &mut closing => panic!("close ended before reply: {result:?}"),
+                    _ = request(&mut peer) => {}
+                }
+            })
+            .await;
+        } else {
+            assert!(tokio::time::timeout(SHORT, &mut closing).await.is_err());
+        }
+        drop(closing);
+        drop(lock);
+        assert_eq!(client.is_usable(), !committed);
+        tokio::task::yield_now().await;
+        assert!(shared.try_lock().is_ok());
+        assert!(tokio::time::timeout(SHORT, peer.read_u8()).await.is_err());
+        drop(shared);
+        drop(client);
+        assert_eq!(bounded(peer.read(&mut [0; 1])).await.unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_companion_consumed_close_success_preserves_shared_client() {
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let mut client = CompanionProxyClient::new(stream);
+    let (result, ()) = bounded(async {
+        tokio::join!(
+            forwarding(&client).close_with_timeout(Duration::MAX),
+            async {
+                let req = request(&mut peer).await;
+                assert_eq!(req.len(), 2);
+                assert_eq!(req["GizmoRemotePortNumber"].as_unsigned_integer(), Some(42));
+                reply(&mut peer, command("ComandSuccess")).await;
+            }
+        )
+    })
+    .await;
+    assert_eq!(result.unwrap(), command("ComandSuccess"));
+    assert!(client.is_usable());
+    let (result, ()) = bounded(async {
+        tokio::join!(client.list(), async {
+            request(&mut peer).await;
+            reply(
+                &mut peer,
+                dictionary("PairedDevicesArray", plist::Value::Array(vec![])),
+            )
+            .await;
+        })
+    })
+    .await;
+    result.unwrap();
 }

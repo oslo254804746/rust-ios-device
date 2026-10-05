@@ -170,7 +170,7 @@ def cli_help_closed_output(binary, flag, *, machine=False):
     return report
 
 
-def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=True, machine=True):
+def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=True, machine=True, family="notify"):
     """Reject finite timeout input before selection/setup; trap any device contact."""
     private_device = b"synthetic-notification-private-device"
     private_name = b"synthetic-notification-private-name"
@@ -185,8 +185,10 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
             command += ["--udid", private_device.decode()]
         else:
             env.pop("IOS_UDID", None)
-        command += ["notify", subcommand]
-        if subcommand != "springboard":
+        command += [family, subcommand]
+        if family == "companion" and subcommand in {"forward", "stop"}:
+            command += ["42"]
+        elif family == "notify" and subcommand != "springboard":
             command += [private_name.decode()]
         command += ["--timeout", str(timeout)]
         result = capture(command, env=env, timeout=5)
@@ -201,10 +203,10 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
             device_connections += 1
     report = assess(result, secret_variants(private_device) | secret_variants(private_name), 1)
     if machine:
-        contract = machine_error_contract(result, error_class="invalid_input", phase="notify",
+        contract = machine_error_contract(result, error_class="invalid_input", phase=family,
                                           exit_code=1, effects="unknown")
     else:
-        contract = (not result.stdout and result.stderr.startswith(b"notify failed:") and
+        contract = (not result.stdout and result.stderr.startswith((family + " failed:").encode()) and
                     b"io/InvalidInput" in result.stderr and b"panicked" not in result.stderr)
     report["device_connections"] = device_connections
     report["contract"] = contract and device_connections == 0
@@ -212,7 +214,7 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
     return report
 
 
-def cli_notification_empty_default(binary):
+def cli_notification_empty_default(binary, *, family="notify"):
     """Serve one empty discovery reply to a valid default-selection command."""
     valid, errors = [], []
     with socket.socket() as listener:
@@ -243,8 +245,10 @@ def cli_notification_empty_default(binary):
         env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
         private_name = b"synthetic-notification-private-name"
         try:
-            result = capture([str(binary), "--error-format=json", "notify", "wait",
-                              private_name.decode(), "--timeout", "1"], env=env, timeout=5)
+            command = (["notify", "wait", private_name.decode()] if family == "notify" else
+                       ["companion", "listen"])
+            result = capture([str(binary), "--error-format=json", *command, "--timeout", "1"],
+                             env=env, timeout=5)
         finally:
             worker.join(timeout=5)
         if worker.is_alive() or errors or valid != [True]:
@@ -259,7 +263,7 @@ def cli_notification_empty_default(binary):
             connection.close()
             unexpected_connections += 1
     report = assess(result, secret_variants(private_name), 1)
-    report["contract"] = machine_error_contract(result, error_class="unknown", phase="notify",
+    report["contract"] = machine_error_contract(result, error_class="unknown", phase=family,
                                                  exit_code=1, effects="unknown")
     report["contract"] = report["contract"] and unexpected_connections == 0
     report["passed"] = report["passed"] and report["contract"]
@@ -268,7 +272,7 @@ def cli_notification_empty_default(binary):
     return report
 
 
-def interrupted_launch(binary, *, notification_setup=False):
+def interrupted_launch(binary, *, notification_setup=False, companion_setup=False):
     """Interrupt only an owned CLI blocked on its sole ListDevices endpoint."""
     process = None
     try:
@@ -278,7 +282,10 @@ def interrupted_launch(binary, *, notification_setup=False):
             listener.settimeout(3)
             env = os.environ.copy()
             env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
-            if notification_setup:
+            if companion_setup:
+                env.pop("IOS_UDID", None)
+                command = [str(binary), "--error-format=json", "companion", "listen", "--timeout", "5"]
+            elif notification_setup:
                 env.pop("IOS_UDID", None)
                 command = [str(binary), "--error-format=json", "notify", "wait",
                            "synthetic-notification-private-name", "--timeout", "5"]
@@ -315,8 +322,9 @@ def interrupted_launch(binary, *, notification_setup=False):
                 process.wait(timeout=0.5)
 
 
-def cli_launch_cancellation(binary, *, notification_setup=False):
-    flag = "--interrupt-notification-setup" if notification_setup else "--interrupt-launch"
+def cli_launch_cancellation(binary, *, notification_setup=False, companion_setup=False):
+    flag = ("--interrupt-companion-setup" if companion_setup else
+            "--interrupt-notification-setup" if notification_setup else "--interrupt-launch")
     result = capture([sys.executable, str(Path(__file__).resolve()), flag,
                       "--binary", str(binary)], timeout=6)
     report = assess(result, secret_variants(b"synthetic-private-cancel-device") |
@@ -328,7 +336,7 @@ def cli_launch_cancellation(binary, *, notification_setup=False):
     report["contract"] = (trace == {"child_exit": 1, "list_request": True, "peer_eof": True,
                                     "signal": "SIGINT"} and
                           machine_error_contract(replace(result, stdout=b"", returncode=1),
-                                                 error_class="cancelled", phase="notify" if notification_setup else "webinspector",
+                                                 error_class="cancelled", phase="companion" if companion_setup else "notify" if notification_setup else "webinspector",
                                                  exit_code=1, effects="unknown"))
     report["passed"] = report["passed"] and report["contract"]
     return report
@@ -342,13 +350,15 @@ def main():
     parser.add_argument("--machine-errors", action="store_true", help="internal owned JSON failure probe")
     parser.add_argument("--interrupt-launch", action="store_true", help="internal owned SIGINT probe")
     parser.add_argument("--interrupt-notification-setup", action="store_true", help="internal owned notification SIGINT probe")
+    parser.add_argument("--interrupt-companion-setup", action="store_true", help="internal owned Companion SIGINT probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
-    if args.interrupt_launch or args.interrupt_notification_setup:
+    if args.interrupt_launch or args.interrupt_notification_setup or args.interrupt_companion_setup:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
             return 1
-        return 0 if interrupted_launch(args.binary, notification_setup=args.interrupt_notification_setup) else 1
+        return 0 if interrupted_launch(args.binary, notification_setup=args.interrupt_notification_setup,
+                                       companion_setup=args.interrupt_companion_setup) else 1
     if args.closed_output:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
@@ -370,9 +380,18 @@ def main():
                 reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout, explicit=explicit)
     for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
         reports[f"notification-wait-{kind}-human"] = cli_notification_deadline_error(args.binary, "wait", timeout, machine=False)
+    reports["companion-empty-default"] = cli_notification_empty_default(args.binary, family="companion")
+    for subcommand in ["listen", "forward", "stop"]:
+        for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
+            for explicit in [False, True]:
+                key = f"companion-{subcommand}-{kind}-{'explicit' if explicit else 'default'}-json"
+                reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout, explicit=explicit, family="companion")
+    for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
+        reports[f"companion-listen-{kind}-human"] = cli_notification_deadline_error(args.binary, "listen", timeout, machine=False, family="companion")
     if sys.platform.startswith("linux"):
         reports["launch-cancel-json-error"] = cli_launch_cancellation(args.binary)
         reports["notification-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, notification_setup=True)
+        reports["companion-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, companion_setup=True)
         for human in (False, True):
             reports[f"list-{'human' if human else 'json'}-closed-output"] = cli_list(args.binary, human=human, close_stdout=True)
         for flag in ["help", "version"]:

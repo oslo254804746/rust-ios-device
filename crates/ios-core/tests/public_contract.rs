@@ -2034,6 +2034,55 @@ async fn lifecycle_companion_public_shared_state_budget_send_and_exhaustive_fami
     assert_eq!(family(&client.list().await.unwrap_err()), "protocol");
 }
 
+#[cfg(feature = "companion")]
+#[tokio::test]
+async fn lifecycle_companion_public_consumed_close_is_owned_send_and_has_no_drop_fallback() {
+    use ios_core::companion::CompanionProxyClient;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    fn send<T: Send>(_: &T) {}
+    async fn request(peer: &mut tokio::io::DuplexStream) -> plist::Dictionary {
+        let len = peer.read_u32().await.unwrap() as usize;
+        assert!(len < 4096);
+        let mut body = vec![0; len];
+        peer.read_exact(&mut body).await.unwrap();
+        plist::from_bytes(&body).unwrap()
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let mut client = CompanionProxyClient::new(stream);
+    let operation = async {
+        let (handle, ()) = tokio::join!(
+            client.start_forwarding_service_port_handle(42, None, None),
+            async {
+                assert_eq!(
+                    request(&mut peer).await["Command"].as_string(),
+                    Some("StartForwardingServicePort")
+                );
+                let mut value = plist::Dictionary::new();
+                value.insert("CompanionProxyServicePort".into(), 43u64.into());
+                let mut body = Vec::new();
+                plist::to_writer_xml(&mut body, &value).unwrap();
+                peer.write_u32(body.len() as u32).await.unwrap();
+                peer.write_all(&body).await.unwrap();
+            }
+        );
+        let closing = handle.unwrap().close_with_timeout(Duration::MAX);
+        send(&closing);
+        drop(closing);
+        assert!(client.is_usable());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.read_u8())
+                .await
+                .is_err()
+        );
+        drop(client);
+        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+    };
+    tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .unwrap();
+}
+
 #[cfg(feature = "notificationproxy")]
 #[test]
 fn lifecycle_notification_public_budget_state_send_and_exhaustive_families() {

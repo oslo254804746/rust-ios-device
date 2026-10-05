@@ -246,8 +246,8 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         Commands::List(_) | Commands::Listen(_) | Commands::Discover(_) | Commands::Doctor(_) => {
             false
         }
-        // Notification discovery participates in its setup budget and signal.
-        Commands::Notify(_) => false,
+        // Discovery participates in these commands' setup budget and signal.
+        Commands::Notify(_) | Commands::Companion(_) => false,
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
@@ -352,6 +352,9 @@ async fn main() -> ExitCode {
     let result = async {
         if let Commands::Notify(notification) = &cli.command {
             notification.preflight()?;
+        }
+        if let Commands::Companion(companion) = &cli.command {
+            companion.preflight()?;
         }
         let udid = resolve_cli_udid(cli.udid, &cli.command).await?;
         dispatch_command(cli.command, udid, cli.no_json).await

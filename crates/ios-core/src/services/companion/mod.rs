@@ -233,6 +233,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CompanionProxyClient<S> {
             response,
             stop_response: None,
             stopped: false,
+            drop_cleanup: true,
         })
     }
 
@@ -523,6 +524,7 @@ where
     response: plist::Dictionary,
     stop_response: Option<plist::Dictionary>,
     stopped: bool,
+    drop_cleanup: bool,
 }
 
 impl<S> ForwardingHandle<S>
@@ -569,6 +571,28 @@ where
         self.stop_with_timeout(self.timeout).await
     }
 
+    /// Consume this handle and await one bounded stop, without a later Drop
+    /// fallback. The configured timeout is clamped by the cleanup cap.
+    ///
+    /// Creating this future disarms best-effort Drop immediately, including
+    /// when the future is never polled. Cancellation drops owned local state;
+    /// it does not guarantee remote stop, rollback or safe retry.
+    pub fn close(self) -> impl Future<Output = Result<plist::Dictionary, CompanionError>> + Send {
+        let timeout = self.timeout;
+        self.close_with_timeout(timeout)
+    }
+
+    /// Consume this handle with a caller-owned cleanup budget, clamped to five
+    /// seconds. No detached fallback is scheduled after success, failure or
+    /// caller cancellation. Other shared owners retain the underlying stream.
+    pub fn close_with_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<plist::Dictionary, CompanionError>> + Send {
+        self.drop_cleanup = false;
+        async move { self.stop_with_timeout(timeout).await }
+    }
+
     /// Stop this forwarding with a caller-provided remaining deadline.
     ///
     /// This is useful to callers that share one absolute deadline across
@@ -608,7 +632,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn drop(&mut self) {
-        if self.stopped || !lifecycle::usable(&self.usable) || self.timeout.is_zero() {
+        if !self.drop_cleanup
+            || self.stopped
+            || !lifecycle::usable(&self.usable)
+            || self.timeout.is_zero()
+        {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -787,6 +815,7 @@ mod tests {
             response: plist::Dictionary::new(),
             stop_response: None,
             stopped: false,
+            drop_cleanup: true,
         };
         let error = handle.stop_with_timeout(duration).await.unwrap_err();
         assert_eq!(crate::classify_error(&error), crate::ErrorClass::Timeout);

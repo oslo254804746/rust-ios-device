@@ -52,134 +52,51 @@ enum CompanionSub {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WaitResult {
-    Cancelled,
-    TimedOut,
-}
+mod control;
 
 impl CompanionCmd {
-    pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
-        let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for companion"))?;
-        match self.sub {
-            CompanionSub::List => {
-                let (_device, stream) = connect_companion(&udid, None).await?;
-                let mut client = ios_core::companion::CompanionProxyClient::new(stream);
-                let devices = client.list().await?;
-                if json {
-                    crate::output::outln!("{}", serde_json::to_string_pretty(&devices)?);
-                } else {
-                    for device in devices {
-                        crate::output::outln!("{}", serde_json::to_string_pretty(&device)?);
-                    }
-                }
-            }
-            CompanionSub::Get {
-                udid: companion_udid,
-                key,
-            } => {
-                let (_device, stream) = connect_companion(&udid, None).await?;
-                let mut client = ios_core::companion::CompanionProxyClient::new(stream);
-                let value = client.get_value(&companion_udid, &key).await?;
-                if json {
-                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
-                } else if let Some(string) = value.as_string() {
-                    crate::output::outln!("{string}");
-                } else {
-                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
-                }
-            }
-            CompanionSub::Listen { timeout } => {
-                let deadline = operation_deadline(timeout)?;
-                let (device, stream) = connect_companion(&udid, deadline).await?;
-                let client = new_client(stream, remaining_timeout(deadline));
-                let mut events = client.listen_for_devices().await?;
-                let termination = wait_for_events(&mut events, deadline, json).await?;
-                drop(events);
-                drop(device);
-                finish_wait("companion listener", termination, timeout)?;
-            }
-            CompanionSub::Forward {
-                remote_port,
-                service_name,
-                timeout,
-            } => {
-                let deadline = operation_deadline(timeout)?;
-                let (device, stream) = connect_companion(&udid, deadline).await?;
-                let mut client = new_client(stream, remaining_timeout(deadline));
-                let mut forwarding = client
-                    .start_forwarding_service_port_handle(
-                        remote_port,
-                        service_name.as_deref(),
-                        None,
-                    )
-                    .await?;
-                if json {
-                    crate::output::outln!(
-                        "{}",
-                        serde_json::json!({
-                            "GizmoRemotePortNumber": forwarding.remote_port(),
-                            "CompanionProxyServicePort": forwarding.service_port(),
-                        })
-                    );
-                } else {
-                    crate::output::outln!(
-                        "Forwarded companion port {} through service port {}. Press Ctrl+C to stop.",
-                        forwarding.remote_port(),
-                        forwarding.service_port()
-                    );
-                }
-                let termination = wait_for_stop(deadline).await?;
-                let stop_result: Result<(), ios_core::companion::CompanionError> =
-                    if termination == WaitResult::TimedOut {
-                        // There is no budget left for a protocol stop after an
-                        // absolute deadline. Dropping still schedules the
-                        // bounded best-effort cleanup when a runtime is alive.
-                        Ok(())
-                    } else {
-                        let stop_timeout = remaining_timeout(deadline).unwrap_or_else(|| {
-                            // The handle's configured timeout is the
-                            // library default when this command has no
-                            // absolute deadline.
-                            forwarding.timeout()
-                        });
-                        forwarding.stop_with_timeout(stop_timeout).await.map(|_| ())
-                    };
-                drop(forwarding);
-                drop(client);
-                drop(device);
-                stop_result.with_context(|| "failed to stop companion forwarding")?;
-                finish_wait("companion forwarding", termination, timeout)?;
-            }
-            CompanionSub::Stop {
-                remote_port,
-                timeout,
-            } => {
-                let deadline = operation_deadline(timeout)?;
-                let (device, stream) = connect_companion(&udid, deadline).await?;
-                let mut client = new_client(stream, remaining_timeout(deadline));
-                let response = client.stop_forwarding_service_port(remote_port).await?;
-                drop(client);
-                drop(device);
-                if json {
-                    crate::output::outln!(
-                        "{}",
-                        serde_json::to_string(&plist::Value::Dictionary(response))?
-                    );
-                } else if let Some(command) =
-                    response.get("Command").and_then(plist::Value::as_string)
-                {
-                    crate::output::outln!("{command}");
-                } else {
-                    crate::output::outln!(
-                        "{}",
-                        serde_json::to_string_pretty(&plist::Value::Dictionary(response))?
-                    );
-                }
-            }
-        }
+    pub(crate) fn preflight(&self) -> Result<()> {
+        control::preflight(&self.sub)
+    }
 
-        Ok(())
+    pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
+        self.preflight()?;
+        let deadline = operation_deadline(control::timeout(&self.sub))?;
+        let mut signal = Box::pin(tokio::signal::ctrl_c());
+        let (device, stream) = control::setup(
+            control::SETUP_BUDGET,
+            deadline,
+            async {
+                let udid = match udid {
+                    Some(udid) => udid,
+                    None => {
+                        let devices = ios_core::list_devices()
+                            .await
+                            .context("failed to list connected iOS devices for default --udid")?;
+                        crate::default_udid_from_devices(&devices)
+                            .ok_or_else(|| anyhow::anyhow!("--udid required for companion"))?
+                    }
+                };
+                connect_companion(&udid, deadline).await
+            },
+            signal.as_mut(),
+        )
+        .await?;
+        let client = new_client(stream, remaining_timeout(deadline));
+        let result = control::run(
+            client,
+            self.sub,
+            deadline,
+            json,
+            |line| {
+                crate::output::write_line(format_args!("{line}"))?;
+                Ok(())
+            },
+            signal.as_mut(),
+        )
+        .await;
+        drop(device);
+        result
     }
 }
 
@@ -251,84 +168,12 @@ fn remaining_timeout(deadline: Option<tokio::time::Instant>) -> Option<Duration>
     deadline.map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()))
 }
 
-async fn wait_for_events<S>(
-    events: &mut ios_core::companion::CompanionDeviceStream<S>,
-    deadline: Option<tokio::time::Instant>,
-    json: bool,
-) -> Result<WaitResult>
-where
-    S: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
-    loop {
-        let event = if let Some(deadline) = deadline {
-            tokio::select! {
-                signal = ctrl_c.as_mut() => {
-                    signal.context("failed to wait for Ctrl+C")?;
-                    return Ok(WaitResult::Cancelled);
-                }
-                event = events.next_event() => event,
-                _ = tokio::time::sleep_until(deadline) => return Ok(WaitResult::TimedOut),
-            }
-        } else {
-            tokio::select! {
-                signal = ctrl_c.as_mut() => {
-                    signal.context("failed to wait for Ctrl+C")?;
-                    return Ok(WaitResult::Cancelled);
-                }
-                event = events.next_event() => event,
-            }
-        };
-        match event {
-            Some(Ok(event)) => {
-                let value = plist::Value::Dictionary(event);
-                if json {
-                    crate::output::outln!("{}", serde_json::to_string(&value)?);
-                } else {
-                    crate::output::outln!("{}", serde_json::to_string_pretty(&value)?);
-                }
-            }
-            Some(Err(error)) => return Err(error.into()),
-            None => return Err(anyhow::anyhow!("companion listener closed unexpectedly")),
-        }
-    }
-}
-
-async fn wait_for_stop(deadline: Option<tokio::time::Instant>) -> Result<WaitResult> {
-    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
-    if let Some(deadline) = deadline {
-        Ok(tokio::select! {
-            signal = ctrl_c.as_mut() => {
-                signal.context("failed to wait for Ctrl+C")?;
-                WaitResult::Cancelled
-            }
-            _ = tokio::time::sleep_until(deadline) => WaitResult::TimedOut,
-        })
-    } else {
-        ctrl_c.await.context("failed to wait for Ctrl+C")?;
-        Ok(WaitResult::Cancelled)
-    }
-}
-
-fn finish_wait(operation: &str, result: WaitResult, timeout: Option<u64>) -> Result<()> {
-    match result {
-        WaitResult::Cancelled => Ok(()),
-        WaitResult::TimedOut => match timeout {
-            Some(seconds) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("{operation} timed out after {seconds} seconds"),
-            )
-            .into()),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("{operation} timed out"),
-            )
-            .into()),
-        },
-    }
-}
-
 fn seconds_duration(seconds: u64) -> Result<Duration> {
+    if seconds == 0 {
+        return Err(crate::output::input_decision(
+            "--timeout must be greater than zero",
+        ));
+    }
     let duration = Duration::from_secs(seconds);
     tokio::time::Instant::now()
         .checked_add(duration)
@@ -342,19 +187,23 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn stream_contract_companion_issued_timeout_is_typed_without_native_cause() {
-        for budget in [None, Some(3)] {
-            let error = finish_wait("owned operation", WaitResult::TimedOut, budget).unwrap_err();
-            assert_eq!(
-                ios_core::classify_error(error.as_ref()),
-                ios_core::ErrorClass::Timeout
-            );
-            let io = error.downcast_ref::<std::io::Error>().unwrap();
-            assert!(std::error::Error::source(io).is_none());
-            assert_eq!(io.raw_os_error(), None);
-        }
-        assert!(finish_wait("owned operation", WaitResult::Cancelled, Some(3)).is_ok());
+    #[tokio::test]
+    async fn stream_contract_companion_issued_timeout_keeps_actual_elapsed() {
+        let error = control::drive(
+            std::future::pending::<Result<()>>(),
+            std::future::pending(),
+            Some(tokio::time::Instant::now()),
+            || Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            ios_core::classify_error(error.as_ref()),
+            ios_core::ErrorClass::Timeout
+        );
+        assert!(error
+            .chain()
+            .any(|source| source.is::<tokio::time::error::Elapsed>()));
     }
 
     #[derive(Parser)]
@@ -404,11 +253,9 @@ mod tests {
             );
             assert_eq!(error.to_string(), "--timeout is too large");
         }
-        assert!(seconds_duration(0).unwrap().is_zero());
+        assert!(seconds_duration(0).is_err());
         assert!(operation_deadline(None).unwrap().is_none());
-        assert!(operation_deadline(Some(0)).unwrap().is_some());
-        assert!(finish_wait("test", WaitResult::TimedOut, Some(2)).is_err());
-        assert!(finish_wait("test", WaitResult::Cancelled, Some(2)).is_ok());
+        assert!(operation_deadline(Some(0)).is_err());
     }
 
     #[test]

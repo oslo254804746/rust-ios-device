@@ -91,17 +91,18 @@ class ClosedOutputContracts(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned process group")
 class NotificationAdmissionContracts(unittest.TestCase):
+    family = "notify"
     def probe(self, prefix="", diagnostic="'error:synthetic'"):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "owned-notification-admission-fixture"
             body = ("import json, os, socket, sys\n" + prefix +
                     "print(json.dumps({'schema_version':1, 'error':{'class':'invalid_input', "
-                    "'phase':'notify', 'exit_code':1, 'effects':'unknown', "
+                    "'phase':" + repr(self.family) + ", 'exit_code':1, 'effects':'unknown', "
                     "'confirmation_required':False, 'diagnostic':" + diagnostic + "}}), file=sys.stderr)\n"
                     "sys.exit(1)\n")
             binary.write_text("#!" + sys.executable + "\n" + body)
             binary.chmod(0o700)
-            return compatibility.cli_notification_deadline_error(binary, "wait", 0)
+            return compatibility.cli_notification_deadline_error(binary, "listen" if self.family == "companion" else "wait", 0, family=self.family)
 
     def test_expected_error_without_contact_is_accepted(self):
         report = self.probe()
@@ -125,6 +126,10 @@ class NotificationAdmissionContracts(unittest.TestCase):
         self.assertGreater(report["raw_hits"], 0)
         self.assertEqual(report["device_connections"], 0)
         self.assertTrue(report["cleanup_complete"])
+
+
+class CompanionAdmissionContracts(NotificationAdmissionContracts):
+    family = "companion"
 
 
 if __name__ == "__main__":
