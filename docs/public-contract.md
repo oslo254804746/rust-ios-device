@@ -103,6 +103,25 @@ remain. This error behavior migration needs pre-1.0 release review; setup/
 whole-flow/pinned signal/join/primary cleanup remain separate work. See
 [WebInspector discovery acceptance](validation/webinspector-discovery-lifecycle-2026-10-05.md).
 
+The subsequent finite CLI profile covers opened-tabs, eval and launch. Default
+selection moves inside a checked absolute total shared by connection, startup,
+discovery, session commands and output. Explicit selection and first-device
+ordering stay. The same pinned Ctrl+C future spans all stages; successful local
+signals are typed Cancelled, while signal-registration IO remains IO. Zero now
+rejects as source-free Timeout before discovery instead of using the former
+100ms minimum; positive inputs keep that minimum. Invalid duration/clock input
+rejects before discovery. Discovery uses the existing500ms idle cap inside the
+total, so a smaller total can expire before quiescence.
+
+Attached usable sessions receive a separate5s cleanup total. Completed output
+can now be followed by cleanup failure and exit1; primary plus cleanup failures
+retain both errors with the primary classification. Successful row/value/launch
+schemas and human rendering stay, including the full eval response envelope.
+Exactly one old root default-selection predicate assertion is migrated;
+existing task/shell assertions and core APIs stay. These timing/exit changes
+need pre-1.0 release review. Interactive shell and server owners remain separate.
+See [WebInspector command acceptance](validation/webinspector-command-lifecycle-2026-10-05.md).
+
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners
 reject further wire work after interrupted progress, a committed unanswered

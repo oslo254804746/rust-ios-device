@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Give WebInspector opened-tabs, eval and launch one total covering default
+  selection, setup, commands and output, with one Ctrl+C future and independent
+  bounded session cleanup. Zero rejects before discovery; cleanup failure can
+  now make completed output exit unsuccessfully. See
+  [WebInspector command migration](docs/validation/webinspector-command-lifecycle-2026-10-05.md).
 - Preserve the original WebInspector CLI discovery timeout after partial input
   or blocked automatic listing. Retry idle discovery only while the client
   permits reuse, retaining original native sources and page selection. See

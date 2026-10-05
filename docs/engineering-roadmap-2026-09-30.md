@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6359,3 +6359,60 @@ Plistreader已有cyclecheck，仍需expansion/depth/CPU与boundeddecode/fuzz，�
 task/subtask/historyprefix、118capability正文/maturity/prior evidence保持。Exact
 source/binary/full/narrow/23compile diagnostics/gates/cacheclean provenance匹配，
 文档期间sourcefrozen，referenceHEAD/status不变。L01/class4/overallgoal active。
+
+### 大类 4：L01 finite WebInspector CLI command ownership（2026-10-05）
+
+| 字段 | 当前真实交付 |
+| --- | --- |
+| 实现 | `fa3d3f7ec523bad235c2d3986e28bf229998d1c2`，基于 `418b51dbe199e1a1dd1d9a09f4554ffbda065db5`；明确11source/test files，2147+/208-；21newRust/30newactualCLI/4newtooling |
+| 范围 | opened-tabs/eval/launch默认发现、建连、startup、discovery、attach、每个命令及output共用checked absolute total/同一pinned Ctrl+C；每阶段配置client cap不延长total；fully attached usable session另有5scleanup，primary与secondary及automation两步cleanup错误都保留 |
+| 合同 | [专题验收](validation/webinspector-command-lifecycle-2026-10-05.md)、lifecycle/public/error/CHANGELOG/quality/Q01host evidence；zero从100msfallback改为pre-discovery source-free Timeout；500msidle在total内；cleanup失败可在已output后exit1，pre-1.0需review |
+| 当前验证 | fresh pipeline55428 authoritatively terminal0，完整第11节拆分全部PASS：2385Rust/13Python，CLI780/Core1443/public52，0FAIL/2既有ignored；narrow/min21，CLI68/Core102/coreonlyminimum17/minCLIalltargets/originalstack5/strictCoreCLI/fmt/targetedtooling18/actualCLI85全部PASS |
+| 保留条件 | 22device NOT_RUN；Chromium/installed3.9/3.13未重跑；无browser/other-platform/device/remoteACK/retry/RSS/decoderpeak/baseline-wide old-source control；interactive/server/join与其他L01、L02–L04/Q04及第五至九类继续 |
+
+root以前在finite命令timer/signal之前执行unbounded默认发现，本轮移动到command owner。
+Firstdefault（包括Network先列出）和explicit bypass保持；empty诊断保持。一个原有
+root predicate assertion按必要行为迁移，原task/shell testmodules byte-identical；
+不能把这轮描述成全部旧assertions都未改。Core API/6variants/models/wire/dependencies、
+CDP/Seleniumexplicit selector/security及interactive现有路径不改。
+
+Ready signal优先于due timer/work，failed signal保留IO；due total抑制ready work。
+单poll跨期限后返回成功也必须由native timer报Elapsed，已返回native失败保持primary。
+Output/serialization依旧cooperative，无强制CPU抢占/benchmark承诺。
+Tabs没有attached session；Eval精确session socket teardown；Launch先Stopownedcontext
+再teardown forwarding socket，两步共享独立cleanup total，不再用caller remainder。
+Incomplete/invalid client不发猜测恢复请求，stream/device guard保留到cleanup结束再Drop。
+这只证明local accepted wire/flush/ownership，不证明remoteACK/rollback或可重试。
+
+21tests覆盖7control以及14oneshot groups：三命令human/JSON真实帧、first/explicit selection、
+default/nativeconnect/partialEOF/plist、跨connection/start总预算、committedevalcancel/expiry
+无retry/teardown、matchedbusiness清理、实际writer BrokenPipe与双错、outputexpiry/cancel后
+独立cleanup/delayedflush、completedoutput后cleanup失败、Stopbusinesserr后socketexpiry。
+实际owned CLI85（新增30），zero/两种overflow在default/explicit前拒绝、empty、stalled
+200ms ListDevices/EOF、实际Linuxchild SIGINT与human invalid，no realdevice/pairing supplied。
+Tooling63（新增4）；full的66feature/4runtime、7+7doctests/3snippets、C、3.12wheel/sdist、
+installedimport、help118/raw38/host5/backup3全部PASS；不升级capability maturity。
+
+历史开发先19tests10PASS/9FAIL，再20tests18PASS/2FAIL，再20tests19PASS/1FAIL，暴露
+fixture对省略pause key、完整eval封套及native sources/classes的错误假设；late-ready
+control在driver修正前0PASS/1FAIL。历史full30439/71014及/tmp记录在环境续接后不可读取，
+不用它们代替当前验收。保留源码后fresh55428重跑13gates至terminal0，当前证据写入
+项目ignored target/validation/webinspector-command-2026-10-05/，无需cacheclean。
+
+Freeze patch SHA256：
+`a61bc9678b409a9264049a2d1db784fbc5ee52ada160487c215ffe1e19a0ce7f`；
+binary SHA256：
+`5169af3728eecdb8e281852b9ddaa517d00b6bfeba4f351b31a2f9e45e93e898`。
+Actualcommit与frozen/tested11filepatch精确一致，referenceHEAD/status保持。
+协议selector/字段使用existingCore API与只读reference；WebKitshared inspection/automation
+target close map提供source reasoning，详情见专题链接，不以source推断替代真机。
+
+全部31任务/subtasks/既有交付prefix及118capability正文/maturity/prior evidence保持，
+仅L01overview/末尾交付/单项hostentry追加；9完成/11未开始/11进行中或待条件不变。
+L01/class4/总体goal active，继续js-shell/CDP/WebDriver/server owner，再其他L01、
+L02–L04/Q04与第五至九类。无subagent/push/publication/historyrewrite/referenceedit/device操作。
+
+文档audit PASS：8documents/7Markdown/354locallinks与source/actualhelp118；all31
+task/subtask/historyprefix及118capability正文/maturity/prior evidence保持。Exact
+source/binary/freshfull13gates/current21tests匹配，文档期间无product edits，references
+HEAD/status不变。L01/class4/overallgoal active。

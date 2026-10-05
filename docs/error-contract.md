@@ -125,6 +125,23 @@ This narrow adapter change does not certify other frontend whole-flow/cleanup
 owners. See
 [WebInspector discovery error evidence](validation/webinspector-discovery-lifecycle-2026-10-05.md).
 
+Finite WebInspector CLI commands now reject zero as the existing source-free
+Timeout before default discovery. Existing invalid-input guards and native
+duration conversion failures keep their sources. The absolute frontend timer
+retains actual Elapsed when selected; a successful Ctrl+C wait uses
+OperationCancelled, and a failed wait keeps its original IO. Ready work cannot
+win an already due total, nor can a successful cooperative poll finish after
+the total and escape it. An already returned native failure remains primary.
+
+Native startup/codec/command/output failures retain their sources through session
+cleanup. A private dual-failure wrapper exposes the primary as its source,
+retains the cleanup error separately and uses class-only Debug/static Display.
+Automation stop plus socket teardown also preserve the first failure when the
+second step expires. Successful output followed by cleanup failure now exits1;
+no rollback, retry or remote cleanup ACK is implied. Core error variants and
+final machine envelope stay. See
+[WebInspector command error evidence](validation/webinspector-command-lifecycle-2026-10-05.md).
+
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
 return static Protocol before I/O, including owners already queued on the mutex.

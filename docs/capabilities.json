@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-command-lifecycle-fa3d3f7",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned duplex plist finite-command flows: tabs/eval/launch JSON and human output, first/default and explicit selection, Runtime/Automation attachment/commands, owned context close/socket identity; native EOF/plist/writer and committed cancellation/expiry; delayed/failed/stalled cleanup; actual Linux CLI default discovery zero/overflow/stall/empty/SIGINT"],
+      "required_state": ["Eleven source/test files;21 new Rust tests,30 new actual CLI cases and4 new tooling tests. Fresh frozen pipeline55428 terminal0:minimum21/CLI68/Core102/core-only minimum17/minCLIalltargets/originalstack5/strict/fmt/targetedtooling18/actualCLI85 and section11 full PASS. Prior development fixture failures/late-success control and /tmp full sessions are historical; temporary logs unavailable after continuation and not used for current acceptance. Exactly one root default-selection predicate assertion migrated; old task/shell assertions/core APIs/protocols/dependencies/reference HEAD/status preserved. No forged ConnectedDevice or physical-device/browser/other-platform/baseline-wide old-source control/benchmark/RSS acceptance; maturity unchanged"],
+      "tested_commit": "fa3d3f7ec523bad235c2d3986e28bf229998d1c2",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-command-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Finite opened-tabs/eval/launch default selection, connection, startup, discovery, attachment, every command and output share one checked absolute total/pinned signal. Zero source-free Timeout and invalid duration/clock reject before discovery; due/late-ready success admission, native failures and cancellation retain sources. Fully attached usable sessions clean under independent5s; primary plus cleanup and automation stop plus teardown failures both retained; completed output can now be followed by exit1. Existing formats/page selection stay; idle500ms distinct from total. Fresh full2385Rust/13Python, CLI780/Core1443/public52, zero FAIL/two existing ignored; all gates/tooling63/help118/raw38/host5/CLI85/backup3 PASS. Local write/flush is not remote ACK. Interactive/server/join owners, other L01/L02–L04/Q04/classes5–9 and all31 remain active;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
+    },
+    {
       "id": "linux-webinspector-discovery-lifecycle-db7960a",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

@@ -465,6 +465,26 @@ stay; this does not certify frontend setup/whole-flow/signal/join/cleanup or
 decoder bounds. See
 [WebInspector discovery fixtures](validation/webinspector-discovery-lifecycle-2026-10-05.md).
 
+Finite WebInspector opened-tabs/eval/launch now own default-device selection
+through final output under one checked absolute total and one pinned signal.
+Every session stage caps the owned client's existing operation policy to the
+remaining total. A500ms discovery idle period cannot reset the total. A due
+timer suppresses ready work; a late successful cooperative poll is also rejected,
+while an already returned native failure stays primary. Serialization and
+synchronous output remain cooperative rather than forcibly preemptible.
+
+The stream and real device guard remain owned until cleanup finishes. Only fully
+attached usable sessions issue teardown: Inspector uses the existing forwarding
+socket close; Automation first closes its owned browsing context, then its
+forwarding socket. Both cleanup steps share an independent5s total and do not
+poll the already completed Ctrl+C future. Invalid clients and incomplete attach
+owners drop without issuing guessed recovery requests. Primary and cleanup
+failures remain available, including two failures within automation cleanup.
+Local write/flush completion is not a remote ACK. Normal formats stay; a cleanup
+failure after output is now a returned failure. Twenty-one host tests and actual
+owned CLI probes cover this profile. See
+[WebInspector command fixtures](validation/webinspector-command-lifecycle-2026-10-05.md).
+
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
 and late/fragmented/blocked-send cases for each owner. L02–L04/Q04 and platform/
