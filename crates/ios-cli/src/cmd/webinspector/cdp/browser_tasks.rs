@@ -1,5 +1,6 @@
 //! Child results survive bounded supervisor abort; every explicit stop joins.
 use super::super::tasks::control::{self, Budget};
+#[cfg(test)]
 use super::CDP_PAGE_CLEANUP_TIMEOUT;
 use anyhow::Result;
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -14,11 +15,15 @@ use tokio::sync::{mpsc, watch};
 pub(super) struct PageOutcome {
     primary: Option<anyhow::Error>,
     cleanup: Option<Result<()>>,
+    join: Option<std::result::Result<(), tokio::task::JoinError>>,
+    requested_abort: bool,
 }
 
 impl std::fmt::Debug for PageOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CdpPageOutcome")
+            .field("joined", &self.join.is_some())
+            .field("requested_abort", &self.requested_abort)
             .field(
                 "primary_class",
                 &self
@@ -45,7 +50,16 @@ impl PageOutcome {
     pub(super) fn cleanup(&mut self, result: Result<()>) {
         self.cleanup = Some(result);
     }
-    fn take(&mut self, completed: bool) -> Result<()> {
+    pub(super) fn is_joined(&self) -> bool {
+        self.join.is_some()
+    }
+    #[cfg(test)]
+    pub(super) fn is_aborted(&self) -> bool {
+        self.requested_abort
+    }
+    fn take(&mut self) -> Result<()> {
+        let join = self.join.take();
+        let completed = matches!(&join, Some(Ok(())));
         let cleanup = self.cleanup.take().unwrap_or_else(|| {
             if completed {
                 Err(anyhow::Error::new(
@@ -57,7 +71,20 @@ impl PageOutcome {
                 Ok(())
             }
         });
-        control::finish(self.primary.take().map_or(Ok(()), Err), cleanup)
+        let result = control::finish(self.primary.take().map_or(Ok(()), Err), cleanup);
+        let joined = match join {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) if self.requested_abort && error.is_cancelled() => Ok(()),
+            Some(Err(error)) => {
+                Err(anyhow::Error::new(error).context("CDP child task join failed"))
+            }
+            None => Err(anyhow::Error::new(
+                ios_core::webinspector::WebInspectorError::Protocol(
+                    "CDP child is missing its join outcome".into(),
+                ),
+            )),
+        };
+        control::finish(result, joined)
     }
 }
 
@@ -83,73 +110,130 @@ impl Drop for BrowserPageSession {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn stop_browser_page(page: BrowserPageSession) -> Result<()> {
     stop_browser_pages(vec![page], CDP_PAGE_CLEANUP_TIMEOUT).await
 }
 
 pub(super) async fn stop_browser_pages(
-    mut pages: Vec<BrowserPageSession>,
+    pages: Vec<BrowserPageSession>,
     duration: Duration,
 ) -> Result<()> {
-    if pages.is_empty() {
-        return Ok(());
-    }
-    let budget = Budget::new(duration, "CDP child cleanup");
-    for page in &pages {
-        let _ = page.cancel.send(true);
-    }
-    let mut joined = Vec::with_capacity(pages.len());
-    joined.resize_with(pages.len(), || None);
-    let waited = match budget {
-        Ok(budget) => {
-            budget
-                .drive(
-                    Box::pin(async {
-                        let mut pending = FuturesUnordered::new();
-                        for (index, page) in pages.iter_mut().enumerate() {
-                            pending.push(async move { (index, (&mut page.task).await) });
-                        }
-                        while let Some((index, result)) = pending.next().await {
-                            joined[index] = Some(result);
-                        }
-                        Ok(())
-                    }),
-                    std::future::pending::<std::io::Result<()>>(),
-                )
-                .await
-        }
-        Err(error) => Err(error),
-    };
-    // The controller has dropped all borrowed join futures before this pass.
-    // Abort every remaining task before joining any one of them.
-    for (index, page) in pages.iter().enumerate() {
-        if joined[index].is_none() {
-            page.task.abort();
+    BrowserPageCleanup::new(pages, duration).stop().await
+}
+
+/// Borrowing stop can be cancelled without losing owners, completed joins or
+/// an already issued deadline error. Explicit parent cleanup can then resume.
+pub(super) struct BrowserPageCleanup {
+    pages: Vec<BrowserPageSession>,
+    duration: Duration,
+    budget: Option<Budget>,
+    waited: Option<Result<()>>,
+}
+
+impl BrowserPageCleanup {
+    pub(super) fn new(pages: Vec<BrowserPageSession>, duration: Duration) -> Self {
+        Self {
+            pages,
+            duration,
+            budget: None,
+            waited: None,
         }
     }
-    let mut result = Ok(());
-    for (index, page) in pages.iter_mut().enumerate() {
-        let aborted = joined[index].is_none();
-        let join = match joined[index].take() {
-            Some(result) => result,
-            None => (&mut page.task).await,
-        };
-        let owned = page
-            .outcome
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .take(join.is_ok());
-        result = control::finish(result, owned);
-        if let Err(error) = join {
-            if !(aborted && error.is_cancelled()) {
-                result = control::finish(
-                    result,
-                    Err(anyhow::Error::new(error).context("CDP child task join failed")),
-                );
+
+    pub(super) fn push(&mut self, page: BrowserPageSession) {
+        self.pages.push(page);
+    }
+
+    pub(super) fn into_remaining(self) -> (Vec<BrowserPageSession>, Result<()>) {
+        (self.pages, self.waited.unwrap_or(Ok(())))
+    }
+
+    pub(super) async fn stop(&mut self) -> Result<()> {
+        if self.pages.is_empty() {
+            return Ok(());
+        }
+        if self.budget.is_none() && self.waited.is_none() {
+            match Budget::new(self.duration, "CDP child cleanup") {
+                Ok(budget) => self.budget = Some(budget),
+                Err(error) => self.waited = Some(Err(error)),
+            }
+            for page in &self.pages {
+                let _ = page.cancel.send(true);
             }
         }
+        if self.waited.is_none() {
+            let budget = self.budget.expect("cleanup budget was admitted");
+            self.waited = Some(
+                budget
+                    .drive(
+                        Box::pin(async {
+                            let mut pending = FuturesUnordered::new();
+                            for page in &mut self.pages {
+                                if !page
+                                    .outcome
+                                    .lock()
+                                    .unwrap_or_else(|poison| poison.into_inner())
+                                    .is_joined()
+                                {
+                                    pending.push(async move {
+                                        let result = (&mut page.task).await;
+                                        page.outcome
+                                            .lock()
+                                            .unwrap_or_else(|poison| poison.into_inner())
+                                            .join = Some(result);
+                                    });
+                                }
+                            }
+                            while pending.next().await.is_some() {}
+                            Ok(())
+                        }),
+                        std::future::pending::<std::io::Result<()>>(),
+                    )
+                    .await,
+            );
+        }
+        // All borrowed join futures have been dropped. Record every abort
+        // before joining any task, so cancellation here also remains resumable.
+        for page in &self.pages {
+            let mut outcome = page
+                .outcome
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if !outcome.is_joined() {
+                outcome.requested_abort = true;
+                page.task.abort();
+            }
+        }
+        for page in &mut self.pages {
+            let joined = page
+                .outcome
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .is_joined();
+            if !joined {
+                let result = (&mut page.task).await;
+                page.outcome
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .join = Some(result);
+            }
+        }
+        // No await after taking outcomes: all causes transfer to the caller
+        // together, rather than being lost during cancellation partway through.
+        let mut result = Ok(());
+        for page in &self.pages {
+            let owned = page
+                .outcome
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            result = control::finish(result, owned);
+        }
+        self.pages.clear();
+        self.budget = None;
+        control::finish(result, self.waited.take().unwrap_or(Ok(())))
     }
-    control::finish(result, waited)
 }
 
 pub(super) fn report_cleanup(result: Result<()>) {

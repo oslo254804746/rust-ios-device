@@ -69,6 +69,10 @@ async fn released(child: &mut Child) {
     assert!(argument["WIRSenderKey"]
         .as_string()
         .is_some_and(|sender| !sender.is_empty()));
+    released_after_close(child).await;
+}
+
+async fn released_after_close(child: &mut Child) {
     no_more_requests(&mut child.peer).await;
     assert!(child.source.dropped.load(Ordering::SeqCst));
     assert_eq!(child.source.calls.load(Ordering::SeqCst), 1);
@@ -430,4 +434,134 @@ async fn lifecycle_cdp_browser_child_supervisor_joins_all_after_panic_or_missing
         }
         closed(&mut child).await;
     }
+}
+
+async fn interrupted_cleanup(failure: bool) -> (Child, Child, browser_tasks::BrowserPageCleanup) {
+    let mut finished = opened().await;
+    let mut pending = opened().await;
+    if failure {
+        finished.source.flush_fault.store(1, Ordering::SeqCst);
+        invalid_target(&mut finished).await;
+        bounded(async {
+            while !finished.owner.as_ref().unwrap().task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+    pending.source.flush_fault.store(2, Ordering::SeqCst);
+    let joined = finished.owner.as_ref().unwrap().outcome.clone();
+    let mut cleanup = browser_tasks::BrowserPageCleanup::new(
+        vec![finished.owner.take().unwrap()],
+        Duration::from_millis(100),
+    );
+    cleanup.push(pending.owner.take().unwrap());
+    let mut stop = Box::pin(cleanup.stop());
+    bounded(async {
+        tokio::select! {
+            result = &mut stop => panic!("pending cleanup unexpectedly ended: {result:?}"),
+            _ = async {
+                let frame = read_frame(&mut pending.peer).await.unwrap().unwrap();
+                assert_eq!(frame["__selector"].as_string(), Some("_rpc_forwardDidClose:"));
+                while !joined.lock().unwrap().is_joined() {
+                    tokio::task::yield_now().await;
+                }
+            } => {},
+        }
+    })
+    .await;
+    drop(stop);
+    assert!(joined.lock().unwrap().is_joined());
+    assert!(finished.source.dropped.load(Ordering::SeqCst));
+    assert!(!pending.source.dropped.load(Ordering::SeqCst));
+    (finished, pending, cleanup)
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_borrowed_stop_resumes_after_a_completed_join() {
+    let (mut finished, mut pending, mut cleanup) = interrupted_cleanup(false).await;
+    let error = bounded(cleanup.stop()).await.unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(error
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    closed(&mut finished).await;
+    released_after_close(&mut pending).await;
+    // Already taken outcomes are never polled again by repeat stop.
+    bounded(cleanup.stop()).await.unwrap();
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_borrowed_stop_retains_completed_native_dual_errors() {
+    let (mut finished, mut pending, mut cleanup) = interrupted_cleanup(true).await;
+    let error = bounded(cleanup.stop()).await.unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Protocol
+    );
+    assert!(error.chain().any(|source| source.is::<serde_json::Error>()));
+    let outer = error
+        .downcast_ref::<super::super::tasks::control::CleanupFailure>()
+        .unwrap();
+    assert!(outer
+        .cleanup
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    let child = outer
+        .primary
+        .downcast_ref::<super::super::tasks::control::CleanupFailure>()
+        .unwrap();
+    assert!(child.cleanup.chain().any(|source| source
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|native| native.kind() == std::io::ErrorKind::PermissionDenied)));
+    closed(&mut finished).await;
+    released_after_close(&mut pending).await;
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_reparenting_keeps_issued_expiry_during_abort_join() {
+    let mut child = opened().await;
+    child.source.flush_fault.store(2, Ordering::SeqCst);
+    let progress = child.owner.as_ref().unwrap().outcome.clone();
+    let mut cleanup = browser_tasks::BrowserPageCleanup::new(
+        vec![child.owner.take().unwrap()],
+        Duration::from_millis(50),
+    );
+    let mut stop = Box::pin(cleanup.stop());
+    bounded(async {
+        tokio::select! {
+            biased;
+            _ = async {
+                while !progress.lock().unwrap().is_aborted() {
+                    tokio::task::yield_now().await;
+                }
+            } => {},
+            result = &mut stop => panic!("abort join must remain interruptible: {result:?}"),
+        }
+    })
+    .await;
+    drop(stop);
+    assert!(!progress.lock().unwrap().is_joined());
+    let (pages, issued) = cleanup.into_remaining();
+    assert!(issued
+        .as_ref()
+        .unwrap_err()
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    let error = super::super::tasks::control::finish(
+        issued,
+        bounded(stop_browser_pages(pages, CDP_PAGE_CLEANUP_TIMEOUT)).await,
+    )
+    .unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(error
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    released(&mut child).await;
 }
