@@ -1,6 +1,6 @@
 //! Command grammar and dispatch; workflows and server owners do the work.
 use super::cdp::run_cdp_server;
-use super::tasks::{run_eval, run_js_shell, run_launch, run_opened_tabs};
+use super::tasks::{finite_duration, run_eval, run_js_shell, run_launch, run_opened_tabs};
 use super::webdriver::run_selenium_server;
 use super::workflows::duration_from_secs;
 use crate::access::{HttpBoundaryArgs, ServerAccessArgs};
@@ -86,20 +86,17 @@ pub(super) enum WebInspectorSub {
 }
 
 impl WebInspectorCmd {
-    /// Long-lived debug listeners must pin an explicit selector. Resolving the
-    /// global default here would scan devices before validating their policy.
+    /// Finite commands own default selection in their total/signal scope;
+    /// debug listeners still require an explicit selector before server setup.
+    /// Interactive shell selection remains on its existing path for now.
     pub(crate) fn needs_default_udid(&self) -> bool {
-        !matches!(
-            self.sub,
-            WebInspectorSub::Cdp { .. } | WebInspectorSub::Selenium { .. }
-        )
+        matches!(self.sub, WebInspectorSub::JsShell { .. })
     }
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
-        let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
         match self.sub {
             WebInspectorSub::OpenedTabs { timeout } => {
-                run_opened_tabs(&udid, duration_from_secs(timeout)?, json_output).await
+                run_opened_tabs(udid, finite_duration(timeout)?, json_output).await
             }
             WebInspectorSub::Eval {
                 expression,
@@ -109,12 +106,12 @@ impl WebInspectorCmd {
                 timeout,
             } => {
                 run_eval(
-                    &udid,
+                    udid,
                     app_id,
                     bundle_id.unwrap_or_else(|| SAFARI_BUNDLE_ID.to_string()),
                     &page_id,
                     &expression,
-                    duration_from_secs(timeout)?,
+                    finite_duration(timeout)?,
                     json_output,
                 )
                 .await
@@ -125,10 +122,10 @@ impl WebInspectorCmd {
                 timeout,
             } => {
                 run_launch(
-                    &udid,
+                    udid,
                     &bundle_id,
                     url.as_deref(),
-                    duration_from_secs(timeout)?,
+                    finite_duration(timeout)?,
                     json_output,
                 )
                 .await
@@ -141,6 +138,7 @@ impl WebInspectorCmd {
                 continue_on_error,
                 timeout,
             } => {
+                let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
                 run_js_shell(
                     &udid,
                     url.as_deref(),
@@ -160,6 +158,7 @@ impl WebInspectorCmd {
                 access,
                 boundary,
             } => {
+                let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
                 run_cdp_server(
                     &udid,
                     host,
@@ -177,6 +176,7 @@ impl WebInspectorCmd {
                 access,
                 boundary,
             } => {
+                let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
                 run_selenium_server(
                     &udid,
                     host,

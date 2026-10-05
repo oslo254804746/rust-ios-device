@@ -1,12 +1,11 @@
 //! CLI one-shot and interactive task orchestration. Core owns service/session state.
-use super::connection::{connect_webinspector, connect_webinspector_with_timeout};
-use super::shell::{print_runtime_evaluation_human, run_js_shell_loop};
+use super::connection::connect_webinspector_with_timeout;
+use super::shell::run_js_shell_loop;
 use super::workflows::{
     is_inspectable_page_type, page_matches_selector, page_type_name, remaining_webinspector_time,
     runtime_evaluate_params, runtime_evaluation_error, wait_for_application,
     wait_for_inspectable_page, webinspector_deadline,
 };
-use super::SESSION_CLEANUP_MAX;
 use anyhow::{anyhow, Context, Result};
 use ios_core::webinspector::{
     ApplicationPage, AutomationSession, InspectorSession, WebInspectorClient, RSD_SERVICE_NAME,
@@ -15,6 +14,9 @@ use ios_core::webinspector::{
 use serde::Serialize;
 use serde_json::json;
 use std::time::Duration;
+
+mod control;
+mod oneshot;
 
 #[derive(Debug, Serialize)]
 struct OpenedTabRow {
@@ -47,40 +49,20 @@ struct LaunchResult {
     uses_rsd: bool,
 }
 
+pub(super) fn finite_duration(seconds: f64) -> Result<Duration> {
+    control::finite_duration(seconds)
+}
+
 pub(super) async fn run_opened_tabs(
-    udid: &str,
+    udid: Option<String>,
     timeout: Duration,
     json_output: bool,
 ) -> Result<()> {
-    let (_device, stream, _use_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(timeout).await?;
-    let pages = client.open_application_pages(timeout).await?;
-    let rows = pages.into_iter().map(opened_tab_row).collect::<Vec<_>>();
-
-    if json_output {
-        crate::output::outln!("{}", serde_json::to_string_pretty(&rows)?);
-    } else if rows.is_empty() {
-        crate::output::outln!("No inspectable pages reported");
-    } else {
-        for row in rows {
-            crate::output::outln!(
-                "{} [{}] page={} {} {}",
-                row.application_name,
-                row.bundle_identifier,
-                row.page_id,
-                row.title.as_deref().unwrap_or("<no title>"),
-                row.url.as_deref().unwrap_or("<no url>")
-            );
-            crate::output::outln!("  app_id: {}", row.application_id);
-            crate::output::outln!("  type: {}", row.page_type);
-        }
-    }
-    Ok(())
+    oneshot::run_command(udid, oneshot::Command::Tabs, timeout, json_output).await
 }
 
 pub(super) async fn run_eval(
-    udid: &str,
+    udid: Option<String>,
     app_id: Option<String>,
     bundle_id: String,
     page_selector: &str,
@@ -88,168 +70,46 @@ pub(super) async fn run_eval(
     timeout: Duration,
     json_output: bool,
 ) -> Result<()> {
-    let (_device, stream, _use_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client.start_preserving_errors(timeout).await?;
-    client.open_application_pages(timeout).await?;
-
-    let application_id = match app_id {
-        Some(app_id) => app_id,
-        None => client
-            .application_by_bundle(&bundle_id)
-            .map(|application| application.id.clone())
-            .ok_or_else(|| anyhow!("bundle '{bundle_id}' is not currently inspectable"))?,
-    };
-
-    let page = client
-        .application_pages(&application_id)
-        .into_iter()
-        .flat_map(|pages| pages.values())
-        .find(|page| {
-            is_inspectable_page_type(&page.page_type) && page_matches_selector(page, page_selector)
-        })
-        .cloned()
-        .ok_or_else(|| {
-            anyhow!(
-                "inspectable page {page_selector} was not found under application '{application_id}'"
-            )
-        })?;
-    let page_id = page.id;
-
-    let mut session = InspectorSession::new(application_id.clone(), page_id);
-    session.attach(&mut client, true, timeout).await?;
-    let response = session
-        .send_command_and_wait(
-            &mut client,
-            "Runtime.evaluate",
-            runtime_evaluate_params(expression),
-            timeout,
-        )
-        .await?;
-    if let Some(error) = runtime_evaluation_error(&response) {
-        return Err(anyhow!("webinspector evaluate error: {error}"));
-    }
-
-    if json_output {
-        crate::output::outln!("{}", serde_json::to_string_pretty(&response)?);
-    } else {
-        print_runtime_evaluation_human(&response)?;
-    }
-    Ok(())
+    oneshot::run_command(
+        udid,
+        oneshot::Command::Eval {
+            app_id,
+            bundle_id,
+            page_selector,
+            expression,
+        },
+        timeout,
+        json_output,
+    )
+    .await
 }
 
 pub(super) async fn run_launch(
-    udid: &str,
+    udid: Option<String>,
     bundle_id: &str,
     url: Option<&str>,
     timeout: Duration,
     json_output: bool,
 ) -> Result<()> {
-    let operation = run_launch_inner(udid, bundle_id, url, timeout);
-    tokio::pin!(operation);
-    let result =
-        launch_result_with_signal(&mut operation, tokio::signal::ctrl_c(), timeout).await?;
-
-    if json_output {
-        crate::output::outln!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        crate::output::outln!("Launched {} (pid {})", result.bundle_id, result.pid);
-        crate::output::outln!("  page: {}", result.page_id);
-        crate::output::outln!("  url: {}", result.url.as_deref().unwrap_or("<no url>"));
-        crate::output::outln!("  title: {}", result.title);
-        crate::output::outln!("  session: {}", result.session_id);
-        if let Some(connection_id) = result.automation_connection_id.as_deref() {
-            crate::output::outln!("  automation connection: {connection_id}");
-        }
-        crate::output::outln!("  service: {}", result.service_name);
-    }
-    Ok(())
+    oneshot::run_command(
+        udid,
+        oneshot::Command::Launch { bundle_id, url },
+        timeout,
+        json_output,
+    )
+    .await
 }
 
-/// The caller owns the operation future and its device guard. Selecting a
-/// successful local signal records cancellation, without claiming a remote ACK.
+// The original source/cancellation assertions exercise the same new driver.
+#[cfg(test)]
 async fn launch_result_with_signal<T>(
     operation: impl std::future::Future<Output = Result<T>>,
     signal: impl std::future::Future<Output = std::io::Result<()>>,
     timeout: Duration,
 ) -> Result<T> {
-    tokio::select! {
-        result = tokio::time::timeout(timeout, operation) => {
-            result.with_context(|| format!("webinspector launch timed out after {timeout:?}"))?
-        }
-        signal = signal => {
-            signal.context("failed waiting for Ctrl+C")?;
-            Err(anyhow::Error::new(ios_core::OperationCancelled::new())
-                .context("webinspector launch cancelled"))
-        }
-    }
-}
-
-async fn run_launch_inner(
-    udid: &str,
-    bundle_id: &str,
-    url: Option<&str>,
-    timeout: Duration,
-) -> Result<LaunchResult> {
-    let deadline = webinspector_deadline(timeout)?;
-    let (device, stream, uses_rsd) = connect_webinspector(udid).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client
-        .start_preserving_errors(remaining_webinspector_time(deadline, timeout)?)
-        .await?;
-    client.request_application_launch(bundle_id).await?;
-    let application = wait_for_application(&mut client, bundle_id, deadline, timeout).await?;
-    let mut automation = AutomationSession::new(
-        application.id.clone(),
-        application.bundle_identifier.clone(),
-    );
-    automation
-        .attach(&mut client, remaining_webinspector_time(deadline, timeout)?)
-        .await?;
-    automation.start_session(&mut client).await?;
-    if let Some(url) = url.filter(|url| !url.is_empty()) {
-        automation.navigate(&mut client, url).await?;
-    }
-    let current_url = automation.current_url(&mut client).await?;
-    let title = automation.get_title(&mut client).await?;
-    let page = client
-        .page(&application.id, automation.page_id())
-        .cloned()
-        .ok_or_else(|| anyhow!("automation page {} disappeared", automation.page_id()))?;
-    let result = LaunchResult {
-        bundle_id: application.bundle_identifier,
-        application_id: application.id,
-        application_name: application.name,
-        pid: application.pid,
-        page_id: page.id,
-        page_key: page.listing_key,
-        page_type: page_type_name(&page.page_type),
-        url: current_url.or(page.url),
-        title,
-        session_id: automation.session_id().to_string(),
-        inspector_connection_id: client.connection_id().to_string(),
-        automation_connection_id: page.automation_connection_id,
-        service_name: if uses_rsd {
-            RSD_SERVICE_NAME
-        } else {
-            SERVICE_NAME
-        },
-        uses_rsd,
-    };
-    // Closing the browsing context is best effort. The result has already been
-    // collected, and a device disconnect should not turn a successful launch
-    // into a second attempt or another launch request.
-    // Cleanup must not consume the operation deadline: the launch result is
-    // already complete, and disconnecting the service is also safe cleanup.
-    if let Ok(remaining) = remaining_webinspector_time(deadline, timeout) {
-        let _ = tokio::time::timeout(
-            remaining.min(SESSION_CLEANUP_MAX),
-            automation.stop_session(&mut client),
-        )
-        .await;
-    }
-    drop(device);
-    Ok(result)
+    control::Budget::new(timeout, "launch")?
+        .drive(operation, signal)
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]

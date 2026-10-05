@@ -164,16 +164,23 @@ fn print_shell_error(expression: &str, error: &str, json_output: bool) -> Result
 }
 
 pub(super) fn print_runtime_evaluation_human(value: &JsonValue) -> Result<()> {
+    crate::output::outln!("{}", runtime_evaluation_human(value)?);
+    Ok(())
+}
+
+pub(super) fn runtime_evaluation_human(value: &JsonValue) -> Result<String> {
     if let Some(value) = runtime_remote_object(value).and_then(|result| result.get("value")) {
-        crate::output::outln!("{}", value.as_str().unwrap_or(&value.to_string()));
+        Ok(value
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| value.to_string()))
     } else if let Some(description) =
         runtime_remote_object(value).and_then(|result| result.get("description"))
     {
-        crate::output::outln!("{description}");
+        Ok(description.to_string())
     } else {
-        crate::output::outln!("{}", serde_json::to_string_pretty(value)?);
+        Ok(serde_json::to_string_pretty(value)?)
     }
-    Ok(())
 }
 
 #[cfg(test)]

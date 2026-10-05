@@ -92,17 +92,20 @@ class ClosedOutputContracts(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned process group")
 class NotificationAdmissionContracts(unittest.TestCase):
     family = "notify"
+    error_class = "invalid_input"
     def probe(self, prefix="", diagnostic="'error:synthetic'"):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "owned-notification-admission-fixture"
             body = ("import json, os, socket, sys\n" + prefix +
-                    "print(json.dumps({'schema_version':1, 'error':{'class':'invalid_input', "
+                    "print(json.dumps({'schema_version':1, 'error':{'class':" + repr(self.error_class) + ", "
                     "'phase':" + repr(self.family) + ", 'exit_code':1, 'effects':'unknown', "
                     "'confirmation_required':False, 'diagnostic':" + diagnostic + "}}), file=sys.stderr)\n"
                     "sys.exit(1)\n")
             binary.write_text("#!" + sys.executable + "\n" + body)
             binary.chmod(0o700)
-            return compatibility.cli_notification_deadline_error(binary, "listen" if self.family == "companion" else "wait", 0, family=self.family)
+            subcommand = ("opened-tabs" if self.family == "webinspector" else
+                          "listen" if self.family == "companion" else "wait")
+            return compatibility.cli_notification_deadline_error(binary, subcommand, 0, family=self.family)
 
     def test_expected_error_without_contact_is_accepted(self):
         report = self.probe()
@@ -130,6 +133,19 @@ class NotificationAdmissionContracts(unittest.TestCase):
 
 class CompanionAdmissionContracts(NotificationAdmissionContracts):
     family = "companion"
+
+
+class WebInspectorAdmissionContracts(NotificationAdmissionContracts):
+    family = "webinspector"
+    error_class = "timeout"
+
+    def test_zero_budget_does_not_accept_an_invalid_input_class(self):
+        self.error_class = "invalid_input"
+        report = self.probe()
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["contract"])
+        self.assertEqual(report["device_connections"], 0)
+        self.assertTrue(report["cleanup_complete"])
 
 
 if __name__ == "__main__":

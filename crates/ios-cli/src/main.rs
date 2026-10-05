@@ -923,7 +923,9 @@ mod tests {
                 .is_none());
         }
         let tabs = Cli::try_parse_from(["ios", "webinspector", "opened-tabs"]).unwrap();
-        assert!(command_needs_default_udid(&tabs.command));
+        // Finite WebInspector commands now own default selection under their
+        // total budget/signal; main must not do an unbounded discovery first.
+        assert!(!command_needs_default_udid(&tabs.command));
     }
 
     #[test]

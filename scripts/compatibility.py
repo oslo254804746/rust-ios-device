@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 from diagnostics import ROOT, assess, capture, secret_variants
 from regression import SafeArgumentParser
@@ -170,6 +171,14 @@ def cli_help_closed_output(binary, flag, *, machine=False):
     return report
 
 
+def webinspector_arguments(subcommand):
+    if subcommand == "eval":
+        return ["webinspector", "eval", "6*7", "--page-id", "7"]
+    if subcommand in {"opened-tabs", "launch"}:
+        return ["webinspector", subcommand]
+    raise ValueError("fixture-webinspector-command")
+
+
 def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=True, machine=True, family="notify"):
     """Reject finite timeout input before selection/setup; trap any device contact."""
     private_device = b"synthetic-notification-private-device"
@@ -185,12 +194,12 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
             command += ["--udid", private_device.decode()]
         else:
             env.pop("IOS_UDID", None)
-        command += [family, subcommand]
+        command += webinspector_arguments(subcommand) if family == "webinspector" else [family, subcommand]
         if family == "companion" and subcommand in {"forward", "stop"}:
             command += ["42"]
         elif family == "notify" and subcommand != "springboard":
             command += [private_name.decode()]
-        command += ["--timeout", str(timeout)]
+        command += ["--timeout=" + str(timeout)] if family == "webinspector" else ["--timeout", str(timeout)]
         result = capture(command, env=env, timeout=5)
         trap.setblocking(False)
         device_connections = 0
@@ -202,8 +211,9 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
             connection.close()
             device_connections += 1
     report = assess(result, secret_variants(private_device) | secret_variants(private_name), 1)
+    error_class = "timeout" if family == "webinspector" and timeout == 0 else "invalid_input"
     if machine:
-        contract = machine_error_contract(result, error_class="invalid_input", phase=family,
+        contract = machine_error_contract(result, error_class=error_class, phase=family,
                                           exit_code=1, effects="unknown")
     else:
         contract = (not result.stdout and result.stderr.startswith((family + " failed:").encode()) and
@@ -214,7 +224,7 @@ def cli_notification_deadline_error(binary, subcommand, timeout, *, explicit=Tru
     return report
 
 
-def cli_notification_empty_default(binary, *, family="notify"):
+def cli_notification_empty_default(binary, *, family="notify", subcommand="opened-tabs"):
     """Serve one empty discovery reply to a valid default-selection command."""
     valid, errors = [], []
     with socket.socket() as listener:
@@ -245,7 +255,8 @@ def cli_notification_empty_default(binary, *, family="notify"):
         env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
         private_name = b"synthetic-notification-private-name"
         try:
-            command = (["notify", "wait", private_name.decode()] if family == "notify" else
+            command = (webinspector_arguments(subcommand) if family == "webinspector" else
+                       ["notify", "wait", private_name.decode()] if family == "notify" else
                        ["companion", "listen"])
             result = capture([str(binary), "--error-format=json", *command, "--timeout", "1"],
                              env=env, timeout=5)
@@ -272,7 +283,63 @@ def cli_notification_empty_default(binary, *, family="notify"):
     return report
 
 
-def interrupted_launch(binary, *, notification_setup=False, companion_setup=False):
+def cli_webinspector_stalled_default(binary, subcommand):
+    """Own one unanswered ListDevices socket; require total expiry and release."""
+    valid, errors = [], []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(3)
+
+        def serve():
+            try:
+                with listener.accept()[0] as connection:
+                    connection.settimeout(3)
+                    length, version, kind, _tag = struct.unpack("<IIII", read_exact(connection, 16))
+                    if not 16 < length <= 16384 or version != 1 or kind != 8:
+                        raise ValueError("fixture-request")
+                    request = plistlib.loads(read_exact(connection, length - 16))
+                    if request.get("MessageType") != "ListDevices":
+                        raise ValueError("fixture-operation")
+                    valid.append(connection.recv(1) == b"")
+            except Exception:
+                errors.append(True)
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        env = os.environ.copy()
+        env.pop("IOS_UDID", None)
+        env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
+        started = time.monotonic()
+        try:
+            result = capture([str(binary), "--error-format=json", *webinspector_arguments(subcommand),
+                              "--timeout", "0.2"], env=env, timeout=3)
+        finally:
+            worker.join(timeout=3)
+        elapsed = time.monotonic() - started
+        if worker.is_alive() or errors or valid != [True]:
+            raise ValueError("fixture-server-failed")
+        listener.setblocking(False)
+        unexpected_connections = 0
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except BlockingIOError:
+                break
+            connection.close()
+            unexpected_connections += 1
+    report = assess(result, secret_variants(b"synthetic-private-cancel-device"), 1)
+    report["contract"] = (machine_error_contract(result, error_class="timeout", phase="webinspector",
+                                                exit_code=1, effects="unknown") and
+                          elapsed < 2 and unexpected_connections == 0)
+    report["list_requests"] = len(valid)
+    report["peer_eof"] = valid == [True]
+    report["unexpected_connections"] = unexpected_connections
+    report["passed"] = report["passed"] and report["contract"]
+    return report
+
+
+def interrupted_launch(binary, *, notification_setup=False, companion_setup=False, webinspector_setup=None):
     """Interrupt only an owned CLI blocked on its sole ListDevices endpoint."""
     process = None
     try:
@@ -282,7 +349,11 @@ def interrupted_launch(binary, *, notification_setup=False, companion_setup=Fals
             listener.settimeout(3)
             env = os.environ.copy()
             env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + str(listener.getsockname()[1])
-            if companion_setup:
+            if webinspector_setup is not None:
+                env.pop("IOS_UDID", None)
+                command = [str(binary), "--error-format=json", *webinspector_arguments(webinspector_setup),
+                           "--timeout", "5"]
+            elif companion_setup:
                 env.pop("IOS_UDID", None)
                 command = [str(binary), "--error-format=json", "companion", "listen", "--timeout", "5"]
             elif notification_setup:
@@ -322,10 +393,11 @@ def interrupted_launch(binary, *, notification_setup=False, companion_setup=Fals
                 process.wait(timeout=0.5)
 
 
-def cli_launch_cancellation(binary, *, notification_setup=False, companion_setup=False):
+def cli_launch_cancellation(binary, *, notification_setup=False, companion_setup=False, webinspector_setup=None):
     flag = ("--interrupt-companion-setup" if companion_setup else
             "--interrupt-notification-setup" if notification_setup else "--interrupt-launch")
-    result = capture([sys.executable, str(Path(__file__).resolve()), flag,
+    probe = (["--interrupt-webinspector-setup", webinspector_setup] if webinspector_setup is not None else [flag])
+    result = capture([sys.executable, str(Path(__file__).resolve()), *probe,
                       "--binary", str(binary)], timeout=6)
     report = assess(result, secret_variants(b"synthetic-private-cancel-device") |
                     secret_variants(b"synthetic-notification-private-name"), 0)
@@ -351,14 +423,17 @@ def main():
     parser.add_argument("--interrupt-launch", action="store_true", help="internal owned SIGINT probe")
     parser.add_argument("--interrupt-notification-setup", action="store_true", help="internal owned notification SIGINT probe")
     parser.add_argument("--interrupt-companion-setup", action="store_true", help="internal owned Companion SIGINT probe")
+    parser.add_argument("--interrupt-webinspector-setup", choices=["opened-tabs", "eval", "launch"],
+                        help="internal owned finite WebInspector default-selection SIGINT probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
-    if args.interrupt_launch or args.interrupt_notification_setup or args.interrupt_companion_setup:
+    if args.interrupt_launch or args.interrupt_notification_setup or args.interrupt_companion_setup or args.interrupt_webinspector_setup:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
             return 1
         return 0 if interrupted_launch(args.binary, notification_setup=args.interrupt_notification_setup,
-                                       companion_setup=args.interrupt_companion_setup) else 1
+                                       companion_setup=args.interrupt_companion_setup,
+                                       webinspector_setup=args.interrupt_webinspector_setup) else 1
     if args.closed_output:
         if not sys.platform.startswith("linux"):
             print('{"status":"NOT_RUN","reason":"Linux owned process group required"}')
@@ -388,10 +463,24 @@ def main():
                 reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout, explicit=explicit, family="companion")
     for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
         reports[f"companion-listen-{kind}-human"] = cli_notification_deadline_error(args.binary, "listen", timeout, machine=False, family="companion")
+    for subcommand in ["opened-tabs", "eval", "launch"]:
+        reports[f"webinspector-{subcommand}-empty-default"] = cli_notification_empty_default(
+            args.binary, family="webinspector", subcommand=subcommand)
+        reports[f"webinspector-{subcommand}-stalled-default"] = cli_webinspector_stalled_default(args.binary, subcommand)
+        for kind, timeout in [("zero", 0), ("clock-overflow", 1e19), ("duration-overflow", sys.float_info.max)]:
+            for explicit in [False, True]:
+                key = f"webinspector-{subcommand}-{kind}-{'explicit' if explicit else 'default'}-json"
+                reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout,
+                                                               explicit=explicit, family="webinspector")
+        reports[f"webinspector-{subcommand}-overflow-human"] = cli_notification_deadline_error(
+            args.binary, subcommand, 1e19, machine=False, family="webinspector")
     if sys.platform.startswith("linux"):
         reports["launch-cancel-json-error"] = cli_launch_cancellation(args.binary)
         reports["notification-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, notification_setup=True)
         reports["companion-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, companion_setup=True)
+        for subcommand in ["opened-tabs", "eval", "launch"]:
+            reports[f"webinspector-{subcommand}-default-cancel-json-error"] = cli_launch_cancellation(
+                args.binary, webinspector_setup=subcommand)
         for human in (False, True):
             reports[f"list-{'human' if human else 'json'}-closed-output"] = cli_list(args.binary, human=human, close_stdout=True)
         for flag in ["help", "version"]:
