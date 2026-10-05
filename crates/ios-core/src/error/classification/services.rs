@@ -221,6 +221,10 @@ pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
         });
     }
     #[cfg(feature = "webinspector")]
+    if error.is::<crate::webinspector::WebInspectorLimit>() {
+        return Some(ErrorClass::ResourceLimit);
+    }
+    #[cfg(feature = "webinspector")]
     protocol_class!(error, crate::webinspector::WebInspectorError, {
         Kind::Timeout(_) => ErrorClass::Timeout,
         // Existing startup probes can flatten a timeout/reset into Disabled.

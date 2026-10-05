@@ -16,7 +16,12 @@ pub use inspector::InspectorSession;
 mod automation;
 pub use automation::{AutomationSession, By};
 
+mod retained;
+#[cfg(test)]
 mod timing;
+
+#[cfg(test)]
+mod lifecycle_session_tests;
 
 pub const SERVICE_NAME: &str = "com.apple.webinspector";
 pub const RSD_SERVICE_NAME: &str = "com.apple.webinspector.shim.remote";
@@ -45,6 +50,23 @@ struct WebInspectorTimeout {
 }
 
 crate::redaction::error_debug!(WebInspectorTimeout);
+
+#[derive(thiserror::Error)]
+#[error("WebInspector {resource} exceeded the local limit of {limit}")]
+pub(crate) struct WebInspectorLimit {
+    resource: &'static str,
+    limit: u64,
+}
+
+crate::redaction::error_debug!(WebInspectorLimit);
+
+fn local_limit(resource: &'static str, limit: u64) -> WebInspectorError {
+    native_error(
+        std::io::ErrorKind::Other,
+        "retain WebInspector state",
+        WebInspectorLimit { resource, limit },
+    )
+}
 
 impl WebInspectorError {
     /// The budget reported by a WebInspector-issued deadline or the legacy

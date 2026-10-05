@@ -1,11 +1,12 @@
 //! Inspector attachment, Target transport envelopes and response state.
 //! Operates on a supplied WebInspector client; no device dialing or HTTP.
 
-use super::timing::{deadline_after, remaining_time};
+use super::client::{await_operation, WebInspectorOperation};
+use super::retained::admit_id;
 use super::{WebInspectorClient, WebInspectorError, WebInspectorEvent};
 use serde_json::{json, Value as JsonValue};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -14,8 +15,8 @@ pub struct InspectorSession {
     page_id: u64,
     session_id: String,
     target_id: Option<String>,
-    next_transport_id: u64,
-    next_command_id: u64,
+    next_transport_id: Option<u64>,
+    next_command_id: Option<u64>,
 }
 
 impl InspectorSession {
@@ -37,8 +38,8 @@ impl InspectorSession {
             page_id,
             session_id: session_id.into(),
             target_id: None,
-            next_transport_id: 1,
-            next_command_id: 1,
+            next_transport_id: Some(1),
+            next_command_id: Some(1),
         }
     }
 
@@ -58,26 +59,16 @@ impl InspectorSession {
         self.target_id.as_deref()
     }
 
+    /// One total budget covers setup and target discovery, capped by the client
+    /// operation budget. An abandoned committed setup invalidates the client.
     pub async fn attach<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         client: &mut WebInspectorClient<S>,
         wait_for_target: bool,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, true),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "attach WebInspector session", error)
-        })??;
-        if wait_for_target {
-            self.wait_for_target(client, deadline, timeout_duration)
-                .await?;
-        }
-        Ok(())
+        self.attach_with_pause(client, wait_for_target, timeout_duration, true)
+            .await
     }
 
     /// Attach a CDP debugger without pausing the page as soon as it opens.
@@ -87,24 +78,32 @@ impl InspectorSession {
         wait_for_target: bool,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.send_socket_setup(&self.session_id, &self.application_id, self.page_id, false),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(
-                timeout_duration,
-                "attach unpaused WebInspector session",
-                error,
-            )
-        })??;
-        if wait_for_target {
-            self.wait_for_target(client, deadline, timeout_duration)
+        self.attach_with_pause(client, wait_for_target, timeout_duration, false)
+            .await
+    }
+
+    async fn attach_with_pause<S: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        client: &mut WebInspectorClient<S>,
+        wait_for_target: bool,
+        timeout_duration: Duration,
+        pause: bool,
+    ) -> Result<(), WebInspectorError> {
+        let deadline = client.deadline(Some(timeout_duration))?;
+        let mut operation = WebInspectorOperation::with_deadline(client, deadline)?;
+        let result = await_operation(deadline, "attach WebInspector session", async {
+            operation
+                .client
+                .send_socket_setup(&self.session_id, &self.application_id, self.page_id, pause)
                 .await?;
-        }
-        Ok(())
+            operation.commit();
+            if wait_for_target {
+                self.wait_for_target(&mut operation).await?;
+            }
+            Ok(())
+        })
+        .await;
+        operation.finish(result)
     }
 
     pub async fn next_raw_message<S: AsyncRead + AsyncWrite + Unpin>(
@@ -128,6 +127,7 @@ impl InspectorSession {
         method: &str,
         params: JsonValue,
     ) -> Result<u64, WebInspectorError> {
+        client.deadline(None)?;
         let params = match params {
             JsonValue::Object(_) => params,
             JsonValue::Null => JsonValue::Object(Default::default()),
@@ -138,12 +138,21 @@ impl InspectorSession {
             }
         };
 
-        let command_id = self.next_command_id;
-        self.next_command_id += 1;
+        let command_id = admit_id(self.next_command_id)?;
+        // Admit both counters before consuming either. MAX is valid once;
+        // None records exhaustion and prevents wraparound or identifier reuse.
+        let transport_id = self
+            .target_id
+            .as_ref()
+            .map(|_| admit_id(self.next_transport_id))
+            .transpose()?;
+        self.next_command_id = command_id.checked_add(1);
+        if let Some(transport_id) = transport_id {
+            self.next_transport_id = transport_id.checked_add(1);
+        }
 
         let payload = if let Some(target_id) = &self.target_id {
-            let transport_id = self.next_transport_id;
-            self.next_transport_id += 1;
+            let transport_id = transport_id.expect("target transport was admitted");
             JsonValue::Object(serde_json::Map::from_iter([
                 ("id".to_string(), JsonValue::from(transport_id)),
                 (
@@ -186,6 +195,11 @@ impl InspectorSession {
         Ok(command_id)
     }
 
+    /// Send and correlate a response under one total deadline. Cancellation or
+    /// failure after sending invalidates the client, preventing late replies
+    /// from being reused by another session. Matched business errors remain
+    /// response objects. Unrelated events are restored in order within local
+    /// count/compact-JSON byte limits.
     pub async fn send_command_and_wait<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         client: &mut WebInspectorClient<S>,
@@ -193,17 +207,21 @@ impl InspectorSession {
         params: JsonValue,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        let command_id = timeout(
-            remaining_time(deadline, timeout_duration)?,
-            self.send_command(client, method, params),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "send WebInspector command", error)
-        })??;
-        self.wait_for_response(client, command_id, timeout_duration)
-            .await
+        let deadline = client.deadline(Some(timeout_duration))?;
+        let mut operation = WebInspectorOperation::with_deadline(client, deadline)?;
+        let result = await_operation(deadline, "execute WebInspector command", async {
+            let command_id = self.send_command(operation.client, method, params).await?;
+            operation.commit();
+            self.wait_for_response(&mut operation, command_id).await
+        })
+        .await;
+        // Only a matched response completes the committed wire obligation.
+        // Inspector returns explicit business errors as response objects.
+        if result.is_ok() {
+            operation.finish_response(result)
+        } else {
+            operation.finish(result)
+        }
     }
 
     pub async fn send_bridge_message<S: AsyncRead + AsyncWrite + Unpin>(
@@ -211,9 +229,10 @@ impl InspectorSession {
         client: &mut WebInspectorClient<S>,
         message: &JsonValue,
     ) -> Result<(), WebInspectorError> {
+        client.deadline(None)?;
         let payload = if let Some(target_id) = &self.target_id {
-            let transport_id = self.next_transport_id;
-            self.next_transport_id += 1;
+            let transport_id = admit_id(self.next_transport_id)?;
+            self.next_transport_id = transport_id.checked_add(1);
             json!({
                 "id": transport_id,
                 "method": "Target.sendMessageToTarget",
@@ -271,71 +290,46 @@ impl InspectorSession {
 
     async fn wait_for_target<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
-        client: &mut WebInspectorClient<S>,
-        deadline: Instant,
-        timeout_duration: Duration,
+        operation: &mut WebInspectorOperation<'_, S>,
     ) -> Result<(), WebInspectorError> {
-        let mut skipped = Vec::new();
         while self.target_id.is_none() {
-            let event = match client
-                .next_socket_data_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await
-            {
-                Ok(event) => event,
-                Err(error) => {
-                    client.restore_pending_events_front(skipped);
-                    return Err(error);
-                }
-            };
+            let event = operation.client.next_socket_data().await?;
             let WebInspectorEvent::SocketData { message, .. } = &event else {
                 unreachable!("next_socket_data_with_timeout only returns socket-data events");
             };
             self.observe_message(message)?;
             if self.target_id.is_none() {
-                skipped.push(event);
+                operation.preserve(event)?;
+                tokio::task::yield_now().await;
             }
         }
-        client.restore_pending_events_front(skipped);
         Ok(())
     }
 
     async fn wait_for_response<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
-        client: &mut WebInspectorClient<S>,
+        operation: &mut WebInspectorOperation<'_, S>,
         command_id: u64,
-        timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        let mut skipped = Vec::new();
         loop {
-            let event = match client
-                .next_socket_data_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await
-            {
-                Ok(event) => event,
-                Err(error) => {
-                    client.restore_pending_events_front(skipped);
-                    return Err(error);
-                }
-            };
+            let event = operation.client.next_socket_data().await?;
             let WebInspectorEvent::SocketData { message, .. } = &event else {
                 unreachable!("next_socket_data_with_timeout only returns socket-data events");
             };
             match self.match_response(message, command_id) {
                 Ok(Some(response)) => {
-                    client.restore_pending_events_front(skipped);
                     return Ok(response);
                 }
                 Ok(None) => {
                     if self.should_preserve_message(message) {
-                        skipped.push(event);
+                        operation.preserve(event)?;
                     }
                 }
                 Err(error) => {
-                    client.restore_pending_events_front(skipped);
                     return Err(error);
                 }
             }
+            tokio::task::yield_now().await;
         }
     }
 
@@ -447,6 +441,9 @@ impl InspectorSession {
             && message.get("method").is_none())
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

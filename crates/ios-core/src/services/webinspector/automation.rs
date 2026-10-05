@@ -1,14 +1,15 @@
 //! Remote automation lifecycle, commands, result and element semantics.
 //! Operates on a supplied client; selectors and JavaScript retain existing bytes.
 
-use super::timing::{deadline_after, remaining_time};
+use super::client::{await_operation, WebInspectorOperation};
+use super::retained::admit_id;
 use super::{
     AutomationAvailability, Page, WebInspectorClient, WebInspectorError, WebInspectorEvent,
 };
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -54,7 +55,7 @@ pub struct AutomationSession {
     top_level_handle: Option<String>,
     implicit_wait_timeout_ms: u64,
     page_load_timeout_ms: u64,
-    next_command_id: u64,
+    next_command_id: Option<u64>,
 }
 
 impl AutomationSession {
@@ -79,7 +80,7 @@ impl AutomationSession {
             top_level_handle: None,
             implicit_wait_timeout_ms: 0,
             page_load_timeout_ms: 3_000_000,
-            next_command_id: 1,
+            next_command_id: Some(1),
         }
     }
 
@@ -111,12 +112,15 @@ impl AutomationSession {
         self.implicit_wait_timeout_ms = timeout.as_millis() as u64;
     }
 
+    /// One capped total covers the automation request, listings and socket
+    /// setup. An abandoned committed request invalidates the client; page_id
+    /// is updated only after both discovery stages complete.
     pub async fn attach<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         client: &mut WebInspectorClient<S>,
         timeout_duration: Duration,
     ) -> Result<(), WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
+        let deadline = client.deadline(Some(timeout_duration))?;
         if matches!(
             client.automation_availability(),
             Some(AutomationAvailability::NotAvailable)
@@ -125,51 +129,32 @@ impl AutomationSession {
                 "remote automation is not available".to_string(),
             ));
         }
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.request_automation_session(&self.session_id, &self.application_id),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(
-                timeout_duration,
-                "request WebInspector automation session",
-                error,
-            )
-        })??;
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.request_listing(&self.application_id),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "request automation listing", error)
-        })??;
-
-        let page = self
-            .wait_for_automation_page(client, deadline, timeout_duration, false)
-            .await?;
-        self.page_id = Some(page.id);
-
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.send_socket_setup(&self.session_id, &self.application_id, page.id, true),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "attach automation socket", error)
-        })??;
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            client.request_listing(&self.application_id),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "refresh automation listing", error)
-        })??;
-        let page = self
-            .wait_for_automation_page(client, deadline, timeout_duration, true)
-            .await?;
+        let mut operation = WebInspectorOperation::with_deadline(client, deadline)?;
+        let result = await_operation(deadline, "attach WebInspector automation session", async {
+            operation
+                .client
+                .request_automation_session(&self.session_id, &self.application_id)
+                .await?;
+            operation.commit();
+            operation
+                .client
+                .request_listing(&self.application_id)
+                .await?;
+            let page = self
+                .wait_for_automation_page(operation.client, false)
+                .await?;
+            operation
+                .client
+                .send_socket_setup(&self.session_id, &self.application_id, page.id, true)
+                .await?;
+            operation
+                .client
+                .request_listing(&self.application_id)
+                .await?;
+            self.wait_for_automation_page(operation.client, true).await
+        })
+        .await;
+        let page = operation.finish(result)?;
         self.page_id = Some(page.id);
         Ok(())
     }
@@ -562,21 +547,21 @@ impl AutomationSession {
         params: JsonValue,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        let command_id = timeout(
-            remaining_time(deadline, timeout_duration)?,
-            self.send_command(client, method, params),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(
-                timeout_duration,
-                "send WebInspector automation command",
-                error,
-            )
-        })??;
-        self.wait_for_response(client, command_id, timeout_duration)
-            .await
+        let deadline = client.deadline(Some(timeout_duration))?;
+        let mut operation = WebInspectorOperation::with_deadline(client, deadline)?;
+        let mut matched = false;
+        let result = await_operation(deadline, "execute WebInspector automation command", async {
+            let command_id = self.send_command(operation.client, method, params).await?;
+            operation.commit();
+            self.wait_for_response(&mut operation, command_id, &mut matched)
+                .await
+        })
+        .await;
+        if matched {
+            operation.finish_response(result)
+        } else {
+            operation.finish(result)
+        }
     }
 
     async fn send_command<S: AsyncRead + AsyncWrite + Unpin>(
@@ -585,11 +570,12 @@ impl AutomationSession {
         method: &str,
         params: JsonValue,
     ) -> Result<u64, WebInspectorError> {
+        client.deadline(None)?;
         let page_id = self.page_id.ok_or_else(|| {
             WebInspectorError::Protocol("automation session has not attached to a page".to_string())
         })?;
-        let command_id = self.next_command_id;
-        self.next_command_id += 1;
+        let command_id = admit_id(self.next_command_id)?;
+        self.next_command_id = command_id.checked_add(1);
         client
             .send_socket_data(
                 &self.session_id,
@@ -607,47 +593,34 @@ impl AutomationSession {
 
     async fn wait_for_response<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
-        client: &mut WebInspectorClient<S>,
+        operation: &mut WebInspectorOperation<'_, S>,
         command_id: u64,
-        timeout_duration: Duration,
+        matched: &mut bool,
     ) -> Result<JsonValue, WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        let mut skipped = Vec::new();
         loop {
-            let event = match client
-                .next_socket_data_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await
-            {
-                Ok(event) => event,
-                Err(error) => {
-                    client.restore_pending_events_front(skipped);
-                    return Err(error);
-                }
-            };
+            let event = operation.client.next_socket_data().await?;
             if let WebInspectorEvent::SocketData { message, .. } = &event {
                 if message.get("id").and_then(JsonValue::as_u64) == Some(command_id) {
+                    *matched = true;
                     if let Some(error) = message.get("error") {
-                        client.restore_pending_events_front(skipped);
                         return Err(WebInspectorError::Protocol(format!(
                             "automation command failed: {error}"
                         )));
                     }
-                    client.restore_pending_events_front(skipped);
                     return Ok(message
                         .get("result")
                         .cloned()
                         .unwrap_or(JsonValue::Object(Default::default())));
                 }
             }
-            skipped.push(event);
+            operation.preserve(event)?;
+            tokio::task::yield_now().await;
         }
     }
 
     async fn wait_for_automation_page<S: AsyncRead + AsyncWrite + Unpin>(
         &self,
         client: &mut WebInspectorClient<S>,
-        deadline: Instant,
-        timeout_duration: Duration,
         require_connection_id: bool,
     ) -> Result<Page, WebInspectorError> {
         loop {
@@ -658,9 +631,8 @@ impl AutomationSession {
                     return Ok(page.clone());
                 }
             }
-            let _ = client
-                .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await?;
+            let _ = client.next_event().await?;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -694,6 +666,9 @@ fn normalized_locator(by: By, value: &str) -> (String, String) {
         _ => (by.as_wire().to_string(), value.to_string()),
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

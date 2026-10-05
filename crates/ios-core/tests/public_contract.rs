@@ -3,6 +3,103 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+#[cfg(feature = "webinspector")]
+#[tokio::test]
+async fn lifecycle_webinspector_session_public_correlated_timeout_rejects_late_reply_and_other_session(
+) {
+    use ios_core::webinspector::{InspectorSession, WebInspectorClient, WebInspectorError};
+    use serde_json::json;
+    use std::{error::Error, time::Duration};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (stream, mut peer) = tokio::io::duplex(16384);
+    let mut client = WebInspectorClient::with_connection_id(stream, "owned-private");
+    let mut session = InspectorSession::with_session_id("PID:42", 7, "owned-private");
+    let mut another = session.clone();
+    fn send<F: Future + Send>(future: F) -> F {
+        future
+    }
+    let budget = Duration::from_millis(20);
+    let caller =
+        send(session.send_command_and_wait(&mut client, "Runtime.enable", json!({}), budget));
+    let server = async {
+        let size = peer.read_u32().await.unwrap() as usize;
+        assert!(size < 16384);
+        let mut bytes = vec![0; size];
+        peer.read_exact(&mut bytes).await.unwrap();
+        let request: plist::Dictionary = plist::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            request["__selector"].as_string(),
+            Some("_rpc_forwardSocketData:")
+        );
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, server)
+    })
+    .await
+    .unwrap();
+    let error = result.unwrap_err();
+    assert_eq!(error.timeout_duration(), Some(budget));
+    assert_eq!(
+        ios_core::classify_error(&error),
+        ios_core::ErrorClass::Timeout
+    );
+    let mut native = Some(&error as &(dyn Error + 'static));
+    let mut elapsed = false;
+    for _ in 0..32 {
+        let Some(source) = native else { break };
+        elapsed |= source.is::<tokio::time::error::Elapsed>();
+        native = source.source();
+    }
+    assert!(elapsed);
+    assert!(!client.is_usable());
+    let response = plist::Value::Dictionary(plist::Dictionary::from_iter([
+        ("__selector".to_owned(), "_rpc_applicationSentData:".into()),
+        (
+            "__argument".to_owned(),
+            plist::Value::Dictionary(plist::Dictionary::from_iter([
+                ("WIRApplicationIdentifierKey".to_owned(), "PID:42".into()),
+                (
+                    "WIRMessageDataKey".to_owned(),
+                    plist::Value::Data(
+                        serde_json::to_vec(&json!({"id": 1, "result": {"enabled": true}})).unwrap(),
+                    ),
+                ),
+            ])),
+        ),
+    ]));
+    let mut body = Vec::new();
+    plist::to_writer_xml(&mut body, &response).unwrap();
+    peer.write_u32(body.len() as u32).await.unwrap();
+    peer.write_all(&body).await.unwrap();
+    client.set_operation_timeout(None);
+    assert!(matches!(
+        send(another.next_raw_message(&mut client, budget)).await,
+        Err(WebInspectorError::Protocol(_))
+    ));
+    assert!(matches!(
+        send(another.send_command_and_wait(&mut client, "Runtime.enable", json!({}), budget)).await,
+        Err(WebInspectorError::Protocol(_))
+    ));
+    fn family(error: &WebInspectorError) -> &'static str {
+        match error {
+            WebInspectorError::Io(_) => "io",
+            WebInspectorError::Plist(_) => "plist",
+            WebInspectorError::Json(_) => "json",
+            WebInspectorError::Disabled => "disabled",
+            WebInspectorError::Protocol(_) => "protocol",
+            WebInspectorError::Timeout(_) => "timeout",
+        }
+    }
+    assert_eq!(family(&error), "io");
+    drop(client);
+    let mut extra = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut extra))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(extra.is_empty());
+}
+
 #[test]
 fn lifecycle_backup2_public_budget_state_cleanup_and_send_futures_keep_exhaustive_errors() {
     use ios_core::backup2::{

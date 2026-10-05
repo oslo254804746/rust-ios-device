@@ -1,7 +1,7 @@
 //! WebInspector service state, application/page cache and incoming event routing.
 //! Owns a supplied async stream; device dialing and HTTP adapters are callers.
 
-use super::timing::{deadline_after, remaining_time};
+use super::retained::{event_size, MAX_EVENTS, MAX_EVENT_BYTES};
 use super::wire::{extract_json_payload, optional_string, recv_plist, required_string, send_plist};
 use super::{
     Application, ApplicationPage, AutomationAvailability, Page, WebInspectorError,
@@ -16,10 +16,9 @@ use tokio::time::timeout;
 use tokio::time::Duration;
 use uuid::Uuid;
 
-mod lifecycle;
-use lifecycle::{
-    await_operation, checked_deadline, Deadline, WebInspectorOperation, WebInspectorState,
-};
+pub(super) mod lifecycle;
+pub(super) use lifecycle::{await_operation, WebInspectorOperation};
+use lifecycle::{checked_deadline, Deadline, WebInspectorState};
 
 #[derive(Debug)]
 pub struct WebInspectorClient<S> {
@@ -29,6 +28,7 @@ pub struct WebInspectorClient<S> {
     applications: IndexMap<String, Application>,
     application_pages: IndexMap<String, IndexMap<u64, Page>>,
     pending_events: VecDeque<WebInspectorEvent>,
+    pending_event_bytes: usize,
     state: WebInspectorState,
 }
 
@@ -45,6 +45,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             applications: IndexMap::new(),
             application_pages: IndexMap::new(),
             pending_events: VecDeque::new(),
+            pending_event_bytes: 0,
             state: WebInspectorState::default(),
         }
     }
@@ -143,7 +144,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         let deadline = self.deadline(Some(timeout_duration))?;
         let mut response_phase = false;
         let result = await_operation(deadline, "start WebInspector discovery", async {
-            let mut operation = WebInspectorOperation::new(self)?;
+            let mut operation = WebInspectorOperation::with_deadline(self, deadline)?;
             operation
                 .client
                 .report_identifier()
@@ -400,17 +401,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     /// bytes or a decoded event invalidates local state and clears cached values.
     pub async fn next_event(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
         let deadline = self.deadline(None)?;
-        await_operation(
+        self.next_event_with_deadline(deadline).await
+    }
+
+    async fn next_event_with_deadline(
+        &mut self,
+        deadline: Option<Deadline>,
+    ) -> Result<WebInspectorEvent, WebInspectorError> {
+        let operation = WebInspectorOperation::with_deadline(self, deadline)?;
+        let result = await_operation(
             deadline,
             "receive WebInspector event",
-            self.next_event_raw(),
+            operation.client.next_event_raw(),
         )
-        .await
+        .await;
+        operation.finish(result)
     }
 
     async fn next_event_raw(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
         self.ensure_usable()?;
         if let Some(event) = self.pending_events.pop_front() {
+            self.pending_event_bytes = self
+                .pending_event_bytes
+                .saturating_sub(event_size(&event, MAX_EVENT_BYTES)?);
             return Ok(event);
         }
         let mut operation = WebInspectorOperation::new(self)?;
@@ -430,36 +443,71 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         timeout_duration: Duration,
     ) -> Result<WebInspectorEvent, WebInspectorError> {
         let deadline = self.deadline(Some(timeout_duration))?;
-        await_operation(
-            deadline,
-            "receive WebInspector event",
-            self.next_event_raw(),
-        )
-        .await
+        self.next_event_with_deadline(deadline).await
     }
 
     pub(super) async fn next_socket_data_with_timeout(
         &mut self,
         timeout_duration: Duration,
     ) -> Result<WebInspectorEvent, WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
+        let deadline = self.deadline(Some(timeout_duration))?;
+        let operation = WebInspectorOperation::with_deadline(self, deadline)?;
+        let result = await_operation(
+            deadline,
+            "receive WebInspector socket data",
+            operation.client.next_socket_data(),
+        )
+        .await;
+        operation.finish(result)
+    }
+
+    pub(super) async fn next_socket_data(
+        &mut self,
+    ) -> Result<WebInspectorEvent, WebInspectorError> {
         loop {
-            let event = self
-                .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
-                .await?;
+            let event = self.next_event().await?;
             if matches!(event, WebInspectorEvent::SocketData { .. }) {
                 return Ok(event);
             }
+            tokio::task::yield_now().await;
         }
     }
 
-    pub(super) fn restore_pending_events_front(&mut self, mut events: Vec<WebInspectorEvent>) {
+    #[cfg(test)]
+    pub(super) fn restore_pending_events_front(&mut self, events: Vec<WebInspectorEvent>) {
+        self.restore_events(events.into())
+            .expect("test events fit local policy");
+    }
+
+    fn restore_events(
+        &mut self,
+        mut events: VecDeque<WebInspectorEvent>,
+    ) -> Result<(), WebInspectorError> {
         if !self.is_usable() {
-            return;
+            return Ok(());
         }
-        while let Some(event) = events.pop() {
+        if events.len() > MAX_EVENTS.saturating_sub(self.pending_events.len()) {
+            self.invalidate();
+            return Err(super::local_limit(
+                "retained event count",
+                MAX_EVENTS as u64,
+            ));
+        }
+        let mut bytes = self.pending_event_bytes;
+        for event in &events {
+            match event_size(event, MAX_EVENT_BYTES.saturating_sub(bytes)) {
+                Ok(size) => bytes += size,
+                Err(error) => {
+                    self.invalidate();
+                    return Err(error);
+                }
+            }
+        }
+        while let Some(event) = events.pop_back() {
             self.pending_events.push_front(event);
         }
+        self.pending_event_bytes = bytes;
+        Ok(())
     }
 
     async fn handle_message(
@@ -623,6 +671,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(test)]
+mod correlated_tests;
 
 fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
     match &error {
