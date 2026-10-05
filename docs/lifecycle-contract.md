@@ -608,3 +608,28 @@ This supersedes the earlier direct-page principal-cancellation gap. Generic
 caller/server Drop still has no async cleanup guarantee. Constructor primary
 cleanup, active request/output totals, joined browser children, stored-session
 revocation, other L01, L02–L04/Q04 and classes5–9 remain.
+
+CDP browser children now pin their local stop signal outside active traffic and
+yield each turn. Usable empty idle resumes; a timeout that invalidates the client
+returns its original error. Each child records its primary before independent
+2s forwarding cleanup, then records cleanup before the existing Closed event.
+An explicit supervisor stop retains that primary even if it must abort cleanup.
+Detach, Closed and a failed input sender explicitly stop and join the removed
+child; browser loop exit cancels all remaining children under one2s total,
+aborts all unfinished tasks, then joins every handle before releasing owners.
+Unexpected native JoinError and a completed child missing its cleanup outcome
+are errors. One child failure cannot skip the other joins.
+
+Eleven fixtures cover actual child constructors and owned plist streams, native
+errors, partial-read cancellation, delayed/default-expiring flush, full output,
+idle resumption, shared group expiry and retained primary after abort. Two
+standalone actors within one fixture test supervisor panic/missing-result
+admission only. The existing terminal try_send can miss a full queue; release
+and join are proved independently, without claiming terminal delivery. See
+[browser task evidence](validation/cdp-browser-tasks-2026-10-05.md).
+
+Browser outer Principal.run still drops the whole handler on revocation; Drop
+only aborts. Revocation during a removed child's cleanup also needs an owner
+outside the raced future. This profile proves explicit returned stops, not
+async Drop, browser lease or server joins. Constructor and active totals,
+registry ownership, other L01, L02–L04/Q04 and classes5–9 continue.

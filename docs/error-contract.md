@@ -1781,3 +1781,19 @@ formatter; it sends no new error frames or headers and exposes no credentials.
 This supersedes the earlier principal-cancellation limitation for direct pages.
 Generic caller/server cancellation and browser/stored task joins remain separate.
 See [CDP page lease fixtures](validation/cdp-page-lease-2026-10-05.md).
+
+CDP browser child tasks retain original send, decode, receive and cleanup
+failures instead of breaking silently. The primary is recorded before cleanup;
+supervisor abort cannot erase that observed cause. Explicit stops combine
+child outcomes, unexpected native JoinError and an actually issued cleanup
+expiry through the existing private wrapper. Every other child is joined even
+after a failure. Known causes remain owned; a cleanup result interrupted before
+completion is not invented. A normally completed task without its cleanup
+outcome is a local Protocol error.
+
+Explicit detach/Closed handling uses the existing safe diagnostic formatter
+while keeping successful detach replies and healthy browser traffic. Browser
+loop exit combines its primary with group cleanup. No raw causes, new headers
+or error frames are sent. Browser lease/caller/server cancellation still uses
+Drop and needs separate ownership work. See
+[browser child errors](validation/cdp-browser-tasks-2026-10-05.md).

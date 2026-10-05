@@ -1067,3 +1067,14 @@ tickets, policy fields, successful messages and public grammar stay. The earlier
 direct-page lease gap is covered; generic caller/server Drop, browser children,
 stored-session joins and device evidence remain. See
 [CDP page lease migration](validation/cdp-page-lease-2026-10-05.md).
+
+CDP browser pages now use independent2s cleanup instead of the active timeout;
+explicit removal joins the child and reports retained failures through existing
+safe diagnostics. Browser loop exit stops remaining children together under
+one2s total, then aborts and joins every unfinished handle. Successful detach
+replies, events, routes, admission and public grammar stay. Private constructor
+return ownership changes only inside the CLI; native and dual failures are not
+exported as unsafe messages. These timing/diagnostic corrections need pre-1.0
+release review and device evidence. Browser lease/server/caller Drop and stored
+registry joins remain pending. See
+[browser task migration](validation/cdp-browser-tasks-2026-10-05.md).

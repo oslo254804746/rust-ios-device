@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain CDP browser page errors through independent 2s cleanup, including an
+  observed primary error when the supervisor must abort. Explicit stops join
+  every child; browser exit shares one cleanup total across remaining pages.
+  Child failures use existing safe diagnostics and successful detach replies.
+  See [browser task migration](docs/validation/cdp-browser-tasks-2026-10-05.md).
 - Keep a direct CDP page's lease cancellation inside its resource owner. Policy
   expiry/reload stops page work and awaits independent cleanup before release;
   native cancellation/cleanup causes survive through existing safe diagnostics.

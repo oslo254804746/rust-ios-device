@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cdp-browser-tasks-d8cf32e",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual private browser forwarding constructors over owned plist streams and explicit supervisor; observed native errors, read bytes, full queue, healthy idle, flush, release and page-lock reacquisition. Two standalone actors test only supervisor panic/missing-outcome admission."
+      ],
+      "required_state": [
+        "Three files/eleven new tests. Negative25725 terminal101:0PASS/2FAIL; corrected55684 twoPASS; expanded52734 sixPASS/15147 elevenPASS. Frozen52191 terminal0/all21 gates:11/min11/lease7/WD8/direct5/setup15/page5/finite21/shell31/CLI150/access29/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tooling22/CLI95/full. Original assertions stay with one outcome fixture field; direct page/browser setup/discovery/other owners/controller/core/public/access/deps unchanged."
+      ],
+      "tested_commit": "d8cf32eb4ad09217c3f9962df658eea03fed12e9",
+      "date": "2026-10-05",
+      "location": "docs/validation/cdp-browser-tasks-2026-10-05.md",
+      "result": "PASS",
+      "scope": "One pinned local stop controls active work outside unbiased traffic. Native primary is recorded before independent2s cleanup and survives supervisor abort; native and dual causes remain owned. Explicit detach/Closed/dead sender stops and joins. Returned browser exit cancels all remaining children under one2s total, aborts all pending then joins each; unexpected JoinError/missing outcome are errors. Existing safe diagnostics/successful detach replies remain. Full2467Rust/13Python,CLI862/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Explicit returned stop only: outer browser principal/caller/server Drop, retiring owner during raced cleanup, constructor/active totals/stored registry remain pending; terminal try_send can miss full queue.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/browser lease join/platform/benchmark/RSS/decoder peak proof. All31/L01/class4/L02–L04/Q04/classes5–9 active."
+    },
+    {
       "id": "linux-cdp-page-lease-5ecb565",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
