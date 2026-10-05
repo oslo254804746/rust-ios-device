@@ -1078,3 +1078,14 @@ exported as unsafe messages. These timing/diagnostic corrections need pre-1.0
 release review and device evidence. Browser lease/server/caller Drop and stored
 registry joins remain pending. See
 [browser task migration](validation/cdp-browser-tasks-2026-10-05.md).
+
+CDP browser policy expiry/reload now stops business work and waits for common2s
+cleanup before release. A child removed during detach remains owned when lease
+cancellation interrupts its cleanup; completed joins and known native errors
+survive. Previously outer Principal.run dropped the parent and aborted these
+children without awaited cleanup. Revocation now uses existing safe diagnostics
+with typed cancellation, preserving cleanup failures privately. No successful
+reply, event, route, policy/admission field or public grammar changes. This
+timing/diagnostic correction needs pre-1.0 release review and device evidence.
+Generic caller/server Drop and stored-session joins remain. See
+[browser lease migration](validation/cdp-browser-lease-2026-10-05.md).

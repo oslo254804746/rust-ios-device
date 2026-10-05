@@ -633,3 +633,26 @@ only aborts. Revocation during a removed child's cleanup also needs an owner
 outside the raced future. This profile proves explicit returned stops, not
 async Drop, browser lease or server joins. Constructor and active totals,
 registry ownership, other L01, L02–L04/Q04 and classes5–9 continue.
+
+Browser ownership now includes one pinned principal.revoked future through
+initial discovery and active work. Biased outer control and a yield per turn
+preserve the inner unbiased traffic choice. Returned revocation has typed
+cancellation, then performs common independent2s child cleanup without polling
+the completed lease again. Removed children enter a retiring owner outside the
+raced active future before any cleanup await. Dropping its borrowed stop future
+retains owners, original deadline, completed join results and an already-issued
+wait error. Resuming never polls a completed JoinHandle again. Outcomes are
+taken together after all joins, with no further await during their transfer.
+
+On parent exit, retiring and remaining children join one common2s cleanup group;
+any previously issued retiring error is preserved alongside the final result.
+Eight actual admitted browser fixtures cover expiry/reload, delayed/default
+cleanup, observed partial frame, detach in progress and source cancellation
+before return. A private observer checks Cancelled plus original cleanup IO.
+Three additional child fixtures verify interrupted cleanup progress/errors.
+See [browser lease evidence](validation/cdp-browser-lease-2026-10-05.md).
+
+This covers the earlier browser principal/removed-owner gap. Generic caller or
+server Drop still only aborts; no product server supervisor join is certified.
+Constructor primary cleanup, active request/output totals, stored registry,
+terminal event retention, other L01, L02–L04/Q04 and classes5–9 continue.

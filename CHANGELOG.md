@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Keep CDP browser lease cancellation inside its resource owner. Removed pages
+  stay owned during interrupted cleanup; completed joins and issued errors
+  survive, and remaining pages share one 2s cleanup total. See
+  [browser lease migration](docs/validation/cdp-browser-lease-2026-10-05.md).
 - Retain CDP browser page errors through independent 2s cleanup, including an
   observed primary error when the supervisor must abort. Explicit stops join
   every child; browser exit shares one cleanup total across remaining pages.

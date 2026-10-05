@@ -1797,3 +1797,19 @@ loop exit combines its primary with group cleanup. No raw causes, new headers
 or error frames are sent. Browser lease/caller/server cancellation still uses
 Drop and needs separate ownership work. See
 [browser child errors](validation/cdp-browser-tasks-2026-10-05.md).
+
+CDP browser lease expiry/reload now returns typed OperationCancelled inside the
+owner. Existing cleanup then retains native child and waiter failures under
+that parent primary. Removed-child owners, completed joins, native primary and
+cleanup outcomes, and an already issued Elapsed survive cancellation of a
+borrowed cleanup future. Resuming/reparenting does not invent errors or poll
+completed handles again. Private observation verifies Cancelled primary plus
+original PermissionDenied IO; other fixtures retain native JSON/IO/Elapsed
+through interrupted cleanup and all joins.
+
+Browser revocation now reaches the existing safe diagnostic formatter instead
+of silently discarding outer ScopeDenied. No raw causes, new error headers or
+WebSocket error frames are sent. Child detach replies and healthy traffic stay.
+This supersedes the earlier browser principal/retiring-owner limitation; generic
+caller/server Drop and stored registry remain. See
+[browser lease errors](validation/cdp-browser-lease-2026-10-05.md).
