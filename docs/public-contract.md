@@ -28,6 +28,28 @@ and feature-specific fixtures remain required.
 
 ## Rust changes
 
+WebInspectorClient adds is_usable and set_operation_timeout(Option<Duration>),
+retaining constructors/root paths and default None. Startup/timed events use
+the shorter explicit/configured budget; an event includes automatic listing
+writes. Zero now rejects before ready cache/IO as source-free Timeout and
+unrepresentable effective budgets return Io InvalidInput. Startup overflow
+previously returned Protocol; timed/discovery zero admission and startup's
+effective-budget getter replace their former ready/remainder behavior. Shorter
+explicit budgets can safely clamp MAX configuration. Actual expiry keeps Elapsed.
+
+Partial/native/codec/routing failure invalidates and clears owned metadata/
+pending state. Later event reads/wire writes reject Protocol, including cached events;
+restore and setter None cannot revive state. Empty idle/send cancellation and
+local XML failure before IO can preserve reuse. Startup guards a committed
+report through CurrentState, while the legacy Disabled versus preserving-error
+mapping stays. Discovery snapshots require empty usable idle; partial input or
+configured total expiry now fails. Opaque stream stays until Drop and getters
+are local admission, not retry authorization. Six variants/models/serde/wire
+strings/16MiB/raw helpers and original consumer assertions stay. These pre-1.0
+source/reuse/timing migrations need release review; no bypass/deprecation alias.
+Correlated sessions/cache bounds/frontend owners remain separate. See
+[WebInspector client acceptance](validation/webinspector-client-lifecycle-2026-10-05.md).
+
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners
 reject further wire work after interrupted progress, a committed unanswered

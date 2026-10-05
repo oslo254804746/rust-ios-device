@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-client-lifecycle-30fb63f",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned duplex empty/partial read/write/flush and native EOF/BrokenPipe/PermissionDenied; cached BufReader header progress; malformed plist/non-dictionary/oversize/shape/JSON/PID source; startup commitment/cancellation/late complete state and125ms send+125ms reply under200ms; automatic listing empty blocked write/cancellation and shared200ms event total; idle quiescence versus partial/configured total; exact successful listing/cache; external Send/exhaustive families/no-contact zero"],
+      "required_state": ["Four source/test files; sixteen internal/one external new tests, final full/minimum17 PASS, Core WebInspector55 plus3 public/1 integration=59, CLI40/minimum check/stack5/strict gates PASS. First test compilation43968 failed E0283, no test PASS claimed; corrected narrow17. Supplement29765 adds native JSON/PID cases only in new test file with identical product/public hashes, again17/minimum17/strict PASS. Old client assertions/start mappings/routing/model/wire/timing/Inspector/Automation/external consumers/protocol strings/default None/16MiB/error variants/frontends/references preserved. No device/browser/OS signal, baseline-wide old-source control, benchmark/RSS or other-platform acceptance; maturity unchanged"],
+      "tested_commit": "30fb63fe5d6a6530bb96270adbb59c27c96d1e27",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-client-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "WebInspector client owns accepted/buffered frames and committed report/event routing; partial/native/codec/routing failure invalidates and drops owned metadata/pending collections, rejects guarded cache/IO reuse and ignores invalid restore. Empty idle/send cancellation/pre-IO XML failure can preserve reuse. Add local is_usable/optional total default None, effective zero legacyTimeout/overflow Io InvalidInput, explicit shorter MAX clamp and actual Elapsed with due priority. Startup legacy mappings remain, effective budget replaces remainder; discovery quiescence only empty usable idle while configured total/partial/routing failure returns error. Full23783 terminal0:2314Rust/13Python, CLI752/Core1402/public50, zero failures/two existing ignored and every section11 split gate PASS. No new queue/task/ACK/remote cleanup/retry guarantee. Correlated Inspector/Automation, count/byte cache bounds and frontend/server owners still pending; all31/L01–L04/Q04/classes5–9 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
+    },
+    {
       "id": "linux-companion-cli-control-c2fa6fb",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

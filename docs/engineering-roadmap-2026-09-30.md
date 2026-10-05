@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6051,3 +6051,87 @@ blockingresources，L02–L04/Q04及第五至九类。Capability118正文/maturi
 hostevidence；22device NOT_RUN，Chromium/installed3.9/3.13未重跑。平台/设备/凭据/协议
 条件继续，无reference编辑/subagents/push/publication/historyrewrite；host acceptance不
 完成L01、第四类或总体goal。
+
+### 大类 4：L01 WebInspector client frame/start/event ownership 交付（2026-10-05）
+
+实现与受测提交：`30fb63fe5d6a6530bb96270adbb59c27c96d1e27`，基于
+`09d5fcd9eacc9f15dcda1a3b3bfc62e7d4fbd228`。四份source/test文件，1210 insertions/
+55 deletions，Linux x86_64/Rust1.97.1/MSRV1.80.1/项目Python3.12.13。专题：
+[WebInspector client 生命周期与迁移](validation/webinspector-client-lifecycle-2026-10-05.md)。
+
+Additive is_usable/set_operation_timeout(OptionDuration)，默认None保持unbounded
+client send/event；startup/timed event使用explicit/configured较短期限。发送在argument
+clone/JSONencode前admit，共享XML/send/flush；event涵盖decode/routing/自动listing写入。
+Due nominaldeadline在每次operation poll前阻止ready work，native timer给实际Elapsed，
+无synthesizedcause/task/queue，codec/运行worker仍cooperative。
+
+Zero在cache/IO前为source-free legacyTimeout；不可表示effectivebudget为Io InvalidInput，
+explicit较短期限可clampMAX配置。Startup overflow从旧Protocol迁移；timed/readycache及
+discovery zero迁移为checked admission；startup getter现报告effective operationbudget，
+替代变化的reply remainder。Six variants/native wrapper/getter/constructors/rootpaths、
+模型/serde/protocolstrings/16MiB raw framing保持，无bypass/deprecation alias；发布需审查
+这些pre1.0 source/timing/reuse变化。
+
+Direct frameguard跟踪accepted buffered/wire read/write、nativefailure/EOF/flush。
+Partialcancel/expiry或codec失败失效，丢弃owned applications/pages/pending/automation
+metadata；后续guarded wire/event-cache operation在IO前拒绝，invalid restore丢弃输入，
+setterNone不复活。Empty idle/send cancel、unpolled及preIO XMLfailure可复用。Opaque
+transport/buffers保持到Drop，connectionid保留；不是liveness/retry/RSS/remotecleanup证据。
+
+Decoded event直到routing/automaticlisting完成才结束owner；其后emptyblockedwrite
+cancel/expiry也失效，防止消费完incomingframe却留下半更新cache。Complete routing/
+JSON/PID/shape错误保留original并失效；返回event之后的既有correlatedbusinessparser未改。
+Startup sent report到CurrentState为logicalowner：cancel/expiry即使emptyread仍失效，
+late complete state不能再消费。Legacy blocked report outertimer保持nativeTimeout，旧
+reporttransport与responsefailure Disabled mapping保留；preserving API保留original。
+Disabled不证明设备设置。无 guessed ACK/teardown/retry。
+
+Open_application_pages只有empty/stillusable idle视为snapshot完成；partial或routing
+失败返回原错误，配置total覆盖applicationrequest/reads并独立于idle，expiry仍错误。
+DefaultNone保持旧idleprofile，rawhelpers caller责任与源码未改；Drop不做remote stop。
+
+新16internal/1external tests。首compile43968 terminal101是23个test-only E0283 type
+推断诊断，显式key/value types修正；该次没有任何testPASS。MAX admission fixture调整
+输入role验证effectivebudget并加explicitshorterclamp，该执行前修正不冒称runtime failure。
+次narrow23094为17PASS。补nativewrite/cancelledautomaticwrite后pipeline63338 terminal0：
+finalfull17/minimum17，Core55+public3+integration1=59/CLI40/minCLIalltargets/
+actualoriginalstack5/strictCoreCLIClippy/fmt通过。补JSON/PID nativebranches仅改新fixture
+文件，product/public SHA与pipeline一致；supplement29765 terminal0再次17/min17/
+strictClippy/fmt，再冻结四文件。
+
+Owned2s外界、SHORT20ms及125+125ms/200ms totals。覆盖12entries/cacheadmission、nominal
+now timer、emptyvsheader/body/buffered progress、unpolled/empty/partial writes、flush、
+nativeEOF/BrokenPipe/PermissionDenied/plist/nondict/oversize/shape/JSON/PID sources、
+committed startup/late completestate、send+readtotal、decoded event emptylistingwait/
+cancel/expiry、read+automaticsendtotal、quiescencevstotal与original成功listing/cache、
+公开13Send futures/6exhaustive variants。无physicalservice/browser/OSsignal/throughput/
+RSS/oldsource baselinewide negativecontrol。每次sourceedit前进程已terminal；focused
+cargo clean -p ios-cli --profile dev清1657cachefiles/6.6GiB，无livebuild/source/reference
+清理/storagefailure。约2.9GiB清前、8.0GiB narrow后、5.6GiB full前。
+
+Full23783 terminal0，第11节Rust/Python拆分全部PASS：2314Rust/13Python，
+CLI752/Core1402/public50，0FAIL/2既有ignored。Fmt/check/strictClippy/MSRV、66features/
+4runtimegroups、7+7doctests/3snippets、CABI、3.12wheel/sdist/install、59tooling/
+118actualhelp/38raw/5host/55CLI/3backup通过。Frozen source SHA256
+`3db99be39a1149eab1064b21ac22630b6f0610a2dca23d738deabbb5e5b0570b`，
+最终ios binary SHA256
+`503a27aa69f3cdff1637a4ccaaa0b08742798ad02a4c9ac29f2c8660635a52bf`。
+Four-file patch从freeze到full不变并精确匹配实际implementationcommit。旧client全部
+tests/assertions/startmapping/incomingrouting、model/wire/timing/Inspector/Automation/
+protocolstrings/defaultNone/16MiB/errorfamilies/publicconsumer bytes保留，frontends/
+dependencies/referenceHEAD/status未改。Logs/audits为/tmp/ios-l01-webinspector-。
+
+八文档收尾audit PASS：7Markdown/324local links，source/actualCLIhelp inventory PASS；
+精确implementation/frozen source/binary/full/narrow/compile/supplement/cachecleanup与
+readonlyreferences匹配。所有31tasks/subtasks/旧history prefix保留，仅L01overview行与
+末尾交付追加；Capability118正文/maturity/既有evidence保持，只增hostevidence。
+文档期间产品source未改。
+
+全部31任务/subtasks/history保持，总览9完成/11未开始/11进行中或待验收/条件不变。
+L01/class4/overallgoal active；下一Inspector/Automation correlated totals/attach/late
+reply ownership、bounded pending/skipped/application/page state，然后WebInspector
+frontend/server lifecycle；其他L01协议/rawborrowedsessions/multi-requesttotals/
+longstreams/manualpairing/blockingresources、L02–L04/Q04及第五至九类继续。Capability118
+正文/maturity/history保持仅增hostevidence；22device NOT_RUN，Chromium/installed3.9/
+3.13未重跑。平台/设备/凭据/协议条件继续；无reference编辑/subagents/push/publication/
+historyrewrite，host profile不完成L01、第四类或总体goal。

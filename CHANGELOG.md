@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guard WebInspector client frames, startup and automatic event-routing writes
+  across cancellation. Add local is_usable and optional operation budgets,
+  reject invalid cached reuse, and require empty usable idle for discovery
+  quiescence. Preserve legacy/preserving startup mappings and native sources;
+  record checked zero/overflow and effective-budget migrations. See
+  [WebInspector client lifecycle migration](docs/validation/webinspector-client-lifecycle-2026-10-05.md).
 - Bound Companion default discovery/service setup at30 seconds and share one
   finite total and pinned Ctrl+C owner through command work. Reject zero/overflow
   before selection, retain actual timer/signal sources and await independent5s

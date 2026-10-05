@@ -14,7 +14,9 @@ L01/class 4 is in progress. The DTX profile's accepted implementation is
 `9b2c488ec9052d2899de91a68622b00be207446c`; notification CLI discovery/setup,
 send/total deadlines and operator signal ownership is
 `e3ab42b8e1d47155edd9e0ffd08c668b5e3a41ec`; Companion shared request/listener/forwarding
-ownership is `7a0ed63d99f04d99971004b177dd68e1cdf3b3bb`.
+ownership is `7a0ed63d99f04d99971004b177dd68e1cdf3b3bb`; Companion CLI ownership is
+`c2fa6fb60c9bdd2f56514b7b4844fe39f596bc3d`; WebInspector client frame/start/event
+ownership is `30fb63fe5d6a6530bb96270adbb59c27c96d1e27`.
 This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
@@ -369,6 +371,34 @@ Whole-command or close cancellation leaves no detached fallback. Legacy borrowed
 stop/Drop policies remain; shared owners retain the stream. No remote release,
 rollback, retry or guessed stop-listen command is claimed. See
 [Companion CLI fixtures and migration](validation/companion-cli-control-2026-10-05.md).
+
+WebInspectorClient adds is_usable and an optional operation budget, default None.
+Startup/timed events use the shorter explicit/configured limit. Sends include
+encoding/send/flush and event totals include decoding/routing/automatic listings.
+Checked zero rejects before cache/IO as legacy Timeout; unrepresentable effective
+budgets become Io InvalidInput. A shorter explicit limit can safely clamp MAX
+configuration. Due nominal deadlines suppress ready work while the native timer
+supplies actual Elapsed; synchronous codecs remain cooperative.
+
+Frame owners track accepted bytes, including buffered input, native failure/EOF
+and flush. Partial cancellation/expiry or codec failure invalidates and drops
+owned metadata/pending collections; all later wire/cache-read operations reject
+and restore attempts discard supplied events. Empty idle/send cancellation and
+pre-IO local XML failure can preserve reuse. Opaque transport/buffers remain
+until Drop. A decoded event stays owned through automatic listing writes, even
+when cancellation occurs before those writes accept a byte.
+
+Startup owns a committed report until CurrentState, preventing late state after
+cancel/expiry from being reused. Legacy start still keeps blocked report outer
+expiry as native Timeout and maps its former report/response failures to Disabled;
+the preserving API keeps originals. Effective operation budget replaces varying
+startup response remainder in the native getter. Page discovery quiescence now
+requires empty usable idle; partial/routing and configured total expiry fail.
+Raw helpers, protocol strings/models/16MiB framing and six public variants remain.
+Inspector/Automation correlated totals/attach ownership and retained cache limits,
+plus frontend/server setup/total/signal/join/output cleanup, remain subsequent
+owners. No task/queue, remote cleanup/ACK/retry or measured memory claim is added.
+See [WebInspector client fixtures](validation/webinspector-client-lifecycle-2026-10-05.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

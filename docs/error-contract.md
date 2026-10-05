@@ -65,6 +65,21 @@ details are needed; automatic diagnostics still use the redaction boundary.
 
 ## Known information-loss boundaries
 
+WebInspector client guards preserve original IO/EOF, plist/JSON, typed PID
+conversion and routing errors while invalidating owned metadata/cache state.
+Later guarded paths reject static Protocol before IO/cache removal; empty idle
+or pre-IO local XML failure can remain usable. Six variants and native timeout
+wrapper/getter remain. Zero is source-free Timeout, effective overflow is Io
+InvalidInput, and real expiry retains native Elapsed without synthesis. Startup
+reports its effective budget rather than a changing response remainder; legacy
+send/response Disabled mappings and the preserving API stay. Discovery idle
+quiescence requires usable empty input; partial/routing or configured total
+expiry cannot return a successful snapshot. Existing correlated business parsing
+after a returned event is untouched; correlated cancellation, retained-state
+resource rejection and frontend primary/cleanup owners remain separate work.
+Local admission never proves device settings, cleanup or retry safety. See
+[WebInspector client error evidence](validation/webinspector-client-lifecycle-2026-10-05.md).
+
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
 return static Protocol before I/O, including owners already queued on the mutex.
