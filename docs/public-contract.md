@@ -95,6 +95,14 @@ the unchanged wire bound is checked before plist decoding, whereas model/cache
 admission follows it. Frontend cleanup and further L01/Q04 remain. See
 [WebInspector cache acceptance](validation/webinspector-cache-lifecycle-2026-10-05.md).
 
+CLI application/page discovery preserves original terminal Timeout/native
+Elapsed when core framing/routing invalidates the client. Its former follow-up
+invalid-client Protocol is no longer substituted. Empty usable idle retries,
+cached matches, page-key precedence, public grammar/output and all core APIs
+remain. This error behavior migration needs pre-1.0 release review; setup/
+whole-flow/pinned signal/join/primary cleanup remain separate work. See
+[WebInspector discovery acceptance](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners
 reject further wire work after interrupted progress, a committed unanswered

@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6303,3 +6303,59 @@ all31task/subtask/historyprefix和118capability正文/maturity/prior evidence保
 仅L01overview/末尾交付/单项hostentry追加。Exactcommitted/frozensource/binary/
 full/narrow/gates/cachecleanprovenance匹配，文档期间productsource未改，reference
 HEAD/status不变。L01/class4/overallgoal active，继续独立可执行frontend工作。
+
+### 大类 4：L01 WebInspector CLI discovery primary error retention（2026-10-05）
+
+| 必填字段 | 实际交付与边界 |
+| --- | --- |
+| 任务/范围/状态 | L01/class4/all31 active；CLI application/page discovery失效Timeout保留主错误的主机子范围，不完成setup/whole-flow/signal/join/cleanup/本类/总体 |
+| 实现 | `db7960ae4d8643c1c8849e4a8795a21cdc821ee6`，基于 `e1befa3e25fa0b0c2b4332c8e69698dbde2cbfc9`；明确2source/test files，384+/2-；7newinternal各两workflow，原workflow全文除2guard/testmodule声明外byte-identical，旧tests/selector/deadline/helpers/output/core/protocol/dependency保持 |
+| 合同/迁移 | [专题验收](validation/webinspector-discovery-lifecycle-2026-10-05.md)、[生命周期](lifecycle-contract.md)、[公开接入](public-contract.md)、[错误](error-contract.md)、CHANGELOG/quality/Q01单项host evidence；原先被后续Protocol覆盖的native Timeout恢复，pre-1.0需release review，不升级maturity |
+| 主机验证 | Linux x86_64/Rust1.97.1/MSRV1.80.1/Python3.12.13；full92892 terminal0，第11节拆分全部PASS：2364Rust/13Python，CLI759/Core1443/public52，0FAIL/2既有ignored。Corrected narrow/minCLI7，CLI47/Core102/coreonlywebinspectorcachemin17/minCLIalltargets/originalstack5/strictCoreCLI/fmt PASS；tooling59/help118/raw38/host5/CLI55/backup3及制品/文档/C PASS |
+| 真实剩余 | WebInspector其他frontend/server setup/whole-flow/cached due admission/pinned signal/join/output/independent primary cleanup，js-shell/CDP/WebDriver资源和decoded plist expansion/depth/peak/CPU/fuzz继续；其他L01、L02–L04/Q04及第五至九类继续。22device NOT_RUN，Chromium/installed3.9/3.13未重跑；host不替代platform/device/credentials/protocol条件 |
+
+CLI wait_for_application/wait_for_inspectable_page原将所有issuedTimeout作为idle，
+partialheader/body/automaticlistingwrite导致clientinvalid后，下一applicationlistrequest
+用staticunusableProtocol覆盖主nativeTimeout。现在仅clientis_usable时retryidle；
+失效直接保留原Elapsed/duration/Timeoutclass。Emptyusableidle仍retry，cachematch/
+成功selection/pagekeyprecedence/helpers/500msidlecap/CLIgrammar/output保持；无新
+API/errorvariant/reader/ACK/remotecleanup/protocolguess。此profile不证明wholeflowowner。
+
+7actualServiceStream/ownedduplexfixtures各覆盖两workflow：partialheader/body后
+queuedlatecompleteframe/无retrywrites；64byteduplex真实automaticlistingblocking及
+partialoutgoingframe；观测第二actualrequest证明emptyidle后真实app/pageselection，
+explicitkey优先不匹配bundle、cachedmatch无write；原EOFUnexpectedEof/plist::Error/
+1025rawappcountResourceLimit保持。20msconfiguredidle/3souterbound，无伪造deviceguard，
+无device/browser/OSsignal/baseline-wideoldsourcecontrol/benchmark/RSS/otherplatformclaim。
+
+First84258 terminal101：23newtestonlyE0283dictionarykey推断diagnostics，NO TEST
+EXECUTION/PASS；显式Stringkeys修正后60870 terminal0/7PASS。Pipeline42910全部exit0，
+minCLI7/CLI47/Core96+public5+integration1=102/coreonlymin17/minCLIalltargets/stack5/
+strictCoreCLI/fmt PASS。CLIdependency仍enablecorefull，core-onlywebinspector另检。
+Full92892 terminal0：2364Rust/13Python；workspacefmt/check/strictClippy/MSRV、66features/
+4runtimegroups、7+7doctests/3snippets、CABI、3.12wheel/sdistbuild/install/import、tooling59/
+help118/raw38/host5/CLI55/backup3全部PASS。原2ignored和22device NOT_RUN保持。
+
+Allbuilds terminal后才edit或启动新pipeline，观察超时不算退出。FocusedCLIcacheclean
+1301files/5.1GiB（free695MiBbefore/4.5GiBafter）；全部gates terminal且2.8GiBfree后
+Coredevcacheclean48515 exit0，65236files/72.1GiB，free71GiB；full重建相关targets后
+约49GiBfree，无source/reference删除或storagefailure。TwofilefreezeSHA256
+`810c27f44d0b5f192dd77904694bc4f16926ab00b2c11c74d21db3ad1bbd19d2`；iosbinarySHA256
+`2455e4279eb5d7313278e12c9ff827487f5d5ee9330e347dd7bdd7e255d53a85`。
+Actualcommit与freeze/fullpatch精确一致；logs/audits使用/tmp/ios-l01-webinspector-discovery-。
+
+Outputmacros原已传播IO，后续重点是same-total/primarycleanupscope与injectedwriter证据，
+不把现有输出描述成忽略失败。其他cached-due/signal/wholeflow/independentcleanup/
+joinedtask/CDP/js-shellcontinueinvalid等仍待。Readonly另核L02生产TunnelAgent全局
+lifecyclelock跨ensure/refreshnetwork，Bquery/stop隔离待实际fake测量；不是性能PASS。
+Plistreader已有cyclecheck，仍需expansion/depth/CPU与boundeddecode/fuzz，非peak/RSS证明。
+
+全部31主任务/subtasks/历史prefix保持，只L01overview/末尾交付/单项hostentry追加，
+9完成/11未开始/11进行中或待验收条件不变，118capability正文/maturity/prior evidence
+保持。L01/class4/goal active，接着其他frontendowner，再其他L01、L02–L04/Q04和
+第五至九类；无subagent/referenceedit/push/publication/historyrewrite或device操作。
+
+八文档audit PASS：7Markdown/348locallinks与source/actualhelp118 inventory；all31
+task/subtask/historyprefix、118capability正文/maturity/prior evidence保持。Exact
+source/binary/full/narrow/23compile diagnostics/gates/cacheclean provenance匹配，
+文档期间sourcefrozen，referenceHEAD/status不变。L01/class4/overallgoal active。

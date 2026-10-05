@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-discovery-lifecycle-db7960a",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned ServiceStream duplex discovery for both app/page workflows: partial header/body with queued complete late reply; real64-byte blocked automatic listing; observe second empty-idle request then exact app/page/explicit-key selection and cached no-write; native EOF/plist/resource sources and invalid-client later admission"],
+      "required_state": ["Two source/test files; seven new internal tests each both workflows,20ms configured idle/3s bound. First84258 compile101/23 test-only E0283 diagnostics/no tests; explicit String keys corrected60870 seven PASS. Pipeline42910 terminal0:minCLI7/CLI47/Core102/core-only webinspector cache minimum17/minCLIalltargets/originalstack5/strictCoreCLI/fmt. Entire old workflow byte-identical after stripping two guard changes/test-module declaration; all original assertions/core APIs/wire/models/dependencies/reference HEAD/status preserved. No device/browser/OS signal/baseline-wide old-source control/benchmark/RSS/other-platform acceptance; maturity unchanged"],
+      "tested_commit": "db7960ae4d8643c1c8849e4a8795a21cdc821ee6",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-discovery-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "CLI app/page discovery retries issued Timeout only while client is usable; partial receive/automatic-listing invalidation retains original native Elapsed/duration/Timeout instead of masking it with a new invalid-client Protocol. Empty usable idle retry, explicit page-key precedence/cached matches/selection/helpers/outputs stay. Full92892 terminal0:2364Rust/13Python, CLI759/Core1443/public52, zero failures/two existing ignored and every section11 split gate PASS. Setup/whole-flow/cached due admission/pinned signal/join/output/independent cleanup, interactive/server owners and other L01/L02–L04/Q04/classes5–9 remain. All31 active;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun; host is not device or decoder/peak/performance evidence."
+    },
+    {
       "id": "linux-webinspector-cache-lifecycle-20d6fc5",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

@@ -453,6 +453,18 @@ model/selector/dependency/ACK/retry/task is added. Frontend/server whole-flow
 owners still remain. See
 [WebInspector cache fixtures](validation/webinspector-cache-lifecycle-2026-10-05.md).
 
+CLI application/page discovery now treats an issued timeout as ordinary idle
+only while the supplied client remains usable. Partial header/body or blocked
+automatic listing expiry returns its original native Elapsed/Timeout instead
+of retrying on the invalid client and replacing the primary with Protocol.
+No retry consumes a late reply. Empty usable idle still retries; successful
+selection and cached matches preserve their previous behavior. Seven actual
+supplied-stream fixtures cover both workflows, including EOF/plist/resource
+sources and explicit page-key precedence. Existing helpers/deadlines/outputs
+stay; this does not certify frontend setup/whole-flow/signal/join/cleanup or
+decoder bounds. See
+[WebInspector discovery fixtures](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,
 and late/fragmented/blocked-send cases for each owner. L02–L04/Q04 and platform/

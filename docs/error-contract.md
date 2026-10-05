@@ -115,6 +115,16 @@ limit diagnostics. Logical count/byte admission does not certify decoder peak
 or retry/remote cleanup. See
 [WebInspector cache error evidence](validation/webinspector-cache-lifecycle-2026-10-05.md).
 
+CLI wait_for_application/wait_for_inspectable_page now return a terminal issued
+Timeout directly when the client was invalidated by partial receive or automatic
+listing writes. Original native Elapsed/duration and Timeout classification
+survive; another request can no longer mask the primary with local Protocol.
+Empty usable idle keeps its retry policy. Native EOF, plist and ResourceLimit
+still retain their original families/sources; selection and diagnostics stay.
+This narrow adapter change does not certify other frontend whole-flow/cleanup
+owners. See
+[WebInspector discovery error evidence](validation/webinspector-discovery-lifecycle-2026-10-05.md).
+
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
 return static Protocol before I/O, including owners already queued on the mutex.

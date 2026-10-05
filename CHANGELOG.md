@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve the original WebInspector CLI discovery timeout after partial input
+  or blocked automatic listing. Retry idle discovery only while the client
+  permits reuse, retaining original native sources and page selection. See
+  [WebInspector discovery migration](docs/validation/webinspector-discovery-lifecycle-2026-10-05.md).
 - Bound WebInspector application/page caches and flattened page snapshots by
   local counts and logical JSON bytes. Admit complete updates before replacing
   caches, preserve duplicate-event order, and release removed payloads/capacity.
