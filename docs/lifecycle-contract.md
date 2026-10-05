@@ -415,8 +415,8 @@ state before append/restoration. Complete owners restore original ordering;
 committed cancellation discards skipped state and drops pending capacity. Cached
 pop releases its byte accounting. Typed private local limits remain ResourceLimit
 under Io; checked u64 counters admit MAX once and never wrap/reuse. Logical bytes
-are not RSS/peak-memory evidence. Application/page metadata remains a separate
-bounded-state task.
+are not RSS/peak-memory evidence. That session profile deferred application/page
+metadata to the subsequent cache profile below.
 
 Finite scopes inherit their original absolute deadline through nested sends,
 startup, timed socket/event reads and automatic listing writes. Scope Drop restores
@@ -426,6 +426,32 @@ Due priority and cooperative codecs stay. No remote ACK/cleanup/retry or reader
 task is added; frontend/server setup/total/signal/join/output/primary-cleanup and
 multi-command workflow owners remain pending. See
 [WebInspector session fixtures](validation/webinspector-session-lifecycle-2026-10-05.md).
+
+Received metadata now has LOCAL caps:1024 applications,1024 page application
+sets (including empty/orphan sets),4096 aggregate cached pages,4096 raw entries
+per listing and1024 raw application-list entries. Combined compact JSON for
+availability/applications/page sets includes keys, duplicate model IDs,
+containers, escaping and UTF-8, capped at16MiB. A separate16MiB flattened
+ApplicationPage projection prevents copying a large application for every page.
+Staged maps and the duplicate-preserving listing Vec each have16MiB admission
+before insert/clone/append; raw count admission precedes collection reservation.
+
+Borrowed projections replace old values for accounting without cloning the full
+cache/snapshot or allocating encoded JSON. Rejected updates do not partially
+replace a snapshot. Successful connected snapshots remove absent page owners;
+page replacement drops the old map; disconnect removes both owners and empty
+tables drop capacity. Original listing-event duplicates/order and cached last
+value/first ID order remain. Complete routing rejection is typed ResourceLimit
+under existing Io and invalidates/drops owned client metadata/pending state.
+
+These are local admission policies, not device limits, RSS, allocator/decoder
+peak, recursion/object-reference expansion or performance evidence. Actual
+binary plist shared-string fixtures fit the unchanged16MiB wire ceiling but
+expand before model/cache admission; decoded allocation/CPU bounds remain
+L01/Q04 work. Codecs/counting remain cooperative. No public API/error variant,
+model/selector/dependency/ACK/retry/task is added. Frontend/server whole-flow
+owners still remain. See
+[WebInspector cache fixtures](validation/webinspector-cache-lifecycle-2026-10-05.md).
 
 Remaining L01 work includes other service/protocol deadlines and cancellation
 state, cleanup-primary retention and bounded stream/task ownership for other clients,

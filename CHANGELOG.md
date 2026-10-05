@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound WebInspector application/page caches and flattened page snapshots by
+  local counts and logical JSON bytes. Admit complete updates before replacing
+  caches, preserve duplicate-event order, and release removed payloads/capacity.
+  Resource rejection keeps the existing typed Io/ResourceLimit family and
+  invalidates the receiving client. See
+  [WebInspector cache migration](docs/validation/webinspector-cache-lifecycle-2026-10-05.md).
 - Share one WebInspector correlated-command/attach deadline across sends and
   replies; invalidate abandoned committed sessions to reject late responses.
   Bound pending/skipped events by count and logical JSON bytes, check full-range

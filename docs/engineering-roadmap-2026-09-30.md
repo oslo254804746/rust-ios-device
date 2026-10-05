@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6232,3 +6232,74 @@ server lifecycle，然后其他L01、L02–L04/Q04及第五至九类。Capabilit
 既有evidence不变，只追加hostevidence。22device NOT_RUN，Chromium/installed3.9/3.13
 未重跑；platform/device/credentials/protocol条件继续。无subagents/referenceedit/push/
 publication/historyrewrite，hostprofile不完成L01/第四类/总体goal。
+
+### 大类 4：L01 WebInspector metadata / staging / snapshot admission（2026-10-05）
+
+| 必填字段 | 实际交付与边界 |
+| --- | --- |
+| 任务/范围/状态 | L01/class4/all31 active；application/page/availability组合cache、staged map/listing Vec和flattened snapshot LOCAL count/logical-byte admission与释放主机子范围验收，不完成L01/本类/总体 |
+| 受测实现 | `20d6fc5774e9f2bfdc243de194ee7e62f084967c`，基于 `602ef1d3780ab2e4a5f72aa62260ac2fa45c56d6`；明确5source/test files，1168+/11-；新16internal+1external，原client/public consumer及前两lifecycle/session断言byte-identical |
+| 合同/迁移 | [专题验收](validation/webinspector-cache-lifecycle-2026-10-05.md)、[生命周期](lifecycle-contract.md)、[公开接入](public-contract.md)、[错误](error-contract.md)、CHANGELOG/quality/Q01单项host evidence；固定LOCAL限制为pre-1.0行为变化，需release review，不升级maturity |
+| 主机验证 | Linux x86_64/Rust1.97.1/MSRV1.80.1/Python3.12.13；full45509 terminal0，第11节Rust/Python拆分全部PASS：2357Rust/13Python，CLI752/Core1443/public52，0FAIL/2既有ignored。Final narrow/minimum17；Core96+public5+integration1=102/CLI40/minCLIalltargets/actualoriginalstack5/strictCoreCLIClippy/fmt PASS；tooling59/actualhelp118/raw38/host5/CLI55/backup3及全部制品/文档/C检查PASS |
+| 实际剩余 | WebInspector CLI/CDP/WebDriver/server setup/whole-flow total/pinned signal/join/output/primary cleanup继续；decoded plist object-reference expansion/recursion/allocation peak/CPU preflight与fuzz属L01/Q04未验收；其他协议/raw borrowed/multi-request/long streams/manual pairing/blocking资源、L02–L04/Q04及第五至九类继续。22device NOT_RUN；Chromium/installed3.9/3.13未重跑；host不替代platform/device/credentials/protocol条件 |
+
+固定LOCAL caps为1024applications/rawappentries/pageapplicationsets（含empty/orphan）、
+4096aggregatecachedpages/rawlistingentries。Availability+applications+application_pages
+组合compactJSON上限16MiB，包含mapkeys/duplicatedmodelIDs/containers/escaping/UTF8；
+stagedmaps与duplicate-preservinglistingVec各16MiB。额外flattenedApplicationPage
+projection16MiB，在cacheadmission前约束同一大application被每page重复copy的放大。
+这些不是Apple/device协议上限，不是RSS/allocator/peak/CPU/latency/throughput证明。
+
+Rawcount在reserve/per-entryparse前拒绝，staging以checkedreplace/sub/add计数后才
+insert/clone/append。Borrowedprojection计算替换后组合cache/snapshot，无完整旧snapshot
+clone或encodedJSON副本。拒绝不partialmutate旧snapshot；successlistingevent保留原
+duplicateorder，cachelastvalue/firstIDorder保持；connectedsnapshotabsentpageowner释放、
+emptytableDrop/survivoroutershrink，page替换Drop旧map，disconnect释放两cachepayload/
+budget并Dropemptycapacity。原自动listing每uniqueID一次保持。
+
+CompleteincomingroutingResourceLimit通过既有eventowner失效/dropmetadata/pending，
+discovery不吞成idle成功，之后guardedIO拒绝。PrivateWebInspectorLimit精确typed分类
+仍在IoOther下，6publicvariants保持，无stringmatch/OutOfMemory/其他decoder替代；
+resource diagnostics仅resource/limit，不带app/title/URL。Privatehandler测试只为查看
+admission前无mutation，绕过frameowner的usable状态不是publicreuse合同。
+
+实际测试包括1025跨frameapp增长、rawoversizedmalformedapp/listcount优先、1024empty/
+orphanpageowners、4096/4097跨app和实际跨framepages、exact16MiB组合metadata与
+Unknownavailability/keys/JSONescape/Unicode、替换缩小/re-admit/disconnectcapacity、
+duplicateIDs/eventcacheorder/oneautomaticsend/absentowner释放、flattenedboundary或
+1bytebelow及下一namechar拒绝、actual8MiBapp+2smallpages拒绝和stagedduplicateVec。
+Actualbplist00共享8MiB字符串frames均assert<16MiB，分别拒绝stagedappmap/listingVec；
+publicSend/exhaustive6variants/ResourceLimit/Io/clearedmetadata/后续readwrite无IO保持。
+10souterbounds；无baseline-wideoldsourcecontrol/device/browser/OSsignal/benchmarkclaim。
+
+验证轨迹如实保留：firstnarrow75451 terminal0为13PASS；加入实际binary/aggregate/public
+fixtures后33329 terminal0为17PASS，本profile无compile/runtimefailure。Sequentialgates
+全部exit0，minimum17/Core102/CLI40/minCLI/stack5/strict/fmt PASS。Full45509 terminal0
+为2357Rust/13Python，workspacefmt/check/strictClippy/MSRV、66features/4runtimegroups、
+7+7doctests/3snippets、CABI、3.12wheel/sdistbuild/install/import、tooling59/help118/raw38/
+host5/CLI55/backup3全部PASS。22device NOT_RUN，Chromium/installed3.9/3.13未重跑。
+所有已有build/test terminal后才edit或启动另一pipeline，观察超时不算进程退出。
+
+FocusedCLIcacheclean仅在allbuilds terminal时执行：initial1301files/5.1GiB（free1.9GiB
+before/5.7GiBafter）；prefull446files/1.7GiB（3.5GiBbefore/5.3GiBafter）；full后约695MiB。
+无source/reference删除或storagefailure。五文件freezeSHA256
+`987d5836c804bdba0cde773311c3726d2b08af787ca9bb1f61c96de4ee5f52b7`；iosbinarySHA256
+`75af15d7cb44043e82dc630583077d90b38c61e9cba73a5e7a50563c559b6fcd`。
+Actualcommitpatch与freeze/full精确一致，logs/audits使用/tmp/ios-l01-webinspector-cache-。
+
+Lockedplist1.7.1binarywriter共有scalarreferences；这些合法smallframes可在decoder展开，
+raw16MiB检查先于plist::Value解析，model/cacheadmission在解码之后。故decoderpeak/
+recursion/object-referenceexpansion/CPU仍待证据和preflight/fuzz，计数/codeccooperative；
+不能声称全部allocation有界。Wire/model/selector/rawhelper/mapping/defaultNone/public
+signatures/rootpaths/businessmatching/frontend/dependencies和referenceHEAD/status不变。
+
+全部31主任务/subtasks/历史prefix保持，仅当前L01overview与末尾交付追加；9完成/
+11未开始/11进行中或待验收条件不变，118capability正文/maturity/prior evidence保持仅
+加hostentry。接着frontend/serverowner，再其他L01、L02–L04/Q04和第五至九类；禁止
+subagents/referenceedit/push/publication/historyrewrite，host不完成本类或总体goal。
+
+八文档audit PASS：7Markdown/340locallinks与source/actualCLIhelp118 inventory；
+all31task/subtask/historyprefix和118capability正文/maturity/prior evidence保持，
+仅L01overview/末尾交付/单项hostentry追加。Exactcommitted/frozensource/binary/
+full/narrow/gates/cachecleanprovenance匹配，文档期间productsource未改，reference
+HEAD/status不变。L01/class4/overallgoal active，继续独立可执行frontend工作。

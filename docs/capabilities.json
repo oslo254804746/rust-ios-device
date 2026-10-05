@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-cache-lifecycle-20d6fc5",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Owned actual repeated application frames and cross-frame aggregate pages; raw malformed oversized lists; empty/orphan sets and replacement/disconnect release; duplicate listing-event versus cache order and unique automatic listings; exact combined metadata/flattened snapshot logical JSON boundaries; actual binary shared8MiB strings below16MiB wire ceiling; discovery/public Send/exhaustive families/typed ResourceLimit/later no-IO rejection"],
+      "required_state": ["Five source/test files; sixteen internal/one external new tests. First narrow13 and final17 PASS with no compile/test failure; minimum17/Core96+public5+integration1=102/CLI40/stack5/minimum CLI/strict gates PASS. Old client/public consumers/previous lifecycle/session assertions byte-identical; wire/models/selectors/mappings/variants/frontends/dependencies/reference HEAD/status preserved. No device/browser/OS signal/baseline-wide old-source control/benchmark/RSS/decoder peak/other-platform acceptance; maturity unchanged"],
+      "tested_commit": "20d6fc5774e9f2bfdc243de194ee7e62f084967c",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-cache-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "LOCAL1024 applications/raw app entries/empty-orphan page sets,4096 aggregate pages/raw listing entries;16MiB combined availability/app/page compact JSON and each staged map/listing Vec; separate16MiB flattened ApplicationPage projection prevents repeated application-copy amplification. Borrowed checked projection before cache mutation, count before reserve, replacement/disconnect/absent-owner payload-budget release and empty capacity drop. Duplicate-event/cache ordering stays; private typed ResourceLimit under Io invalidates receiving owner and rejects later IO. Full45509 terminal0:2357Rust/13Python, CLI752/Core1443/public52, zero failures/two existing ignored and every section11 split gate PASS. Logical metrics do not certify simultaneous copies/RSS/decoded object-reference expansion/recursion/CPU; decoder preflight/fuzz remains L01/Q04. Frontend/server setup/whole-flow/signal/join/output/primary cleanup and other L01/L02–L04/Q04/classes5–9 continue; all31 active with22device NOT_RUN, Chromium/installed3.9/3.13 not rerun."
+    },
+    {
       "id": "linux-webinspector-session-lifecycle-8011749",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

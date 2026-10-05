@@ -71,9 +71,29 @@ Finite scopes inherit through nested sends/startup/timed reads/automatic listing
 so MAX can be clamped without inner overflow; exiting restores independent
 configuration. Old internal timing assertions remain test-only. Default None,
 wire/models/selectors/business parsers/frontends and old consumers stay. These
-pre-1.0 timing/reuse/resource migrations need release review. Application/page
-cache bounds, multi-command workflows and frontend cleanup remain pending. See
+pre-1.0 timing/reuse/resource migrations need release review. That profile
+deferred application/page cache bounds; multi-command workflows and frontend
+cleanup remain pending. See
 [WebInspector session acceptance](validation/webinspector-session-lifecycle-2026-10-05.md).
+
+The cache profile keeps all public signatures/models/serde, six error variants,
+root paths and successful event/snapshot ordering. Incoming application/page
+metadata now has fixed LOCAL counts and16MiB logical compact-JSON limits,
+including scalar availability and map keys; raw lists and staged collections
+are admitted before growth. open_pages_snapshot keeps returning Vec but the
+corresponding flattened projection is separately admitted against16MiB before
+caching, limiting repeated application copies across pages. Oversized complete
+updates return existing Io with private typed ResourceLimit and invalidate the
+receiving client; discard its sessions and construct a fresh client/session.
+
+Duplicate page events keep their original order; cached duplicate IDs retain
+the last value in first-ID order. Replacement/disconnect release count/byte
+budget and owned removed payloads, with empty tables dropped. These fixed
+pre-1.0 admission changes need release review. They are not device limits,
+RSS/peak-decoder/recursion/object-reference/performance or retry guarantees;
+the unchanged wire bound is checked before plist decoding, whereas model/cache
+admission follows it. Frontend cleanup and further L01/Q04 remain. See
+[WebInspector cache acceptance](validation/webinspector-cache-lifecycle-2026-10-05.md).
 
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners

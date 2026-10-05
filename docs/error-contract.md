@@ -101,6 +101,20 @@ rules, startup Disabled mapping and safe diagnostics stay. Local categories or
 queue release do not certify remote cleanup, retry or measured memory. See
 [WebInspector session error evidence](validation/webinspector-session-lifecycle-2026-10-05.md).
 
+WebInspector metadata/snapshot/staging count and compact-JSON byte rejection
+also uses the existing private WebInspectorLimit typed ResourceLimit under Io
+Other. The six variants remain exhaustive; no string matching, OutOfMemory or
+unrelated decoder source is substituted. Raw list counts are checked before
+parsing individual entries, so an oversized list rejects ResourceLimit even if
+its entries would otherwise be malformed. Smaller malformed input retains the
+original parser source. Admission precedes cache mutation; complete receiving
+routing failures invalidate/drop owned state, and discovery cannot turn them
+into successful idle snapshots. Later guarded IO rejects local invalid reuse.
+No application identifier/title/URL or metadata payload is included in local
+limit diagnostics. Logical count/byte admission does not certify decoder peak
+or retry/remote cleanup. See
+[WebInspector cache error evidence](validation/webinspector-cache-lifecycle-2026-10-05.md).
+
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
 return static Protocol before I/O, including owners already queued on the mutex.
