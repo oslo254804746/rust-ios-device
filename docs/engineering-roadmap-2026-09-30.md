@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -7000,4 +7000,70 @@ cleanup/active totals/terminal retention/resourcecaps仍保留；其他L01/L02�
 9完成/11未开始/11进行中或待条件保持。无Apple ACK/rollback/retry/asyncDrop/server
 join/platform/benchmark/RSS/decoder peak认证；本地代码后独立文档收尾提交，
 总体goal active，继续余下owners与manager等可执行范围。
+无subagent/push/publication/history rewrite/reference edits/device/Apple操作。
+
+### 大类 4：L01 WebDriver typed revocation cleanup results（2026-10-05）
+
+受测实现：`bf2da2dcef7106a16b19f0bd355e80b0e998b642`，基于
+`f306e1228edfde78a0c9180f4be10aa580781101`。Linux x86_64，Rust1.97.1/
+MSRV1.80.1，Python3.12.13。[专题证据](validation/webdriver-revocation-2026-10-05.md)。
+L01/第四类/全部31项继续active；本次只交付typed callback/returned-result范围。
+
+实际WebDriver registration直接传existing stop_selenium_runtime_until给
+insert_with_budget。Actor在条目retirement后创建一个checked100ms Budget，
+runtime mutex/original Automation context/forwarding cleanup共享绝对deadline，
+无外层竞争timer。原业务Protocol主错误不会在pending forwarding flush expiry
+时丢失，原PermissionDenied/Elapsed及双causes保留经NativeJoinHandle<Result<()>>
+和TaskOwner.join/reap转移，无后续await。Native Normal exit可携带cleanup Err，
+不代表成功；unexpected nativejoin flags/classification保持，issued abort cancel
+中性。既有safe error_message tracing label扩为automation session closed with
+error，不增加HTTP/schema/route/status/success/API字段。Timing/diagnostic修正
+保留pre-1.0 release review/真机条件。期限不包含先行map wait/server shutdown。
+
+六文件380+/20-、八新测试。去旧unit log adapter；legacyunitinsert仅cfgtest
+Budget.drive适配原hostfixtures，runtime.stop/durationcleanup wrapper只加cfgtest
+而函数体不变。原DELETE/stop_until/typedmutexhelper/sharedprotocol cleanup、
+constructor/active methods、retirement/admission/全部assertions保留；原Tokio
+helper只补Ok以匹配nativeResult。Core/public/access/deps/其他owners不变，无新
+task/source/backend/protocol operation。已知主错误在callback尚未返回时若store
+abort仍待处理，不能宣称覆盖generic asyncDrop/全部request Arcs。
+
+八fixture均actualprotectedproduct selenium_router POST+ownedAutomationpeer，
+七个actualHTTP/auth/reload和一个actualGrantExpiry3s；private observe消耗实际
+actor nativeResult，非替代cleanup/生产日志capture/serverjoin。覆盖normal/expiry
+original context+forwarding close、nativeflushIO、realdefault100ms Elapsed、
+businessprimary+nativeIO/business+Elapsed、mutex占满预算zero cleanup/armedflag
+未disarm、stalledcontext invalidclient跳过forwarding recovery。原IDs1/2、matching
+close counts、calls1/Drop/peer trace/fixturelistenerjoin与safeformatter无synthetic
+DEVICE/TOKEN/session泄漏被观察；fixtureArc显式释放不代表取消所有inflight requests，
+close/flush不是Apple ACK/设备证据。
+
+首82798 terminal0：8PASS；首frozen94556 terminal101：19precedinggatesPASS，
+strictdeadcodeFAIL仅剩cfgtest使用的private durationwrapper，fullNOT_STARTED。
+确认权威exit/no live builds后唯一修正为wrapper加cfgtest/body不变，archived5
+source bytes与sharedowner原baseline及精确修正已审查。Corrected98957 terminal0：
+all25gates PASS，源码冻结至真实进程退出，观察超时不算退出。
+
+8/min8、store13/DELETE9/oldscope2/browser23/pagelease7/WDcleanup8/direct5/setup15/
+page5/finite21/shell31、CLI192/access29/Core102/core-min17、minimumCLIalltargets/
+原stack5/strictClippy/fmt、.venv tooling22/binary/actualCLI95/§11full全部PASS。
+完整Rust/Python拆分2509Rust/13Python，CLI904/Core1443/public52，0FAIL/2既有ignored。
+Workspacefmt/check/strict/MSRV、66features/4groups、7+7docs/3snippets、CABI、
+Python3.12wheel/sdistbuild/install/import、tooling67/help118/raw38/host5/CLI95/
+backup3 PASS；22device NOT_RUN，Chromium/installed3.9/3.13未重跑。
+
+Source patch SHA256：
+`8466c0b69a65828974ee3b14a72c7ce513a410a6b2b95a6aee27a609d1d43592`。
+Actual ios binary SHA256：
+`9a8b97ff270f422e9585129b4b6432812be812f0db976282d0ac4bcfdcc6e513`。
+Commit=frozen source；durablefirst/correctedgates/failedattempt/sourcebytes/native
+hashes/audits在ignored `target/validation/webdriver-revocation-2026-10-05/`，
+referenceHEAD/status不变。
+
+先行map wait/knownprimary beforecallbackReturnwhenStoreabort、activeArcs/idle
+completedhandles/caller-serverDrop/constructorprimary/active totals/terminal-caps
+与其他L01/L02–L04/Q04/第五至九类继续。全部31项/子任务/history、118capability
+正文/maturity/prior证据及9完成/11未开始/11进行中或待条件保持，无Apple ACK/
+rollback/retry/asyncDrop/serverjoin/platform/benchmark/RSS/decoderpeak认证。
+代码后独立文档收尾提交，持续推进其余L01和manager隔离等独立范围，总体goal active。
 无subagent/push/publication/history rewrite/reference edits/device/Apple操作。

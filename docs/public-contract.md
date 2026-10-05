@@ -1115,3 +1115,16 @@ existing100ms total now also includes this map-removal join wait. This timing
 correction needs pre-1.0 release review and device evidence. Generic Drop,
 legacy callback errors, in-flight request Arcs and server shutdown remain
 separate. See [watcher migration](validation/session-store-2026-10-05.md).
+
+### WebDriver revocation cleanup timing/diagnostics (2026-10-05)
+
+After retiring the entry, the watcher creates one checked100ms cleanup Budget
+and passes it to the existing typed runtime helper. Runtime mutex and original
+context/forwarding cleanup consume that deadline. The old unit log adapter and
+competing outer timer are removed from this production path. Returned native
+primary/secondary errors survive through the owned join/reap and existing safe
+tracing. This timing/diagnostic correction needs pre-1.0 release review and
+device evidence. Constructor, DELETE, routes, successful payloads, HTTP schema,
+authorization and public Rust/C/Python surfaces stay. This total starts after
+entry retirement; preceding map wait and server shutdown remain separate. See
+[revocation migration](validation/webdriver-revocation-2026-10-05.md).

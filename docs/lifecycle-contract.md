@@ -716,3 +716,32 @@ idle handle reclamation without API calls, caller/server shutdown, constructor
 primary cleanup, active totals, terminal retention and resource caps remain.
 Other L01/L02–L04/Q04/classes5–9 continue; no async Drop/Apple ACK/retry/platform/
 performance/RSS/decoder peak acceptance.
+
+### WebDriver typed revocation callback (2026-10-05)
+
+The production registration now supplies stop_selenium_runtime_until directly
+to insert_with_budget. After original entry retirement, the actor creates one
+checked100ms cleanup Budget and invokes that Result callback without a competing
+outer timer. Existing mutex admission, original Automation context and forwarding
+cleanup use the same deadline. Native JoinHandle<Result<()>> keeps callback
+failure through normal task exit, and its existing owner retains/transfers that
+result on join/reap. Native task normal/abort/unexpected classifications remain;
+normal exit does not imply cleanup success. No extra task/source/protocol action.
+
+The old unit log adapter is removed; legacy unit insert is now a cfg(test)
+Budget.drive adapter for existing host fixtures. Runtime.stop and the private
+duration cleanup wrapper become cfg(test) with bodies intact. Actual DELETE,
+stop_until, shared protocol cleanup, constructors/active work, retirement and
+all earlier assertions stay. Eight new fixtures create actual protected product
+Selenium sessions, seven reload through the actual HTTP endpoint and one awaits
+actual grant expiry. Private native-result observation checks original errors,
+default expiry, unchanged IDs and owned release. Fixture Arc release and listener
+joins do not certify cancellation of all requests or product server supervision.
+See [typed revocation evidence](validation/webdriver-revocation-2026-10-05.md).
+
+This covers the earlier unit callback/outer-timer error gap. Map wait before the
+callback total, known primary before callback return if store aborts, active
+request Arcs, idle completed handles, caller/server Drop, constructor primary
+cleanup, active totals, terminal retention and resource caps remain. Other
+L01/L02–L04/Q04/classes5–9 continue; no device/Apple ACK/async Drop/server join/
+retry/platform/performance/RSS/decoder peak acceptance.

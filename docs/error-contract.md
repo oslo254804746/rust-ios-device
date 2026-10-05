@@ -1847,3 +1847,23 @@ This covers task joins only. The unchanged unit revocation callback/outer100ms
 timer still needs native protocol cleanup primary/secondary retention. Idle
 completed handles await the next registry call or Drop; generic Drop aborts
 without an async join. See [watcher errors](validation/session-store-2026-10-05.md).
+
+### WebDriver revocation cleanup Result (2026-10-05)
+
+The actual WebDriver registry callback now returns Result through its native
+JoinHandle<Result<()>>. Normal native task exit can contain cleanup failure;
+it is not a success claim. The watcher owner retains that original result until
+join/reap transfers it without another await. Native PermissionDenied flush IO,
+issued mutex/context/socket Elapsed and business Protocol primary plus original
+secondary IO/Elapsed remain downcastable. No outer timer races the combined
+cleanup result. Previously a unit adapter logged the error and its outer timer
+could discard a known business primary while forwarding close was pending.
+
+Registry reports use existing safe error_message and the broader tracing label
+automation session closed with error; unexpected native join flags/categories
+stay. No new HTTP fields/status/body/exit schema is introduced. The private
+actor result observer tests real product creation/reload/expiry with owned plist
+streams; it does not certify captured production logging or device cleanup.
+Map wait before callback budget, known errors before callback return during
+store abort and generic Drop/server supervision remain. See
+[revocation errors](validation/webdriver-revocation-2026-10-05.md).

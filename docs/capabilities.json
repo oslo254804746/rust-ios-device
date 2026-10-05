@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webdriver-revocation-bf2da2d",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Eight actual protected product selenium_router POST session creations over original owned Automation plist peer/source; seven actual HTTP /auth/reload and one actual synthetic grant expiry3s. Private observer consumes actual native actor Result, matching original create/close IDs1/2, forwarding count, source call1/Drop/peer trace and safe error_message; fixture listener joins are not product supervision."
+      ],
+      "required_state": [
+        "Six source files/eight new tests.82798 first8PASS. First frozen94556 terminal101 nineteenPASS/strictprivate durationwrapper deadcodeFAIL/fullNOT_STARTED; sole cfg(test) wrapper correction/body unchanged, archived first5source bytes/shared owner baseline audited. Corrected98957 terminal0/all25gates:8/min8/store13/delete9/oldscope2/browser23/lease7/WD8/direct5/setup15/page5/finite21/shell31/CLI192/access29/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tools22/CLI95/full. Original assertions/admission/retirement/DELETE/runtime helpers/constructors/shared protocol/core/public/access/deps preserved; cfg wrappers/old unit adapter removed/old native helper adds Ok only."
+      ],
+      "tested_commit": "bf2da2dcef7106a16b19f0bd355e80b0e998b642",
+      "date": "2026-10-05",
+      "location": "docs/validation/webdriver-revocation-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Actual WebDriver typed callback after map retirement creates one100ms Budget through existing runtime mutex/original context+forwarding cleanup WITHOUT outer competing timer. NativeJoinHandle<Result<()>>/TaskOwner retains returned PermissionDenied/Elapsed and original business primary plus cleanup IO/Elapsed through join/reap; native normal exit can contain failure. Existing safe tracing with broader sessionclosed label; no HTTP/schema/route/success/API change. Full2509Rust/13Python,CLI904/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Budget starts after retirement; map wait/known error before callback return if store aborts/active Arcs/idlehandles/server/caller Drop/constructor-active totals/terminal-caps remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
+    },
+    {
       "id": "linux-session-store-7fb827b",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

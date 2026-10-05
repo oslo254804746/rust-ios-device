@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve WebDriver revocation cleanup results through the owned watcher join.
+  Runtime mutex, context close and forwarding close share the existing100ms
+  callback total; known business/native cleanup causes survive pending flush
+  expiry. See [revocation evidence](docs/validation/webdriver-revocation-2026-10-05.md).
 - Retain WebDriver session watcher handles after registry removal. Explicit
   removal/replacement aborts and joins the watcher; cancelled waits can resume,
   and registry calls reap completed revocations without a task joining itself.
