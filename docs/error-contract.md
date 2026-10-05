@@ -142,6 +142,21 @@ no rollback, retry or remote cleanup ACK is implied. Core error variants and
 final machine envelope stay. See
 [WebInspector command error evidence](validation/webinspector-command-lifecycle-2026-10-05.md).
 
+Interactive js-shell now uses the same checked admission and native timer/signal
+sources. Setup cancellation is typed Cancelled and exits1. After setup, a
+successful directly owned Ctrl+C signal is a normal stop; failed signal
+registration remains a native error. Completed JavaScript or remote-response
+business errors may produce the existing error records and continue. Native
+wire, deadline, codec, input or output failures stop even when continue-on-error
+is enabled, retaining the first source instead of attempting an invalid client.
+
+Session teardown and explicit stdin flag restoration both preserve a primary
+failure and their own cleanup failures. Cleanup failure after an otherwise
+successful stop returns failure; prior stdout records remain emitted. Native
+EOF retains its observed IO source/class rather than being relabeled from prose.
+The final machine envelope and error variants stay. See
+[WebInspector shell error evidence](validation/webinspector-shell-lifecycle-2026-10-05.md).
+
 Companion's shared operation guard preserves the original native/frame error
 while invalidating local client/listener/forwarding reuse. Later guarded paths
 return static Protocol before I/O, including owners already queued on the mutex.

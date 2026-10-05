@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6416,3 +6416,54 @@ L02–L04/Q04与第五至九类。无subagent/push/publication/historyrewrite/re
 task/subtask/historyprefix及118capability正文/maturity/prior evidence保持。Exact
 source/binary/freshfull13gates/current21tests匹配，文档期间无product edits，references
 HEAD/status不变。L01/class4/overallgoal active。
+
+### 大类 4：L01 interactive WebInspector shell ownership（2026-10-05，整类进行中）
+
+实现与受测提交：`8ac37b7d52ce74dc29c6f11e06c82bcffba879fc`，基于
+`26de9e25b93be089832e843fc012ab4766dbd842`；证据见
+[WebInspector shell lifecycle](validation/webinspector-shell-lifecycle-2026-10-05.md)。
+17 个变更文件（18 个 frozen paths，包含 source rename），2751 insertions/865 deletions。
+L01/class4/全部31 tasks 保持 active；本记录是主机子 profile，非真机或整类出口。
+
+| 字段 | 实际交付与边界 |
+| --- | --- |
+| 任务与范围 | L01 js-shell frontend：input/default/connect/start/Safari/discovery/attach/navigation/metadata 共用 checked setup total；之后 idle unbounded/cancellable，每条 expression/interpretation/output 新建 total；one pinned signal 贯穿全部阶段 |
+| 实际变更 | ready blank input yield；每次协议阶段刷新 remaining client cap；continue-on-error 仅继续 complete JS/remote business response；native wire/deadline/codec/input/output 停止并保留 source，不复用 invalid client 或重试 late reply |
+| 信号与清理 | setup Ctrl+C typed Cancelled/exit1；active successful Ctrl+C 为 normal stop，failed registration 保留 native IO；fully attached usable session 才执行 independent5s existing socket teardown；保留 primary/session cleanup/stdin restoration，正常 stop 也可能因 cleanup 退出1；stream/device guards 保持到 cleanup，未完成 attach/invalid client 不猜 recovery |
+| Linux input | owned AsyncFd pipe/TTY，无 detached blocking read；dup shared status flags 明确恢复，Drop best-effort；preexisting nonblock 不变；regular file cooperative/dev-null EOF/unpollable dev-zero 保留 native registration failure；macOS/Windows 仍用旧 Tokio stdin，取消/退出实现及验收待条件 |
+| 兼容与源码审查 | session/result/error compact JSON、human stdout/stderr/prompt/EOF/exit、full Runtime response、page-key/Safari/URL encoding 保留；original task/shell modules、14 finite assertion functions、control source/tests byte-identical；shared Session/cap/cleanup 仅移动/private visibility/fmt/trailing comma，无 logic change；core/bindings/public variants/wire/server access policy 不变；Cargo.lock 仅 existing libc CLI Linux edge，无版本/checksum 升级 |
+| 历史失败 | first compile101/7 test temporary-borrow errors/no tests；second narrow23PASS/2FAIL（native EOF class 与 cleanup source traversal 的 fixture assumptions）；修正后 third31PASS。Pipeline74954 最小/finite/CLI/Core/core-min/minCLI/stack PASS 后 strict Clippy101（test-only JSON import）；cfg(test) 修正。不计为当前通过 |
+| 审查后的真实验证 | preceding pipeline69263 all14/full2416Rust/13Python PASS；提交前发现 child-ready marker 位于 metadata publication，收紧到 actual first input poll，only interactive/tests.rs 改变，product bytes 保持；current reviewed pipeline44479 authoritatively terminal0，all14 gates 和 section11 full PASS |
+| 当前窄检查 | shell31/min31、unchanged finite21、CLI99、Core96+public5+integration1=102、core-only webinspector minimum17、minimum CLI all-targets、original stack5、strict Core/CLI Clippy/fmt、targeted tooling22、binary/actualCLI95 PASS；CLI dependency full 与 core-only minimum 分开 |
+| 完整统一入口 | 2416 Rust/13 Python，CLI811/Core1443/public52，0 FAIL/2 existing ignored；workspace fmt/check/strict/MSRV1.80.1、66 features/4 runtime、7+7 doctests/3 snippets、C ABI、3.12 wheel/sdist install/import、67 tooling/118 help/38 raw/5 host/95 actualCLI/3 backup PASS |
+| 主机 fixtures | 23 shell +8 Linux input tests；owned plist stream/private Source/input/writer，fake Connection 无 forged ConnectedDevice；actual PTY/readiness/flags/registration error、stdin-only child/runtime exit；whole shell 在 first input poll 后接收真实 owned SIGINT、一次 cleanup、parent writer 仍打开时 child/runtime exit；10 new actual ios setup/default/zero/overflow/empty/stall/SIGINT cases，无设备服务或配对/Apple操作 |
+| 真实剩余 | CDP/WebDriver/server setup/request totals、revocation/primary cleanup/joined child owners，其他 L01 协议和清理；L02–L04/Q04 的 manager isolation、重连、resource/decoder expansion/depth/peak/CPU/fuzz/baseline；第五至九类所有子任务继续；22 device NOT_RUN、Chromium/installed3.9/3.13 NOT_RERUN，无 browser/其他平台/远端ACK/safe retry/long-run/RSS/decoder peak 或 baseline-wide old-source acceptance |
+
+当前唯一完整验收为 reviewed/ 下的 pipeline44479；root/ 和 final/ 的较早源码、
+失败及通过均保留各自 snapshot，不覆盖，不作为 latest fixture 的替代验收。
+Linux x86_64/Rust1.97.1/MSRV1.80.1/project Python3.12.13；统一入口：
+
+```sh
+python3 scripts/validate.py full --python /home/oslo/projects/rust-ios-device/.venv/bin/python
+```
+
+Durable ignored evidence：
+target/validation/webinspector-shell-2026-10-05/reviewed/。
+Source patch SHA256：
+`9385b45600f00f84590743dab1a8abbdfc18a29cb286d88784e50a81cd9553d4`。
+Actual ios debug binary SHA256：
+`ebebc83ddc3cfe282d3a4447fa1269636b7a7aa3701e45db47bbcf194abe7d7c`。
+Actual commit 与 frozen tested patch 精确一致；refs HEAD/status 不变，无 cache clean。
+Timing/zero/continue-on-error/cancellation/cleanup exit migration 留待 pre-1.0 review；
+host evidence 不替代平台、真机、凭据或协议条件，local write/flush 不等于 Apple ACK。
+
+全部31任务及subtasks、原交付历史prefix、118capability正文/maturity/prior evidence
+保持；9完成/11未开始/11进行中或待条件不变。仅L01 overview/末尾交付与单项host
+evidence追加。实现先单独提交，再文档收尾；总体目标保持 active，接着推进
+CDP/WebDriver/server owner、其他L01、L02–L04/Q04与第五至九类。无subagent/push/
+publication/history rewrite/reference checkout edits/device操作。
+
+文档 audit PASS：8 documents/7 Markdown/363 local links/source与actualhelp118；
+all31 task/subtask/history prefix、118capability正文/maturity/prior evidence保持。
+source/binary/full14gates/current31 tests匹配，文档期间无product edits，reference
+HEAD/status不变。总体goal仍为active，继续后续独立工作。

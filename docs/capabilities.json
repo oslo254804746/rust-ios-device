@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-webinspector-shell-lifecycle-8ac37b7",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Owned actual plist shell sessions with private device/input/output sources; Linux pipe/PTY/regular/dev-null/dev-zero readiness/flags; real test-binary shell SIGINT after first input poll and runtime exit with writer open; actual ios fake default ListDevices probes"
+      ],
+      "required_state": [
+        "Seventeen changed files/eighteen frozen paths;31 new Rust tests (23 shell/8 Linux input),10 new CLI cases and4 tooling tests. Current pipeline44479 terminal0:all14 gates, shell31/min31/finite21/CLI99/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/targetedtooling22/actualCLI95/full PASS. First compile and fixture source traversal/Clippy failures are historical. Prior69263 full passed before test-only first-input readiness refinement; product bytes unchanged. Original task/shell/fourteen finite assertion functions/control sources preserved; shared cleanup logic moves unchanged; Cargo.lock only existing libc edge. No forged ConnectedDevice or public synthetic backend; maturity stays experimental."
+      ],
+      "tested_commit": "8ac37b7d52ce74dc29c6f11e06c82bcffba879fc",
+      "date": "2026-10-05",
+      "location": "docs/validation/webinspector-shell-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Interactive js-shell checked setup covers input/default/connect/start/Safari/discovery/attach/navigation/metadata; one pinned signal, cancellable unbounded idle and fresh per-expression/output totals. Ready blank input yields. Setup Ctrl+C is typed Cancelled; active Ctrl+C normal stop; signal IO/native wire/deadline/codec/input/output stay primary and stop even with continue-on-error. Completed business responses can continue. Fully attached usable sessions clean under independent5s; primary/session cleanup/explicit stdin restoration errors retained; successful stop can exit1 on cleanup. Linux pipe/terminal ownership spawns no blocking reader; flags restore. Regular-file/output remain cooperative; other platforms retain prior Tokio stdin pending cancellation work. Full2416Rust/13Python, CLI811/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Local write is not Apple ACK;22device NOT_RUN, Chromium/installed3.9/3.13 not rerun. CDP/WebDriver/server/join, other L01/L02–L04/Q04/classes5–9 and all31 remain active."
+    },
+    {
       "id": "linux-webinspector-command-lifecycle-fa3d3f7",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

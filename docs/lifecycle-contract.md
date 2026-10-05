@@ -490,3 +490,32 @@ state, cleanup-primary retention and bounded stream/task ownership for other cli
 and late/fragmented/blocked-send cases for each owner. L02–L04/Q04 and platform/
 device evidence remain separate tasks. A local category or is_usable value is
 not evidence of device recovery or remote cleanup.
+
+Interactive WebInspector js-shell now owns selection through metadata under one
+setup total, then uses cancellable idle input and fresh per-expression totals
+covering command, interpretation and output. One pinned signal spans all phases.
+Ready blank input yields to cancellation. The client policy is refreshed before
+each operation, so expired setup/request caps do not govern normal idle input
+or the next expression. Continue only complete business responses; a native
+wire/codec/deadline failure terminates and cannot consume a late reply.
+
+Setup Ctrl+C is typed cancellation; active Ctrl+C is normal operator stop. Only
+completed attachment and a usable client authorize the existing forwarding
+socket close under separate5s cleanup. Device/stream ownership lasts through
+cleanup, which never polls a completed signal. Primary, session cleanup and
+explicit stdin-restoration failures retain their sources; successful stop can
+still fail cleanup. No remote ACK, rollback, automatic retry or recovery claim.
+
+Linux stdin pipe/terminal readiness is directly owned without a detached blocking
+read. Modified shared file-description flags restore on explicit finish and
+best-effort Drop, including failed readiness admission. Regular-file reads,
+serialization and output remain cooperative. Other platforms retain Tokio
+stdin and need platform-specific cancellation/shutdown work. The actual owned
+Linux child sends its ready marker from the first input poll, then receives
+SIGINT and exits after cleanup while the parent still holds the writer open.
+This is host evidence, not Apple teardown or a resource/performance baseline.
+See [WebInspector shell fixtures](validation/webinspector-shell-lifecycle-2026-10-05.md).
+
+CDP/WebDriver/server totals, revocation and joined child ownership remain, along
+with other L01 and L02–L04/Q04/classes5–9. Host shell acceptance does not complete
+L01, class4 or the entire engineering goal.

@@ -122,6 +122,30 @@ existing task/shell assertions and core APIs stay. These timing/exit changes
 need pre-1.0 release review. Interactive shell and server owners remain separate.
 See [WebInspector command acceptance](validation/webinspector-command-lifecycle-2026-10-05.md).
 
+The interactive js-shell profile moves default selection into the setup owner.
+One total covers selection, connection, startup, optional Safari launch,
+discovery, attachment, navigation and session metadata. Idle input remains
+unbounded and cancellable; each expression and its output receive a new total.
+Zero rejects before stdin acquisition/discovery, replacing the former100ms
+fallback; positive inputs keep that minimum. One pinned signal now makes active
+Ctrl+C a deterministic normal stop after setup; setup cancellation still fails.
+
+Continue-on-error applies to completed business responses. Native transport,
+codec, deadline and input/output failures now stop instead of printing a request
+error and attempting another command on the invalid client. A fully attached
+usable session gets independent5s cleanup; cleanup or explicit stdin-restoration
+failure can make an otherwise successful stop exit1. Session/result/error JSON,
+human channels, page-key precedence, URL encoding, prompts/EOF and exit commands
+stay. These timing/error/exit migrations need pre-1.0 release review.
+
+Linux owns pipe/terminal stdin through readiness and restores modified flags on
+explicit finish or best-effort Drop. Unpollable nonregular descriptors now fail
+with their native registration error. Regular-file reads and synchronous output
+remain cooperative. macOS/Windows retain the prior Tokio stdin path; cancellable
+input/runtime shutdown there remains awaiting platform work and evidence.
+No public core/binding API or wire change is added. See
+[WebInspector shell acceptance](validation/webinspector-shell-lifecycle-2026-10-05.md).
+
 CompanionProxyClient adds is_usable without changing existing constructors,
 signatures or its four error variants. Shared client/listener/forwarding owners
 reject further wire work after interrupted progress, a committed unanswered

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Own WebInspector js-shell setup, cancellable input and per-evaluation output
+  deadlines with one Ctrl+C future and independent session cleanup. Linux pipe
+  and terminal input no longer leave a blocking stdin task at shutdown.
+  Zero rejects before input acquisition/discovery; native transport failures
+  stop even with --continue-on-error. See
+  [WebInspector shell migration](docs/validation/webinspector-shell-lifecycle-2026-10-05.md).
 - Give WebInspector opened-tabs, eval and launch one total covering default
   selection, setup, commands and output, with one Ctrl+C future and independent
   bounded session cleanup. Zero rejects before discovery; cleanup failure can
