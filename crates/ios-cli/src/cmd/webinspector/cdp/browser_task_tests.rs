@@ -1,0 +1,433 @@
+//! Actual browser child constructor, local stop and forwarding cleanup.
+use super::super::bridge_tests::{read_frame, send_json};
+use super::lifecycle_tests::{
+    no_more_requests, setup_before_target, source_with_delay, state, Source,
+};
+use super::*;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicU64, Ordering},
+};
+use tokio::io::{AsyncWriteExt, DuplexStream};
+
+const BOUND: Duration = Duration::from_secs(4);
+static PAGE: AtomicU64 = AtomicU64::new(18000);
+async fn bounded<T>(operation: impl Future<Output = T>) -> T {
+    tokio::time::timeout(BOUND, operation)
+        .await
+        .expect("owned browser child fixture stalled")
+}
+
+struct Child {
+    source: Arc<Source>,
+    peer: DuplexStream,
+    owner: Option<BrowserPageSession>,
+    output: mpsc::Receiver<BrowserPageOutput>,
+    page: u64,
+    session: String,
+}
+
+async fn opened() -> Child {
+    let page = PAGE.fetch_add(1, Ordering::SeqCst);
+    let session = format!("owned-browser-child-{page}");
+    let target = format!("PID:42:page-{page}");
+    let (source, mut peer) = source_with_delay(Duration::ZERO);
+    let server = state(source.clone(), Duration::from_millis(50));
+    let (output, received) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let (result,())=bounded(async {
+        tokio::join!(open_cdp_browser_page(&server,&target,&session,output),async {
+            setup_before_target(&mut peer,page).await;
+            send_json(&mut peer,json!({"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"owned-cdp-target"}}})).await.unwrap();
+        })
+    }).await;
+    let owner = Some(result.unwrap());
+    Child {
+        source,
+        peer,
+        owner,
+        output: received,
+        page,
+        session,
+    }
+}
+
+async fn released(child: &mut Child) {
+    let frame = bounded(read_frame(&mut child.peer)).await.unwrap().unwrap();
+    assert_eq!(
+        frame["__selector"].as_string(),
+        Some("_rpc_forwardDidClose:")
+    );
+    let argument = frame["__argument"].as_dictionary().unwrap();
+    assert_eq!(
+        argument["WIRApplicationIdentifierKey"].as_string(),
+        Some("PID:42")
+    );
+    assert_eq!(
+        argument["WIRPageIdentifierKey"].as_unsigned_integer(),
+        Some(child.page)
+    );
+    assert!(argument["WIRSenderKey"]
+        .as_string()
+        .is_some_and(|sender| !sender.is_empty()));
+    no_more_requests(&mut child.peer).await;
+    assert!(child.source.dropped.load(Ordering::SeqCst));
+    assert_eq!(child.source.calls.load(Ordering::SeqCst), 1);
+    if let Some(owner) = &child.owner {
+        assert!(owner.sender.is_closed());
+    }
+    drop(
+        bounded(lock_cdp_page(
+            &format!("PID:42:page-{}", child.page),
+            Duration::from_millis(100),
+        ))
+        .await
+        .unwrap(),
+    );
+}
+
+async fn closed(child: &mut Child) {
+    released(child).await;
+    match bounded(child.output.recv()).await.unwrap() {
+        BrowserPageOutput::Closed { session_id } => assert_eq!(session_id, child.session),
+        BrowserPageOutput::Message { .. } => panic!("cleanup must not publish a page reply"),
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_delayed_flush_finishes_under_independent_cleanup() {
+    let mut child = opened().await;
+    let before = child.source.flush_completed.load(Ordering::SeqCst);
+    child.source.flush_fault.store(3, Ordering::SeqCst);
+    let owner = child.owner.as_mut().unwrap();
+    owner.cancel.send(true).unwrap();
+    bounded(&mut owner.task).await.unwrap();
+    assert_eq!(
+        child.source.flush_completed.load(Ordering::SeqCst),
+        before + 1
+    );
+    closed(&mut child).await;
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_pending_flush_uses_real_default_cleanup() {
+    let mut child = opened().await;
+    child.source.flush_fault.store(2, Ordering::SeqCst);
+    let began = tokio::time::Instant::now();
+    let owner = child.owner.as_mut().unwrap();
+    owner.cancel.send(true).unwrap();
+    bounded(&mut owner.task).await.unwrap();
+    assert!(
+        began.elapsed() >= CDP_PAGE_CLEANUP_TIMEOUT,
+        "child cleanup must not inherit the 50ms active timeout"
+    );
+    closed(&mut child).await;
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_supervisor_keeps_native_flush_failure() {
+    let mut child = opened().await;
+    child.source.flush_fault.store(1, Ordering::SeqCst);
+    let error = bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::PermissionDenied
+    );
+    assert!(error.chain().any(|source| source
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|native| native.kind() == std::io::ErrorKind::PermissionDenied)));
+    closed(&mut child).await;
+}
+
+async fn invalid_target(child: &mut Child) {
+    send_json(
+        &mut child.peer,
+        json!({"method":"Target.dispatchMessageFromTarget",
+        "params":{"targetId":"owned-cdp-target","message":"{"}}),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_native_json_and_cleanup_errors_both_survive() {
+    let mut child = opened().await;
+    child.source.flush_fault.store(1, Ordering::SeqCst);
+    invalid_target(&mut child).await;
+    // Observe completion without polling the handle twice: the supervisor
+    // exclusively owns the actual join and retained-result collection.
+    bounded(async {
+        while !child.owner.as_ref().unwrap().task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let error = bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap_err();
+    let both = error
+        .downcast_ref::<super::super::tasks::control::CleanupFailure>()
+        .expect("both native causes remain owned");
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Protocol
+    );
+    assert!(both
+        .primary
+        .chain()
+        .any(|source| source.is::<serde_json::Error>()));
+    assert_eq!(
+        ios_core::classify_error(both.cleanup.as_ref()),
+        ios_core::ErrorClass::PermissionDenied
+    );
+    assert!(both.cleanup.chain().any(|source| source
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|native| native.kind() == std::io::ErrorKind::PermissionDenied)));
+    closed(&mut child).await;
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_known_json_primary_survives_supervisor_abort_and_join() {
+    let mut child = opened().await;
+    child.source.flush_fault.store(2, Ordering::SeqCst);
+    invalid_target(&mut child).await;
+    // Actual cleanup frame proves the JSON failure preceded cleanup/abort.
+    let close = bounded(read_frame(&mut child.peer)).await.unwrap().unwrap();
+    assert_eq!(
+        close["__selector"].as_string(),
+        Some("_rpc_forwardDidClose:")
+    );
+    let error = bounded(stop_browser_pages(
+        vec![child.owner.take().unwrap()],
+        Duration::from_millis(50),
+    ))
+    .await
+    .unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Protocol
+    );
+    assert!(error.chain().any(|source| source.is::<serde_json::Error>()));
+    let both = error
+        .downcast_ref::<super::super::tasks::control::CleanupFailure>()
+        .expect("native primary plus issued supervisor expiry");
+    assert_eq!(
+        ios_core::classify_error(both.cleanup.as_ref()),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(both
+        .cleanup
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    no_more_requests(&mut child.peer).await;
+    assert!(child.source.dropped.load(Ordering::SeqCst));
+    assert!(bounded(child.output.recv()).await.is_none());
+    drop(
+        bounded(lock_cdp_page(
+            &format!("PID:42:page-{}", child.page),
+            Duration::from_millis(100),
+        ))
+        .await
+        .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_group_stops_every_child_under_one_default_total() {
+    let mut first = opened().await;
+    let mut second = opened().await;
+    first.source.flush_fault.store(2, Ordering::SeqCst);
+    second.source.flush_fault.store(2, Ordering::SeqCst);
+    let began = tokio::time::Instant::now();
+    let error = bounded(stop_browser_pages(
+        vec![first.owner.take().unwrap(), second.owner.take().unwrap()],
+        CDP_PAGE_CLEANUP_TIMEOUT,
+    ))
+    .await
+    .unwrap_err();
+    assert_eq!(
+        ios_core::classify_error(error.as_ref()),
+        ios_core::ErrorClass::Timeout
+    );
+    assert!(error
+        .chain()
+        .any(|source| source.is::<tokio::time::error::Elapsed>()));
+    assert!(began.elapsed() >= CDP_PAGE_CLEANUP_TIMEOUT);
+    assert!(
+        began.elapsed() < Duration::from_millis(3500),
+        "cleanup must not multiply 2s per child"
+    );
+    for child in [&mut first, &mut second] {
+        let close = bounded(read_frame(&mut child.peer)).await.unwrap().unwrap();
+        assert_eq!(
+            close["__selector"].as_string(),
+            Some("_rpc_forwardDidClose:")
+        );
+        no_more_requests(&mut child.peer).await;
+        assert!(child.source.dropped.load(Ordering::SeqCst));
+        assert_eq!(child.source.calls.load(Ordering::SeqCst), 1);
+        drop(
+            bounded(lock_cdp_page(
+                &format!("PID:42:page-{}", child.page),
+                Duration::from_millis(100),
+            ))
+            .await
+            .unwrap(),
+        );
+    }
+}
+
+async fn reply(child: &mut Child, id: u64) {
+    send_json(
+        &mut child.peer,
+        json!({"method":"Target.dispatchMessageFromTarget","params":{
+            "targetId":"owned-cdp-target",
+            "message":json!({"id":id,"result":{"value":42}}).to_string()
+        }}),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_empty_idle_resumes_before_normal_joined_stop() {
+    let mut child = opened().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!child.owner.as_ref().unwrap().task.is_finished());
+    reply(&mut child, 17).await;
+    match bounded(child.output.recv()).await.unwrap() {
+        BrowserPageOutput::Message {
+            session_id,
+            message,
+        } => {
+            assert_eq!(session_id, child.session);
+            assert_eq!(message, json!({"id":17,"result":{"value":42}}));
+        }
+        BrowserPageOutput::Closed { .. } => panic!("healthy empty idle must resume"),
+    }
+    bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap();
+    closed(&mut child).await;
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_cancel_after_observed_partial_frame_skips_close() {
+    let mut child = opened().await;
+    let before = child.source.received.load(Ordering::SeqCst);
+    child.peer.write_all(&[0, 0]).await.unwrap();
+    bounded(async {
+        while child.source.received.load(Ordering::SeqCst) != before + 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap();
+    // Cancellation after committed bytes invalidates the original client.
+    // A successful local stop does not justify sending a recovery request.
+    no_more_requests(&mut child.peer).await;
+    assert!(child.source.dropped.load(Ordering::SeqCst));
+    assert_eq!(child.source.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(bounded(child.output.recv()).await,
+        Some(BrowserPageOutput::Closed {session_id}) if session_id == child.session));
+    drop(
+        bounded(lock_cdp_page(
+            &format!("PID:42:page-{}", child.page),
+            Duration::from_millis(100),
+        ))
+        .await
+        .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_cancel_unblocks_full_output_before_cleanup() {
+    let mut child = opened().await;
+    for id in 0..CDP_PAGE_CHANNEL as u64 {
+        reply(&mut child, id).await;
+    }
+    bounded(async {
+        while child.output.len() != CDP_PAGE_CHANNEL {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let before = child.source.received.load(Ordering::SeqCst);
+    reply(&mut child, CDP_PAGE_CHANNEL as u64).await;
+    bounded(async {
+        while child.source.received.load(Ordering::SeqCst) == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(!child.owner.as_ref().unwrap().task.is_finished());
+    bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap();
+    released(&mut child).await;
+    // The existing terminal try_send can miss a full queue. Actual join and
+    // release are independently proved; no terminal delivery is invented.
+    assert_eq!(child.output.len(), CDP_PAGE_CHANNEL);
+    assert!(child.output.is_closed());
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_native_output_error_survives_join() {
+    let mut child = opened().await;
+    child.output.close();
+    reply(&mut child, 19).await;
+    bounded(async {
+        while !child.owner.as_ref().unwrap().task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let error = bounded(stop_browser_page(child.owner.take().unwrap()))
+        .await
+        .unwrap_err();
+    assert!(error
+        .chain()
+        .any(|source| source.is::<mpsc::error::SendError<BrowserPageOutput>>()));
+    released(&mut child).await;
+    assert!(bounded(child.output.recv()).await.is_none());
+}
+
+#[tokio::test]
+async fn lifecycle_cdp_browser_child_supervisor_joins_all_after_panic_or_missing_outcome() {
+    // These two standalone actors exercise only supervisor join/outcome
+    // admission. The other child is always the actual forwarding constructor.
+    for panic in [true, false] {
+        let mut child = opened().await;
+        let (sender, _) = mpsc::channel(1);
+        let (cancel, _) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            assert!(!panic, "synthetic owned child panic");
+        });
+        let unexpected = BrowserPageSession {
+            sender,
+            cancel,
+            task,
+            outcome: browser_tasks::outcome(),
+        };
+        let error = bounded(stop_browser_pages(
+            vec![unexpected, child.owner.take().unwrap()],
+            CDP_PAGE_CLEANUP_TIMEOUT,
+        ))
+        .await
+        .unwrap_err();
+        if panic {
+            assert!(error.chain().any(|source| source
+                .downcast_ref::<tokio::task::JoinError>()
+                .is_some_and(|native| native.is_panic())));
+        } else {
+            assert_eq!(
+                ios_core::classify_error(error.as_ref()),
+                ios_core::ErrorClass::Protocol
+            );
+        }
+        closed(&mut child).await;
+    }
+}

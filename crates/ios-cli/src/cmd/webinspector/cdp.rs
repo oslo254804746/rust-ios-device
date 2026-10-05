@@ -25,6 +25,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, Mutex, OwnedMutexGuard};
 
+mod browser_tasks;
+use browser_tasks::{report_cleanup, stop_browser_page, stop_browser_pages, BrowserPageSession};
+
 const MAX_CDP_CLIENT_MESSAGE_BYTES: usize = 1024 * 1024;
 const CDP_TARGET_POLL: Duration = Duration::from_secs(2);
 const CDP_PAGE_CHANNEL: usize = 64;
@@ -259,32 +262,6 @@ async fn handle_cdp_socket(
     super::tasks::control::finish(bridge_result, cleanup)
 }
 
-struct BrowserPageSession {
-    sender: mpsc::Sender<JsonValue>,
-    cancel: watch::Sender<bool>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for BrowserPageSession {
-    fn drop(&mut self) {
-        let _ = self.cancel.send(true);
-        // Dropping JoinHandle detaches its task. Revoked parent connections
-        // must instead drop every child device stream and page lock.
-        self.task.abort();
-    }
-}
-
-async fn stop_browser_page(mut page: BrowserPageSession) {
-    let _ = page.cancel.send(true);
-    if tokio::time::timeout(CDP_PAGE_CLEANUP_TIMEOUT, &mut page.task)
-        .await
-        .is_err()
-    {
-        page.task.abort();
-        let _ = (&mut page.task).await;
-    }
-}
-
 enum BrowserPageOutput {
     Message {
         session_id: String,
@@ -347,7 +324,7 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                                     Ok(pages) => {
                                         let refresh = state.refresh(&pages);
                                         for id in refresh.removed_sessions {
-                                            if let Some(page) = sessions.remove(&id) { stop_browser_page(page).await; }
+                                            if let Some(page) = sessions.remove(&id) { report_cleanup(stop_browser_page(page).await); }
                                         }
                                         send_cdp_messages(&mut sender, refresh.messages).await?;
                                     }
@@ -363,8 +340,8 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                                 BrowserCdpAction::Attach { request, target_id } => {
                                     let id = state.register_attachment(&target_id).expect("known target");
                                     match open_cdp_browser_page(server, &target_id, &id, page_output_tx.clone()).await {
-                                        Ok((input, task)) => {
-                                            sessions.insert(id.clone(), BrowserPageSession { sender: input.0, cancel: input.1, task });
+                                        Ok(page) => {
+                                            sessions.insert(id.clone(), page);
                                             send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({"sessionId": id}))]).await?;
                                         }
                                         Err(_) => {
@@ -375,7 +352,7 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                                 }
                                 BrowserCdpAction::Detach { request, session_id } => {
                                     if let Some(page) = sessions.remove(&session_id) {
-                                        stop_browser_page(page).await;
+                                        report_cleanup(stop_browser_page(page).await);
                                     }
                                     state.detach(&session_id, false);
                                     send_cdp_messages(&mut sender, vec![cdp_browser::reply(&request, json!({}))]).await?;
@@ -383,7 +360,9 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                                 BrowserCdpAction::Forward { session_id, message } => {
                                     if let Some(page) = sessions.get(&session_id) {
                                         if page.sender.send(message).await.is_err() {
-                                            sessions.remove(&session_id);
+                                            if let Some(page) = sessions.remove(&session_id) {
+                                                report_cleanup(stop_browser_page(page).await);
+                                            }
                                             send_cdp_messages(&mut sender, state.detach(&session_id, true)).await?;
                                         }
                                     }
@@ -404,7 +383,9 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                             }
                         }
                         Some(BrowserPageOutput::Closed {session_id}) => {
-                            sessions.remove(&session_id);
+                            if let Some(page) = sessions.remove(&session_id) {
+                                report_cleanup(stop_browser_page(page).await);
+                            }
                             send_cdp_messages(&mut sender, state.detach(&session_id, true)).await?;
                         }
                         None => break,
@@ -415,7 +396,7 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
                         let refresh = state.refresh(&pages);
                         for id in refresh.removed_sessions {
                             if let Some(page) = sessions.remove(&id) {
-                                stop_browser_page(page).await;
+                                report_cleanup(stop_browser_page(page).await);
                             }
                         }
                         send_cdp_messages(&mut sender, refresh.messages).await?;
@@ -426,10 +407,9 @@ async fn handle_cdp_browser_socket(socket: WebSocket, server: &ServerState) -> R
         }
         Ok(())
     }.await;
-    for (_, page) in sessions {
-        stop_browser_page(page).await;
-    }
-    result
+    let cleanup =
+        stop_browser_pages(sessions.into_values().collect(), CDP_PAGE_CLEANUP_TIMEOUT).await;
+    super::tasks::control::finish(result, cleanup)
 }
 
 async fn send_cdp_messages(
@@ -451,17 +431,10 @@ async fn auto_attach_cdp_pages(
 ) -> Result<()> {
     for target_id in state.unattached_targets() {
         if let Some(session_id) = state.register_attachment(&target_id) {
-            if let Ok((input, task)) =
+            if let Ok(page) =
                 open_cdp_browser_page(server, &target_id, &session_id, output.clone()).await
             {
-                sessions.insert(
-                    session_id.clone(),
-                    BrowserPageSession {
-                        sender: input.0,
-                        cancel: input.1,
-                        task,
-                    },
-                );
+                sessions.insert(session_id.clone(), page);
                 if let Some(event) = state.attached_event(&session_id) {
                     send_cdp_messages(sender, vec![event]).await?;
                 }
@@ -478,10 +451,7 @@ async fn open_cdp_browser_page(
     target_id: &str,
     cdp_session_id: &str,
     output: mpsc::Sender<BrowserPageOutput>,
-) -> Result<(
-    (mpsc::Sender<JsonValue>, watch::Sender<bool>),
-    tokio::task::JoinHandle<()>,
-)> {
+) -> Result<BrowserPageSession> {
     let budget = Budget::new(server.timeout, "CDP browser page setup")?;
     let (guard, device, mut client, mut inspector, mut js_adapter) = budget
         .drive(
@@ -517,26 +487,41 @@ async fn open_cdp_browser_page(
     let (cancel, mut cancellation) = watch::channel(false);
     let timeout = server.timeout;
     let cdp_session_id = cdp_session_id.to_string();
+    let outcome = browser_tasks::outcome();
+    let task_outcome = outcome.clone();
     let task = tokio::spawn(async move {
         let _guard = guard;
         let _device = device;
-        'page: loop {
-            tokio::select! {
-                changed = cancellation.changed() => {
-                    if changed.is_err() || *cancellation.borrow() { break; }
+        let stop = async {
+            loop {
+                if *cancellation.borrow() {
+                    return;
                 }
+                if cancellation.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        tokio::pin!(stop);
+        let primary = tokio::select! {
+            biased;
+            _ = &mut stop => Ok(()),
+            result = async {
+        loop {
+            tokio::task::yield_now().await;
+            tokio::select! {
                 inbound = receiver.recv() => {
                     match inbound {
                         Some(message) => {
                             if let Some(error) = js_adapter.as_ref().and_then(|adapter| adapter.invalid_context_response(&message)) {
-                                if output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await.is_err() { break 'page; }
+                                output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message: error }).await?;
                                 continue;
                             }
                             let messages = if let Some(adapter) = &mut js_adapter {
                                 adapter.outgoing(message)
                             } else { vec![message] };
                             for message in messages {
-                                if inspector.send_bridge_message(&mut client, &message).await.is_err() { break 'page; }
+                                inspector.send_bridge_message(&mut client, &message).await?;
                             }
                         }
                         None => break,
@@ -544,43 +529,52 @@ async fn open_cdp_browser_page(
                 }
                 outbound = inspector.next_raw_message(&mut client, timeout) => {
                     match outbound {
-                        Ok(message) => match inspector.bridge_message(&message) {
-                            Ok(Some(message)) => {
+                        Ok(message) => {
+                            if let Some(message) = inspector.bridge_message(&message)? {
                                 // The outer session ID is added by the browser state.
                                 let messages = if let Some(adapter) = &mut js_adapter {
                                     adapter.incoming(message)
                                 } else { vec![message] };
                                 for message in messages {
                                     let message = diagnostic_cdp_response(message);
-                                    tokio::select! {
-                                        result = output.send(BrowserPageOutput::Message {session_id: cdp_session_id.clone(), message}) => { if result.is_err() { break 'page; } }
-                                        changed = cancellation.changed() => { if changed.is_err() || *cancellation.borrow() { break 'page; } }
-                                    }
+                                    output.send(BrowserPageOutput::Message {session_id: cdp_session_id.clone(), message}).await?;
                                 }
                             }
-                            Ok(None) => {},
-                            Err(_) => break,
                         },
-                        Err(error) if error.timeout_duration().is_some() => {},
-                        Err(_) => break,
+                        Err(error) if error.timeout_duration().is_some() && client.is_usable() => {},
+                        Err(error) => return Err(error.into()),
                     }
                 }
             }
         }
-        let _ = tokio::time::timeout(
-            timeout,
-            client.send_socket_teardown(
-                inspector.session_id(),
-                inspector.application_id(),
-                inspector.page_id(),
-            ),
-        )
-        .await;
+        Ok(())
+            } => result,
+        };
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .primary(primary);
+        let mut owner = super::tasks::session_owner::Session::Inspector {
+            session: inspector,
+            attached: true,
+        };
+        let cleanup =
+            super::tasks::session_owner::cleanup(&mut client, &mut owner, CDP_PAGE_CLEANUP_TIMEOUT)
+                .await;
+        task_outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .cleanup(cleanup);
         let _ = output.try_send(BrowserPageOutput::Closed {
             session_id: cdp_session_id,
         });
     });
-    Ok(((input, cancel), task))
+    Ok(BrowserPageSession {
+        sender: input,
+        cancel,
+        task,
+        outcome,
+    })
 }
 
 async fn load_open_pages(server: &ServerState) -> Result<Vec<ApplicationPage>> {
@@ -678,6 +672,9 @@ mod cleanup_tests;
 
 #[cfg(test)]
 mod lease_tests;
+
+#[cfg(test)]
+mod browser_task_tests;
 
 #[cfg(test)]
 mod tests {
@@ -912,6 +909,7 @@ mod tests {
             sender,
             cancel,
             task,
+            outcome: browser_tasks::outcome(),
         });
         let _released = tokio::time::timeout(Duration::from_secs(1), lock.lock_owned())
             .await
