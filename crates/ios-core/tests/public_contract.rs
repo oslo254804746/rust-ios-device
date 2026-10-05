@@ -1989,6 +1989,74 @@ async fn public_discovery_deadlines_keep_native_sources_and_exhaustive_families(
     assert!(has_elapsed(&error));
 }
 
+#[cfg(feature = "webinspector")]
+#[tokio::test]
+async fn lifecycle_webinspector_public_budget_state_signatures_and_error_families() {
+    use ios_core::webinspector::{WebInspectorClient, WebInspectorError};
+    use std::{future::Future, time::Duration};
+    use tokio::io::AsyncReadExt;
+    fn send<F: Future + Send>(_: F) {}
+    fn family(error: &WebInspectorError) -> &'static str {
+        match error {
+            WebInspectorError::Io(_) => "io",
+            WebInspectorError::Plist(_) => "plist",
+            WebInspectorError::Json(_) => "json",
+            WebInspectorError::Disabled => "disabled",
+            WebInspectorError::Protocol(_) => "protocol",
+            WebInspectorError::Timeout(_) => "timeout",
+        }
+    }
+    let (stream, mut peer) = tokio::io::duplex(4096);
+    let mut client = WebInspectorClient::with_connection_id(stream, "owned");
+    assert!(client.is_usable());
+    send(client.next_event());
+    send(client.next_event_with_timeout(Duration::ZERO));
+    send(client.start(Duration::ZERO));
+    send(client.start_preserving_errors(Duration::ZERO));
+    send(client.report_identifier());
+    send(client.request_connected_applications());
+    send(client.request_listing("owned"));
+    send(client.request_application_launch("owned"));
+    send(client.request_automation_session("owned", "owned"));
+    send(client.send_socket_setup("owned", "owned", 1, false));
+    send(client.send_socket_data("owned", "owned", 1, &serde_json::json!({})));
+    send(client.send_socket_teardown("owned", "owned", 1));
+    send(client.open_application_pages(Duration::ZERO));
+    assert!(client.is_usable());
+    client.set_operation_timeout(Some(Duration::ZERO));
+    let error = client.next_event().await.unwrap_err();
+    assert_eq!(family(&error), "timeout");
+    assert!(!crate_has_elapsed(&error));
+    assert!(client.is_usable());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), peer.read_u8())
+            .await
+            .is_err()
+    );
+    client.set_operation_timeout(None);
+    drop(peer);
+    let error = client.next_event().await.unwrap_err();
+    assert_eq!(family(&error), "io");
+    assert!(!client.is_usable());
+    assert_eq!(
+        family(&client.report_identifier().await.unwrap_err()),
+        "protocol"
+    );
+
+    fn crate_has_elapsed(error: &WebInspectorError) -> bool {
+        use std::error::Error;
+        let mut next: Option<&(dyn Error + 'static)> = Some(error);
+        for _ in 0..32 {
+            let Some(source) = next else { break };
+            if source.is::<tokio::time::error::Elapsed>() {
+                return true;
+            }
+            next = source.source();
+        }
+        false
+    }
+}
+
 #[cfg(feature = "companion")]
 #[tokio::test]
 async fn lifecycle_companion_public_shared_state_budget_send_and_exhaustive_families() {

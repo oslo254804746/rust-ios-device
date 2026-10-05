@@ -11,8 +11,15 @@ use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
 use std::collections::VecDeque;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{timeout, Duration};
+#[cfg(test)]
+use tokio::time::timeout;
+use tokio::time::Duration;
 use uuid::Uuid;
+
+mod lifecycle;
+use lifecycle::{
+    await_operation, checked_deadline, Deadline, WebInspectorOperation, WebInspectorState,
+};
 
 #[derive(Debug)]
 pub struct WebInspectorClient<S> {
@@ -22,6 +29,7 @@ pub struct WebInspectorClient<S> {
     applications: IndexMap<String, Application>,
     application_pages: IndexMap<String, IndexMap<u64, Page>>,
     pending_events: VecDeque<WebInspectorEvent>,
+    state: WebInspectorState,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
@@ -37,6 +45,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             applications: IndexMap::new(),
             application_pages: IndexMap::new(),
             pending_events: VecDeque::new(),
+            state: WebInspectorState::default(),
         }
     }
 
@@ -131,65 +140,97 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         timeout_duration: Duration,
         map_error: fn(WebInspectorError) -> WebInspectorError,
     ) -> Result<(), WebInspectorError> {
-        let deadline = deadline_after(timeout_duration)?;
-        timeout(
-            remaining_time(deadline, timeout_duration)?,
-            self.report_identifier(),
-        )
-        .await
-        .map_err(|error| {
-            super::native_timeout(timeout_duration, "report WebInspector identifier", error)
-        })?
-        .map_err(map_error)?;
-        loop {
-            let event = self
-                .next_event_with_timeout(remaining_time(deadline, timeout_duration)?)
+        let deadline = self.deadline(Some(timeout_duration))?;
+        let mut response_phase = false;
+        let result = await_operation(deadline, "start WebInspector discovery", async {
+            let mut operation = WebInspectorOperation::new(self)?;
+            operation
+                .client
+                .report_identifier()
                 .await
                 .map_err(map_error)?;
-            if matches!(event, WebInspectorEvent::CurrentState { .. }) {
-                return Ok(());
+            operation.commit();
+            response_phase = true;
+            loop {
+                let event = operation.client.next_event_raw().await?;
+                if matches!(event, WebInspectorEvent::CurrentState { .. }) {
+                    return operation.finish(Ok(()));
+                }
+                tokio::task::yield_now().await;
             }
+        })
+        .await;
+        // The legacy send-stage outer timer was not mapped to Disabled;
+        // response-stage failures were. Retain that distinction.
+        if response_phase {
+            result.map_err(map_error)
+        } else {
+            result
         }
     }
 
     /// Discovers all open application pages on the device.
     ///
     /// Sends `_rpc_getConnectedApplications:` and consumes incoming events until no
-    /// new event arrives within `idle_timeout`. The timeout signals quiescence (no
-    /// more pages are being reported) and is the **expected completion path** — it is
-    /// not an error. Returns the accumulated snapshot of open pages.
+    /// new event arrives within `idle_timeout`. An empty idle timeout on a usable
+    /// connection signals quiescence and returns the accumulated snapshot. A
+    /// partial frame, interrupted routing or configured operation-total expiry
+    /// remains an error; those failures cannot certify discovery completion.
     pub async fn open_application_pages(
         &mut self,
         idle_timeout: Duration,
     ) -> Result<Vec<ApplicationPage>, WebInspectorError> {
-        timeout(idle_timeout, self.request_connected_applications())
-            .await
-            .map_err(|error| {
-                super::native_timeout(idle_timeout, "request WebInspector applications", error)
-            })??;
-        loop {
-            match self.next_event_with_timeout(idle_timeout).await {
-                Ok(_) => continue,
-                Err(error) if error.timeout_duration().is_some() => {
-                    return Ok(self.open_pages_snapshot())
+        let total = self.deadline(None)?;
+        let request = checked_deadline(idle_timeout)?;
+        await_operation(total, "discover WebInspector pages", async {
+            await_operation(
+                Some(request),
+                "request WebInspector applications",
+                self.request_connected_applications(),
+            )
+            .await?;
+            loop {
+                // Idle quiescence and a configured operation total are separate
+                // owners. Only the empty, still usable idle path is success.
+                let idle = checked_deadline(idle_timeout)?;
+                match await_operation(
+                    Some(idle),
+                    "receive WebInspector event",
+                    self.next_event_raw(),
+                )
+                .await
+                {
+                    Ok(_) => tokio::task::yield_now().await,
+                    Err(error) if error.timeout_duration().is_some() && self.is_usable() => {
+                        return Ok(self.open_pages_snapshot())
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
-        }
+        })
+        .await
     }
 
     pub async fn report_identifier(&mut self) -> Result<(), WebInspectorError> {
-        self.send_message("_rpc_reportIdentifier:", plist::Dictionary::new())
+        let deadline = self.deadline(None)?;
+        self.send_message(deadline, "_rpc_reportIdentifier:", plist::Dictionary::new())
             .await
     }
 
     pub async fn request_connected_applications(&mut self) -> Result<(), WebInspectorError> {
-        self.send_message("_rpc_getConnectedApplications:", plist::Dictionary::new())
-            .await
+        let deadline = self.deadline(None)?;
+        self.send_message(
+            deadline,
+            "_rpc_getConnectedApplications:",
+            plist::Dictionary::new(),
+        )
+        .await
     }
 
     pub async fn request_listing(&mut self, application_id: &str) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         self.send_message(
+            deadline,
             "_rpc_forwardGetListing:",
             plist::Dictionary::from_iter([(
                 "WIRApplicationIdentifierKey".to_string(),
@@ -203,7 +244,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         &mut self,
         bundle_identifier: &str,
     ) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         self.send_message(
+            deadline,
             "_rpc_requestApplicationLaunch:",
             plist::Dictionary::from_iter([(
                 "WIRApplicationBundleIdentifierKey".to_string(),
@@ -218,7 +261,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         session_id: &str,
         application_id: &str,
     ) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         self.send_message(
+            deadline,
             "_rpc_forwardAutomationSessionRequest:",
             plist::Dictionary::from_iter([
                 (
@@ -255,6 +300,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         page_id: u64,
         pause: bool,
     ) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         let mut args = plist::Dictionary::from_iter([
             (
                 "WIRApplicationIdentifierKey".to_string(),
@@ -279,7 +325,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                 plist::Value::Boolean(false),
             );
         }
-        self.send_message("_rpc_forwardSocketSetup:", args).await
+        self.send_message(deadline, "_rpc_forwardSocketSetup:", args)
+            .await
     }
 
     pub async fn send_socket_data(
@@ -289,7 +336,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         page_id: u64,
         message: &JsonValue,
     ) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         self.send_message(
+            deadline,
             "_rpc_forwardSocketData:",
             plist::Dictionary::from_iter([
                 (
@@ -324,7 +373,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         application_id: &str,
         page_id: u64,
     ) -> Result<(), WebInspectorError> {
+        let deadline = self.deadline(None)?;
         self.send_message(
+            deadline,
             "_rpc_forwardDidClose:",
             plist::Dictionary::from_iter([
                 (
@@ -344,23 +395,47 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         .await
     }
 
+    /// Read and route one event, including its automatic listing writes.
+    /// Empty idle cancellation can preserve reuse; cancellation after accepted
+    /// bytes or a decoded event invalidates local state and clears cached values.
     pub async fn next_event(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
+        let deadline = self.deadline(None)?;
+        await_operation(
+            deadline,
+            "receive WebInspector event",
+            self.next_event_raw(),
+        )
+        .await
+    }
+
+    async fn next_event_raw(&mut self) -> Result<WebInspectorEvent, WebInspectorError> {
+        self.ensure_usable()?;
         if let Some(event) = self.pending_events.pop_front() {
             return Ok(event);
         }
-        let plist = recv_plist(&mut self.stream).await?;
-        self.handle_message(plist).await
+        let mut operation = WebInspectorOperation::new(self)?;
+        let mut frame = operation.client.begin_frame()?;
+        let result = recv_plist(&mut frame.io()).await;
+        let plist = frame.finish(result)?;
+        operation.commit();
+        let result = operation.client.handle_message(plist).await;
+        operation.finish(result)
     }
 
+    /// Read one event within the shorter explicit/configured total. Zero rejects
+    /// before cached events or IO as legacy Timeout; overflow is Io InvalidInput.
+    /// Actual expiry retains Elapsed. Only an empty idle read can remain usable.
     pub async fn next_event_with_timeout(
         &mut self,
         timeout_duration: Duration,
     ) -> Result<WebInspectorEvent, WebInspectorError> {
-        timeout(timeout_duration, self.next_event())
-            .await
-            .map_err(|error| {
-                super::native_timeout(timeout_duration, "receive WebInspector event", error)
-            })?
+        let deadline = self.deadline(Some(timeout_duration))?;
+        await_operation(
+            deadline,
+            "receive WebInspector event",
+            self.next_event_raw(),
+        )
+        .await
     }
 
     pub(super) async fn next_socket_data_with_timeout(
@@ -379,6 +454,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
     }
 
     pub(super) fn restore_pending_events_front(&mut self, mut events: Vec<WebInspectorEvent>) {
+        if !self.is_usable() {
+            return;
+        }
         while let Some(event) = events.pop() {
             self.pending_events.push_front(event);
         }
@@ -516,6 +594,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
 
     async fn send_message(
         &mut self,
+        deadline: Option<Deadline>,
         selector: &str,
         mut arguments: plist::Dictionary,
     ) -> Result<(), WebInspectorError> {
@@ -523,22 +602,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             "WIRConnectionIdentifierKey".to_string(),
             plist::Value::String(self.connection_id.clone()),
         );
-        send_plist(
-            &mut self.stream,
-            &plist::Value::Dictionary(plist::Dictionary::from_iter([
-                (
-                    "__selector".to_string(),
-                    plist::Value::String(selector.to_string()),
-                ),
-                (
-                    "__argument".to_string(),
-                    plist::Value::Dictionary(arguments),
-                ),
-            ])),
-        )
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                "__selector".to_string(),
+                plist::Value::String(selector.to_string()),
+            ),
+            (
+                "__argument".to_string(),
+                plist::Value::Dictionary(arguments),
+            ),
+        ]));
+        await_operation(deadline, "send WebInspector message", async {
+            let mut frame = self.begin_frame()?;
+            let result = send_plist(&mut frame.io(), &value).await;
+            frame.finish(result)
+        })
         .await
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
     match &error {
