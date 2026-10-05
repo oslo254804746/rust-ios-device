@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain WebDriver session watcher handles after registry removal. Explicit
+  removal/replacement aborts and joins the watcher; cancelled waits can resume,
+  and registry calls reap completed revocations without a task joining itself.
+  See [session ownership evidence](docs/validation/session-store-2026-10-05.md).
 - Return WebDriver DELETE cleanup failures through the existing HTTP error
   contract. Session removal, mutex wait, context close and forwarding close
   share one 100ms total; known primary and cleanup causes remain owned.

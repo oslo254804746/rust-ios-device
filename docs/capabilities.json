@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-session-store-7fb827b",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Six actual protected loopback HTTP registry insertion fixtures with synthetic grants then private Sessions operations and generic owned host resources; seven owned Tokio actors. No Automation wire/backend/device claim. Matching resource generation, retirement/abort/join/native flags, pending actor before Drop, weak store release and unrelated admission observed."
+      ],
+      "required_state": [
+        "Four source files/13new tests actor7+registry6.99572 first13PASS; latest includes native classification and actual live-actor proof before Drop. First frozen63290 terminal101 eighteenPASS/strictmanual_inspectFAIL/fullNOT_STARTED; sole map→inspect/redundant return correction and archived4source bytes audited. Corrected82353 terminal0/all24gates:13/min13/delete9/oldscope2/browser23/lease7/WD8/direct5/setup15/page5/finite21/shell31/CLI184/access29/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tools22/CLI95/full. Original admission/two assertion bodies byte preserved; all other owners/core/public/access/deps unchanged."
+      ],
+      "tested_commit": "7fb827b1ee4ff17e29597123b23672184a20a0a5",
+      "date": "2026-10-05",
+      "location": "docs/validation/session-store-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Store holds active entries and retired TaskOwners. Explicit removal/replacement issues abort before join mutex wait and keeps owner through cancellation; completion/native JoinError persists and completed handles never repolled. Unexpected panic/external cancellation retains original native cause and safe tracing; explicit abort cancellation neutral. Revoked actor verifies original weak resource identity, retires its own handle, drops global lock/strong store before legacy100ms unit callback, never selfabort/selfjoin. API operations try_lock/reap finished actors only; no new actor/background reaper. Full2501Rust/13Python,CLI896/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Callback native cleanup primary, active Arcs, idle completed retention until API/Drop, caller/store/server Drop, constructor/active totals/terminal/caps remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/rollback/retry/async Drop/server join/platform/benchmark/RSS/decoder peak acceptance. All31/L01/class4/L02–L04/Q04/classes5–9 active."
+    },
+    {
       "id": "linux-webdriver-delete-731bdb0",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

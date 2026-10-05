@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6937,4 +6937,67 @@ generic caller/server Drop、constructor primary cleanup、active request/output
 totals、terminal retention与其他L01/L02–L04/Q04/第五至九类继续。无Apple ACK/
 rollback/retry/asyncDrop/server join/platform/benchmark/RSS/decoder peak认证。
 代码后独立文档收尾提交，再继续任务所有权等可执行范围；goal active，
+无subagent/push/publication/history rewrite/reference edits/device/Apple操作。
+
+### 大类 4：L01 stored session task owners / explicit joins（2026-10-05）
+
+受测实现：`7fb827b1ee4ff17e29597123b23672184a20a0a5`，基于
+`a0bf070aa52d14c57c1ee1981c0b5acdf2c6ff06`。Linux x86_64，Rust1.97.1/
+MSRV1.80.1，Python3.12.13。[专题证据](validation/session-store-2026-10-05.md)。
+只交付stored watcher所有权/join主机范围，L01/第四类/全部31项继续active。
+
+Store持有active entries和retiring ArcTaskOwners。显式remove/replacement先把
+owner保留并发出abort，再等待join mutex；取消该等待不丢owner/abort请求，
+borrowed join记录Normal/RequestedAbort/Unexpected和原nativeJoinError，完成
+handle不再poll，原panic/externalcancel分类Unknown/Cancelled，显式abort的
+cancelled join为预期结果。转移native error后无额外await，registry经既有safe
+tracing报告，不增加HTTP fields/raw panic。DELETE既有100ms预算包含map join。
+
+Revoked actor核对original weak resource identity再移除条目，把自身handle交
+Store retirement，释放strong store/global lock后运行既有100ms unit cleanup
+callback；不selfabort/selfjoin，旧actor不能移除replacement资源。Registry
+insert/get/principal/remove只reap finished actors，try_lock不等active join，
+protocol cleanup/task join都在全局表锁外。无新actor/background reaper/source
+backend/protocol operation。Idle completed handles仍等下一次registryAPI/Drop，
+generic Drop仍fallbackabort而非asyncjoin。Timing迁移保留release review/真机条件。
+
+四个文件687+/22-，13new tests：七个ownedTokio actors验证normal/repeat/abort/
+原panic/externalcancel/cancelresume/nonblockingreap/Drop；六个protected actual
+loopback HTTP registry inserts与private Sessions操作使用generic owned host
+Resource，验证remove先join、joinmutex占用时取消保留+另一真实HTTP入表、reload
+80ms正常退出不selfabort、actualdefault100ms pending callback后normaljoin、
+sameIDreplacement保留新generation、Drop前nativeAbortHandle证明actor仍pending/
+资源未释放且weakstore随后失效。它们不是Automation wire/device fixtures，
+fixturelistenerjoin不代表productserverjoin。原两个securityscope/Drop assertions
+及middleware逐字保留，其他owners/core/public/access/dependencies不变。
+
+首次99572 terminal0：13PASS；之后补native分类/Drop前actualpending proof，
+冻结gates验证latestsource。首frozen63290 terminal101：18preceding gatesPASS，
+strictClippy manual_inspectFAIL，fullNOT_STARTED。确认真实exit/no live builds后
+只改remove.map→inspect并去冗余entryreturn；archived四文件bytes/SHA和唯一修正
+已审查。Corrected82353 terminal0/all24gates PASS，源码冻结至权威退出。
+
+13/min13、prioractualDELETE9/oldscope2/browser23/pagelease7/WDcleanup8/direct5/
+setup15/page5/finite21/shell31、CLI184/access29/Core102/core-min17、minimumCLI
+alltargets/原stack5/strictClippy/fmt、.venv tooling22/binary/actualCLI95/§11full
+全部PASS。完整Rust/Python拆分2501Rust/13Python，CLI896/Core1443/public52，
+0FAIL/2既有ignored；workspacefmt/check/strict/MSRV、66features/4groups、7+7docs/
+3snippets、CABI、Python3.12wheel/sdistbuild/install/import、tooling67/help118/
+raw38/host5/CLI95/backup3 PASS。22device NOT_RUN，Chromium/installed3.9/3.13未重跑。
+
+Source patch SHA256：
+`05695680f3810a98b850c45eba0984130e406afdf334c9525e6e68d5e9212a34`。
+Actual ios binary SHA256：
+`f22253382855a70083544b0e29d4ef00d4787679fcaa5b346767f939620274a7`。
+Commit=frozen source；durable firstrun/correctedgates/archivedfailure/4sourcebytes/
+nativehashes/audits在ignored `target/validation/session-store-2026-10-05/`，
+referenceHEAD/status不变。
+
+原unit callback/outer100ms尚需native protocol cleanup主错误保留，active request
+Arcs、idle retired handles无API回收、caller/store/serverDrop、constructorprimary
+cleanup/active totals/terminal retention/resourcecaps仍保留；其他L01/L02–L04/Q04/
+第五至九类继续。全部31项/子任务/history、118capability正文/maturity/prior证据与
+9完成/11未开始/11进行中或待条件保持。无Apple ACK/rollback/retry/asyncDrop/server
+join/platform/benchmark/RSS/decoder peak认证；本地代码后独立文档收尾提交，
+总体goal active，继续余下owners与manager等可执行范围。
 无subagent/push/publication/history rewrite/reference edits/device/Apple操作。

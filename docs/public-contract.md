@@ -1102,3 +1102,16 @@ primary through cleanup expiry. Routes, parameters, successful payloads and
 public Rust/C/Python surfaces stay. Review this error/timing change for the
 pre-1.0 release; real-device evidence and in-flight request/registry ownership
 remain pending. See [DELETE migration](validation/webdriver-delete-2026-10-05.md).
+
+### Stored session watcher ownership (2026-10-05)
+
+Registry removal/replacement now issues watcher abort before waiting for its
+join. The retired owner remains in the store if that wait is cancelled;
+subsequent registry calls reap finished actors. A revoked actor moves its own
+handle to the store, then finishes cleanup without aborting/joining itself.
+Original session middleware, private registry signatures, scopes, routes,
+successful responses and public Rust/C/Python surfaces stay. WebDriver DELETE's
+existing100ms total now also includes this map-removal join wait. This timing
+correction needs pre-1.0 release review and device evidence. Generic Drop,
+legacy callback errors, in-flight request Arcs and server shutdown remain
+separate. See [watcher migration](validation/session-store-2026-10-05.md).

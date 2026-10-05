@@ -683,3 +683,36 @@ Drop, constructor primary cleanup, active request/output totals, terminal event
 retention and remaining L01/L02–L04/Q04/classes5–9 continue. No async Drop,
 Apple ACK/rollback/retry, platform or performance acceptance. See
 [DELETE lifecycle evidence](validation/webdriver-delete-2026-10-05.md).
+
+### Stored session retirement and joins (2026-10-05)
+
+The store owns active entries and retired watcher owners. Explicit removal or
+replacement publishes the retired owner and issues abort before awaiting its
+join mutex. Cancelling that wait cannot lose the owner or abort request. Join
+completion/native errors persist; repeat calls skip a completed handle.
+Insert/get/principal/remove reap only finished retired actors and try_lock
+their join state, avoiding waits on active actors. No global table lock spans
+protocol cleanup or task join. No extra actor, supervisor or background reaper
+is introduced; idle completed handles remain until the next registry API/Drop.
+
+On lease revocation the actor checks original weak resource identity before
+removing the entry, transfers its own handle into retirement and releases the
+strong store reference/global lock before the existing100ms unit callback.
+It never aborts or joins itself. Replacement keeps the new resource protected
+from a stale actor. Store Drop remains fallback abort without async join.
+
+Seven owned Tokio actor tests cover normal/repeated/abort/native panic/external
+cancel/resumable join/nonblocking finished reap/fallback release. Six actual
+protected loopback registry fixtures use generic owned host resources: explicit
+remove join, cancelled wait plus another actual HTTP insertion,80ms reload
+cleanup, real100ms callback expiry, replacement and an actually pending actor
+at store Drop with weak-store release. They are not Automation protocol/device
+fixtures. Nine accepted actual WebDriver DELETE cases and both original scope/
+Drop tests pass. Original middleware/assertions/other owners remain.
+See [session ownership evidence](validation/session-store-2026-10-05.md).
+
+Legacy callback native cleanup errors/primary retention, active request Arcs,
+idle handle reclamation without API calls, caller/server shutdown, constructor
+primary cleanup, active totals, terminal retention and resource caps remain.
+Other L01/L02–L04/Q04/classes5–9 continue; no async Drop/Apple ACK/retry/platform/
+performance/RSS/decoder peak acceptance.

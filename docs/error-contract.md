@@ -1831,3 +1831,19 @@ shares the entry deadline and avoids an outer competing cleanup timer. Legacy
 revocation callback, registry join and active request Arcs remain separate.
 This pre-1.0 error/timing migration needs release review and device evidence;
 see [DELETE errors](validation/webdriver-delete-2026-10-05.md).
+
+### Stored session watcher join errors (2026-10-05)
+
+The private watcher owner keeps original Tokio JoinError after an unexpected
+panic or external cancellation, retaining Unknown or Cancelled classification.
+Only an explicitly issued abort's cancellation is neutral. Completed normal,
+requested-abort and unexpected outcomes persist across cancelled join waits;
+completed handles are not polled again. Native error transfer has no subsequent
+await before the existing safe diagnostic formatter receives it. Registry
+operations report join failures through safe tracing rather than new HTTP
+fields or raw panic payloads.
+
+This covers task joins only. The unchanged unit revocation callback/outer100ms
+timer still needs native protocol cleanup primary/secondary retention. Idle
+completed handles await the next registry call or Drop; generic Drop aborts
+without an async join. See [watcher errors](validation/session-store-2026-10-05.md).
