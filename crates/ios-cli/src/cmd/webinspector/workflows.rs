@@ -98,7 +98,7 @@ pub(super) async fn wait_for_application(
             let wait = remaining_webinspector_time(deadline, timeout)?.min(PAGE_DISCOVERY_IDLE);
             match client.next_event_with_timeout(wait).await {
                 Ok(_) => continue,
-                Err(error) if error.timeout_duration().is_some() => break,
+                Err(error) if error.timeout_duration().is_some() && client.is_usable() => break,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -124,7 +124,7 @@ pub(super) async fn wait_for_inspectable_page(
             let wait = remaining_webinspector_time(deadline, timeout)?.min(PAGE_DISCOVERY_IDLE);
             match client.next_event_with_timeout(wait).await {
                 Ok(_) => continue,
-                Err(error) if error.timeout_duration().is_some() => break,
+                Err(error) if error.timeout_duration().is_some() && client.is_usable() => break,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -270,6 +270,9 @@ pub(super) fn webinspector_deadline(timeout: Duration) -> Result<Instant> {
         .checked_add(timeout)
         .ok_or_else(|| crate::output::input_decision("--timeout is too large for the system clock"))
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
