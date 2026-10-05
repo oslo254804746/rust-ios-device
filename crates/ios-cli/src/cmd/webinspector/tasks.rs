@@ -1,22 +1,27 @@
 //! CLI one-shot and interactive task orchestration. Core owns service/session state.
 use super::connection::connect_webinspector_with_timeout;
-use super::shell::run_js_shell_loop;
 use super::workflows::{
     is_inspectable_page_type, page_matches_selector, page_type_name, remaining_webinspector_time,
-    runtime_evaluate_params, runtime_evaluation_error, wait_for_application,
-    wait_for_inspectable_page, webinspector_deadline,
+    runtime_evaluate_params, runtime_evaluation_error, wait_for_application, webinspector_deadline,
 };
 use anyhow::{anyhow, Context, Result};
 use ios_core::webinspector::{
     ApplicationPage, AutomationSession, InspectorSession, WebInspectorClient, RSD_SERVICE_NAME,
-    SAFARI_BUNDLE_ID, SERVICE_NAME,
+    SERVICE_NAME,
 };
 use serde::Serialize;
+#[cfg(test)]
 use serde_json::json;
 use std::time::Duration;
 
 mod control;
+mod input;
+mod interactive;
 mod oneshot;
+mod session_owner;
+mod source;
+#[cfg(test)]
+mod test_peer;
 
 #[derive(Debug, Serialize)]
 struct OpenedTabRow {
@@ -114,7 +119,7 @@ async fn launch_result_with_signal<T>(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_js_shell(
-    udid: &str,
+    udid: Option<String>,
     url: Option<&str>,
     bundle_id: Option<&str>,
     page_id: Option<&str>,
@@ -123,131 +128,19 @@ pub(super) async fn run_js_shell(
     timeout: Duration,
     json_output: bool,
 ) -> Result<()> {
-    let operation = run_js_shell_inner(
+    interactive::run_command(
         udid,
-        url,
-        bundle_id,
-        page_id,
-        open_safari,
-        continue_on_error,
-        timeout,
-        json_output,
-    );
-    tokio::pin!(operation);
-    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
-    tokio::select! {
-        result = &mut operation => result,
-        signal = &mut ctrl_c => {
-            signal.context("failed waiting for Ctrl+C")?;
-            Err(anyhow!("webinspector js-shell cancelled"))
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_js_shell_inner(
-    udid: &str,
-    url: Option<&str>,
-    bundle_id: Option<&str>,
-    page_id: Option<&str>,
-    open_safari: bool,
-    continue_on_error: bool,
-    timeout: Duration,
-    json_output: bool,
-) -> Result<()> {
-    let deadline = webinspector_deadline(timeout)?;
-    let (device, stream, uses_rsd) = connect_webinspector_with_timeout(udid, timeout).await?;
-    let mut client = WebInspectorClient::new(stream);
-    client
-        .start_preserving_errors(remaining_webinspector_time(deadline, timeout)?)
-        .await?;
-
-    // Match go-ios: --open-safari starts Safari, while an explicitly supplied
-    // --bundle-id still controls which page is selected. Without a filter,
-    // --open-safari naturally selects Safari as its default target.
-    let bundle_filter = if open_safari {
-        bundle_id.or(Some(SAFARI_BUNDLE_ID))
-    } else {
-        bundle_id
-    };
-    if open_safari {
-        let remaining = remaining_webinspector_time(deadline, timeout)?;
-        tokio::time::timeout(
-            remaining,
-            client.request_application_launch(SAFARI_BUNDLE_ID),
-        )
-        .await
-        .with_context(|| format!("webinspector Safari launch timed out after {timeout:?}"))??;
-    }
-    let (application_id, page) =
-        wait_for_inspectable_page(&mut client, page_id, bundle_filter, deadline, timeout).await?;
-    let application = client
-        .applications()
-        .get(&application_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("application '{application_id}' disappeared"))?;
-    let mut session = InspectorSession::new(application_id.clone(), page.id);
-    session
-        .attach(
-            &mut client,
-            true,
-            remaining_webinspector_time(deadline, timeout)?,
-        )
-        .await?;
-
-    if let Some(url) = url.filter(|url| !url.is_empty()) {
-        let expression = format!(
-            "window.location = {}",
-            serde_json::to_string(url).context("failed encoding shell URL")?
-        );
-        let response = session
-            .send_command_and_wait(
-                &mut client,
-                "Runtime.evaluate",
-                runtime_evaluate_params(&expression),
-                remaining_webinspector_time(deadline, timeout)?,
-            )
-            .await?;
-        if let Some(error) = runtime_evaluation_error(&response) {
-            return Err(anyhow!("webinspector navigation error: {error}"));
-        }
-    }
-
-    let metadata = json!({
-        "kind": "session",
-        "bundle_id": application.bundle_identifier,
-        "application_id": application.id,
-        "page_id": page.id,
-        "page_key": page.listing_key,
-        "page_type": page_type_name(&page.page_type),
-        "url": page.url,
-        "title": page.title,
-        "session_id": session.session_id(),
-        "inspector_connection_id": client.connection_id(),
-        "automation_connection_id": page.automation_connection_id,
-        "service_name": if uses_rsd { RSD_SERVICE_NAME } else { SERVICE_NAME },
-    });
-    if json_output {
-        crate::output::outln!("{}", serde_json::to_string(&metadata)?);
-    } else {
-        crate::output::outln!(
-            "Connected to {} page={} {}",
-            application.bundle_identifier,
-            page.id,
-            page.url.as_deref().unwrap_or("<no url>")
-        );
-    }
-
-    run_js_shell_loop(
-        &mut client,
-        &mut session,
-        timeout,
-        continue_on_error,
-        json_output,
+        interactive::Options {
+            url,
+            bundle_id,
+            page_id,
+            open_safari,
+            continue_on_error,
+            timeout,
+            json: json_output,
+        },
     )
-    .await?;
-    drop(device);
-    Ok(())
+    .await
 }
 
 fn opened_tab_row(page: ApplicationPage) -> OpenedTabRow {

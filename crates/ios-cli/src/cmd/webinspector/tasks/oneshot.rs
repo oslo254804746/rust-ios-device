@@ -8,10 +8,8 @@ use super::{
 };
 use ios_core::device::ServiceStream;
 
-mod source;
-use source::{Connection, DeviceSource, Source};
-
-const CLEANUP_BUDGET: Duration = Duration::from_secs(5);
+use super::session_owner::{cap, cleanup, Session, CLEANUP_BUDGET};
+use super::source::{Connection, DeviceSource, Source};
 
 pub(super) enum Command<'a> {
     Tabs,
@@ -125,25 +123,6 @@ async fn run(
     drop(client);
     drop(device);
     control::finish(primary, cleanup)
-}
-
-enum Session {
-    None,
-    Inspector {
-        session: InspectorSession,
-        attached: bool,
-    },
-    Automation {
-        session: AutomationSession,
-        attached: bool,
-        application_id: String,
-    },
-}
-
-fn cap(client: &mut WebInspectorClient<ServiceStream>, budget: Budget) -> Result<Duration> {
-    let remaining = budget.remaining()?;
-    client.set_operation_timeout(Some(remaining));
-    Ok(remaining)
 }
 
 async fn line(
@@ -342,91 +321,6 @@ async fn execute(
         }
     }
     Ok(())
-}
-
-async fn cleanup(
-    client: &mut WebInspectorClient<ServiceStream>,
-    owner: &mut Session,
-    duration: Duration,
-) -> Result<()> {
-    if !client.is_usable()
-        || matches!(
-            owner,
-            Session::None
-                | Session::Inspector {
-                    attached: false,
-                    ..
-                }
-                | Session::Automation {
-                    attached: false,
-                    ..
-                }
-        )
-    {
-        return Ok(());
-    }
-    let budget = Budget::new(duration, "cleanup")?;
-    let result = match owner {
-        Session::Inspector { session, .. } => {
-            budget
-                .drive(
-                    Box::pin(async {
-                        cap(client, budget)?;
-                        client
-                            .send_socket_teardown(
-                                session.session_id(),
-                                session.application_id(),
-                                session.page_id(),
-                            )
-                            .await?;
-                        Ok(())
-                    }),
-                    std::future::pending::<std::io::Result<()>>(),
-                )
-                .await
-        }
-        Session::Automation {
-            session,
-            application_id,
-            ..
-        } => {
-            let stop = budget
-                .drive(
-                    Box::pin(async {
-                        cap(client, budget)?;
-                        session
-                            .stop_session(client)
-                            .await
-                            .map_err(anyhow::Error::from)
-                    }),
-                    std::future::pending::<std::io::Result<()>>(),
-                )
-                .await;
-            let socket = if client.is_usable() {
-                budget
-                    .drive(
-                        Box::pin(async {
-                            cap(client, budget)?;
-                            client
-                                .send_socket_teardown(
-                                    session.session_id(),
-                                    application_id,
-                                    session.page_id(),
-                                )
-                                .await
-                                .map_err(anyhow::Error::from)
-                        }),
-                        std::future::pending::<std::io::Result<()>>(),
-                    )
-                    .await
-            } else {
-                Ok(())
-            };
-            control::finish(stop, socket)
-        }
-        Session::None => Ok(()),
-    };
-    result.context("webinspector session cleanup failed")
 }
 
 #[cfg(test)]

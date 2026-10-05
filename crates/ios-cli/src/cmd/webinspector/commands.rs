@@ -53,7 +53,7 @@ pub(super) enum WebInspectorSub {
             long,
             default_value_t = true,
             action = clap::ArgAction::Set,
-            help = "Continue after an evaluation error (use --continue-on-error=false to stop)"
+            help = "Continue after a completed JavaScript error; transport failures stop (use --continue-on-error=false to stop)"
         )]
         continue_on_error: bool,
         #[arg(short = 't', long, default_value = "5.0")]
@@ -88,9 +88,9 @@ pub(super) enum WebInspectorSub {
 impl WebInspectorCmd {
     /// Finite commands own default selection in their total/signal scope;
     /// debug listeners still require an explicit selector before server setup.
-    /// Interactive shell selection remains on its existing path for now.
+    /// Interactive shell setup also owns selection and cancellation.
     pub(crate) fn needs_default_udid(&self) -> bool {
-        matches!(self.sub, WebInspectorSub::JsShell { .. })
+        false
     }
 
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
@@ -138,15 +138,14 @@ impl WebInspectorCmd {
                 continue_on_error,
                 timeout,
             } => {
-                let udid = udid.ok_or_else(|| anyhow!("--udid required for webinspector"))?;
                 run_js_shell(
-                    &udid,
+                    udid,
                     url.as_deref(),
                     bundle_id.as_deref(),
                     page_id.as_deref(),
                     open_safari,
                     continue_on_error,
-                    duration_from_secs(timeout)?,
+                    finite_duration(timeout)?,
                     json_output,
                 )
                 .await

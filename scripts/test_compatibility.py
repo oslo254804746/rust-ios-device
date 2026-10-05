@@ -103,7 +103,7 @@ class NotificationAdmissionContracts(unittest.TestCase):
                     "sys.exit(1)\n")
             binary.write_text("#!" + sys.executable + "\n" + body)
             binary.chmod(0o700)
-            subcommand = ("opened-tabs" if self.family == "webinspector" else
+            subcommand = (getattr(self, "subcommand", "opened-tabs") if self.family == "webinspector" else
                           "listen" if self.family == "companion" else "wait")
             return compatibility.cli_notification_deadline_error(binary, subcommand, 0, family=self.family)
 
@@ -146,6 +146,10 @@ class WebInspectorAdmissionContracts(NotificationAdmissionContracts):
         self.assertFalse(report["contract"])
         self.assertEqual(report["device_connections"], 0)
         self.assertTrue(report["cleanup_complete"])
+
+
+class WebInspectorShellAdmissionContracts(WebInspectorAdmissionContracts):
+    subcommand = "js-shell"
 
 
 if __name__ == "__main__":

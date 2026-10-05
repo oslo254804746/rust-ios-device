@@ -174,7 +174,7 @@ def cli_help_closed_output(binary, flag, *, machine=False):
 def webinspector_arguments(subcommand):
     if subcommand == "eval":
         return ["webinspector", "eval", "6*7", "--page-id", "7"]
-    if subcommand in {"opened-tabs", "launch"}:
+    if subcommand in {"opened-tabs", "launch", "js-shell"}:
         return ["webinspector", subcommand]
     raise ValueError("fixture-webinspector-command")
 
@@ -423,8 +423,8 @@ def main():
     parser.add_argument("--interrupt-launch", action="store_true", help="internal owned SIGINT probe")
     parser.add_argument("--interrupt-notification-setup", action="store_true", help="internal owned notification SIGINT probe")
     parser.add_argument("--interrupt-companion-setup", action="store_true", help="internal owned Companion SIGINT probe")
-    parser.add_argument("--interrupt-webinspector-setup", choices=["opened-tabs", "eval", "launch"],
-                        help="internal owned finite WebInspector default-selection SIGINT probe")
+    parser.add_argument("--interrupt-webinspector-setup", choices=["opened-tabs", "eval", "launch", "js-shell"],
+                        help="internal owned WebInspector default-selection SIGINT probe")
     parser.add_argument("--help-kind", choices=["help", "version"], help="internal owned help/version probe")
     args = parser.parse_args()
     if args.interrupt_launch or args.interrupt_notification_setup or args.interrupt_companion_setup or args.interrupt_webinspector_setup:
@@ -463,7 +463,7 @@ def main():
                 reports[key] = cli_notification_deadline_error(args.binary, subcommand, timeout, explicit=explicit, family="companion")
     for kind, timeout in [("zero", 0), ("overflow", (1 << 64) - 1)]:
         reports[f"companion-listen-{kind}-human"] = cli_notification_deadline_error(args.binary, "listen", timeout, machine=False, family="companion")
-    for subcommand in ["opened-tabs", "eval", "launch"]:
+    for subcommand in ["opened-tabs", "eval", "launch", "js-shell"]:
         reports[f"webinspector-{subcommand}-empty-default"] = cli_notification_empty_default(
             args.binary, family="webinspector", subcommand=subcommand)
         reports[f"webinspector-{subcommand}-stalled-default"] = cli_webinspector_stalled_default(args.binary, subcommand)
@@ -478,7 +478,7 @@ def main():
         reports["launch-cancel-json-error"] = cli_launch_cancellation(args.binary)
         reports["notification-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, notification_setup=True)
         reports["companion-setup-cancel-json-error"] = cli_launch_cancellation(args.binary, companion_setup=True)
-        for subcommand in ["opened-tabs", "eval", "launch"]:
+        for subcommand in ["opened-tabs", "eval", "launch", "js-shell"]:
             reports[f"webinspector-{subcommand}-default-cancel-json-error"] = cli_launch_cancellation(
                 args.binary, webinspector_setup=subcommand)
         for human in (False, True):

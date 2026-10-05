@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin};
 
 use ios_core::device::{ConnectedDevice, ServiceStream};
 
-use super::super::{connect_webinspector_with_timeout, control::Budget, Result};
+use super::{connect_webinspector_with_timeout, control::Budget, Result};
 
 pub(super) type SourceFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 

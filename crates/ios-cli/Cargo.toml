@@ -47,6 +47,9 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 subtle = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 indexmap = { workspace = true }
 serde_urlencoded = "0.7"

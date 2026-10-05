@@ -1482,6 +1482,7 @@ dependencies = [
  "hex",
  "indexmap",
  "ios-core",
+ "libc",
  "plist",
  "rand 0.8.5",
  "regex",
