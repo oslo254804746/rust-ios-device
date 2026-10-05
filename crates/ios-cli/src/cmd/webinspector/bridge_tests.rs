@@ -379,21 +379,21 @@ async fn injected_service_runs_real_browser_bridge_flattened_session_and_detach(
     assert_eq!(traces.iter().map(|t| t.teardowns).sum::<usize>(), 1);
 }
 
-fn envelope(selector: &str, argument: Dictionary) -> Value {
+pub(super) fn envelope(selector: &str, argument: Dictionary) -> Value {
     Value::Dictionary(Dictionary::from_iter([
         ("__selector".to_string(), Value::String(selector.into())),
         ("__argument".to_string(), Value::Dictionary(argument)),
     ]))
 }
 
-fn strings(entries: &[(&str, &str)]) -> Dictionary {
+pub(super) fn strings(entries: &[(&str, &str)]) -> Dictionary {
     entries
         .iter()
         .map(|(k, v)| ((*k).to_string(), Value::String((*v).into())))
         .collect()
 }
 
-async fn write_frame(stream: &mut DuplexStream, value: Value) -> Result<()> {
+pub(super) async fn write_frame(stream: &mut DuplexStream, value: Value) -> Result<()> {
     let mut bytes = Vec::new();
     plist::to_writer_xml(&mut bytes, &value)?;
     stream
@@ -403,7 +403,7 @@ async fn write_frame(stream: &mut DuplexStream, value: Value) -> Result<()> {
     Ok(())
 }
 
-async fn read_frame(stream: &mut DuplexStream) -> Result<Option<Dictionary>> {
+pub(super) async fn read_frame(stream: &mut DuplexStream) -> Result<Option<Dictionary>> {
     let mut first = [0];
     if stream.read(&mut first).await? == 0 {
         return Ok(None);
@@ -419,7 +419,7 @@ async fn read_frame(stream: &mut DuplexStream) -> Result<Option<Dictionary>> {
     Ok(Some(plist::from_bytes(&bytes)?))
 }
 
-async fn send_json(stream: &mut DuplexStream, message: JsonValue) -> Result<()> {
+pub(super) async fn send_json(stream: &mut DuplexStream, message: JsonValue) -> Result<()> {
     let mut argument = strings(&[("WIRApplicationIdentifierKey", "PID:42")]);
     argument.insert(
         "WIRMessageDataKey".to_string(),

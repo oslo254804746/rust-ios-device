@@ -206,7 +206,7 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
                                 }
                             }
                         }
-                        Err(error) if error.timeout_duration().is_some() => {},
+                        Err(error) if error.timeout_duration().is_some() && client.is_usable() => {},
                         Err(error) => return Err(error.into()),
                     }
                 }
@@ -591,6 +591,9 @@ fn cdp_target_descriptors(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
