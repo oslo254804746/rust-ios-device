@@ -18,7 +18,7 @@ pub(super) mod control;
 mod input;
 mod interactive;
 mod oneshot;
-mod session_owner;
+pub(super) mod session_owner;
 mod source;
 #[cfg(test)]
 mod test_peer;

@@ -12,7 +12,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
         Mutex as StdMutex,
     },
     task::{Context, Poll},
@@ -38,6 +38,9 @@ struct OwnedStream {
     dropped: Arc<AtomicBool>,
     stall: Arc<AtomicBool>,
     blocked: Arc<AtomicUsize>,
+    flush_fault: Arc<AtomicU8>,
+    flush_completed: Arc<AtomicUsize>,
+    flush_delay: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 impl Drop for OwnedStream {
     fn drop(&mut self) {
@@ -66,7 +69,24 @@ impl AsyncWrite for OwnedStream {
         Pin::new(&mut self.inner).poll_write(cx, bytes)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        match self.flush_fault.load(Ordering::SeqCst) {
+            1 => return Poll::Ready(Err(std::io::ErrorKind::PermissionDenied.into())),
+            2 => return Poll::Pending,
+            3 => {
+                let delay = self
+                    .flush_delay
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(Duration::from_millis(80))));
+                if delay.as_mut().poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+            }
+            _ => {}
+        }
+        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        if matches!(&result, Poll::Ready(Ok(()))) {
+            self.flush_completed.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
@@ -81,6 +101,8 @@ pub(in crate::cmd::webinspector) struct Source {
     connect_delay: Duration,
     pub(in crate::cmd::webinspector) stall: Arc<AtomicBool>,
     pub(in crate::cmd::webinspector) blocked: Arc<AtomicUsize>,
+    pub(in crate::cmd::webinspector) flush_fault: Arc<AtomicU8>,
+    pub(in crate::cmd::webinspector) flush_completed: Arc<AtomicUsize>,
 }
 impl InspectorSource for Source {
     fn connect<'a>(&'a self, udid: &'a str, _timeout: Duration) -> ConnectionFuture<'a> {
@@ -116,6 +138,8 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
     let dropped = Arc::new(AtomicBool::new(false));
     let stall = Arc::new(AtomicBool::new(false));
     let blocked = Arc::new(AtomicUsize::new(0));
+    let flush_fault = Arc::new(AtomicU8::new(0));
+    let flush_completed = Arc::new(AtomicUsize::new(0));
     (
         Arc::new(Source {
             stream: StdMutex::new(Some(Box::new(OwnedStream {
@@ -123,6 +147,9 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
                 dropped: dropped.clone(),
                 stall: stall.clone(),
                 blocked: blocked.clone(),
+                flush_fault: flush_fault.clone(),
+                flush_completed: flush_completed.clone(),
+                flush_delay: None,
             }))),
             calls: AtomicUsize::new(0),
             returned: AtomicBool::new(false),
@@ -130,6 +157,8 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
             dropped,
             stall,
             blocked,
+            flush_fault,
+            flush_completed,
         }),
         peer,
     )

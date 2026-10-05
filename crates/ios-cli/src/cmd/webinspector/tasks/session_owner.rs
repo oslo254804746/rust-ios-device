@@ -9,7 +9,7 @@ use std::time::Duration;
 
 pub(super) const CLEANUP_BUDGET: Duration = Duration::from_secs(5);
 
-pub(super) enum Session {
+pub(in crate::cmd::webinspector) enum Session {
     None,
     Inspector {
         session: InspectorSession,
@@ -31,7 +31,7 @@ pub(super) fn cap(
     Ok(remaining)
 }
 
-pub(super) async fn cleanup(
+pub(in crate::cmd::webinspector) async fn cleanup(
     client: &mut WebInspectorClient<ServiceStream>,
     owner: &mut Session,
     duration: Duration,

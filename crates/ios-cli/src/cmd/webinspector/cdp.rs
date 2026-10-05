@@ -233,16 +233,14 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
         Ok(())
     }
     .await;
-    let _ = tokio::time::timeout(
-        timeout,
-        client.send_socket_teardown(
-            session.session_id(),
-            session.application_id(),
-            session.page_id(),
-        ),
-    )
-    .await;
-    bridge_result
+    let mut owner = super::tasks::session_owner::Session::Inspector {
+        session,
+        attached: true,
+    };
+    let cleanup =
+        super::tasks::session_owner::cleanup(&mut client, &mut owner, CDP_PAGE_CLEANUP_TIMEOUT)
+            .await;
+    super::tasks::control::finish(bridge_result, cleanup)
 }
 
 struct BrowserPageSession {
@@ -658,6 +656,9 @@ pub(super) mod lifecycle_tests;
 
 #[cfg(test)]
 mod setup_tests;
+
+#[cfg(test)]
+mod cleanup_tests;
 
 #[cfg(test)]
 mod tests {

@@ -98,7 +98,10 @@ pub(super) fn finite_duration(seconds: f64) -> Result<Duration> {
     })
 }
 
-pub(super) fn finish<T>(primary: Result<T>, cleanup: Result<()>) -> Result<T> {
+pub(in crate::cmd::webinspector) fn finish<T>(
+    primary: Result<T>,
+    cleanup: Result<()>,
+) -> Result<T> {
     match (primary, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Ok(_), Err(cleanup)) => Err(cleanup),
@@ -107,9 +110,9 @@ pub(super) fn finish<T>(primary: Result<T>, cleanup: Result<()>) -> Result<T> {
     }
 }
 
-pub(super) struct CleanupFailure {
-    pub(super) primary: anyhow::Error,
-    pub(super) cleanup: anyhow::Error,
+pub(in crate::cmd::webinspector) struct CleanupFailure {
+    pub(in crate::cmd::webinspector) primary: anyhow::Error,
+    pub(in crate::cmd::webinspector) cleanup: anyhow::Error,
 }
 
 impl std::fmt::Display for CleanupFailure {
