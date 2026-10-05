@@ -41,6 +41,7 @@ struct OwnedStream {
     flush_fault: Arc<AtomicU8>,
     flush_completed: Arc<AtomicUsize>,
     flush_delay: Option<Pin<Box<tokio::time::Sleep>>>,
+    received: Arc<AtomicUsize>,
 }
 impl Drop for OwnedStream {
     fn drop(&mut self) {
@@ -53,7 +54,13 @@ impl AsyncRead for OwnedStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(&result, Poll::Ready(Ok(()))) {
+            self.received
+                .fetch_add(buf.filled().len() - before, Ordering::SeqCst);
+        }
+        result
     }
 }
 impl AsyncWrite for OwnedStream {
@@ -103,6 +110,7 @@ pub(in crate::cmd::webinspector) struct Source {
     pub(in crate::cmd::webinspector) blocked: Arc<AtomicUsize>,
     pub(in crate::cmd::webinspector) flush_fault: Arc<AtomicU8>,
     pub(in crate::cmd::webinspector) flush_completed: Arc<AtomicUsize>,
+    pub(in crate::cmd::webinspector) received: Arc<AtomicUsize>,
 }
 impl InspectorSource for Source {
     fn connect<'a>(&'a self, udid: &'a str, _timeout: Duration) -> ConnectionFuture<'a> {
@@ -140,6 +148,7 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
     let blocked = Arc::new(AtomicUsize::new(0));
     let flush_fault = Arc::new(AtomicU8::new(0));
     let flush_completed = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(AtomicUsize::new(0));
     (
         Arc::new(Source {
             stream: StdMutex::new(Some(Box::new(OwnedStream {
@@ -150,6 +159,7 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
                 flush_fault: flush_fault.clone(),
                 flush_completed: flush_completed.clone(),
                 flush_delay: None,
+                received: received.clone(),
             }))),
             calls: AtomicUsize::new(0),
             returned: AtomicBool::new(false),
@@ -159,6 +169,7 @@ pub(in crate::cmd::webinspector) fn source_with_delay(
             blocked,
             flush_fault,
             flush_completed,
+            received,
         }),
         peer,
     )
@@ -206,6 +217,16 @@ pub(super) async fn start_with_timeout(
     page: u64,
     timeout: Duration,
 ) -> Server {
+    start_with_stop(source, page, timeout, std::future::pending::<()>()).await
+}
+
+pub(super) async fn start_with_stop(
+    source: Arc<Source>,
+    page: u64,
+    timeout: Duration,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> Server {
+    let stop = Arc::new(StdMutex::new(Some(Box::pin(stop))));
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let mut state = state(source, timeout);
@@ -220,10 +241,12 @@ pub(super) async fn start_with_timeout(
         get(move |ws: WebSocketUpgrade| {
             let state = state.clone();
             let tx = tx.lock().unwrap().take().expect("one owned upgrade");
+            let stop = stop.lock().unwrap().take().expect("one owned stop future");
             async move {
                 ws.on_upgrade(move |socket| async move {
                     let result =
-                        handle_cdp_socket(socket, &state, &format!("PID:42:page-{page}")).await;
+                        handle_cdp_socket(socket, &state, &format!("PID:42:page-{page}"), stop)
+                            .await;
                     let _ = tx.send(result);
                 })
             }

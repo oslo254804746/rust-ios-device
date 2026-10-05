@@ -137,9 +137,8 @@ async fn cdp_page_ws(
         .max_frame_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .max_message_size(MAX_CDP_CLIENT_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            if let Ok(Err(error)) = principal
-                .run(handle_cdp_socket(socket, &state, &page_id))
-                .await
+            if let Err(error) =
+                handle_cdp_socket(socket, &state, &page_id, principal.revoked()).await
             {
                 let _ = crate::output::write_error_line(format_args!(
                     "cdp bridge closed with error: {}",
@@ -149,7 +148,17 @@ async fn cdp_page_ws(
         }))
 }
 
-async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &str) -> Result<()> {
+async fn handle_cdp_socket(
+    socket: WebSocket,
+    server: &ServerState,
+    page_id: &str,
+    stop: impl std::future::Future<Output = ()> + Send,
+) -> Result<()> {
+    let signal = async {
+        stop.await;
+        Ok::<(), std::io::Error>(())
+    };
+    tokio::pin!(signal);
     let timeout = server.timeout;
     let budget = Budget::new(timeout, "CDP page setup")?;
     let (_page_guard, _device, mut client, mut session, mut js_adapter) = budget
@@ -179,13 +188,20 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
                 client.set_operation_timeout(None);
                 Ok((guard, device, client, session, js_adapter))
             }),
-            std::future::pending::<std::io::Result<()>>(),
+            &mut signal,
         )
         .await?;
 
     let (mut sender, mut receiver) = socket.split();
-    let bridge_result = async {
+    let bridge_result = tokio::select! {
+        biased;
+        _ = &mut signal => Err(anyhow::Error::new(ios_core::OperationCancelled::new())
+            .context("CDP page authorization revoked")),
+        result = async {
         loop {
+            // Each message turn yields back to the directly owned lease
+            // control while preserving the existing unbiased traffic choice.
+            tokio::task::yield_now().await;
             tokio::select! {
                 inbound = receiver.next() => {
                     match inbound {
@@ -231,8 +247,8 @@ async fn handle_cdp_socket(socket: WebSocket, server: &ServerState, page_id: &st
             }
         }
         Ok(())
-    }
-    .await;
+        } => result,
+    };
     let mut owner = super::tasks::session_owner::Session::Inspector {
         session,
         attached: true,
@@ -659,6 +675,9 @@ mod setup_tests;
 
 #[cfg(test)]
 mod cleanup_tests;
+
+#[cfg(test)]
+mod lease_tests;
 
 #[cfg(test)]
 mod tests {
