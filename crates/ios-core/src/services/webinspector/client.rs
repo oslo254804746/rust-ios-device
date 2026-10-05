@@ -19,6 +19,8 @@ use uuid::Uuid;
 pub(super) mod lifecycle;
 pub(super) use lifecycle::{await_operation, WebInspectorOperation};
 use lifecycle::{checked_deadline, Deadline, WebInspectorState};
+mod metadata;
+use metadata::{Change, MAX_APPLICATIONS, MAX_LISTING_ENTRIES};
 
 #[derive(Debug)]
 pub struct WebInspectorClient<S> {
@@ -93,6 +95,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             })
     }
 
+    /// Clone the admitted application/page projection. Received metadata is
+    /// admitted against a separate flattened JSON budget before caching, so a
+    /// large application cannot be amplified by an unbounded number of pages.
+    /// These local logical limits do not measure RSS or remote capability.
     pub fn open_pages_snapshot(&self) -> Vec<ApplicationPage> {
         let mut result = Vec::new();
         for (application_id, application) in &self.applications {
@@ -530,6 +536,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                     argument,
                     "WIRAutomationAvailabilityKey",
                 )?);
+                self.admit_metadata(Change::Availability(&availability))?;
                 self.automation_availability = Some(availability.clone());
                 Ok(WebInspectorEvent::CurrentState { availability })
             }
@@ -543,7 +550,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                                 .to_string(),
                         )
                     })?;
+                metadata::count(
+                    applications_dict.len(),
+                    MAX_APPLICATIONS,
+                    "application list entries",
+                )?;
                 let mut applications = IndexMap::new();
+                let mut staged_bytes = 2;
                 for application in applications_dict.values() {
                     let application = application.as_dictionary().ok_or_else(|| {
                         WebInspectorError::Protocol(
@@ -551,11 +564,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                         )
                     })?;
                     let application = Application::from_plist(application)?;
+                    staged_bytes = metadata::staged_map_bytes(
+                        staged_bytes,
+                        applications.len(),
+                        &application.id,
+                        &application,
+                        applications.get(&application.id),
+                    )?;
                     applications.insert(application.id.clone(), application);
                 }
 
+                self.admit_metadata(Change::Applications(&applications))?;
                 self.application_pages
                     .retain(|application_id, _| applications.contains_key(application_id));
+                if self.application_pages.is_empty() {
+                    self.application_pages = Default::default();
+                } else {
+                    self.application_pages.shrink_to_fit();
+                }
                 self.applications = applications.clone();
                 for application_id in applications.keys() {
                     self.request_listing(application_id).await?;
@@ -578,7 +604,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                         )
                     })?;
 
+                metadata::count(listing.len(), MAX_LISTING_ENTRIES, "listing entries")?;
                 let mut listed_pages = Vec::with_capacity(listing.len());
+                let mut pages = IndexMap::new();
+                let mut staged_map_bytes = 2;
+                let mut staged_list_bytes = 2;
                 for (listing_key, page) in listing {
                     let page = page.as_dictionary().ok_or_else(|| {
                         WebInspectorError::Protocol(
@@ -586,20 +616,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                         )
                     })?;
                     let page = Page::from_plist(listing_key, page)?;
+                    staged_map_bytes = metadata::staged_map_bytes(
+                        staged_map_bytes,
+                        pages.len(),
+                        &page.id,
+                        &page,
+                        pages.get(&page.id),
+                    )?;
+                    staged_list_bytes =
+                        metadata::staged_list_bytes(staged_list_bytes, listed_pages.len(), &page)?;
+                    pages.insert(page.id, page.clone());
                     listed_pages.push(page);
                 }
 
                 // A listing is a complete snapshot, not a delta. Replace the
                 // cache only after every page has parsed successfully so a
                 // malformed update cannot partially corrupt the last snapshot.
-                let pages = self
-                    .application_pages
-                    .entry(application_id.clone())
-                    .or_default();
-                pages.clear();
-                for page in &listed_pages {
-                    pages.insert(page.id, page.clone());
-                }
+                self.admit_metadata(Change::Pages(&application_id, &pages))?;
+                self.application_pages.insert(application_id.clone(), pages);
 
                 Ok(WebInspectorEvent::Listing {
                     application_id,
@@ -608,12 +642,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             }
             "_rpc_applicationUpdated:" => {
                 let application = Application::from_plist(argument)?;
+                self.admit_metadata(Change::Application(&application))?;
                 self.applications
                     .insert(application.id.clone(), application.clone());
                 Ok(WebInspectorEvent::ApplicationUpdated { application })
             }
             "_rpc_applicationConnected:" => {
                 let application = Application::from_plist(argument)?;
+                self.admit_metadata(Change::Application(&application))?;
                 self.applications
                     .insert(application.id.clone(), application.clone());
                 Ok(WebInspectorEvent::ApplicationConnected { application })
@@ -632,6 +668,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                     required_string(argument, "WIRApplicationIdentifierKey")?.to_string();
                 self.applications.shift_remove(&application_id);
                 self.application_pages.shift_remove(&application_id);
+                if self.applications.is_empty() {
+                    self.applications = Default::default();
+                }
+                if self.application_pages.is_empty() {
+                    self.application_pages = Default::default();
+                }
                 Ok(WebInspectorEvent::ApplicationDisconnected { application_id })
             }
             other => Err(WebInspectorError::Protocol(format!(
@@ -674,6 +716,9 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod correlated_tests;
+
+#[cfg(test)]
+mod metadata_tests;
 
 fn map_handshake_disabled_error(error: WebInspectorError) -> WebInspectorError {
     match &error {
