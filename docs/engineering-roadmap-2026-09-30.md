@@ -108,7 +108,7 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -6467,3 +6467,58 @@ publication/history rewrite/reference checkout edits/device操作。
 all31 task/subtask/history prefix、118capability正文/maturity/prior evidence保持。
 source/binary/full14gates/current31 tests匹配，文档期间无product edits，reference
 HEAD/status不变。总体goal仍为active，继续后续独立工作。
+
+### 大类 4：L01 CDP page terminal idle/native primary retention（2026-10-05）
+
+实现：`2e22aaf7da2c47fff1654c557882e8cb9a121517`，基于
+`4de5c00df11ca72f963f1814d643610b0ebe97f3`；明确3source/test files，476+/6-。
+验收见 [CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md)。
+生产只改 page bridge 的 Timeout retry guard：仅 client.is_usable 时继续 idle。
+Partial header/body 或 automatic listing write expiry 使连接失效时，保留第一份
+native Elapsed/Timeout，不让下一轮 local Protocol 覆盖，不再写 retry/teardown。
+Healthy empty idle 仍恢复并转发 nested Target reply，正常 WebSocket close 使用
+既有 selector。五个 cfg(test) helper 仅扩大 private visibility，旧body/assertion
+逐字保持；Core/public/bindings/dependencies/access/cleanup/browser代码不变。
+Returned error correction 留待 pre-1.0 release review，不升级 capability maturity。
+
+五个 actual owned Axum WebSocket/duplex plist/private InspectorSource tests：
+partial header/body、真实 connected-app-list routing blocked write、multiple empty
+idle 后 target relay/normal teardown，以及 actual EOF/plist/legacy oversize errors。
+50ms idle/4s outer fixture bound 不作为 performance 承诺；stream Drop、peer EOF、
+单次 connect/no further bytes 均实际观测，无 forged device 或 public fake backend。
+Direct private handler observation 不替代 admission/revocation 或外部 CDP/device验收。
+
+历史准确保留：23098 compile101/3 E0283 diagnostics，无test execution。
+80012 terminal101/1PASS3FAIL，两个 terminal cases Protocol 替代 Timeout，第三项
+误用 applicationUpdated 而 outer bound；修正事件后 before-product56035 terminal101/
+1PASS3FAIL，三项均 actual Protocol vs expected Timeout，healthy idle PASS。
+修复 guard 后7527 terminal101/4PASS1FAIL，新增 plist assertion 误认为 Protocol，
+既有实际class为IO；只修该assertion，19929 terminal0/5PASS。
+
+Frozen pipeline36134 authoritatively terminal0，全部15gates通过。新tests/allfeatures
+与minCLI5/5，finite21/shell31/CLI104/Core96+public5+integration1=102/coreonlycachemin17/
+minCLIalltargets/originalstack5/strictCoreCLI/fmt/targetedtooling22/actualCLI95 PASS。
+第11节完整 Rust/Python 拆分：2421Rust/13Python，CLI816/Core1443/public52，0FAIL/
+2既有ignored。Workspacefmt/check/strictClippy/MSRV1.80.1、66features/4groups、
+7+7doctests/3snippets、CABI、3.12wheel/sdistbuild/install/import、tooling67/help118/
+raw38/host5/CLI95/backup3全部PASS。22device NOT_RUN，Chromium/installed3.9/3.13未重跑。
+所有构建终止后才改源码/启动下一验证；观察超时不等于退出。
+
+Frozen source patch SHA256：
+`9b45ef230001de695e42149a97f0a3eb217c517059b33b8664e2160a5689a42d`。
+Actual ios debug binary SHA256：
+`2fe7cc98689301125679d1776244f17e8412e8b9d5d449fd1910fd8f0df48031`。
+Actualcommit 精确匹配 frozen/tested patch；证据在 ignored
+`target/validation/cdp-page-idle-2026-10-05/`。Refs HEAD/status不变，无cacheclean。
+
+L01/class4/overallgoal active。Page/browser/WebDriver/server setup/request/output
+totals、独立primary cleanup、server cancellation、revocation/joined child/stored
+tasks，其他协议/清理、L02–L04/Q04与第五至九类继续。Stored100ms/browser2s cleanup
+policy 未改；无remoteACK/retry/rollback/other-platform/benchmark/RSS/decoderpeak验收。
+全部31主任务及subtasks/history、118capability正文/maturity/prior evidence保持，
+9完成/11未开始/11进行中或待条件不变。仅追加本profile，不结束总体目标。
+
+文档audit PASS：8documents/7Markdown/367locallinks与actualhelp118；all31
+task/subtask/history prefix及118capability正文/maturity/prior evidence保持。
+真实commit/source/binary/15gates/full36134/five tests匹配，文档期间无product
+edit，refsHEAD/status不变。实现与文档分开提交，接着server/其他独立工作。

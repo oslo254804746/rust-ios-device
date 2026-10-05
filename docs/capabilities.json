@@ -4,6 +4,20 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cdp-page-idle-lifecycle-2e22aaf",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": ["Actual owned localhost Axum WebSocket and private InspectorSource over a duplex plist stream; partial header/body, blocked automatic listing, resumed target message and normal close; native EOF/plist/legacy frame limit"],
+      "required_state": ["Three source/test files, five new tests; only production page-loop timeout guard changes. Existing five cfg(test) helpers gain private visibility, bodies and original assertions unchanged. Corrected before-product control:1 PASS/3 FAIL, all three observed Protocol instead of Timeout. Pipeline36134 terminal0, all15 gates:5/min5/finite21/shell31/CLI104/Core102/core-min17/minCLIalltargets/stack5/strict/fmt/tooling22/actualCLI95/full PASS. No public synthetic source, forged device or access/cleanup/browser/dependency/core/binding change; maturity unchanged."],
+      "tested_commit": "2e22aaf7da2c47fff1654c557882e8cb9a121517",
+      "date": "2026-10-05",
+      "location": "docs/validation/cdp-page-idle-lifecycle-2026-10-05.md",
+      "result": "PASS",
+      "scope": "Page bridge retries a Timeout only while client.is_usable; partial frame or automatic listing expiry retains its original native Elapsed/Timeout and drops the stream without retry/teardown bytes. Empty usable idle remains open, relays an actual nested Target message and emits existing close on normal WebSocket shutdown. EOF/plist native sources and legacy oversize Protocol stay. Full2421Rust/13Python,CLI816/Core1443/public52,0FAIL/2existing ignored;tooling67/help118/raw38/host5/CLI95/backup3 PASS. Tests directly observe the private handler, not new admission/revocation or external browser acceptance. Setup/request totals, primary cleanup, server cancellation and joined browser/stored tasks remain; all31/L01/class4/L02–L04/Q04/classes5–9 active.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no remote ACK/retry/platform/benchmark/RSS/decoder peak claim."
+    },
+    {
       "id": "linux-webinspector-shell-lifecycle-8ac37b7",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

@@ -1728,3 +1728,14 @@ separate work. Missing headers are not proof of success. Native failures are
 classified before boundary conversion; private original Rust chains are not
 exported as unsafe HTTP data. Host/Chromium evidence does not certify a device
 workflow or Apple teardown.
+
+The CDP page WebSocket bridge now returns the original native Timeout/Elapsed
+when a partial header/body or automatic listing write invalidates its client.
+Previously it ignored that timeout, then returned a new local Protocol error
+on the next loop. Empty usable idle still resumes. Native EOF remains IO,
+malformed plist retains its native source and existing IO classification, and
+the legacy oversize-frame rejection remains Protocol. This change applies to
+the private page loop after upgrade; it adds no error headers or unsafe error
+data to WebSocket frames. Setup totals, cleanup errors, browser child results
+and server cancellation remain separate work. See
+[CDP page fixtures](validation/cdp-page-idle-lifecycle-2026-10-05.md).

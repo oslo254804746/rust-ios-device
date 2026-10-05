@@ -1009,3 +1009,13 @@ routing; this is host evidence, not an actual device workflow.
 These are representative regression profiles, not an exhaustive semver checker
 or ABI proof across all architectures. Platform release checks, A02/L01 and
 representative device evidence remain required before 1.0 readiness.
+
+For the experimental CDP page bridge, a timeout that invalidates the underlying
+WebInspector client now remains the returned primary error. It previously
+became a local unusable-connection Protocol error after another iteration.
+Healthy empty idle, successful target messages, normal close, API/CLI grammar
+and access policy stay. The private source/handler fixtures verify host behavior,
+with no new public source selector or physical-device/browser acceptance.
+This error-behavior correction needs pre-1.0 release review; setup/request totals,
+cleanup results and joined server/browser ownership remain pending. See
+[CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md).

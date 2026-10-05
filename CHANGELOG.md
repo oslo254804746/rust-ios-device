@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve a CDP page bridge's original timeout after partial input or blocked
+  automatic listing invalidates its WebInspector connection. Healthy empty idle
+  still resumes. See [CDP page lifecycle evidence](docs/validation/cdp-page-idle-lifecycle-2026-10-05.md).
 - Own WebInspector js-shell setup, cancellable input and per-evaluation output
   deadlines with one Ctrl+C future and independent session cleanup. Linux pipe
   and terminal input no longer leave a blocking stdin task at shutdown.

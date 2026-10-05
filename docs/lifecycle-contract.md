@@ -519,3 +519,19 @@ See [WebInspector shell fixtures](validation/webinspector-shell-lifecycle-2026-1
 CDP/WebDriver/server totals, revocation and joined child ownership remain, along
 with other L01 and L02–L04/Q04/classes5–9. Host shell acceptance does not complete
 L01, class4 or the entire engineering goal.
+
+The CDP page bridge continues an issued timeout only while its WebInspector
+client remains usable. A partial header/body or blocked automatic listing write
+can invalidate that client; the loop now returns the original native
+Timeout/Elapsed and drops its stream without another request or teardown write.
+Healthy empty idle still waits, forwards the next target message and uses the
+existing close selector on normal WebSocket shutdown. Native EOF, plist and
+legacy size errors retain their original families. Five actual WebSocket/owned
+plist fixtures verify this narrow profile; see
+[CDP page lifecycle](validation/cdp-page-idle-lifecycle-2026-10-05.md).
+
+Page/browser setup totals, finite sends/output, primary-preserving independent
+cleanup, server cancellation, stored-session revocation and joined child
+ownership remain. The stored-session100ms and browser-page2s cleanup policies
+were not changed. Host page-loop acceptance does not complete any of those
+owners, other protocols, L02–L04/Q04 or classes5–9.
