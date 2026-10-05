@@ -82,6 +82,7 @@ pub(in crate::cmd::webinspector) async fn cleanup(
     result.context("webinspector session cleanup failed")
 }
 
+#[cfg(test)]
 pub(in crate::cmd::webinspector) async fn cleanup_automation(
     client: &mut WebInspectorClient<ServiceStream>,
     session: &mut AutomationSession,

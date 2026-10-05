@@ -29,6 +29,9 @@ mod cleanup_tests;
 #[cfg(test)]
 mod delete_tests;
 
+#[cfg(test)]
+mod revocation_tests;
+
 pub(super) struct SeleniumRuntime {
     _device: Option<ConnectedDevice>,
     client: WebInspectorClient<ServiceStream>,
@@ -39,6 +42,7 @@ pub(super) struct SeleniumRuntime {
 }
 
 impl SeleniumRuntime {
+    #[cfg(test)]
     async fn stop(&mut self) -> Result<()> {
         if !self.cleanup_armed {
             return Ok(());
@@ -257,11 +261,11 @@ async fn webdriver_new_session(
     let session_id = Uuid::new_v4().to_string();
     state
         .selenium_sessions
-        .insert(
+        .insert_with_budget(
             session_id.clone(),
             runtime,
             principal,
-            stop_selenium_runtime,
+            stop_selenium_runtime_until,
         )
         .await;
     Ok(Json(json!({
@@ -307,13 +311,6 @@ async fn stop_selenium_runtime_until(
     // timeout around their combined result could discard an already known
     // business failure while the forwarding close is pending.
     runtime.stop_until(budget).await
-}
-
-async fn stop_selenium_runtime(runtime: Arc<Mutex<SeleniumRuntime>>) {
-    let mut runtime = runtime.lock().await;
-    if let Err(error) = runtime.stop().await {
-        tracing::warn!(error = %crate::output::error_message(&error), "automation cleanup failed");
-    }
 }
 
 async fn webdriver_get_url(

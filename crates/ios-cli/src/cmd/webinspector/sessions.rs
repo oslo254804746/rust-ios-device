@@ -12,7 +12,9 @@ use axum::middleware::Next;
 use axum::response::Response;
 use tokio::sync::Mutex;
 
+use super::tasks::control::Budget;
 use crate::access::Principal;
+use anyhow::Result;
 
 mod task_owner;
 use task_owner::TaskOwner;
@@ -52,6 +54,7 @@ impl<T> Default for Sessions<T> {
 }
 
 impl<T: Send + 'static> Sessions<T> {
+    #[cfg(test)]
     pub(super) async fn insert<F, C>(
         &self,
         id: String,
@@ -61,6 +64,35 @@ impl<T: Send + 'static> Sessions<T> {
     ) where
         F: Future<Output = ()> + Send + 'static,
         C: FnOnce(Arc<Mutex<T>>) -> F + Send + 'static,
+    {
+        self.insert_with_budget(
+            id,
+            resource,
+            principal,
+            move |resource, budget| async move {
+                budget
+                    .drive(
+                        async {
+                            cleanup(resource).await;
+                            Ok(())
+                        },
+                        std::future::pending::<std::io::Result<()>>(),
+                    )
+                    .await
+            },
+        )
+        .await;
+    }
+
+    pub(super) async fn insert_with_budget<F, C>(
+        &self,
+        id: String,
+        resource: T,
+        principal: Principal,
+        cleanup: C,
+    ) where
+        F: Future<Output = Result<()>> + Send + 'static,
+        C: FnOnce(Arc<Mutex<T>>, Budget) -> F + Send + 'static,
     {
         self.reap_finished().await;
         let weak = Arc::downgrade(&self.entries);
@@ -96,12 +128,14 @@ impl<T: Send + 'static> Sessions<T> {
             if let Some(resource) = resource {
                 // Remove admission first. Cleanup cannot keep an expired
                 // resource addressable or hold its map lock across I/O.
-                if tokio::time::timeout(super::SESSION_CLEANUP_MAX, cleanup(resource))
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("automation revocation cleanup timed out");
-                }
+                let budget =
+                    Budget::new(super::SESSION_CLEANUP_MAX, "WebDriver revocation cleanup")?;
+                // The callback stages own this same total and preserve known
+                // primary/secondary errors. A competing outer timer could
+                // discard them while the forwarding close remains pending.
+                cleanup(resource, budget).await
+            } else {
+                Ok(())
             }
         });
         let replaced = store.entries.insert(
@@ -182,6 +216,15 @@ impl<T: Send + 'static> Sessions<T> {
             .await
             .retiring
             .retain(|other| !Arc::ptr_eq(owner, other));
+    }
+
+    #[cfg(test)]
+    pub(super) async fn observe(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let owner = self.entries.lock().await.entries[id].revocation.clone();
+        async move { owner.join().await }
     }
 }
 

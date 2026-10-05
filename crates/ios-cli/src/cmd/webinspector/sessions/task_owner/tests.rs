@@ -27,6 +27,7 @@ async fn pending() -> (TaskOwner, Arc<AtomicBool>, Arc<Notify>) {
         let _guard = guard;
         active.notify_one();
         finish.notified().await;
+        Ok(())
     }));
     bounded(started.notified()).await;
     (owner, released, allow)

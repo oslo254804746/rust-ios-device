@@ -15,7 +15,7 @@ pub(super) enum Completion {
 }
 
 struct JoinState {
-    handle: JoinHandle<()>,
+    handle: JoinHandle<Result<()>>,
     completed: Option<Completion>,
     error: Option<anyhow::Error>,
 }
@@ -27,7 +27,7 @@ pub(super) struct TaskOwner {
 }
 
 impl TaskOwner {
-    pub(super) fn new(handle: JoinHandle<()>) -> Self {
+    pub(super) fn new(handle: JoinHandle<Result<()>>) -> Self {
         Self {
             abort: handle.abort_handle(),
             requested_abort: AtomicBool::new(false),
@@ -41,7 +41,7 @@ impl TaskOwner {
 
     pub(super) fn abort(&self) {
         // Abort does not wait for the join mutex. A removal cancelled while
-        // waiting for that mutex must still have stopped its watcher.
+        // waiting for that mutex must still have issued its watcher abort.
         self.requested_abort.store(true, Ordering::SeqCst);
         self.abort.abort();
     }
@@ -67,7 +67,7 @@ impl TaskOwner {
         }
         let result = (&mut state.handle).await;
         let (completed, error) = match result {
-            Ok(()) => (Completion::Normal, None),
+            Ok(result) => (Completion::Normal, result.err()),
             Err(error) if self.requested_abort.load(Ordering::SeqCst) && error.is_cancelled() => {
                 (Completion::RequestedAbort, None)
             }
@@ -107,7 +107,7 @@ impl Drop for TaskOwner {
 
 pub(super) fn report(result: Result<()>) {
     if let Err(error) = result {
-        tracing::warn!(error = %crate::output::error_message(&error), "automation watcher join failed");
+        tracing::warn!(error = %crate::output::error_message(&error), "automation session closed with error");
     }
 }
 
