@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Close WebDriver's owned forwarding socket after its Automation context, with
+  one 100ms cleanup total and retained context/socket failures. Starting stop
+  disarms duplicate cleanup after success, failure or cancellation. See
+  [WebDriver cleanup evidence](docs/validation/webdriver-cleanup-2026-10-05.md).
 - Retain CDP page teardown failures after WebSocket shutdown. Cleanup uses an
   independent 2s budget; an existing primary error and the cleanup error both
   remain owned. See [CDP page cleanup migration](docs/validation/cdp-page-cleanup-2026-10-05.md).

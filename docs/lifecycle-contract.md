@@ -569,3 +569,21 @@ drops the handler. Constructor primary cleanup, finite sends/output, joined
 browser children and stored-session revocation still need owner work. Existing
 stored100ms and browser-page2s policies remain. Other L01, L02–L04/Q04 and
 classes5–9 stay in the engineering scope.
+
+WebDriver runtime stop now borrows its original AutomationSession and application
+identity to close context then forwarding socket under one100ms stored cleanup
+total. The existing Automation cleanup body is shared with finite/shell owners;
+their5s policy and the direct page2s policy stay. Once stop is first polled, its
+private flag disarms further cleanup after success, business failure or caller
+cancellation. Both cleanup errors retain their native sources and original
+primary classification. Invalid committed context close skips socket recovery.
+
+Eight actual constructor/owned-stream fixtures cover normal close, native flush
+failure, dual business/native errors, total remainder, context/flush expiry,
+repeat stop and caller cancellation after the real close frame. Command IDs1/2
+remain; a valid owner sends one forwarding close. Caller cancellation invalidates
+the client; explicit runtime Drop releases the stream. This is not async Drop,
+remote ACK or registry-task join proof. HTTP DELETE result swallowing, outer
+timeouts, lock admission, active Arc races, constructor primary cleanup and
+joined revocation/server ownership remain. See
+[WebDriver cleanup evidence](validation/webdriver-cleanup-2026-10-05.md).

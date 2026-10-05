@@ -1762,3 +1762,12 @@ Invalid clients skip recovery writes. Five actual WebSocket/owned-stream fixture
 cover this returned-error profile. Principal/server cancellation still drops the
 handler and is not covered by this cleanup path. See
 [CDP page cleanup fixtures](validation/cdp-page-cleanup-2026-10-05.md).
+
+WebDriver runtime stop now retains context-close and forwarding-close failures
+through the existing private cleanup wrapper. Both steps share the stored100ms
+total; native IO/Elapsed and the original primary classification survive. An
+invalid client skips socket recovery, and starting stop disarms another attempt.
+These are runtime-result fixtures: HTTP DELETE still ignores its cleanup result,
+and outer revocation timeouts retain their existing handling. Request/registry
+ownership and routed error projection remain separate work. See
+[WebDriver cleanup fixtures](validation/webdriver-cleanup-2026-10-05.md).

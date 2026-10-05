@@ -1045,3 +1045,13 @@ messages and public grammar stay. Constructor cleanup, outer lease cancellation,
 server shutdown and joined browser/stored tasks remain pending; this is not an
 async Drop guarantee. See
 [CDP page cleanup migration](validation/cdp-page-cleanup-2026-10-05.md).
+
+WebDriver runtime stop now closes its owned forwarding socket after the
+Automation browsing context, borrowing the original session without cloning
+command IDs. Both steps share the existing stored100ms allowance. Cleanup starts
+once per runtime; success, failure or caller cancellation cannot authorize a
+second attempt. The runtime preserves native and dual cleanup errors. HTTP
+DELETE grammar, response shape and its existing result-discard policy stay;
+routed failure handling remains pending. This forwarding/timing correction needs
+pre-1.0 release review and device evidence. See
+[WebDriver cleanup migration](validation/webdriver-cleanup-2026-10-05.md).
