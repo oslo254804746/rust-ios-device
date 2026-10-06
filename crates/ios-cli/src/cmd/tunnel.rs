@@ -845,8 +845,9 @@ impl TunnelAgentState {
         // Capture every device generation before waiting for the first connection.
         // A stop while an earlier device stalls invalidates the queued ticket too.
         let mut candidates = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for udid in devices {
-            if self.inner.access.permits_device(&udid) {
+            if self.inner.access.permits_device(&udid) && seen.insert(udid.clone()) {
                 let ticket = self.inner.lifecycle.ticket(&udid).await?;
                 candidates.push((udid, Route::Usbmux, ticket));
             }
@@ -854,29 +855,46 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        for (udid, route, ticket) in candidates {
-            self.refresh_connect(&udid, route, &ticket).await;
-        }
-
-        let targets = self.inner.source.paired_devices().await?;
+        // Discover both families before connecting so a pending USB connection
+        // cannot prevent a known mobdev2 candidate from entering the window.
+        // Keep a discovery failure until the USB candidates have been processed,
+        // preserving their publication and the original returned source error.
+        let paired = self.inner.source.paired_devices().await;
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        let mut candidates = Vec::new();
-        for target in targets {
-            if self.inner.access.permits_device(&target.udid) {
-                let ticket = self.inner.lifecycle.ticket(&target.udid).await?;
-                candidates.push((target.udid, Route::Mobdev2(target.host), ticket));
+        if let Ok(targets) = &paired {
+            for target in targets {
+                if self.inner.access.permits_device(&target.udid)
+                    && seen.insert(target.udid.clone())
+                {
+                    let ticket = self.inner.lifecycle.ticket(&target.udid).await?;
+                    candidates.push((
+                        target.udid.clone(),
+                        Route::Mobdev2(target.host.clone()),
+                        ticket,
+                    ));
+                }
             }
         }
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        for (udid, route, ticket) in candidates {
-            self.refresh_connect(&udid, route, &ticket).await;
-        }
+        self.refresh_candidates(candidates).await;
+        paired?;
         self.mark_ready().await;
         Ok(())
+    }
+
+    async fn refresh_candidates(&self, candidates: Vec<(String, Route, Ticket)>) {
+        // Own these futures in the scanner itself. Dropping the scan cancels
+        // every active connection and releases its serial guard/permit.
+        let mut connections = futures_util::stream::iter(candidates)
+            .map(|(udid, route, ticket)| async move {
+                self.refresh_connect(&udid, route, &ticket).await;
+            })
+            .buffer_unordered(lifecycle::MAX_CONNECTS);
+        while connections.next().await.is_some() {}
     }
 
     async fn record_failed_attempt(&self, udid: &str) {

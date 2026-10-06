@@ -11,6 +11,8 @@ const A: &str = "synthetic-device-a";
 const B: &str = "synthetic-device-b";
 const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
+mod parallel_tests;
+
 enum Behavior {
     Success,
     Failure(std::io::ErrorKind),
@@ -55,6 +57,7 @@ struct FakeSource {
     usb: StdMutex<Vec<String>>,
     usb_gate: StdMutex<Option<Arc<Semaphore>>>,
     list_failure: AtomicBool,
+    paired_failure: AtomicBool,
     paired: StdMutex<Vec<PairedMobdev2Device>>,
 }
 
@@ -80,6 +83,7 @@ impl FakeSource {
             usb: StdMutex::new(Vec::new()),
             usb_gate: StdMutex::new(None),
             list_failure: AtomicBool::new(false),
+            paired_failure: AtomicBool::new(false),
             paired: StdMutex::new(Vec::new()),
         })
     }
@@ -189,7 +193,16 @@ impl Source for FakeSource {
     }
 
     fn paired_devices(&self) -> BoxFuture<'_, Result<Vec<PairedMobdev2Device>>> {
-        Box::pin(async { Ok(self.paired.lock().unwrap().clone()) })
+        Box::pin(async {
+            if self.paired_failure.load(Ordering::SeqCst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "synthetic-private-paired-discovery",
+                )
+                .into());
+            }
+            Ok(self.paired.lock().unwrap().clone())
+        })
     }
 }
 
@@ -490,17 +503,29 @@ async fn lifecycle_tunnel_scan_and_explicit_start_share_same_device_owner() {
 #[tokio::test]
 async fn lifecycle_tunnel_stop_invalidates_device_queued_behind_stalled_scan() {
     let source = FakeSource::new();
-    *source.usb.lock().unwrap() = vec![A.into(), B.into()];
+    *source.usb.lock().unwrap() = vec![
+        A.into(),
+        "synthetic-c".into(),
+        "synthetic-d".into(),
+        "synthetic-e".into(),
+        B.into(),
+    ];
     let gate = Arc::new(Semaphore::new(0));
     source.script(A, [Behavior::Held(gate.clone())]);
+    for udid in ["synthetic-c", "synthetic-d", "synthetic-e"] {
+        source.script(udid, [Behavior::Held(gate.clone())]);
+    }
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let scan_state = state.clone();
     let scan = tokio::spawn(async move { scan_state.refresh_once().await });
     source.entered(A, 1).await;
+    for udid in ["synthetic-c", "synthetic-d", "synthetic-e"] {
+        source.entered(udid, 1).await;
+    }
     assert!(!tokio::time::timeout(LOCAL_BUDGET, state.remove_tunnel(B))
         .await
         .unwrap());
-    gate.add_permits(1);
+    gate.add_permits(4);
     scan.await.unwrap().unwrap();
     assert_eq!(source.count(B), 0);
     assert!(state.get_record(B).await.is_none());
