@@ -146,6 +146,10 @@ impl UserspaceTunDevice {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
         })?;
 
+        // Finish fallible listener setup before any worker can outlive an error.
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let local_port = listener.local_addr()?.port();
+
         let (ios_to_smol_tx, ios_to_smol_rx) =
             mpsc::channel::<Vec<u8>>(IOS_PACKET_CHANNEL_CAPACITY);
         let (smol_to_ios_tx, smol_to_ios_rx) =
@@ -175,9 +179,6 @@ impl UserspaceTunDevice {
             .await;
             tracing::debug!("userspace: smoltcp loop exited");
         });
-
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let local_port = listener.local_addr()?.port();
 
         let listener_task = tokio::spawn(async move {
             run_local_listener(listener, conn_req_tx).await;
@@ -789,6 +790,269 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_userspace_native_bind_failure_releases_stream_without_workers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncRead, ReadBuf};
+
+        const CHILD_ENV: &str = "IOS_USERSPACE_BIND_FAILURE_CHILD";
+        const TEST_NAME: &str = "tunnel::tun::userspace::tests::lifecycle_userspace_native_bind_failure_releases_stream_without_workers";
+        let isolated_child = std::env::var_os(CHILD_ENV).is_some()
+            && std::env::args().any(|argument| argument == "--exact");
+        if !isolated_child {
+            // Descriptor limits are process-wide. Only this exact child changes
+            // them; the parent harness keeps its normal limit and runtime.
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME, "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn isolated userspace bind-failure fixture");
+            match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                Ok(Ok(status)) => {
+                    assert!(status.success(), "isolated userspace bind fixture failed");
+                }
+                result => {
+                    // Both a timeout and a wait error keep ownership until an
+                    // explicit kill request and a separate, bounded reap.
+                    let kill = child.start_kill();
+                    let reaped = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                    panic!(
+                        "isolated userspace bind fixture did not exit: wait={result:?}, kill={kill:?}, reap={reaped:?}"
+                    );
+                }
+            }
+            return;
+        }
+
+        struct DescriptorLimit {
+            original: libc::rlimit,
+            restored: bool,
+        }
+
+        impl DescriptorLimit {
+            fn reduce() -> Self {
+                let mut original = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // SAFETY: a valid writable rlimit pointer is supplied.
+                assert_eq!(
+                    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+                    0
+                );
+                let limit = libc::rlimit {
+                    rlim_cur: original.rlim_cur.min(64),
+                    rlim_max: original.rlim_max,
+                };
+                let guard = Self {
+                    original,
+                    restored: false,
+                };
+                // SAFETY: only this isolated child's soft limit is reduced;
+                // the hard limit and the valid original value are preserved.
+                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+                guard
+            }
+
+            fn restore(mut self) {
+                // SAFETY: the original limits came from getrlimit and the
+                // hard limit was never changed by this fixture.
+                assert_eq!(
+                    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.original) },
+                    0
+                );
+                self.restored = true;
+            }
+        }
+
+        impl Drop for DescriptorLimit {
+            fn drop(&mut self) {
+                if !self.restored {
+                    // SAFETY: restore the saved, valid limit on assertion or
+                    // other early exits. The normal path checks restoration.
+                    let _ = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.original) };
+                }
+            }
+        }
+
+        #[derive(Default)]
+        struct Probe {
+            read_polls: AtomicUsize,
+            write_polls: AtomicUsize,
+            drops: AtomicUsize,
+        }
+
+        struct TrackedStream {
+            inner: tokio::io::DuplexStream,
+            probe: Arc<Probe>,
+        }
+
+        impl AsyncRead for TrackedStream {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.read_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_read(cx, buf)
+            }
+        }
+
+        impl AsyncWrite for TrackedStream {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_write(cx, buf)
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_flush(cx)
+            }
+
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let this = self.get_mut();
+                this.probe.write_polls.fetch_add(1, Ordering::SeqCst);
+                Pin::new(&mut this.inner).poll_shutdown(cx)
+            }
+        }
+
+        impl Drop for TrackedStream {
+            fn drop(&mut self) {
+                self.probe.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // The current-thread runtime and its driver already exist. This
+        // stable Tokio metric is consistent here and requires no new FD.
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let baseline = metrics.num_alive_tasks();
+        let limit = DescriptorLimit::reduce();
+        let mut held_files = Vec::new();
+        loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => {
+                    assert!(held_files.len() < 64, "descriptor exhaustion is bounded");
+                    held_files.push(file);
+                }
+                Err(error) => {
+                    assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                    break;
+                }
+            }
+        }
+
+        for attempt in 0..3 {
+            let (inner, mut peer) = tokio::io::duplex(128);
+            let probe = Arc::new(Probe::default());
+            let stream = TrackedStream {
+                inner,
+                probe: Arc::clone(&probe),
+            };
+            let error = UserspaceTunDevice::start("fd00::1", "fd00::2", 1280, stream)
+                .await
+                .err()
+                .expect("native listener bind must fail with no available descriptors");
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+            let native = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .expect("native bind failure lost its IO source");
+            assert_eq!(native.raw_os_error(), Some(libc::EMFILE));
+            let TunnelError::Io(error) = error else {
+                panic!("native bind failure lost its IO error variant");
+            };
+            assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+            eprintln!(
+                "failed construction attempt={attempt}, alive={}, baseline={baseline}, drops={}, read_polls={}, write_polls={}",
+                metrics.num_alive_tasks(),
+                probe.drops.load(Ordering::SeqCst),
+                probe.read_polls.load(Ordering::SeqCst),
+                probe.write_polls.load(Ordering::SeqCst),
+            );
+            assert_eq!(
+                metrics.num_alive_tasks(),
+                baseline,
+                "failed construction spawned workers on attempt {attempt}"
+            );
+            assert_eq!(probe.drops.load(Ordering::SeqCst), 1);
+            assert_eq!(probe.read_polls.load(Ordering::SeqCst), 0);
+            assert_eq!(probe.write_polls.load(Ordering::SeqCst), 0);
+            // Keep the actual peer open: EOF must come from releasing the
+            // failed construction's owned stream, not from dropping the peer.
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                    .await
+                    .expect("failed construction retained the duplex stream")
+                    .unwrap(),
+                0
+            );
+            tokio::task::yield_now().await;
+            assert_eq!(metrics.num_alive_tasks(), baseline);
+        }
+
+        drop(held_files);
+        limit.restore();
+
+        // A real successful bind after restoring the limit still starts all
+        // four workers. No local proxy client or physical device is involved.
+        let (inner, mut peer) = tokio::io::duplex(128);
+        let probe = Arc::new(Probe::default());
+        let stream = TrackedStream {
+            inner,
+            probe: Arc::clone(&probe),
+        };
+        let device = UserspaceTunDevice::start("fd00::1", "fd00::2", 1280, stream)
+            .await
+            .expect("userspace initialization after descriptor-limit restoration");
+        assert_ne!(device.local_port, 0);
+        assert_eq!(device.task_handles.len(), 4);
+        assert!(device.is_alive());
+        assert_eq!(metrics.num_alive_tasks(), baseline + 4);
+        assert_eq!(probe.drops.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while probe.read_polls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("successful constructor's packet reader was not polled");
+        assert!(device.is_alive());
+        drop(device);
+        // Observe this fixture's abort completion and stream release; this
+        // does not add or certify an explicit join API or device cleanup ACK.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while metrics.num_alive_tasks() != baseline || probe.drops.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropped successful userspace owner retained workers or stream");
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                .await
+                .expect("dropped successful userspace owner retained duplex peer")
+                .unwrap(),
+            0
+        );
+    }
 
     #[tokio::test]
     async fn proxy_timeout_and_eof_diagnostics_hide_raw_partial_preamble() {
