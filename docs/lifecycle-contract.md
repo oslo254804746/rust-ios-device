@@ -769,3 +769,21 @@ measurement or device acceptance.15/min15,tunnel56,full2524Rust/13Python PASS;
 22device NOT_RUN. Parent9635 handle missing/exit unknown; all14 subprocess
 exits0 and frozen source/binary audit prove the scoped gate. L01/L02/class4/
 all31 tasks and later classes remain active.
+
+## Bounded automatic scan futures
+
+The [parallel scanner profile](validation/tunnel-parallel-2026-10-06.md),
+`66bf7311020763b8a29b175a117cdf1b70d4e22f`, supersedes the preceding
+sequential candidate connection condition. USB and known paired mobdev2
+candidates enter one deduplicated window, directly owned by the parent scanner,
+with at most four futures and the existing shared permits/serial/generation
+guards. Parent cancellation drops all active candidates; stopping A leaves
+B's generation running. Original per-candidate15s/backoff/source options stay.
+
+Paired discovery now precedes connections, so that setup can delay USB startup.
+No discovery/whole-scan total or task/RSS bound is certified. Native discovery
+errors return after USB candidate outcomes; known error retention under generic
+parent Drop remains. Eight new actual manager fixtures and23/min23,tunnel64,
+full2532Rust/13Python pass;22device NOT_RUN. Attachment/replug identity, stale
+snapshots, native worker/server joins, metadata/resources/L04, other L01/
+L03–L04/Q04/classes5–9 and the full31-task goal remain.

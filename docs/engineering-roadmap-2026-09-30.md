@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护已交付主机 profile；自动扫描仍逐台建连，in-flight 拔插身份、扫描总预算、资源/平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、去重 USB/mobdev2 候选的父 future 受限并发扫描已交付主机 profiles；in-flight 拔插身份、发现/扫描总预算、资源/平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7117,3 +7117,48 @@ L02所需Coreconnect/RSD/H2与S01主机接口已就绪，L01剩余owners不因�
 接着bounded parallel auto scans/in-flight identity/scan totals/resource，再L03–L04/Q04
 及其他L01和第五至九类。L01/L02/第四类/总体目标active；无subagent/push/
 publication/historyrewrite/referenceedit/设备或Apple凭据操作。
+
+### 大类 4：L02 bounded parallel automatic scans（2026-10-06）
+
+受测实现 `66bf7311020763b8a29b175a117cdf1b70d4e22f`，父
+`b96ede822e52611d2be97be624baacb2317af608`。三源码319+/17-、八新测试；
+[并发扫描证据](validation/tunnel-parallel-2026-10-06.md) 和 [manager 合同](tunnel.md)
+记录当前行为。此前 e0f5267 profile 的 sequential 条件由本项实现解除，历史保留。
+
+实际CLI扫描把usbmux与existing-trust mobdev2候选合并去重，保留firstUSB/
+firstpairedhost的有效优先顺序。父scanner future用buffer_unordered直接拥有最多4个
+建连future，不创建detached连接task；共用既有4permit/perdevice serial/watch/15s
+candidate/error/backoff。A停滞时USB或mobdev2 B可在假设备预算1s内发布；
+stopA不取消B。16候选只有4active/peak，其余12未接入；parent Drop全部释放
+source futures/permits。Fake device/future Drop不是Core worker join/Apple ACK/RSS。
+
+既有paired discovery改为connect attempts之前，以解除USB batch阻塞mobdev2；
+其等待可延迟USB启动，discovery/wholeScan total仍待，不声明真实吞吐改善。
+paired discovery原错误保留至USB候选处理后返回，成功USB记录仍发布、ready不新设；
+generic parent Drop期间已知错误更强保留属于剩余owner边界。NativeSource/Lifecycle/
+refresh_connect及manual/table/HTTP/auth/federation/bridge/record/core/public/access/deps
+BYTE不改。旧queuedB fixture从1stalledA调整为4stalledA/C/D/E并放行4permit；
+原断言全部保留，其他旧test bodies不改；private fake增paired_failure。
+
+53715 terminal101 **0PASS/5FAIL**，25737 terminal0 **20PASS**；新增cross-family
+control88793 terminal101 **0PASS/1FAIL**，原mobdev2仍被USB batch阻塞；
+合并窗口/补充error-route回归99805 terminal0 **23PASS**。日志和原process statuses/
+hash保留，历史source preimages未存档，不虚构历史源码hash。冻结 **87432 terminal0**，
+all14 gates **PASS**；audit terminal0，实际 **2532Rust/13Python**、CLI927/Core1443/
+public52、0FAIL/2oldignored。23/min23/tunnel64+1ignored/WebInspector192/access29/
+Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full PASS。66features/
+4runtimegroups/MSRV1.80.1/7+7docs/3snippets/CABI/3.12wheel-sdist/tooling67/help118/
+raw38/host5/CLI95/backup3 PASS；**22device NOT_RUN**，Chromium/installed3.9/3.13
+NOT_RERUN。观察超时不算退出；源码直到原进程authoritative completion保持冻结。
+
+source patch SHA256 `1cb613e6083c8c68f134628c3fd9cbc11194381732cfa7c0d108fdf26a95da39`；
+actual debug ios SHA256 `188538ef87689ab47b29392c56f757e5905890c25de576ed4a0f28e58d40590c`；
+commit=frozen，ignored evidence `target/validation/tunnel-parallel-2026-10-06/`，
+reference HEAD/status不变。调度/启动时机变化须pre-1.0 review。
+
+L02仍进行中，9complete/10notstarted/12inprogress-orconditions/all31主项/子任务/
+历史、118capability正文/maturity保留。接着in-flight detach/replug身份/旧attached
+snapshot、discovery/wholeScan budget、metadata/resource/nativeworker/serverjoins，
+以及其他L01/L03–L04/Q04和第五至九类。有限4permit不限制所有Core tasks/allocator；
+无平台/真机/ACK/nativejoin/benchmark/RSS/decoder peak验收，无subagent/push/
+publication/historyrewrite/referenceedit/设备或Apple服务操作；第四类/总体goal active。

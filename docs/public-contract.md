@@ -1145,3 +1145,16 @@ are host evidence. Source/result hashes and all14 subprocess exits are audited;
 parent9635 tool exit is unavailable after handle recovery. Automatic scans still
 connect sequentially; physical/native joins/resource/L04 and all remaining
 L01/L02/L03–L04/Q04/classes5–9 conditions stay.
+
+## L02 bounded automatic scans
+
+The [parallel scan gate](validation/tunnel-parallel-2026-10-06.md) accepts
+`66bf7311020763b8a29b175a117cdf1b70d4e22f`. Private scanner scheduling merges
+USB/mobdev2 candidates, keeps original effective first route/host and owns four
+connection futures. Public SDK/C/Python, source adapters/options, manual start,
+HTTP/auth/payloads and original error body remain. Existing-trust discovery
+precedes connections; its wait may delay USB startup, so the timing change needs
+release review. A discovery error retains original IO after USB results have
+been processed. Local fake-device release is not native worker join or device
+acceptance. In-flight attachment identity, whole-scan budgets, native resources,
+L04 and all remaining L01/L02/L03–L04/Q04/classes5–9 conditions remain.

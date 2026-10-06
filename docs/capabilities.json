@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-parallel-66bf731",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState with owned private fake devices/source futures. Eight new fixtures: A stalled/B USB or mobdev2 publishes under1s, repeated UDIDs,16candidates/4active-peak,scan caller Drop owns every active future,stopA preservesB,paired native error/USB result retained,first USB/paired host preserved. No physical tunnel/native task join/Apple ACK/RSS proof."
+      ],
+      "required_state": [
+        "Three source files319+/17-,8new tests. First53715 terminal1010PASS5FAIL,USB post25737 terminal0twentyPASS,cross-family88793 terminal1010PASS1FAIL,expanded99805 terminal0twenty-threePASS. Frozen87432 terminal0/all14gates:23/min23/tunnel64+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. NativeSource/Lifecycle/refresh_connect/manual/HTTP/auth/federation/bridge/core/public/deps unchanged. Old queued-stop fixture scaffolding now fills4slots, original assertions retained; fake paired_failure only."
+      ],
+      "tested_commit": "66bf7311020763b8a29b175a117cdf1b70d4e22f",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-parallel-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Parent scanner owns max4 connection futures with buffer_unordered and existing shared permits/device serial/watch/budget/backoff. Combined USB and existing-trust mobdev2 candidate dedup keeps first effective USB/paired host, avoids duplicate-A window starvation and USB-batch blocking of B. No new detached connection tasks. Discovery now precedes USB connection attempts and maydelaystartup; failure retained until USBcandidate results then returns native IO/keepsUSBrecords/doesnotsetready. Full2532Rust/13Python,CLI927/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. In-flight detach/replug identity/stale snapshots,discovery-wholeScan deadlines,known primary undergenericparentDrop,metadata/nativeworkers/serverjoins/resource/L04/platform/device remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun;no Apple ACK/nativejoin/benchmark/RSS/decoder peak proof or maturity upgrade. All31/tasks/subtasks intact,9complete/10notstarted/12inprogressconditions;L01/L02/class4/L03–L04/Q04/classes5–9/goal active."
+    },
+    {
       "id": "linux-tunnel-isolation-e0f5267",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

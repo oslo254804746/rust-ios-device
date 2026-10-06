@@ -9,10 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Connect tunnel scan candidates in a shared window of four owned futures.
+  USB and existing-trust mobdev2 candidates are deduplicated together, allowing
+  a healthy device to connect while another stalls. See
+  [parallel scan evidence](docs/validation/tunnel-parallel-2026-10-06.md).
 - Isolate local tunnel-manager queries and stops from stalled connections.
   Starts coordinate per device with four shared connection permits and one15s
   queue/connect/fallback total. Stop cancels old pending starts and fences late
-  publication. Automatic scan connections remain sequential. See
+  publication. See
   [host evidence and migration](docs/validation/tunnel-isolation-2026-10-06.md).
 - Preserve WebDriver revocation cleanup results through the owned watcher join.
   Runtime mutex, context close and forwarding close share the existing100ms

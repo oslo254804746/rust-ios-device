@@ -48,12 +48,18 @@ cancelled; that start receives the existing502 with a cancelled error header.
 A later explicit start is allowed. Subsequent scans may recreate a present
 device, so stop is not a persistent exclusion policy.
 
-Automatic scans still connect candidates sequentially. Failure backoff remains
-30/60/120/240/300 seconds. Linux fake-device tests cover A stalled while B's
-combined local query/stop operations finish under one second, duplicate starts,
-stop/discovery races and owned resource release. Physical-device isolation,
-in-flight unplug/replug identity, whole-scan deadlines and resource/performance
-measurements remain pending. See [current host evidence](validation/tunnel-isolation-2026-10-06.md).
+Automatic scans deduplicate USB and existing-trust mobdev2 candidates together
+and own up to four connection futures. Healthy B can publish while A stalls;
+stopping A leaves B's active generation running. Paired discovery now precedes
+connection attempts, so its wait can delay scan startup. Discovery/whole-scan
+deadlines remain pending. Failure backoff stays30/60/120/240/300 seconds.
+
+Linux fake-device tests cover local query/stop isolation, duplicate starts,
+stop/discovery races, sixteen candidates with four active connections, cross-
+transport isolation and owned release. Physical-device isolation, in-flight
+unplug/replug identity and resource/performance measurements remain pending.
+See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
+[parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).
 
 ## Manager federation and WebSocket bridge
 

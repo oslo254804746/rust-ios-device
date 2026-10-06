@@ -1882,3 +1882,16 @@ schema1 and authorization stay. Timing/category corrections need release review.
 Cancellation is local ownership; no native worker join, Apple ACK, retry safety
 or persistent device exclusion follows. Scan discovery/whole-flow totals and
 in-flight detach/replug remain; L01/L02/L03–L04/Q04 and later classes continue.
+
+## Parallel scanner outcomes
+
+[L02 bounded scans](validation/tunnel-parallel-2026-10-06.md) tests
+`66bf7311020763b8a29b175a117cdf1b70d4e22f`. USB and existing-trust mobdev2
+candidates share one deduplicated four-future window. Original candidate
+connection/error/backoff code stays. A paired discovery error is retained until
+USB candidates finish, then returned with its native source; successful USB
+records stay and ready is not newly set. Candidate cancellation does not
+manufacture connection-failure backoff. Discovery now precedes USB attempts;
+whole-discovery/scan deadlines and stronger known-error retention during
+arbitrary parent Drop remain. No machine schema/status/auth change, safe retry
+or remote cleanup claim. L01/L02/L03–L04/Q04 and later classes continue.
