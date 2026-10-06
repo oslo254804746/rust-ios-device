@@ -550,6 +550,8 @@ impl TunnelAgentState {
     }
 
     fn notify_shutdown(&self) {
+        // Fence both existing and future starts before any async table cleanup.
+        self.inner.lifecycle.close();
         self.inner.shutdown.send_replace(true);
     }
 

@@ -19,6 +19,7 @@ mod parallel_tests;
 mod publication_tests;
 mod retention_tests;
 mod server_tests;
+mod shutdown_admission_tests;
 
 enum Behavior {
     Success,

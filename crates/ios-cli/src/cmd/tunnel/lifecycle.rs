@@ -15,7 +15,8 @@ const MAX_DEVICE_GATES: usize = 4096;
 pub(super) struct Lifecycle {
     devices: Mutex<HashMap<String, Weak<DeviceGate>>>,
     pub(super) connects: Semaphore,
-    shutdown: watch::Sender<Arc<()>>,
+    // Some is a reusable clear epoch; None is terminal server shutdown.
+    shutdown: watch::Sender<Option<Arc<()>>>,
     scan: watch::Sender<Arc<()>>,
 }
 
@@ -27,7 +28,7 @@ struct DeviceGate {
 pub(super) struct Ticket {
     gate: Arc<DeviceGate>,
     generation: Arc<()>,
-    shutdown: watch::Receiver<Arc<()>>,
+    shutdown: watch::Receiver<Option<Arc<()>>>,
     shutdown_generation: Arc<()>,
 }
 
@@ -42,13 +43,24 @@ impl Lifecycle {
         Self {
             devices: Mutex::new(HashMap::new()),
             connects: Semaphore::new(MAX_CONNECTS),
-            shutdown: watch::channel(Arc::new(())).0,
+            shutdown: watch::channel(Some(Arc::new(()))).0,
             scan: watch::channel(Arc::new(())).0,
         }
     }
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
+        let shutdown = self.shutdown.subscribe();
+        let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
         let mut devices = self.devices.lock().await;
+        // Closing never waits for this lock, and an old queued admission must
+        // not acquire a new epoch after clear or terminal shutdown.
+        if !shutdown
+            .borrow()
+            .as_ref()
+            .is_some_and(|epoch| Arc::ptr_eq(epoch, &shutdown_generation))
+        {
+            return Err(cancelled());
+        }
         let gate = match devices.get(udid).and_then(Weak::upgrade) {
             Some(gate) => gate,
             None => {
@@ -68,8 +80,6 @@ impl Lifecycle {
             }
         };
         let generation = gate.generation.borrow().clone();
-        let shutdown = self.shutdown.subscribe();
-        let shutdown_generation = shutdown.borrow().clone();
         Ok(Ticket {
             gate,
             generation,
@@ -88,11 +98,25 @@ impl Lifecycle {
     }
 
     pub(super) fn clear(&self) {
-        self.shutdown.send_replace(Arc::new(()));
+        self.shutdown.send_if_modified(|epoch| {
+            if epoch.is_none() {
+                return false;
+            }
+            *epoch = Some(Arc::new(()));
+            true
+        });
+        self.scan.send_replace(Arc::new(()));
+    }
+
+    pub(super) fn close(&self) {
+        self.shutdown.send_replace(None);
         self.scan.send_replace(Arc::new(()));
     }
 
     pub(super) fn scan_control(&self, timeout: Duration) -> Result<ScanControl> {
+        if self.shutdown.borrow().is_none() {
+            return Err(cancelled());
+        }
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             crate::output::input_decision("tunnel scan discovery deadline overflow")
         })?;
@@ -106,7 +130,7 @@ impl Lifecycle {
     }
 
     pub(super) fn scan_is_current(&self, generation: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.scan.borrow(), generation)
+        self.shutdown.borrow().is_some() && Arc::ptr_eq(&self.scan.borrow(), generation)
     }
 }
 
@@ -135,7 +159,11 @@ impl ScanControl {
 impl Ticket {
     pub(super) fn is_current(&self) -> bool {
         Arc::ptr_eq(&self.gate.generation.borrow(), &self.generation)
-            && Arc::ptr_eq(&self.shutdown.borrow(), &self.shutdown_generation)
+            && self
+                .shutdown
+                .borrow()
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.shutdown_generation))
     }
 
     pub(super) async fn serial(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -159,4 +187,36 @@ impl Ticket {
 
 pub(super) fn cancelled() -> anyhow::Error {
     anyhow::Error::new(ios_core::OperationCancelled::new()).context("tunnel operation cancelled")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lifecycle_tunnel_shutdown_admission_coordinator_wait_keeps_original_epoch() {
+        for terminal in [false, true] {
+            let lifecycle = Lifecycle::new();
+            let held = lifecycle.devices.lock().await;
+            let mut queued = Box::pin(lifecycle.ticket("synthetic-queued-device"));
+            assert!(futures_util::poll!(&mut queued).is_pending());
+            if terminal {
+                lifecycle.close();
+            } else {
+                lifecycle.clear();
+            }
+            drop(held);
+            let outcome = tokio::time::timeout(Duration::from_secs(1), queued)
+                .await
+                .unwrap();
+            match outcome {
+                Err(error) => assert!(error.is::<ios_core::OperationCancelled>()),
+                Ok(_) => panic!("queued admission acquired a replacement epoch"),
+            }
+            assert!(lifecycle.devices.lock().await.is_empty());
+            if !terminal {
+                assert!(lifecycle.ticket("synthetic-queued-device").await.is_ok());
+            }
+        }
+    }
 }
