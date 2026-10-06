@@ -13,12 +13,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use ios_core::MuxClient;
 use ios_core::TunMode;
-use ios_core::{
-    connect, connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
-    discover_paired_mobdev2_devices, ConnectOptions, ConnectedDevice,
-};
+use ios_core::{connect, ConnectOptions, ConnectedDevice};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +27,11 @@ use crate::access::{
     normalize_upstream_url, AccessControl, ClientAccessArgs, Permission, Principal,
     ServerAccessArgs, UpstreamArgs, Upstreams,
 };
+
+mod lifecycle;
+mod source;
+use lifecycle::{Lifecycle, Ticket};
+use source::{NativeSource, Route, Source, UsbSnapshot};
 
 const DEFAULT_AGENT_HOST: &str = "127.0.0.1";
 const DEFAULT_AGENT_PORT: u16 = 49151;
@@ -328,12 +329,22 @@ struct TunnelAgentInner {
     upstream_access: Upstreams,
     failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
     ready: RwLock<bool>,
-    lifecycle_lock: Mutex<()>,
+    lifecycle: Lifecycle,
+    scan_lock: Mutex<()>,
+    source: Arc<dyn Source>,
+    connect_timeout: Duration,
     shutdown: Notify,
 }
 
 struct ManagedTunnel {
-    device: ConnectedDevice,
+    device: ManagedDevice,
+    publication: Arc<()>,
+}
+
+enum ManagedDevice {
+    Native(Box<ConnectedDevice>),
+    #[cfg(test)]
+    Fake(Box<dyn source::FakeDevice>),
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +486,22 @@ impl TunnelAgentState {
         access: AccessControl,
         upstream_access: Upstreams,
     ) -> Self {
+        Self::with_source(
+            tun_mode,
+            access,
+            upstream_access,
+            Arc::new(NativeSource),
+            TUNNEL_CONNECT_TIMEOUT,
+        )
+    }
+
+    fn with_source(
+        tun_mode: TunMode,
+        access: AccessControl,
+        upstream_access: Upstreams,
+        source: Arc<dyn Source>,
+        connect_timeout: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
@@ -484,7 +511,10 @@ impl TunnelAgentState {
                 upstream_access,
                 failed_attempts: RwLock::new(HashMap::new()),
                 ready: RwLock::new(false),
-                lifecycle_lock: Mutex::new(()),
+                lifecycle: Lifecycle::new(),
+                scan_lock: Mutex::new(()),
+                source,
+                connect_timeout,
                 shutdown: Notify::new(),
             }),
         }
@@ -503,12 +533,14 @@ impl TunnelAgentState {
     }
 
     async fn clear(&self) {
-        self.inner.tunnels.write().await.clear();
+        let mut tunnels = self.inner.tunnels.write().await;
+        self.inner.lifecycle.clear();
+        tunnels.clear();
+        drop(tunnels);
         self.inner.failed_attempts.write().await.clear();
     }
 
     async fn list_records(&self) -> Vec<TunnelRecord> {
-        let _guard = self.inner.lifecycle_lock.lock().await;
         let mut tunnels = self.inner.tunnels.write().await;
         tunnels.retain(|_, tunnel| tunnel.is_alive());
         tunnels.values().filter_map(|t| t.record().ok()).collect()
@@ -611,7 +643,6 @@ impl TunnelAgentState {
     }
 
     async fn get_record(&self, udid: &str) -> Option<TunnelRecord> {
-        let _guard = self.inner.lifecycle_lock.lock().await;
         let mut tunnels = self.inner.tunnels.write().await;
         match tunnels.get(udid) {
             Some(tunnel) if tunnel.is_alive() => tunnel.record().ok(),
@@ -624,8 +655,8 @@ impl TunnelAgentState {
     }
 
     async fn remove_tunnel(&self, udid: &str) -> bool {
-        let _guard = self.inner.lifecycle_lock.lock().await;
         let mut tunnels = self.inner.tunnels.write().await;
+        self.inner.lifecycle.stop(udid).await;
         match tunnels.get(udid) {
             Some(tunnel) if tunnel.is_alive() => {
                 tunnels.remove(udid);
@@ -645,310 +676,205 @@ impl TunnelAgentState {
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
     ) -> Result<TunnelRecord> {
-        let _guard = self.inner.lifecycle_lock.lock().await;
-
-        if let Some(existing) = self.inner.tunnels.read().await.get(udid) {
-            if existing.is_alive() {
-                return existing.record();
-            }
-        }
-        self.inner.tunnels.write().await.remove(udid);
-
-        match requested_connection_type {
-            Some(StartTunnelConnectionType::Usb) => {
-                return self.connect_direct_usb_tunnel_locked(udid, ip_filter).await;
-            }
-            Some(StartTunnelConnectionType::Wifi) => {
-                return self
-                    .connect_remote_pairing_tunnel_locked(udid, ip_filter)
-                    .await;
-            }
-            Some(StartTunnelConnectionType::Usbmux) => {
-                return self.connect_usbmux_tunnel_locked(udid).await;
-            }
-            None => {}
-        }
-
-        match self.connect_usbmux_tunnel_locked(udid).await {
-            Ok(record) => Ok(record),
-            Err(usbmux_err) => {
-                let mobdev2_targets = discover_paired_mobdev2_devices()
-                    .await
-                    .context("failed to browse paired mobdev2 devices")?;
-                let target = mobdev2_targets
-                    .into_iter()
-                    .find(|target| {
-                        target.udid == udid
-                            && ip_filter
-                                .map(|ip| ip == target.host)
-                                .unwrap_or(true)
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "usbmux failed ({usbmux_err}); no paired mobdev2 target matched udid={udid} ip={ip_filter:?}"
-                        )
-                    })?;
-                self.connect_mobdev2_tunnel_locked(&target.udid, &target.host)
-                    .await
-            }
-        }
-    }
-
-    async fn connect_usbmux_tunnel_locked(&self, udid: &str) -> Result<TunnelRecord> {
-        let device = tokio::time::timeout(
-            TUNNEL_CONNECT_TIMEOUT,
-            connect(
-                udid,
-                ConnectOptions {
-                    tun_mode: self.inner.tun_mode,
-                    pair_record_path: None,
-                    skip_tunnel: false,
-                },
-            ),
-        )
-        .await
-        .context("timed out while creating usbmux tunnel")??;
-
-        self.store_tunnel_locked(udid, device).await
-    }
-
-    async fn connect_direct_usb_tunnel_locked(
-        &self,
-        udid: &str,
-        ip_filter: Option<&str>,
-    ) -> Result<TunnelRecord> {
-        let device = tokio::time::timeout(
-            TUNNEL_CONNECT_TIMEOUT,
-            connect_direct_usb_tunnel(
-                udid,
-                ip_filter,
-                ConnectOptions {
-                    tun_mode: self.inner.tun_mode,
-                    pair_record_path: None,
-                    skip_tunnel: false,
-                },
-            ),
-        )
-        .await
-        .with_context(|| format!("timed out while creating direct usb tunnel for {udid}"))??;
-
-        self.store_tunnel_locked(udid, device).await
-    }
-
-    async fn connect_mobdev2_tunnel_locked(&self, udid: &str, host: &str) -> Result<TunnelRecord> {
-        let device = tokio::time::timeout(
-            TUNNEL_CONNECT_TIMEOUT,
-            connect_tcp_lockdown_tunnel(
-                udid,
-                host,
-                ConnectOptions {
-                    tun_mode: self.inner.tun_mode,
-                    pair_record_path: None,
-                    skip_tunnel: false,
-                },
-            ),
-        )
-        .await
-        .with_context(|| {
-            format!("timed out while creating mobdev2 tunnel for {udid} via {host}")
-        })??;
-
-        self.store_tunnel_locked(udid, device).await
-    }
-
-    async fn connect_remote_pairing_tunnel_locked(
-        &self,
-        udid: &str,
-        host: Option<&str>,
-    ) -> Result<TunnelRecord> {
-        let device = tokio::time::timeout(
-            TUNNEL_CONNECT_TIMEOUT,
-            connect_remote_pairing_tunnel(
-                udid,
-                host,
-                ConnectOptions {
-                    tun_mode: self.inner.tun_mode,
-                    pair_record_path: None,
-                    skip_tunnel: false,
-                },
-            ),
-        )
-        .await
-        .with_context(|| format!("timed out while creating remote pairing tunnel for {udid}"))??;
-
-        self.store_tunnel_locked(udid, device).await
-    }
-
-    async fn store_tunnel_locked(
-        &self,
-        udid: &str,
-        device: ConnectedDevice,
-    ) -> Result<TunnelRecord> {
-        let record = ManagedTunnel::record_for_device(&device, self.inner.tun_mode)?;
-        self.inner
-            .tunnels
-            .write()
+        let ticket = self.inner.lifecycle.ticket(udid).await?;
+        ticket
+            .run(async {
+                tokio::time::timeout(self.inner.connect_timeout, async {
+                    let _serial = ticket.serial().await;
+                    if let Some(record) = self.get_record(udid).await {
+                        return Ok(record);
+                    }
+                    let _permit = self.inner.lifecycle.connects.acquire().await?;
+                    let route = match requested_connection_type {
+                        Some(StartTunnelConnectionType::Usb) => {
+                            Route::Usb(ip_filter.map(str::to_owned))
+                        }
+                        Some(StartTunnelConnectionType::Wifi) => {
+                            Route::Wifi(ip_filter.map(str::to_owned))
+                        }
+                        Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
+                    };
+                    match self.connect_and_store(udid, route, &ticket).await {
+                        Ok(record) => Ok(record),
+                        Err(error) if requested_connection_type.is_some() => Err(error),
+                        Err(usbmux_error) => {
+                            let targets = self
+                                .inner
+                                .source
+                                .paired_devices()
+                                .await
+                                .context("failed to browse paired mobdev2 devices")?;
+                            let Some(target) = targets.into_iter().find(|target| {
+                                target.udid == udid
+                                    && ip_filter.map_or(true, |ip| ip == target.host)
+                            }) else {
+                                return Err(
+                                    usbmux_error.context("no paired mobdev2 target matched")
+                                );
+                            };
+                            self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket)
+                                .await
+                        }
+                    }
+                })
+                .await
+                .context("timed out while creating tunnel")?
+            })
             .await
-            .insert(udid.to_string(), ManagedTunnel { device });
+    }
+
+    async fn connect_and_store(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+    ) -> Result<TunnelRecord> {
+        let device = self
+            .inner
+            .source
+            .connect(udid, route, self.inner.tun_mode)
+            .await?;
+        let record = device.record_for_mode(self.inner.tun_mode)?;
+        let mut tunnels = self.inner.tunnels.write().await;
+        if !ticket.is_current() {
+            return Err(lifecycle::cancelled());
+        }
+        anyhow::ensure!(
+            self.inner.access.permits_device(udid),
+            lifecycle::cancelled()
+        );
+        tunnels.insert(
+            udid.to_owned(),
+            ManagedTunnel {
+                device,
+                publication: Arc::new(()),
+            },
+        );
         Ok(record)
     }
 
-    async fn refresh_once(&self) -> Result<()> {
-        let _guard = self.inner.lifecycle_lock.lock().await;
+    async fn refresh_connect(&self, udid: &str, route: Route, ticket: &Ticket) {
+        let result = ticket
+            .run(async {
+                tokio::time::timeout(self.inner.connect_timeout, async {
+                    let _serial = ticket.serial().await;
+                    if self.get_record(udid).await.is_some() {
+                        return Ok(());
+                    }
+                    if self
+                        .inner
+                        .failed_attempts
+                        .read()
+                        .await
+                        .get(udid)
+                        .is_some_and(|failed| failed.should_skip(Instant::now()))
+                    {
+                        return Ok(());
+                    }
+                    let _permit = self.inner.lifecycle.connects.acquire().await?;
+                    self.connect_and_store(udid, route, ticket).await?;
+                    self.inner.failed_attempts.write().await.remove(udid);
+                    Ok(())
+                })
+                .await
+                .context("timed out establishing scanned tunnel")?
+            })
+            .await;
+        if let Err(error) = result {
+            // A user stop is not a connection failure and must not restart backoff.
+            if ticket.is_current() {
+                tracing::warn!(
+                    device = %ios_core::redaction::diagnostic_id(udid),
+                    error = %crate::output::error_message(&error),
+                    "tunnel agent: failed to establish tunnel"
+                );
+                self.record_failed_attempt(udid).await;
+            }
+        }
+    }
 
-        self.inner
-            .tunnels
-            .write()
-            .await
-            .retain(|device, _| self.inner.access.permits_device(device));
+    async fn refresh_once(&self) -> Result<()> {
+        // Only scans serialize. Queries, stops and explicit starts never take this lock.
+        let _scan = self.inner.scan_lock.lock().await;
+        let scan_generation = self.inner.lifecycle.scan_generation();
+        let initial = {
+            let mut tunnels = self.inner.tunnels.write().await;
+            tunnels.retain(|device, _| self.inner.access.permits_device(device));
+            tunnels
+                .iter()
+                .map(|(udid, tunnel)| (udid.clone(), tunnel.publication.clone()))
+                .collect::<HashMap<_, _>>()
+        };
         if !self.inner.access.permits_any_device() {
             self.mark_ready().await;
             return Ok(());
         }
 
-        let mut mux = MuxClient::connect().await?;
-        let devices = match mux.list_devices().await {
-            Ok(devices) => devices,
-            Err(err) => {
-                self.inner.tunnels.write().await.clear();
-                return Err(err.into());
+        let snapshot = self.inner.source.usb_devices().await;
+        // A stop during discovery must fence the old snapshot even for a device
+        // that had no published tunnel or device gate when the scan began.
+        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+            return Ok(());
+        }
+        let devices = match snapshot {
+            UsbSnapshot::Devices(devices) => devices,
+            UsbSnapshot::ConnectError(error) => return Err(error),
+            UsbSnapshot::ListError(error) => {
+                self.inner.tunnels.write().await.retain(|udid, tunnel| {
+                    !initial
+                        .get(udid)
+                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                });
+                return Err(error);
             }
         };
-        drop(mux);
-
-        let attached_udids = devices
+        let attached = devices
             .iter()
-            .map(|device| device.serial_number.clone())
+            .map(String::as_str)
             .collect::<std::collections::HashSet<_>>();
+        self.inner.tunnels.write().await.retain(|udid, tunnel| {
+            tunnel.is_alive()
+                && self.inner.access.permits_device(udid)
+                && (tunnel.device.device_id() == 0
+                    || attached.contains(udid.as_str())
+                    || !initial
+                        .get(udid)
+                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
+        });
 
-        {
-            let mut tunnels = self.inner.tunnels.write().await;
-            tunnels.retain(|udid, tunnel| {
-                tunnel.is_alive()
-                    && self.inner.access.permits_device(udid)
-                    && (tunnel.device.info.device_id == 0 || attached_udids.contains(udid))
-            });
-        }
-
-        let existing = self
-            .inner
-            .tunnels
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-
-        for device in devices {
-            if !self.inner.access.permits_device(&device.serial_number) {
-                continue;
-            }
-            if existing.contains(&device.serial_number) {
-                continue;
-            }
-            if self
-                .inner
-                .failed_attempts
-                .read()
-                .await
-                .get(&device.serial_number)
-                .is_some_and(|failed| failed.should_skip(Instant::now()))
-            {
-                continue;
-            }
-
-            match tokio::time::timeout(
-                TUNNEL_CONNECT_TIMEOUT,
-                connect(
-                    &device.serial_number,
-                    ConnectOptions {
-                        tun_mode: self.inner.tun_mode,
-                        pair_record_path: None,
-                        skip_tunnel: false,
-                    },
-                ),
-            )
-            .await
-            {
-                Ok(Ok(connected)) => {
-                    self.inner.tunnels.write().await.insert(
-                        device.serial_number.clone(),
-                        ManagedTunnel { device: connected },
-                    );
-                    self.inner
-                        .failed_attempts
-                        .write()
-                        .await
-                        .remove(&device.serial_number);
-                }
-                Ok(Err(err)) => {
-                    tracing::warn!(
-                        device = %ios_core::redaction::diagnostic_id(&device.serial_number),
-                        error = %ios_core::redaction::diagnostic_error(&err),
-                        "tunnel agent: failed to establish tunnel"
-                    );
-                    self.record_failed_attempt(&device.serial_number).await;
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "tunnel agent: timed out establishing tunnel for {}",
-                        ios_core::redaction::diagnostic_id(&device.serial_number)
-                    );
-                    self.record_failed_attempt(&device.serial_number).await;
-                }
+        // Capture every device generation before waiting for the first connection.
+        // A stop while an earlier device stalls invalidates the queued ticket too.
+        let mut candidates = Vec::new();
+        for udid in devices {
+            if self.inner.access.permits_device(&udid) {
+                let ticket = self.inner.lifecycle.ticket(&udid).await?;
+                candidates.push((udid, Route::Usbmux, ticket));
             }
         }
-
-        let existing = self
-            .inner
-            .tunnels
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-
-        for target in discover_paired_mobdev2_devices().await? {
-            if !self.inner.access.permits_device(&target.udid) {
-                continue;
-            }
-            if existing.contains(&target.udid) {
-                continue;
-            }
-            if self
-                .inner
-                .failed_attempts
-                .read()
-                .await
-                .get(&target.udid)
-                .is_some_and(|failed| failed.should_skip(Instant::now()))
-            {
-                continue;
-            }
-
-            match self
-                .connect_mobdev2_tunnel_locked(&target.udid, &target.host)
-                .await
-            {
-                Ok(_) => {
-                    self.inner
-                        .failed_attempts
-                        .write()
-                        .await
-                        .remove(&target.udid);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        device = %ios_core::redaction::diagnostic_id(&target.udid),
-                        host = %ios_core::redaction::diagnostic_id(&target.host),
-                        error = %crate::output::error_message(&err),
-                        "tunnel agent: failed to establish mobdev2 tunnel"
-                    );
-                    self.record_failed_attempt(&target.udid).await;
-                }
-            }
+        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+            return Ok(());
+        }
+        for (udid, route, ticket) in candidates {
+            self.refresh_connect(&udid, route, &ticket).await;
         }
 
+        let targets = self.inner.source.paired_devices().await?;
+        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+            return Ok(());
+        }
+        let mut candidates = Vec::new();
+        for target in targets {
+            if self.inner.access.permits_device(&target.udid) {
+                let ticket = self.inner.lifecycle.ticket(&target.udid).await?;
+                candidates.push((target.udid, Route::Mobdev2(target.host), ticket));
+            }
+        }
+        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+            return Ok(());
+        }
+        for (udid, route, ticket) in candidates {
+            self.refresh_connect(&udid, route, &ticket).await;
+        }
         self.mark_ready().await;
         Ok(())
     }
@@ -1162,21 +1088,15 @@ impl ManagedTunnel {
     }
 
     fn record(&self) -> Result<TunnelRecord> {
-        Self::record_for_device(
-            &self.device,
-            if self.device.userspace_port().is_some() {
-                TunMode::Userspace
-            } else {
-                TunMode::Kernel
-            },
-        )
+        self.device.record_for_mode(if self.device.userspace() {
+            TunMode::Userspace
+        } else {
+            TunMode::Kernel
+        })
     }
 
     fn is_alive(&self) -> bool {
-        self.device
-            .tunnel_handle()
-            .map(|tunnel| tunnel.is_alive())
-            .unwrap_or(false)
+        self.device.is_alive()
     }
 
     fn record_for_device(device: &ConnectedDevice, tun_mode: TunMode) -> Result<TunnelRecord> {
@@ -1807,6 +1727,7 @@ mod tests {
 
     mod access_tests;
     mod browser_tests;
+    mod lifecycle_tests;
     mod method_tests;
     mod upstream_tests;
 
