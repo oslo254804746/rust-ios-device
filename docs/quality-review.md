@@ -6,6 +6,13 @@ conclusions. This template starts D02 governance, not 1.0 readiness or release
 authorization. The roadmap retains every unfinished task and subtask.
 
 Current implementation review: 2026-10-05. Monthly review remains planned for 2026-10-30.
+Execution scope changed by the user on2026-10-06: Q04 and all its subtasks are
+excluded. The effective scope is30 tasks (9 complete/9 not started/12 in progress
+or conditions); older rows retain their checkpoint-specific scope. Existing
+Q04 commits/evidence stay, and the uncommitted UID-budget experiment was archived
+and withdrawn. A525-byte synthetic UID archive expanding into1,048,575 nodes
+remains a known unfixed finding. Scope exclusion does not waive another task’s
+original safety/acceptance conditions. The old goal is paused for a new session.
 The [capability catalog](capabilities.md) is the source for maturity/evidence;
 [build evidence](validation/build-release-2026-09-30.md) records the first gate.
 
