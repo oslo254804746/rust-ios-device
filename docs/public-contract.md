@@ -1172,3 +1172,15 @@ observable retirement/cancellation needs release review. Point-in-time host
 snapshot evidence leaves manual in-flight identity, unobserved changes/reused
 IDs, publication freshness, native joins/resources/platform/device pending.
 The complete31-task goal and L01/L02/L03–L04/Q04/classes5–9 remain active.
+
+## USB publication query
+
+The [L02 publication gate](validation/tunnel-publication-2026-10-06.md),
+`86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`, adds one existing daemon
+connection/list query for successful usbmux/direct-USB creation, including
+manual starts. The original budget/cancellation includes that wait; native IO/
+Elapsed remain, absent results cancel locally before publication. This startup/
+admission change needs release review. No public SDK/C/Python/API field,
+dependency, protocol codec, HTTP route/auth/payload changes. Later attachment
+changes and resource/native joins/platform/device conditions remain. It does
+not complete L02 or any remaining31-task scope.

@@ -1907,3 +1907,14 @@ backoff. Original IO/backoff remains. Snapshot equality is not physical
 freshness, native worker join or safe retry proof. Manual expected ID is absent,
 and post-connect queries/listeners are not implemented. Original HTTP/schema/
 safe body/public SDK stay. L02/L01/L03–L04/Q04 and later classes continue.
+
+## Query errors before tunnel publication
+
+The [publication query gate](validation/tunnel-publication-2026-10-06.md)
+accepts `86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`. An extra current
+attachment query before USB publication retains original Connect/List IO and
+original Elapsed under the existing total; absence is local cancellation with
+owned result release. It is not an original device failure or remote ACK.
+Safe context/body/schema/auth stay. Query completion is a point-in-time view;
+after-query changes, reused IDs, daemon restart, native liveness/joins and
+generation-specific backoff remain. L01/L02/L03–L04/Q04/classes5–9 continue.

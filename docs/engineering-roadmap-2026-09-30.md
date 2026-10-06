@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、去重 USB/mobdev2 父 future 受限并发、observed attachment ID/选择/退役与过期候选保护已交付主机 profiles；未观察的拔插/发布新鲜度/manual in-flight 身份、发现/扫描总预算、资源/平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、USB/mobdev2 父 future 受限并发、observed ID/选择/退役/过期候选及 USB 发布前同预算再次查询已交付主机 profiles；query 后变化/ID reuse/daemon restart/manual epoch/generation-specific 退避、发现/扫描总预算、资源/平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7205,3 +7205,47 @@ L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31�
 discovery-wholeScan totals/metadata/resource/nativeworker-serverjoins，再其他L01/
 L03–L04/Q04及第五至九类。无subagent/push/publication/historyrewrite/referenceedit/
 设备或Apple服务操作。
+
+### 大类 4：L02 attachment query before publication（2026-10-06）
+
+受测实现 `86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`，父
+`12e6b17757a99f66ff506835712560a2c88ffbe4`。三源码198+/3-、六新测试；
+[发布前查询证据](validation/tunnel-publication-2026-10-06.md) 与 [manager 合同](tunnel.md)
+记录范围。生产只增加17lineblock：initial expectedID/recordvalidation后、
+publication table lock之前，对Usbmux/directUSB结果再调用existingSource.usb_devices。
+当前(UDI,ID)在则发布，absent释放owneddevice/localcancel；Connect/ListErr保留原
+Anyhow/IO与safe static context。结果对象在query期间仍owned，分享原15s/serial/
+permit/watch，无globalnetworklock；Wifi/mobdev2跳过，initial mismatch不发额外query。
+
+实际增加ONEdaemon connection/list roundtrip，manual同样参加，可增加启动耗时，
+待pre-1.0 review/platform/device evidence。reply snapshot之后变化/IDreuse/daemonrestart/
+nativealivefalse/eventlistener/worker-serverjoins仍未解决，不能claim fullphysicalfreshness/
+ACK/资源/RSS/benchmark。ordinaryIO/backoff保留；absent local cancellation不加新退避。
+旧failedattempt UID-only仍可把71失败退避带到fresh72，下一项须继续，不宣称L02完成。
+
+privateFake成功legacyUSB结果注册进default.USBlist（explicitdetails仍独立控制），
+usb_calls计数、error在gate之前捕获为per-request outcome。唯一旧failed_scan
+fixture改setup顺序：oldA先成功，再设旧failure/gate，poll旧query后设新query健康/
+无gate再连B；保留全部旧assertions及其他30旧bodies；不加production bypass。
+nativeSource/lifecycle/Core/public/access/deps/原production所有body除17block BYTE保持。
+
+control26945 terminal101 **0PASS/6FAIL**，post14072 terminal0 **36PASS**；
+冻结 **20077 terminal0/all14 gates PASS**、source/result audit terminal0。实际
+**2545Rust/13Python**、CLI940/Core1443/public52、0FAIL/2既有ignored；
+36/min36/tunnel77+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/
+strict/fmt/tooling22/buildCLI95/full PASS。66features/4groups/MSRV1.80.1/7+7docs/
+3snippets/CABI/3.12wheel-sdist/tooling67/help118/raw38/host5/CLI95/backup3 PASS；
+**22device NOT_RUN**，Chromium/installed3.9/3.13 NOT_RERUN。观察timeout不算退出，
+source直到authoritative completion冻结；真实coreworker/device并未由fakeDrop认证。
+
+patch SHA256 `ed585c77da2af2dbcd7dcd9e6cef4d0370eabfcb0c65552e4d46bfa6f83432fc`；
+actual debug ios SHA256 `0bf5bce817434a2c0c9af4679f2e68f246166d1b05636c07d80fa33c0176eaee`；
+commit=frozen，ignored evidence `target/validation/tunnel-publication-2026-10-06/`，
+reference HEAD/status不变。ActualCLIstate independently controlledsource/nativeID/query/
+ownedresult/IO/Elapsed/stop/anothertransport，未用SDKfakeconstructor或新的protocol keys。
+
+L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/全部子项/
+历史/118capability正文maturity保留。接着generation/route-specific failurebackoff、
+afterquery变化/未知manualepoch/reuse/restart/nativeLive/metadata/resource/wholeScan，
+再其他L01/L03–L04/Q04和第五至九类。无subagent/push/publication/historyrewrite/
+referenceedit/设备或Apple服务操作。

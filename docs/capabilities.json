@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-publication-86fecfe",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/ownedprivateFakeDevice/queryfuture/nativeIO. Six newfixtures manualdetachedwhileconnecting,initial/native71versuscurrent72,querypendingoriginal80msElapsed,stopduringquerybeforestore,queryBrokenPipepreserved,anotherattachedtransportaccepted. DefaultfakeUSBsuccessregistersattachment;explicitdetails remaincontrolled and failuresper-requestcaptured. No physicaldaemon/device/nativeworkerjoin/ACK/RSSproof."
+      ],
+      "required_state": [
+        "Three source files198+/3-,6newtests.26945 terminal1010PASS6FAIL,14072 terminal0thirty-sixPASS,frozen20077 terminal0/all14gates36/min36/tunnel77+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. Only17lineproductionblock added;allotherprod/sourceadapter/lifecycle/HTTP/record/core/public/access/deps unchanged. All30oldassertions retained;oldfailedsnapshot fixture onlycoherentinputscaffolding;no prod testbypass."
+      ],
+      "tested_commit": "86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-publication-2026-10-06.md",
+      "result": "PASS",
+      "scope": "SuccessfulUsbmux/directUSBcreation ownscompleteddevice duringEXTRAexistingSource.usb_devices connection/list query BEFOREglobalpublicationlock, same15s/serial/permit/watch. CurrentUDI-IDmember stores;absentDrops/localcancel/nofailurebackoff;Connect/List IOretained/staticcontext/actualElapsed. Wifi-mobdev2 andinitialexpected-IDrejection skipquery. Full2545Rust/13PythonCLI940Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Extraquery/startupimpactneedsrelease/device review. POINT-IN-TIMEatreply only: laterchanges/reuse/restart/manualepochs/nativealivefalse/worker-serverjoins,UID-onlybackoff suppressingfreshgeneration,retainedmetadata/resource/discovery-wholeScan/L04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof/maturityupgrade. All31/subtasks/history/9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
+    },
+    {
       "id": "linux-tunnel-identity-1eb45c2",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

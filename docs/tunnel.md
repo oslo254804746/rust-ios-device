@@ -64,9 +64,16 @@ New publications survive older snapshots. See
 [snapshot identity evidence](validation/tunnel-identity-2026-10-06.md).
 
 These checks use point-in-time snapshots; manual starts carry no expected ID.
-No post-connect attachment query or event listener is implemented. Unobserved
-detach/replug, ID reuse/daemon restart, publication freshness, physical-device
-isolation and resource/performance measurements remain pending.
+Usbmux/direct-USB creation now queries the daemon once more before publication,
+checking that the returned(UDID,ID) remains attached. This extra query shares the
+existing connection total/cancellation and can increase startup time. An absent
+result is released locally; query IO and actual deadline expiry remain typed.
+Wi-Fi/mobdev2 skip it. See
+[publication query evidence](validation/tunnel-publication-2026-10-06.md).
+
+This checks the query reply's snapshot. No event listener is implemented.
+Changes after the query, reused IDs/daemon restart, native liveness/joins,
+generation-specific backoff and physical/resource/performance evidence remain pending.
 See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 [parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).
 

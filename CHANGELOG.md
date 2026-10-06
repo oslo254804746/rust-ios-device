@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Recheck current native attachments before publishing a USB tunnel result.
+  The extra daemon query shares the existing connection total and cancellation;
+  absent results release locally, and query IO remains available. See
+  [publication query evidence](docs/validation/tunnel-publication-2026-10-06.md).
 - Preserve native attachment IDs in tunnel scans. An observed replacement ID
   retires the old record, and a candidate returning another generation is
   cancelled before publication without adding connection-failure backoff.

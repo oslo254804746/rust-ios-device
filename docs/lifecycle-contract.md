@@ -805,3 +805,20 @@ snapshot change can still be admitted; manual expected ID is None and no
 post-connect query/listener exists. Physical freshness, native worker/server
 joins, discovery/wholeScan deadlines,metadata/resources/L04 and otherL01/
 L03–L04/Q04/classes5–9 remain. This profile does not complete L02 or the goal.
+
+## Completed device ownership during publication query
+
+[L02 publication query](validation/tunnel-publication-2026-10-06.md),
+`86fecfe3331e9efa74dc76fbc48b47ad5c3df8f1`, owns a completed USB device
+through an additional current(UDID,ID) query before the global table lock.
+Original15s/serial/permit/watch cover it; failure/cancellation releases that
+owned result and preserves native IO/Elapsed/local cancellation. No global
+lock covers network wait. Initial expected-ID rejection and Wi-Fi/mobdev2
+skip the extra query. Six actual manager fixtures,36/min36,tunnel77 and
+full2545Rust/13Python pass;22device NOT_RUN.
+
+Observation at query completion leaves later changes/reused IDs/daemon restart/
+manual epochs/nativealivefalse/worker-server joins unresolved. Failed attempts
+still key only UDID, so prior-generation backoff may suppress a new ID. Native
+tasks/allocation/retained metadata/discovery-wholeScan budgets/L04 and otherL01/
+L03–L04/Q04/classes5–9 remain. The extra query is not a performance or RSS proof.
