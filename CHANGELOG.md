@@ -491,6 +491,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Apply the manager scan's discovery deadline and cancellation to internal
+  table locks and USB coordinator admission. Late unlocks cannot advance an
+  expired scan; native USB errors survive cancellation, with primary and
+  cleanup errors retained separately. See
+  [scan setup evidence](docs/validation/tunnel-scan-setup-2026-10-06.md).
+
 - Count coordinator acquisition in the manager's existing 15-second manual
   connection total. Queueing, connection, trusted fallback and publication
   share one checked deadline; zero budgets and late ready results cannot

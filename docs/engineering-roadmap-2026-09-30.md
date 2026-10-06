@@ -114,8 +114,8 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入/coordinator锁等待取消/manual建连checked15s absolute total与迟到ready拒绝主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝/coordinator锁等待取消/manual协调器获取至publication同一绝对期限已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入/coordinator锁等待取消/manual建连checked15s absolute total与迟到ready拒绝与scan setup内部table/USB coordinator/无授权ready-failure锁共享绝对期限及迟到poll拒绝主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝/coordinator锁等待取消/manual协调器获取至publication同一绝对期限与scan setup内部锁/USB ticket同clock及native primary保留已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7694,3 +7694,45 @@ ACK/asyncDrop/资源/性能；direct tunnel start与scanned candidate timing未�
 actualhelp118、whitespace、commit/frozen patch与source/binary hash通过。31原任务行
 及全部history prefix、118能力正文maturity和既有evidence保持，仅当前L01/L02、
 最新用户授权、末尾交付及本host证据更新；文档期间产品源码未变。
+
+### 大类 4：L01/L02 scan setup internal waits（2026-10-06）
+
+实现 `57d57999fddbe0234b502686b65b8500d7d50cfd`，父 `7ca396753cc89a38da980de9b0f558a7dd2eabdb`，四CLI文件726+/25-、
+16新测试；[scan setup证据](validation/tunnel-scan-setup-2026-10-06.md)。一个子代理
+实施、另一代理审查，均未运行Rust命令；主代理串行全部构建/测试，运行时冻结源码。
+后续代理只读审查/ignored方案，不应用到产品源码。
+
+原checked15s discovery clock扩至initial/post-USB table、USB coordinator和无授权
+failed/ready锁；clear/shutdown在锁仍持有时结束等待。每次work poll校验nominal
+deadline，迟到解锁不能prune/clear/markReady/插入Weak gate。USB source已经返回
+的原生错误在同poll epoch变化后不被吞掉；ListError清理取消跳过旧写、返回primary，
+cleanup expiry private wrapper分别保留IO/Elapsed，source指向primary且wrapper/CLI
+human/JSON脱敏。任意raw source Debug并不自动脱敏。
+
+旧refresh_once/ScanControl.drive与新scaffolding负控制74607权威退出101：0PASS/16FAIL；
+组合helper负控制在首个失败子路径停止，不能算每个循环分支已分别负验。恢复fix后
+冻结91653权威退出0，九串行门禁全部PASS：new16/min16、tunnel152/1既有ignored、
+minCLIalltargets、原stack5、strictCLIClippy、fmt、第11节完整拆分、项目.venv工具73。
+**2620Rust/13Python，CLI1015/Core1443/public52，0FAIL/2既有ignored**；66features/
+4groups/MSRV1.80.1/7+7docs/3snippets/C ABI/3.12wheel-sdist/tooling73/help118/raw38/
+host5/CLI95/backup3 PASS。22device NOT_RUN；Chromium/installed3.9/3.13 NOT_RERUN。
+累计测试1s总预算/两300ms阶段/650ms观察余量，是因果期限证据，不是L04测量。
+全部旧断言/其他product sources/Q04与只读refs HEAD/status保持。
+
+patch SHA256 `b6e8621bde201da0271ae9c0ef9117109eccaeb759599719f070de8f6c6301c7`；actual ios SHA256
+`f89cd7fe0fecc52b448df11b619ebf7865c09d73c3ef75bf5cfba7d62bd3ecbb`。commit patch=frozen；tracked crate/script/Cargo及新test hash在门禁间
+及退出后核对。ignored `target/validation/tunnel-scan-setup-2026-10-06/`保留source、
+control/gate logs、exit/hash/review。无cacheclean/push/publication/historyrewrite/
+referenceedit/device/credential/Apple操作。
+
+paired reply结束setup clock；candidate独立total与后续handoff/reconcile/finalready
+保持原行为。single-poll CPU、shutdown/publication linearization、startup/wholeScan/
+metadata、原生construction/worker-serverjoins、physical freshness/reuse/restart/manual
+epochs、其他L01/L02、L03–L04和第五至九类及全部待条件项继续。有效30项及全部
+子任务仍active，9完成/21未完成；Q04全部排除、UID风险未修复，其他原验收不豁免。
+无asyncDrop/ACK/nativejoin/资源/性能认证；时序修正待pre-1.0 release review。
+
+七文档收尾审查：六Markdown/369 local links、项目.venv capability source及actual
+help118、whitespace、commit/frozen patch与source/binary hash通过。31原主任务行及
+全部history prefix、118能力正文/maturity/既有evidence保持；仅当前L01/L02与本项
+交付/evidence更新，文档期间产品源码未变。

@@ -60,8 +60,15 @@ stopping A leaves B's active generation running. Paired discovery now precedes
 connection attempts, so its wait can delay scan startup. Scan-lock queue, USB
 snapshot and existing-trust paired discovery now share one15-second deadline.
 Stop/clear cancels an old waiting generation; real expiry remains a timeout.
-This covers setup, while each candidate retains its own connection budget.
-Whole-scan and metadata CPU/handoff budgets remain pending. See
+Initial/post-USB tunnel table locks, USB coordinator admission and the
+no-authorized-device failure/ready locks now share that same clock and cancel
+while held. A lock released after expiry cannot advance the scan. An already
+returned native USB error survives cancellation; ListError cleanup expiry
+retains the primary and cleanup errors separately. See
+[scan setup evidence](validation/tunnel-scan-setup-2026-10-06.md).
+The setup clock ends at the paired reply; each candidate retains its own
+connection budget. Post-paired handoff, reconciliation/final ready, whole-scan
+and metadata CPU budgets remain pending. See
 [scan discovery evidence](validation/tunnel-discovery-2026-10-06.md).
 Failure backoff stays30/60/120/240/300 seconds for
 the same observed native ID and route/paired host. A newly observed ID or known

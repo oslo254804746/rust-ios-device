@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-scan-setup-57d5799",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private locks, coordinator table, owned fake sources/devices. Held/late setup lock waits, native errors and epoch changes. No physical/native worker join."
+      ],
+      "required_state": [
+        "Four CLI files726+/25-,16 new tests. Original-body control74607 exited101:0PASS/16FAIL; frozen91653 exited0/all9 serial gates,new16/min16,tunnel152+1ignored,minCLIalltargets,stack5,strict,fmt,full2620Rust13Python,project .venv tooling73. Original assertions/other product/Q04/reference HEAD/status preserved. Subagent implementation and review; all Rust commands primary-only."
+      ],
+      "tested_commit": "57d57999fddbe0234b502686b65b8500d7d50cfd",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-scan-setup-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Original checked15s discovery clock includes initial/post-USB table, USB coordinator and no-authorized failure/ready waits; clear/shutdown cancel while held, per-poll nominal guard blocks late mutation/gate insertion. Returned USB native error survives same-poll cancellation; ListError cleanup cancel skips stale pruning, expiry retains primary IO plus native Elapsed privately with source primary and safe wrapper/CLI output. Paired reply ends setup; candidate totals/post-paired behavior retained. Full2620Rust13PythonCLI1015Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Single-poll CPU,shutdown/publication linearization,startup/whole-scan/post-paired/metadata/native joins/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,API,dependency,ACK,resource/performance certification;timing needs release review."
+    },
+    {
       "id": "linux-tunnel-manual-deadline-d3ed1c3",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

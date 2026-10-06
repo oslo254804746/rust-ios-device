@@ -968,3 +968,30 @@ deadlines and direct `ios tunnel start` remain their separate profiles.
 22device NOT_RUN; other L01/L02, L03–L04 and classes5–9 stay active. All30 tasks
 and subtasks exclude Q04; its known UID finding stays unfixed and other tasks'
 original acceptance remains.
+
+## Tunnel scan setup internal waits
+
+The [scan setup profile](validation/tunnel-scan-setup-2026-10-06.md),
+`57d57999fddbe0234b502686b65b8500d7d50cfd`, extends the existing checked15s
+discovery clock to initial/post-USB table locks, USB coordinator admission and the no-authorized
+failure/ready locks. These waits observe clear/shutdown while held. The biased
+native expiry and per-poll nominal guard prevent late unlocks from pruning,
+marking ready or inserting coordinator gates. Native USB errors already
+returned survive same-poll cancellation. ListError cleanup skips stale writes
+on cancellation and retains both primary IO and cleanup Elapsed on expiry;
+source remains primary, wrapper/CLI rendering stays safe.
+
+Sixteen actual manager cases cover held/late locks, gate-table observation,
+cumulative discovery budget, cancellation/fresh scans and error retention.
+Old-body control74607 exited101:0PASS/16FAIL; frozen91653 exited0/all nine
+serial gates. Full/minimum16/16,tunnel152/1existing ignored,stack5,strict checks,
+2620Rust/13Python and project .venv tooling73 pass. A delegated implementation
+and independent review ran no Rust tools; product sources stayed frozen.
+
+The clock ends at paired reply; candidate connection totals and post-paired
+handoff/reconciliation/final readiness keep their original behavior. CPU
+within one poll,shutdown/publication linearization,startup/whole-scan/metadata,
+native construction/worker/server joins,physical freshness/reuse/restart/manual
+epochs and other L01/L02/L03–L04/classes5–9 continue.22device NOT_RUN; active30
+tasks/subtasks exclude Q04,whose UID risk remains unfixed; other acceptance
+conditions remain. No maturity,ACK,async Drop,resource or performance claim.
