@@ -174,7 +174,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scope", choices=["full", "quick", "fmt", "check", "lint",
         "rust-tests", "python-host", "msrv", "features", "docs", "ffi", "python-package",
-        "tooling-tests", "capabilities", "diagnostics", "regression", "compatibility", "backup-contracts"])
+        "tooling-tests", "capabilities", "diagnostics", "regression", "compatibility", "backup-contracts", "high-cost"])
     parser.add_argument("--package", choices=["ios-core", "ios-cli", "ios-ffi"],
                         help="package to test in quick mode")
     parser.add_argument("--python", default=os.environ.get("PYO3_PYTHON", sys.executable))
@@ -205,6 +205,8 @@ def main():
             "scripts/compatibility.py"]),
         "backup-contracts": lambda: run("local backup CLI output/failure fixtures", [sys.executable,
             "scripts/backup_contracts.py"]),
+        "high-cost": lambda: run("explicit high-cost PBKDF2 vector", [args.python,
+            "scripts/high_cost.py"]),
         "tooling-tests": lambda: run("validation failure paths", [sys.executable, "-m",
             "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]),
         "python-package": lambda: python_package(args.python),
