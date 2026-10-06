@@ -123,10 +123,13 @@ whose JSON body finishes after shutdown returns the existing502 with
 `x-ios-error-class: cancelled` without connecting. Ordinary internal `clear`
 still allows a fresh generation; restarting a server needs a new manager state.
 Coordinator admissions capture their clear epoch before locking, so an old
-waiter cannot acquire the replacement epoch. The coordinator lock wait itself
-still awaits release; its total/cancellation, checks racing with shutdown,
+waiter cannot acquire the replacement epoch. Coordinator lock wait now also
+observes clear/shutdown directly and returns cancellation while the lock is
+still held. Its connection-total coverage, checks racing with shutdown,
 existing forwarding and delegated worker joins remain separate work. See
 [shutdown admission evidence](validation/tunnel-shutdown-admission-2026-10-06.md).
+The later [coordinator cancellation evidence](validation/tunnel-coordinator-cancel-2026-10-06.md)
+records the wait improvement; it does not add an acquisition deadline.
 
 `GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
 UDID-keyed tunnel listing including registered upstream managers. Register one

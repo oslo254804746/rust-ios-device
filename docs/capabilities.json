@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-coordinator-cancel-a4beec7",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual private coordinator mutex held through cancellation result, both reusable-clear and terminal-close paths; no row mutation, original marker/class, fresh post-clear ticket. No native Source/device/protocol or worker join."
+      ],
+      "required_state": [
+        "One lifecycle source file40+/2-,one new test/two runtime paths. Control35560 exited101:0PASS/1FAIL at first clear path; terminal path not reached. Frozen14142 exited0/all8 gates,new1/min1/tunnel123+1ignored/minCLIalltargets/stack5/strict/fmt/full2591Rust13Python. Extra project .venv tooling90657 exited0:73PASS. Original assertion functions and all other product sources preserved."
+      ],
+      "tested_commit": "a4beec7fa01b605933b1966b79ef3ee738ae41fd",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-coordinator-cancel-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Directly owned biased select cancels coordinator lock await on clear/shutdown before held lock release; old post-lock epoch check preserved and ordinary fresh admission works. No acquisition deadline or manual-total coverage yet. Full2591Rust13PythonCLI986Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/all subtasks excluding Q04,9complete9notstarted12inprogress-or-conditions;UID finding unfixed,other acceptance unchanged. Post-check/startup/whole-scan/metadata/native joins/otherL01-L04/classes5-9 remain;no maturity,protocol,pairing,public API,dependency,physical/resource/performance change or certification."
+    },
+    {
       "id": "linux-tunnel-shutdown-admission-0d025dd",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

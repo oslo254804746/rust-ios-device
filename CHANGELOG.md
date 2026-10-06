@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cancel tunnel coordinator lock waits on clear or server shutdown before the
+  lock is released, without creating coordinator state. Fresh admission after
+  ordinary clear stays available. See
+  [coordinator cancellation evidence](docs/validation/tunnel-coordinator-cancel-2026-10-06.md).
 - Close tunnel connection admission before server cleanup. Existing tickets
   cancel, late manual starts/scans stay rejected, and an HTTP start body finishing
   after table clear cannot recreate a tunnel. Ordinary clear remains reusable;

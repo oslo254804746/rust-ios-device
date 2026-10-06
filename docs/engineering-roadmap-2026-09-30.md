@@ -114,8 +114,8 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入/coordinator锁等待取消主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝/coordinator锁等待取消已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7593,3 +7593,40 @@ subagent/referenceedit/push/publication/historyrewrite，源码冻结至验证�
 本项七文档收尾审查：六Markdown/353 local links、项目.venv capability inventory/
 actualhelp118、whitespace与实现/二进制hash通过；118能力正文/maturity/所有旧evidence、
 全部历史/子任务prefix保留，只有L01/L02当前行和末尾交付追加。文档期间源码未变。
+
+### 大类 4：L01/L02 coordinator lock-wait cancellation（2026-10-06）
+
+受测实现 `a4beec7fa01b605933b1966b79ef3ee738ae41fd`，父文档收尾
+`8bd99de979495a7ea710925c072546015b0e2a80`；一个lifecycle文件40+/2-。
+[协调器取消证据](validation/tunnel-coordinator-cancel-2026-10-06.md)覆盖先前准确
+保留的锁等待不能立即取消条件：直接owned biased select同时等待clear/shutdown与
+实际coordinator mutex，锁仍被持有时返回原OperationCancelled，不产生coordinator行。
+原post-lock epoch检查/已有断言保持，普通clear之后fresh ticket可继续；无新task、
+协议/public API/权限/NativeSource/Core/SDK/bindings/deps变动。
+
+一新测试有clear与terminal两runtime路径；两者都在持锁期间观察typed取消及空表，
+之后释放锁，clear分支再实际新建ticket。负控制35560退出101：0PASS/1FAIL，首次clear
+等待外层1s超时，terminal路径该失败运行未到达，不能算两个负控制。冻结14142权威
+退出0，八门禁通过：new1/min1（两路径）、tunnel123/1既有ignored、minCLIalltargets/
+原stack5/strictCLIClippy/fmt/第11节full。**2591Rust/13Python，CLI986/Core1443/public52，
+0FAIL/2既有ignored**；66features/4groups/MSRV1.80.1/7+7docs/3snippets/C ABI/3.12wheel-sdist/
+tooling73/help118/raw38/host5/CLI95/backup3 PASS；另项目.venv工具90657退出0，73PASS。
+**22device NOT_RUN**；Chromium/installed3.9/3.13 NOT_RERUN，不升级maturity。
+
+patch SHA256 `0573916f2586d6509a1ce2ecf749670bf994df9bd3349a8ff3bb9bd44692a8d5`；
+actual ios SHA256 `5ea60df57061c294c6b8252baf28376b02de6f8491365ceef054faa502284232`。
+commit=frozen，ignored `target/validation/tunnel-coordinator-cancel-2026-10-06/`；只读
+refs HEAD/status及全部其他产品源码保持。源码冻结至真实退出再审查diff/提交，取消
+时序改变需pre-1.0 review；持锁因果fixture不作为L04性能基线。
+
+L01/L02/第四类/30项目标 active，9完成/9未开始/12进行中或待条件及所有原任务/
+子项/历史/118能力正文maturity保持。继续coordinator acquisition deadline与manual
+connection total覆盖、startup/wholeScan/metadata/post-check竞态/nativeworker-serverjoins、
+其他L01/L02，再L03–L04、第五至九类及全部待条件项。无asyncDrop/nativejoin/physical/
+Apple/资源/性能认证。Q04全部子项继续排除，已知UID风险未修复，其他验收不豁免；
+无cacheclean/subagent/referenceedit/push/publication/historyrewrite/device操作。
+
+本项七文档收尾审查：六Markdown/358 local links、项目.venv source/actualhelp118
+inventory、whitespace及source/binary hash通过；全部旧任务/子项/history prefix、118能力
+正文/maturity/既有evidence保持。只有L01/L02当前行、末尾交付与一项host证据追加，
+文档期间产品源码不变。

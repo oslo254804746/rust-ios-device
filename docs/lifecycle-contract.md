@@ -927,3 +927,15 @@ strict checks and full2590Rust/13Python pass. There is no forced delegate/Core
 join: coordinator lock wait totals/cancellation, post-check races, startup and
 whole-scan budgets, forwarding owners and other L01/L02 work remain. L03–L04,
 classes5–9 and all other active30-task acceptance conditions continue.
+
+## Cancelled tunnel coordinator lock waits
+
+The [coordinator cancellation profile](validation/tunnel-coordinator-cancel-2026-10-06.md),
+`a4beec7fa01b605933b1966b79ef3ee738ae41fd`, replaces the uninterruptible
+coordinator mutex await with a directly owned biased clear/shutdown wait.
+Both reusable clear and terminal close return OperationCancelled while that
+mutex remains held; no coordinator row is created. The original post-lock
+epoch check stays, ordinary fresh admission after clear works, and no actor or
+network request is added. One new test runs both paths; full/minimum,tunnel123,
+stack5,strict checks and full2591Rust/13Python pass. Acquisition deadlines,
+post-check races and the other pending L01/L02 scope remain.
