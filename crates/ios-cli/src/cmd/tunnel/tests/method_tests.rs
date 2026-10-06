@@ -17,9 +17,8 @@ async fn authenticated_legacy_get_is_readonly_and_post_shutdown_notifies() {
             .await
             .unwrap(),
     );
-    let shutdown = state.inner.shutdown.notified();
+    let shutdown = state.wait_shutdown();
     tokio::pin!(shutdown);
-    shutdown.as_mut().enable();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let client = reqwest::Client::builder()
         .no_proxy()

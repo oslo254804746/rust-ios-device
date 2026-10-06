@@ -18,6 +18,7 @@ mod liveness_tests;
 mod parallel_tests;
 mod publication_tests;
 mod retention_tests;
+mod server_tests;
 
 enum Behavior {
     Success,

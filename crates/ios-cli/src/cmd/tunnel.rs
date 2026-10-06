@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
+#[cfg(test)]
+use tokio::sync::Notify;
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
@@ -29,6 +31,7 @@ use crate::access::{
 };
 
 mod lifecycle;
+mod server;
 mod source;
 use lifecycle::{Lifecycle, Ticket};
 use source::{NativeSource, Route, Source, UsbSnapshot};
@@ -335,7 +338,7 @@ struct TunnelAgentInner {
     scan_lock: Mutex<()>,
     source: Arc<dyn Source>,
     connect_timeout: Duration,
-    shutdown: Notify,
+    shutdown: watch::Sender<bool>,
 }
 
 struct ManagedTunnel {
@@ -533,7 +536,7 @@ impl TunnelAgentState {
                 scan_lock: Mutex::new(()),
                 source,
                 connect_timeout,
-                shutdown: Notify::new(),
+                shutdown: watch::channel(false).0,
             }),
         }
     }
@@ -547,7 +550,12 @@ impl TunnelAgentState {
     }
 
     fn notify_shutdown(&self) {
-        self.inner.shutdown.notify_waiters();
+        self.inner.shutdown.send_replace(true);
+    }
+
+    async fn wait_shutdown(&self) {
+        let mut shutdown = self.inner.shutdown.subscribe();
+        let _ = shutdown.wait_for(|stopped| *stopped).await;
     }
 
     async fn clear(&self) {
@@ -1343,34 +1351,15 @@ async fn run_tunnel_agent(
         }
     );
 
-    let monitor_state = state.clone();
-    let monitor = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(scan_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                _ = monitor_state.inner.shutdown.notified() => break,
-                _ = interval.tick() => {
-                    if let Err(err) = monitor_state.refresh_once().await {
-                        tracing::warn!(error = %crate::output::error_message(&err), "tunnel agent refresh failed");
-                    }
-                }
-            }
-        }
-    });
-
-    let shutdown_state = state.clone();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_state.inner.shutdown.notified().await;
-        })
-        .await?;
-
-    monitor.abort();
-    let _ = monitor.await;
-    state.clear().await;
-    Ok(())
+    server::serve(
+        listener,
+        app,
+        state,
+        scan_interval,
+        server::CLEANUP_TIMEOUT,
+        tokio::signal::ctrl_c(),
+    )
+    .await
 }
 
 fn agent_router(state: TunnelAgentState) -> Router {
