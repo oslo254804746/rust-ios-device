@@ -15,9 +15,34 @@ pub(super) enum Route {
 }
 
 pub(super) enum UsbSnapshot {
-    Devices(Vec<String>),
+    Devices(Vec<UsbDevice>),
     ConnectError(anyhow::Error),
     ListError(anyhow::Error),
+}
+
+#[derive(Clone)]
+pub(super) struct UsbDevice {
+    pub(super) udid: String,
+    pub(super) device_id: u32,
+    pub(super) usb: bool,
+}
+
+// Match the existing Core connect selection: first USB, otherwise last match.
+// Keep each UDID's first discovery position so candidate scheduling is stable.
+pub(super) fn selected_devices(devices: Vec<UsbDevice>) -> Vec<UsbDevice> {
+    let mut positions: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut selected: Vec<UsbDevice> = Vec::new();
+    for device in devices {
+        if let Some(&position) = positions.get(&device.udid) {
+            if !selected[position].usb {
+                selected[position] = device;
+            }
+        } else {
+            positions.insert(device.udid.clone(), selected.len());
+            selected.push(device);
+        }
+    }
+    selected
 }
 
 pub(super) trait Source: Send + Sync {
@@ -72,7 +97,11 @@ impl Source for NativeSource {
                 Ok(devices) => UsbSnapshot::Devices(
                     devices
                         .into_iter()
-                        .map(|device| device.serial_number)
+                        .map(|device| UsbDevice {
+                            udid: device.serial_number,
+                            device_id: device.device_id,
+                            usb: device.connection_type.eq_ignore_ascii_case("USB"),
+                        })
                         .collect(),
                 ),
                 Err(error) => UsbSnapshot::ListError(error.into()),

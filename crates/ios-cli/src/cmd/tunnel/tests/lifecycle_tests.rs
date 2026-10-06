@@ -11,6 +11,7 @@ const A: &str = "synthetic-device-a";
 const B: &str = "synthetic-device-b";
 const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
+mod identity_tests;
 mod parallel_tests;
 
 enum Behavior {
@@ -55,6 +56,8 @@ struct FakeSource {
     drops: Arc<AtomicUsize>,
     alive: Arc<AtomicBool>,
     usb: StdMutex<Vec<String>>,
+    usb_details: StdMutex<Option<Vec<source::UsbDevice>>>,
+    connected_ids: StdMutex<HashMap<String, u32>>,
     usb_gate: StdMutex<Option<Arc<Semaphore>>>,
     list_failure: AtomicBool,
     paired_failure: AtomicBool,
@@ -81,6 +84,8 @@ impl FakeSource {
             drops: Arc::new(AtomicUsize::new(0)),
             alive: Arc::new(AtomicBool::new(true)),
             usb: StdMutex::new(Vec::new()),
+            usb_details: StdMutex::new(None),
+            connected_ids: StdMutex::new(HashMap::new()),
             usb_gate: StdMutex::new(None),
             list_failure: AtomicBool::new(false),
             paired_failure: AtomicBool::new(false),
@@ -166,7 +171,12 @@ impl Source for FakeSource {
                 id: if matches!(route, Route::Wifi(_) | Route::Mobdev2(_)) {
                     0
                 } else {
-                    1
+                    self.connected_ids
+                        .lock()
+                        .unwrap()
+                        .get(udid)
+                        .copied()
+                        .unwrap_or(1)
                 },
             })))
         })
@@ -174,7 +184,18 @@ impl Source for FakeSource {
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         Box::pin(async {
-            let devices = self.usb.lock().unwrap().clone();
+            let devices = self.usb_details.lock().unwrap().clone().unwrap_or_else(|| {
+                self.usb
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|udid| source::UsbDevice {
+                        udid: udid.clone(),
+                        device_id: 1,
+                        usb: true,
+                    })
+                    .collect()
+            });
             let gate = self.usb_gate.lock().unwrap().clone();
             if let Some(gate) = gate {
                 gate.acquire().await.unwrap().forget();

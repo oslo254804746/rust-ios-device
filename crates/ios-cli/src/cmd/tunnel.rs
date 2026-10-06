@@ -339,6 +339,7 @@ struct TunnelAgentInner {
 struct ManagedTunnel {
     device: ManagedDevice,
     publication: Arc<()>,
+    usbmux: bool,
 }
 
 enum ManagedDevice {
@@ -694,7 +695,7 @@ impl TunnelAgentState {
                         }
                         Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
                     };
-                    match self.connect_and_store(udid, route, &ticket).await {
+                    match self.connect_and_store(udid, route, &ticket, None).await {
                         Ok(record) => Ok(record),
                         Err(error) if requested_connection_type.is_some() => Err(error),
                         Err(usbmux_error) => {
@@ -712,7 +713,7 @@ impl TunnelAgentState {
                                     usbmux_error.context("no paired mobdev2 target matched")
                                 );
                             };
-                            self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket)
+                            self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket, None)
                                 .await
                         }
                     }
@@ -728,12 +729,17 @@ impl TunnelAgentState {
         udid: &str,
         route: Route,
         ticket: &Ticket,
+        expected_id: Option<u32>,
     ) -> Result<TunnelRecord> {
+        let usbmux = matches!(route, Route::Usbmux | Route::Usb(_));
         let device = self
             .inner
             .source
             .connect(udid, route, self.inner.tun_mode)
             .await?;
+        if expected_id.is_some_and(|expected| expected != device.device_id()) {
+            return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
+        }
         let record = device.record_for_mode(self.inner.tun_mode)?;
         let mut tunnels = self.inner.tunnels.write().await;
         if !ticket.is_current() {
@@ -748,12 +754,19 @@ impl TunnelAgentState {
             ManagedTunnel {
                 device,
                 publication: Arc::new(()),
+                usbmux,
             },
         );
         Ok(record)
     }
 
-    async fn refresh_connect(&self, udid: &str, route: Route, ticket: &Ticket) {
+    async fn refresh_connect(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+        expected_id: Option<u32>,
+    ) {
         let result = ticket
             .run(async {
                 tokio::time::timeout(self.inner.connect_timeout, async {
@@ -772,7 +785,8 @@ impl TunnelAgentState {
                         return Ok(());
                     }
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
-                    self.connect_and_store(udid, route, ticket).await?;
+                    self.connect_and_store(udid, route, ticket, expected_id)
+                        .await?;
                     self.inner.failed_attempts.write().await.remove(udid);
                     Ok(())
                 })
@@ -781,8 +795,8 @@ impl TunnelAgentState {
             })
             .await;
         if let Err(error) = result {
-            // A user stop is not a connection failure and must not restart backoff.
-            if ticket.is_current() {
+            // A lifecycle cancellation is not a connection failure and must not restart backoff.
+            if ticket.is_current() && !error.is::<ios_core::OperationCancelled>() {
                 tracing::warn!(
                     device = %ios_core::redaction::diagnostic_id(udid),
                     error = %crate::output::error_message(&error),
@@ -830,26 +844,28 @@ impl TunnelAgentState {
         };
         let attached = devices
             .iter()
-            .map(String::as_str)
+            .map(|device| (device.udid.as_str(), device.device_id))
             .collect::<std::collections::HashSet<_>>();
         self.inner.tunnels.write().await.retain(|udid, tunnel| {
             tunnel.is_alive()
                 && self.inner.access.permits_device(udid)
-                && (tunnel.device.device_id() == 0
-                    || attached.contains(udid.as_str())
+                && (!tunnel.usbmux
+                    || attached.contains(&(udid.as_str(), tunnel.device.device_id()))
                     || !initial
                         .get(udid)
                         .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
         });
+        drop(attached);
 
         // Capture every device generation before waiting for the first connection.
         // A stop while an earlier device stalls invalidates the queued ticket too.
         let mut candidates = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for udid in devices {
+        for device in source::selected_devices(devices) {
+            let udid = device.udid;
             if self.inner.access.permits_device(&udid) && seen.insert(udid.clone()) {
                 let ticket = self.inner.lifecycle.ticket(&udid).await?;
-                candidates.push((udid, Route::Usbmux, ticket));
+                candidates.push((udid, Route::Usbmux, ticket, Some(device.device_id)));
             }
         }
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
@@ -873,6 +889,7 @@ impl TunnelAgentState {
                         target.udid.clone(),
                         Route::Mobdev2(target.host.clone()),
                         ticket,
+                        None,
                     ));
                 }
             }
@@ -886,12 +903,13 @@ impl TunnelAgentState {
         Ok(())
     }
 
-    async fn refresh_candidates(&self, candidates: Vec<(String, Route, Ticket)>) {
+    async fn refresh_candidates(&self, candidates: Vec<(String, Route, Ticket, Option<u32>)>) {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
         let mut connections = futures_util::stream::iter(candidates)
-            .map(|(udid, route, ticket)| async move {
-                self.refresh_connect(&udid, route, &ticket).await;
+            .map(|(udid, route, ticket, expected_id)| async move {
+                self.refresh_connect(&udid, route, &ticket, expected_id)
+                    .await;
             })
             .buffer_unordered(lifecycle::MAX_CONNECTS);
         while connections.next().await.is_some() {}
