@@ -15,6 +15,7 @@ mod backoff_tests;
 mod discovery_tests;
 mod identity_tests;
 mod liveness_tests;
+mod manual_deadline_tests;
 mod parallel_tests;
 mod publication_tests;
 mod retention_tests;

@@ -704,50 +704,44 @@ impl TunnelAgentState {
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
     ) -> Result<TunnelRecord> {
-        let ticket = self.inner.lifecycle.ticket(udid).await?;
+        let deadline = lifecycle::ConnectionDeadline::new(self.inner.connect_timeout)?;
+        let ticket = deadline.run(self.inner.lifecycle.ticket(udid)).await?;
         ticket
-            .run(async {
-                tokio::time::timeout(self.inner.connect_timeout, async {
-                    let _serial = ticket.serial().await;
-                    if let Some(record) = self.get_record(udid).await {
-                        return Ok(record);
+            .run(deadline.run(async {
+                let _serial = ticket.serial().await;
+                if let Some(record) = self.get_record(udid).await {
+                    return Ok(record);
+                }
+                let _permit = self.inner.lifecycle.connects.acquire().await?;
+                let route = match requested_connection_type {
+                    Some(StartTunnelConnectionType::Usb) => {
+                        Route::Usb(ip_filter.map(str::to_owned))
                     }
-                    let _permit = self.inner.lifecycle.connects.acquire().await?;
-                    let route = match requested_connection_type {
-                        Some(StartTunnelConnectionType::Usb) => {
-                            Route::Usb(ip_filter.map(str::to_owned))
-                        }
-                        Some(StartTunnelConnectionType::Wifi) => {
-                            Route::Wifi(ip_filter.map(str::to_owned))
-                        }
-                        Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
-                    };
-                    match self.connect_and_store(udid, route, &ticket, None).await {
-                        Ok(record) => Ok(record),
-                        Err(error) if requested_connection_type.is_some() => Err(error),
-                        Err(usbmux_error) => {
-                            let targets = self
-                                .inner
-                                .source
-                                .paired_devices()
-                                .await
-                                .context("failed to browse paired mobdev2 devices")?;
-                            let Some(target) = targets.into_iter().find(|target| {
-                                target.udid == udid
-                                    && ip_filter.map_or(true, |ip| ip == target.host)
-                            }) else {
-                                return Err(
-                                    usbmux_error.context("no paired mobdev2 target matched")
-                                );
-                            };
-                            self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket, None)
-                                .await
-                        }
+                    Some(StartTunnelConnectionType::Wifi) => {
+                        Route::Wifi(ip_filter.map(str::to_owned))
                     }
-                })
-                .await
-                .context("timed out while creating tunnel")?
-            })
+                    Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
+                };
+                match self.connect_and_store(udid, route, &ticket, None).await {
+                    Ok(record) => Ok(record),
+                    Err(error) if requested_connection_type.is_some() => Err(error),
+                    Err(usbmux_error) => {
+                        let targets = self
+                            .inner
+                            .source
+                            .paired_devices()
+                            .await
+                            .context("failed to browse paired mobdev2 devices")?;
+                        let Some(target) = targets.into_iter().find(|target| {
+                            target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
+                        }) else {
+                            return Err(usbmux_error.context("no paired mobdev2 target matched"));
+                        };
+                        self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket, None)
+                            .await
+                    }
+                }
+            }))
             .await
     }
 

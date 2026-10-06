@@ -38,6 +38,38 @@ pub(super) struct ScanControl {
     deadline: Instant,
 }
 
+pub(super) struct ConnectionDeadline {
+    deadline: Instant,
+}
+
+impl ConnectionDeadline {
+    pub(super) fn new(timeout: Duration) -> Result<Self> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| crate::output::input_decision("tunnel connection deadline overflow"))?;
+        Ok(Self { deadline })
+    }
+
+    pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::pin!(work);
+        tokio::select! {
+            biased;
+            expired = tokio::time::timeout_at(self.deadline, std::future::pending::<T>()) => {
+                expired.context("timed out while creating tunnel")
+            }
+            result = std::future::poll_fn(|cx| {
+                // Tokio's timeout polls its work before the timer. Suppress
+                // late ready work, including publication, at the nominal deadline.
+                if Instant::now() >= self.deadline {
+                    std::task::Poll::Pending
+                } else {
+                    work.as_mut().poll(cx)
+                }
+            }) => result,
+        }
+    }
+}
+
 impl Lifecycle {
     pub(super) fn new() -> Self {
         Self {
@@ -90,6 +122,11 @@ impl Lifecycle {
             shutdown,
             shutdown_generation,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn hold_coordinator(&self) -> impl Drop + '_ {
+        self.devices.lock().await
     }
 
     // The caller holds the tunnel table write guard. This fences publication
