@@ -754,6 +754,9 @@ impl TunnelAgentState {
             return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
         }
         let record = device.record_for_mode(self.inner.tun_mode)?;
+        if !device.is_alive() {
+            return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
+        }
         if usbmux {
             // Keep the completed device owned while the current daemon view is
             // checked, within the caller's existing permit/deadline/cancellation.
@@ -779,6 +782,9 @@ impl TunnelAgentState {
             self.inner.access.permits_device(udid),
             lifecycle::cancelled()
         );
+        if !device.is_alive() {
+            return Err(lifecycle::cancelled().context("tunnel inactive before publication"));
+        }
         tunnels.insert(
             udid.to_owned(),
             ManagedTunnel {
