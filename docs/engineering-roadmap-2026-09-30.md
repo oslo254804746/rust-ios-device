@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 查询/停止隔离、同设备协调、四个共享许可、停止与迟到发布保护、旧快照/受限并发/observed ID/发布前查询/known identity 退避及本地失活结果拒绝已交付主机 profiles；last check 后变化/kernel receiver false positive/ID reuse/restart/manual epoch、失败记录/metadata 资源上限、发现/扫描总预算、平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 查询/停止隔离、同设备协调、四个共享许可、停止/迟到发布/旧快照保护、受限并发/observed ID/发布前查询/known identity 退避/本地失活拒绝及 queue-USb-paired discovery shared15s/epochcancel 已交付主机 profiles；last check 后变化/receiver false positive/ID reuse/restart/manual epoch、retained maps/metadata 上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7328,3 +7328,44 @@ L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/
 reuse-restart-manualepochs/nativeworker-serverjoins、retainedmaps/metadata/discovery-wholeScan，
 L03/L04/Q04及其他L01/第五至九类。无subagent/push/publication/historyrewrite/
 referenceedit/设备或Apple服务操作。
+
+### 大类 4：L02 shared discovery setup deadline/epoch cancellation（2026-10-06）
+
+受测实现 `a47648442d5b7707ad41beeb58a6ab1ad764ea9a`，父
+`653a1a3021f4e429a1263f9aea997e6ea2f63e00`。四源码268+/9-、九新测试；
+[发现期限证据](validation/tunnel-discovery-2026-10-06.md) 与 [manager 合同](tunnel.md)
+记录范围。privateScanControl在queue之前捕获SCANepoch并borrow_and_update标记版本，
+checkedInstant+existingtimeout(default15s)，drive共absolute deadline覆盖scanLock queue/
+USBsnapshot/pairedsnapshot；stop-clear旧epoch返回None/quietOk，phasefuture/queue释放，
+不当连接失败/ready。实际expire保留ORIGINALTokioElapsed/staticcontext；due-zero用
+pending timer取得nativeElapsed而不poll realwork；overflow原inputdecision/invalid_input
+在Source/mutatingpoll之前拒绝。此前这些wait无界；startup/quietcancel修正待release review。
+
+边界：SETUP deadline在paired discovery返回结束，不涵盖wholeScan/candidatehandoff
+CPU；原每candidate15s/4window/permits/nativeSource/IO/guard/query/liveness/backoff/
+HTTP/Core/public/deps unchanged。sourceFutureDrop不是Core blocking pair-record workers
+停止/join，仍缺更强parent-primary/worker/server/资源/platform/device证据。旧DeviceTicket/
+weakgates/stop/clear/budgetbodies保留；原45assertions BYTE不改，fake仅phaseProbeDrop/
+counters/pairedgate/per-requestcaptureddata。无SDKfakeconstructor/API/新protocol/pairing。
+
+control79873 terminal101 **0PASS/7FAIL**；post58753 terminal0 **52PASS**；
+再增queuedcancel/Scopeboundary+overflowmachineclass后冻结54。冻结 **32405 terminal0/
+all14 gates PASS**、source/result audit terminal0。实际 **2563Rust/13Python**，
+CLI958/Core1443/public52、0FAIL/2既有ignored；54/min54/tunnel95+1ignored/
+WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full
+PASS。66features/4groups/MSRV1.80.1/7+7docs/3snippets/CABI/3.12wheel-sdist/tooling67/
+help118/raw38/host5/CLI95/backup3 PASS；**22device NOT_RUN**，
+Chromium/installed3.9/3.13 NOT_RERUN。source持续冻结到authoritativecompletion，
+观察timeout不当exit，fakeFutureDrop非physical/nativejoin/RSS/ACK/baseline性能证据。
+
+patch SHA256 `0afafe77afebd925b6afc42c93790d0729d56f65a93423cb70391f44815b3705`；
+actual debug ios SHA256 `047970a9711ef1ee5d91f7ff8cc83af1ea0a74bb3841ba3106293f99d27ed969`；
+commit=frozen，ignored evidence `target/validation/tunnel-discovery-2026-10-06/`，
+reference HEAD/status不变。ActualCLIstate nativeElapsed不同于outertesttimeout、
+sourceprobeactive/exited/ready/no IO与下一generation可用，quietstop旧assertions保留。
+
+L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/全部子项/
+历史/118capability正文maturity保留。接着retainedmaps/metadata limits、wholeScan/CPU/
+handoff/source-worker/serverjoins、lastcheckchanges/receiverfalsepositive/reuse/restart/
+manualepochs，L03/L04/Q04及其他L01/第五至九类。无subagent/push/publication/
+historyrewrite/referenceedit/设备或Apple服务操作。

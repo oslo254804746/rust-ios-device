@@ -1207,3 +1207,14 @@ requires release review; SDK/C/Python fields/exports, source/API/codec/
 dependencies and HTTP/auth/record grammar stay. No physical connectivity,
 kernel worker/join or after-check stability is certified. All31 remaining
 tasks/conditions, L01/L02/L03–L04/Q04/classes5–9 stay.
+
+## Scan discovery setup budget
+
+[L02 scan setup](validation/tunnel-discovery-2026-10-06.md),
+`a47648442d5b7707ad41beeb58a6ab1ad764ea9a`, bounds previously unbounded
+queue/list/discovery by one15s deadline and drops old phase futures on stop/
+clear. It adds no public SDK/C/Python field/configuration/export, codec,
+dependency, native pairing/trust or HTTP schema. Timing/quiet cancellation
+correction needs release review. Original candidate15s/window/failure behavior
+stays; no whole-scan/resource/Core blocking-worker or physical evidence claim.
+All31 scopes and L01/L02/L03–L04/Q04/classes5–9 remain.

@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-discovery-a476484",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private ownedUSB-pairedProbe futures/dropcounters/pairedgate/controlledqueue. Nine fixtures nativeElapsed USBpending/queued/noSource,sharedUSB65ms-pairedoriginal80ms,stop-clearquiet oldprobe/nextgeneration,zero-originalElapsed-nopoll,overflow-invalid_input-nopoll,queuedstop,setupendsbeforecandidatephase. No physical/Coreblockingworker/nativejoin/ACK/RSSproof."
+      ],
+      "required_state": [
+        "Four source files268+/9-,9newtests.79873 terminal1010PASS7FAIL,58753 terminal0fifty-twoPASS,addedqueuedcancel/boundary+overflowclassbeforefrozen32405 terminal0/all14gates54/min54/tunnel95+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. ExistingDeviceTicket/weakgate/stop/clear/permits/otherprod/source/SDK/HTTP/core/public/deps/all45assertions retained;privatephaseProbes/counters only."
+      ],
+      "tested_commit": "a47648442d5b7707ad41beeb58a6ab1ad764ea9a",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-discovery-2026-10-06.md",
+      "result": "PASS",
+      "scope": "PrivateScanControl capturesseenSCANepoch beforequeue/checked15s deadline sharedscanmutex-USBsnapshot-pairedsnapshot; realElapsedoriginal/staticcontext,dueZero usespendingtimerwithoutrealpoll,overflowinputdecision invalid_inputbeforeSource/mutation. Stop-clear returnsquietNone/scanOk/dropqueued-phasefuture/noReady,no newfailurebackoff; newgeneration usable. SETUP ONLYendsatpairedreply; originalcandidate15s/window/guards/IO/trust/source unchanged, no wholeScan budget/no actor/protocol/newpairing/API. Full2563Rust/13PythonCLI958Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. SourcefutureDrop NOTblockingload-pair worker stop/join. WholeScan/metadataCPU-handoff/knownprimaryunderparentDrop/retainedmaps/nativejoins/aftercheckchanges/receiverfalsepositive/reuse-restart/manualepochs/L03-L04/Q04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 notrerun;no ACK/nativejoin/RSS/benchmark/decoderpeak/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
+    },
+    {
       "id": "linux-tunnel-liveness-7a77000",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

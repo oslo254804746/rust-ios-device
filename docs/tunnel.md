@@ -51,8 +51,13 @@ device, so stop is not a persistent exclusion policy.
 Automatic scans deduplicate USB and existing-trust mobdev2 candidates together
 and own up to four connection futures. Healthy B can publish while A stalls;
 stopping A leaves B's active generation running. Paired discovery now precedes
-connection attempts, so its wait can delay scan startup. Discovery/whole-scan
-deadlines remain pending. Failure backoff stays30/60/120/240/300 seconds for
+connection attempts, so its wait can delay scan startup. Scan-lock queue, USB
+snapshot and existing-trust paired discovery now share one15-second deadline.
+Stop/clear cancels an old waiting generation; real expiry remains a timeout.
+This covers setup, while each candidate retains its own connection budget.
+Whole-scan and metadata CPU/handoff budgets remain pending. See
+[scan discovery evidence](validation/tunnel-discovery-2026-10-06.md).
+Failure backoff stays30/60/120/240/300 seconds for
 the same observed native ID and route/paired host. A newly observed ID or known
 host/route change can retry immediately; a failure on that identity starts at
 count1. Failure records hide retained hosts in Debug output. See

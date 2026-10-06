@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Give tunnel scan discovery one15s deadline across queue, USB snapshot and
+  existing-trust paired discovery. Stop/clear cancels old waiting phases;
+  actual expiry retains native Elapsed. See
+  [scan discovery evidence](docs/validation/tunnel-discovery-2026-10-06.md).
 - Reject known inactive tunnel results before attachment query and again before
   publication. Results losing local liveness during query or lock waits release
   without publishing a record. See

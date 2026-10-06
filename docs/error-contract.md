@@ -1940,3 +1940,14 @@ Original IO/Elapsed, schemas/auth/old guards stay when locally active. True
 means kernel receiver exists or userspace tasks unfinished, not connectivity/
 ACK/join proof. Last-check races/false positives/resources/platform/device/
 L01/L02/L03–L04/Q04 and later classes remain.
+
+## Scan setup expiry and quiet cancellation
+
+[L02 discovery setup](validation/tunnel-discovery-2026-10-06.md) accepts
+`a47648442d5b7707ad41beeb58a6ab1ad764ea9a`. A checked15s deadline spans
+queue/USB/paired waits; native Elapsed remains. Due/zero does not poll real
+work, overflow uses invalid_input before source or mutation. Stop/clear of an
+old scan epoch quietly drops its phase future and returns Ok without failure
+backoff/ready. Original source IO and candidate outcomes stay; whole-scan/
+blocking-worker joins/known primary under generic parent Drop and otherL01/
+L02/L03–L04/Q04/classes5–9 conditions remain.

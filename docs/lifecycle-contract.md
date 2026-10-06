@@ -855,3 +855,20 @@ handle is unfinished. SDK bodies stay and this does not imply physical
 transport/ACK/native task joins; receiver clones/after-check exit remain.
 Resource/retention/snapshot setup-wholeScan/native joins/L03-L04/Q04/otherL01/
 L02/classes5–9 continue. Six added production lines do not close these conditions.
+
+## One scan discovery setup deadline
+
+The [discovery setup profile](validation/tunnel-discovery-2026-10-06.md),
+`a47648442d5b7707ad41beeb58a6ab1ad764ea9a`, captures a scan epoch before
+queueing and shares checked15s across scan mutex/USB snapshot/paired snapshot.
+Seen-version capture avoids spurious fresh-generation cancellation. Real
+Elapsed/IO remain; due-zero never polls real work and overflow rejects before
+source/mutation. Stop/clear quietly cancels old phase/queued futures without
+marking ready. Nine actual manager fixtures,54/min54,tunnel95/full2563Rust/
+13Python pass;22device NOT_RUN.
+
+This deadline ends at paired reply; existing candidate15s/window/guards/
+liveness/backoff remain. Whole-scan/metadataCPU/handoff budget and native
+blocking pair-record worker/server joins are unproven. Fake probe release
+certifies source future ownership only. Retained metadata/lastcheck-races/
+reuse-restart/manualepochs/L03-L04/Q04/otherL01/classes5–9 continue.
