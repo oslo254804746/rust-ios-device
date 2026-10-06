@@ -939,3 +939,32 @@ epoch check stays, ordinary fresh admission after clear works, and no actor or
 network request is added. One new test runs both paths; full/minimum,tunnel123,
 stack5,strict checks and full2591Rust/13Python pass. Acquisition deadlines,
 post-check races and the other pending L01/L02 scope remain.
+
+## Manual tunnel connection absolute deadline
+
+The [manual deadline profile](validation/tunnel-manual-deadline-2026-10-06.md),
+`d3ed1c33c14b2dcfdf83ef6c678cc1f451813176`, starts the existing 15-second total
+before coordinator admission. One checked absolute deadline drives admission
+and the existing serial/cache/permit/connect/paired fallback/attachment query/
+publication body. Clear/shutdown cancellation and original source errors stay
+typed. Overflow is InvalidInput before source work; zero retains native Elapsed
+without polling work. A due nominal deadline suppresses the next work poll,
+so a late ready coordinator, permit, paired reply, native connection or
+publication lock cannot advance that operation. Caller Drop releases directly
+owned queued futures, fake devices and permits.
+
+Thirteen actual manager tests include held coordinator/permit expiry before
+release, cumulative admission and fallback budgets, late ready boundaries,
+completed-device release at publication lock, all transport choices at zero,
+overflow, cancellation, caller Drop and actual HTTP 502/timeout. Full/minimum
+13/13, tunnel136/1 existing ignored, stack5, strict checks and section11
+2604 Rust/13 Python pass; project .venv tooling73 pass. A read-only parallel
+review ran no builds or edits; all nine gates ran serially under the primary.
+
+This bounds cooperative work polling, not CPU preemption within a poll,
+physical attachment freshness, the shutdown/publication linearization gap,
+native worker joins or whole-scan/metadata/handoff budgets. Scanned candidate
+deadlines and direct `ios tunnel start` remain their separate profiles.
+22device NOT_RUN; other L01/L02, L03–L04 and classes5–9 stay active. All30 tasks
+and subtasks exclude Q04; its known UID finding stays unfixed and other tasks'
+original acceptance remains.

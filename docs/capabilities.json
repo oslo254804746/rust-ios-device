@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-manual-deadline-d3ed1c3",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private mutexes, four permits, owned fake source/device and HTTP handler. Held and late-ready coordinator/permit/connect/paired/publication paths. No native device/Apple/worker join."
+      ],
+      "required_state": [
+        "Four CLI files427+/41-,13 new tests. Original first-eight control81949 exited101:2PASS/6FAIL; fixed55001 exited0:8PASS, then five boundary tests and scheduling margin added. Frozen98985 exited0/all9 serial gates, full/min13/13,tunnel136+1ignored,minCLIalltargets,stack5,strict,fmt,full2604Rust13Python,project .venv tooling73. Original assertions, other product sources, excluded Q04 sources and reference HEAD/status preserved. Subagents only read/audited."
+      ],
+      "tested_commit": "d3ed1c33c14b2dcfdf83ef6c678cc1f451813176",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-manual-deadline-2026-10-06.md",
+      "result": "PASS",
+      "scope": "One checked15s absolute manual connection deadline starts before coordinator acquisition and covers serial/cache/permit/connect/trusted fallback/attachment query/publication. Native Elapsed/cancellation/source IO remain; zero does not poll source, overflow is InvalidInput; due nominal deadline suppresses next work poll. Late completed-device publication releases owned result. Full2604Rust13PythonCLI999Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID finding unfixed,other acceptance unchanged. Single-poll CPU,shutdown/publication linearization,scan internal locks/startup/whole-scan/metadata/native joins/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,public API,dependency,physical/resource/performance certification; timing needs release review."
+    },
+    {
       "id": "linux-tunnel-coordinator-cancel-a4beec7",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

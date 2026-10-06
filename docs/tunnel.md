@@ -38,9 +38,15 @@ ios tunnel serve --help
 Local `GET /tunnels`, `GET /tunnel/<UDID>` and `DELETE /tunnel/<UDID>` use the
 tunnel table without waiting for another device's network connection. Starts
 for one device serialize; manual starts and scans share four connection permits.
-Manual creation has one15-second total after device coordinator acquisition,
-including queue/permit waits, connection, existing-trust discovery/fallback and
-publication. Expiry reports a timeout. Existing source routes/options remain.
+Manual creation captures one 15-second absolute deadline before device
+coordinator acquisition. Coordinator, device queue, cache/permit waits,
+connection, existing-trust discovery/fallback, attachment query and publication
+share that deadline. Expiry retains the native timeout source and the existing
+HTTP 502/timeout response. Zero budgets never poll source work; an unrepresentable
+deadline returns invalid_input. A due deadline prevents the next work poll,
+including a late ready connection or publication lock. Single-poll CPU work,
+startup and whole-scan totals remain separate conditions. See
+[manual connection deadline evidence](validation/tunnel-manual-deadline-2026-10-06.md).
 
 Stop cancels active and queued starts for that device and rejects their late
 publication. An absent record still returns404 even if a pending start was
@@ -125,11 +131,14 @@ still allows a fresh generation; restarting a server needs a new manager state.
 Coordinator admissions capture their clear epoch before locking, so an old
 waiter cannot acquire the replacement epoch. Coordinator lock wait now also
 observes clear/shutdown directly and returns cancellation while the lock is
-still held. Its connection-total coverage, checks racing with shutdown,
-existing forwarding and delegated worker joins remain separate work. See
+still held. Manual connection-total coverage now includes that acquisition;
+checks racing with shutdown, existing forwarding and delegated worker joins
+remain separate work. See
 [shutdown admission evidence](validation/tunnel-shutdown-admission-2026-10-06.md).
 The later [coordinator cancellation evidence](validation/tunnel-coordinator-cancel-2026-10-06.md)
-records the wait improvement; it does not add an acquisition deadline.
+records the cancellation improvement; the later
+[manual connection deadline profile](validation/tunnel-manual-deadline-2026-10-06.md)
+adds acquisition to the total.
 
 `GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
 UDID-keyed tunnel listing including registered upstream managers. Register one

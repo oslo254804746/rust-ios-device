@@ -491,6 +491,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Count coordinator acquisition in the manager's existing 15-second manual
+  connection total. Queueing, connection, trusted fallback and publication
+  share one checked deadline; zero budgets and late ready results cannot
+  start or publish work, and overflow returns invalid_input. See
+  [manual connection deadline evidence](docs/validation/tunnel-manual-deadline-2026-10-06.md).
+
 - Preserve native Pcap/FPS stream errors and XCTest/notification/CrashReport
   timeout sources. Propagate failed OS Trace/crash/power signal waits; expose
   typed notification closure and issued stream deadlines. Keep existing stops,
