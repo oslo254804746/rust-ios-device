@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Scope tunnel scan failure backoff to the observed native ID and known route
+  or paired host. A changed identity can retry immediately; repeated failures
+  of the same identity keep the original schedule. See
+  [backoff identity evidence](docs/validation/tunnel-backoff-2026-10-06.md).
 - Recheck current native attachments before publishing a USB tunnel result.
   The extra daemon query shares the existing connection total and cancellation;
   absent results release locally, and query IO remains available. See

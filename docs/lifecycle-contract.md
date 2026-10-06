@@ -822,3 +822,21 @@ manual epochs/nativealivefalse/worker-server joins unresolved. Failed attempts
 still key only UDID, so prior-generation backoff may suppress a new ID. Native
 tasks/allocation/retained metadata/discovery-wholeScan budgets/L04 and otherL01/
 L03–L04/Q04/classes5–9 remain. The extra query is not a performance or RSS proof.
+
+## Failure waits for one known connection identity
+
+The [L02 backoff profile](validation/tunnel-backoff-2026-10-06.md),
+`d0b04bed79ecec5c3f724ff003122f66b1159216`, associates each recorded failure
+with its known Route/expected native ID. Only identical attempts inherit a wait
+or increment its counter; a known ID/paired host/route change can retry and a
+new failure starts at1. Time calculation and same-identity30/60/120/240/300s
+stay. Successful publication removes failure as before. Native connections,
+trust, guards/queries/serial/watch/permits stay; Debug hides retained hosts.
+Five actual/security fixtures,41/min41,tunnel82,full2550Rust/13Python pass;
+22device NOT_RUN.
+
+Failure-map entries across UDIDs remain unbounded. Unobserved same-ID/host
+reuse/restart, after-query changes/manualepochs/nativeLive/worker-server joins,
+metadata bounds/discovery-wholeScan/L03 configurable reconnection/L04/Q04 and
+all otherL01/L02/classes5–9 remain. Do not reset every expired same-device
+failure to1 or infer resource stability from this identity correction.

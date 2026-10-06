@@ -52,7 +52,11 @@ Automatic scans deduplicate USB and existing-trust mobdev2 candidates together
 and own up to four connection futures. Healthy B can publish while A stalls;
 stopping A leaves B's active generation running. Paired discovery now precedes
 connection attempts, so its wait can delay scan startup. Discovery/whole-scan
-deadlines remain pending. Failure backoff stays30/60/120/240/300 seconds.
+deadlines remain pending. Failure backoff stays30/60/120/240/300 seconds for
+the same observed native ID and route/paired host. A newly observed ID or known
+host/route change can retry immediately; a failure on that identity starts at
+count1. Failure records hide retained hosts in Debug output. See
+[backoff identity evidence](validation/tunnel-backoff-2026-10-06.md).
 
 Linux fake-device tests cover local query/stop isolation, duplicate starts,
 stop/discovery races, sixteen candidates with four active connections, cross-
@@ -73,7 +77,7 @@ Wi-Fi/mobdev2 skip it. See
 
 This checks the query reply's snapshot. No event listener is implemented.
 Changes after the query, reused IDs/daemon restart, native liveness/joins,
-generation-specific backoff and physical/resource/performance evidence remain pending.
+failure-map/metadata bounds and physical/resource/performance evidence remain pending.
 See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 [parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).
 

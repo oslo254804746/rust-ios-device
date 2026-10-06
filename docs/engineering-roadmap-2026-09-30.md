@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、USB/mobdev2 父 future 受限并发、observed ID/选择/退役/过期候选及 USB 发布前同预算再次查询已交付主机 profiles；query 后变化/ID reuse/daemon restart/manual epoch/generation-specific 退避、发现/扫描总预算、资源/平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、旧快照保护、USB/mobdev2 父 future 受限并发、observed ID/选择/退役/过期候选、USB 发布前同预算查询、known ID/route/paired host 退避隔离已交付主机 profiles；query 后变化/ID reuse/daemon restart/manual epoch、失败记录/metadata 资源上限、发现/扫描总预算、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7249,3 +7249,44 @@ L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/
 afterquery变化/未知manualepoch/reuse/restart/nativeLive/metadata/resource/wholeScan，
 再其他L01/L03–L04/Q04和第五至九类。无subagent/push/publication/historyrewrite/
 referenceedit/设备或Apple服务操作。
+
+### 大类 4：L02 failure backoff by known connection identity（2026-10-06）
+
+受测实现 `d0b04bed79ecec5c3f724ff003122f66b1159216`，父
+`cef374bdbc583004e53b0a40193ca69886ea52eb`。三源码203+/4-、五新测试；
+[连接身份退避证据](validation/tunnel-backoff-2026-10-06.md) 与 [manager 合同](tunnel.md)
+记录行为。此前UID-only backoff会把71/旧pairedhost失败延迟带给fresh72/knownnewhost；
+现在privateFailedAttempt保存Route+expectedNativeID，仅同identity才skip或增加count。
+knownID/host/route变化可立即尝试，新identity失败从count1开始，成功照旧remove记录，
+sameidentity原30/60/120/240/300s/time函数保持。privateidentity Debug只出staticlabel，
+不泄露retainedhost。无需新pairing/actor/wire/API/deps，不改native connection/trust，
+不重试安装/擦除等副作用，不宣称L03 configurable retry/state/resource验收。
+
+旧36 lifecycle assertions/helper/fixtures BYTE保留，2个旧time-test literals只补identity
+字段，原assertions/timefunction不改。prod除failureidentity/skip/record外、NativeSource/
+guards/postpubquery/serial/watch/permits/manual/HTTP/auth/record/Core/public/access/deps
+BYTE保持。sameID-host reuse/daemonrestart/未观察变化仍无新identity证据；失败map跨UID
+retention仍无界，不把devicegate4096或source-ownedDrop当RSS/native task bound。
+knownchange retry修正待pre-1.0 review/scoped device evidence。
+
+control34585 terminal101 **0PASS/4FAIL**；post63939 terminal0 **40PASS**，
+再增safeDebug privatehost fixture后冻结41。冻结 **79705 terminal0/all14 gates PASS**，
+source/result audit terminal0。实际 **2550Rust/13Python**、CLI945/Core1443/public52、
+0FAIL/2既有ignored；41/min41/tunnel82+1ignored/WebInspector192/access29/Core102/
+minCLIalltargets/stack5/strict/fmt/tooling22/buildCLI95/full PASS。66features/4groups/
+MSRV1.80.1/7+7docs/3snippets/CABI/3.12wheel-sdist/tooling67/help118/raw38/host5/CLI95/
+backup3 PASS；**22device NOT_RUN**，Chromium/installed3.9/3.13 NOT_RERUN；
+source一直冻结到authoritative completion，观察timeout不算exit。
+
+patch SHA256 `b2479b78b7f65d429c8b626534bfe528f72b6f34a2f3171a9c52e77e6861fdeb`；
+actual debug ios SHA256 `a6679568cd1d2b990d35c1d5afa2d6035521a3945d6f67d5fc15d7c03bf5f95f`；
+commit=frozen，ignored evidence `target/validation/tunnel-backoff-2026-10-06/`，
+reference HEAD/status不变。ActualCLIState independentknownID/pairedhost/route/IO/time
+观测重试count/sourcecalls/ownedrelease，debug原secret无泄露；不是Core锁microtest/
+physicaldevice/ACK/nativejoin/RSS/performance证据。
+
+L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/全部子项/
+历史/118capability正文maturity保留。接着failuremap/othermetadata bounds、afterquery/
+reuse/restart/manualepochs/nativeLive/worker-serverjoins/discovery-wholeScan，L03/L04/
+Q04及其他L01和第五至九类。无subagent/push/publication/historyrewrite/referenceedit/
+设备或Apple服务操作。

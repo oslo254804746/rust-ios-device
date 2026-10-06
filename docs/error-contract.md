@@ -1918,3 +1918,14 @@ owned result release. It is not an original device failure or remote ACK.
 Safe context/body/schema/auth stay. Query completion is a point-in-time view;
 after-query changes, reused IDs, daemon restart, native liveness/joins and
 generation-specific backoff remain. L01/L02/L03–L04/Q04/classes5–9 continue.
+
+## Known identity and failure backoff
+
+[L02 backoff identity](validation/tunnel-backoff-2026-10-06.md) accepts
+`d0b04bed79ecec5c3f724ff003122f66b1159216`. Ordinary native failure now
+records its known route/expected ID; waiting and count increment apply only
+to that identity. Known changes can retry immediately; new identity failure
+starts at1. Original source IO/cancel/reporting/category and same-identity
+schedule stay. Debug exposes no retained host. No safe retry or side-effect/
+new-pairing claim follows. Same ID/host after reuse/restart remains unresolved;
+retention/native resources/L03/L04 and otherL01/L02/Q04/classes5–9 continue.

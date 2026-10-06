@@ -1184,3 +1184,15 @@ admission change needs release review. No public SDK/C/Python/API field,
 dependency, protocol codec, HTTP route/auth/payload changes. Later attachment
 changes and resource/native joins/platform/device conditions remain. It does
 not complete L02 or any remaining31-task scope.
+
+## L02 failure identity
+
+The [backoff identity gate](validation/tunnel-backoff-2026-10-06.md),
+`d0b04bed79ecec5c3f724ff003122f66b1159216`, changes private scanner failure
+matching: new known native ID/host/route can retry immediately, same identity
+retains30/60/120/240/300s and increments its counter. No public SDK/C/Python
+field/export, dependency, codec, HTTP/auth/payload or native trust/connection
+change. Known-change timing correction requires release review. No pairing/
+configurable reconnection or side-effect retry is added. Retention/resource/
+unobserved reuse/restart/platform/device conditions and the full31-task scope
+remain; L01/L02/L03–L04/Q04/classes5–9 continue.

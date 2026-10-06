@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-backoff-d0b04be",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/ownedprivateFakeDevice/knownRoute-expectedID/nativeIO/clock. Four behavioral fixtures native71 failure/new72retry,knownpairedIP1failure/IP2retry,changedidentityfailurecount1/sameidentityskip-expirecount2,Usbmux-to-knownMobdev2route; fifth safeDebug wholefailure record with syntheticprivatehost. No physical/nativejoin/ACK/RSS/performanceproof."
+      ],
+      "required_state": [
+        "Three source files203+/4-,5newtests.34585 terminal1010PASS4FAIL,63939 terminal0fortyPASS,addedDebugfixturebeforefrozen79705 terminal0/all14gates41/min41/tunnel82+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. All36oldlifecycle/sourcefixtures BYTEpreserved;2main time-test structliterals fieldadditions only/originalassertions-timefunction stay. Otherproduction/nativeSource/guards/postquery/HTTP/record/core/public/deps unchanged."
+      ],
+      "tested_commit": "d0b04bed79ecec5c3f724ff003122f66b1159216",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-backoff-2026-10-06.md",
+      "result": "PASS",
+      "scope": "PrivateFailedAttempt identity Routeclone+expectednativeID. Skip/increment onlysameidentity plusoriginaltimefunction; knownID/pairedhost/routechange retriesimmediately,newfailure starts1,successremoveasbefore; same30/60/120/240/300 schedule/cancel/nativeIO preserved. SafeDebug staticlabel concealsretainedhost. No newpairing/actor/API/codec/deps/configurable-reconnect/retryofsideeffects/trustchange. Full2550Rust/13PythonCLI945Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Failuremap acrossUIDs stillunbounded;unobservedsameID-hostreuse/restart/afterquery/manualepochs/nativeLive/worker-serverjoins/metadata/discovery-wholeScan/L03-L04/Q04/platform/device remain.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
+    },
+    {
       "id": "linux-tunnel-publication-86fecfe",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
