@@ -50,6 +50,26 @@ CI check job runs it. This condition does not disable the separate native/C and
 Python platform jobs. A standalone run needs an already-built `target/debug/ios`;
 the full gate builds it through `capabilities` and `diagnostics` first.
 
+## Explicit high-cost host vector
+
+The ordinary full gate keeps the 10M PBKDF2 interoperability test ignored.
+Run it separately with owned process-group supervision:
+
+```sh
+.venv/bin/python scripts/validate.py high-cost --python .venv/bin/python
+# Override the compile-plus-execution budget through the standalone runner:
+.venv/bin/python scripts/high_cost.py --timeout 300
+```
+
+Default 900s and 2 MiB combined output cover release Core compilation/execution
+with only `backup2-manifest`. The exact vector must execute once; its actual
+artifact and raw bounded output have hashes. Original logs live in newly owned
+ignored directories. Zero selection, partial capture, timeout, overflow or
+incomplete process cleanup fails. No device is contacted and ordinary `full`
+remains unchanged. Linux [evidence](validation/pbkdf2-2026-10-06.md) does not
+certify macOS or generic Windows Cargo process-tree supervision. All protocol
+fuzz entrypoints and the complete synthetic seed corpus remain separate Q04 work.
+
 ## Candidate release artifacts
 
 Build and verify the current host's target before any publication:

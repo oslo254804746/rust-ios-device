@@ -3,7 +3,7 @@
 日期：2026-09-30；代码基线：`572c297`。
 
 状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
-其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类 L01、L02 进行中，实际证据见第 14 节。
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类 L01、L02、Q04 进行中，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -96,7 +96,7 @@
 | Q01 | 建立能力成熟度与验证矩阵 | P2 | 无 | 完成 |
 | Q02 | 建立回归工具与代表性真机流程 | P2 | Q01、S04 | 待条件：Linux 统一捕获/owned cleanup、27 行风险矩阵及 FUP 文档复核已交付；设备 adapters/真实工作流、Windows/UNC、历史报告勘误待条件 |
 | Q03 | 建立跨平台路径与输出失败合同 | P2 | B03 | 待验收：Linux 主机完成；其他平台/UNC 待条件 |
-| Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 待开始 |
+| Q04 | 增加协议 fuzz 与高成本专项检查 | P2 | B03 | 进行中：显式有界 high-cost PBKDF2入口/精确1次执行/产物及原始日志哈希已交付主机证据；XPC/DTX/OPACK/NSKeyedArchiver fuzz入口与完全合成种子、截断/长度/嵌套/UID/压缩、预算内CPU/分配/panic专项仍待完成；平台条件保留 |
 | S01 | 管理器认证与设备、端口授权 | P1 | 无 | 待验收：manager/CLI/doctor/debug 与 S03 独立联邦凭据主机接入已交付；平台文件/ACL、真机转发/会话撤销待条件 |
 | S02 | HTTP 状态变更及浏览器访问边界 | P1 | S01 | 待验收：既有入口 Linux 方法/Host/Origin/CORS、单次票据及实际浏览器主机验收已交付；F05 新入口、跨平台与真机工作流待条件 |
 | S03 | 远端受保护传输与联邦凭据隔离 | P1 | S01、S02 | 待验收：Linux HTTPS/WSS、独立凭据/CA、重定向隔离与两跳主机范围已交付；平台文件/部署/真实设备待条件 |
@@ -7460,3 +7460,44 @@ commit=frozen，ignored `target/validation/tunnel-server-2026-10-06/`，refs HEA
 12进行中或待条件，全部31主任务/子项/历史及118能力正文保留；其他 L01/L02、L03–L04、
 Q04协议fuzz/高成本专项与第五至九类继续。无subagent/push/publication/historyrewrite/
 referenceedit/真实设备/凭据/Apple服务操作。
+
+### 大类 4：Q04 explicit high-cost PBKDF2 entry（2026-10-06）
+
+受测实现 `de74436beeb302fd1756dd10d7f6a9f324344de9`，父
+`74b47ca06f5dc149287217a18e747f77b9b2d011`，三脚本231+/1-。
+[高成本证据](validation/pbkdf2-2026-10-06.md) 与 [构建入口](build.md) 记录
+显式 high-cost scope，使用项目 .venv；普通 full 不加入10M向量，原ignore理由保留。
+runner沿用既有Unix-owned process-group capture，默认900s覆盖Cargo编译+执行，
+接受有限(0,3600]预算，合计输出2MiB。仅Core/lib/release/no-default/
+backup2-manifest/locked精确选中既有public pyiosbackup vector，不连接设备。
+
+通过需要精确目标行、唯一1PASS/0FAIL/0IGNORE/0MEASURED summary、唯一实际Core
+test artifact及target内路径/sha；非零/零过滤/错误目标/重复summary/缺失产物/
+partial/overflow/timeout/stop/未收尾group不能PASS。原始有界stdout/stderr保存于
+新建ignored owned目录，sha与九个source文件在结束后再核对。六新工具测试含实际
+validate dispatcher的PATH合成Cargo/真实文件/日志observer；该合成用例不当crypto
+通过证据。没有Core/crypto fixture/Cargo/SDK/protocol/capture原实现变更。
+
+首实际19040 terminal0：向量1PASS，63.952s含初次编译；历史原九sourceSHA保留。
+最终冻结 **52988 terminal0/all5 gates PASS**：syntax、项目.venv工具73、
+Core最小backup2-manifest/alltargets、实际high-cost、第11节full拆分均通过。
+最新实际向量 **1PASS/0FAIL/0IGNORE/320filtered**，1.102s含缓存后的Cargo执行，
+进程组cleanup_complete，无timeout/overflow/partial，产物与原始日志哈希审查0。
+该耗时是单一host工作负载记录，不是L04性能基线或硬件吞吐承诺。
+普通 **2581Rust/13Python**，CLI976/Core1443/public52、0FAIL/2既有ignored；
+tooling73/help118/raw38/host5/CLI95/backup3、66features/4groups/MSRV1.80.1/
+7+7docs/3snippets/C ABI/3.12wheel-sdist build-install-import PASS。
+**22device NOT_RUN**；Chromium/installed3.9/3.13 NOT_RERUN，maturity不变。
+
+patch SHA256 `378e6c40ff887bf7a4f933d8be41e54d74c6e5b783a75de1d65af0195f5898f9`；
+actual ios SHA256 `3823aedc1950ad79587f8701ed6ceede9f1b9a1320688d6d5f79e0f69e79980c`；
+high-cost test artifact SHA256 `889506219808b1c2c960d993366b70d2e68c8cf0c52bd9cffb6535502cd2016b`。
+commit匹配冻结脚本，actual报告保留其运行时source_revision父提交及九sourceSHA；
+ignored evidence `target/validation/pbkdf2-2026-10-06/`，references HEAD/status未变。
+
+Q04进入进行中，总览 **9完成/9未开始/13进行中或待条件**，不以高成本子项完成
+宣称协议fuzz通过。四类parser入口/完全合成种子/截断长度深度/UID压缩、预算内
+panic/CPU/失控分配及decoded peak仍待完成；macOS证据/Windows通用Cargo子进程树
+监督缺条件。普通跨平台full的scope不因新增显式入口而停用。全部31主任务/子项/
+历史/118能力正文与L01/L02/L03–L04/第五至九类保留，goal active；无subagent/
+push/publication/historyrewrite/referenceedit/真实设备/凭据/Apple操作。

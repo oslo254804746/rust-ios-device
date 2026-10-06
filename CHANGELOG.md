@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add explicit bounded `high-cost` validation for the existing 10M PBKDF2
+  interoperability vector, requiring an executed test and verified artifact/log
+  hashes. Ordinary `full` keeps it ignored. See
+  [PBKDF2 evidence](docs/validation/pbkdf2-2026-10-06.md).
 - Retain tunnel server shutdown for late waiters, own the scanner in the server
   future, and handle Ctrl-C after startup. Returned shutdown shares a separate
   2-second budget across table clear and HTTP drain; primary and cleanup errors

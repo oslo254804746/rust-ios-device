@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-pbkdf2-de74436",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Explicit release Core/lib/backup2-manifest public PBKDF2 vector: exact1PASS0FAIL0IGNORE320filtered. Owned process-group capture900s/2MiB, actual artifact and bounded raw-log hashes. Six tooling fixtures include synthetic Cargo through actual dispatcher; those are not crypto evidence."
+      ],
+      "required_state": [
+        "Three scripts231+/1-; Core/vector/Cargo/capture/public API unchanged.19040 terminal0 initial vector63.952s inclcompile;52988 terminal0/all5 gates/syntax/tooling73/minCorealltargets/actualvector1.102s cached/full2581Rust13Python. Artifact/log/nine-source hashes verified, cleanup complete, no timeout/overflow/partial."
+      ],
+      "tested_commit": "de74436beeb302fd1756dd10d7f6a9f324344de9",
+      "date": "2026-10-06",
+      "location": "docs/validation/pbkdf2-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Explicit high-cost independently runs existing ignored10Mvector; normal full unchanged. Require exactselectedline/one1PASSsummary/actualCoreartifact+SHA/no incomplete capture, frozen source and owned rawlogs. Ordinary2581Rust13PythonCLI976Core1443public52,0FAIL2existing ignored;tooling73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Linux process proof is not macOS/Windows Cargo-tree validation or L04 baseline. Q04 inprogress: all XPC/DTX/OPACK/NSKeyedArchiver fuzz targets/syntheticseeds/trunc-length-depth-UID-compression/CPU-alloc-panic/decodedpeaks required. All31 tasks/subtasks/history9complete9notstarted13inprogressconditions/otherL01-L04/classes5-9 retained;no maturity/SDK/protocol/pairing/dependency change."
+    },
+    {
       "id": "linux-tunnel-server-5120fa9",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
