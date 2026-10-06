@@ -158,6 +158,7 @@ fn lifecycle_tunnel_backoff_debug_does_not_expose_retained_route_host() {
             route: Route::Mobdev2(secret.into()),
             native_id: None,
         },
+        slot: None,
     };
     let rendered = format!("{attempt:?}");
     assert!(!rendered.contains(secret));

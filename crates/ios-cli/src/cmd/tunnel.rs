@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
@@ -39,6 +39,7 @@ const DEFAULT_SCAN_INTERVAL_MS: u64 = 2_000;
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
+const MAX_FAILURE_RECORDS: usize = 4096;
 const MAX_LIST_BYTES: usize = 1024 * 1024;
 const BRIDGE_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
@@ -328,6 +329,7 @@ struct TunnelAgentInner {
     upstreams: RwLock<BTreeSet<String>>,
     upstream_access: Upstreams,
     failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
+    failure_slots: Arc<Semaphore>,
     ready: RwLock<bool>,
     lifecycle: Lifecycle,
     scan_lock: Mutex<()>,
@@ -353,6 +355,7 @@ struct FailedTunnelAttempt {
     last_attempt: Instant,
     fail_count: u32,
     identity: AttemptIdentity,
+    slot: Option<Arc<OwnedSemaphorePermit>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -524,6 +527,7 @@ impl TunnelAgentState {
                 upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
                 upstream_access,
                 failed_attempts: RwLock::new(HashMap::new()),
+                failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::new(),
                 scan_lock: Mutex::new(()),
@@ -807,6 +811,9 @@ impl TunnelAgentState {
             route: route.clone(),
             native_id: expected_id,
         };
+        // Keep the reservation outside the cancellable connection future until
+        // its failure is recorded or the attempt releases it.
+        let mut failure_slot = None;
         let result = ticket
             .run(async {
                 tokio::time::timeout(self.inner.connect_timeout, async {
@@ -826,6 +833,7 @@ impl TunnelAgentState {
                     {
                         return Ok(());
                     }
+                    failure_slot = Some(self.reserve_failure_slot(udid).await?);
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
                     self.connect_and_store(udid, route, ticket, expected_id)
                         .await?;
@@ -844,7 +852,10 @@ impl TunnelAgentState {
                     error = %crate::output::error_message(&error),
                     "tunnel agent: failed to establish tunnel"
                 );
-                self.record_failed_attempt(udid, identity).await;
+                if let Some(slot) = failure_slot {
+                    self.record_failed_attempt(udid, identity, slot, ticket)
+                        .await;
+                }
             }
         }
     }
@@ -868,6 +879,7 @@ impl TunnelAgentState {
                 .collect::<HashMap<_, _>>()
         };
         if !self.inner.access.permits_any_device() {
+            self.inner.failed_attempts.write().await.clear();
             self.mark_ready().await;
             return Ok(());
         }
@@ -949,6 +961,7 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
+        self.reconcile_failures(&candidates, paired.is_ok()).await;
         self.refresh_candidates(candidates).await;
         paired?;
         self.mark_ready().await;
@@ -967,8 +980,70 @@ impl TunnelAgentState {
         while connections.next().await.is_some() {}
     }
 
-    async fn record_failed_attempt(&self, udid: &str, identity: AttemptIdentity) {
+    async fn reconcile_failures(
+        &self,
+        candidates: &[(String, Route, Ticket, Option<u32>)],
+        paired_complete: bool,
+    ) {
+        let known = candidates
+            .iter()
+            .map(|(udid, route, _, native_id)| {
+                (
+                    udid.as_str(),
+                    AttemptIdentity {
+                        route: route.clone(),
+                        native_id: *native_id,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        self.inner
+            .failed_attempts
+            .write()
+            .await
+            .retain(|udid, failed| {
+                self.inner.access.permits_device(udid)
+                    && match known.get(udid.as_str()) {
+                        Some(identity) => failed.identity == *identity,
+                        None => {
+                            !paired_complete && matches!(failed.identity.route, Route::Mobdev2(_))
+                        }
+                    }
+            });
+    }
+
+    async fn reserve_failure_slot(&self, udid: &str) -> Result<Arc<OwnedSemaphorePermit>> {
+        if let Some(slot) = self
+            .inner
+            .failed_attempts
+            .read()
+            .await
+            .get(udid)
+            .and_then(|failed| failed.slot.clone())
+        {
+            return Ok(slot);
+        }
+        self.inner
+            .failure_slots
+            .clone()
+            .try_acquire_owned()
+            .map(Arc::new)
+            .map_err(|_| crate::output::resource_decision("tunnel failure record capacity"))
+    }
+
+    async fn record_failed_attempt(
+        &self,
+        udid: &str,
+        identity: AttemptIdentity,
+        slot: Arc<OwnedSemaphorePermit>,
+        ticket: &Ticket,
+    ) {
         let mut failed = self.inner.failed_attempts.write().await;
+        // Clear/stop can run while this write lock is queued. An old outcome
+        // must not resurrect metadata after its lifecycle generation ended.
+        if !ticket.is_current() {
+            return;
+        }
         failed
             .entry(udid.to_string())
             .and_modify(|attempt| {
@@ -984,6 +1059,7 @@ impl TunnelAgentState {
                 last_attempt: Instant::now(),
                 fail_count: 1,
                 identity,
+                slot: Some(slot),
             });
     }
 }
@@ -2284,6 +2360,7 @@ mod tests {
                 route: Route::Usbmux,
                 native_id: None,
             },
+            slot: None,
         };
         assert!(failed.should_skip(now));
 
@@ -2294,6 +2371,7 @@ mod tests {
                 route: Route::Usbmux,
                 native_id: None,
             },
+            slot: None,
         };
         assert!(!expired.should_skip(now));
     }
