@@ -13,6 +13,7 @@ const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
 mod identity_tests;
 mod parallel_tests;
+mod publication_tests;
 
 enum Behavior {
     Success,
@@ -59,6 +60,7 @@ struct FakeSource {
     usb_details: StdMutex<Option<Vec<source::UsbDevice>>>,
     connected_ids: StdMutex<HashMap<String, u32>>,
     usb_gate: StdMutex<Option<Arc<Semaphore>>>,
+    usb_calls: AtomicUsize,
     list_failure: AtomicBool,
     paired_failure: AtomicBool,
     paired: StdMutex<Vec<PairedMobdev2Device>>,
@@ -87,6 +89,7 @@ impl FakeSource {
             usb_details: StdMutex::new(None),
             connected_ids: StdMutex::new(HashMap::new()),
             usb_gate: StdMutex::new(None),
+            usb_calls: AtomicUsize::new(0),
             list_failure: AtomicBool::new(false),
             paired_failure: AtomicBool::new(false),
             paired: StdMutex::new(Vec::new()),
@@ -164,6 +167,16 @@ impl Source for FakeSource {
             let mut record = fake_record(12345);
             record.udid = udid.into();
             record.interface = format!("fake-{udid}");
+            // A successful legacy fake USB connection represents an attached
+            // device. Explicit metadata fixtures control their own snapshots.
+            if matches!(route, Route::Usbmux | Route::Usb(_))
+                && self.usb_details.lock().unwrap().is_none()
+            {
+                let mut attached = self.usb.lock().unwrap();
+                if !attached.iter().any(|id| id == udid) {
+                    attached.push(udid.into());
+                }
+            }
             Ok(ManagedDevice::Fake(Box::new(OwnedDevice {
                 record,
                 alive: self.alive.clone(),
@@ -184,6 +197,7 @@ impl Source for FakeSource {
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         Box::pin(async {
+            self.usb_calls.fetch_add(1, Ordering::SeqCst);
             let devices = self.usb_details.lock().unwrap().clone().unwrap_or_else(|| {
                 self.usb
                     .lock()
@@ -197,10 +211,11 @@ impl Source for FakeSource {
                     .collect()
             });
             let gate = self.usb_gate.lock().unwrap().clone();
+            let failed = self.list_failure.load(Ordering::SeqCst);
             if let Some(gate) = gate {
                 gate.acquire().await.unwrap().forget();
             }
-            if self.list_failure.load(Ordering::SeqCst) {
+            if failed {
                 return UsbSnapshot::ListError(
                     std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe,
@@ -609,14 +624,16 @@ async fn lifecycle_tunnel_scan_backoff_and_disconnect_release_remain_observable(
 #[tokio::test]
 async fn lifecycle_tunnel_stale_failed_scan_does_not_remove_new_publication() {
     let source = FakeSource::new();
-    source.list_failure.store(true, Ordering::SeqCst);
     let gate = Arc::new(Semaphore::new(0));
-    *source.usb_gate.lock().unwrap() = Some(gate.clone());
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     start(state.clone(), A).await.unwrap();
+    source.list_failure.store(true, Ordering::SeqCst);
+    *source.usb_gate.lock().unwrap() = Some(gate.clone());
     let scan = state.refresh_once();
     tokio::pin!(scan);
     assert!(futures_util::poll!(&mut scan).is_pending());
+    source.list_failure.store(false, Ordering::SeqCst);
+    *source.usb_gate.lock().unwrap() = None;
     start(state.clone(), B).await.unwrap();
     gate.add_permits(1);
     let error = scan.await.unwrap_err();

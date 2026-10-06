@@ -741,6 +741,23 @@ impl TunnelAgentState {
             return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
         }
         let record = device.record_for_mode(self.inner.tun_mode)?;
+        if usbmux {
+            // Keep the completed device owned while the current daemon view is
+            // checked, within the caller's existing permit/deadline/cancellation.
+            match self.inner.source.usb_devices().await {
+                UsbSnapshot::Devices(devices) => {
+                    if !devices.iter().any(|attached| {
+                        attached.udid == udid && attached.device_id == device.device_id()
+                    }) {
+                        return Err(lifecycle::cancelled()
+                            .context("tunnel attachment absent before publication"));
+                    }
+                }
+                UsbSnapshot::ConnectError(error) | UsbSnapshot::ListError(error) => {
+                    return Err(error.context("check tunnel attachment before publication"));
+                }
+            }
+        }
         let mut tunnels = self.inner.tunnels.write().await;
         if !ticket.is_current() {
             return Err(lifecycle::cancelled());
