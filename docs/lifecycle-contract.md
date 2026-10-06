@@ -20,6 +20,9 @@ ownership is `30fb63fe5d6a6530bb96270adbb59c27c96d1e27`.
 This contract records implemented profiles and
 their limits; it does not certify every service or remote cleanup.
 
+The active roadmap scope excludes Q04 and all its subtasks as of2026-10-06.
+Older profiles below retain their historical scope and unresolved findings.
+
 | Deadline role | Meaning |
 | --- | --- |
 | Connect | Transport, discovery/bootstrap or service setup budget; each documented entry owns its start point |
@@ -906,3 +909,21 @@ release their remaining held resources. Timeout does not force-join Axum
 delegated tasks or Core workers. Startup totals, later admission/check races,
 generic caller-drop primary reporting, L03–L04/Q04 and classes5–9 remain.
 22device NOT_RUN; no physical ACK/native join/RSS/performance certification.
+
+## Terminal tunnel connection admission
+
+The [shutdown admission profile](validation/tunnel-shutdown-admission-2026-10-06.md),
+`0d025dd3404082fb76adab20758b2e278b2d9464`, distinguishes reusable clear epochs
+from terminal server shutdown. Notification closes admission before async cleanup;
+old connection tickets observe cancellation and fresh tickets/scans are rejected.
+Clear cannot reopen a closed state. A ticket queued at the coordinator captures
+its original epoch before waiting and cannot adopt a later clear epoch.
+
+An actual incomplete HTTP body finishes during graceful drain after table clear:
+the production start handler returns502/cancelled without source contact or
+publication. Caller Drop also leaves retained state clones closed. Nine new
+full/minimum host tests,122 tunnel tests, the original five CLI stack checks,
+strict checks and full2590Rust/13Python pass. There is no forced delegate/Core
+join: coordinator lock wait totals/cancellation, post-check races, startup and
+whole-scan budgets, forwarding owners and other L01/L02 work remain. L03–L04,
+classes5–9 and all other active30-task acceptance conditions continue.

@@ -114,8 +114,8 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7543,3 +7543,53 @@ L01–L04，再按依赖推进第五至九类。既有Q04高成本入口
 本次仅作源码字节核对、范围文档与交接审查，未重新启动构建/测试。
 22device NOT_RUN，平台/凭据/Apple条件保留；所有118能力正文/maturity及原任务、
 子任务、交付历史保留。未推送/发布/改写历史、修改参考checkout或启用子代理。
+
+### 新30项目标恢复与 L01/L02 shutdown admission（2026-10-06）
+
+新会话先 get_goal 返回无目标，已 create_goal：原31项排除 Q04 后的30个主任务及
+全部子任务，不设预算、不恢复旧31项目标、不启用子代理。完整读取 AGENTS.MD、
+本计划7545行与指定交接；实际分支/HEAD为预期 `feat/device-service-updates-20260927` /
+`25d3667ab41ac3fe30a5028128dd58269eeecad8`，工作区干净，无运行中的项目验证进程。
+基线 d025b44 到恢复HEAD只有两个范围文档差异；归档patch/逐文件hash、两个撤回
+源文件字节及两个实验文件不存在均核对，恢复阶段未构建测试。只读refs保持原HEAD
+与既有uv.lock/go.mod改动；ignored恢复证据 `target/validation/resume-excluding-q04-2026-10-06/`。
+
+受测实现 `0d025dd3404082fb76adab20758b2e278b2d9464`，父为恢复HEAD；四个CLI
+文件334+/8-、九新测试。[关闭后接入证据](validation/tunnel-shutdown-admission-2026-10-06.md)
+记录实际漏洞触发：已委托的 HTTP start 请求在 shutdown/清表后才完成 JSON body，
+原coordinator可取得新epoch并重新建连。现 private lifecycle 区分可重用clear与不可
+重开的shutdown终态；notify在async cleanup前close，旧tickets取消、新manual/scans
+拒绝。普通clear可重新开始，server restart需新state。coordinator ticket在锁等待前
+捕获原clear epoch，不会在等待后取得替代epoch；锁等待本身的total/cancellation仍待。
+
+实际旧生产负控制85563退出101：1PASS/5FAIL；修复后32475退出0：原六项6PASS。
+再加discovery/callerDrop/coordinator wait共九项。冻结11055权威退出0，八门禁全通过：
+new9/min9、tunnel122/1既有ignored、minCLIalltargets、原stack5、strictCLIClippy、fmt、
+第11节完整拆分。**2590Rust/13Python、0FAIL/2既有ignored**，CLI985/Core1443/public52；
+66features/4groups/MSRV1.80.1/7+7docs/3snippets/C ABI/3.12wheel-sdist build-install-import/
+tooling73/help118/raw38/host5/CLI95/backup3 PASS。另项目.venv工具26755退出0：73PASS。
+**22device NOT_RUN**；Chromium/installed3.9/3.13 NOT_RERUN，不升级maturity。
+
+actual server/router的延迟body在观察清表后释放，502/cancelled、A零source contact/
+无迟到publication、graceful drain/监听关闭；pending native-future/query/serial/discovery
+取消及owneddevice/permit释放有主机证据。coordinator wait fixture明确先释放其持锁，
+不宣称该锁等待立即取消。原断言/serverowner/NativeSource/Core/SDK/bindings/deps/访问
+与wire保持，Q04源文件仍为恢复基线；无协议猜测、真实设备或Apple操作。
+
+patch SHA256 `995001651bbd61e410eb00803cddd765ce99bb067cfac01b4fa3470bb9bd8c3f`；
+actual ios SHA256 `a5d0be4a0f7246e098eaaa8397268ac7d48768bb9828b8e638a83bdd64a57fc4`。
+commit patch与frozen完全相同；ignored `target/validation/tunnel-shutdown-admission-2026-10-06/`
+保留日志/退出码/源码拷贝/hash与审查。首文档patch context不匹配未应用，重读后修正；
+没有放宽断言/lint/条件。终态接入语义修正需pre-1.0 release review。
+
+L01/L02/第四类/新30项目标 active，**9完成/9未开始/12进行中或待条件**。全部原
+任务/子项/历史与118能力正文/maturity/既有证据保留，仅追加本host profile。继续
+coordinator lock-wait total/cancellation、post-check竞态、startup/wholeScan/metadata/
+nativeworker-serverjoins与其他 L01/L02，再 L03–L04、第五至九类及其他待验收条件。
+不把本项当atomic全竞态保护、asyncDrop/nativejoin/physicalfreshness/ACK/性能基线。
+Q04全部子项继续排除，UID已知资源风险未修复，其他任务原验收不豁免；无cacheclean/
+subagent/referenceedit/push/publication/historyrewrite，源码冻结至验证真实退出再提交。
+
+本项七文档收尾审查：六Markdown/353 local links、项目.venv capability inventory/
+actualhelp118、whitespace与实现/二进制hash通过；118能力正文/maturity/所有旧evidence、
+全部历史/子任务prefix保留，只有L01/L02当前行和末尾交付追加。文档期间源码未变。

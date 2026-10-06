@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-shutdown-admission-0d025dd",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private owned source/device and router/listener. Delayed admitted HTTP start body finishes after shutdown/table clear:502/cancelled, no source contact/publication, graceful drain/listener close. No physical device/Apple/native worker join."
+      ],
+      "required_state": [
+        "Four CLI files334+/8-,nine new full/minimum tests. Control85563 exited101:1PASS/5FAIL; after32475 exited0:6PASS; frozen11055 exited0/all8 gates, new9/min9/tunnel122+1ignored/minCLIalltargets/stack5/strict/fmt/full2590Rust13Python. Project .venv tooling26755 exited0:73PASS. Old assertions/server owner/native source/Core/bindings/dependencies and excluded sources preserved."
+      ],
+      "tested_commit": "0d025dd3404082fb76adab20758b2e278b2d9464",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-shutdown-admission-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Terminal lifecycle closes before async cleanup; existing tickets cancel and fresh manual/scans reject; clear never reopens shutdown but ordinary clear remains reusable. Coordinator captures pre-lock epoch; its wait still awaits lock release. Full2590Rust13PythonCLI985Core1443public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. No atomic post-check race/asyncDrop/Axum-Core forced join/freshness/resource/performance claim. Active30 tasks/all subtasks excluding Q04,9complete9notstarted12inprogress-or-conditions;UID risk unfixed,other acceptance unchanged. Startup/whole-scan/metadata/coord-wait/native joins/otherL01-L04/classes5-9 remain;no maturity/protocol/pairing/API/dependency change."
+    },
+    {
       "id": "linux-pbkdf2-de74436",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

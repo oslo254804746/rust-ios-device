@@ -116,6 +116,18 @@ It cannot await a locked table or delegated Axum/Core workers. A capped drain
 does not forcibly join pending handlers/upgrades; startup totals, later admission
 races and those delegated resources remain separate work.
 
+Shutdown now closes connection admission before waiting for table cleanup.
+Existing connection tickets are cancelled; fresh manual starts and scans cannot
+reopen that state, including after `clear`. A delegated `/start-tunnel` request
+whose JSON body finishes after shutdown returns the existing502 with
+`x-ios-error-class: cancelled` without connecting. Ordinary internal `clear`
+still allows a fresh generation; restarting a server needs a new manager state.
+Coordinator admissions capture their clear epoch before locking, so an old
+waiter cannot acquire the replacement epoch. The coordinator lock wait itself
+still awaits release; its total/cancellation, checks racing with shutdown,
+existing forwarding and delegated worker joins remain separate work. See
+[shutdown admission evidence](validation/tunnel-shutdown-admission-2026-10-06.md).
+
 `GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
 UDID-keyed tunnel listing including registered upstream managers. Register one
 with `POST /upstream` and `{"url":"http://host:port/"}`; `GET /upstream` lists
