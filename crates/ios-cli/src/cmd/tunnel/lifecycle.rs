@@ -49,9 +49,13 @@ impl Lifecycle {
     }
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
-        let shutdown = self.shutdown.subscribe();
+        let mut shutdown = self.shutdown.subscribe();
         let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
-        let mut devices = self.devices.lock().await;
+        let mut devices = tokio::select! {
+            biased;
+            _ = shutdown.changed() => return Err(cancelled()),
+            devices = self.devices.lock() => devices,
+        };
         // Closing never waits for this lock, and an old queued admission must
         // not acquire a new epoch after clear or terminal shutdown.
         if !shutdown
@@ -192,6 +196,40 @@ pub(super) fn cancelled() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lifecycle_tunnel_coordinator_cancel_returns_before_held_lock_release() {
+        for terminal in [false, true] {
+            let lifecycle = Lifecycle::new();
+            let held = lifecycle.devices.lock().await;
+            let mut queued = Box::pin(lifecycle.ticket("synthetic-waiting-device"));
+            assert!(futures_util::poll!(&mut queued).is_pending());
+            if terminal {
+                lifecycle.close();
+            } else {
+                lifecycle.clear();
+            }
+            let outcome = tokio::time::timeout(Duration::from_secs(1), queued).await;
+            assert!(
+                held.is_empty(),
+                "cancelled admission created coordinator state"
+            );
+            drop(held);
+            match outcome.expect("cancellation waited for the held coordinator lock") {
+                Err(error) => {
+                    assert!(error.is::<ios_core::OperationCancelled>());
+                    assert_eq!(
+                        ios_core::classify_error(error.as_ref()),
+                        ios_core::ErrorClass::Cancelled
+                    );
+                }
+                Ok(_) => panic!("old admission resumed after cancellation"),
+            }
+            if !terminal {
+                assert!(lifecycle.ticket("synthetic-waiting-device").await.is_ok());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn lifecycle_tunnel_shutdown_admission_coordinator_wait_keeps_original_epoch() {
