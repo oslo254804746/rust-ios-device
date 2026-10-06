@@ -19,6 +19,7 @@ mod manual_deadline_tests;
 mod parallel_tests;
 mod publication_tests;
 mod retention_tests;
+mod scan_setup_tests;
 mod server_tests;
 mod shutdown_admission_tests;
 

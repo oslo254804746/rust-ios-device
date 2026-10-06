@@ -129,6 +129,11 @@ impl Lifecycle {
         self.devices.lock().await
     }
 
+    #[cfg(test)]
+    pub(super) async fn coordinator_count(&self) -> usize {
+        self.devices.lock().await.len()
+    }
+
     // The caller holds the tunnel table write guard. This fences publication
     // together with removal without waiting for a connecting device's serial lock.
     pub(super) async fn stop(&self, udid: &str) {
@@ -180,19 +185,23 @@ impl ScanControl {
         if !Arc::ptr_eq(&self.changes.borrow(), &self.generation) {
             return Ok(None);
         }
-        // A due deadline must retain native Elapsed without polling real work.
-        if Instant::now() >= self.deadline {
-            return tokio::time::timeout_at(self.deadline, std::future::pending::<T>())
-                .await
-                .map(Some)
-                .context("tunnel scan discovery total expired");
-        }
+        let deadline = self.deadline;
+        tokio::pin!(work);
         tokio::select! {
             biased;
             _ = self.changes.changed() => Ok(None),
-            result = tokio::time::timeout_at(self.deadline, work) => {
-                result.map(Some).context("tunnel scan discovery total expired")
+            expired = tokio::time::timeout_at(deadline, std::future::pending::<T>()) => {
+                expired.map(Some).context("tunnel scan discovery total expired")
             }
+            result = std::future::poll_fn(|cx| {
+                // Suppress late ready locks and tickets on every poll, even
+                // before the independently polled native timer becomes ready.
+                if Instant::now() >= deadline {
+                    std::task::Poll::Pending
+                } else {
+                    work.as_mut().poll(cx)
+                }
+            }) => Ok(Some(result)),
         }
     }
 }

@@ -361,6 +361,39 @@ struct FailedTunnelAttempt {
     slot: Option<Arc<OwnedSemaphorePermit>>,
 }
 
+struct ScanCleanupFailure {
+    primary: anyhow::Error,
+    cleanup: anyhow::Error,
+}
+
+impl std::fmt::Display for ScanCleanupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("tunnel scan failed; snapshot cleanup also failed")
+    }
+}
+
+impl std::fmt::Debug for ScanCleanupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TunnelScanCleanupFailure")
+            .field(
+                "primary_class",
+                &ios_core::classify_error(self.primary.as_ref()),
+            )
+            .field(
+                "cleanup_class",
+                &ios_core::classify_error(self.cleanup.as_ref()),
+            )
+            .finish()
+    }
+}
+
+impl std::error::Error for ScanCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.primary.as_ref())
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct AttemptIdentity {
     route: Route,
@@ -875,7 +908,9 @@ impl TunnelAgentState {
         };
         let scan_generation = control.generation.clone();
         let initial = {
-            let mut tunnels = self.inner.tunnels.write().await;
+            let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
+                return Ok(());
+            };
             tunnels.retain(|device, _| self.inner.access.permits_device(device));
             tunnels
                 .iter()
@@ -883,28 +918,47 @@ impl TunnelAgentState {
                 .collect::<HashMap<_, _>>()
         };
         if !self.inner.access.permits_any_device() {
-            self.inner.failed_attempts.write().await.clear();
-            self.mark_ready().await;
+            let Some(mut failed) = control.drive(self.inner.failed_attempts.write()).await? else {
+                return Ok(());
+            };
+            failed.clear();
+            drop(failed);
+            let Some(mut ready) = control.drive(self.inner.ready.write()).await? else {
+                return Ok(());
+            };
+            *ready = true;
             return Ok(());
         }
 
         let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
             return Ok(());
         };
-        // A stop during discovery must fence the old snapshot even for a device
-        // that had no published tunnel or device gate when the scan began.
-        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
-            return Ok(());
-        }
         let devices = match snapshot {
-            UsbSnapshot::Devices(devices) => devices,
+            UsbSnapshot::Devices(devices) => {
+                // Fence successful old snapshots without discarding a native
+                // source error that the discovery future has already returned.
+                if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+                    return Ok(());
+                }
+                devices
+            }
             UsbSnapshot::ConnectError(error) => return Err(error),
             UsbSnapshot::ListError(error) => {
-                self.inner.tunnels.write().await.retain(|udid, tunnel| {
-                    !initial
-                        .get(udid)
-                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
-                });
+                match control.drive(self.inner.tunnels.write()).await {
+                    Ok(Some(mut tunnels)) => tunnels.retain(|udid, tunnel| {
+                        !initial
+                            .get(udid)
+                            .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                    }),
+                    Ok(None) => {}
+                    Err(cleanup) => {
+                        return Err(ScanCleanupFailure {
+                            primary: error,
+                            cleanup,
+                        }
+                        .into());
+                    }
+                }
                 return Err(error);
             }
         };
@@ -912,7 +966,10 @@ impl TunnelAgentState {
             .iter()
             .map(|device| (device.udid.as_str(), device.device_id))
             .collect::<std::collections::HashSet<_>>();
-        self.inner.tunnels.write().await.retain(|udid, tunnel| {
+        let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
+            return Ok(());
+        };
+        tunnels.retain(|udid, tunnel| {
             tunnel.is_alive()
                 && self.inner.access.permits_device(udid)
                 && (!tunnel.usbmux
@@ -921,6 +978,7 @@ impl TunnelAgentState {
                         .get(udid)
                         .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
         });
+        drop(tunnels);
         drop(attached);
 
         // Capture every device generation before waiting for the first connection.
@@ -930,7 +988,10 @@ impl TunnelAgentState {
         for device in source::selected_devices(devices) {
             let udid = device.udid;
             if self.inner.access.permits_device(&udid) && seen.insert(udid.clone()) {
-                let ticket = self.inner.lifecycle.ticket(&udid).await?;
+                let Some(ticket) = control.drive(self.inner.lifecycle.ticket(&udid)).await? else {
+                    return Ok(());
+                };
+                let ticket = ticket?;
                 candidates.push((udid, Route::Usbmux, ticket, Some(device.device_id)));
             }
         }
@@ -947,6 +1008,9 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
+        // The setup clock ends at the paired reply. The remaining candidate
+        // handoff, reconciliation and readiness waits keep their existing
+        // behavior; each candidate still owns its independent connection total.
         if let Ok(targets) = &paired {
             for target in targets {
                 if self.inner.access.permits_device(&target.udid)
