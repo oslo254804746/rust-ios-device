@@ -12,6 +12,7 @@ const B: &str = "synthetic-device-b";
 const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
 mod backoff_tests;
+mod discovery_tests;
 mod identity_tests;
 mod liveness_tests;
 mod parallel_tests;
@@ -63,6 +64,12 @@ struct FakeSource {
     connected_ids: StdMutex<HashMap<String, u32>>,
     usb_gate: StdMutex<Option<Arc<Semaphore>>>,
     usb_calls: AtomicUsize,
+    usb_active: AtomicUsize,
+    usb_exited: AtomicUsize,
+    paired_calls: AtomicUsize,
+    paired_active: AtomicUsize,
+    paired_exited: AtomicUsize,
+    paired_gate: StdMutex<Option<Arc<Semaphore>>>,
     list_failure: AtomicBool,
     paired_failure: AtomicBool,
     paired: StdMutex<Vec<PairedMobdev2Device>>,
@@ -73,6 +80,18 @@ impl Drop for Active<'_> {
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::SeqCst);
         self.0.exited.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct Probe<'a> {
+    active: &'a AtomicUsize,
+    exited: &'a AtomicUsize,
+}
+
+impl Drop for Probe<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        self.exited.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -92,6 +111,12 @@ impl FakeSource {
             connected_ids: StdMutex::new(HashMap::new()),
             usb_gate: StdMutex::new(None),
             usb_calls: AtomicUsize::new(0),
+            usb_active: AtomicUsize::new(0),
+            usb_exited: AtomicUsize::new(0),
+            paired_calls: AtomicUsize::new(0),
+            paired_active: AtomicUsize::new(0),
+            paired_exited: AtomicUsize::new(0),
+            paired_gate: StdMutex::new(None),
             list_failure: AtomicBool::new(false),
             paired_failure: AtomicBool::new(false),
             paired: StdMutex::new(Vec::new()),
@@ -200,6 +225,11 @@ impl Source for FakeSource {
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         Box::pin(async {
             self.usb_calls.fetch_add(1, Ordering::SeqCst);
+            self.usb_active.fetch_add(1, Ordering::SeqCst);
+            let _probe = Probe {
+                active: &self.usb_active,
+                exited: &self.usb_exited,
+            };
             let devices = self.usb_details.lock().unwrap().clone().unwrap_or_else(|| {
                 self.usb
                     .lock()
@@ -232,14 +262,26 @@ impl Source for FakeSource {
 
     fn paired_devices(&self) -> BoxFuture<'_, Result<Vec<PairedMobdev2Device>>> {
         Box::pin(async {
-            if self.paired_failure.load(Ordering::SeqCst) {
+            self.paired_calls.fetch_add(1, Ordering::SeqCst);
+            self.paired_active.fetch_add(1, Ordering::SeqCst);
+            let _probe = Probe {
+                active: &self.paired_active,
+                exited: &self.paired_exited,
+            };
+            let failed = self.paired_failure.load(Ordering::SeqCst);
+            let devices = self.paired.lock().unwrap().clone();
+            let gate = self.paired_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            if failed {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "synthetic-private-paired-discovery",
                 )
                 .into());
             }
-            Ok(self.paired.lock().unwrap().clone())
+            Ok(devices)
         })
     }
 }

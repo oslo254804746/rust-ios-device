@@ -851,8 +851,14 @@ impl TunnelAgentState {
 
     async fn refresh_once(&self) -> Result<()> {
         // Only scans serialize. Queries, stops and explicit starts never take this lock.
-        let _scan = self.inner.scan_lock.lock().await;
-        let scan_generation = self.inner.lifecycle.scan_generation();
+        let mut control = self
+            .inner
+            .lifecycle
+            .scan_control(self.inner.connect_timeout)?;
+        let Some(_scan) = control.drive(self.inner.scan_lock.lock()).await? else {
+            return Ok(());
+        };
+        let scan_generation = control.generation.clone();
         let initial = {
             let mut tunnels = self.inner.tunnels.write().await;
             tunnels.retain(|device, _| self.inner.access.permits_device(device));
@@ -866,7 +872,9 @@ impl TunnelAgentState {
             return Ok(());
         }
 
-        let snapshot = self.inner.source.usb_devices().await;
+        let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
+            return Ok(());
+        };
         // A stop during discovery must fence the old snapshot even for a device
         // that had no published tunnel or device gate when the scan began.
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
@@ -917,7 +925,9 @@ impl TunnelAgentState {
         // cannot prevent a known mobdev2 candidate from entering the window.
         // Keep a discovery failure until the USB candidates have been processed,
         // preserving their publication and the original returned source error.
-        let paired = self.inner.source.paired_devices().await;
+        let Some(paired) = control.drive(self.inner.source.paired_devices()).await? else {
+            return Ok(());
+        };
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }

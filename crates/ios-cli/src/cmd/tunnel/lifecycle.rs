@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::{watch, Mutex, Semaphore};
+use tokio::time::Instant;
 
 pub(super) const MAX_CONNECTS: usize = 4;
 const MAX_DEVICE_GATES: usize = 4096;
@@ -27,6 +29,12 @@ pub(super) struct Ticket {
     generation: Arc<()>,
     shutdown: watch::Receiver<Arc<()>>,
     shutdown_generation: Arc<()>,
+}
+
+pub(super) struct ScanControl {
+    changes: watch::Receiver<Arc<()>>,
+    pub(super) generation: Arc<()>,
+    deadline: Instant,
 }
 
 impl Lifecycle {
@@ -84,12 +92,43 @@ impl Lifecycle {
         self.scan.send_replace(Arc::new(()));
     }
 
-    pub(super) fn scan_generation(&self) -> Arc<()> {
-        self.scan.borrow().clone()
+    pub(super) fn scan_control(&self, timeout: Duration) -> Result<ScanControl> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            crate::output::input_decision("tunnel scan discovery deadline overflow")
+        })?;
+        let mut changes = self.scan.subscribe();
+        let generation = changes.borrow_and_update().clone();
+        Ok(ScanControl {
+            changes,
+            generation,
+            deadline,
+        })
     }
 
     pub(super) fn scan_is_current(&self, generation: &Arc<()>) -> bool {
         Arc::ptr_eq(&self.scan.borrow(), generation)
+    }
+}
+
+impl ScanControl {
+    pub(super) async fn drive<T>(&mut self, work: impl Future<Output = T>) -> Result<Option<T>> {
+        if !Arc::ptr_eq(&self.changes.borrow(), &self.generation) {
+            return Ok(None);
+        }
+        // A due deadline must retain native Elapsed without polling real work.
+        if Instant::now() >= self.deadline {
+            return tokio::time::timeout_at(self.deadline, std::future::pending::<T>())
+                .await
+                .map(Some)
+                .context("tunnel scan discovery total expired");
+        }
+        tokio::select! {
+            biased;
+            _ = self.changes.changed() => Ok(None),
+            result = tokio::time::timeout_at(self.deadline, work) => {
+                result.map(Some).context("tunnel scan discovery total expired")
+            }
+        }
     }
 }
 
