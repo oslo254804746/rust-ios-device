@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-retention-26b8995",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private fake source and protected policy-reload HTTP. Ten fixtures cover effective snapshot cleanup, unknown paired discovery, expired identity progression, retained/in-flight capacity, existing retry, caller drop, successful release and queued clear race. Capacity prefill uses actual private reserve/record, not4095 native attempts."
+      ],
+      "required_state": [
+        "Four source files474+/3-,10newtests; original54 assertions/source/lifecycle/Core/HTTP/trust/dependencies preserved.43601 terminal1011PASS4FAIL; recovered59PASS log has unavailable parent handle/exit;9659 terminal10161PASS2FAIL fixed cooperative-yield fixture.94282 terminal0/all14 gates64/min64/tunnel105+1ignored/WebInspector192/access29/Core102/stack5/strict/full2573Rust13Python."
+      ],
+      "tested_commit": "26b89951b52dd690bcc0e994541007b5426fba93",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-retention-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Effective snapshots release unauthorized/observed absent/known changed failure rows; paired errors preserve unknown mobdev2, present expired identities retain30/60/120/240/300s.4096 owned slots cover records and pending reservations; new attempts at capacity stop before native IO, existing retries share a lease, success/cancel release and write-lock ticket check rejects old queued outcomes. Logical count does not certify bytes/RSS/native workers/socket/whole-scan bounds. CLI968/Core1443/public52/full2573Rust13Python,0FAIL2existing ignored; tooling67/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN; Chromium/installed3.9/3.13 NOT_RERUN. No maturity upgrade, pairing or protocol/API change; cache/admission timing needs review. All31 tasks/subtasks/history,9complete10notstarted12inprogressconditions and L01/L02/L03-L04/Q04/classes5-9 remain active."
+    },
+    {
       "id": "linux-tunnel-discovery-a476484",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bound scanner failure records and pending failure reservations to 4096.
+  Effective snapshots release obsolete/unauthorized rows; paired discovery
+  errors preserve unknown rows and present identities retain their backoff.
+  Full capacity defers new native attempts. See
+  [retention evidence](docs/validation/tunnel-retention-2026-10-06.md).
 - Give tunnel scan discovery one15s deadline across queue, USB snapshot and
   existing-trust paired discovery. Stop/clear cancels old waiting phases;
   actual expiry retains native Elapsed. See

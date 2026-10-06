@@ -1218,3 +1218,15 @@ dependency, native pairing/trust or HTTP schema. Timing/quiet cancellation
 correction needs release review. Original candidate15s/window/failure behavior
 stays; no whole-scan/resource/Core blocking-worker or physical evidence claim.
 All31 scopes and L01/L02/L03–L04/Q04/classes5–9 remain.
+
+## Bounded scanner failure retention
+
+The [retention gate](validation/tunnel-retention-2026-10-06.md),
+`26b89951b52dd690bcc0e994541007b5426fba93`, adds private effective-snapshot
+reconciliation and 4096 shared slots for retained rows plus pending reservations.
+Full capacity defers fresh scanned connections before native work; existing
+identities retain their schedule. Observed absence or scope/identity change
+releases rows; paired errors preserve unknown mobdev2 failures. Cache/admission
+timing needs release review. SDK/C/Python exports, HTTP schema, native source/
+trust, protocol and dependencies stay. Logical count is not a byte/RSS/native
+worker guarantee. All31 tasks and L01/L02/L03–L04/Q04/classes5–9 remain.

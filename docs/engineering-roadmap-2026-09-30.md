@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 查询/停止隔离、同设备协调、四个共享许可、停止/迟到发布/旧快照保护、受限并发/observed ID/发布前查询/known identity 退避/本地失活拒绝及 queue-USb-paired discovery shared15s/epochcancel 已交付主机 profiles；last check 后变化/receiver false positive/ID reuse/restart/manual epoch、retained maps/metadata 上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7369,3 +7369,47 @@ L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/
 handoff/source-worker/serverjoins、lastcheckchanges/receiverfalsepositive/reuse/restart/
 manualepochs，L03/L04/Q04及其他L01/第五至九类。无subagent/push/publication/
 historyrewrite/referenceedit/设备或Apple服务操作。
+
+### 大类 4：L02 failure retention and capacity（2026-10-06）
+
+受测实现 `26b89951b52dd690bcc0e994541007b5426fba93`，父
+`405bb0d89b2b5e428cceae8b23924db9dff464af`，四文件474+/3-，十新测试。
+[保留与容量证据](validation/tunnel-retention-2026-10-06.md) 记录实际 manager：
+扫描按有效快照清理未授权、观测缺失与已知 identity 变化的旧失败；paired discovery
+失败仍是 UNKNOWN，保留旧 mobdev2 行。仍在场且过期的相同 identity 保留 counter
+和30/60/120/240/300s退避。观测缺失不是物理 ACK；清理后重新出现可从初始退避开始。
+
+4096 个 owned semaphore slots 同时覆盖 retained rows 与 in-flight reservations；
+已有行重试复用许可，新 UID 在 native IO/共享 connect permit 前预留。满额返回
+原 source-free resource_limit，不 poll 新连接或静默淘汰旧退避。成功/取消释放局部
+reservation；记录失败在 write lock 内重查 Ticket，clear/stop 后排队旧结果不复活。
+数量上限不覆盖字节/RSS、candidate vectors、元数据 CPU、原生线程/socket。
+
+十测试覆盖12行后空快照、paired error/USB缺失、实际 protected HTTP policy reload、
+known ID改变先清理、same expired count2、4095 retained+held A占满/B无native IO/
+failed A为第4096行、满额已有A重试、caller Drop、clear/排队写竞态、成功发布释放。
+容量预填走实际私有 reserve/record，并非4095次原生建连；fake Drop 非 native join。
+原54测试断言/nativeSource/lifecycle/Core/HTTP/public/trust/deps 保留，仅三旧结构体
+fixture 增 slot:None；生产行持有许可。无新协议、配对、公共 API 或依赖。
+
+control43601 terminal101 **1PASS/4FAIL**；恢复 after.log 为59PASS，但 parent
+handle/exit不可取得，仅记录日志。expanded9659 terminal101 **61PASS/2FAIL**：
+填充记录后首次 poll 因 Tokio 协作调度让步尚未到 Source，fixture 改为在外层1s
+预算内等实际 entry 再检查，生产实现不变。最终 **94282 terminal0/all14 gates PASS**，
+源码审查 terminal0。实际 **2573Rust/13Python**，CLI968/Core1443/public52、
+0FAIL/2既有ignored；64/min64/tunnel105+1ignored/WebInspector192/access29/Core102/
+minCLIalltargets/stack5/strict/fmt/tools22/actualCLI95/full PASS。
+第11节 Rust/Python 拆分使用项目 .venv；66features/4groups/MSRV1.80.1/7+7docs/
+3snippets/C ABI/3.12wheel-sdist build-install-import/tooling67/help118/raw38/host5/
+CLI95/backup3 PASS。**22device NOT_RUN**；Chromium/installed3.9/3.13 NOT_RERUN。
+
+patch SHA256 `324521a21287418fc406e9aeb1445196a16c47f8fa9dd2b3dd7ecdfa22ed8cfd`；
+actual debug ios SHA256 `ef6ad9d64e17f6468043c31a940a64ac8927dadf252343726d7f11aaaf856bd0`。
+commit=frozen，ignored evidence `target/validation/tunnel-retention-2026-10-06/`，
+reference HEAD/status未变。cache/admission timing修正待pre-1.0 release review。
+
+L02/第四类/总体 goal active；9完成/10未开始/12进行中或待条件，全部31主任务、
+子任务、历史及118 capability正文/maturity保留。继续其他 metadata/字节上限、
+wholeScan/CPU/handoff/native-worker/server joins、last-check/reuse/restart/manual epoch、
+其他 L01、L03–L04/Q04 与第五至九类。未启用子代理、推送、发布、改写历史、
+修改参考 checkout 或操作真实设备/凭据/Apple 服务。

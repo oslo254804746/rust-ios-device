@@ -63,6 +63,18 @@ host/route change can retry immediately; a failure on that identity starts at
 count1. Failure records hide retained hosts in Debug output. See
 [backoff identity evidence](validation/tunnel-backoff-2026-10-06.md).
 
+Effective scan snapshots remove unauthorized, observed absent or known changed
+failure identities. Present expired identities keep their counter. A paired
+discovery error preserves unknown mobdev2 rows; successful empty discovery can
+release them. This is observed cache reconciliation, not physical removal proof.
+See [retention evidence](validation/tunnel-retention-2026-10-06.md).
+
+Failure records and pending reservations share 4096 slots. Existing retries reuse
+a slot; new scanned attempts at capacity defer with resource_limit before native
+connection work. Success/cancel releases reservations. Clear/stop fences queued
+failure recording. The count does not bound bytes, candidate metadata, native
+workers, sockets or RSS.
+
 Linux fake-device tests cover local query/stop isolation, duplicate starts,
 stop/discovery races, sixteen candidates with four active connections, cross-
 transport isolation and owned release. Scans retain observed native attachment
@@ -87,7 +99,7 @@ Local liveness uses kernel receiver existence or unfinished userspace tasks,
 which does not certify physical connectivity or native task joins. See
 [local liveness evidence](validation/tunnel-liveness-2026-10-06.md).
 Changes after the last check, reused IDs/daemon restart, receiver false positives/joins,
-failure-map/metadata bounds and physical/resource/performance evidence remain pending.
+other metadata/byte bounds and physical/resource/performance evidence remain pending.
 See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 [parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).
 

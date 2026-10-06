@@ -872,3 +872,19 @@ liveness/backoff remain. Whole-scan/metadataCPU/handoff budget and native
 blocking pair-record worker/server joins are unproven. Fake probe release
 certifies source future ownership only. Retained metadata/lastcheck-races/
 reuse-restart/manualepochs/L03-L04/Q04/otherL01/classes5–9 continue.
+
+## Failure rows and reserved capacity
+
+The [retention profile](validation/tunnel-retention-2026-10-06.md),
+`26b89951b52dd690bcc0e994541007b5426fba93`, reconciles rows against current
+authorized candidates. Complete absence releases rows; failed paired discovery
+retains unknown mobdev2. Present expired identity keeps30/60/120/240/300s.
+
+4096 owned slots cover records and pending attempts. Existing retries share a
+lease; success/cancel releases local reservations. Failure recording checks
+generation again under its write lock, preventing clear/queued-write resurrection.
+Ten actual fixtures and64/min64/tunnel105/full2573Rust/13Python pass.
+Capacity prefill invokes real private reserve/record, not4095 native failures;
+fake release is not Core worker cancellation/join. Bytes, candidate metadata,
+sockets/RSS, whole-scan/CPU/server joins and physical evidence remain.
+L01/L02/L03–L04/Q04/classes5–9 stay active;22device NOT_RUN.

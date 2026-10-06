@@ -1951,3 +1951,14 @@ old scan epoch quietly drops its phase future and returns Ok without failure
 backoff/ready. Original source IO and candidate outcomes stay; whole-scan/
 blocking-worker joins/known primary under generic parent Drop and otherL01/
 L02/L03–L04/Q04/classes5–9 conditions remain.
+
+## Scanner failure record capacity
+
+[L02 retention](validation/tunnel-retention-2026-10-06.md), tested at
+`26b89951b52dd690bcc0e994541007b5426fba93`, uses the existing source-free
+resource_limit decision when a fresh scanned identity cannot reserve capacity.
+It precedes native connection work and does not invent an IO cause or evict
+active backoff. Existing identities reuse their slot. Original native IO,
+Elapsed and paired-discovery reporting stay. A ticket recheck under the failure
+write lock rejects old queued outcomes after clear/stop. Other L01/L02,
+L03–L04/Q04/classes5–9 and native worker/device conditions remain.
