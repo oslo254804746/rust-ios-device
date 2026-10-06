@@ -1929,3 +1929,14 @@ starts at1. Original source IO/cancel/reporting/category and same-identity
 schedule stay. Debug exposes no retained host. No safe retry or side-effect/
 new-pairing claim follows. Same ID/host after reuse/restart remains unresolved;
 retention/native resources/L03/L04 and otherL01/L02/Q04/classes5–9 continue.
+
+## Known inactive publication result
+
+[L02 local liveness](validation/tunnel-liveness-2026-10-06.md) accepts
+`7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`. Existing is_alive false
+before query or after publication-lock wait cancels local admission and
+releases the owned result; no synthetic original IO/native failure is inferred.
+Original IO/Elapsed, schemas/auth/old guards stay when locally active. True
+means kernel receiver exists or userspace tasks unfinished, not connectivity/
+ACK/join proof. Last-check races/false positives/resources/platform/device/
+L01/L02/L03–L04/Q04 and later classes remain.

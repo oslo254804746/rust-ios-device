@@ -72,11 +72,16 @@ Usbmux/direct-USB creation now queries the daemon once more before publication,
 checking that the returned(UDID,ID) remains attached. This extra query shares the
 existing connection total/cancellation and can increase startup time. An absent
 result is released locally; query IO and actual deadline expiry remain typed.
-Wi-Fi/mobdev2 skip it. See
+Wi-Fi/mobdev2 skip it. Every route also checks known local liveness before the
+query and again after the publication lock. Known inactive results release with
+local cancellation. See
 [publication query evidence](validation/tunnel-publication-2026-10-06.md).
 
 This checks the query reply's snapshot. No event listener is implemented.
-Changes after the query, reused IDs/daemon restart, native liveness/joins,
+Local liveness uses kernel receiver existence or unfinished userspace tasks,
+which does not certify physical connectivity or native task joins. See
+[local liveness evidence](validation/tunnel-liveness-2026-10-06.md).
+Changes after the last check, reused IDs/daemon restart, receiver false positives/joins,
 failure-map/metadata bounds and physical/resource/performance evidence remain pending.
 See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 [parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reject known inactive tunnel results before attachment query and again before
+  publication. Results losing local liveness during query or lock waits release
+  without publishing a record. See
+  [local liveness evidence](docs/validation/tunnel-liveness-2026-10-06.md).
 - Scope tunnel scan failure backoff to the observed native ID and known route
   or paired host. A changed identity can retry immediately; repeated failures
   of the same identity keep the original schedule. See

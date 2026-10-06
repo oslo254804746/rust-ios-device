@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、旧快照保护、USB/mobdev2 父 future 受限并发、observed ID/选择/退役/过期候选、USB 发布前同预算查询、known ID/route/paired host 退避隔离已交付主机 profiles；query 后变化/ID reuse/daemon restart/manual epoch、失败记录/metadata 资源上限、发现/扫描总预算、平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 查询/停止隔离、同设备协调、四个共享许可、停止与迟到发布保护、旧快照/受限并发/observed ID/发布前查询/known identity 退避及本地失活结果拒绝已交付主机 profiles；last check 后变化/kernel receiver false positive/ID reuse/restart/manual epoch、失败记录/metadata 资源上限、发现/扫描总预算、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7290,3 +7290,41 @@ L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/
 reuse/restart/manualepochs/nativeLive/worker-serverjoins/discovery-wholeScan，L03/L04/
 Q04及其他L01和第五至九类。无subagent/push/publication/historyrewrite/referenceedit/
 设备或Apple服务操作。
+
+### 大类 4：L02 known local liveness before admission/publication（2026-10-06）
+
+受测实现 `7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`，父
+`d96cb4220eff078fec8e0b09d7a0c92ccd540527`。三源码103+/0-、四新测试；
+[本地存活证据](validation/tunnel-liveness-2026-10-06.md) 与 [manager 合同](tunnel.md)
+记录范围。生产仅two checks/sixlines：expectedID/recordvalidation后query前，以及
+tablelock/epoch/policy后insert前，再读原device.is_alive。knownfalse拒绝派生
+localOperationCancelled/ownedDrop/nofailurebackoff，allroutes含Wifi无daemonquery。
+不重建nativeIO；其余prod/SDKSource/guards/query/backoff/watch/serial/permits/manual/
+HTTP/auth/federation/record/core/public/access/deps及原41assertions/helper BYTE不改。
+
+READONLY验证原SDK kernel cancelSender.receiver_count()>0，userspace everyhandle
+!is_finished；SDK实现不改。true不是physicalconnect/AppleACK/nativejoinedworker，
+receiverclone可造成falsepositive，worker可在lastcheck后退出；清楚保留这些条件，
+不拿privateFakeAliveflag替代Coreworker/真机证据。admission修正待pre-1.0 review。
+
+control52217 terminal101 **0PASS/4FAIL**；post30358 terminal0 **45PASS**；
+冻结 **79395 terminal0/all14 gates PASS**、source/result audit terminal0。实际
+**2554Rust/13Python**、CLI949/Core1443/public52、0FAIL/2既有ignored；
+45/min45/tunnel86+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/
+strict/fmt/tools22/buildCLI95/full PASS。66features/4groups/MSRV1.80.1/7+7docs/3snippets/
+CABI/3.12wheel-sdist/tooling67/help118/raw38/host5/CLI95/backup3 PASS；
+**22device NOT_RUN**，Chromium/installed3.9/3.13 NOT_RERUN。
+source持续冻结到authoritativecompletion，观察timeout不当exit。
+
+patch SHA256 `06cd466d7036ffe0256130289678df299b72dde19d642a3be0ea12549f06396f`；
+actual debug ios SHA256 `8e7d076d086635b42dcd26102c5c1a6c816834dde91ec223b63423da0d535b3e`；
+commit=frozen，ignored evidence `target/validation/tunnel-liveness-2026-10-06/`，
+reference HEAD/status不变。actualCLIstate beforequery/whilequery/whiletable/Wifi-local
+观察result ownership/no lateinsert/permit release；仅本地observedknownfalse，非physical
+freshness/nativejoins/RSS/resourcebenchmark。Kernelreceiver positive语义限制明确保留。
+
+L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31/全部子项/
+历史/118capability正文maturity保留。接着lastcheck后变化/kernelreceiverfalsepositive/
+reuse-restart-manualepochs/nativeworker-serverjoins、retainedmaps/metadata/discovery-wholeScan，
+L03/L04/Q04及其他L01/第五至九类。无subagent/push/publication/historyrewrite/
+referenceedit/设备或Apple服务操作。

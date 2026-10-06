@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-liveness-7a77000",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/ownedprivateFakeDevice/independentlocalAliveflag. Four fixtures inactiveonnativeResult/rejectbeforequery,diesduringmatching-currentIDquery,dieswhilepublicationlockheld,Wififalsewithoutquery;nativeLocalCancel/ownedDrop/permitrestore/no lateinsert. SDKsemanticsreadonly kernelreceiverexists/userspacealltasksunfinished. No physical/Coreworker fixture/nativejoin/ACK/RSSproof."
+      ],
+      "required_state": [
+        "Three source files103+/0-,4newtests.52217 terminal1010PASS4FAIL,30358 terminal0forty-fivePASS,frozen79395 terminal0/all14gates45/min45/tunnel86+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. Only2livenesschecks/6prodlines;allotherprod and all41old assertions/sourcefixtures/nativeSource/lifecycle/Core/public/deps unchanged."
+      ],
+      "tested_commit": "7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-liveness-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Knownfalse existingdevice.is_alive AFTERexpectedID-recordvalidation BEFOREdaemonquery andAFTERpubmutex/epoch-policyimmediatelyBEFOREinsert cancelslocaladmission/ownedDrop/nofailurebackoff acrossallroutes. No syntheticnativeIO,source/budget/permit/query/backoff/SDK/API/codec/trust/HTTP changes. KernelAPItrue=receiver_count>0/userspace=truealltaskhandlesunfinished; trueNOTconnectivity/ACK/join andreceiverclones/aftercheckexit remain. Full2554Rust/13PythonCLI949Core1443public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. Aftercheckchanges/unobservedsameID-hostreuse/restart/manualepochs/nativejoins/retainedmaps/resource/discovery-wholeScan/L03-L04/Q04/platform/device pending.22device NOT_RUN;Chromiuminstalled3.9/3.13 notrerun;no nativejoin/ACK/RSS/benchmark/decoderpeak/maturityupgrade. All31/subtasks/history9complete10notstarted12inprogressconditions,L01L02class4/L03-L04/Q04/classes5-9/goalactive."
+    },
+    {
       "id": "linux-tunnel-backoff-d0b04be",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

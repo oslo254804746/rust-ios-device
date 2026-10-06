@@ -1196,3 +1196,14 @@ change. Known-change timing correction requires release review. No pairing/
 configurable reconnection or side-effect retry is added. Retention/resource/
 unobserved reuse/restart/platform/device conditions and the full31-task scope
 remain; L01/L02/L03–L04/Q04/classes5–9 continue.
+
+## Local liveness admission
+
+The [local liveness gate](validation/tunnel-liveness-2026-10-06.md),
+`7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`, adds two private existing
+is_alive observations before daemon query and insertion. Known false results
+cancel locally without publication, including Wi-Fi. Admission correction
+requires release review; SDK/C/Python fields/exports, source/API/codec/
+dependencies and HTTP/auth/record grammar stay. No physical connectivity,
+kernel worker/join or after-check stability is certified. All31 remaining
+tasks/conditions, L01/L02/L03–L04/Q04/classes5–9 stay.

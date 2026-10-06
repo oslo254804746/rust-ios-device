@@ -840,3 +840,18 @@ reuse/restart, after-query changes/manualepochs/nativeLive/worker-server joins,
 metadata bounds/discovery-wholeScan/L03 configurable reconnection/L04/Q04 and
 all otherL01/L02/classes5–9 remain. Do not reset every expired same-device
 failure to1 or infer resource stability from this identity correction.
+
+## Known local inactive state
+
+The [liveness profile](validation/tunnel-liveness-2026-10-06.md),
+`7a77000cdbd0a8e6d2fbaaf6ac5bd630af47d6c5`, checks existing device.is_alive
+after record validation before query and again after publication lock/epoch/
+policy before insertion. Known false releases result/localcancellation/no
+backoff across all routes. Four actual manager fixtures,45/min45,tunnel86,
+full2554Rust/13Python pass;22device NOT_RUN.
+
+Kernel true means a cancel receiver remains; userspace true means every task
+handle is unfinished. SDK bodies stay and this does not imply physical
+transport/ACK/native task joins; receiver clones/after-check exit remain.
+Resource/retention/snapshot setup-wholeScan/native joins/L03-L04/Q04/otherL01/
+L02/classes5–9 continue. Six added production lines do not close these conditions.
