@@ -352,6 +352,19 @@ enum ManagedDevice {
 struct FailedTunnelAttempt {
     last_attempt: Instant,
     fail_count: u32,
+    identity: AttemptIdentity,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct AttemptIdentity {
+    route: Route,
+    native_id: Option<u32>,
+}
+
+impl std::fmt::Debug for AttemptIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TunnelAttemptIdentity")
+    }
 }
 
 impl FailedTunnelAttempt {
@@ -784,6 +797,10 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
     ) {
+        let identity = AttemptIdentity {
+            route: route.clone(),
+            native_id: expected_id,
+        };
         let result = ticket
             .run(async {
                 tokio::time::timeout(self.inner.connect_timeout, async {
@@ -797,7 +814,9 @@ impl TunnelAgentState {
                         .read()
                         .await
                         .get(udid)
-                        .is_some_and(|failed| failed.should_skip(Instant::now()))
+                        .is_some_and(|failed| {
+                            failed.identity == identity && failed.should_skip(Instant::now())
+                        })
                     {
                         return Ok(());
                     }
@@ -819,7 +838,7 @@ impl TunnelAgentState {
                     error = %crate::output::error_message(&error),
                     "tunnel agent: failed to establish tunnel"
                 );
-                self.record_failed_attempt(udid).await;
+                self.record_failed_attempt(udid, identity).await;
             }
         }
     }
@@ -932,17 +951,23 @@ impl TunnelAgentState {
         while connections.next().await.is_some() {}
     }
 
-    async fn record_failed_attempt(&self, udid: &str) {
+    async fn record_failed_attempt(&self, udid: &str, identity: AttemptIdentity) {
         let mut failed = self.inner.failed_attempts.write().await;
         failed
             .entry(udid.to_string())
             .and_modify(|attempt| {
                 attempt.last_attempt = Instant::now();
-                attempt.fail_count = attempt.fail_count.saturating_add(1);
+                if attempt.identity == identity {
+                    attempt.fail_count = attempt.fail_count.saturating_add(1);
+                } else {
+                    attempt.identity = identity.clone();
+                    attempt.fail_count = 1;
+                }
             })
             .or_insert(FailedTunnelAttempt {
                 last_attempt: Instant::now(),
                 fail_count: 1,
+                identity,
             });
     }
 }
@@ -2239,12 +2264,20 @@ mod tests {
         let failed = FailedTunnelAttempt {
             last_attempt: now - Duration::from_secs(10),
             fail_count: 2,
+            identity: AttemptIdentity {
+                route: Route::Usbmux,
+                native_id: None,
+            },
         };
         assert!(failed.should_skip(now));
 
         let expired = FailedTunnelAttempt {
             last_attempt: now - Duration::from_secs(61),
             fail_count: 2,
+            identity: AttemptIdentity {
+                route: Route::Usbmux,
+                native_id: None,
+            },
         };
         assert!(!expired.should_skip(now));
     }
