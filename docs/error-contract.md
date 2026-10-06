@@ -1895,3 +1895,15 @@ manufacture connection-failure backoff. Discovery now precedes USB attempts;
 whole-discovery/scan deadlines and stronger known-error retention during
 arbitrary parent Drop remain. No machine schema/status/auth change, safe retry
 or remote cleanup claim. L01/L02/L03–L04/Q04 and later classes continue.
+
+## Observed attachment cancellation
+
+The [L02 identity snapshot gate](validation/tunnel-identity-2026-10-06.md),
+`1eb45c25145f5306a5831df6a0c29d494a94ca96`, rejects a scanned candidate
+whose completed native ID differs from the observed expected ID. Its owned
+result drops and local OperationCancelled identifies admission cancellation;
+this is not an original device IO failure. Such cancellation adds no failure
+backoff. Original IO/backoff remains. Snapshot equality is not physical
+freshness, native worker join or safe retry proof. Manual expected ID is absent,
+and post-connect queries/listeners are not implemented. Original HTTP/schema/
+safe body/public SDK stay. L02/L01/L03–L04/Q04 and later classes continue.

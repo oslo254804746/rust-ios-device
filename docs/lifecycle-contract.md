@@ -787,3 +787,21 @@ parent Drop remains. Eight new actual manager fixtures and23/min23,tunnel64,
 full2532Rust/13Python pass;22device NOT_RUN. Attachment/replug identity, stale
 snapshots, native worker/server joins, metadata/resources/L04, other L01/
 L03–L04/Q04/classes5–9 and the full31-task goal remain.
+
+## Observed native attachment IDs
+
+The [L02 identity gate](validation/tunnel-identity-2026-10-06.md),
+`1eb45c25145f5306a5831df6a0c29d494a94ca96`, retains returned usbmux IDs/USB
+flags and prunes only original usbmux-route publications absent from the
+observed(UDID,ID) set. Another attached transport and concurrent new publication
+survive. Candidate first-USB/last-other selection matches Core; returned ID
+mismatch releases its owned result with local cancellation and no backoff.
+Private route family replaces ID0 inference, without wire-validity evidence.
+Existing device gates/watch/permits/budgets/window stay.
+
+Seven new actual manager fixtures,30/min30/tunnel71,full2539Rust/13Python pass;
+22device NOT_RUN. A matching old ID after unobserved detach/reuse/restart or
+snapshot change can still be admitted; manual expected ID is None and no
+post-connect query/listener exists. Physical freshness, native worker/server
+joins, discovery/wholeScan deadlines,metadata/resources/L04 and otherL01/
+L03–L04/Q04/classes5–9 remain. This profile does not complete L02 or the goal.

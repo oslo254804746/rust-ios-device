@@ -56,8 +56,17 @@ deadlines remain pending. Failure backoff stays30/60/120/240/300 seconds.
 
 Linux fake-device tests cover local query/stop isolation, duplicate starts,
 stop/discovery races, sixteen candidates with four active connections, cross-
-transport isolation and owned release. Physical-device isolation, in-flight
-unplug/replug identity and resource/performance measurements remain pending.
+transport isolation and owned release. Scans retain observed native attachment
+IDs, retire old records after an observed replacement, and reject candidates
+returning another ID without connection-failure backoff. Selection keeps the
+existing first-USB/last-other preference and retains another attached transport.
+New publications survive older snapshots. See
+[snapshot identity evidence](validation/tunnel-identity-2026-10-06.md).
+
+These checks use point-in-time snapshots; manual starts carry no expected ID.
+No post-connect attachment query or event listener is implemented. Unobserved
+detach/replug, ID reuse/daemon restart, publication freshness, physical-device
+isolation and resource/performance measurements remain pending.
 See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 [parallel scan evidence](validation/tunnel-parallel-2026-10-06.md).
 

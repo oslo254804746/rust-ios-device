@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、去重 USB/mobdev2 候选的父 future 受限并发扫描已交付主机 profiles；in-flight 拔插身份、发现/扫描总预算、资源/平台/真机证据继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护、去重 USB/mobdev2 父 future 受限并发、observed attachment ID/选择/退役与过期候选保护已交付主机 profiles；未观察的拔插/发布新鲜度/manual in-flight 身份、发现/扫描总预算、资源/平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7162,3 +7162,46 @@ snapshot、discovery/wholeScan budget、metadata/resource/nativeworker/serverjoi
 以及其他L01/L03–L04/Q04和第五至九类。有限4permit不限制所有Core tasks/allocator；
 无平台/真机/ACK/nativejoin/benchmark/RSS/decoder peak验收，无subagent/push/
 publication/historyrewrite/referenceedit/设备或Apple服务操作；第四类/总体goal active。
+
+### 大类 4：L02 observed attachment identity（2026-10-06）
+
+受测实现 `1eb45c25145f5306a5831df6a0c29d494a94ca96`，父
+`dac32cb6111205392051465027572e0eb4519feb`。四源码254+/18-、七新测试；
+[身份快照证据](validation/tunnel-identity-2026-10-06.md) 和 [manager 合同](tunnel.md)
+记录当前范围。Source保留现有MuxClient list已返回的UDID/deviceID/USB标志；
+不扩SDK、不加protocol frame/daemon query。4Nativeconnect/options/paired discovery/
+device adapter不改。实际CLI按observed(UDI,ID)清除原publication旧usbmux记录，
+同UDI还在但ID变了也退役；其他仍attached的transportID和并发newpublication保留。
+ManagedTunnel记录route family，代替ID0 sentinel；synthetic0不是wire validity证据。
+
+candidate选择保持Core firstUSB/lastnonUSB及firstUDI position；期望ID与完成device
+ID不符则drop结果、localOperationCancelled、无failure backoff，下次新快照可立即接入。
+普通原IO/退避不改。serial/watch/permits/15s/window/HTTP/auth/record/core/public/access/
+deps保持；原23assertionfunctions BYTE不改。manual expectedID仍None，未加postconnect
+query/listener；matchingoldID未观察拔插/IDreuse/daemonrestart/快照后变化仍待，不能
+根据ID equality认证physical freshness/Apple ACK/native worker join/RSS。退役/取消
+语义变化待pre-1.0 review；继续更强发布新鲜度和完整in-flight身份，不把本profile当L02完成。
+
+control95029 terminal101 **4PASS/2FAIL**（replug保留旧ID、stale candidate接纳新代），
+临时metadata未使用warning不算严格验收；95472 terminal101 E0282 index inference/
+无测试。原进程退出后唯一HashMap<String,usize>annotation修正，38985 terminal0
+**29PASS**，之后增第7个synthetic0 route-family fixture再冻结。冻结
+**26331 terminal0/all14 gates PASS**，audit terminal0，实际 **2539Rust/13Python**，
+CLI934/Core1443/public52、0FAIL/2既有ignored；30/min30/tunnel71+1ignored/
+WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tooling22/buildCLI95/
+full PASS。66features/4groups/MSRV1.80.1/7+7docs/3snippets/CABI/3.12wheel-sdist/
+tooling67/help118/raw38/host5/CLI95/backup3 PASS；**22device NOT_RUN**，
+Chromium/installed3.9/3.13 NOT_RERUN。历史source preimages未存档，不编造历史hash；
+观察超时不当退出，source直到authoritativecompletion冻结。
+
+patch SHA256 `8a1a082a7fc834f0e63c469af60d4d5089aacef826944205376c1e2da45cc467`；
+actual debug ios SHA256 `ad99790c2598d507bc3457c43c75f14415b770468d946ad3280230c8c21c393a`；
+commit=frozen，ignored evidence `target/validation/tunnel-identity-2026-10-06/`，
+reference HEAD/status不变。actualCLIstate ownedFakeMetadata independently controls
+snapshot/completedIDs；不替代Corefake lock microtests，不代表真机/worker/socket/RSS。
+
+L02/第四类/goal active，9complete/10notstarted/12inprogressconditions/all31主项/子项/
+历史/118capability正文/maturity保留。接着publication freshness/manualinflight/
+discovery-wholeScan totals/metadata/resource/nativeworker-serverjoins，再其他L01/
+L03–L04/Q04及第五至九类。无subagent/push/publication/historyrewrite/referenceedit/
+设备或Apple服务操作。

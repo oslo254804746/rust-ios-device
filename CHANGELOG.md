@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve native attachment IDs in tunnel scans. An observed replacement ID
+  retires the old record, and a candidate returning another generation is
+  cancelled before publication without adding connection-failure backoff.
+  See [snapshot identity evidence](docs/validation/tunnel-identity-2026-10-06.md).
 - Connect tunnel scan candidates in a shared window of four owned futures.
   USB and existing-trust mobdev2 candidates are deduplicated together, allowing
   a healthy device to connect while another stalls. See

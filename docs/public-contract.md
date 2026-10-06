@@ -1158,3 +1158,17 @@ release review. A discovery error retains original IO after USB results have
 been processed. Local fake-device release is not native worker join or device
 acceptance. In-flight attachment identity, whole-scan budgets, native resources,
 L04 and all remaining L01/L02/L03–L04/Q04/classes5–9 conditions remain.
+
+## L02 attachment snapshot acceptance
+
+[L02 observed identity](validation/tunnel-identity-2026-10-06.md) accepts
+`1eb45c25145f5306a5831df6a0c29d494a94ca96`. Private source metadata keeps
+native IDs/USB flags already returned by MuxClient; no SDK/C/Python export,
+struct field, dependency, protocol frame or extra daemon query is added.
+Private route-family tracking replaces a zero sentinel without claiming wire
+validity. Scans retire absent old IDs and cancel mismatched candidate results
+without failure backoff, retaining current Core selection/HTTP grammar. This
+observable retirement/cancellation needs release review. Point-in-time host
+snapshot evidence leaves manual in-flight identity, unobserved changes/reused
+IDs, publication freshness, native joins/resources/platform/device pending.
+The complete31-task goal and L01/L02/L03–L04/Q04/classes5–9 remain active.

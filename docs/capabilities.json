@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-identity-1eb45c2",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState with independently controlled private fake attachment and completed IDs. Seven new fixtures: observed replug71-to72/oldDrop,rejectsnapshot71-completed72/noBackoff/nextgenerationretry,retainanotherattachedtransport,firstUSB-lastnonUSB selection,concurrentnewpublicationversusstalesnapshot,syntheticzero routefamily(no wire evidence). No physical tunnel/native join/Apple ACK/RSSproof."
+      ],
+      "required_state": [
+        "Four source files254+/18-,7newtests. Initial95029 terminal1014PASS2FAIL,post95472 terminal101E0282 indexinference/no tests,sole HashMap<String,usize> annotation afterexit;38985 terminal0twenty-ninePASS;zero fixture addedbeforefreeze. Frozen26331 terminal0/all14gates30/min30/tunnel71+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/buildCLI95/full. All23prior assertions/parallelfixtures unchanged;nativefourconnect/options/paired/deviceadapters/core/public/access/deps unchanged."
+      ],
+      "tested_commit": "1eb45c25145f5306a5831df6a0c29d494a94ca96",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-identity-2026-10-06.md",
+      "result": "PASS",
+      "scope": "PrivateSource retains existingMuxClient nativeID/USBflag. Prunes matchingoriginalusbmux-routepublication onlyifitsIDnotobserved forUDI; anotherattachedtransport and concurrentnewpublication survive. CandidatefirstUSB/lastnonUSB keepsCorepriority/order; completedIDmismatch dropsownedresult/localOperationCancelled/noFailureBackoff. PrivateRoutefamily replacesID0sentinel,no protocolvalidityclaim. No SDKexport/frame/extraDaemonquery. Full2539Rust/13PythonCLI934/Core1443/public52,0FAIL/2existing ignored;tools67help118raw38host5CLI95backup3PASS. POINT-IN-TIMEonly: manualexpectedIDNone/no postconnectquery/listener; matchingoldIDafterunobserveddetach/reuse/daemonrestart/snapshotchange stillpending,as publicationfreshness/discovery-wholeScan/nativejoins/metadata/resources/L04/platform/device.22device NOT_RUN;Chromiuminstalled3.9/3.13 not rerun;no ACK/nativejoin/benchmark/RSS/decoderpeakproof or maturityupgrade. All31main/subtasks intact9complete10notstarted12inprogressconditions,L01/L02/class4/L03–L04/Q04/classes5–9/goalactive."
+    },
+    {
       "id": "linux-tunnel-parallel-66bf731",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
