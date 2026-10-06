@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-server-5120fa9",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual listener/router/TunnelAgentState with private fake device source. Eight fixtures: retained late shutdown, preclosed no-source, HTTP POST shutdown/owned scan and device release, caller Drop, typed signal error, locked-table dual failure/Elapsed, HTTP drain timeout and real Linux child SIGINT/runtime exit. Axum/Core delegated workers are not certified forcibly joined."
+      ],
+      "required_state": [
+        "Five files498+/34-,8newtests. Original64 assertions/source/controller/retention/native SDK/HTTP/auth/trust/dependencies unchanged; one old private waiter fixture adapted.18746 terminal1010PASS1FAIL;34085 E0599/no tests;55083 and71101 terminal10171PASS1FAIL new-fixture expectations corrected.86684 terminal0/all14 gates72/min72/tunnel113+1ignored/WebInspector192/access29/Core102/stack5/strict/full2581Rust13Python."
+      ],
+      "tested_commit": "5120fa90e06a92f4734603382b98779b69f1ca38",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-server-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Persistent private shutdown bool, parent-owned Box scanner/candidates, one pinned Ctrl-C after startup, independent2s table-clear/HTTP-drain. Native primary/cleanup stored separately; source primary and safe diagnostic formatter retained. Caller Drop signals epochs/try-clears only unlocked maps; held locks and delegated HTTP/Core workers not asynchronously joined. Real SIGINT targets only a fake-source child, not physical device/CLI startup or other-platform proof. Full2581Rust13PythonCLI976Core1443public52,0FAIL2existing ignored;tools67help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Startup totals/late admission/after-check changes/native joins/generic callerDrop primary reporting/metadata/L03-L04/Q04/classes5-9 remain. All31 tasks/subtasks/history9complete10notstarted12inprogressconditions;no maturity upgrade,protocol/pairing/API/dependency change;exit timing needs review."
+    },
+    {
       "id": "linux-tunnel-retention-26b8995",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

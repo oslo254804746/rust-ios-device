@@ -888,3 +888,21 @@ Capacity prefill invokes real private reserve/record, not4095 native failures;
 fake release is not Core worker cancellation/join. Bytes, candidate metadata,
 sockets/RSS, whole-scan/CPU/server joins and physical evidence remain.
 L01/L02/L03–L04/Q04/classes5–9 stay active;22device NOT_RUN.
+
+## Owned tunnel scanner and returned shutdown
+
+The [server profile](validation/tunnel-server-2026-10-06.md),
+`5120fa90e06a92f4734603382b98779b69f1ca38`, retains a bool shutdown state for late subscribers. The
+parent owns its scanner future and every active candidate. HTTP shutdown,
+a pinned signal outcome or server completion stops that scanner before cleanup.
+One independent2s budget covers existing table clear and graceful HTTP drain;
+native primary/cleanup sources remain separately inspectable.
+
+Eight fixtures/72 minimum+full/113 tunnel/full2581Rust/13Python pass, including
+a real Linux SIGINT child exiting its Tokio runtime with a fake pending scanner.
+Caller Drop signals shutdown/generations and clears unlocked tables only.
+Held-table and HTTP-drain30ms cases prove native Elapsed; the fixtures explicitly
+release their remaining held resources. Timeout does not force-join Axum
+delegated tasks or Core workers. Startup totals, later admission/check races,
+generic caller-drop primary reporting, L03–L04/Q04 and classes5–9 remain.
+22device NOT_RUN; no physical ACK/native join/RSS/performance certification.

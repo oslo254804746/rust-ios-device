@@ -105,6 +105,17 @@ See [local operation evidence](validation/tunnel-isolation-2026-10-06.md) and
 
 ## Manager federation and WebSocket bridge
 
+The server retains shutdown state for late waiters and owns its scanner future.
+After startup, one pinned Ctrl-C future or authenticated POST shutdown stops the
+scanner before cleanup. Table clear and graceful HTTP drain share an independent
+2-second budget; an expired drain reports a timeout. Native primary and cleanup
+errors stay inspectable. See [server evidence](validation/tunnel-server-2026-10-06.md).
+
+Caller Drop signals shutdown/cancellation and releases unlocked tables only.
+It cannot await a locked table or delegated Axum/Core workers. A capped drain
+does not forcibly join pending handlers/upgrades; startup totals, later admission
+races and those delegated resources remain separate work.
+
 `GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
 UDID-keyed tunnel listing including registered upstream managers. Register one
 with `POST /upstream` and `{"url":"http://host:port/"}`; `GET /upstream` lists

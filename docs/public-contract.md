@@ -1230,3 +1230,16 @@ releases rows; paired errors preserve unknown mobdev2 failures. Cache/admission
 timing needs release review. SDK/C/Python exports, HTTP schema, native source/
 trust, protocol and dependencies stay. Logical count is not a byte/RSS/native
 worker guarantee. All31 tasks and L01/L02/L03–L04/Q04/classes5–9 remain.
+
+## Tunnel server shutdown ownership
+
+[Server lifecycle evidence](validation/tunnel-server-2026-10-06.md),
+`5120fa90e06a92f4734603382b98779b69f1ca38`, replaces private lossy notification with persistent shutdown,
+owns the scanner in its parent and adds one pinned Ctrl-C future after server
+startup. Returned shutdown shares an independent2s budget across table clear
+and HTTP drain. It adds no SDK/C/Python export, protocol, dependency, CLI option
+or HTTP payload/status change. Exit/timing corrections need release review.
+Linux real SIGINT uses a private fake-source child; configuration/startup totals,
+other platforms, locked-table/HTTP delegation/Core worker joins and generic
+caller-drop primary reporting remain unproven. All31 tasks and remaining scope
+L01/L02/L03–L04/Q04/classes5–9 stay active.

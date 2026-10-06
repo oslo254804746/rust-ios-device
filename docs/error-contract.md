@@ -1962,3 +1962,15 @@ active backoff. Existing identities reuse their slot. Original native IO,
 Elapsed and paired-discovery reporting stay. A ticket recheck under the failure
 write lock rejects old queued outcomes after clear/stop. Other L01/L02,
 L03–L04/Q04/classes5–9 and native worker/device conditions remain.
+
+## Tunnel server outcomes and cleanup
+
+The [server gate](validation/tunnel-server-2026-10-06.md), `5120fa90e06a92f4734603382b98779b69f1ca38`,
+retains signal/server IO and actual cleanup Elapsed. A dual failure stores both
+outcomes with the primary as its source; BrokenPipe still classifies as
+Disconnected. Wrapper Debug and CLI diagnostic output stay safe. Raw Anyhow
+Debug follows the deliberately retained native chain and is not the diagnostic
+boundary. Shutdown now retains its signal for late waiters. The returned server
+uses an independent2s cleanup total; expiry does not certify delegated HTTP or
+Core worker termination. Caller Drop cannot await or clear a locked table.
+Other L01/L02/L03–L04/Q04/classes5–9 and platform/device conditions remain.

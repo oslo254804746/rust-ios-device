@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain tunnel server shutdown for late waiters, own the scanner in the server
+  future, and handle Ctrl-C after startup. Returned shutdown shares a separate
+  2-second budget across table clear and HTTP drain; primary and cleanup errors
+  remain inspectable. See
+  [server lifecycle evidence](docs/validation/tunnel-server-2026-10-06.md).
 - Bound scanner failure records and pending failure reservations to 4096.
   Effective snapshots release obsolete/unauthorized rows; paired discovery
   errors preserve unknown rows and present identities retain their backoff.

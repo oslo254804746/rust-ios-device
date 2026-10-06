@@ -108,8 +108,8 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾主机 profiles 已交付；其他协议/清理和设备条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾已交付主机 profiles；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/handoff/native worker-server joins、平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7413,3 +7413,50 @@ L02/第四类/总体 goal active；9完成/10未开始/12进行中或待条件�
 wholeScan/CPU/handoff/native-worker/server joins、last-check/reuse/restart/manual epoch、
 其他 L01、L03–L04/Q04 与第五至九类。未启用子代理、推送、发布、改写历史、
 修改参考 checkout 或操作真实设备/凭据/Apple 服务。
+
+### 大类 4：L01/L02 tunnel server shutdown ownership（2026-10-06）
+
+受测实现 `5120fa90e06a92f4734603382b98779b69f1ca38`，父
+`b052752bed4c1b1d26d3fa2f70a27aabc7218b33`，五文件498+/34-、八新测试。
+[服务器退出证据](validation/tunnel-server-2026-10-06.md) 覆盖实际 listener/router/
+manager：private watch bool 保留 shutdown，迟到等待者不丢退出；parent Box 拥有
+scanner 与 candidate futures，取代 detached monitor。启动完成后一个 pinned
+Tokio Ctrl-C 与 HTTP shutdown/server outcome 统一触发退出；先 drop scanner，
+再用独立默认2s共享 clear table 与 Axum graceful drain。正常主错误/cleanup Elapsed
+保留，dual failure 持有两者/source 指向 primary；BrokenPipe仍为Disconnected。
+
+Caller Drop 发送退出/epoch cancellation，仅 try-clear 未锁表，不能 async join。
+Axum0.7.9 dependency 源码只读确认 HTTP/signal delegate tasks：排空超时/drop 不会
+强制 join/abort 已委托 handler/upgrades。held-table/HTTP30ms fixture 明确释放剩余
+锁/请求并观察响应EOF，不把 fixture收尾冒充产品原生 cleanup。configuration/startup
+total、late admission/last-check races、Core workers/native joins、generic callerDrop
+primary reporting 与平台/设备条件继续。启动到 listener/router/info 的原主体、原64
+生命周期断言、nativeSource/controller/backoff-retention/Core/HTTP/auth/record/trust/
+deps 不改；旧method fixture只适配 private waiter，两行输入不改断言。
+
+八新测试：迟到 shutdown；preclosed 无Source；实际 HTTP POST shutdown释放 pending
+scan A/owned B/listener/permit，固定signal进入一次；caller futureDrop拥有scanner；
+signal typed IO primary保留/清理；heldtable cleanup nativeElapsed加原BrokenPipe；
+graceful HTTP drain期限；Linux真实子进程SIGINT在实际Tokio signal poll/source entry
+之后发送，仅本测试子进程，退出runtime并验证假设备资源。不是实际设备/CLI startup
+或其他平台信号证据，无新协议/配对/SDK假构造器。
+
+control18746 terminal101 **0PASS/1FAIL**；34085 terminal101 E0599/no tests，
+fixture响应改bytes+serde，无依赖；55083 terminal101 **71PASS/1FAIL**（分类误期望
+Io，原BrokenPipe是Disconnected）；first frozen71101 terminal101 **71PASS/1FAIL**
+（raw Anyhow Debug含保留的IO文本），新fixture改查safe wrapper与实际CLI诊断边界。
+失败冻结源码hash/log保留。最终 **86684 terminal0/all14 gates PASS**，源码审查0；
+实际 **2581Rust/13Python**，CLI976/Core1443/public52、0FAIL/2既有ignored，
+72/min72/tunnel113+1ignored/WebInspector192/access29/Core102/minCLIalltargets/
+stack5/strict/fmt/tools22/actualCLI95/full PASS。第11节项目 .venv 与 Rust/Python
+拆分，66features/4groups/MSRV1.80.1/7+7docs/3snippets/C ABI/3.12wheel-sdist
+build-install-import/tooling67/help118/raw38/host5/CLI95/backup3 PASS。
+**22device NOT_RUN**；Chromium/installed3.9/3.13 NOT_RERUN，maturity不升级。
+
+patch SHA256 `d067f8f9ae5cf0a92b48926042d4281683ae0ca2989077e01c0e1ea7f40c2fc5`；
+actual debug ios SHA256 `3823aedc1950ad79587f8701ed6ceede9f1b9a1320688d6d5f79e0f69e79980c`。
+commit=frozen，ignored `target/validation/tunnel-server-2026-10-06/`，refs HEAD/status
+未变。退出/时序修正待release review。L01/L02/第四类/goal保持active，9完成/10未开始/
+12进行中或待条件，全部31主任务/子项/历史及118能力正文保留；其他 L01/L02、L03–L04、
+Q04协议fuzz/高成本专项与第五至九类继续。无subagent/push/publication/historyrewrite/
+referenceedit/真实设备/凭据/Apple服务操作。
