@@ -995,3 +995,28 @@ native construction/worker/server joins,physical freshness/reuse/restart/manual
 epochs and other L01/L02/L03–L04/classes5–9 continue.22device NOT_RUN; active30
 tasks/subtasks exclude Q04,whose UID risk remains unfixed; other acceptance
 conditions remain. No maturity,ACK,async Drop,resource or performance claim.
+
+## Userspace tunnel construction ownership
+
+The [native construction profile](validation/userspace-construction-2026-10-06.md),
+`19315169dda049d6ab1acd68414bf4976b147b47`, binds the listener and queries its
+port before creating channels, splitting the stream or spawning workers. Initialization
+failure now releases the stream without detached handles. Native IO source,
+IPv6/MTU validation and the successful four-task/abort-on-Drop behavior remain.
+
+One Linux exact current-thread child uses actual descriptor exhaustion and
+public start:three EMFILE attempts retain aggregate/source errno,spawn no
+tasks,Drop stream once and yield peer EOF. Restored limits allow a real start
+with four workers,reader poll and observed abort completion/stream release. Old
+direct-child97374 exited101:alive3/baseline0/drop0 at first attempt; later old
+assertions were not reached. Frozen62936 exited0/all11 serial gates;new parent/
+direct child/minimum1/1/1,Coretunnel46,originalstack5,strict/minimum checks,
+full2621Rust/13Python and project .venv tooling73 PASS. Original assertions and
+other product sources stay. RAII unwind/local_addr failure are structural
+review,not separately executed fault-injection evidence.
+
+This observes one host lifecycle without proxy clients,not explicit joins,device ACK,
+RSS or long-run performance. Success/proxy/kernel/blocking/HTTP owners and
+other L01/L02/L03–L04/classes5–9 continue;22device NOT_RUN. Active30 tasks/all
+subtasks exclude Q04,UID risk unfixed,other acceptance unchanged. No maturity
+or platform certification. All Rust commands primary-only and serial.

@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-userspace-construction-1931516",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual public UserspaceTunDevice::start, Linux isolated exact current-thread child, real OS descriptor exhaustion/EMFILE and loopback bind, DuplexStream peer/Drop probes and stable Tokio task metrics. No physical device or proxy client."
+      ],
+      "required_state": [
+        "One Core file267+/3-,one Linux regression. Direct exact old-body control97374 exited101:first native EMFILE/alive3/baseline0/drop0/read0/write0; later assertions not reached. Frozen62936 exited0/all11 gates,parent1/directchild1/min1,Coretunnel46,minCoreuserspace+CLIalltargets,stack5,strictCore/fmt/full2621Rust13Python,project .venv tooling73. Source frozen;primary only Rust commands;subagents ignored proposal/read-only review. Original assertions/other product/Q04/reference HEAD/status preserved."
+      ],
+      "tested_commit": "19315169dda049d6ab1acd68414bf4976b147b47",
+      "date": "2026-10-06",
+      "location": "docs/validation/userspace-construction-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Native listener bind/local_addr before channel/split/spawn prevents detached construction workers and releases input stream on error, original Io/source/IPv6-MTU validation/success4task behavior retained. Three real EMFILE attempts no tasks/drop1/peerEOF; restored real native success+reader poll+observed abort completion. RAII unwind/local_addr fault only structural review,no explicit joins/ACK/RSS/long-run claim. Full2621Rust13PythonCLI1015Core1444public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Success/proxy/kernel/blocking/HTTP owners,linearization/scan terminal/startup/whole-scan/metadata/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain. No maturity,protocol,pairing,API,dependency,resource/performance/platform certification."
+    },
+    {
       "id": "linux-tunnel-scan-setup-57d5799",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

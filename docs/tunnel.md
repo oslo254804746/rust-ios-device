@@ -7,6 +7,13 @@ The tunnel layer establishes a CDTunnel to devices that expose the required Core
 - `userspace`: runs packet forwarding in userspace and exposes a local TCP proxy. This is the recommended first mode.
 - `kernel`: creates a TUN interface through the host OS. This may require administrator/root privileges.
 
+Userspace construction binds its loopback listener and obtains its port before
+starting packet workers. A native initialization error releases the input
+stream with its original IO source and leaves no newly spawned worker. The
+successful owner still aborts its four task handles on Drop; broader worker
+and proxy-child joins remain pending. See
+[construction evidence](validation/userspace-construction-2026-10-06.md).
+
 ## CLI
 
 Start a tunnel:

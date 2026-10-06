@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initialize the userspace tunnel listener before spawning packet workers.
+  A native bind or port-query error releases the input stream without
+  detaching tasks. See
+  [construction failure evidence](docs/validation/userspace-construction-2026-10-06.md).
+
 - Apply the manager scan's discovery deadline and cancellation to internal
   table locks and USB coordinator admission. Late unlocks cannot advance an
   expired scan; native USB errors survive cancellation, with primary and
