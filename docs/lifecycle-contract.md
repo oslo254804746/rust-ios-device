@@ -745,3 +745,27 @@ request Arcs, idle completed handles, caller/server Drop, constructor primary
 cleanup, active totals, terminal retention and resource caps remain. Other
 L01/L02–L04/Q04/classes5–9 continue; no device/Apple ACK/async Drop/server join/
 retry/platform/performance/RSS/decoder peak acceptance.
+
+## CLI tunnel manager device coordination
+
+[L02 device isolation](validation/tunnel-isolation-2026-10-06.md) accepts
+`e0f52671396e6408fc38921f78f73a256a45ce65`: actual CLI local query/stop avoids
+network lifecycle locking, same-device requests serialize, four permits bound
+simultaneous source connections. One15s manual total after ticket acquisition
+includes queue/permit/native connection/existing-trust fallback and publication.
+A stopped generation cannot publish after removal; active and queued requests
+retain OperationCancelled. Clear invalidates old tickets. Native source options
+and wire paths stay. The weak gate table's4096-entry cap is not a measured RSS
+bound. Private boxed native devices add allocation.
+
+Scans use a separate serial scan lock, capture candidates before waiting and
+fence stopped discovery/old publication snapshots. Backoff remains30/60/120/
+240/300s. Automatic candidate connects are still sequential. In-flight
+detach/replug identity, scan discovery/whole total, /shutdown supervision,
+native worker joins and long-run resource evidence remain. A later scan can
+recreate a stopped present device. Actual A-stalled/B combined HTTP query/stop
+is below1s in the owned host fixture; this is not L04 latency/throughput/RSS
+measurement or device acceptance.15/min15,tunnel56,full2524Rust/13Python PASS;
+22device NOT_RUN. Parent9635 handle missing/exit unknown; all14 subprocess
+exits0 and frozen source/binary audit prove the scoped gate. L01/L02/class4/
+all31 tasks and later classes remain active.

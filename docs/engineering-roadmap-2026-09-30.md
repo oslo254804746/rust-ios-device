@@ -3,7 +3,7 @@
 日期：2026-09-30；代码基线：`572c297`。
 
 状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
-其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类 L01 进行中，实际证据见第 14 节。
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类 L01、L02 进行中，实际证据见第 14 节。
 
 ## 1. 目标与执行范围
 
@@ -109,7 +109,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 主机 profiles 已交付；其他协议/清理和设备条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 待开始 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：CLI manager 本地查询/停止隔离、同设备串行协调、四个共享建连许可、停止取消与迟到发布保护、扫描退避/旧快照保护已交付主机 profile；自动扫描仍逐台建连，in-flight 拔插身份、扫描总预算、资源/平台/真机证据继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -7067,3 +7067,53 @@ completedhandles/caller-serverDrop/constructorprimary/active totals/terminal-cap
 rollback/retry/asyncDrop/serverjoin/platform/benchmark/RSS/decoderpeak认证。
 代码后独立文档收尾提交，持续推进其余L01和manager隔离等独立范围，总体goal active。
 无subagent/push/publication/history rewrite/reference edits/device/Apple操作。
+
+### 大类 4：L02 CLI manager device isolation（2026-10-06）
+
+受测实现 `e0f52671396e6408fc38921f78f73a256a45ce65`，父提交
+`4afde1f5288e2ebec22577f0c07f62d9a6edfbe2`。源码2026-10-05冻结、启动验证，
+2026-10-06恢复持久化证据并审查提交。[主机证据](validation/tunnel-isolation-2026-10-06.md)
+及 [manager 使用合同](tunnel.md) 记录实际边界。
+
+CLI TunnelAgentState移除覆盖网络的全局生命周期锁。本地list/get/delete只用短时
+table锁；每设备serial gate、最多4个共享connect permits。停止在publication锁内
+撤销原有active/queued generations，旧结果不能在stop之后发布；现有200/404
+语义保留，absent404也可取消pending start，其502保留原生OperationCancelled。
+后续explicit start允许，后续scan可重新创建；不是永久设备排除。manual start
+在取得ticket后共用15s queue/permit/native connect/existing-trust discovery/fallback/
+publication total；此前queue无界、不同connect各15s。实际Elapsed、unmatched
+fallback原IO保留；期限/类别修正待pre-1.0 review。
+
+私有NativeSource调用相同4个Core connect/options与既有discovery；SDK/public/
+deps/协议不改，cfg fake owned device只用于真实CLI manager/两项protected HTTP。
+native devices private Box是实际额外allocation，不宣称性能优化。扫描单独串行，
+共享同设备gate/permit，先capture全部候选ticket；stop during discovery拒绝旧snapshot，
+旧list failure只清除原publication identity，保留等待期间新建记录。30/60/120/240/
+300s backoff保留。扫描候选建连仍sequential；in-flight detach/replug identity、
+scan total、native worker joins/资源与真机继续。
+
+四源码文件1133+/303-、15新测试；原tunnel assertions/HTTP/auth/federation/bridge/
+record语法与core/public/access/deps BYTE保留。first7782 terminal101，private
+MuxDevice两visibility+两inference错误、无测试；仅改私有source UDID列表而不扩SDK。
+21164 terminal0十三PASS，再加入native downcast/callerDrop及加强旧/新publication断言。
+
+父handle9635恢复时MISSING，无livebuild；父tool exit UNKNOWN，不能虚构terminal0。
+持久化14个subprocess均记录exit0，full最终PASS，冻结assert后已写binary hash；
+恢复source/result audit terminal0。实际主线 **2524Rust/13Python**、CLI919/Core1443/
+public52、0FAIL/2既有ignored。所有15/min15/tunnel56+1ignored/WebInspector192/
+access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/binaryCLI95/full PASS。
+66features/4runtimegroups/MSRV1.80.1/7+7docs/3snippets/CABI/3.12wheel-sdist/
+tooling67/help118/raw38/host5/CLI95/backup3 PASS，**22device NOT_RUN**；
+Chromium/installed3.9/3.13 NOT_RERUN，fakeDeviceDrop不替代native async joins/真机/
+吞吐/RSS/socket/decoder峰值验收。Ignored evidence path:
+`target/validation/tunnel-isolation-2026-10-05/`，reference HEAD/status不变。
+
+source patch SHA256 `97fda9f0acc5ca57d037a3362227e141d42792ed0d5ccec17da595c37d51bc99`；
+actual debug ios SHA256 `871daaa54afaf6275a14bf490d1cef7d58783bf63db0e653317496645e444917`；
+commit=frozen。L02由待开始改进行中，真实总览9完成/10待开始/12进行中或待验收条件。
+全部31项/全部子任务/历史、118capability正文/maturity保留，仅增host evidence。
+
+L02所需Coreconnect/RSD/H2与S01主机接口已就绪，L01剩余owners不因此完成。
+接着bounded parallel auto scans/in-flight identity/scan totals/resource，再L03–L04/Q04
+及其他L01和第五至九类。L01/L02/第四类/总体目标active；无subagent/push/
+publication/historyrewrite/referenceedit/设备或Apple凭据操作。

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Isolate local tunnel-manager queries and stops from stalled connections.
+  Starts coordinate per device with four shared connection permits and one15s
+  queue/connect/fallback total. Stop cancels old pending starts and fences late
+  publication. Automatic scan connections remain sequential. See
+  [host evidence and migration](docs/validation/tunnel-isolation-2026-10-06.md).
 - Preserve WebDriver revocation cleanup results through the owned watcher join.
   Runtime mutex, context close and forwarding close share the existing100ms
   callback total; known business/native cleanup causes survive pending flush

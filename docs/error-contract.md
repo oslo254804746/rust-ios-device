@@ -1867,3 +1867,18 @@ streams; it does not certify captured production logging or device cleanup.
 Map wait before callback budget, known errors before callback return during
 store abort and generic Drop/server supervision remain. See
 [revocation errors](validation/webdriver-revocation-2026-10-05.md).
+
+## Tunnel manager connection generations
+
+The [L02 manager host profile](validation/tunnel-isolation-2026-10-06.md),
+`e0f52671396e6408fc38921f78f73a256a45ce65`, preserves native IO, Tokio Elapsed
+and OperationCancelled through the private source/actual HTTP error adapter.
+Manual creation shares one15s queue/connect/fallback total after ticket
+acquisition. An unmatched mobdev2 fallback retains original usbmux IO instead
+of rebuilding a formatted error. Stop cancels old pending/queued starts;
+their existing502 now carries cancelled. Stop itself retains200/404, including
+404 when there was no record but a pending start was cancelled. Safe bodies,
+schema1 and authorization stay. Timing/category corrections need release review.
+Cancellation is local ownership; no native worker join, Apple ACK, retry safety
+or persistent device exclusion follows. Scan discovery/whole-flow totals and
+in-flight detach/replug remain; L01/L02/L03–L04/Q04 and later classes continue.

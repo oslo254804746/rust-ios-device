@@ -1,8 +1,26 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-05",
+  "updated": "2026-10-06",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-tunnel-isolation-e0f5267",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState and two protected loopback product HTTP cases with private owned fake devices, source futures and Drop counters. A stalled/B combined local query-stop under1s; same-device/scan-stop/generations/backoff/native causes/publication/resource ownership. No physical tunnel, Apple wire or native worker join proof."
+      ],
+      "required_state": [
+        "Four source files/15new tests,1133+/303-. First7782 terminal101 private MuxDevice visibility/inference compile errors/no tests; private UDID boundary correction,21164 terminal0 thirteenPASS; expanded tests frozen. All14 persisted subprocess exits0:15/min15/tunnel56+1ignored/WebInspector192/access29/Core102/minCLIalltargets/stack5/strict/fmt/tools22/builtCLI95/full. Parent9635 handle missing/tool exit unknown at recovery; source/result audit terminal0; commit=frozen. Original tunnel assertions/HTTP/auth/federation/bridge/core/public/dependencies preserved."
+      ],
+      "tested_commit": "e0f52671396e6408fc38921f78f73a256a45ce65",
+      "date": "2026-10-06",
+      "location": "docs/validation/tunnel-isolation-2026-10-06.md",
+      "result": "PASS",
+      "scope": "Private per-device serial/watch generations and max4 shared source-connect permits isolate actual local CLI manager queries/stops from network waits; stop cancels active/queued starts and fences publication. Manual15s total after ticket acquisition includes queue/permits/native connect/existing-trust discovery/fallback/publication; native Elapsed/IO/cancel retained and absent404 may cancel pending start502. Scan only serializes scans, captures candidates before waiting and fences old discovery/publication snapshots; original30/60/120/240/300 backoff remains. Full2524Rust/13Python,CLI919/Core1443/public52,0FAIL/2existing ignored;tools67/help118/raw38/host5/CLI95/backup3 PASS. Automatic scan connects STILLSEQUENTIAL; in-flight detach/replug identity, discovery/whole-scan budgets, native tasks/joins/resource/L04/otherL01/L03–L04/Q04/classes5–9 remain.22device NOT_RUN;Chromium/installed3.9/3.13 not rerun. No Apple ACK/native async joins/benchmark/RSS/decoder peak proof or maturity upgrade. All31 main/subtasks intact,9complete/10notstarted/12inprogress-orconditions;goal active."
+    },
     {
       "id": "linux-webdriver-revocation-bf2da2d",
       "level": "host-unit/protocol",

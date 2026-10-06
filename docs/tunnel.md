@@ -33,6 +33,28 @@ Check its CLI options with:
 ios tunnel serve --help
 ```
 
+## Manager connection lifecycle
+
+Local `GET /tunnels`, `GET /tunnel/<UDID>` and `DELETE /tunnel/<UDID>` use the
+tunnel table without waiting for another device's network connection. Starts
+for one device serialize; manual starts and scans share four connection permits.
+Manual creation has one15-second total after device coordinator acquisition,
+including queue/permit waits, connection, existing-trust discovery/fallback and
+publication. Expiry reports a timeout. Existing source routes/options remain.
+
+Stop cancels active and queued starts for that device and rejects their late
+publication. An absent record still returns404 even if a pending start was
+cancelled; that start receives the existing502 with a cancelled error header.
+A later explicit start is allowed. Subsequent scans may recreate a present
+device, so stop is not a persistent exclusion policy.
+
+Automatic scans still connect candidates sequentially. Failure backoff remains
+30/60/120/240/300 seconds. Linux fake-device tests cover A stalled while B's
+combined local query/stop operations finish under one second, duplicate starts,
+stop/discovery races and owned resource release. Physical-device isolation,
+in-flight unplug/replug identity, whole-scan deadlines and resource/performance
+measurements remain pending. See [current host evidence](validation/tunnel-isolation-2026-10-06.md).
+
 ## Manager federation and WebSocket bridge
 
 `GET /tunnels` keeps the manager's local tunnel record list. `GET /` returns a
@@ -59,10 +81,12 @@ within one second.
 
 This `/connect` and hop contract is specific to this project's managers. The
 reference tunneld currently implements `/upstream` listing aggregation but has
-no matching WebSocket bridge or hop wire protocol. Upstream URLs currently use
-`http`/`ws` only and have no credential configuration. Incoming manager tokens
-are never reused upstream. Policy-mode managers cannot yet federate with each
-other; protected transport and per-upstream credentials are S03 work.
+no matching WebSocket bridge or hop wire protocol. Upstream HTTPS/WSS verifies
+certificates and uses independently configured private credentials through
+`--upstream-config`. Direct plaintext upstreams require literal loopback;
+remote/DNS HTTP is rejected. Incoming manager tokens are never reused upstream.
+See [management access configuration](management-access.md) for the current
+transport, credential and deployment boundaries.
 
 Access-control implementation is tracked as S01–S03 in the
 [engineering roadmap](engineering-roadmap-2026-09-30.md). The first S01
@@ -71,8 +95,10 @@ manager/client credentials.
 `ios tunnel auth create|check` now provides host-only policy preparation and
 precise scope checks; see [management access configuration](management-access.md).
 Server/client authentication, device/port scopes, expiry and POST policy reload
-are now integrated. Browser admission and legacy GET management methods remain
-S02 work. The existing loopback userspace TCP proxy does not authenticate its
+are now integrated. Browser admission and POST-only management methods are
+integrated for the existing host-tested manager routes; platform/device and
+future entry conditions remain in the roadmap. The existing loopback userspace
+TCP proxy does not authenticate its
 IPv6/port preamble; manager credentials do not restrict local processes' direct
 proxy access or kernel TUN routes. The [entry audit](management-access.md)
 records loopback-only forward/WDA/dproxy/screenshot listeners and the remaining

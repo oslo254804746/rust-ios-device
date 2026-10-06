@@ -1128,3 +1128,20 @@ device evidence. Constructor, DELETE, routes, successful payloads, HTTP schema,
 authorization and public Rust/C/Python surfaces stay. This total starts after
 entry retirement; preceding map wait and server shutdown remain separate. See
 [revocation migration](validation/webdriver-revocation-2026-10-05.md).
+
+## L02 private CLI manager coordination
+
+The [manager isolation profile](validation/tunnel-isolation-2026-10-06.md)
+tests `e0f52671396e6408fc38921f78f73a256a45ce65`. Private device source,
+per-device generations and four shared permits change CLI manager scheduling.
+No Rust SDK/C/Python symbol, struct, enum, field, dependency or Apple protocol
+change. Existing HTTP routes/payloads/auth stay; stopping an absent pending
+start still returns404 while its request receives existing502/cancelled.
+Manual start now shares15s after ticket acquisition across queue/permit/
+connection/discovery/fallback/publication, and unmatched fallback retains native
+IO. These observable timing/category changes require pre-1.0 release review.
+Two protected HTTP fixtures and actual TunnelAgentState owned fake-device tests
+are host evidence. Source/result hashes and all14 subprocess exits are audited;
+parent9635 tool exit is unavailable after handle recovery. Automatic scans still
+connect sequentially; physical/native joins/resource/L04 and all remaining
+L01/L02/L03–L04/Q04/classes5–9 conditions stay.
