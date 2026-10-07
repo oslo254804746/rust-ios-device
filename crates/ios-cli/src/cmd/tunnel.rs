@@ -826,15 +826,17 @@ impl TunnelAgentState {
         if !device.is_alive() {
             return Err(lifecycle::cancelled().context("tunnel inactive before publication"));
         }
-        tunnels.insert(
-            udid.to_owned(),
-            ManagedTunnel {
-                device,
-                publication: Arc::new(()),
-                usbmux,
-            },
-        );
-        Ok(record)
+        ticket.commit(|| {
+            tunnels.insert(
+                udid.to_owned(),
+                ManagedTunnel {
+                    device,
+                    publication: Arc::new(()),
+                    usbmux,
+                },
+            );
+            Ok(record)
+        })
     }
 
     async fn refresh_connect(
@@ -1112,23 +1114,30 @@ impl TunnelAgentState {
         if !ticket.is_current() {
             return;
         }
-        failed
-            .entry(udid.to_string())
-            .and_modify(|attempt| {
-                attempt.last_attempt = Instant::now();
-                if attempt.identity == identity {
-                    attempt.fail_count = attempt.fail_count.saturating_add(1);
-                } else {
-                    attempt.identity = identity.clone();
-                    attempt.fail_count = 1;
-                }
-            })
-            .or_insert(FailedTunnelAttempt {
-                last_attempt: Instant::now(),
-                fail_count: 1,
-                identity,
-                slot: Some(slot),
-            });
+        #[cfg(test)]
+        self.inner.lifecycle.before_failure_record();
+        // A close/clear/stop after the first check must not resurrect a row.
+        // Keep the same synchronous epoch fence as successful publication.
+        let _ = ticket.commit(|| {
+            failed
+                .entry(udid.to_string())
+                .and_modify(|attempt| {
+                    attempt.last_attempt = Instant::now();
+                    if attempt.identity == identity {
+                        attempt.fail_count = attempt.fail_count.saturating_add(1);
+                    } else {
+                        attempt.identity = identity.clone();
+                        attempt.fail_count = 1;
+                    }
+                })
+                .or_insert(FailedTunnelAttempt {
+                    last_attempt: Instant::now(),
+                    fail_count: 1,
+                    identity,
+                    slot: Some(slot),
+                });
+            Ok(())
+        });
     }
 }
 

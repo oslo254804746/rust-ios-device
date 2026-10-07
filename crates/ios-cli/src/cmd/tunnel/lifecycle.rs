@@ -12,12 +12,19 @@ use tokio::time::Instant;
 pub(super) const MAX_CONNECTS: usize = 4;
 const MAX_DEVICE_GATES: usize = 4096;
 
+#[cfg(test)]
+type LifecycleCallback = Box<dyn FnOnce(&Lifecycle) + Send>;
+
 pub(super) struct Lifecycle {
     devices: Mutex<HashMap<String, Weak<DeviceGate>>>,
     pub(super) connects: Semaphore,
     // Some is a reusable clear epoch; None is terminal server shutdown.
     shutdown: watch::Sender<Option<Arc<()>>>,
     scan: watch::Sender<Arc<()>>,
+    #[cfg(test)]
+    scan_after_open: std::sync::Mutex<Option<LifecycleCallback>>,
+    #[cfg(test)]
+    failure_before_commit: std::sync::Mutex<Option<LifecycleCallback>>,
 }
 
 struct DeviceGate {
@@ -77,6 +84,10 @@ impl Lifecycle {
             connects: Semaphore::new(MAX_CONNECTS),
             shutdown: watch::channel(Some(Arc::new(()))).0,
             scan: watch::channel(Arc::new(())).0,
+            #[cfg(test)]
+            scan_after_open: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            failure_before_commit: std::sync::Mutex::new(None),
         }
     }
 
@@ -134,6 +145,36 @@ impl Lifecycle {
         self.devices.lock().await.len()
     }
 
+    #[cfg(test)]
+    pub(super) fn on_next_scan_capture(&self, callback: impl FnOnce(&Lifecycle) + Send + 'static) {
+        let mut pending = self.scan_after_open.lock().unwrap();
+        assert!(pending.is_none(), "scan capture hook already installed");
+        *pending = Some(Box::new(callback));
+    }
+
+    #[cfg(test)]
+    pub(super) fn on_next_failure_record(
+        &self,
+        callback: impl FnOnce(&Lifecycle) + Send + 'static,
+    ) {
+        let mut pending = self.failure_before_commit.lock().unwrap();
+        assert!(pending.is_none(), "failure record hook already installed");
+        *pending = Some(Box::new(callback));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_failure_record(&self) {
+        let callback = {
+            let mut pending = self.failure_before_commit.lock().unwrap();
+            let callback = pending.take();
+            drop(pending);
+            callback
+        };
+        if let Some(callback) = callback {
+            callback(self);
+        }
+    }
+
     // The caller holds the tunnel table write guard. This fences publication
     // together with removal without waiting for a connecting device's serial lock.
     pub(super) async fn stop(&self, udid: &str) {
@@ -166,8 +207,27 @@ impl Lifecycle {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             crate::output::input_decision("tunnel scan discovery deadline overflow")
         })?;
+        #[cfg(test)]
+        {
+            // Force one admission boundary on this instance, without retaining
+            // any watch Ref or hook mutex while invoking close/clear.
+            let callback = {
+                let mut pending = self.scan_after_open.lock().unwrap();
+                let callback = pending.take();
+                drop(pending);
+                callback
+            };
+            if let Some(callback) = callback {
+                callback(self);
+            }
+        }
         let mut changes = self.scan.subscribe();
         let generation = changes.borrow_and_update().clone();
+        // A completed close may already be marked seen by this subscription.
+        // Terminal shutdown is monotonic, so reject it after capturing the epoch.
+        if self.shutdown.borrow().is_none() {
+            return Err(cancelled());
+        }
         Ok(ScanControl {
             changes,
             generation,
@@ -214,6 +274,26 @@ impl Ticket {
                 .borrow()
                 .as_ref()
                 .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.shutdown_generation))
+    }
+
+    // The caller already owns its destination table guard. Keep both epoch
+    // borrows through the synchronous mutation so stop/clear/close either win
+    // before admission or wait until this commit finishes. The action must not
+    // await or reenter these watches, including through is_current().
+    pub(super) fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let generation = self.gate.generation.borrow();
+        let shutdown = self.shutdown.borrow();
+        if !Arc::ptr_eq(&generation, &self.generation)
+            || !shutdown
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.shutdown_generation))
+        {
+            return Err(cancelled());
+        }
+        let result = action();
+        drop(shutdown);
+        drop(generation);
+        result
     }
 
     pub(super) async fn serial(&self) -> tokio::sync::MutexGuard<'_, ()> {
