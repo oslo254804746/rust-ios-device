@@ -1,5 +1,6 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 
 use crate::tunnel::tun::TunDevice;
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
@@ -15,8 +16,9 @@ const STREAM_PACKET_QUEUE: usize = 64;
 /// `read_ipv6_packet` is built on `read_exact`, which is *not* cancellation-safe:
 /// dropping it mid-packet discards both the bytes it consumed and its progress,
 /// which permanently desyncs the IPv6 framing for every packet that follows.
-/// Owning the reader means it is never cancelled mid-packet; the loop instead
-/// awaits an mpsc receive, which is cancellation-safe.
+/// While forwarding is active, the reader is never cancelled mid-packet; the
+/// loop instead awaits an mpsc receive, which is cancellation-safe. Dropping
+/// the forwarding future aborts its owned reader and closes the stream.
 #[allow(dead_code)]
 pub async fn forward_packets<S, D>(
     stream: S,
@@ -45,7 +47,10 @@ where
     let payload_capacity = mtu.ipv6_payload_capacity()?;
     let (reader, mut writer) = tokio::io::split(stream);
     let (packet_tx, mut packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
-    let reader_task = tokio::spawn(read_stream_packets(reader, payload_capacity, packet_tx));
+    // Keep the reader owned even if the caller drops this future while a TUN
+    // or stream write is pending. Dropping a bare JoinHandle would detach it.
+    let mut reader_tasks = JoinSet::new();
+    reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
 
     let outcome: Result<(), TunnelError> = async {
         loop {
@@ -78,7 +83,7 @@ where
     }
     .await;
 
-    reader_task.abort();
+    reader_tasks.abort_all();
     outcome
 }
 
@@ -151,6 +156,9 @@ async fn read_ipv6_packet<R: AsyncRead + Unpin>(
     reader.read_exact(&mut payload_buf[..payload_len]).await?;
     Ok(payload_len)
 }
+
+#[cfg(test)]
+mod reader_owner_tests;
 
 #[cfg(test)]
 mod tests {
