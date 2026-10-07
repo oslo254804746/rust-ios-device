@@ -4,11 +4,14 @@ use super::*;
 const BUDGET: Duration = Duration::from_millis(200);
 const CROSS: Duration = Duration::from_millis(250);
 
+mod automatic_tests;
+
 #[derive(Clone, Copy)]
 enum Delay {
     Metadata,
     SourceSuccess,
     SourceFailure,
+    Publication,
 }
 
 struct DelayedDevice {

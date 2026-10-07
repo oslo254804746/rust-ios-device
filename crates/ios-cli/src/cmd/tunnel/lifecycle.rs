@@ -47,6 +47,7 @@ pub(super) struct ScanControl {
 
 pub(super) struct ConnectionDeadline {
     deadline: Instant,
+    timeout_context: &'static str,
 }
 
 #[derive(Debug)]
@@ -62,10 +63,21 @@ impl std::error::Error for ConnectionDeadlineReached {}
 
 impl ConnectionDeadline {
     pub(super) fn new(timeout: Duration) -> Result<Self> {
+        Self::with_context(timeout, "timed out while creating tunnel")
+    }
+
+    pub(super) fn for_scan_candidate(timeout: Duration) -> Result<Self> {
+        Self::with_context(timeout, "timed out establishing scanned tunnel")
+    }
+
+    fn with_context(timeout: Duration, timeout_context: &'static str) -> Result<Self> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| crate::output::input_decision("tunnel connection deadline overflow"))?;
-        Ok(Self { deadline })
+        Ok(Self {
+            deadline,
+            timeout_context,
+        })
     }
 
     /// A synchronous fence for side effects inside a poll. Only run converts
@@ -83,7 +95,7 @@ impl ConnectionDeadline {
         tokio::select! {
             biased;
             expired = tokio::time::timeout_at(self.deadline, std::future::pending::<T>()) => {
-                expired.context("timed out while creating tunnel")
+                expired.context(self.timeout_context)
             }
             result = std::future::poll_fn(|cx| {
                 // Tokio's timeout polls its work before the timer. Suppress

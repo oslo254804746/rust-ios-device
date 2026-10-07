@@ -1003,32 +1003,34 @@ impl TunnelAgentState {
         let mut failure_slot = None;
         let result = ticket
             .run(async {
-                tokio::time::timeout(self.inner.connect_timeout, async {
-                    let _serial = ticket.serial().await;
-                    if self.get_record(udid).await.is_some() {
-                        return Ok(());
-                    }
-                    if self
-                        .inner
-                        .failed_attempts
-                        .read()
-                        .await
-                        .get(udid)
-                        .is_some_and(|failed| {
-                            failed.identity == identity && failed.should_skip(Instant::now())
-                        })
-                    {
-                        return Ok(());
-                    }
-                    failure_slot = Some(self.reserve_failure_slot(udid).await?);
-                    let _permit = self.inner.lifecycle.connects.acquire().await?;
-                    self.connect_and_store(udid, route, ticket, expected_id, None)
-                        .await?;
-                    self.inner.failed_attempts.write().await.remove(udid);
-                    Ok(())
-                })
-                .await
-                .context("timed out establishing scanned tunnel")?
+                let deadline =
+                    lifecycle::ConnectionDeadline::for_scan_candidate(self.inner.connect_timeout)?;
+                deadline
+                    .run(async {
+                        let _serial = ticket.serial().await;
+                        if self.get_record(udid).await.is_some() {
+                            return Ok(());
+                        }
+                        if self
+                            .inner
+                            .failed_attempts
+                            .read()
+                            .await
+                            .get(udid)
+                            .is_some_and(|failed| {
+                                failed.identity == identity && failed.should_skip(Instant::now())
+                            })
+                        {
+                            return Ok(());
+                        }
+                        failure_slot = Some(self.reserve_failure_slot(udid).await?);
+                        let _permit = self.inner.lifecycle.connects.acquire().await?;
+                        self.connect_and_store(udid, route, ticket, expected_id, Some(&deadline))
+                            .await?;
+                        self.inner.failed_attempts.write().await.remove(udid);
+                        Ok(())
+                    })
+                    .await
             })
             .await;
         if let Err(error) = result {
