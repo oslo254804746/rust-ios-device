@@ -161,6 +161,14 @@ once cancellation is scheduled. Normal return still requests abort without
 waiting for a reader join; outer kernel task ownership and explicit joins
 remain pending. See [reader ownership evidence](validation/forward-reader-owner-2026-10-07.md).
 
+The forwarder's watch cancellation also covers selected TUN/stream writes and
+flush waits. One receiver is checked before every new iteration, including
+consecutive Ready steps. A closed sender or changed event ends a pending step;
+an IO error already acquired in that closing poll remains the result. Partial
+writes can be abandoned when the stream closes. See
+[forwarding cancellation evidence](validation/forward-watch-shutdown-2026-10-07.md).
+This does not add an ACK, cleanup deadline or explicit worker join.
+
 Coordinator admissions capture their clear epoch before locking, so an old
 waiter cannot acquire the replacement epoch. Coordinator lock wait now also
 observes clear/shutdown directly and returns cancellation while the lock is

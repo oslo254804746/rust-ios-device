@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stop packet forwarding on watch closure or cancellation events while TUN
+  writes, stream writes or flushes wait, retaining per-iteration checks and
+  acquired native IO errors. See
+  [forwarding cancellation evidence](docs/validation/forward-watch-shutdown-2026-10-07.md).
+
 - Release the packet forwarding reader when its caller is dropped, aborted or
   unwinds during a read/write wait. See
   [reader ownership evidence](docs/validation/forward-reader-owner-2026-10-07.md).

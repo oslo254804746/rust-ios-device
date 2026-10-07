@@ -1065,3 +1065,19 @@ This is scheduled abort/eventual release, not normal reader join, reader panic
 propagation, cleanup deadline or outer kernel/whole-owner join. Cooperative CPU
 and other L01/L02/L03-L04/classes5-9 conditions remain;22device NOT_RUN.
 Active30 tasks/subtasks exclude Q04;9complete21unfinished,UID unfixed.
+
+## Packet forwarding watch cancellation
+
+The [watch cancellation profile](validation/forward-watch-shutdown-2026-10-07.md),
+`a4fc6aa6ccf455773009c3a1a38a9d0e8ca67958`, checks its one watch receiver before every
+iteration and covers the selected branch's write/flush await. Private step
+results preserve acquired native IO and execute existing reader abort_all.
+Cancellation can abandon partial writes and close the connection. Active
+framing/MTU/queue/reader ownership and all prior assertions remain.
+
+Six new full/minimum6/6,Coretunnel59 and all10 frozen serial gates PASS;
+full2644Rust/13Python,0FAIL/2existing ignored. Oldcontrol71973:2PASS/4FAIL;
+wrong whole-loop control90513:0PASS/1FAIL. Fixture recovery precedes assertions.
+Ready cancellation may skip unconsumed worker errors; no single-poll CPU/ACK/
+normal reader join/panic propagation/cleanup deadline/outer-owner guarantee.
+L01-L04/classes5-9 and22device NOT_RUN remain;active30/Q04excluded/UIDunfixed.

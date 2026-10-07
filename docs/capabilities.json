@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-forward-watch-shutdown-a4fc6aa",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV1.80.1; Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual public packet forwarder with DuplexStream, capacity1 IO, controlled TUN/flush, watch close/send, Ready iteration and typed stdIO; no OS TUN/device."
+      ],
+      "required_state": [
+        "Core2files278+/27-,6newtests,old375line11723byte prefix preserved. Old71973 terminal101:2PASS4FAIL;wrong whole-loop90513 terminal101:0PASS1FAIL;fixture recovery before assertions. First frozen52321 terminal1: test-only derivedDebug violates safeDebug gate; archived source/logs retained. After terminal, fixed payload-free manualDebug,unchanged verifier7PASS. Corrected frozen52489 terminal0/all10 serial gates,new6/min6,tunnel59,minCore/CLIalltargets,stack5,strictCore/fmt/full2644Rust13Python/tools73. Actual diff read-only review;primary source/Rust only,source frozen."
+      ],
+      "tested_commit": "a4fc6aa6ccf455773009c3a1a38a9d0e8ca67958",
+      "date": "2026-10-07",
+      "location": "docs/validation/forward-watch-shutdown-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Single receiver per-iteration cancellation spans branch selection and TUN/stream/flush writes. Close/send stops pending step,Ready next-step work suppressed,acquired closing-poll stdIO/BrokenPipe/payload/Disconnected retained. Active framing/MTU/queue/reader owner/old assertions remain. Full2644Rust13PythonCLI1025Core1457public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Terminal partialwrite abandonment;unconsumed queue errors may be skipped;normal joins/reader panic propagation/cleanup deadline/outer native owners/otherL01-L04/classes5-9 remain. Active30/Q04allsubtasks excluded,9complete21unfinished,UID unfixed,other acceptance unchanged. No maturity/API/errorvariant/dependency/policy/pairing/binding/OS TUN/ACK/socket/RSS/long-run/performance/platform certification."
+    },
+    {
       "id": "linux-forward-reader-owner-a455d67",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
