@@ -345,3 +345,15 @@ and acquired original IO remain; default fallback stops before another contact
 after expiry. Synchronous work remains cooperative. Automatic candidate and
 whole-scan policy still need their own acceptance. See
 [same-poll deadline evidence](validation/tunnel-manual-poll-crossing-2026-10-07.md).
+
+## Automatic candidate deadline boundaries
+
+Each admitted scan candidate now shares one checked absolute15s clock across
+serial/cache/backoff/permit/connection and the same native-handoff,metadata/query
+and synchronous publication fences as manual starts. Late insertion rolls back
+the unobserved row; the original new native runtime remains retained for joins.
+Zero/overflow internal budgets reject Source. Actual scanned Elapsed context and
+acquired original IO remain. The four-candidate window/admission policy stays.
+Failure bookkeeping can still wait outside this clock; whole-scan handoff,
+reconciliation and readiness totals remain. See
+[automatic deadline evidence](validation/tunnel-automatic-deadline-2026-10-07.md).

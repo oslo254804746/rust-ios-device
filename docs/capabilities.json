@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-automatic-deadline-c92503d",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual userspace Tokio workers/DuplexStream and private CLI discovery/device metadata; no OS TUN/device."
+      ],
+      "required_state": [
+        "4 source files214+/28-;7newtests:3actual-native workflows,2zero/overflow admission(no native after fix),2scanned-wrapper category cases. Controlled200ms/250ms poll;wrong-old0PASS5FAIL after native recovery;452 hashes/final52757 terminal0/all7 serial gates. Root alone Rust; agents read-only."
+      ],
+      "tested_commit": "c92503ded8a60515a272f4afb1dba99085b130dc",
+      "date": "2026-10-07",
+      "location": "docs/validation/tunnel-automatic-deadline-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Checked absolute per-candidate total and shared same-poll native-handoff/metadata/query/publication fences,late unobserved row rollback/original new native retention,zero/overflow admission and native categories;old15s/window policy stays. CLI208/1ignored/full2732Rust13PythonCLI1071Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain. Cooperative Source/CPU/Drop. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,all other acceptance required,no maturity/ACK/rollback/RSS/performance/platform certification. Timing needs pre-1.0 review."
+    },
+    {
       "id": "linux-tunnel-manual-poll-crossing-a963679",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",

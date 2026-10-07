@@ -1306,3 +1306,14 @@ APIs, error enums, options, output and wire payloads remain. Late-result timing
 needs pre-1.0 review. Cooperative CPU/Drop, automatic candidates/whole-scan and
 other HTTP/startup/metadata/device requirements remain; local row restoration
 does not certify a device transaction or safe replay.
+
+## Automatic tunnel candidate deadline corrections
+
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+The existing15s candidate total now uses checked absolute fences through native
+handoff, metadata/query and publication. Late same-poll success cannot publish;
+zero/overflow internal configuration cannot contact Source. Options, public APIs,
+error enums, output/wire,Core/bindings/dependencies/features remain. Late-result
+and zero/overflow timing need pre-1.0 review. Candidate-window policy stays;
+this is cooperative and not a whole-scan,device rollback or safe-replay contract.
+Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain.

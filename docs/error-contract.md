@@ -2025,3 +2025,13 @@ error remains inspectable with its original category even after a long poll;
 default fallback cannot open another discovery/transport after the total expires.
 The private decision adds no public error enum or safe-retry/remote rollback rule.
 Automatic candidate and other timing/cleanup requirements remain.
+
+## Automatic candidate native expiry and original IO
+
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+The checked candidate clock preserves actual Tokio Elapsed with the prior scanned
+timeout context and the shared wrapper's already acquired original IO precedence.
+Zero never polls work; unrepresentable internal duration is InvalidInput before
+Source without panic. Automatic workflow fixtures prove admission/publication
+and retained original joins; two direct scanned-wrapper cases prove categories.
+Failure identity/backoff and cancellation recording policy stay. Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain.

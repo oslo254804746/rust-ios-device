@@ -1144,3 +1144,18 @@ whole-scan, HTTP/upgrades/blocking/startup/metadata/device and other original
 conditions remain.7newtests,201tunnel/1ignored,all7 serial gates/full2725
 Rust13Python0FAIL2existingignored/tools73 PASS; active30 excludingQ04,
 9complete21unfinished,22device NOT_RUN,UID untouched.
+
+## Automatic tunnel candidate absolute deadline
+
+Implementation `c92503ded8a60515a272f4afb1dba99085b130dc`; [automatic candidate evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+Each admitted automatic candidate keeps its established15s budget under one
+checked absolute clock across serial/cache/backoff/permit/Source and the shared
+native-handoff/metadata/query/publication fences. Late real insertion removes its
+unobserved row; after table/epoch guards release the exact original native Arc
+retires with joins retained. Zero/unrepresentable internal budgets reject Source.
+Actual Elapsed/scanned context and acquired native IO remain. The candidate
+window/admission policy stays; synchronous Source/CPU/Drop remain cooperative.
+Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain.
+7newtests/208tunnel1ignored/all7serial gates/full2732Rust13Python0FAIL2ignored/
+tools73 PASS. Active30/allchildren excludingQ04,9complete21unfinished,
+22device NOT_RUN;UID untouched,no main-task completion.

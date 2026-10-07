@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep automatic tunnel candidate creation under one checked absolute deadline,
+  including native handoff,metadata/query and publication. Reject late success
+  and zero/overflow internal admission while preserving original native errors.
+  See [automatic deadline evidence](docs/validation/tunnel-automatic-deadline-2026-10-07.md).
+
 - Reject manual tunnel work that crosses its deadline during a synchronous
   poll. Restore an unobserved displaced row, retain the late runtime for native
   cleanup, and preserve acquired IO without contacting fallback after expiry.
