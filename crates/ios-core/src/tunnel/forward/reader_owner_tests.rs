@@ -373,3 +373,235 @@ async fn forward_reader_owner_normal_watch_close_keeps_success_and_releases_read
     assert_eq!(probe.read_bytes.load(Ordering::SeqCst), 20);
     assert_released(observed, &probe);
 }
+
+// Save watch-completion evidence before dropping work for fixture recovery.
+// An old blocked branch must fail even though caller drop then releases it.
+async fn finish_watch<F: Future<Output = Result<(), TunnelError>>>(
+    mut work: Pin<Box<F>>,
+    peer: DuplexStream,
+    probe: &Probe,
+    baseline: usize,
+) -> (
+    Result<Result<(), TunnelError>, tokio::time::error::Elapsed>,
+    Observation,
+) {
+    let result = tokio::time::timeout(OBSERVATION, &mut work).await;
+    drop(work);
+    let observed = observe_then_recover(peer, probe, baseline).await;
+    (result, observed)
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_closes_pending_tun_write() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (mut peer, stream, probe) = tracked(128, false);
+    peer.write_all(&packet()).await.unwrap();
+    let entered = Arc::new(Notify::new());
+    let (cancel, receiver) = watch::channel(());
+    let mut work = Box::pin(forward_packets(
+        stream,
+        Tun::WritePending(entered.clone()),
+        1280,
+        receiver,
+    ));
+    checkpoint(&mut work, &entered).await;
+    drop(cancel);
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    result
+        .expect("watch close did not end pending TUN write")
+        .unwrap();
+    assert_eq!(probe.read_bytes.load(Ordering::SeqCst), 40);
+    assert_released(observed, &probe);
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_closes_pending_stream_write() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (peer, stream, probe) = tracked(1, false);
+    let (cancel, receiver) = watch::channel(());
+    let mut work = Box::pin(forward_packets(
+        stream,
+        Tun::Output(Some(packet())),
+        1280,
+        receiver,
+    ));
+    checkpoint(&mut work, &probe.write_pending).await;
+    drop(cancel);
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    result
+        .expect("watch close did not end pending stream write")
+        .unwrap();
+    assert_eq!(probe.write_bytes.load(Ordering::SeqCst), 1);
+    assert_eq!(observed.received, [0x60]);
+    assert_released(observed, &probe);
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_closes_controlled_flush() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (peer, stream, probe) = tracked(128, true);
+    let (cancel, receiver) = watch::channel(());
+    let mut work = Box::pin(forward_packets(
+        stream,
+        Tun::Output(Some(packet())),
+        1280,
+        receiver,
+    ));
+    checkpoint(&mut work, &probe.flush_pending).await;
+    drop(cancel);
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    result
+        .expect("watch close did not end pending flush")
+        .unwrap();
+    assert_eq!(probe.write_bytes.load(Ordering::SeqCst), 40);
+    assert_eq!(observed.received, packet());
+    assert_released(observed, &probe);
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_changed_event_closes_pending_tun_write() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (mut peer, stream, probe) = tracked(128, false);
+    peer.write_all(&packet()).await.unwrap();
+    let entered = Arc::new(Notify::new());
+    let (cancel, receiver) = watch::channel(());
+    let mut work = Box::pin(forward_packets(
+        stream,
+        Tun::WritePending(entered.clone()),
+        1280,
+        receiver,
+    ));
+    checkpoint(&mut work, &entered).await;
+    let receivers_before = cancel.receiver_count();
+    let sent = cancel.send(());
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    sent.unwrap();
+    result
+        .expect("watch event did not end pending TUN write")
+        .unwrap();
+    assert_eq!(receivers_before, 1);
+    assert_eq!(cancel.receiver_count(), 0);
+    assert_eq!(probe.read_bytes.load(Ordering::SeqCst), 40);
+    assert_released(observed, &probe);
+}
+
+#[derive(thiserror::Error)]
+#[error("controlled forwarding IO failure")]
+struct ForwardingFault;
+
+impl std::fmt::Debug for ForwardingFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ForwardingFault")
+    }
+}
+
+struct CloseOnRead {
+    cancel: Option<watch::Sender<()>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl TunDevice for CloseOnRead {
+    async fn read_packet(&mut self) -> Result<Vec<u8>, TunnelError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(cancel) = self.cancel.take() {
+            // Everything in this step is Ready. The next step must recheck the
+            // watch rather than looping through another source read in one poll.
+            drop(cancel);
+            Ok(packet())
+        } else {
+            // Make a wrong whole-loop outer-select control terminate safely.
+            Err(TunnelError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                ForwardingFault,
+            )))
+        }
+    }
+
+    async fn write_packet(&mut self, _packet: &[u8]) -> Result<(), TunnelError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_checks_each_ready_iteration() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (peer, stream, probe) = tracked(128, false);
+    let (cancel, receiver) = watch::channel(());
+    let reads = Arc::new(AtomicUsize::new(0));
+    let work = Box::pin(forward_packets(
+        stream,
+        CloseOnRead {
+            cancel: Some(cancel),
+            reads: reads.clone(),
+        },
+        1280,
+        receiver,
+    ));
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    result.unwrap().unwrap();
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.write_bytes.load(Ordering::SeqCst), 40);
+    assert_eq!(observed.received, packet());
+    assert_released(observed, &probe);
+}
+
+struct FailOnWrite {
+    cancel: Option<watch::Sender<()>>,
+}
+
+impl TunDevice for FailOnWrite {
+    async fn read_packet(&mut self) -> Result<Vec<u8>, TunnelError> {
+        std::future::pending().await
+    }
+
+    async fn write_packet(&mut self, _packet: &[u8]) -> Result<(), TunnelError> {
+        // This error was obtained within the same poll that closed the watch.
+        // Do not replace the acquired primary with a successful cancellation.
+        drop(self.cancel.take());
+        Err(TunnelError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            ForwardingFault,
+        )))
+    }
+}
+
+#[tokio::test]
+async fn forward_watch_shutdown_keeps_io_obtained_in_closing_poll() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let (mut peer, stream, probe) = tracked(128, false);
+    peer.write_all(&packet()).await.unwrap();
+    let (cancel, receiver) = watch::channel(());
+    let work = Box::pin(forward_packets(
+        stream,
+        FailOnWrite {
+            cancel: Some(cancel),
+        },
+        1280,
+        receiver,
+    ));
+    let (result, observed) = finish_watch(work, peer, &probe, baseline).await;
+    let error = result.unwrap().unwrap_err();
+    assert_eq!(
+        crate::classify_error(&error),
+        crate::ErrorClass::Disconnected
+    );
+    let TunnelError::Io(io) = error else {
+        panic!("acquired forwarding IO was replaced");
+    };
+    assert_eq!(io.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(io.get_ref().unwrap().is::<ForwardingFault>());
+    assert_eq!(probe.read_bytes.load(Ordering::SeqCst), 40);
+    assert_released(observed, &probe);
+}

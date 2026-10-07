@@ -9,6 +9,11 @@ use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 /// forwarding loop before the reader has to wait for the TUN to catch up.
 const STREAM_PACKET_QUEUE: usize = 64;
 
+enum ForwardStep {
+    Continue,
+    End,
+}
+
 /// Bidirectionally forward IPv6 packets between an iOS TCP stream and a TUN device.
 /// Runs until the `cancel` watch receiver fires or an IO error occurs.
 ///
@@ -19,6 +24,8 @@ const STREAM_PACKET_QUEUE: usize = 64;
 /// While forwarding is active, the reader is never cancelled mid-packet; the
 /// loop instead awaits an mpsc receive, which is cancellation-safe. Dropping
 /// the forwarding future aborts its owned reader and closes the stream.
+/// Cancellation also covers a selected TUN/stream write or flush wait and is
+/// checked before starting each new forwarding step.
 #[allow(dead_code)]
 pub async fn forward_packets<S, D>(
     stream: S,
@@ -52,36 +59,48 @@ where
     let mut reader_tasks = JoinSet::new();
     reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
 
-    let outcome: Result<(), TunnelError> = async {
-        loop {
-            tokio::select! {
-                _ = cancel.changed() => return Ok(()),
+    let outcome = loop {
+        // Cover the selected branch's writes as well as branch selection. A
+        // fresh check each iteration also stops an always-ready forwarding loop.
+        let step: Result<ForwardStep, TunnelError> = tokio::select! {
+            biased;
+            _ = cancel.changed() => Ok(ForwardStep::End),
+            result = async {
+                tokio::select! {
+                    // iOS stream → TUN: inject a fully-read packet into the TUN
+                    packet = packet_rx.recv() => match packet {
+                        Some(Ok(packet)) => {
+                            tun.write_packet(&packet).await?;
+                            Ok(ForwardStep::Continue)
+                        },
+                        Some(Err(err)) => Err(err),
+                        // Reader task finished: the device closed its side.
+                        None => Ok(ForwardStep::End),
+                    },
 
-                // iOS stream → TUN: inject a fully-read packet into the TUN
-                packet = packet_rx.recv() => match packet {
-                    Some(Ok(packet)) => tun.write_packet(&packet).await?,
-                    Some(Err(err)) => return Err(err),
-                    // Reader task finished: the device closed its side.
-                    None => return Ok(()),
-                },
-
-                // TUN → iOS stream: read packet from OS, forward to device
-                result = tun.read_packet() => {
-                    let packet = result?;
-                    if packet.len() > mtu.as_usize() {
-                        return Err(TunnelError::Protocol(format!(
-                            "TUN packet length {} exceeds negotiated MTU {}",
-                            packet.len(),
-                            mtu.as_u16()
-                        )));
+                    // TUN → iOS stream: read packet from OS, forward to device
+                    result = tun.read_packet() => {
+                        let packet = result?;
+                        if packet.len() > mtu.as_usize() {
+                            return Err(TunnelError::Protocol(format!(
+                                "TUN packet length {} exceeds negotiated MTU {}",
+                                packet.len(),
+                                mtu.as_u16()
+                            )));
+                        }
+                        writer.write_all(&packet).await?;
+                        writer.flush().await?;
+                        Ok(ForwardStep::Continue)
                     }
-                    writer.write_all(&packet).await?;
-                    writer.flush().await?;
                 }
-            }
+            } => result,
+        };
+        match step {
+            Ok(ForwardStep::Continue) => {}
+            Ok(ForwardStep::End) => break Ok(()),
+            Err(error) => break Err(error),
         }
-    }
-    .await;
+    };
 
     reader_tasks.abort_all();
     outcome
