@@ -1994,3 +1994,23 @@ avoid re-recording; foreign/full/extra-wrapped native faults remain ordinary wor
 causes. ForwardReaderCleanup preserves simultaneous raw-forward work and reader
 join errors with primary source. Both opaque payloads use fixed/category Debug
 and Display; original causes remain inspectable. Existing error enums are unchanged.
+
+## Native CLI cleanup causes and immutable observation
+
+The [CLI retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md),
+`6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`, adds readonly Core shutdown_status and opaque report flag
+has_retained_outcomes. Observation records no new attempt expiry and does not
+stop/join workers; incomplete accounting alone is not an acquired native fault.
+The CLI captures already acquired original IO if its outer clock cancels inner
+shutdown before return. First outer joins_complete alone can certify that exact
+runtime, including false; a nested foreign true report cannot release capacity.
+
+Two fixed history causes retain first pure Core expiry and first non-expiry native
+report. Later native faults outrank earlier expiry, including same-owner retries;
+current attempt Elapsed stays separate. Fully joined Err releases capacity while
+its original cause remains available to server terminal cleanup. Bounded counters
+describe other failed owners; Core omitted observations keep their existing meaning.
+Server phase outcomes are saved before Ready; held-table expiry can coexist with
+complete native joins. Metadata-only direct Elapsed and original signal/server
+primary contracts remain. Opaque wrappers render fixed context/categories and
+preserve native sources; no error-enum, protocol, safe-retry or remote-ACK change.

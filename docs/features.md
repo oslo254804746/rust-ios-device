@@ -152,3 +152,14 @@ full strict Clippy pass in the [native owner profile](validation/native-tunnel-o
 integration checks use `coredevice-base` and `tunnel-kernel,mdns`; bare-backend
 unused-code Clippy diagnostics were reproduced on the previous clean baseline.
 No production dependency, group membership or Cargo.lock change was made.
+
+## Caller-owned tunnel activation
+
+The additive TunnelOwner/TunnelReservation traits and four owner-aware connection
+entry points follow the ordinary device API feature surface. Callback attachment
+is used only when an enabled backend activates a runtime. shutdown_status and
+TunnelShutdownFailure::has_retained_outcomes require tunnel-kernel or
+tunnel-userspace. The root UserspaceTunDevice export requires tunnel-userspace.
+Bare/default all-targets and all66 feature checks pass in the
+[CLI native retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md).
+Original production dependencies/features/groups/Cargo.lock are unchanged.

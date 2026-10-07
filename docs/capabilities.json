@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-cli-native-retirement-6debaf9",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual userspace Tokio parents/proxy children, DuplexStream, loopback and local CDTunnel activation; private CLI discovery/device metadata. No OS TUN/device."
+      ],
+      "required_state": [
+        "24 source files3671+/77-,39newtests including14sender-only contract cases (not native cleanup evidence). Three failing controls restored;450 product hashes/final73569 terminal0/all16 serial gates. Exact failed source/log snapshots retained; root alone applies source/runs Rust, existing agents exhausted quota."
+      ],
+      "tested_commit": "6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756",
+      "date": "2026-10-07",
+      "location": "docs/validation/cli-tunnel-native-retirement-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Per-target Core reservation/exact Arc attachment before initial RSD;CLI pre-Source admission and bounded4096 original native owners across metadata/cancellation/retirement;first outer valid joins certificate,readonly acquired-cause capture/bounded history,server native and metadata/HTTP under one independent clock,standalone bridge. CLI194/native227/min83/83,forward26/tunnel95,full2718Rust13PythonCLI1057Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Generic HTTP/upgrades/blocking/startup/whole-scan/metadata/physical freshness/reuse/restart/manualepochs/otherL01-L04/classes5-9 remain. Active30/allchildren excludingQ04,9complete21unfinished,UID untouched,other acceptance unchanged. No maturity/ACK/OS TUN/RSS/long-run/performance/platform certification;API/timing/error changes require pre-1.0 review."
+    },
+    {
       "id": "linux-native-tunnel-owner-f00ff25",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",

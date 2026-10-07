@@ -1104,3 +1104,28 @@ by private identity; foreign/full/wrapped reports remain native work errors.
 project .venv tools73 PASS. Five failing negative controls are recorded. CLI
 retirement/server/Source pre-return ownership, other L01-L04/classes5-9 and22device
 NOT_RUN remain. Active30/Q04allchildren excluded/9complete21unfinished/UIDunfixed.
+
+## CLI native tunnel retention and ownership before RSD
+
+The [CLI native retirement profile](validation/cli-tunnel-native-retirement-2026-10-07.md),
+`6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`, reserves before Source polling and retains exact original runtime
+Arcs before the initial RSD probe and all metadata/query/table waits. Each Core
+strategy target has its own reservation; an abandoned earlier target remains
+retired while the next must acquire fresh capacity. One4096-slot registry covers
+all reserved/inflight/unpublished/active/retired ownership, including late attach.
+Every managed-record Drop retires; joins never await under tables/watch borrows.
+
+Shutdown seals/stops independently of table availability, drops the owned scanner
+and drains native owners concurrently with metadata/HTTP inside one checked2s
+absolute clock. Phase outcomes survive late Ready. Original native shutdown Ok or
+the first outer report's valid-accounting joins_complete alone releases a slot;
+failed fully joined owners retain bounded history. Readonly shutdown_status and
+has_retained_outcomes capture acquired causes across outer-future cancellation.
+Caller Drop requests stop, retains joins while the owner is held and cannot await.
+Standalone start uses the same Core bridge and independent native terminal drain.
+
+39 new tests/all16 frozen serial gates/full2718Rust13Python0FAIL2existing ignored,
+three failing controls/tools73 PASS. This certifies the native host slice, not
+generic HTTP/upgrades/blocking/startup/whole-scan/metadata/physical freshness/
+reuse/restart/manual epoch or other L01-L04/classes5-9.22device NOT_RUN; active30
+excluding Q04/all children,9complete21unfinished,UID untouched.

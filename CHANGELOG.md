@@ -491,6 +491,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Retain CLI tunnel runtimes before RSD probing and through cancelled publication,
+  removal and shutdown. One bounded owner registry keeps original native joins;
+  server native/metadata cleanup shares a budget and preserves acquired causes.
+  Add optional Core ownership callbacks and readonly shutdown status. See
+  [CLI native retirement evidence](docs/validation/cli-tunnel-native-retirement-2026-10-07.md).
+
 - Retain library-owned kernel and userspace tunnel workers for explicit,
   retryable shutdown with native work/join errors and one cleanup budget.
   Stop and replacement signal shared owners; normal packet forwarding joins

@@ -316,3 +316,20 @@ pymobiledevice3 is only needed when running that script.
 - Device/iOS version does not expose the expected CoreDevice service.
 - Firewall or mDNS settings prevent network discovery.
 - Kernel mode is run without sufficient privileges.
+
+## CLI native runtime retirement
+
+The manager now retains original native runtime Arcs before RSD probing and
+through cancelled publication, removal and shutdown. All owner phases share
+4096 slots; a full registry rejects another Source before contact. Stop/clear,
+replacement and discarded records request stop while the registry retains native
+join progress. Native drain runs outside tables and uses a fresh cleanup clock
+on retry. Fully joined faults stay available even after the slot is released.
+
+Returned server shutdown gives native joins and metadata/HTTP drain the same
+independent2s total, including a held-table case. Standalone start also uses a
+2s native drain after returned operation/output/signal results. Caller Drop
+requests stop but cannot await; startup-signal and generic HTTP/delegated-task
+conditions remain. Existing options/stdout/HTTP payloads remain; return timing
+and cleanup errors need pre-1.0 review. See
+[native CLI evidence](validation/cli-tunnel-native-retirement-2026-10-07.md).

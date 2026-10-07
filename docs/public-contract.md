@@ -1269,3 +1269,28 @@ normal return now awaits its reader and can return previously discarded native
 JoinError; simultaneous work/cleanup failure preserves both originals. Raw cleanup
 has no independent deadline. These state/timing/error differences require pre-1.0
 compatibility review. No CLI option/HTTP wire/FFI/Python close change is certified.
+
+## Optional caller ownership and native status
+
+Implementation `6debaf9b6d78c10b4be1cfd55e2fbcbb69da8756`; [API and timing evidence](validation/cli-tunnel-native-retirement-2026-10-07.md).
+Additive root/device TunnelOwner and TunnelReservation traits and four connect
+functions ending with_owner preserve original functions/options/fields/error enums.
+reserve runs before each strategy transport; earlier discovery/credential loading
+may precede it. CLI admission reserves before polling Source. Borrowed reservation
+Drop must release empty capacity or retain/stop an attached original Arc; complete
+transfers responsibility without publication or join certification. Core attaches
+before initial RSD await; its optional failed-probe policy remains nonfatal.
+
+With either backend, TunnelHandle::shutdown_status observes immutable acquired
+causes/pending joins without stop or worker polling. An incomplete error need not
+contain a native fault: inspect TunnelShutdownFailure::has_retained_outcomes.
+UserspaceTunDevice is root-exported with tunnel-userspace and exposes the same
+status observation. Existing shutdown timing/valid-accounting certification stays.
+
+CLI private retention bounds all owner phases together and preserves original
+native joins across cancelled creation/retirement. Returned server and standalone
+cleanup can wait or report a native fault even after resources recover; primary
+and cleanup stay separately inspectable. Caller Drop cannot await. CLI options,
+stdout/HTTP wire and C/Python interfaces remain. These additive APIs and timing/
+error changes require pre-1.0 review; generic HTTP/startup/device/platform and all
+other original task conditions remain, with no maturity or acknowledgement claim.
