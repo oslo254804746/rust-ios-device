@@ -225,6 +225,10 @@ pub use services::testmanager::workflow::{
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
+#[cfg(feature = "tunnel")]
+pub use tunnel::forward::ForwardReaderCleanup;
+#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+pub use tunnel::TunnelShutdownFailure;
 pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};
 #[cfg(feature = "tunnel")]
 pub use xpc::client::XpcClient;

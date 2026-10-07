@@ -1,5 +1,9 @@
 //! Representative external consumer: no private modules or device I/O.
 
+#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+#[path = "public_contract/tunnel_shutdown_contract.rs"]
+mod tunnel_shutdown_contract;
+
 use std::collections::HashMap;
 use std::future::Future;
 

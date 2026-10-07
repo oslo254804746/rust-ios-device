@@ -7,6 +7,7 @@
 //!   client sends 16-byte IPv6 addr + 4-byte LE port after connecting
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,9 +18,9 @@ use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv6Address};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 
+use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
 const PREFIX_LEN: u8 = 64;
@@ -109,7 +110,11 @@ struct ConnState {
 /// Userspace TUN device using smoltcp + local TCP proxy.
 pub struct UserspaceTunDevice {
     pub local_port: u16,
-    task_handles: Vec<JoinHandle<()>>,
+    task_handles: Vec<OwnedTask>,
+    stopped: AtomicBool,
+    stop: watch::Sender<()>,
+    clients: Arc<SharedChildTaskSet>,
+    outcomes: Arc<Ledger>,
 }
 
 impl UserspaceTunDevice {
@@ -157,15 +162,21 @@ impl UserspaceTunDevice {
         let (conn_req_tx, conn_req_rx) = mpsc::channel::<ConnRequest>(32);
 
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
+        let outcomes = Ledger::new();
+        let clients = SharedChildTaskSet::new(Arc::clone(&outcomes), ChildRole::ProxyClient);
+        let (stop, stop_rx) = watch::channel(());
 
         let reader_task = tokio::spawn(async move {
-            read_ios_packets(&mut ios_reader, payload_capacity, ios_to_smol_tx).await;
+            let result =
+                read_ios_packets_owned(&mut ios_reader, payload_capacity, ios_to_smol_tx).await;
             tracing::debug!("userspace: iOS packet reader exited");
+            result
         });
 
         let writer_task = tokio::spawn(async move {
-            write_ios_packets(&mut ios_writer, mtu, smol_to_ios_rx).await;
+            let result = write_ios_packets_owned(&mut ios_writer, mtu, smol_to_ios_rx).await;
             tracing::debug!("userspace: iOS packet writer exited");
+            result
         });
 
         let smoltcp_task = tokio::spawn(async move {
@@ -178,22 +189,85 @@ impl UserspaceTunDevice {
             )
             .await;
             tracing::debug!("userspace: smoltcp loop exited");
+            Ok(())
         });
 
+        let listener_clients = Arc::clone(&clients);
+        let listener_outcomes = Arc::clone(&outcomes);
         let listener_task = tokio::spawn(async move {
-            run_local_listener(listener, conn_req_tx).await;
+            run_local_listener_owned(
+                listener,
+                conn_req_tx,
+                stop_rx,
+                listener_clients,
+                listener_outcomes,
+            )
+            .await;
             tracing::debug!("userspace: local listener exited");
+            Ok(())
         });
 
         tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
         Ok(Self {
             local_port,
-            task_handles: vec![reader_task, writer_task, smoltcp_task, listener_task],
+            task_handles: vec![
+                OwnedTask::new(
+                    reader_task,
+                    ParentRole::ForwardOrReader,
+                    Arc::clone(&outcomes),
+                ),
+                OwnedTask::new(writer_task, ParentRole::Writer, Arc::clone(&outcomes)),
+                OwnedTask::new(smoltcp_task, ParentRole::Smoltcp, Arc::clone(&outcomes)),
+                OwnedTask::new(listener_task, ParentRole::Listener, Arc::clone(&outcomes)),
+            ],
+            stopped: AtomicBool::new(false),
+            stop,
+            clients,
+            outcomes,
         })
     }
 
     pub fn is_alive(&self) -> bool {
-        self.task_handles.iter().all(|handle| !handle.is_finished())
+        !self.stopped.load(Ordering::Acquire)
+            && self.task_handles.iter().all(|handle| !handle.is_finished())
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.stop.send_replace(());
+        // Listener remains owned/running long enough to drain its child set.
+        for task in self.task_handles.iter().take(3) {
+            task.abort();
+        }
+    }
+
+    /// Stop and join all four workers and proxy children under one cooperative
+    /// absolute budget, starting at this call before the future is polled.
+    /// Join-mutex waits share it. Zero requests stop and returns native expiry;
+    /// overflow returns InvalidInput without stopping. Retain the owner to retry
+    /// unfinished joins after timeout or caller-future Drop. Native failures
+    /// remain errors after recovery. Final Drop requests cancellation only.
+    pub fn shutdown(
+        &self,
+        budget: Duration,
+    ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
+        let deadline = owner::deadline(budget);
+        if deadline.is_ok() {
+            self.request_stop();
+        }
+        self.shutdown_until(deadline)
+    }
+
+    pub(crate) fn shutdown_until(
+        &self,
+        deadline: Result<tokio::time::Instant, TunnelError>,
+    ) -> impl std::future::Future<Output = Result<(), TunnelError>> + Send + '_ {
+        owner::join_until(deadline, &self.outcomes, async {
+            for task in &self.task_handles {
+                task.join().await;
+            }
+            self.clients.drain().await;
+        })
     }
 }
 
@@ -207,30 +281,36 @@ impl Drop for UserspaceTunDevice {
 
 // ── iOS packet I/O ─────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<Vec<u8>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let _ = read_ios_packets_owned(reader, payload_capacity, tx).await;
+}
+
+async fn read_ios_packets_owned<R>(
+    reader: &mut R,
+    payload_capacity: usize,
+    tx: mpsc::Sender<Vec<u8>>,
+) -> Result<(), TunnelError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut hdr = vec![0u8; IPV6_HEADER_LEN];
     loop {
-        if reader.read_exact(&mut hdr).await.is_err() {
-            break;
-        }
+        reader.read_exact(&mut hdr).await?;
         let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
         if hdr[0] >> 4 != 6 {
             tracing::warn!("userspace: non-IPv6 packet from iOS, skipping");
-            if !discard_bytes(reader, payload_len).await {
-                break;
-            }
+            discard_bytes_owned(reader, payload_len).await?;
             continue;
         }
         if payload_len > payload_capacity {
             tracing::warn!(
                 "userspace: IPv6 payload {payload_len} exceeds negotiated payload capacity {payload_capacity}"
             );
-            if !discard_bytes(reader, payload_len).await {
-                break;
-            }
+            discard_bytes_owned(reader, payload_len).await?;
             continue;
         }
         let packet_len = match IPV6_HEADER_LEN.checked_add(payload_len) {
@@ -243,35 +323,40 @@ where
         let mut pkt = Vec::with_capacity(packet_len);
         pkt.extend_from_slice(&hdr);
         pkt.resize(packet_len, 0);
-        if reader
-            .read_exact(&mut pkt[IPV6_HEADER_LEN..])
-            .await
-            .is_err()
-        {
-            break;
-        }
+        reader.read_exact(&mut pkt[IPV6_HEADER_LEN..]).await?;
         if tx.send(pkt).await.is_err() {
             break;
         }
     }
+    Ok(())
 }
 
-async fn discard_bytes<R>(reader: &mut R, mut remaining: usize) -> bool
+async fn discard_bytes_owned<R>(reader: &mut R, mut remaining: usize) -> Result<(), TunnelError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut discard = [0u8; 4096];
     while remaining > 0 {
         let chunk_len = remaining.min(discard.len());
-        if reader.read_exact(&mut discard[..chunk_len]).await.is_err() {
-            return false;
-        }
+        reader.read_exact(&mut discard[..chunk_len]).await?;
         remaining -= chunk_len;
     }
-    true
+    Ok(())
 }
 
-async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, mut rx: mpsc::Receiver<Vec<u8>>)
+#[cfg(test)]
+async fn write_ios_packets<W>(writer: &mut W, mtu: ValidatedMtu, rx: mpsc::Receiver<Vec<u8>>)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let _ = write_ios_packets_owned(writer, mtu, rx).await;
+}
+
+async fn write_ios_packets_owned<W>(
+    writer: &mut W,
+    mtu: ValidatedMtu,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+) -> Result<(), TunnelError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -284,10 +369,9 @@ where
             );
             continue;
         }
-        if writer.write_all(&pkt).await.is_err() {
-            break;
-        }
+        writer.write_all(&pkt).await?;
     }
+    Ok(())
 }
 
 // ── smoltcp event loop ─────────────────────────────────────────────────────────
@@ -592,28 +676,63 @@ fn flush_socket_send(socket: &mut tcp::Socket, pending: &mut VecDeque<Vec<u8>>) 
 
 // ── Local TCP listener (go-ios compatible protocol) ────────────────────────────
 
-async fn run_local_listener(listener: TcpListener, conn_req_tx: mpsc::Sender<ConnRequest>) {
-    run_local_listener_with_limit(
+async fn run_local_listener_owned(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    stop: watch::Receiver<()>,
+    clients: Arc<SharedChildTaskSet>,
+    outcomes: Arc<Ledger>,
+) {
+    run_local_listener_with_limit_owned(
         listener,
         conn_req_tx,
         MAX_LOCAL_PROXY_CLIENTS,
         LOCAL_PROXY_PREAMBLE_TIMEOUT,
+        stop,
+        clients,
+        outcomes,
     )
     .await;
 }
 
+#[cfg(test)]
 async fn run_local_listener_with_limit(
     listener: TcpListener,
     conn_req_tx: mpsc::Sender<ConnRequest>,
     max_clients: usize,
     preamble_timeout: Duration,
 ) {
+    let outcomes = Ledger::new();
+    let clients = SharedChildTaskSet::new(Arc::clone(&outcomes), ChildRole::ProxyClient);
+    let (_stop, receiver) = watch::channel(());
+    run_local_listener_with_limit_owned(
+        listener,
+        conn_req_tx,
+        max_clients,
+        preamble_timeout,
+        receiver,
+        clients,
+        outcomes,
+    )
+    .await;
+}
+
+async fn run_local_listener_with_limit_owned(
+    listener: TcpListener,
+    conn_req_tx: mpsc::Sender<ConnRequest>,
+    max_clients: usize,
+    preamble_timeout: Duration,
+    mut stop: watch::Receiver<()>,
+    clients: Arc<SharedChildTaskSet>,
+    outcomes: Arc<Ledger>,
+) {
     let permits = Arc::new(Semaphore::new(max_clients));
-    let mut client_tasks = JoinSet::new();
+    let mut client_tasks = clients.lock().await;
 
     loop {
         tokio::select! {
             biased;
+            _ = stop.changed() => break,
             _ = conn_req_tx.closed() => break,
             joined = client_tasks.join_next(), if !client_tasks.is_empty() => {
                 if let Some(Err(error)) = joined {
@@ -621,8 +740,13 @@ async fn run_local_listener_with_limit(
                 }
             }
             accepted = listener.accept() => {
-                let Ok((client, peer)) = accepted else {
-                    break;
+                let (client, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        // Capture the acquired native primary before child joins.
+                        outcomes.record_work(3, Arc::new(TunnelError::Io(error)));
+                        break;
+                    }
                 };
                 let permit = match permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
@@ -642,6 +766,9 @@ async fn run_local_listener_with_limit(
             }
         }
     }
+    drop(listener);
+    client_tasks.abort_all();
+    while client_tasks.join_next().await.is_some() {}
 }
 
 async fn handle_local_client(
@@ -744,6 +871,9 @@ async fn proxy_local_client(
     };
     tokio::select! { _ = read_half => {} _ = write_half => {} }
 }
+
+#[cfg(test)]
+mod shutdown_tests;
 
 #[cfg(test)]
 mod tests {

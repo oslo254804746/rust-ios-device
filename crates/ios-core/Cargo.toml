@@ -219,6 +219,10 @@ tar          = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 libc         = { workspace = true }
 
+[dev-dependencies]
+# A worker can block in controlled teardown while the timer drives shutdown.
+tokio        = { workspace = true, features = ["rt-multi-thread"] }
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

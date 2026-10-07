@@ -24,7 +24,7 @@ use crate::lockdown::pair_record::PairRecord;
 const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(feature = "tunnel-kernel")]
-use crate::tunnel::forward::forward_packets_inner;
+use crate::tunnel::forward::forward_packets_inner_owned;
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::tun::kernel::KernelTunDevice;
 #[cfg(feature = "tunnel-userspace")]
@@ -133,17 +133,28 @@ where
             }
             #[cfg(feature = "tunnel-kernel")]
             {
-                let (handle, cancel_rx) =
-                    TunnelHandle::new(connection.info.udid.clone(), tunnel_info.clone(), None);
                 let tun = KernelTunDevice::create_validated(&tunnel_info.client_address, mtu)
                     .await
                     .map_err(CoreError::Tunnel)?;
                 let strategy = connection.strategy;
-                tokio::spawn(async move {
-                    if let Err(err) = forward_packets_inner(stream, tun, mtu, cancel_rx).await {
-                        tracing::error!(strategy, error = %crate::redaction::diagnostic_error(&err), "kernel TUN forward failed");
-                    }
-                });
+                // The synchronous factory attaches the typed parent JoinHandle
+                // before the following probe can suspend or be cancelled.
+                let handle = TunnelHandle::new_owned_kernel(
+                    connection.info.udid.clone(),
+                    tunnel_info.clone(),
+                    move |cancel_rx, outcomes, reader| {
+                        tokio::spawn(async move {
+                            let result = forward_packets_inner_owned(
+                                stream, tun, mtu, cancel_rx, outcomes, reader,
+                            )
+                            .await;
+                            if let Err(err) = &result {
+                                tracing::error!(strategy, error = %crate::redaction::diagnostic_error(err), "kernel TUN forward failed");
+                            }
+                            result
+                        })
+                    },
+                );
                 let rsd =
                     attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
                 Ok(connection.into_device(handle, rsd))

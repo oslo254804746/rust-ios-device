@@ -26,6 +26,9 @@ enum ForwardStep {
 /// the forwarding future aborts its owned reader and closes the stream.
 /// Cancellation also covers a selected TUN/stream write or flush wait and is
 /// checked before starting each new forwarding step.
+/// Normal return aborts and joins the local reader, preserving an unexpected
+/// native join failure alongside any forwarding primary. This raw helper has
+/// no separate cleanup deadline; caller-future Drop requests cancellation only.
 #[allow(dead_code)]
 pub async fn forward_packets<S, D>(
     stream: S,
@@ -43,23 +46,134 @@ where
 
 pub(crate) async fn forward_packets_inner<S, D>(
     stream: S,
-    mut tun: D,
+    tun: D,
     mtu: ValidatedMtu,
-    mut cancel: watch::Receiver<()>,
+    cancel: watch::Receiver<()>,
 ) -> Result<(), TunnelError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     D: TunDevice,
 {
     let payload_capacity = mtu.ipv6_payload_capacity()?;
-    let (reader, mut writer) = tokio::io::split(stream);
-    let (packet_tx, mut packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
+    let (reader, writer) = tokio::io::split(stream);
+    let (packet_tx, packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
     // Keep the reader owned even if the caller drops this future while a TUN
     // or stream write is pending. Dropping a bare JoinHandle would detach it.
     let mut reader_tasks = JoinSet::new();
     reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
 
-    let outcome = loop {
+    let outcome = forward_loop(writer, tun, mtu, cancel, packet_rx).await;
+    let mut cleanup = None;
+    // An error from a reader already completed before our abort remains an
+    // unexpected native result, including cancellation from another owner.
+    while let Some(joined) = reader_tasks.try_join_next() {
+        if let Err(error) = joined {
+            if cleanup.is_none() {
+                cleanup = Some(error);
+            }
+        }
+    }
+    reader_tasks.abort_all();
+    while let Some(joined) = reader_tasks.join_next().await {
+        if let Err(error) = joined {
+            if !error.is_cancelled() && cleanup.is_none() {
+                cleanup = Some(error);
+            }
+        }
+    }
+    match (outcome, cleanup) {
+        (outcome, None) => outcome,
+        (Ok(()), Some(cleanup)) => Err(TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::Other,
+            "join tunnel packet reader",
+            cleanup,
+        ))),
+        (Err(primary), Some(cleanup)) => Err(TunnelError::Io(crate::error::context::retained_io(
+            std::io::ErrorKind::Other,
+            "finish tunnel forwarding",
+            ForwardReaderCleanup { primary, cleanup },
+        ))),
+    }
+}
+
+/// Both original outcomes when forwarding and its reader cleanup fail.
+pub struct ForwardReaderCleanup {
+    primary: TunnelError,
+    cleanup: tokio::task::JoinError,
+}
+
+impl ForwardReaderCleanup {
+    /// Original forwarding failure; also returned by `Error::source`.
+    pub fn primary(&self) -> &TunnelError {
+        &self.primary
+    }
+    /// Original unexpected reader join failure, including its native flags.
+    pub fn cleanup(&self) -> &tokio::task::JoinError {
+        &self.cleanup
+    }
+}
+
+impl std::fmt::Display for ForwardReaderCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tunnel forwarding failed; reader cleanup also failed")
+    }
+}
+impl std::fmt::Debug for ForwardReaderCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelForwardReaderCleanup")
+            .field("primary_class", &crate::classify_error(&self.primary))
+            .field("cleanup_class", &crate::classify_error(&self.cleanup))
+            .finish()
+    }
+}
+impl std::error::Error for ForwardReaderCleanup {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+
+#[cfg(feature = "tunnel-kernel")]
+pub(crate) async fn forward_packets_inner_owned<S, D>(
+    stream: S,
+    tun: D,
+    mtu: ValidatedMtu,
+    cancel: watch::Receiver<()>,
+    outcomes: std::sync::Arc<crate::tunnel::owner::Ledger>,
+    readers: std::sync::Arc<crate::tunnel::owner::SharedChildTaskSet>,
+) -> Result<(), TunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    D: TunDevice,
+{
+    let payload_capacity = mtu.ipv6_payload_capacity()?;
+    let (reader, writer) = tokio::io::split(stream);
+    let (packet_tx, packet_rx) = mpsc::channel(STREAM_PACKET_QUEUE);
+    // Runtime owns the set; this guard aborts children on parent unwind without
+    // dropping the set's original join handles. A later owner can drain them.
+    let mut reader_tasks = readers.lock().await;
+    reader_tasks.spawn(read_stream_packets(reader, payload_capacity, packet_tx));
+    let outcome = forward_loop(writer, tun, mtu, cancel, packet_rx).await;
+    if let Err(primary) = outcome {
+        // Preserve the exact original object before any cleanup await or expiry.
+        outcomes.record_work(0, std::sync::Arc::new(primary));
+    }
+    reader_tasks.abort_all();
+    while reader_tasks.join_next().await.is_some() {}
+    outcomes.work_result()
+}
+
+async fn forward_loop<W, D>(
+    mut writer: W,
+    mut tun: D,
+    mtu: ValidatedMtu,
+    mut cancel: watch::Receiver<()>,
+    mut packet_rx: mpsc::Receiver<Result<Vec<u8>, TunnelError>>,
+) -> Result<(), TunnelError>
+where
+    W: AsyncWrite + Unpin,
+    D: TunDevice,
+{
+    loop {
         // Cover the selected branch's writes as well as branch selection. A
         // fresh check each iteration also stops an always-ready forwarding loop.
         let step: Result<ForwardStep, TunnelError> = tokio::select! {
@@ -100,10 +214,7 @@ where
             Ok(ForwardStep::End) => break Ok(()),
             Err(error) => break Err(error),
         }
-    };
-
-    reader_tasks.abort_all();
-    outcome
+    }
 }
 
 /// Read whole IPv6 packets off `reader` and hand them to the forwarding loop.

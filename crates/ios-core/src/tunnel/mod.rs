@@ -102,6 +102,10 @@ pub mod forward;
 #[cfg(feature = "tunnel")]
 pub mod handshake;
 pub mod manager;
+#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+pub(crate) mod owner;
+#[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+pub use owner::TunnelShutdownFailure;
 #[cfg(feature = "tunnel")]
 pub mod tun;
 
