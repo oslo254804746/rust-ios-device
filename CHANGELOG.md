@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject manual tunnel work that crosses its deadline during a synchronous
+  poll. Restore an unobserved displaced row, retain the late runtime for native
+  cleanup, and preserve acquired IO without contacting fallback after expiry.
+  See [deadline crossing evidence](docs/validation/tunnel-manual-poll-crossing-2026-10-07.md).
+
 - Retain CLI tunnel runtimes before RSD probing and through cancelled publication,
   removal and shutdown. One bounded owner registry keeps original native joins;
   server native/metadata cleanup shares a budget and preserves acquired causes.

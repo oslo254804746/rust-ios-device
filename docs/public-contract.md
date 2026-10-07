@@ -1294,3 +1294,15 @@ and cleanup stay separately inspectable. Caller Drop cannot await. CLI options,
 stdout/HTTP wire and C/Python interfaces remain. These additive APIs and timing/
 error changes require pre-1.0 review; generic HTTP/startup/device/platform and all
 other original task conditions remain, with no maturity or acknowledgement claim.
+
+## Manual tunnel same-poll deadline behavior
+
+The [manual deadline crossing profile](validation/tunnel-manual-poll-crossing-2026-10-07.md),
+`a963679ab0f853b1a38bfcee9ac59471d4920641`, prevents late synchronous Source/metadata success from advancing
+query/publication and restores an unobserved displaced table row if insertion
+crosses the clock. The original checked15s total and actual Tokio Elapsed stay;
+acquired original IO remains primary without late fallback contact. Core/public
+APIs, error enums, options, output and wire payloads remain. Late-result timing
+needs pre-1.0 review. Cooperative CPU/Drop, automatic candidates/whole-scan and
+other HTTP/startup/metadata/device requirements remain; local row restoration
+does not certify a device transaction or safe replay.

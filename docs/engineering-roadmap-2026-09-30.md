@@ -114,8 +114,8 @@
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入/coordinator锁等待取消/manual建连checked15s absolute total与迟到ready拒绝与scan setup内部table/USB coordinator/无授权ready-failure锁共享绝对期限及迟到poll拒绝与Userspace native listener初始化先于worker与ticket同步publication/failure commit及scan terminal capture复查与packet forward reader caller-drop/abort/unwind ownership与forward selected write/flush单watch逐轮取消主机 profiles 已交付与Core native retained parent/child joins、checked shutdown/retry/native cause与shared stop/retire主机profile已交付；其他协议/清理和设备条件继续；CLI pre-RSD/per-target originalArc ownership与固定4096退役、readonly acquired-cause/status/firstouter join证书和held-table native shutdown主机profile已交付，genericHTTP/upgrades/blocking/startup/wholeScan/metadata/physicalfreshness/reuse/restart/manualepoch及其他原条件继续 |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝/coordinator锁等待取消/manual协调器获取至publication同一绝对期限与scan setup内部锁/USB ticket同clock及native primary保留/Userspace native bind失败无detached workers/同步publication-failure epoch fence及scan terminal复查已交付主机 profiles与Core native retained parent/child joins、checked shutdown/retry/native cause与shared stop/retire主机profile已交付；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/genericHTTP/upgrades/blocking workers、平台/真机证据继续；CLI pre-RSD/per-target originalArc ownership与固定4096退役、readonly acquired-cause/status/firstouter join证书和held-table native shutdown主机profile已交付，genericHTTP/upgrades/blocking/startup/wholeScan/metadata/physicalfreshness/reuse/restart/manualepoch及其他原条件继续 |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：DTX/FPS/AFC/H2/XPC/borrowed RSD/Lockdown/DeviceLink/MobileBackup2/NotificationProxy/Companion/WebInspector client framing/start/event、session total/late reply/pending-skipped bounds、metadata/staging/flattened snapshot bounds、CLI discovery primary retention、finite CLI default/setup/total/signal/output/cleanup、interactive CLI setup/idle/per-eval/input/signal/cleanup、CDP page terminal idle/native primary retention、CDP/WebDriver server setup totals、direct CDP page independent cleanup/primary retention、WebDriver context/forwarding cleanup、direct CDP page lease cleanup、CDP browser child outcomes/explicit joins、CDP browser lease/retiring owners、WebDriver DELETE handler total/native cleanup errors、stored session retiring task owners/explicit joins、WebDriver typed revocation cleanup results 与 notification/companion CLI cleanup/setup/total/signal 、tunnel server persistent shutdown/owned scanner/pinned Ctrl-C/独立2s收尾/关闭终态拒绝迟到接入/coordinator锁等待取消/manual建连checked15s absolute total与迟到ready拒绝与scan setup内部table/USB coordinator/无授权ready-failure锁共享绝对期限及迟到poll拒绝与Userspace native listener初始化先于worker与ticket同步publication/failure commit及scan terminal capture复查与packet forward reader caller-drop/abort/unwind ownership与forward selected write/flush单watch逐轮取消主机 profiles 已交付与Core native retained parent/child joins、checked shutdown/retry/native cause与shared stop/retire主机profile已交付；其他协议/清理和设备条件继续；CLI pre-RSD/per-target originalArc ownership与固定4096退役、readonly acquired-cause/status/firstouter join证书和held-table native shutdown主机profile已交付，genericHTTP/upgrades/blocking/startup/wholeScan/metadata/physicalfreshness/reuse/restart/manualepoch及其他原条件继续; manual同poll跨clock Source/metadata/query/publication拒绝、unobserved insert还原oldliveArc、新native保原joins、actualElapsed/原IO/no latefallback主机profile已交付，automaticcandidate/wholeScan/其他原条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：manager 查询/停止隔离、同设备协调、四个连接许可、停止/迟到发布/旧快照保护、observed ID/发布前查询/identity 退避/本地失活拒绝、discovery shared15s/epochcancel、失败记录有效快照清理与4096 retained-or-inflight slots 与server owned scanner/持久退出/有界收尾/终态接入拒绝/coordinator锁等待取消/manual协调器获取至publication同一绝对期限与scan setup内部锁/USB ticket同clock及native primary保留/Userspace native bind失败无detached workers/同步publication-failure epoch fence及scan terminal复查已交付主机 profiles与Core native retained parent/child joins、checked shutdown/retry/native cause与shared stop/retire主机profile已交付；last-check/reuse/restart/manual epoch、其他 metadata/字节上限、wholeScan/CPU/genericHTTP/upgrades/blocking workers、平台/真机证据继续；CLI pre-RSD/per-target originalArc ownership与固定4096退役、readonly acquired-cause/status/firstouter join证书和held-table native shutdown主机profile已交付，genericHTTP/upgrades/blocking/startup/wholeScan/metadata/physicalfreshness/reuse/restart/manualepoch及其他原条件继续; manual同poll跨clock Source/metadata/query/publication拒绝、unobserved insert还原oldliveArc、新native保原joins、actualElapsed/原IO/no latefallback主机profile已交付，automaticcandidate/wholeScan/其他原条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -8024,3 +8024,41 @@ wholeScan/metadata/physicalfreshness/reuse/restart/manualepochs及其他L01-L04�
 9完成/9未开始/12进行中或待条件。450product hashes、actualbinary/commitpatch与
 只读refs保持，capabilities针对同一已验证binary复查PASS。仅文档变化，未重跑Rust；
 16串行gates的真实源码证据保持，不冒充其他平台/真机验收，goal继续active。
+
+### 大类 4：L01/L02 manual same-poll deadline crossing（2026-10-07）
+
+实现 `a963679ab0f853b1a38bfcee9ac59471d4920641`，父 `9b2e355f4bd2237afd130beb0b0a45634aa4ea48`；4 source files357+/6-、7newtests。
+[验收证据](validation/tunnel-manual-poll-crossing-2026-10-07.md)。同originalchecked15s
+clock在Source admission、completed native handoff、metadata后/query前、publication前后
+同步复查。一个Source/metadata poll跨clock不再继续query/publication；default fallback
+保已取得原IO并在due时不再contactpaired/transport。Private payloadfree decision回到
+independentnative timer取得actualElapsed，lateReadyOk拒绝、原nativeIO不遮盖。
+
+Real tableinsert同poll跨clock时，在table+epoch fences下remove未观察newrow、还原
+displaced originalrow及exactliveArc；释fences后latelease退役stop并保原nativejoins。
+这是本地表还原，不是device事务rollback/ACK/replay认证。CPU/metadata/Drop仍cooperative。
+Automaticcandidate继续old policy；wholeScan/genericHTTP/upgrades/blocking/startup/metadata
+字节预算/physicalfreshness/reuse/restart/manualepochs及其他原L01-L04条件仍需完成。
+
+7new=5actualuserspace nativeworkers/DuplexStream/privateSource metadata+2real private
+wrapper；controlled200msclock/250mssynchronouspoll不是L04性能。原13nativeCLI testfn
+byteidentical，其他oldtests/Core/public/fields/errorenums/options/wire/deps/features/lock保持。
+Baseline98426 terminal101/1PASS4FAIL，3actual cases先join/EOF/tasks恢复后regression；
+firstfixed51593 fivePASS，complete38308 sevenPASS。Control81695禁postinsertcheck/rollback，
+terminal101/0PASS1FAIL，两个originalnative joins/status/EOF/taskbaseline先恢复再fail；
+只计划file改变，final前恢复全部451producthash。Privatecfgtestcallback只controlleddelay，
+不持callbackmutex、无生产hook/SDK fake ctor。Exactfailedsource/log/hash保留。
+
+Runner70521terminal0/all7串行：CLI201/1ignored/minCLIalltargets/oldstack5/strictworkspace/
+fmt/full/.venvtools73 PASS。**2725Rust/13Python，CLI1064/Core1496/public55，0FAIL/
+2existingignored**；MSRV1.80.1/66features/4groups/docs7+7/snippets3/C ABI/3.12 rebuilt
+wheel-sdist/help118/raw38/host5/CLI95/backup3 PASS。22device NOT_RUN；Chromium/installed
+3.9/3.13 NOT_RERUN，maturity不升。PatchSHA256 `35bd3891b6a7c152c1ffc1efbb493ca168dc8d62f8b1af988022cbd248f0c42b`，actualdebugios
+SHA256 `3e06a80ec5fd666eee4615c7060bfb9219591778d1565d2aef1ef97f5964fc9b`；commit=frozen451hash，referenceHEAD/status不变。
+Root独串行Rust/独edit，无activevalidation期间source/doc edits；agents quota无新交付。
+CARGO_INCREMENTAL=0，无cache删除/push/publish/historyrewrite/device/credentials/Apple/
+elevatedTUN。Ignored证据 `target/validation/deadline-crossing-2026-10-07/`；impl后独立docs。
+
+有效30主项及全部children仍active，9完成/21未完成（9未开始/12进行中或待条件），只
+Q04全部子项排除，UID未修复，其他原验收不豁免。全部old31task行/history/118capabilities
+body/maturity/oldevidence保持；不完成主项/第四类/总体goal，后续第四类及第五至九类继续。

@@ -1129,3 +1129,18 @@ three failing controls/tools73 PASS. This certifies the native host slice, not
 generic HTTP/upgrades/blocking/startup/whole-scan/metadata/physical freshness/
 reuse/restart/manual epoch or other L01-L04/classes5-9.22device NOT_RUN; active30
 excluding Q04/all children,9complete21unfinished,UID untouched.
+
+## Manual tunnel deadline crossing within one poll
+
+The [manual same-poll profile](validation/tunnel-manual-poll-crossing-2026-10-07.md),
+`a963679ab0f853b1a38bfcee9ac59471d4920641`, reuses the original checked15s deadline at Source admission,
+native handoff, metadata/query and synchronous publication. A late insertion
+removes the unobserved new row and restores the exact original row while table
+and epoch fences stay held; the new lease retires after both fences release.
+Late successful Ready becomes the independent timer's actual Elapsed. An acquired
+native IO remains primary and default fallback stops before another contact.
+Timers remain cooperative through synchronous work/Drop. Automatic candidate,
+whole-scan, HTTP/upgrades/blocking/startup/metadata/device and other original
+conditions remain.7newtests,201tunnel/1ignored,all7 serial gates/full2725
+Rust13Python0FAIL2existingignored/tools73 PASS; active30 excludingQ04,
+9complete21unfinished,22device NOT_RUN,UID untouched.

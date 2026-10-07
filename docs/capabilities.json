@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-manual-poll-crossing-a963679",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual userspace Tokio native workers and DuplexStream; private CLI discovery/device metadata. No OS TUN/device."
+      ],
+      "required_state": [
+        "4 source files357+/6-;7newtests,5actual-native/2private-wrapper. Controlled200ms budget/250ms synchronous one-poll delay. Baseline1PASS4FAIL/control0PASS1FAIL recovered native joins/EOF/tasks before assertions;451 frozen product hashes/final70521 terminal0/all7 serial gates."
+      ],
+      "tested_commit": "a963679ab0f853b1a38bfcee9ac59471d4920641",
+      "date": "2026-10-07",
+      "location": "docs/validation/tunnel-manual-poll-crossing-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Manual Source/native handoff/metadata/query/publication share original checked clock even across same-poll expiry;unobserved insert restores original live Arc,new runtime remains retained,actual Elapsed/acquired IO remain,no late fallback contact. CLI201/1ignored/full2725Rust13PythonCLI1064Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Cooperative CPU/Drop,automatic candidates/whole-scan/genericHTTP/upgrades/blocking/startup/metadata/physicalfreshness/reuse/restart/manualepochs/otherL01-L04/classes5-9 remain. Active30/allchildren excludingQ04,9complete21unfinished,UID untouched,all other acceptance remains. No maturity/remote rollback/ACK/RSS/performance/platform certification;late-result timing needs pre-1.0 review."
+    },
+    {
       "id": "linux-cli-native-retirement-6debaf9",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",

@@ -2014,3 +2014,14 @@ Server phase outcomes are saved before Ready; held-table expiry can coexist with
 complete native joins. Metadata-only direct Elapsed and original signal/server
 primary contracts remain. Opaque wrappers render fixed context/categories and
 preserve native sources; no error-enum, protocol, safe-retry or remote-ACK change.
+
+## Late manual connection Ready and acquired IO
+
+Implementation `a963679ab0f853b1a38bfcee9ac59471d4920641`; [original error evidence](validation/tunnel-manual-poll-crossing-2026-10-07.md).
+Payload-free private deadline decisions return control to the independently
+polled Tokio timer; callers still receive actual Elapsed classified Timeout.
+Late successful Ready is rejected. An already acquired Source/metadata native
+error remains inspectable with its original category even after a long poll;
+default fallback cannot open another discovery/transport after the total expires.
+The private decision adds no public error enum or safe-retry/remote rollback rule.
+Automatic candidate and other timing/cleanup requirements remain.

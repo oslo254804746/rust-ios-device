@@ -333,3 +333,15 @@ requests stop but cannot await; startup-signal and generic HTTP/delegated-task
 conditions remain. Existing options/stdout/HTTP payloads remain; return timing
 and cleanup errors need pre-1.0 review. See
 [native CLI evidence](validation/cli-tunnel-native-retirement-2026-10-07.md).
+
+## Manual connection crossing a deadline during one poll
+
+The existing manual15s total now fences Source/native handoff, metadata/query
+and publication even when synchronous work crosses the clock within one poll.
+A late real insertion is removed before another table reader can observe it;
+a displaced original row/runtime stays live. The new exact native Arc retires
+after table/epoch guards release and retains its joins. Actual Tokio Elapsed
+and acquired original IO remain; default fallback stops before another contact
+after expiry. Synchronous work remains cooperative. Automatic candidate and
+whole-scan policy still need their own acceptance. See
+[same-poll deadline evidence](validation/tunnel-manual-poll-crossing-2026-10-07.md).
