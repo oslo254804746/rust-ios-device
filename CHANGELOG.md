@@ -491,6 +491,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve an original paired discovery error when manager clear/close completes
+  inside the Source reply. Successful stale snapshots remain discarded.
+  See [error retention evidence](docs/validation/tunnel-paired-error-retention-2026-10-07.md).
+
 - Keep automatic tunnel candidate creation under one checked absolute deadline,
   including native handoff,metadata/query and publication. Reject late success
   and zero/overflow internal admission while preserving original native errors.

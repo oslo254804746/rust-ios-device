@@ -2035,3 +2035,17 @@ Zero never polls work; unrepresentable internal duration is InvalidInput before
 Source without panic. Automatic workflow fixtures prove admission/publication
 and retained original joins; two direct scanned-wrapper cases prove categories.
 Failure identity/backoff and cancellation recording policy stay. Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain.
+
+## Paired discovery native cause before epoch cancellation
+
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+The stale paired-result branch preserves its acquired original Err and maps only
+successful stale discovery to Ok. The fixture's actual TCP partial UnexpectedEof
+remains directly downcastable and retains the established Io category;EOF is not
+automatically classified as device disconnect. Core classification/error enums
+and all preceding assertions remain. No new wrapper or synthetic cause is added.
+Returned error instead of swallowed success needs pre-1.0 review. Whole-scan post-paired totals/cancellation,out-of-clock failure bookkeeping,metadata bytes,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original L01-L04/classes5-9 requirements remain.
+
+The paired fixtures cover clear/close completed before Source returns. A later
+epoch change between the first and second paired checks can still discard that
+original error; this profile does not certify that second fence.

@@ -357,3 +357,14 @@ acquired original IO remain. The four-candidate window/admission policy stays.
 Failure bookkeeping can still wait outside this clock; whole-scan handoff,
 reconciliation and readiness totals remain. See
 [automatic deadline evidence](validation/tunnel-automatic-deadline-2026-10-07.md).
+
+## Paired discovery error during clear or close
+
+The scanner still discards successful paired snapshots from an old epoch.
+An original error already returned in the same Source poll as clear/close now
+survives instead of becoming success. Candidate handoff/readiness remain fenced;
+existing discovery/candidate clocks and stop-A/active-B isolation stay. See
+[native paired error evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+
+This evidence covers clear/close completed before the Source reply; an epoch
+change at the later paired check still needs a separate error-retention fix.

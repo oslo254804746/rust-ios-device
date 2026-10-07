@@ -1317,3 +1317,16 @@ error enums, output/wire,Core/bindings/dependencies/features remain. Late-result
 and zero/overflow timing need pre-1.0 review. Candidate-window policy stays;
 this is cooperative and not a whole-scan,device rollback or safe-replay contract.
 Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure bookkeeping,metadata byte budgets,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original conditions remain.
+
+## Acquired paired discovery error after cancellation
+
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+Clear/close completed inside Source no longer turns its original error reply into
+success. The original IO object and category stay;successful stale snapshots do
+not connect candidates or mark ready. Public APIs/options/output/wire/enums,
+clocks/dependencies/features/Core/bindings remain. This corrected error outcome
+needs pre-1.0 review;local TCP/privateSource fixtures do not certify mobdev2/DNS,
+pairing or device behavior. Whole-scan post-paired totals/cancellation,out-of-clock failure bookkeeping,metadata bytes,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original L01-L04/classes5-9 requirements remain.
+
+Evidence covers clear/close completed before the Source reply. Error retention
+at the later paired epoch check remains open and needs its own regression.

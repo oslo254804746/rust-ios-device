@@ -4,6 +4,25 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-paired-error-1ab05e3",
+      "limitations": "This profile covers clear/close completed inside Source before its reply. The later paired epoch fence can still discard an acquired original error and requires a separate regression/fix.",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual localhost TCP partial EOF,actual published userspace Tokio workers/DuplexStream;private CLI discovery metadata. No mobdev2/DNS/pairing/device/OS TUN."
+      ],
+      "required_state": [
+        "3 source files 134+/ 1-;4newcases;wrong-old82506 terminal101/new2PASS2FAIL+old2PASS after native recovery;new erroneous EOF category assertion13051 archived then corrected to existing Io.453product hashes/final26492 terminal0/all7 serial gates. Root alone Rust;no source/docs edits during validation."
+      ],
+      "tested_commit": "1ab05e3bcefd3926a402dc645f55c72d16aad6f4",
+      "date": "2026-10-07",
+      "location": "docs/validation/tunnel-paired-error-retention-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Original paired Source IO retained across same-poll completed clear/close,successful stale snapshots discarded;initial exact native userspace Arc joined/status/EOF/tasks recovered before assertion. CLI212/1ignored/full2736Rust13PythonCLI1075Core1496public55,0FAIL2existingignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan post-paired totals/cancellation,out-of-clock failure bookkeeping,metadata bytes,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original L01-L04/classes5-9 requirements remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,all other acceptance required,no maturity/ACK/device/rollback/RSS/performance/platform proof. Corrected error outcome needs pre-1.0 review."
+    },
+    {
       "id": "linux-tunnel-automatic-deadline-c92503d",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",

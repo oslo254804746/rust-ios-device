@@ -1159,3 +1159,18 @@ Whole-scan post-paired handoff/reconciliation/readiness and out-of-clock failure
 7newtests/208tunnel1ignored/all7serial gates/full2732Rust13Python0FAIL2ignored/
 tools73 PASS. Active30/allchildren excludingQ04,9complete21unfinished,
 22device NOT_RUN;UID untouched,no main-task completion.
+
+## Paired discovery acquired IO across clear and close
+
+Implementation `1ab05e3bcefd3926a402dc645f55c72d16aad6f4`; [paired error retention evidence](validation/tunnel-paired-error-retention-2026-10-07.md).
+A stale paired Source success is still discarded before candidate handoff/ready.
+If clear/close completed inside the Source before its original error reply,
+the scanner now returns it unchanged. Actual loopback partial
+EOF and completed manager clear/close fixtures recover the initial exact native
+userspace Arc/joins/status,DuplexEOF/tasks before regression assertions.
+4newtests/212tunnel1ignored/all7serial gates/full2736Rust13Python0FAIL2ignored/
+tools73 PASS;existing clocks and per-device isolation remain. Whole-scan post-paired totals/cancellation,out-of-clock failure bookkeeping,metadata bytes,HTTP/upgrades/blocking/startup/physical freshness/reuse/restart/manualepochs and all other original L01-L04/classes5-9 requirements remain.
+Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;UID untouched.
+
+This paired profile covers cancellation completed inside the Source reply.
+The later paired epoch fence still needs error-retention regression and repair.
