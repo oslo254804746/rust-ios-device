@@ -1,11 +1,14 @@
 //! The parent owns the scanner; returned shutdown gets an independent budget.
+use std::error::Error;
 use std::future::{Future, IntoFuture};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
 use tokio::net::TcpListener;
 
+use super::retirement::{CleanupClock, Registry, Snapshot};
 use super::TunnelAgentState;
 
 pub(super) const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -48,6 +51,9 @@ pub(super) async fn serve(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            if let Err(error) = monitor_state.drain_native(CLEANUP_TIMEOUT).await {
+                tracing::warn!(error = %crate::output::error_message(&error), "native tunnel retirement failed");
+            }
             if let Err(error) = monitor_state.refresh_once().await {
                 tracing::warn!(error = %crate::output::error_message(&error), "tunnel agent refresh failed");
             }
@@ -65,24 +71,233 @@ pub(super) async fn serve(
         }
         _ = &mut monitor => Ok(()),
     };
+    let clock = CleanupClock::new(cleanup_timeout);
     state.notify_shutdown();
     // Box owns the actual scanner future, including every active candidate.
     // Dropping a Pin<&mut _> alone would not release the underlying future.
     drop(monitor);
-    let cleanup = tokio::time::timeout(cleanup_timeout, async {
-        state.clear().await;
-        if !server_finished {
-            server.await.context("draining tunnel manager HTTP")?;
+    let cleanup = match clock {
+        Err(error) => Err(error),
+        Ok(clock) => {
+            let phases = Arc::new(StdMutex::new(CleanupPhases::default()));
+            let native_phases = Arc::clone(&phases);
+            let metadata_phases = Arc::clone(&phases);
+            let work = async {
+                tokio::join!(
+                    async {
+                        let result = state.inner.native.drain_retired(clock).await;
+                        let mut acquired = native_phases.lock().unwrap_or_else(|p| p.into_inner());
+                        acquired.native_complete = true;
+                        match result {
+                            Ok(report) => acquired.native_selected = report.selected,
+                            Err(error) => acquired.native = Some(Arc::new(error)),
+                        }
+                    },
+                    async {
+                        state.clear().await;
+                        let result = if server_finished {
+                            Ok(())
+                        } else {
+                            server.await.context("draining tunnel manager HTTP")
+                        };
+                        let mut acquired =
+                            metadata_phases.lock().unwrap_or_else(|p| p.into_inner());
+                        acquired.metadata_http_complete = true;
+                        if let Err(error) = result {
+                            acquired.metadata_http = Some(Arc::from(error.into_boxed_dyn_error()));
+                        }
+                    },
+                );
+            };
+            let elapsed = clock.run(work).await.err().map(Arc::new);
+            state.inner.native.capture_retired_outcomes();
+            let acquired = phases.lock().unwrap_or_else(|p| p.into_inner());
+            let snapshot = state.inner.native.snapshot();
+            let history = state
+                .inner
+                .native
+                .historical_failure()
+                .map(|error| Arc::new(error) as Cause);
+            if elapsed.is_none()
+                && acquired.native.is_none()
+                && acquired.metadata_http.is_none()
+                && history.is_none()
+                && acquired.native_complete
+                && acquired.metadata_http_complete
+                && snapshot.closed_and_empty()
+            {
+                Ok(())
+            } else if acquired.native_complete
+                && acquired.native_selected == 0
+                && acquired.native.is_none()
+                && acquired.metadata_http.is_none()
+                && history.is_none()
+                && snapshot.closed_and_empty()
+                && elapsed.is_some()
+            {
+                // Preserve the existing metadata-only server timeout contract.
+                // An attempt that selected actual native owners instead carries
+                // its ownership and phase evidence in TerminalCleanupFailure.
+                Err(Arc::try_unwrap(elapsed.expect("actual cleanup timer"))
+                    .expect("local timer")
+                    .into())
+            } else {
+                Err(TerminalCleanupFailure {
+                    native: acquired.native.clone(),
+                    history,
+                    metadata_http: acquired.metadata_http.clone(),
+                    elapsed,
+                    snapshot,
+                    native_complete: acquired.native_complete,
+                    metadata_http_complete: acquired.metadata_http_complete,
+                }
+                .into())
+            }
         }
-        Ok(())
-    })
-    .await
-    .context("tunnel manager cleanup deadline expired")
-    .and_then(|result| result);
+    };
     match (primary, cleanup) {
         (Ok(()), cleanup) => cleanup,
         (Err(primary), Ok(())) => Err(primary),
         (Err(primary), Err(cleanup)) => Err(CleanupFailure { primary, cleanup }.into()),
+    }
+}
+
+type Cause = Arc<dyn Error + Send + Sync>;
+
+#[derive(Default)]
+struct CleanupPhases {
+    native: Option<Cause>,
+    metadata_http: Option<Cause>,
+    native_complete: bool,
+    native_selected: usize,
+    metadata_http_complete: bool,
+}
+
+pub(super) struct TerminalCleanupFailure {
+    native: Option<Cause>,
+    history: Option<Cause>,
+    metadata_http: Option<Cause>,
+    elapsed: Option<Arc<tokio::time::error::Elapsed>>,
+    snapshot: Snapshot,
+    native_complete: bool,
+    metadata_http_complete: bool,
+}
+
+impl TerminalCleanupFailure {
+    pub(super) fn primary(&self) -> &(dyn Error + 'static) {
+        // A non-expiry native history survives a previous monitor drain. Fresh
+        // phase IO takes precedence over a purely historical cleanup expiry.
+        if let Some(history) = &self.history {
+            if history
+                .downcast_ref::<super::retirement::HistoryFailure>()
+                .is_some_and(|history| {
+                    !super::retirement::shutdown_primary_is_elapsed(history.primary())
+                })
+            {
+                return history.as_ref();
+            }
+        }
+        if let Some(native) = &self.native {
+            if native
+                .downcast_ref::<super::retirement::DrainFailure>()
+                .is_some_and(|native| !native.primary_is_elapsed())
+            {
+                return native.as_ref();
+            }
+        }
+        if let Some(metadata) = &self.metadata_http {
+            return metadata.as_ref();
+        }
+        if let Some(elapsed) = &self.elapsed {
+            return elapsed.as_ref();
+        }
+        if let Some(native) = &self.native {
+            return native.as_ref();
+        }
+        if let Some(history) = &self.history {
+            return history.as_ref();
+        }
+        self
+    }
+
+    pub(super) fn native_snapshot(&self) -> Snapshot {
+        self.snapshot
+    }
+}
+
+impl std::fmt::Display for TerminalCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tunnel manager cleanup failed")
+    }
+}
+
+impl std::fmt::Debug for TerminalCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelTerminalCleanupFailure")
+            .field(
+                "native_class",
+                &self
+                    .native
+                    .as_deref()
+                    .map(|cause| ios_core::classify_error(cause)),
+            )
+            .field(
+                "history_class",
+                &self
+                    .history
+                    .as_deref()
+                    .map(|cause| ios_core::classify_error(cause)),
+            )
+            .field(
+                "metadata_http_class",
+                &self
+                    .metadata_http
+                    .as_deref()
+                    .map(|cause| ios_core::classify_error(cause)),
+            )
+            .field("elapsed", &self.elapsed.is_some())
+            .field("native_complete", &self.native_complete)
+            .field("metadata_http_complete", &self.metadata_http_complete)
+            .field("native_ownership", &self.native_snapshot())
+            .finish()
+    }
+}
+
+impl Error for TerminalCleanupFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        if self.native.is_none()
+            && self.history.is_none()
+            && self.metadata_http.is_none()
+            && self.elapsed.is_none()
+        {
+            None
+        } else {
+            Some(self.primary())
+        }
+    }
+}
+
+pub(super) async fn drain_native_terminal(native: &Registry, clock: CleanupClock) -> Result<()> {
+    let result = native.drain_retired(clock).await;
+    native.capture_retired_outcomes();
+    let failure = result.err().map(|error| Arc::new(error) as Cause);
+    let history = native
+        .historical_failure()
+        .map(|error| Arc::new(error) as Cause);
+    let snapshot = native.snapshot();
+    if failure.is_none() && history.is_none() && snapshot.closed_and_empty() {
+        Ok(())
+    } else {
+        Err(TerminalCleanupFailure {
+            native: failure,
+            history,
+            metadata_http: None,
+            elapsed: None,
+            snapshot,
+            native_complete: true,
+            metadata_http_complete: true,
+        }
+        .into())
     }
 }
 

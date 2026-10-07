@@ -23,6 +23,9 @@ use crate::lockdown::pair_record::PairRecord;
 
 const TUNNEL_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[cfg(all(test, feature = "tunnel-userspace"))]
+mod ownership_tests;
+
 #[cfg(feature = "tunnel-kernel")]
 use crate::tunnel::forward::forward_packets_inner_owned;
 #[cfg(feature = "tunnel-kernel")]
@@ -72,13 +75,13 @@ impl TunnelConnection {
 
     fn into_device(
         self,
-        handle: TunnelHandle,
+        handle: impl Into<Arc<TunnelHandle>>,
         probe: super::rsd_observation::RsdProbeOutcome,
     ) -> ConnectedDevice {
         let (rsd, initial_rsd_probe) = probe.into_parts();
         ConnectedDevice {
             info: self.info,
-            tunnel: Some(Arc::new(handle)),
+            tunnel: Some(handle.into()),
             rsd,
             initial_rsd_probe,
             pair_record: self.pair_record,
@@ -97,6 +100,7 @@ pub(super) async fn activate_tunnel<T>(
     connection: TunnelConnection,
     mut stream: T,
     tun_mode: TunMode,
+    reservation: Option<Box<dyn super::TunnelReservation + '_>>,
 ) -> Result<ConnectedDevice, CoreError>
 where
     T: TunnelTransport,
@@ -126,7 +130,7 @@ where
         TunMode::Kernel => {
             #[cfg(not(feature = "tunnel-kernel"))]
             {
-                let _ = (connection, stream, tunnel_info);
+                let _ = (connection, stream, tunnel_info, reservation);
                 Err(CoreError::Unsupported(
                     "kernel TUN support requires ios-core feature 'tunnel-kernel'".into(),
                 ))
@@ -155,15 +159,26 @@ where
                         })
                     },
                 );
+                let handle = Arc::new(handle);
+                let mut reservation = reservation;
+                if let Some(owner) = reservation.as_mut() {
+                    if let Err(error) = owner.attach(Arc::clone(&handle)) {
+                        handle.request_stop();
+                        return Err(error);
+                    }
+                }
                 let rsd =
                     attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
+                if let Some(owner) = reservation.as_mut() {
+                    owner.complete();
+                }
                 Ok(connection.into_device(handle, rsd))
             }
         }
         TunMode::Userspace => {
             #[cfg(not(feature = "tunnel-userspace"))]
             {
-                let _ = (connection, stream, tunnel_info);
+                let _ = (connection, stream, tunnel_info, reservation);
                 Err(CoreError::Unsupported(
                     "userspace tunnel support requires ios-core feature 'tunnel-userspace'".into(),
                 ))
@@ -185,12 +200,23 @@ where
                     tunnel_info.clone(),
                     userspace,
                 );
+                let handle = Arc::new(handle);
+                let mut reservation = reservation;
+                if let Some(owner) = reservation.as_mut() {
+                    if let Err(error) = owner.attach(Arc::clone(&handle)) {
+                        handle.request_stop();
+                        return Err(error);
+                    }
+                }
                 let rsd = attempt_rsd_via_proxy(
                     proxy_port,
                     &tunnel_info.server_address,
                     tunnel_info.server_rsd_port,
                 )
                 .await;
+                if let Some(owner) = reservation.as_mut() {
+                    owner.complete();
+                }
                 Ok(connection.into_device(handle, rsd))
             }
         }

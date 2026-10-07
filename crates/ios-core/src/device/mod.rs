@@ -118,11 +118,16 @@ mod lockdown_transport;
 mod rsd_observation;
 mod service_routing;
 mod support;
+mod tunnel_owner;
+
+pub use tunnel_owner::{TunnelOwner, TunnelReservation};
 
 pub use rsd_observation::{InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState};
 
 pub use connection::{
-    connect, connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
+    connect, connect_direct_usb_tunnel, connect_direct_usb_tunnel_with_owner,
+    connect_remote_pairing_tunnel, connect_remote_pairing_tunnel_with_owner,
+    connect_tcp_lockdown_tunnel, connect_tcp_lockdown_tunnel_with_owner, connect_with_owner,
 };
 
 #[cfg(feature = "mdns")]

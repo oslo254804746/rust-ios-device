@@ -192,6 +192,20 @@ impl TunnelHandle {
         }
     }
 
+    /// Snapshot acquired failures and owned join progress without stopping or
+    /// polling a worker. This also observes causes acquired inside a cancelled
+    /// shutdown future. It is not a new shutdown attempt or deadline result.
+    /// An error report can describe incomplete joins without an original fault;
+    /// inspect `TunnelShutdownFailure::has_retained_outcomes` to distinguish it.
+    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
+    pub fn shutdown_status(&self) -> Result<(), TunnelError> {
+        match &self._runtime {
+            TunnelRuntime::Kernel { outcomes, .. } => outcomes.result(None),
+            #[cfg(feature = "tunnel-userspace")]
+            TunnelRuntime::Userspace { _runtime } => _runtime.shutdown_status(),
+        }
+    }
+
     /// Local admission state; false does not certify native joins or a peer ACK.
     pub fn is_alive(&self) -> bool {
         match &self._runtime {

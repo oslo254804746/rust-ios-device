@@ -4,7 +4,7 @@
 use super::tunnel_activation::{activate_tunnel, TunnelConnection};
 use super::{
     ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
-    ServiceStream,
+    ServiceStream, TunnelOwner,
 };
 use crate::discovery::DeviceInfo;
 use crate::error::CoreError;
@@ -95,6 +95,7 @@ pub(super) async fn connect_via_lockdown_transport(
     pair_record: Arc<PairRecord>,
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
 ) -> Result<ConnectedDevice, CoreError> {
     if opts.skip_tunnel {
         return Ok(ConnectedDevice {
@@ -109,7 +110,7 @@ pub(super) async fn connect_via_lockdown_transport(
 
     #[cfg(not(feature = "tunnel"))]
     {
-        let _ = (info, pair_record, lockdown_transport);
+        let _ = (info, pair_record, lockdown_transport, owner);
         Err(CoreError::Unsupported(
             "CoreDevice tunnel support requires ios-core feature 'tunnel'".into(),
         ))
@@ -117,6 +118,7 @@ pub(super) async fn connect_via_lockdown_transport(
 
     #[cfg(feature = "tunnel")]
     {
+        let reservation = owner.map(TunnelOwner::reserve).transpose()?;
         let lockdown_stream =
             connect_lockdown_port(&info.udid, &lockdown_transport, LOCKDOWN_PORT, true).await?;
 
@@ -155,6 +157,7 @@ pub(super) async fn connect_via_lockdown_transport(
             ),
             proxy_stream,
             opts.tun_mode,
+            reservation,
         )
         .await
     }
@@ -246,6 +249,7 @@ mod tests {
                 skip_tunnel: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();

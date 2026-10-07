@@ -99,9 +99,11 @@ pub use device::discover_paired_mobdev2_devices;
 #[cfg(feature = "mobileactivation")]
 pub use device::DeactivationFallbackError;
 pub use device::{
-    connect_direct_usb_tunnel, connect_remote_pairing_tunnel, connect_tcp_lockdown_tunnel,
-    ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason,
-    InitialRsdProbeState, InternationalConfiguration, PairedMobdev2Device, ServiceStream,
+    connect_direct_usb_tunnel, connect_direct_usb_tunnel_with_owner, connect_remote_pairing_tunnel,
+    connect_remote_pairing_tunnel_with_owner, connect_tcp_lockdown_tunnel,
+    connect_tcp_lockdown_tunnel_with_owner, connect_with_owner, ConnectOptions, ConnectedDevice,
+    InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState, InternationalConfiguration,
+    PairedMobdev2Device, ServiceStream, TunnelOwner, TunnelReservation,
 };
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
@@ -227,6 +229,8 @@ pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
 #[cfg(feature = "tunnel")]
 pub use tunnel::forward::ForwardReaderCleanup;
+#[cfg(feature = "tunnel-userspace")]
+pub use tunnel::tun::userspace::UserspaceTunDevice;
 #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
 pub use tunnel::TunnelShutdownFailure;
 pub use tunnel::{TunMode, TunnelError, TunnelHandle, TunnelInfo, TunnelManager};

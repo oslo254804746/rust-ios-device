@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use ios_core::TunMode;
-use ios_core::{connect, ConnectOptions, ConnectedDevice};
+use ios_core::{connect_with_owner, ConnectOptions, ConnectedDevice};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +31,8 @@ use crate::access::{
 };
 
 mod lifecycle;
+mod ownership;
+mod retirement;
 mod server;
 mod source;
 use lifecycle::{Lifecycle, Ticket};
@@ -283,41 +285,73 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
         crate::output::write_error_line(format_args!("tunnel: connecting ({mode})..."))?;
     }
 
-    let connect_timeout = Duration::from_secs(30);
-    let device = tokio::time::timeout(connect_timeout, connect(udid, opts))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "tunnel connect timed out after {}s — the device may not support \
+    let native = retirement::Registry::new();
+    let _owner = StandaloneOwner(Arc::clone(&native));
+    let ownership = ownership::Ownership::standalone(Arc::clone(&native))?;
+    let primary = async {
+        let connect_timeout = Duration::from_secs(30);
+        let device =
+            tokio::time::timeout(connect_timeout, connect_with_owner(udid, opts, &ownership))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "tunnel connect timed out after {}s — the device may not support \
                  CoreDevice tunneling or the handshake is blocked",
-                connect_timeout.as_secs()
-            )
-        })??;
-    let server_address = device
-        .server_address()
-        .ok_or_else(|| anyhow::anyhow!("tunnel started without a server address"))?;
-    let rsd_port = device
-        .rsd_port()
-        .ok_or_else(|| anyhow::anyhow!("tunnel started without an RSD port"))?;
+                        connect_timeout.as_secs()
+                    )
+                })??;
+        let _lease = ownership.take_completed(
+            device
+                .tunnel_handle()
+                .ok_or_else(|| lifecycle::cancelled().context("native tunnel handle missing"))?,
+        )?;
+        let server_address = device
+            .server_address()
+            .ok_or_else(|| anyhow::anyhow!("tunnel started without a server address"))?;
+        let rsd_port = device
+            .rsd_port()
+            .ok_or_else(|| anyhow::anyhow!("tunnel started without an RSD port"))?;
 
-    if script_mode {
-        crate::output::outln!("{server_address} {rsd_port}");
-    } else {
-        crate::output::outln!("Identifier: {udid}");
-        crate::output::outln!("Mode: {mode}");
-        crate::output::outln!("Protocol: tcp");
-        crate::output::outln!("RSD Address: {server_address}");
-        crate::output::outln!("RSD Port: {rsd_port}");
-        if let Some(userspace_port) = device.userspace_port() {
-            crate::output::outln!("Userspace Proxy: 127.0.0.1:{userspace_port}");
+        if script_mode {
+            crate::output::outln!("{server_address} {rsd_port}");
+        } else {
+            crate::output::outln!("Identifier: {udid}");
+            crate::output::outln!("Mode: {mode}");
+            crate::output::outln!("Protocol: tcp");
+            crate::output::outln!("RSD Address: {server_address}");
+            crate::output::outln!("RSD Port: {rsd_port}");
+            if let Some(userspace_port) = device.userspace_port() {
+                crate::output::outln!("Userspace Proxy: 127.0.0.1:{userspace_port}");
+            }
+            crate::output::outln!("Use the following connection option:");
+            crate::output::outln!("--rsd {server_address} {rsd_port}");
         }
-        crate::output::outln!("Use the following connection option:");
-        crate::output::outln!("--rsd {server_address} {rsd_port}");
-    }
-    std::io::stdout().flush()?;
+        std::io::stdout().flush()?;
 
-    tokio::signal::ctrl_c().await?;
-    Ok(())
+        tokio::signal::ctrl_c().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let clock = retirement::CleanupClock::new(server::CLEANUP_TIMEOUT);
+    native.close_and_stop_all();
+    drop(ownership);
+    let cleanup = match clock {
+        Ok(clock) => server::drain_native_terminal(&native, clock).await,
+        Err(error) => Err(error),
+    };
+    match (primary, cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(server::CleanupFailure { primary, cleanup }.into()),
+    }
+}
+
+struct StandaloneOwner(Arc<retirement::Registry>);
+
+impl Drop for StandaloneOwner {
+    fn drop(&mut self) {
+        self.0.close_and_stop_all();
+    }
 }
 
 #[derive(Clone)]
@@ -339,12 +373,22 @@ struct TunnelAgentInner {
     source: Arc<dyn Source>,
     connect_timeout: Duration,
     shutdown: watch::Sender<bool>,
+    native: Arc<retirement::Registry>,
 }
 
 struct ManagedTunnel {
     device: ManagedDevice,
     publication: Arc<()>,
     usbmux: bool,
+    native: Option<retirement::NativeLease>,
+}
+
+impl Drop for ManagedTunnel {
+    fn drop(&mut self) {
+        // The independent registry keeps the original runtime through every
+        // removal path, even when the table's metadata owner is destroyed.
+        drop(self.native.take());
+    }
 }
 
 enum ManagedDevice {
@@ -570,6 +614,7 @@ impl TunnelAgentState {
                 source,
                 connect_timeout,
                 shutdown: watch::channel(false).0,
+                native: retirement::Registry::new(),
             }),
         }
     }
@@ -585,6 +630,7 @@ impl TunnelAgentState {
     fn notify_shutdown(&self) {
         // Fence both existing and future starts before any async table cleanup.
         self.inner.lifecycle.close();
+        self.inner.native.close_and_stop_all();
         self.inner.shutdown.send_replace(true);
     }
 
@@ -593,11 +639,32 @@ impl TunnelAgentState {
         let _ = shutdown.wait_for(|stopped| *stopped).await;
     }
 
+    async fn drain_native(&self, budget: Duration) -> Result<()> {
+        let clock = retirement::CleanupClock::new(budget)?;
+        let report = self.inner.native.drain_retired(clock).await?;
+        if report.selected != 0 {
+            tracing::debug!(
+                selected = report.selected,
+                joined = report.joined,
+                native_handles = report.snapshot.native_handles,
+                additional_failed_owners = report.snapshot.additional_failed_owners,
+                historical_failure_class = ?report.snapshot.historical_failure_class,
+                "native tunnel retirement collected"
+            );
+        }
+        debug_assert!(report.snapshot.occupied() <= report.snapshot.capacity);
+        Ok(())
+    }
+
     async fn clear(&self) {
         let mut tunnels = self.inner.tunnels.write().await;
-        self.inner.lifecycle.clear();
-        tunnels.clear();
+        let old_epoch = self.inner.lifecycle.clear_owned();
+        let old = std::mem::take(&mut *tunnels);
         drop(tunnels);
+        if let Some(old_epoch) = old_epoch {
+            self.inner.native.retire_global(&old_epoch);
+        }
+        drop(old);
         self.inner.failed_attempts.write().await.clear();
     }
 
@@ -717,18 +784,15 @@ impl TunnelAgentState {
 
     async fn remove_tunnel(&self, udid: &str) -> bool {
         let mut tunnels = self.inner.tunnels.write().await;
-        self.inner.lifecycle.stop(udid).await;
-        match tunnels.get(udid) {
-            Some(tunnel) if tunnel.is_alive() => {
-                tunnels.remove(udid);
-                true
-            }
-            Some(_) => {
-                tunnels.remove(udid);
-                false
-            }
-            None => false,
+        let old_epoch = self.inner.lifecycle.stop_owned(udid).await;
+        let alive = tunnels.get(udid).is_some_and(ManagedTunnel::is_alive);
+        let old = tunnels.remove(udid);
+        drop(tunnels);
+        if let Some(old_epoch) = old_epoch {
+            self.inner.native.retire_device(&old_epoch);
         }
+        drop(old);
+        alive
     }
 
     async fn ensure_tunnel(
@@ -786,11 +850,26 @@ impl TunnelAgentState {
         expected_id: Option<u32>,
     ) -> Result<TunnelRecord> {
         let usbmux = matches!(route, Route::Usbmux | Route::Usb(_));
+        let ownership = ownership::Ownership::admitted(Arc::clone(&self.inner.native), ticket)?;
         let device = self
             .inner
             .source
-            .connect(udid, route, self.inner.tun_mode)
+            .connect_owned(udid, route, self.inner.tun_mode, &ownership)
             .await?;
+        let native = match device.native_handle() {
+            Some(handle) => Some(ownership.take_completed(handle)?),
+            None => {
+                #[cfg(not(test))]
+                return Err(lifecycle::cancelled().context("native tunnel handle missing"));
+                #[cfg(test)]
+                {
+                    if matches!(device, ManagedDevice::Native(_)) {
+                        return Err(lifecycle::cancelled().context("native tunnel handle missing"));
+                    }
+                    None
+                }
+            }
+        };
         if expected_id.is_some_and(|expected| expected != device.device_id()) {
             return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
         }
@@ -826,16 +905,29 @@ impl TunnelAgentState {
         if !device.is_alive() {
             return Err(lifecycle::cancelled().context("tunnel inactive before publication"));
         }
-        ticket.commit(|| {
-            tunnels.insert(
+        // Keep the acquired guard outside the action so a rejected commit
+        // retires it after lifecycle watch/table guards have been released.
+        let mut acquired = Some((device, native));
+        let result = ticket.commit(|| {
+            if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
+                native.publish(ownership.stamp())?;
+            }
+            let (device, native) = acquired.take().expect("single publication");
+            let old = tunnels.insert(
                 udid.to_owned(),
                 ManagedTunnel {
                     device,
                     publication: Arc::new(()),
                     usbmux,
+                    native,
                 },
             );
-            Ok(record)
+            Ok((record, old))
+        });
+        drop(tunnels);
+        result.map(|(record, old)| {
+            drop(old);
+            record
         })
     }
 
@@ -1957,6 +2049,7 @@ mod tests {
     mod browser_tests;
     mod lifecycle_tests;
     mod method_tests;
+    mod native_retirement_tests;
     mod upstream_tests;
 
     #[tokio::test]

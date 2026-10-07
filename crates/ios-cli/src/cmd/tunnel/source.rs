@@ -2,7 +2,8 @@
 
 use futures_util::future::BoxFuture;
 use ios_core::device::PairedMobdev2Device;
-use ios_core::{ConnectOptions, MuxClient, TunMode};
+use ios_core::{ConnectOptions, MuxClient, TunMode, TunnelHandle, TunnelOwner};
+use std::sync::Arc;
 
 use super::{ManagedDevice, TunnelRecord};
 
@@ -52,6 +53,24 @@ pub(super) trait Source: Send + Sync {
         route: Route,
         mode: TunMode,
     ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>>;
+
+    fn connect_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: Route,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+    ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
+        Box::pin(async move {
+            let mut reservation = owner.reserve()?;
+            let device = self.connect(udid, route, mode).await?;
+            if let Some(handle) = device.native_handle() {
+                reservation.attach(Arc::clone(handle))?;
+                reservation.complete();
+            }
+            Ok(device)
+        })
+    }
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot>;
     fn paired_devices(&self) -> BoxFuture<'_, anyhow::Result<Vec<PairedMobdev2Device>>>;
 }
@@ -59,6 +78,48 @@ pub(super) trait Source: Send + Sync {
 pub(super) struct NativeSource;
 
 impl Source for NativeSource {
+    fn connect_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: Route,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+    ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
+        Box::pin(async move {
+            let options = ConnectOptions {
+                tun_mode: mode,
+                pair_record_path: None,
+                skip_tunnel: false,
+            };
+            let device = match route {
+                Route::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
+                Route::Usb(host) => {
+                    ios_core::connect_direct_usb_tunnel_with_owner(
+                        udid,
+                        host.as_deref(),
+                        options,
+                        owner,
+                    )
+                    .await?
+                }
+                Route::Wifi(host) => {
+                    ios_core::connect_remote_pairing_tunnel_with_owner(
+                        udid,
+                        host.as_deref(),
+                        options,
+                        owner,
+                    )
+                    .await?
+                }
+                Route::Mobdev2(host) => {
+                    ios_core::connect_tcp_lockdown_tunnel_with_owner(udid, &host, options, owner)
+                        .await?
+                }
+            };
+            Ok(ManagedDevice::Native(Box::new(device)))
+        })
+    }
+
     fn connect<'a>(
         &'a self,
         udid: &'a str,
@@ -121,9 +182,20 @@ pub(super) trait FakeDevice: Send + Sync {
     fn record(&self) -> TunnelRecord;
     fn is_alive(&self) -> bool;
     fn device_id(&self) -> u32;
+    fn native_handle(&self) -> Option<&Arc<TunnelHandle>> {
+        None
+    }
 }
 
 impl ManagedDevice {
+    pub(super) fn native_handle(&self) -> Option<&Arc<TunnelHandle>> {
+        match self {
+            Self::Native(device) => device.tunnel_handle(),
+            #[cfg(test)]
+            Self::Fake(device) => device.native_handle(),
+        }
+    }
+
     pub(super) fn record_for_mode(&self, mode: TunMode) -> anyhow::Result<TunnelRecord> {
         match self {
             Self::Native(device) => super::ManagedTunnel::record_for_device(device, mode),

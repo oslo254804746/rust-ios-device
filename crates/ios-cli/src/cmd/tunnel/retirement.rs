@@ -1,0 +1,859 @@
+//! CLI-private bounded ownership of original native tunnel join capabilities.
+//!
+//! No task is spawned. Native shutdown never runs under the table,
+//! lifecycle watch borrows or this registry's synchronous mutex.
+
+use std::error::Error;
+use std::future::{pending, poll_fn, Future};
+#[cfg(test)]
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::task::Poll;
+use std::time::Duration;
+
+use anyhow::Result;
+use ios_core::{ErrorClass, TunnelError, TunnelHandle, TunnelShutdownFailure};
+use tokio::sync::{Mutex, Notify};
+use tokio::time::{error::Elapsed, Instant};
+
+pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
+type Cause = Arc<dyn Error + Send + Sync>;
+
+/// Only call with this original handle's directly returned shutdown error.
+/// First outer typed report wins, including false: a foreign report nested in
+/// the native primary must never certify the current runtime. No source text,
+/// liveness bit, pending count alone or AbortHandle completion is evidence.
+fn shutdown_report(error: &TunnelError) -> Option<&TunnelShutdownFailure> {
+    let mut current: Option<&(dyn Error + 'static)> = Some(error);
+    for _ in 0..32 {
+        let Some(cause) = current else { break };
+        if let Some(report) = cause.downcast_ref::<TunnelShutdownFailure>() {
+            return Some(report);
+        }
+        current = if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            io.get_ref()
+                .map(|payload| payload as &(dyn Error + 'static))
+                .or_else(|| cause.source())
+        } else {
+            cause.source()
+        };
+    }
+    None
+}
+
+fn shutdown_joins_certified(error: &TunnelError) -> bool {
+    shutdown_report(error).is_some_and(TunnelShutdownFailure::joins_complete)
+}
+
+pub(super) fn shutdown_primary_is_elapsed(error: &TunnelError) -> bool {
+    shutdown_report(error).is_some_and(|report| report.primary().is::<Elapsed>())
+}
+
+/// Opaque lifecycle identities, never a UDID, endpoint or runtime identity.
+#[derive(Clone)]
+pub(super) struct OwnershipStamp {
+    global: Arc<()>,
+    device: Arc<()>,
+}
+
+impl OwnershipStamp {
+    pub(super) fn new(global: Arc<()>, device: Arc<()>) -> Self {
+        Self { global, device }
+    }
+}
+
+#[derive(Clone)]
+struct Key {
+    slot: usize,
+    incarnation: Arc<()>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Reserved,
+    Inflight,
+    Unpublished,
+    Active,
+    Retired,
+}
+
+struct Entry {
+    incarnation: Arc<()>,
+    stamp: OwnershipStamp,
+    phase: Phase,
+    handle: Option<Arc<TunnelHandle>>,
+    failure_observed: bool,
+}
+
+struct State {
+    sealed: bool,
+    // Fixed length after construction. Never push, evict or resize.
+    slots: Vec<Option<Entry>>,
+    first_failure: Option<Arc<TunnelError>>,
+    first_expiry: Option<Arc<TunnelError>>,
+    additional_failed_owners: u64,
+}
+
+/// Snapshot is identity-free. A retired count is ownership, not native task count.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Snapshot {
+    pub(super) sealed: bool,
+    pub(super) capacity: usize,
+    pub(super) reserved: usize,
+    pub(super) inflight: usize,
+    pub(super) unpublished: usize,
+    pub(super) active: usize,
+    pub(super) retired: usize,
+    pub(super) native_handles: usize,
+    pub(super) historical_failure_class: Option<ErrorClass>,
+    pub(super) additional_failed_owners: u64,
+}
+
+impl Snapshot {
+    pub(super) fn occupied(&self) -> usize {
+        // Each count partitions a single fixed-capacity vector.
+        self.reserved + self.inflight + self.unpublished + self.active + self.retired
+    }
+
+    pub(super) fn closed_and_empty(&self) -> bool {
+        self.sealed && self.occupied() == 0
+    }
+}
+
+/// One checked absolute clock for mutex waits, native joins and server cleanup.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CleanupClock {
+    deadline: Instant,
+}
+
+impl CleanupClock {
+    pub(super) fn new(budget: Duration) -> Result<Self> {
+        let deadline = Instant::now().checked_add(budget).ok_or_else(|| {
+            crate::output::input_decision("native retirement cleanup deadline overflow")
+        })?;
+        Ok(Self { deadline })
+    }
+
+    pub(super) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    /// Callers persist phase outcomes before completing work, so a Ready poll
+    /// crossing the clock cannot discard an already acquired native cause.
+    pub(super) async fn run<T>(self, work: impl Future<Output = T>) -> Result<T, Elapsed> {
+        tokio::pin!(work);
+        let guarded = poll_fn(|cx| {
+            if Instant::now() >= self.deadline() {
+                return Poll::Pending;
+            }
+            match work.as_mut().poll(cx) {
+                Poll::Ready(_) if Instant::now() >= self.deadline => Poll::Pending,
+                result => result,
+            }
+        });
+        tokio::select! {
+            biased;
+            expired = tokio::time::timeout_at(self.deadline, pending::<T>()) => expired,
+            result = guarded => Ok(result),
+        }
+    }
+
+    fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
+
+pub(super) struct Registry {
+    state: StdMutex<State>,
+    drains: Mutex<()>,
+    changed: Notify,
+}
+
+impl Registry {
+    pub(super) fn new() -> Arc<Self> {
+        Self::allocate(MAX_NATIVE_OWNERS)
+    }
+
+    fn allocate(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: StdMutex::new(State {
+                sealed: false,
+                slots: std::iter::repeat_with(|| None).take(capacity).collect(),
+                first_failure: None,
+                first_expiry: None,
+                additional_failed_owners: 0,
+            }),
+            drains: Mutex::new(()),
+            changed: Notify::new(),
+        })
+    }
+
+    #[cfg(test)]
+    fn small(capacity: NonZeroUsize) -> Arc<Self> {
+        assert!(capacity.get() <= MAX_NATIVE_OWNERS);
+        Self::allocate(capacity.get())
+    }
+
+    fn lock(&self) -> StdMutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    pub(super) fn reserve(self: &Arc<Self>, stamp: OwnershipStamp) -> Result<Reservation> {
+        let mut state = self.lock();
+        if state.sealed {
+            return Err(super::lifecycle::cancelled());
+        }
+        let slot = state
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or_else(|| {
+                crate::output::resource_decision("native tunnel owner capacity exhausted")
+            })?;
+        let incarnation = Arc::new(());
+        state.slots[slot] = Some(Entry {
+            incarnation: Arc::clone(&incarnation),
+            stamp,
+            phase: Phase::Reserved,
+            handle: None,
+            failure_observed: false,
+        });
+        Ok(Reservation {
+            registry: Arc::clone(self),
+            key: Some(Key { slot, incarnation }),
+        })
+    }
+
+    fn entry_mut<'a>(state: &'a mut State, key: &Key) -> Option<&'a mut Entry> {
+        state
+            .slots
+            .get_mut(key.slot)?
+            .as_mut()
+            .filter(|entry| Arc::ptr_eq(&entry.incarnation, &key.incarnation))
+    }
+
+    fn retire_matching(&self, matches: impl Fn(&Entry) -> bool, seal: bool) {
+        let handles = {
+            let mut state = self.lock();
+            state.sealed |= seal;
+            let mut handles = Vec::with_capacity(state.slots.len());
+            for entry in state.slots.iter_mut().flatten() {
+                if matches(entry) {
+                    // An inflight empty reservation remains reserved for its
+                    // possible late attachment; only its owning guard can free it.
+                    entry.phase = Phase::Retired;
+                    if let Some(handle) = &entry.handle {
+                        handles.push(Arc::clone(handle));
+                    }
+                }
+            }
+            handles
+        };
+        // Every selected state is durably retired before any native call.
+        for handle in handles {
+            handle.request_stop();
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// Call only after lifecycle.close releases its watch writes.
+    pub(super) fn close_and_stop_all(&self) {
+        self.retire_matching(|_| true, true);
+    }
+
+    /// Use the exact OLD global identity returned by the reusable clear fence.
+    pub(super) fn retire_global(&self, old: &Arc<()>) {
+        self.retire_matching(|entry| Arc::ptr_eq(&entry.stamp.global, old), false);
+    }
+
+    /// Use the exact OLD device identity returned by targeted stop's fence.
+    pub(super) fn retire_device(&self, old: &Arc<()>) {
+        self.retire_matching(|entry| Arc::ptr_eq(&entry.stamp.device, old), false);
+    }
+
+    fn retire_key(&self, key: &Key, release_empty: bool) {
+        let handle = {
+            let mut state = self.lock();
+            let Some(entry) = Self::entry_mut(&mut state, key) else {
+                return;
+            };
+            if entry.handle.is_none() && release_empty {
+                state.slots[key.slot] = None;
+                None
+            } else {
+                entry.phase = Phase::Retired;
+                entry.handle.clone()
+            }
+        };
+        if let Some(handle) = handle {
+            handle.request_stop();
+        }
+        self.changed.notify_waiters();
+    }
+
+    pub(super) fn snapshot(&self) -> Snapshot {
+        let state = self.lock();
+        let count = |phase| {
+            state
+                .slots
+                .iter()
+                .flatten()
+                .filter(|entry| entry.phase == phase)
+                .count()
+        };
+        Snapshot {
+            sealed: state.sealed,
+            capacity: state.slots.len(),
+            reserved: count(Phase::Reserved),
+            inflight: count(Phase::Inflight),
+            unpublished: count(Phase::Unpublished),
+            active: count(Phase::Active),
+            retired: count(Phase::Retired),
+            native_handles: state
+                .slots
+                .iter()
+                .flatten()
+                .filter(|entry| entry.handle.is_some())
+                .count(),
+            historical_failure_class: state
+                .first_failure
+                .as_ref()
+                .map(|error| ios_core::classify_error(error.as_ref())),
+            additional_failed_owners: state.additional_failed_owners,
+        }
+    }
+
+    fn selection_and_stop(&self) -> Vec<Key> {
+        let (keys, handles) = {
+            let state = self.lock();
+            let mut keys = Vec::with_capacity(state.slots.len());
+            let mut handles = Vec::with_capacity(state.slots.len());
+            for (slot, entry) in state.slots.iter().enumerate() {
+                if let Some(entry) = entry.as_ref().filter(|entry| entry.phase == Phase::Retired) {
+                    keys.push(Key {
+                        slot,
+                        incarnation: Arc::clone(&entry.incarnation),
+                    });
+                    if let Some(handle) = &entry.handle {
+                        handles.push(Arc::clone(handle));
+                    }
+                }
+            }
+            (keys, handles)
+        };
+        for handle in handles {
+            handle.request_stop();
+        }
+        keys
+    }
+
+    fn capture_selected(&self, selected: &[Key], attempt: Option<&StdMutex<AttemptEvidence>>) {
+        // Clone each original runtime under the registry lock and inspect its
+        // Core ledger outside it. Observation never certifies/removes a slot.
+        for key in selected {
+            let SelectedOwner::Native(handle) = self.selected_owner(key) else {
+                continue;
+            };
+            if let Err(error) = handle.shutdown_status() {
+                if shutdown_report(&error).is_some_and(TunnelShutdownFailure::has_retained_outcomes)
+                {
+                    let error = Arc::new(error);
+                    self.record_failure(key, Arc::clone(&error));
+                    if let Some(attempt) = attempt {
+                        attempt
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .record(error);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Capture acquired native causes before an outer cleanup future disappears.
+    /// Existing retired ownership and original join handles remain untouched.
+    pub(super) fn capture_retired_outcomes(&self) {
+        let selected = {
+            let state = self.lock();
+            state
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, entry)| {
+                    entry
+                        .as_ref()
+                        .filter(|entry| entry.phase == Phase::Retired)
+                        .map(|entry| Key {
+                            slot,
+                            incarnation: Arc::clone(&entry.incarnation),
+                        })
+                })
+                .collect::<Vec<_>>()
+        };
+        self.capture_selected(&selected, None);
+    }
+
+    fn selected_owner(&self, key: &Key) -> SelectedOwner {
+        let mut state = self.lock();
+        match Self::entry_mut(&mut state, key) {
+            None => SelectedOwner::Released,
+            Some(entry) => match &entry.handle {
+                Some(handle) => SelectedOwner::Native(Arc::clone(handle)),
+                None => SelectedOwner::AwaitingAttachment,
+            },
+        }
+    }
+
+    fn certify_completed(&self, key: &Key, handle: &Arc<TunnelHandle>) {
+        let mut state = self.lock();
+        let same = Self::entry_mut(&mut state, key).is_some_and(|entry| {
+            entry.phase == Phase::Retired
+                && entry
+                    .handle
+                    .as_ref()
+                    .is_some_and(|original| Arc::ptr_eq(original, handle))
+        });
+        if same {
+            // Caller holds explicit native shutdown Ok or the first outer
+            // shutdown report's joins_complete(). This certifies native joins,
+            // not a successful/deadline-compliant attempt or remote ACK.
+            // The local drain clone outlives removal, so final Arc Drop is outside.
+            state.slots[key.slot] = None;
+        }
+        drop(state);
+        self.changed.notify_waiters();
+    }
+
+    fn record_failure(&self, key: &Key, error: Arc<TunnelError>) {
+        let mut state = self.lock();
+        let first_for_owner = Self::entry_mut(&mut state, key).is_some_and(|entry| {
+            if entry.failure_observed {
+                false
+            } else {
+                entry.failure_observed = true;
+                true
+            }
+        });
+        if first_for_owner && state.first_failure.is_some() {
+            state.additional_failed_owners = state.additional_failed_owners.saturating_add(1);
+        }
+        // An earlier pure shutdown expiry must not bury a subsequently acquired
+        // original IO/JoinError, including a retry of this same runtime. Retain
+        // at most the first expiry and first non-expiry native report. This is
+        // separate from the distinct failed-owner observation count.
+        let expiry = shutdown_primary_is_elapsed(&error);
+        if expiry && state.first_expiry.is_none() {
+            state.first_expiry = Some(Arc::clone(&error));
+        }
+        if state.first_failure.is_none()
+            || (!expiry
+                && state
+                    .first_failure
+                    .as_ref()
+                    .is_some_and(|old| shutdown_primary_is_elapsed(old)))
+        {
+            state.first_failure = Some(error);
+        }
+        // This method only records evidence. Its caller may release an Err
+        // owner solely with the first outer report's joins_complete() result.
+    }
+
+    /// Original bounded history remains available after a monitor releases a
+    /// fully joined failed owner. A fresh drain attempt has its own clock.
+    pub(super) fn historical_failure(&self) -> Option<HistoryFailure> {
+        let state = self.lock();
+        state.first_failure.as_ref().map(|primary| HistoryFailure {
+            primary: Arc::clone(primary),
+            expiry: state
+                .first_expiry
+                .as_ref()
+                .filter(|expiry| !Arc::ptr_eq(expiry, primary))
+                .cloned(),
+        })
+    }
+
+    /// Stop is synchronous before the returned future exists. Selection is a
+    /// fixed at-most-capacity set of incarnations, not a growing retirement log.
+    /// Caller Drop retains the original handles/slot state and native Core ledger.
+    pub(super) fn drain_retired(
+        &self,
+        clock: CleanupClock,
+    ) -> impl Future<Output = std::result::Result<DrainReport, DrainFailure>> + Send + '_ {
+        let selected = self.selection_and_stop();
+        let selected_count = selected.len();
+        async move {
+            let attempt = Arc::new(StdMutex::new(AttemptEvidence::default()));
+            let evidence = Arc::clone(&attempt);
+            let work = async {
+                let _serial = self.drains.lock().await;
+                let mut joined = 0;
+                for key in &selected {
+                    if Instant::now() >= clock.deadline {
+                        return DrainReport {
+                            selected: selected_count,
+                            joined,
+                            snapshot: self.snapshot(),
+                        };
+                    }
+                    let handle = loop {
+                        // Arm before inspecting state; enable prevents a missed
+                        // notify_waiters race while late attachment/release occurs.
+                        let changed = self.changed.notified();
+                        tokio::pin!(changed);
+                        changed.as_mut().enable();
+                        match self.selected_owner(key) {
+                            SelectedOwner::Released => break None,
+                            SelectedOwner::Native(handle) => break Some(handle),
+                            SelectedOwner::AwaitingAttachment => changed.await,
+                        }
+                    };
+                    if let Some(handle) = handle {
+                        if Instant::now() >= clock.deadline {
+                            return DrainReport {
+                                selected: selected_count,
+                                joined,
+                                snapshot: self.snapshot(),
+                            };
+                        }
+                        // The outer absolute clock includes the native call and
+                        // limits its minor relative-budget conversion rounding.
+                        match handle.shutdown(clock.remaining()).await {
+                            Ok(()) => {
+                                self.certify_completed(key, &handle);
+                                joined += 1;
+                            }
+                            Err(error) => {
+                                let complete = shutdown_joins_certified(&error);
+                                let error = Arc::new(error);
+                                self.record_failure(key, Arc::clone(&error));
+                                evidence
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .record(error);
+                                if complete {
+                                    self.certify_completed(key, &handle);
+                                    joined += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                DrainReport {
+                    selected: selected_count,
+                    joined,
+                    snapshot: self.snapshot(),
+                }
+            };
+            tokio::pin!(work);
+            let guarded = poll_fn(|cx| {
+                if Instant::now() >= clock.deadline {
+                    return Poll::Pending;
+                }
+                match work.as_mut().poll(cx) {
+                    Poll::Ready(_report) if Instant::now() >= clock.deadline => Poll::Pending,
+                    result => result,
+                }
+            });
+            tokio::select! {
+                biased;
+                expired = tokio::time::timeout_at(clock.deadline, pending::<()>()) => {
+                    let elapsed = expired.expect_err("pending retirement clock cannot complete");
+                    self.capture_selected(&selected, Some(&attempt));
+                    Err(self.failure_snapshot(&attempt, Some(elapsed), selected_count))
+                }
+                report = guarded => {
+                    let has_failure = {
+                        let current = attempt.lock().unwrap_or_else(|p| p.into_inner());
+                        current.first.is_some()
+                    };
+                    if has_failure {
+                        Err(self.failure_snapshot(&attempt, None, selected_count))
+                    } else {
+                        Ok(report)
+                    }
+                }
+            }
+        }
+    }
+
+    fn failure_snapshot(
+        &self,
+        attempt: &StdMutex<AttemptEvidence>,
+        elapsed: Option<Elapsed>,
+        selected: usize,
+    ) -> DrainFailure {
+        let elapsed = elapsed.map(Arc::new);
+        let (primary, additional_failures): (Cause, u64) = {
+            let current = attempt.lock().unwrap_or_else(|p| p.into_inner());
+            let primary = match &current.first {
+                Some(native) => Arc::clone(native) as Cause,
+                None => elapsed
+                    .as_ref()
+                    .expect("failure requires native error or actual timer")
+                    .clone() as Cause,
+            };
+            (primary, current.additional)
+        };
+        DrainFailure {
+            primary,
+            elapsed,
+            selected,
+            additional_failures,
+            snapshot: self.snapshot(),
+        }
+    }
+}
+
+impl Drop for Registry {
+    fn drop(&mut self) {
+        // Final Drop is a stop fallback, never a successful join certificate.
+        let state = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
+        for entry in state.slots.iter().flatten() {
+            if let Some(handle) = &entry.handle {
+                handle.request_stop();
+            }
+        }
+    }
+}
+
+pub(super) struct Reservation {
+    registry: Arc<Registry>,
+    key: Option<Key>,
+}
+
+impl Reservation {
+    pub(super) fn start(&self) -> Result<()> {
+        let key = self.key.as_ref().expect("live reservation has its key");
+        let mut state = self.registry.lock();
+        let entry =
+            Registry::entry_mut(&mut state, key).expect("live reservation owns its fixed slot");
+        if entry.phase == Phase::Retired {
+            return Err(super::lifecycle::cancelled());
+        }
+        entry.phase = Phase::Inflight;
+        Ok(())
+    }
+
+    /// Attach the exact already-obtained Arc in the same poll as Source success,
+    /// before metadata, liveness, daemon or table awaits. A sealed/retired slot
+    /// retains and immediately stops this late handle; it never releases capacity.
+    pub(super) fn attach(mut self, handle: Arc<TunnelHandle>) -> NativeLease {
+        let key = self.key.take().expect("live reservation has its key");
+        let stopped = {
+            let mut state = self.registry.lock();
+            let sealed = state.sealed;
+            let entry = Registry::entry_mut(&mut state, &key)
+                .expect("live reservation owns its fixed slot");
+            assert!(
+                entry.handle.is_none(),
+                "one reservation can attach only one original runtime"
+            );
+            let stopped = sealed || entry.phase == Phase::Retired;
+            entry.handle = Some(Arc::clone(&handle));
+            entry.phase = if stopped {
+                Phase::Retired
+            } else {
+                Phase::Unpublished
+            };
+            stopped
+        };
+        if stopped {
+            handle.request_stop();
+        }
+        self.registry.changed.notify_waiters();
+        NativeLease {
+            registry: Arc::clone(&self.registry),
+            key,
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if let Some(key) = &self.key {
+            self.registry.retire_key(key, true);
+        }
+    }
+}
+
+pub(super) struct NativeLease {
+    registry: Arc<Registry>,
+    key: Key,
+}
+
+impl NativeLease {
+    pub(super) fn matches_runtime(&self, handle: &Arc<TunnelHandle>) -> bool {
+        let mut state = self.registry.lock();
+        Registry::entry_mut(&mut state, &self.key).is_some_and(|entry| {
+            entry
+                .handle
+                .as_ref()
+                .is_some_and(|original| Arc::ptr_eq(original, handle))
+        })
+    }
+
+    /// Must be inside the caller's Ticket.commit synchronous action. This
+    /// method never touches lifecycle watches, a table or the native runtime.
+    pub(super) fn publish(&self, stamp: &OwnershipStamp) -> Result<()> {
+        let mut state = self.registry.lock();
+        if state.sealed {
+            return Err(super::lifecycle::cancelled());
+        }
+        let Some(entry) = Registry::entry_mut(&mut state, &self.key) else {
+            return Err(super::lifecycle::cancelled());
+        };
+        if entry.phase != Phase::Unpublished
+            || !Arc::ptr_eq(&entry.stamp.global, &stamp.global)
+            || !Arc::ptr_eq(&entry.stamp.device, &stamp.device)
+        {
+            return Err(super::lifecycle::cancelled());
+        }
+        entry.phase = Phase::Active;
+        Ok(())
+    }
+
+    pub(super) fn retire(&self) {
+        self.registry.retire_key(&self.key, false);
+    }
+}
+
+impl Drop for NativeLease {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
+enum SelectedOwner {
+    Released,
+    AwaitingAttachment,
+    Native(Arc<TunnelHandle>),
+}
+
+#[derive(Default)]
+struct AttemptEvidence {
+    first: Option<Arc<TunnelError>>,
+    additional: u64,
+}
+
+impl AttemptEvidence {
+    fn record(&mut self, error: Arc<TunnelError>) {
+        if self.first.is_none() {
+            self.first = Some(error);
+        } else {
+            self.additional = self.additional.saturating_add(1);
+            if !shutdown_primary_is_elapsed(&error)
+                && self
+                    .first
+                    .as_ref()
+                    .is_some_and(|first| shutdown_primary_is_elapsed(first))
+            {
+                self.first = Some(error);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct DrainReport {
+    pub(super) selected: usize,
+    pub(super) joined: usize,
+    pub(super) snapshot: Snapshot,
+}
+
+/// Immutable result for this drain attempt. Historical registry evidence is
+/// separate; an earlier attempt Elapsed never becomes this attempt's clock.
+pub(super) struct DrainFailure {
+    primary: Cause,
+    elapsed: Option<Arc<Elapsed>>,
+    selected: usize,
+    additional_failures: u64,
+    snapshot: Snapshot,
+}
+
+impl DrainFailure {
+    pub(super) fn primary(&self) -> &(dyn Error + 'static) {
+        self.primary.as_ref()
+    }
+    #[cfg(test)]
+    pub(super) fn elapsed(&self) -> Option<&Elapsed> {
+        self.elapsed.as_deref()
+    }
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Snapshot {
+        self.snapshot
+    }
+
+    pub(super) fn primary_is_elapsed(&self) -> bool {
+        self.primary().is::<Elapsed>()
+            || self
+                .primary()
+                .downcast_ref::<TunnelError>()
+                .is_some_and(shutdown_primary_is_elapsed)
+    }
+}
+
+impl std::fmt::Display for DrainFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("native tunnel retirement failed")
+    }
+}
+
+impl std::fmt::Debug for DrainFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeRetirementFailure")
+            .field("primary_class", &ios_core::classify_error(self.primary()))
+            .field("elapsed", &self.elapsed.is_some())
+            .field("selected", &self.selected)
+            .field("additional_failures", &self.additional_failures)
+            .field("ownership", &self.snapshot)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Error for DrainFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.primary())
+    }
+}
+
+pub(super) struct HistoryFailure {
+    primary: Arc<TunnelError>,
+    expiry: Option<Arc<TunnelError>>,
+}
+
+impl HistoryFailure {
+    pub(super) fn primary(&self) -> &TunnelError {
+        self.primary.as_ref()
+    }
+    pub(super) fn expiry(&self) -> Option<&TunnelError> {
+        self.expiry.as_deref()
+    }
+}
+
+impl std::fmt::Display for HistoryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("native tunnel cleanup recorded a failure")
+    }
+}
+
+impl std::fmt::Debug for HistoryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeTunnelHistoryFailure")
+            .field("primary_class", &ios_core::classify_error(self.primary()))
+            .field("earlier_expiry", &self.expiry().is_some())
+            .finish()
+    }
+}
+
+impl Error for HistoryFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.primary())
+    }
+}
+
+#[cfg(test)]
+mod native_tests;
+#[cfg(test)]
+mod tests;

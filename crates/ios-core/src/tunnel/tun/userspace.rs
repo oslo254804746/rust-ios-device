@@ -269,6 +269,12 @@ impl UserspaceTunDevice {
             self.clients.drain().await;
         })
     }
+
+    /// Observe acquired native failures/join progress without requesting stop
+    /// or polling workers. This is an immutable observation, not an attempt.
+    pub fn shutdown_status(&self) -> Result<(), TunnelError> {
+        self.outcomes.result(None)
+    }
 }
 
 impl Drop for UserspaceTunDevice {

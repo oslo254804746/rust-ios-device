@@ -291,6 +291,9 @@ async fn read_ipv6_packet<R: AsyncRead + Unpin>(
 mod reader_owner_tests;
 
 #[cfg(test)]
+mod cleanup_outcome_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
     use std::pin::Pin;

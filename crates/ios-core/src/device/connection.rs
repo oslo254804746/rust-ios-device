@@ -10,6 +10,7 @@ use super::tunnel_connect::{
 };
 use super::{
     ConnectOptions, ConnectedDevice, InitialRsdProbe, InitialRsdProbeSkipReason, LockdownTransport,
+    TunnelOwner,
 };
 use crate::discovery::DeviceInfo;
 use crate::error::CoreError;
@@ -18,6 +19,24 @@ use crate::mux::MuxClient;
 use std::time::Duration;
 
 pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice, CoreError> {
+    connect_inner(udid, opts, None).await
+}
+
+/// Connect with caller cleanup ownership established before native activation
+/// and the initial RSD probe. Each strategy attempt reserves separately.
+pub async fn connect_with_owner(
+    udid: &str,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+) -> Result<ConnectedDevice, CoreError> {
+    connect_inner(udid, opts, Some(owner)).await
+}
+
+async fn connect_inner(
+    udid: &str,
+    opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
+) -> Result<ConnectedDevice, CoreError> {
     let mut mux = MuxClient::connect().await?;
     let devices = mux.list_devices().await?;
     let dev = select_mux_device(devices, udid)
@@ -38,6 +57,7 @@ pub async fn connect(udid: &str, opts: ConnectOptions) -> Result<ConnectedDevice
             device_id: dev.device_id,
         },
         opts,
+        owner,
     )
     .await
 }
@@ -46,6 +66,25 @@ pub async fn connect_direct_usb_tunnel(
     udid: &str,
     rsd_ip: Option<&str>,
     opts: ConnectOptions,
+) -> Result<ConnectedDevice, CoreError> {
+    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, None).await
+}
+
+/// Direct USB connection with per-target caller cleanup reservations.
+pub async fn connect_direct_usb_tunnel_with_owner(
+    udid: &str,
+    rsd_ip: Option<&str>,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+) -> Result<ConnectedDevice, CoreError> {
+    connect_direct_usb_tunnel_inner(udid, rsd_ip, opts, Some(owner)).await
+}
+
+async fn connect_direct_usb_tunnel_inner(
+    udid: &str,
+    rsd_ip: Option<&str>,
+    opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
 ) -> Result<ConnectedDevice, CoreError> {
     let mut mux = MuxClient::connect().await?;
     let devices = mux.list_devices().await?;
@@ -77,7 +116,7 @@ pub async fn connect_direct_usb_tunnel(
 
     #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
     {
-        let _ = rsd_ip;
+        let _ = (rsd_ip, owner);
         Err(CoreError::Unsupported(
             "direct USB tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
         ))
@@ -101,6 +140,7 @@ pub async fn connect_direct_usb_tunnel(
                 lockdown_transport.clone(),
                 opts.clone(),
                 target,
+                owner,
             )
             .await
             {
@@ -127,6 +167,27 @@ pub async fn connect_remote_pairing_tunnel(
     host: Option<&str>,
     opts: ConnectOptions,
 ) -> Result<ConnectedDevice, CoreError> {
+    connect_remote_pairing_tunnel_inner(udid, host, opts, None).await
+}
+
+/// Existing-trust RemotePairing connection with per-target cleanup ownership.
+/// A target timing out after activation retains its owner for caller cleanup;
+/// a subsequent target must acquire a new reservation before transport work.
+pub async fn connect_remote_pairing_tunnel_with_owner(
+    udid: &str,
+    host: Option<&str>,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+) -> Result<ConnectedDevice, CoreError> {
+    connect_remote_pairing_tunnel_inner(udid, host, opts, Some(owner)).await
+}
+
+async fn connect_remote_pairing_tunnel_inner(
+    udid: &str,
+    host: Option<&str>,
+    opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
+) -> Result<ConnectedDevice, CoreError> {
     let pair_record = try_load_pair_record(udid, opts.pair_record_path.as_deref());
     let info = DeviceInfo {
         udid: udid.to_string(),
@@ -152,7 +213,7 @@ pub async fn connect_remote_pairing_tunnel(
 
     #[cfg(not(all(feature = "tunnel", feature = "mdns")))]
     {
-        let _ = host;
+        let _ = (host, owner);
         Err(CoreError::Unsupported(
             "remote pairing tunnel support requires ios-core features 'tunnel' and 'mdns'".into(),
         ))
@@ -189,6 +250,7 @@ pub async fn connect_remote_pairing_tunnel(
                     &remote_identifier,
                     &remote_host,
                     port,
+                    owner,
                 ),
             )
             .await
@@ -216,6 +278,25 @@ pub async fn connect_tcp_lockdown_tunnel(
     host: &str,
     opts: ConnectOptions,
 ) -> Result<ConnectedDevice, CoreError> {
+    connect_tcp_lockdown_tunnel_inner(udid, host, opts, None).await
+}
+
+/// TCP lockdown connection with caller ownership before initial RSD probing.
+pub async fn connect_tcp_lockdown_tunnel_with_owner(
+    udid: &str,
+    host: &str,
+    opts: ConnectOptions,
+    owner: &dyn TunnelOwner,
+) -> Result<ConnectedDevice, CoreError> {
+    connect_tcp_lockdown_tunnel_inner(udid, host, opts, Some(owner)).await
+}
+
+async fn connect_tcp_lockdown_tunnel_inner(
+    udid: &str,
+    host: &str,
+    opts: ConnectOptions,
+    owner: Option<&dyn TunnelOwner>,
+) -> Result<ConnectedDevice, CoreError> {
     let pair_record = load_pair_record(udid, opts.pair_record_path.as_deref())?;
     let info = DeviceInfo {
         udid: udid.to_string(),
@@ -230,6 +311,7 @@ pub async fn connect_tcp_lockdown_tunnel(
             host: host.to_string(),
         },
         opts,
+        owner,
     )
     .await
 }

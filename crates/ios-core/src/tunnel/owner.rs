@@ -183,6 +183,7 @@ impl Ledger {
             cleanup,
             pending_joins,
             join_accounting_valid: !self.invalid_count.load(Ordering::Acquire),
+            retained_outcomes: outcomes.slots.iter().any(Option::is_some),
             additional_unretained_outcomes: outcomes.additional_unretained_outcomes,
         };
         drop(outcomes);
@@ -207,6 +208,7 @@ pub struct TunnelShutdownFailure {
     cleanup: Vec<Cause>,
     pending_joins: usize,
     join_accounting_valid: bool,
+    retained_outcomes: bool,
     additional_unretained_outcomes: u64,
 }
 
@@ -229,6 +231,12 @@ impl TunnelShutdownFailure {
     /// This does not certify an error-free attempt, its deadline, or a peer ACK.
     pub fn joins_complete(&self) -> bool {
         self.pending_joins == 0 && self.join_accounting_valid
+    }
+
+    /// Whether this snapshot includes an acquired original work/join failure.
+    /// Pure attempt expiry or incomplete accounting alone does not set this.
+    pub fn has_retained_outcomes(&self) -> bool {
+        self.retained_outcomes
     }
 
     /// Repeated observations omitted by fixed per-role retention, not a count

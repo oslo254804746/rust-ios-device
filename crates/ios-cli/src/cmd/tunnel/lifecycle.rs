@@ -177,22 +177,35 @@ impl Lifecycle {
 
     // The caller holds the tunnel table write guard. This fences publication
     // together with removal without waiting for a connecting device's serial lock.
+    #[cfg(test)]
     pub(super) async fn stop(&self, udid: &str) {
-        if let Some(gate) = self.devices.lock().await.get(udid).and_then(Weak::upgrade) {
-            gate.generation.send_replace(Arc::new(()));
-        }
+        let _ = self.stop_owned(udid).await;
+    }
+
+    pub(super) async fn stop_owned(&self, udid: &str) -> Option<Arc<()>> {
+        let gate = {
+            let devices = self.devices.lock().await;
+            devices.get(udid).and_then(Weak::upgrade)
+        };
+        let previous = gate.map(|gate| gate.generation.send_replace(Arc::new(())));
         self.scan.send_replace(Arc::new(()));
+        previous
     }
 
     pub(super) fn clear(&self) {
+        let _ = self.clear_owned();
+    }
+
+    pub(super) fn clear_owned(&self) -> Option<Arc<()>> {
+        let mut previous = None;
         self.shutdown.send_if_modified(|epoch| {
-            if epoch.is_none() {
-                return false;
-            }
+            let Some(current) = epoch else { return false };
+            previous = Some(Arc::clone(current));
             *epoch = Some(Arc::new(()));
             true
         });
         self.scan.send_replace(Arc::new(()));
+        previous
     }
 
     pub(super) fn close(&self) {
@@ -267,6 +280,13 @@ impl ScanControl {
 }
 
 impl Ticket {
+    pub(super) fn ownership_stamp(&self) -> super::retirement::OwnershipStamp {
+        super::retirement::OwnershipStamp::new(
+            Arc::clone(&self.shutdown_generation),
+            Arc::clone(&self.generation),
+        )
+    }
+
     pub(super) fn is_current(&self) -> bool {
         Arc::ptr_eq(&self.gate.generation.borrow(), &self.generation)
             && self

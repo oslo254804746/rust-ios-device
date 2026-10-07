@@ -355,6 +355,51 @@ async fn native_kernel_owner_actual_eof_primary_survives_expiry_then_retry() {
 }
 
 #[tokio::test]
+async fn native_shutdown_status_preserves_acquired_eof_after_outer_future_drop() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let gate = cleanup_gate().await;
+    let reached = tokio::time::timeout(OBSERVE, gate.acquired.notified())
+        .await
+        .is_ok();
+    let before = gate.handle.shutdown_status();
+    let live_before = gate.handle.is_alive();
+    let mut cleanup = Box::pin(gate.handle.shutdown(OBSERVE));
+    let interrupted = tokio::time::timeout(Duration::from_millis(30), &mut cleanup)
+        .await
+        .is_err();
+    drop(cleanup);
+    let after = gate.handle.shutdown_status();
+    let original = gate.primary.lock().unwrap().clone();
+    gate.release.notify_one();
+    let retried = gate.handle.shutdown(OBSERVE).await;
+    drop(gate.handle);
+    let (eof, recovery) = recovered(gate.peer, &gate.probe, baseline).await;
+    assert!(reached && live_before && interrupted && eof && recovery);
+    let original = original.unwrap();
+    let before = before.unwrap_err();
+    let after = after.unwrap_err();
+    let retried = retried.unwrap_err();
+    for error in [&before, &after, &retried] {
+        let report = snapshot(error).unwrap();
+        assert!(report.has_retained_outcomes());
+        assert!(std::ptr::eq(
+            report.primary().downcast_ref::<TunnelError>().unwrap(),
+            original.as_ref()
+        ));
+        assert!(!report
+            .cleanup()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>()));
+    }
+    assert_eq!(snapshot(&before).unwrap().pending_joins(), 2);
+    assert_eq!(snapshot(&after).unwrap().pending_joins(), 2);
+    assert!(!snapshot(&after).unwrap().joins_complete());
+    assert!(snapshot(&retried).unwrap().joins_complete());
+    assert_eq!(snapshot(&before).unwrap().pending_joins(), 2);
+}
+
+#[tokio::test]
 async fn native_kernel_owner_dropped_join_future_can_retry_native_primary() {
     let baseline = tokio::runtime::Handle::current()
         .metrics()

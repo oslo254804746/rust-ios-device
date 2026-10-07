@@ -173,7 +173,9 @@ pub(super) async fn connect_via_direct_rsd_target(
     lockdown_transport: LockdownTransport,
     opts: ConnectOptions,
     target: MdnsDevice,
+    owner: Option<&dyn super::TunnelOwner>,
 ) -> Result<ConnectedDevice, CoreError> {
+    let reservation = owner.map(super::TunnelOwner::reserve).transpose()?;
     let rsd = rsd_handshake(target.ipv6, target.rsd_port).await?;
     if rsd.udid != info.udid {
         return Err(CoreError::Protocol(format!(
@@ -197,6 +199,7 @@ pub(super) async fn connect_via_direct_rsd_target(
         TunnelConnection::new(info, pair_record, lockdown_transport, "direct RSD"),
         direct_stream,
         opts.tun_mode,
+        reservation,
     )
     .await
 }
@@ -209,7 +212,9 @@ pub(super) async fn connect_via_remote_pairing_target(
     remote_identifier: &str,
     host: &str,
     port: u16,
+    owner: Option<&dyn super::TunnelOwner>,
 ) -> Result<ConnectedDevice, CoreError> {
+    let reservation = owner.map(super::TunnelOwner::reserve).transpose()?;
     let remote_stream =
         establish_remote_pairing_tunnel_stream(remote_identifier, host, port).await?;
 
@@ -224,6 +229,7 @@ pub(super) async fn connect_via_remote_pairing_target(
         ),
         remote_stream,
         opts.tun_mode,
+        reservation,
     )
     .await
 }
