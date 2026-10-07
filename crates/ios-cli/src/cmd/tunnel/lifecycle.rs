@@ -49,12 +49,33 @@ pub(super) struct ConnectionDeadline {
     deadline: Instant,
 }
 
+#[derive(Debug)]
+struct ConnectionDeadlineReached;
+
+impl std::fmt::Display for ConnectionDeadlineReached {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("tunnel connection deadline reached")
+    }
+}
+
+impl std::error::Error for ConnectionDeadlineReached {}
+
 impl ConnectionDeadline {
     pub(super) fn new(timeout: Duration) -> Result<Self> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| crate::output::input_decision("tunnel connection deadline overflow"))?;
         Ok(Self { deadline })
+    }
+
+    /// A synchronous fence for side effects inside a poll. Only run converts
+    /// this private decision into the independent timer's original Elapsed.
+    pub(super) fn check(&self) -> Result<()> {
+        if Instant::now() >= self.deadline {
+            Err(ConnectionDeadlineReached.into())
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
@@ -70,7 +91,15 @@ impl ConnectionDeadline {
                 if Instant::now() >= self.deadline {
                     std::task::Poll::Pending
                 } else {
-                    work.as_mut().poll(cx)
+                    match work.as_mut().poll(cx) {
+                        std::task::Poll::Ready(Err(error)) if error.is::<ConnectionDeadlineReached>() => {
+                            std::task::Poll::Pending
+                        }
+                        std::task::Poll::Ready(Ok(_)) if Instant::now() >= self.deadline => {
+                            std::task::Poll::Pending
+                        }
+                        result => result,
+                    }
                 }
             }) => result,
         }

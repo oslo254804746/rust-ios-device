@@ -11,6 +11,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 const DEVICE: &str = "native-cli-retirement-fixture";
 const OBSERVE: Duration = Duration::from_secs(2);
 
+mod deadline_tests;
+
 struct NativeDevice {
     native: Arc<TunnelHandle>,
 }
@@ -144,7 +146,9 @@ async fn recovered(source: &LocalSource, expected: usize) -> bool {
 }
 async fn publish(state: &TunnelAgentState, route: Route) -> Result<TunnelRecord> {
     let ticket = state.inner.lifecycle.ticket(DEVICE).await?;
-    state.connect_and_store(DEVICE, route, &ticket, None).await
+    state
+        .connect_and_store(DEVICE, route, &ticket, None, None)
+        .await
 }
 async fn finish(state: &TunnelAgentState, source: &LocalSource, expected: usize) -> bool {
     state.notify_shutdown();

@@ -359,6 +359,9 @@ struct TunnelAgentState {
     inner: Arc<TunnelAgentInner>,
 }
 
+#[cfg(test)]
+type PublicationCallback = Box<dyn FnOnce() + Send>;
+
 struct TunnelAgentInner {
     access: AccessControl,
     tun_mode: TunMode,
@@ -374,6 +377,8 @@ struct TunnelAgentInner {
     connect_timeout: Duration,
     shutdown: watch::Sender<bool>,
     native: Arc<retirement::Registry>,
+    #[cfg(test)]
+    publication_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
 struct ManagedTunnel {
@@ -615,6 +620,8 @@ impl TunnelAgentState {
                 connect_timeout,
                 shutdown: watch::channel(false).0,
                 native: retirement::Registry::new(),
+                #[cfg(test)]
+                publication_after_insert: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -819,9 +826,15 @@ impl TunnelAgentState {
                     }
                     Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
                 };
-                match self.connect_and_store(udid, route, &ticket, None).await {
+                match self
+                    .connect_and_store(udid, route, &ticket, None, Some(&deadline))
+                    .await
+                {
                     Ok(record) => Ok(record),
                     Err(error) if requested_connection_type.is_some() => Err(error),
+                    // Preserve an already acquired Source error without opening
+                    // another discovery/transport after the total has expired.
+                    Err(error) if deadline.check().is_err() => Err(error),
                     Err(usbmux_error) => {
                         let targets = self
                             .inner
@@ -834,8 +847,14 @@ impl TunnelAgentState {
                         }) else {
                             return Err(usbmux_error.context("no paired mobdev2 target matched"));
                         };
-                        self.connect_and_store(udid, Route::Mobdev2(target.host), &ticket, None)
-                            .await
+                        self.connect_and_store(
+                            udid,
+                            Route::Mobdev2(target.host),
+                            &ticket,
+                            None,
+                            Some(&deadline),
+                        )
+                        .await
                     }
                 }
             }))
@@ -848,7 +867,11 @@ impl TunnelAgentState {
         route: Route,
         ticket: &Ticket,
         expected_id: Option<u32>,
+        deadline: Option<&lifecycle::ConnectionDeadline>,
     ) -> Result<TunnelRecord> {
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
         let usbmux = matches!(route, Route::Usbmux | Route::Usb(_));
         let ownership = ownership::Ownership::admitted(Arc::clone(&self.inner.native), ticket)?;
         let device = self
@@ -870,10 +893,16 @@ impl TunnelAgentState {
                 }
             }
         };
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
         if expected_id.is_some_and(|expected| expected != device.device_id()) {
             return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
         }
         let record = device.record_for_mode(self.inner.tun_mode)?;
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
         if !device.is_alive() {
             return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
         }
@@ -908,9 +937,16 @@ impl TunnelAgentState {
         // Keep the acquired guard outside the action so a rejected commit
         // retires it after lifecycle watch/table guards have been released.
         let mut acquired = Some((device, native));
+        let mut late_record = None;
         let result = ticket.commit(|| {
+            if let Some(deadline) = deadline {
+                deadline.check()?;
+            }
             if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
                 native.publish(ownership.stamp())?;
+            }
+            if let Some(deadline) = deadline {
+                deadline.check()?;
             }
             let (device, native) = acquired.take().expect("single publication");
             let old = tunnels.insert(
@@ -922,9 +958,29 @@ impl TunnelAgentState {
                     native,
                 },
             );
+            #[cfg(test)]
+            {
+                let callback = self.inner.publication_after_insert.lock().unwrap().take();
+                if let Some(callback) = callback {
+                    callback();
+                }
+            }
+            if let Some(deadline) = deadline {
+                if let Err(error) = deadline.check() {
+                    // Nothing has observed this row while the table and epoch
+                    // fences are held. Restore the displaced original row and
+                    // retire the late runtime only after releasing those guards.
+                    late_record = tunnels.remove(udid);
+                    if let Some(old) = old {
+                        tunnels.insert(udid.to_owned(), old);
+                    }
+                    return Err(error);
+                }
+            }
             Ok((record, old))
         });
         drop(tunnels);
+        drop(late_record);
         result.map(|(record, old)| {
             drop(old);
             record
@@ -966,7 +1022,7 @@ impl TunnelAgentState {
                     }
                     failure_slot = Some(self.reserve_failure_slot(udid).await?);
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
-                    self.connect_and_store(udid, route, ticket, expected_id)
+                    self.connect_and_store(udid, route, ticket, expected_id, None)
                         .await?;
                     self.inner.failed_attempts.write().await.remove(udid);
                     Ok(())
