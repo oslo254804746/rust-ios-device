@@ -4,6 +4,24 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-forward-reader-owner-a455d67",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual Tokio DuplexStream and private tracked transport/TUN waits; parent drop/abort/typed panic, current-thread task metrics. No OS TUN or physical device."
+      ],
+      "required_state": [
+        "Core two files387+/4-,seven tests; old control40930 exited101:1PASS6FAIL after recovery; frozen96089 exited0/all10 serial gates,new7/min7,tunnel53,minCore/CLIalltargets,stack5,strictCore/fmt/full2638Rust13Python,.venv tooling73. Original assertions/other product/Q04/refs preserved; subagent read-only review,primary source/Rust commands,source frozen."
+      ],
+      "tested_commit": "a455d6788168b61b3bae49fa0a996b3fa2b5824e",
+      "date": "2026-10-07",
+      "location": "docs/validation/forward-reader-owner-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Local JoinSet owns one packet reader; caller drop/abort/unwind schedules abortion and eventual stream/task release. Actual20-byte partial header/capacity1 write,controlled TUN/flush,parent nativeJoinError/typedpanic and normalwatch Ok. Active framing/MTU/queue/outcome unchanged. Full2638Rust13PythonCLI1025Core1451public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Normal reader joins/panic propagation/cleanup deadline/outer kernel/wholeowner joins and other L01-L04/classes5-9 remain. Active30 tasks/allsubtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. No maturity/API/dependency/pairing/OS TUN/ACK/socket/RSS/long-run/performance/platform certification."
+    },
+    {
       "id": "linux-tunnel-shutdown-fences-7dc589b",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",

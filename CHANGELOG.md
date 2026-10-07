@@ -491,6 +491,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release the packet forwarding reader when its caller is dropped, aborted or
+  unwinds during a read/write wait. See
+  [reader ownership evidence](docs/validation/forward-reader-owner-2026-10-07.md).
+
 - Prevent stale tunnel publication and failure-row updates after close, clear
   or stop. Scan admission also rejects a close completed before subscription,
   preserving native cancellation and ordinary clear reuse. See

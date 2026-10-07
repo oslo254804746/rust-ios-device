@@ -154,6 +154,13 @@ Policy/liveness snapshots and other scan mutations remain separate checks.
 The server's 2-second cleanup clock starts after signalling closure, so it
 does not bound a synchronous writer's wait for a guarded action.
 
+The Core packet forwarder also retains its reader in a local task set.
+Dropping or aborting the forwarding future requests reader cancellation even
+while a TUN write, stream write or flush is pending. This releases the stream
+once cancellation is scheduled. Normal return still requests abort without
+waiting for a reader join; outer kernel task ownership and explicit joins
+remain pending. See [reader ownership evidence](validation/forward-reader-owner-2026-10-07.md).
+
 Coordinator admissions capture their clear epoch before locking, so an old
 waiter cannot acquire the replacement epoch. Coordinator lock wait now also
 observes clear/shutdown directly and returns cancellation while the lock is

@@ -1049,3 +1049,19 @@ startup/whole-scan/metadata/native joins/physical freshness/reuse/restart/manual
 epochs and other L01/L02/L03-L04/classes5-9 continue. Existing proxy JoinSet
 ownership remains distinct from explicit whole-owner joins.22device NOT_RUN;
 active30 tasks/subtasks exclude Q04,UID unfixed,other acceptance unchanged.
+
+## Packet forwarding reader cancellation
+
+The [reader ownership profile](validation/forward-reader-owner-2026-10-07.md),
+`a455d6788168b61b3bae49fa0a996b3fa2b5824e`, owns its one packet reader in a local JoinSet.
+Caller future drop, parent abort or unwind requests reader abortion; active
+framing/select/queue/MTU behavior and the normal outcome remain unchanged.
+Seven cases observe actual duplex stream Drop/EOF and isolated task-baseline
+recovery. Capacity1 write is actual IO; flush/TUN waits are controlled. Old
+control40930 exited101:1PASS/6FAIL after fixture recovery. Frozen96089 exited0:
+all10 serial gates,new full/minimum7/7,Coretunnel53,full2638Rust/13Python.
+
+This is scheduled abort/eventual release, not normal reader join, reader panic
+propagation, cleanup deadline or outer kernel/whole-owner join. Cooperative CPU
+and other L01/L02/L03-L04/classes5-9 conditions remain;22device NOT_RUN.
+Active30 tasks/subtasks exclude Q04;9complete21unfinished,UID unfixed.
