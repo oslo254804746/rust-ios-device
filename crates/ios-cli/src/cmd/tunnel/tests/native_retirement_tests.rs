@@ -12,6 +12,7 @@ const DEVICE: &str = "native-cli-retirement-fixture";
 const OBSERVE: Duration = Duration::from_secs(2);
 
 mod deadline_tests;
+mod paired_discovery_tests;
 
 struct NativeDevice {
     native: Arc<TunnelHandle>,

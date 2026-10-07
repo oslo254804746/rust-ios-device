@@ -1158,7 +1158,9 @@ impl TunnelAgentState {
             return Ok(());
         };
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
-            return Ok(());
+            // Discard a successful stale snapshot, but preserve the original
+            // discovery error already acquired in this cancellation poll.
+            return paired.map(|_| ());
         }
         // The setup clock ends at the paired reply. The remaining candidate
         // handoff, reconciliation and readiness waits keep their existing
