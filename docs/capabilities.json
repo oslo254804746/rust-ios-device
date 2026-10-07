@@ -1,8 +1,26 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-06",
+  "updated": "2026-10-07",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-tunnel-shutdown-fences-7dc589b",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust 1.97.1/MSRV 1.80.1; Python 3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual TunnelAgentState/private fake sources/devices, second-liveness Notify/Condvar checkpoint, completed close and synchronous watch writer, one-shot test capture/record seams. No physical/native joins."
+      ],
+      "required_state": [
+        "Six CLI files769+/26-,10 new tests. Original callsite/capture control9611 exited101:6PASS4FAIL; first Usbmux/stop only, new helper retained. Frozen68894 exited0/all9 gates,new10/min10,tunnel162+1ignored,minCLIalltargets,stack5,strict/fmt/full2631Rust13Python,.venv tooling73. Original assertions/other product/Q04/refs preserved. Subagent ignored proposals/read-only review;primary completes/applies and serializes all Rust commands; source frozen."
+      ],
+      "tested_commit": "7dc589bf4f26ead3597d991992f251d0ec29831e",
+      "date": "2026-10-07",
+      "location": "docs/validation/tunnel-shutdown-fences-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Ticket generation/shutdown read guards span synchronous publication/failure mutation; stale writes skip, native cancellation preserved, no guard across await/reentry. Original check/policy/liveness/count/slot/fallback/budgets remain. Scan terminal recheck after capture prevents completed close becoming seen; preclosed/overflow priority and clear reuse preserved. Full2631Rust13PythonCLI1025Core1444public52,0FAIL2existing ignored;tools73help118raw38host5CLI95backup3 PASS.22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN. Active30 tasks/subtasks excluding Q04,9complete21unfinished;UID unfixed,other acceptance unchanged. Close may wait before cleanup clock,response order differs from commit. Policy/physical snapshots,same-poll fallback,other scan writes,startup/whole-scan/metadata/native ownership/joins/physical freshness/reuse/restart/manual epochs/otherL01-L04/classes5-9 remain; existing proxy JoinSet not repeated. No maturity,API,dependency,protocol,pairing,ACK,resource/performance/platform certification."
+    },
     {
       "id": "linux-userspace-construction-1931516",
       "level": "host-unit/protocol",

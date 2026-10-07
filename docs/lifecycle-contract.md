@@ -1020,3 +1020,32 @@ RSS or long-run performance. Success/proxy/kernel/blocking/HTTP owners and
 other L01/L02/L03–L04/classes5–9 continue;22device NOT_RUN. Active30 tasks/all
 subtasks exclude Q04,UID risk unfixed,other acceptance unchanged. No maturity
 or platform certification. All Rust commands primary-only and serial.
+
+## Tunnel shutdown state changes
+
+The [shutdown state profile](validation/tunnel-shutdown-fences-2026-10-07.md),
+`7dc589bf4f26ead3597d991992f251d0ec29831e`, retains ticket generation/shutdown watch guards
+through synchronous publication and failure-row mutations. Stale actions are
+skipped with native cancellation; accepted actions finish before lifecycle
+writers complete. Guards do not cross await or reenter watches. Original
+early checks, policy/liveness order, row/count/slot rules and timing remain.
+Scan capture rechecks terminal state after subscribing, retaining preclosed/
+checked-deadline priority and reusable clear. Test callbacks release their
+mutex before invocation and exist only in test builds.
+
+Ten cases exercise actual manager publication on four routes, close/commit
+ordering, stale stop/clear actions, scan source suppression and capture
+priority, stale failure insert/update and reservation release. Old callsite
+control9611 exited101:6PASS/4FAIL at first Usbmux/stop branches; later old routes/
+clear were not negative-tested, and new-helper positive tests retained it.
+Frozen68894 exited0/all9 serial gates,new full/minimum10/10,tunnel162/1existing
+ignored,minCLIalltargets,stack5,strict/fmt,full2631Rust/13Python and tooling73.
+Old assertions/other product sources remain; all Rust tools primary-only.
+
+An accepted response can finish after close, and close can wait before the
+separate server cleanup timer starts. No complete hard shutdown/CPU preemption
+claim. Policy/physical snapshots, same-poll fallback, other scan writes,
+startup/whole-scan/metadata/native joins/physical freshness/reuse/restart/manual
+epochs and other L01/L02/L03-L04/classes5-9 continue. Existing proxy JoinSet
+ownership remains distinct from explicit whole-owner joins.22device NOT_RUN;
+active30 tasks/subtasks exclude Q04,UID unfixed,other acceptance unchanged.

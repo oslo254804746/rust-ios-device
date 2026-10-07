@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent stale tunnel publication and failure-row updates after close, clear
+  or stop. Scan admission also rejects a close completed before subscription,
+  preserving native cancellation and ordinary clear reuse. See
+  [shutdown state evidence](docs/validation/tunnel-shutdown-fences-2026-10-07.md).
+
 - Initialize the userspace tunnel listener before spawning packet workers.
   A native bind or port-query error releases the input stream without
   detaching tasks. See

@@ -142,6 +142,18 @@ reopen that state, including after `clear`. A delegated `/start-tunnel` request
 whose JSON body finishes after shutdown returns the existing502 with
 `x-ios-error-class: cancelled` without connecting. Ordinary internal `clear`
 still allows a fresh generation; restarting a server needs a new manager state.
+
+Publication and failure-row writes now retain their ticket epoch guards
+through the actual synchronous insertion/update. If close, clear or stop has
+already won, no stale write occurs. If insertion wins first, close waits for
+that short action and later table cleanup removes the record; the response
+may finish afterward. Scan admission also rechecks terminal state after watch
+capture, preventing discovery from missing a completed close. See
+[shutdown state evidence](validation/tunnel-shutdown-fences-2026-10-07.md).
+Policy/liveness snapshots and other scan mutations remain separate checks.
+The server's 2-second cleanup clock starts after signalling closure, so it
+does not bound a synchronous writer's wait for a guarded action.
+
 Coordinator admissions capture their clear epoch before locking, so an old
 waiter cannot acquire the replacement epoch. Coordinator lock wait now also
 observes clear/shutdown directly and returns cancellation while the lock is
