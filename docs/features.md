@@ -140,3 +140,15 @@ Some features add heavier optional dependencies only when enabled:
 | `backup2-manifest` | Host-side Backup2 Manifest.db/Manifest.mbdb filtering and local extraction, including modern and legacy BackupKeyBag/AES encrypted payloads; modern manifests use bundled SQLite. |
 
 The `ios-cli` crate enables `ios-core/full` because the binary exposes many commands. Library users should prefer a narrower feature list.
+
+## Tunnel shutdown payload gates
+
+`ForwardReaderCleanup` is exported with `tunnel`. The persistent native owner
+implementation, `TunnelShutdownFailure` and `TunnelHandle::shutdown` require
+either `tunnel-kernel` or `tunnel-userspace`; bare `tunnel` keeps its raw forwarding
+helper without backend ownership. `request_stop` and manager `retire` retain the
+existing handle/manager feature surface. Backend-minimum behavior/checks and
+full strict Clippy pass in the [native owner profile](validation/native-tunnel-owner-2026-10-07.md). Extra strict native
+integration checks use `coredevice-base` and `tunnel-kernel,mdns`; bare-backend
+unused-code Clippy diagnostics were reproduced on the previous clean baseline.
+No production dependency, group membership or Cargo.lock change was made.

@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Retain library-owned kernel and userspace tunnel workers for explicit,
+  retryable shutdown with native work/join errors and one cleanup budget.
+  Stop and replacement signal shared owners; normal packet forwarding joins
+  its reader. See [native owner evidence](docs/validation/native-tunnel-owner-2026-10-07.md).
+
 - Stop packet forwarding on watch closure or cancellation events while TUN
   writes, stream writes or flushes wait, retaining per-iteration checks and
   acquired native IO errors. See

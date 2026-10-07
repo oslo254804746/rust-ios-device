@@ -1243,3 +1243,29 @@ Linux real SIGINT uses a private fake-source child; configuration/startup totals
 other platforms, locked-table/HTTP delegation/Core worker joins and generic
 caller-drop primary reporting remain unproven. All31 tasks and remaining scope
 L01/L02/L03–L04/Q04/classes5–9 stay active.
+
+## Core tunnel shutdown API and timing migration
+
+Implementation `f00ff25395a8432087daf578c9dd23975b09be5a`; [host evidence](validation/native-tunnel-owner-2026-10-07.md).
+Original fields, constructors, signatures, error enums and Cargo.lock remain.
+Additive TunnelHandle::request_stop and TunnelManager::retire are available with
+the existing handle/manager surface. With tunnel-kernel or tunnel-userspace,
+TunnelHandle::shutdown and opaque TunnelShutdownFailure are available; userspace
+also exposes its runtime shutdown. ForwardReaderCleanup requires tunnel.
+
+shutdown starts its checked absolute clock and stop at the method call before
+future poll. Zero stops then yields native expiry; overflow returns InvalidInput
+without stopping. Retain the original Arc through timeout/cancellation and retry;
+recorded native faults remain errors after resource recovery. Snapshot getters
+primary/cleanup/pending_joins/joins_complete/additional_unretained_outcomes expose
+immutable bounded evidence. joins_complete covers owned native joins with valid
+accounting, not error-free/deadline/peer or external caller task completion.
+
+stop now signals shared clones; replacement register signals a different old Arc
+and same-Arc registration stays live. Neither joins. retire transfers a stopped
+owner for caller-managed shutdown, without a manager retirement queue. Legacy new
+owns no arbitrary external task spawned by its receiver consumer. Raw forward
+normal return now awaits its reader and can return previously discarded native
+JoinError; simultaneous work/cleanup failure preserves both originals. Raw cleanup
+has no independent deadline. These state/timing/error differences require pre-1.0
+compatibility review. No CLI option/HTTP wire/FFI/Python close change is certified.

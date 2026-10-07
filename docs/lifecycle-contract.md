@@ -1081,3 +1081,26 @@ wrong whole-loop control90513:0PASS/1FAIL. Fixture recovery precedes assertions.
 Ready cancellation may skip unconsumed worker errors; no single-poll CPU/ACK/
 normal reader join/panic propagation/cleanup deadline/outer-owner guarantee.
 L01-L04/classes5-9 and22device NOT_RUN remain;active30/Q04excluded/UIDunfixed.
+
+## Core native tunnel task ownership
+
+The [native owner profile](validation/native-tunnel-owner-2026-10-07.md), `f00ff25395a8432087daf578c9dd23975b09be5a`, adds retained original
+parent handles and child sets for library-created kernel/userspace runtimes.
+shutdown captures its checked absolute clock and synchronous stop before future
+poll; join-lock waits share it. Zero requests stop and returns native expiry;
+overflow does not request stop. Timeout/caller-future Drop retains unfinished
+joins while the owner remains held; retry uses a new budget. Outcomes are saved
+before pending accounting changes. Final Drop is cancellation fallback only.
+
+Normal raw forwarding aborts and joins its reader without an independent budget.
+Kernel parent panic leaves its original reader set retained for explicit drain.
+Userspace drains four parents and proxy children. Ten fixed cause slots plus
+saturating omitted-observation count preserve primary and cleanup native causes.
+joins_complete requires zero pending and valid accounting; it is not error-free,
+deadline or device acknowledgement. Direct same-ledger work reports are recognized
+by private identity; foreign/full/wrapped reports remain native work errors.
+
+35 new tests;14 frozen serial gates/full2679Rust13Python0FAIL2existing ignored,
+project .venv tools73 PASS. Five failing negative controls are recorded. CLI
+retirement/server/Source pre-return ownership, other L01-L04/classes5-9 and22device
+NOT_RUN remain. Active30/Q04allchildren excluded/9complete21unfinished/UIDunfixed.

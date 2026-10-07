@@ -1974,3 +1974,23 @@ boundary. Shutdown now retains its signal for late waiters. The returned server
 uses an independent2s cleanup total; expiry does not certify delegated HTTP or
 Core worker termination. Caller Drop cannot await or clear a locked table.
 Other L01/L02/L03–L04/Q04/classes5–9 and platform/device conditions remain.
+
+## Native tunnel shutdown evidence
+
+The [Core native owner profile](validation/native-tunnel-owner-2026-10-07.md), `f00ff25395a8432087daf578c9dd23975b09be5a`, retains original
+work IO and Tokio JoinError/Elapsed objects through existing TunnelError::Io
+retained context. Opaque TunnelShutdownFailure follows primary for Error::source
+and classification; cleanup exposes other retained failures/current expiry.
+Ten fixed role slots and a saturating omitted-observation count bound retention.
+That counter counts observations, not distinct faults. Snapshot retry does not
+mutate old evidence. joins_complete requires zero pending joins and valid count
+accounting, and can be true on an error report after recovery; it does not certify
+the timed attempt succeeded. An outer report certifies only its runtime's joins.
+
+Requested aborts are quiet while preserving native cancellation. Already-finished
+foreign cancellation remains unexpected; competing unfinished aborts have no
+exclusive Tokio provenance. Direct work reports use private ledger identity to
+avoid re-recording; foreign/full/extra-wrapped native faults remain ordinary work
+causes. ForwardReaderCleanup preserves simultaneous raw-forward work and reader
+join errors with primary source. Both opaque payloads use fixed/category Debug
+and Display; original causes remain inspectable. Existing error enums are unchanged.

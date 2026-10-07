@@ -10,9 +10,10 @@ The tunnel layer establishes a CDTunnel to devices that expose the required Core
 Userspace construction binds its loopback listener and obtains its port before
 starting packet workers. A native initialization error releases the input
 stream with its original IO source and leaves no newly spawned worker. The
-successful owner still aborts its four task handles on Drop; broader worker
-and proxy-child joins remain pending. See
-[construction evidence](validation/userspace-construction-2026-10-06.md).
+successful owner aborts its four task handles on final Drop. Explicit shutdown
+also collects those worker joins and the original proxy-client task set. See
+[construction evidence](validation/userspace-construction-2026-10-06.md) and
+[native owner evidence](validation/native-tunnel-owner-2026-10-07.md).
 
 ## CLI
 
@@ -115,8 +116,9 @@ local cancellation. See
 [publication query evidence](validation/tunnel-publication-2026-10-06.md).
 
 This checks the query reply's snapshot. No event listener is implemented.
-Local liveness uses kernel receiver existence or unfinished userspace tasks,
-which does not certify physical connectivity or native task joins. See
+Local liveness first rejects a stopped shared runtime, then checks kernel
+receiver existence or unfinished userspace tasks. It does not certify physical
+connectivity or native task joins. See
 [local liveness evidence](validation/tunnel-liveness-2026-10-06.md).
 Changes after the last check, reused IDs/daemon restart, receiver false positives/joins,
 other metadata/byte bounds and physical/resource/performance evidence remain pending.
@@ -157,9 +159,12 @@ does not bound a synchronous writer's wait for a guarded action.
 The Core packet forwarder also retains its reader in a local task set.
 Dropping or aborting the forwarding future requests reader cancellation even
 while a TUN write, stream write or flush is pending. This releases the stream
-once cancellation is scheduled. Normal return still requests abort without
-waiting for a reader join; outer kernel task ownership and explicit joins
-remain pending. See [reader ownership evidence](validation/forward-reader-owner-2026-10-07.md).
+once cancellation is scheduled. Normal return now aborts and joins that reader,
+returning an unexpected native join failure alongside any forwarding primary.
+The library-created kernel runtime additionally owns its parent and persistent
+reader set, so explicit shutdown can collect children after parent panic. See
+[reader ownership evidence](validation/forward-reader-owner-2026-10-07.md) and
+[native owner evidence](validation/native-tunnel-owner-2026-10-07.md).
 
 The forwarder's watch cancellation also covers selected TUN/stream writes and
 flush waits. One receiver is checked before every new iteration, including
@@ -167,7 +172,25 @@ consecutive Ready steps. A closed sender or changed event ends a pending step;
 an IO error already acquired in that closing poll remains the result. Partial
 writes can be abandoned when the stream closes. See
 [forwarding cancellation evidence](validation/forward-watch-shutdown-2026-10-07.md).
-This does not add an ACK, cleanup deadline or explicit worker join.
+Watch cancellation does not acknowledge device teardown. Core owner shutdown
+provides explicit native joins under a separate cooperative budget.
+
+`TunnelHandle::request_stop()` synchronously stops the shared runtime without
+waiting for completion. With either tunnel backend, `shutdown(budget)` starts
+its absolute clock and stop request when called, before its future is polled.
+Join-mutex waits share that clock. Zero still requests stop and returns native
+expiry; overflow returns invalid_input without stopping. Keep the Arc across
+timeout/cancellation and retry shutdown with a new budget. Native failures stay
+inspectable after recovery; final Drop only requests cancellation.
+
+Core `TunnelManager::stop` removes the row and signals retained clones before
+returning.
+Replacement `register` signals a displaced different Arc; the same Arc remains
+live. Both calls remain non-joining. Use `retire` to obtain a stopped Arc and
+retain it for shutdown. Legacy `TunnelHandle::new` owns no arbitrary tasks the
+caller spawns with its receiver. CLI eviction/server cleanup and the activation
+RSD wait before Source returns still need independent retirement integration.
+These shared-state/timing/error changes require pre-1.0 compatibility review.
 
 Coordinator admissions capture their clear epoch before locking, so an old
 waiter cannot acquire the replacement epoch. Coordinator lock wait now also
