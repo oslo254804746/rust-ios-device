@@ -11,6 +11,7 @@
 //! For FileRead responses, the data is in the payload section.
 
 crate::redaction::error_debug!(AfcError);
+crate::redaction::error_debug!(AfcReadLimit);
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -37,6 +38,45 @@ pub enum AfcError {
     Status(AfcStatusCode),
     #[error("protocol error: {0}")]
     Protocol(String),
+}
+
+/// A local bounded-read admission decision, retained under the existing Io
+/// variant so callers can keep exhaustively matching AfcError.
+#[derive(thiserror::Error)]
+#[error("AFC {scope} exceeds the {limit} byte limit (received {received} bytes)")]
+pub(crate) struct AfcReadLimit {
+    scope: &'static str,
+    limit: usize,
+    received: u64,
+}
+
+fn bounded_read_limit(scope: &'static str, limit: usize, received: u64) -> AfcError {
+    AfcError::Io(std::io::Error::other(AfcReadLimit {
+        scope,
+        limit,
+        received,
+    }))
+}
+
+#[derive(Clone, Copy)]
+struct ReadResponseLimit {
+    body: usize,
+    payload: usize,
+}
+
+impl ReadResponseLimit {
+    // File handles and status replies each contain one u64 and no data payload.
+    const CONTROL: Self = Self {
+        body: 8,
+        payload: 0,
+    };
+
+    fn data(requested: usize) -> Self {
+        Self {
+            body: requested.max(8),
+            payload: requested,
+        }
+    }
 }
 
 fn header_error(source: zerocopy::CastError<&[u8], AfcHeader>) -> AfcError {
@@ -353,6 +393,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         header_payload: &[u8],
         payload: &[u8],
     ) -> Result<Packet, AfcError> {
+        self.request_with_response_limit(opcode, header_payload, payload, None)
+            .await
+    }
+
+    async fn request_with_response_limit(
+        &mut self,
+        opcode: AfcOpcode,
+        header_payload: &[u8],
+        payload: &[u8],
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<Packet, AfcError> {
         if !self.usable {
             return Err(AfcError::Protocol(
                 "AFC connection is unusable; reconnect before another request".into(),
@@ -383,7 +434,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         };
         let operation = async {
             request.client.send(opcode, header_payload, payload).await?;
-            request.client.recv().await
+            match response_limit {
+                Some(limit) => request.client.recv_with_response_limit(Some(limit)).await,
+                None => request.client.recv().await,
+            }
         };
         let result = match deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline, operation).await {
@@ -429,6 +483,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     // ── recv ─────────────────────────────────────────────────────────────────
 
     async fn recv(&mut self) -> Result<Packet, AfcError> {
+        self.recv_with_response_limit(None).await
+    }
+
+    async fn recv_with_response_limit(
+        &mut self,
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<Packet, AfcError> {
         let mut hdr_buf = [0u8; AfcHeader::SIZE];
         self.stream.read_exact(&mut hdr_buf).await?;
 
@@ -458,6 +519,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             return Err(AfcError::Protocol(format!(
                 "AFC this_len exceeds entire_len: this_len={this_len_raw} entire_len={entire_len_raw}"
             )));
+        }
+
+        // Admit the peer's declared lengths before usize conversion or either
+        // body allocation. A rejected frame is not drained or reused.
+        if let Some(limit) = response_limit {
+            let body_len = entire_len_raw - header_size;
+            let payload_len = entire_len_raw - this_len_raw;
+            if body_len > limit.body as u64 {
+                return Err(bounded_read_limit("reply body", limit.body, body_len));
+            }
+            if payload_len > limit.payload as u64 {
+                return Err(bounded_read_limit("reply data", limit.payload, payload_len));
+            }
         }
 
         let entire_len = usize::try_from(entire_len_raw).map_err(|error| {
@@ -638,6 +712,91 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
         finish_file_transfer(result, cleanup)
     }
 
+    /// Read a complete file with a caller-supplied byte ceiling.
+    ///
+    /// The effective ceiling is the smaller of `max_bytes` and
+    /// [`Self::MAX_IN_MEMORY_FILE`]. A larger file returns a local resource-limit
+    /// error under the existing [`AfcError::Io`] variant, never a truncated
+    /// success. Zero permits only an empty file: a one-byte EOF probe detects
+    /// non-empty input. No file size metadata is trusted to establish EOF.
+    ///
+    /// Open and close replies are admitted against eight body bytes; each read
+    /// reply is admitted against its requested chunk (at most 64 KiB, or eight
+    /// bytes for a status reply) before body allocation. One extra byte may be
+    /// received to detect a file exceeding the ceiling, but is not appended to
+    /// the result. These are logical byte bounds, not an allocator/RSS guarantee.
+    ///
+    /// The configured request timeout applies separately to open, each read,
+    /// and close. Cleanup has the existing independent five-second ceiling and
+    /// preserves the primary error if cleanup also fails. This method adds no
+    /// whole-file deadline or async Drop: cancellation after an open/committed
+    /// request invalidates reuse, and the caller must drop the client.
+    pub async fn read_file_with_limit(
+        &mut self,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<Bytes, AfcError> {
+        let limit = max_bytes.min(Self::MAX_IN_MEMORY_FILE);
+        let fd = self
+            .file_open_with_response_limit(
+                path,
+                Self::FILE_MODE_READ_ONLY,
+                Some(ReadResponseLimit::CONTROL),
+            )
+            .await?;
+        let mut transfer = AfcTransfer {
+            client: self,
+            completed: false,
+        };
+        let result = async {
+            let mut data = BytesMut::new();
+            loop {
+                // The fixed in-memory ceiling makes this addition representable
+                // even when the caller supplied usize::MAX.
+                let remaining = limit - data.len();
+                let requested = (remaining + 1).min(65_536);
+                let mut hp = [0u8; 16];
+                hp[..8].copy_from_slice(&fd.to_le_bytes());
+                hp[8..].copy_from_slice(&(requested as u64).to_le_bytes());
+                let packet = transfer
+                    .client
+                    .request_with_response_limit(
+                        AfcOpcode::FileRefRead,
+                        &hp,
+                        &[],
+                        Some(ReadResponseLimit::data(requested)),
+                    )
+                    .await?;
+                if packet.payload.is_empty() {
+                    break;
+                }
+                if packet.payload.len() > remaining {
+                    return Err(bounded_read_limit(
+                        "file data",
+                        limit,
+                        data.len() as u64 + packet.payload.len() as u64,
+                    ));
+                }
+                data.extend_from_slice(&packet.payload);
+            }
+            Ok(data.freeze())
+        }
+        .await;
+        let cleanup = transfer
+            .client
+            .close_transfer_file_with_response_limit(
+                fd,
+                FILE_CLEANUP_BUDGET,
+                Some(ReadResponseLimit::CONTROL),
+            )
+            .await;
+        if cleanup.is_err() {
+            transfer.client.usable = false;
+        }
+        transfer.completed = true;
+        finish_file_transfer(result, cleanup)
+    }
+
     /// Read an entire file into memory, following a single AFC symlink.
     ///
     /// This matches go-ios PullSingleFile behavior: if the source path is a
@@ -718,11 +877,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     // ── file handle ops ───────────────────────────────────────────────────────
 
     async fn file_open(&mut self, path: &str, mode: u64) -> Result<u64, AfcError> {
+        self.file_open_with_response_limit(path, mode, None).await
+    }
+
+    async fn file_open_with_response_limit(
+        &mut self,
+        path: &str,
+        mode: u64,
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<u64, AfcError> {
         let mut hp = vec![0u8; 8];
         hp[..8].copy_from_slice(&mode.to_le_bytes());
         hp.extend_from_slice(path.as_bytes());
         hp.push(0);
-        let pkt = self.request(AfcOpcode::FileRefOpen, &hp, &[]).await?;
+        let pkt = self
+            .request_with_response_limit(AfcOpcode::FileRefOpen, &hp, &[], response_limit)
+            .await?;
         if pkt.header_payload.len() < 8 {
             self.usable = false;
             return Err(AfcError::Protocol(
@@ -755,13 +925,37 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
     }
 
     async fn file_close(&mut self, fd: u64) -> Result<(), AfcError> {
+        self.file_close_with_response_limit(fd, None).await
+    }
+
+    async fn file_close_with_response_limit(
+        &mut self,
+        fd: u64,
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<(), AfcError> {
         let hp = fd.to_le_bytes();
-        self.request(AfcOpcode::FileRefClose, &hp, &[]).await?;
+        self.request_with_response_limit(AfcOpcode::FileRefClose, &hp, &[], response_limit)
+            .await?;
         Ok(())
     }
 
     async fn close_transfer_file(&mut self, fd: u64, budget: Duration) -> Result<(), AfcError> {
-        match tokio::time::timeout(budget, self.file_close(fd)).await {
+        self.close_transfer_file_with_response_limit(fd, budget, None)
+            .await
+    }
+
+    async fn close_transfer_file_with_response_limit(
+        &mut self,
+        fd: u64,
+        budget: Duration,
+        response_limit: Option<ReadResponseLimit>,
+    ) -> Result<(), AfcError> {
+        match tokio::time::timeout(
+            budget,
+            self.file_close_with_response_limit(fd, response_limit),
+        )
+        .await
+        {
             Ok(result) => result,
             Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
         }
@@ -845,6 +1039,9 @@ pub mod mode {
     pub const WRITE_ONLY_CREATE_APPEND: u64 = 0x00000005;
     pub const READ_WRITE_CREATE_APPEND: u64 = 0x00000006;
 }
+
+#[cfg(test)]
+mod bounded_read_tests;
 
 #[cfg(test)]
 mod tests {

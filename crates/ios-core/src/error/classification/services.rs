@@ -43,6 +43,9 @@ pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     }
     #[cfg(feature = "afc")]
     {
+        if error.is::<crate::afc::AfcReadLimit>() {
+            return Some(ErrorClass::ResourceLimit);
+        }
         use crate::afc::{AfcError as Kind, AfcStatusCode as Status};
         typed_class!(error, Kind, {
             Kind::Protocol(_) => ErrorClass::Protocol,
@@ -68,6 +71,12 @@ pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     }
     #[cfg(feature = "apps")]
     {
+        if error.is::<crate::apps::installation::BrowseLimit>() {
+            return Some(ErrorClass::ResourceLimit);
+        }
+        if error.is::<crate::apps::installation::BrowseResponseError>() {
+            return Some(ErrorClass::ServiceFailure);
+        }
         protocol_class!(error, crate::apps::installation::IpError, {
             Kind::Install(_) => ErrorClass::ServiceFailure
         });

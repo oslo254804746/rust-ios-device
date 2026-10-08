@@ -6,10 +6,14 @@
 //! Reference: go-ios/ios/installationproxy/installationproxy.go
 
 crate::redaction::error_debug!(IpError);
+crate::redaction::error_debug!(BrowseLimit);
 
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 pub const SERVICE_NAME: &str = "com.apple.mobile.installation_proxy";
 
@@ -22,6 +26,199 @@ const MAX_BROWSE_CHUNKS: usize = 1_000;
 
 /// Maximum number of app entries retained from one Browse operation.
 const MAX_BROWSE_ENTRIES: usize = 1_000_000;
+const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
+
+/// Caller ceilings for one bounded user-application Browse.
+///
+/// Reply wire bytes include each four-byte length prefix and declared plist
+/// body. They exclude the fixed Browse request and are not a decoded-model,
+/// serialized-output, allocator, or RSS measurement. Values above the existing
+/// 1,000-frame and 1,000,000-entry limits cannot raise those hard limits. The
+/// existing four-MiB limit still applies to each reply body.
+#[derive(Debug, Clone, Copy)]
+pub struct BrowseLimits {
+    total_timeout: Duration,
+    max_entries: usize,
+    max_wire_bytes: usize,
+    max_frames: usize,
+}
+
+impl BrowseLimits {
+    /// Start with 10,000 entries, 16 MiB of replies, and 1,000 reply frames.
+    /// The total starts when the bounded operation is first polled and includes
+    /// sending/flushing the request and every reply, without restarting per frame.
+    pub fn new(total_timeout: Duration) -> Self {
+        Self {
+            total_timeout,
+            max_entries: 10_000,
+            max_wire_bytes: 16 * 1024 * 1024,
+            max_frames: MAX_BROWSE_CHUNKS,
+        }
+    }
+
+    /// Zero allows a completed empty list. An oversized list is never truncated.
+    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+        self.max_entries = max_entries;
+        self
+    }
+
+    /// Fewer than four bytes rejects before request I/O.
+    pub fn with_max_wire_bytes(mut self, max_wire_bytes: usize) -> Self {
+        self.max_wire_bytes = max_wire_bytes;
+        self
+    }
+
+    /// Zero rejects before request I/O, because completion requires a reply.
+    pub fn with_max_frames(mut self, max_frames: usize) -> Self {
+        self.max_frames = max_frames;
+        self
+    }
+}
+
+#[derive(thiserror::Error)]
+#[error("InstallationProxy Browse {kind} exceeds limit {limit} (received {received})")]
+pub(crate) struct BrowseLimit {
+    kind: &'static str,
+    limit: u64,
+    received: u64,
+}
+
+fn browse_limit(kind: &'static str, limit: usize, received: u64) -> IpError {
+    IpError::Io(std::io::Error::other(BrowseLimit {
+        kind,
+        limit: limit as u64,
+        received,
+    }))
+}
+
+/// The complete device error observation, retained without echoing its text.
+#[derive(thiserror::Error)]
+#[error("device rejected InstallationProxy Browse")]
+pub(crate) struct BrowseResponseError {
+    code: String,
+    description: Option<String>,
+}
+
+impl std::fmt::Debug for BrowseResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowseResponseError")
+            .field("code", &crate::redaction::diagnostic_id(&self.code))
+            .field("has_description", &self.description.is_some())
+            .finish()
+    }
+}
+
+struct BrowseGuard<'a, S> {
+    stream: &'a mut S,
+    usable: &'a mut bool,
+    progressed: bool,
+    failed: bool,
+    completed: bool,
+}
+
+impl<S> Drop for BrowseGuard<'_, S> {
+    fn drop(&mut self) {
+        if !self.completed && (self.progressed || self.failed) {
+            *self.usable = false;
+        }
+    }
+}
+
+struct BrowseIo<'a, S> {
+    inner: &'a mut S,
+    progressed: &'a mut bool,
+    failed: &'a mut bool,
+    deadline: tokio::time::Instant,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for BrowseIo<'_, S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Poll::Pending;
+        }
+        let before = buf.filled().len();
+        let result = Pin::new(&mut *self.inner).poll_read(cx, buf);
+        *self.progressed |= buf.filled().len() > before;
+        if matches!(result, Poll::Ready(Err(_))) {
+            *self.failed = true;
+        }
+        if matches!(result, Poll::Ready(Ok(()))) && tokio::time::Instant::now() >= self.deadline {
+            // The outer timer supplies the original Elapsed. Suppressing this
+            // late success also prevents any subsequent read in this poll.
+            Poll::Pending
+        } else {
+            result
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for BrowseIo<'_, S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_write(cx, bytes);
+        if matches!(result, Poll::Ready(Err(_))) {
+            *self.failed = true;
+        }
+        if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
+            *self.progressed = true;
+        }
+        if matches!(result, Poll::Ready(Ok(_))) && tokio::time::Instant::now() >= self.deadline {
+            Poll::Pending
+        } else {
+            result
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_flush(cx);
+        if matches!(result, Poll::Ready(Err(_))) {
+            *self.failed = true;
+        }
+        if matches!(result, Poll::Ready(Ok(()))) && tokio::time::Instant::now() >= self.deadline {
+            Poll::Pending
+        } else {
+            result
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Poll::Pending;
+        }
+        let result = Pin::new(&mut *self.inner).poll_shutdown(cx);
+        if matches!(result, Poll::Ready(Err(_))) {
+            *self.failed = true;
+        }
+        if matches!(result, Poll::Ready(Ok(()))) && tokio::time::Instant::now() >= self.deadline {
+            Poll::Pending
+        } else {
+            result
+        }
+    }
+}
+
+async fn browse_checkpoint(deadline: tokio::time::Instant) -> Result<(), IpError> {
+    if tokio::time::Instant::now() < deadline {
+        return Ok(());
+    }
+    match tokio::time::timeout_at(deadline, std::future::pending::<()>()).await {
+        Err(elapsed) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into()),
+        Ok(()) => unreachable!("pending future completed"),
+    }
+}
 
 #[derive(thiserror::Error)]
 pub enum IpError {
@@ -49,15 +246,37 @@ pub struct AppInfo {
 /// InstallationProxy client.
 pub struct InstallationProxy<S> {
     stream: S,
+    usable: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
     pub fn new(stream: S) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            usable: true,
+        }
+    }
+
+    /// Local admission after a bounded Browse, not peer liveness or retry safety.
+    /// Legacy requests retain their original lifecycle behavior until a bounded
+    /// operation invalidates this connection.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+
+    fn ensure_usable(&self) -> Result<(), IpError> {
+        if self.usable {
+            Ok(())
+        } else {
+            Err(IpError::Protocol(
+                "InstallationProxy connection is unusable; reconnect before another request".into(),
+            ))
+        }
     }
 
     /// Install an app from a staged IPA path on the device.
     pub async fn install(&mut self, package_path: &str) -> Result<(), IpError> {
+        self.ensure_usable()?;
         send_plist(
             &mut self.stream,
             &serde_json::json!({
@@ -73,6 +292,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
 
     /// Upgrade an app from a staged IPA path on the device.
     pub async fn upgrade(&mut self, package_path: &str) -> Result<(), IpError> {
+        self.ensure_usable()?;
         send_plist(
             &mut self.stream,
             &serde_json::json!({
@@ -89,6 +309,189 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
     /// List all user-installed apps.
     pub async fn list_user_apps(&mut self) -> Result<Vec<AppInfo>, IpError> {
         self.browse("User", true, &[]).await
+    }
+
+    /// List user apps under one total deadline and caller reply/entry ceilings.
+    ///
+    /// Zero/overflowing deadlines, zero frame limits and fewer than four wire
+    /// bytes fail before transport work. A zero entry limit allows an empty
+    /// completed list. No partial result is returned on any failure.
+    ///
+    /// Cancellation/expiry after wire progress, native I/O failures, malformed
+    /// replies, and local budget refusals after progress invalidate this client.
+    /// Subsequent legacy and bounded methods reject before I/O; construct a
+    /// fresh client. Complete
+    /// success permits reuse. A complete legal Error response permits reuse
+    /// only with an explicit Status Complete; missing/unknown status does not.
+    /// The original device error is retained with safe Display/Debug. No retry,
+    /// mutation replay, reconnect, or asynchronous Drop is introduced.
+    pub async fn list_user_apps_with_limits(
+        &mut self,
+        limits: BrowseLimits,
+    ) -> Result<Vec<AppInfo>, IpError> {
+        if limits.total_timeout.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "InstallationProxy Browse total budget is zero",
+            )
+            .into());
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(limits.total_timeout)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "InstallationProxy Browse deadline is too large",
+                )
+            })?;
+        let max_frames = limits.max_frames.min(MAX_BROWSE_CHUNKS);
+        let max_entries = limits.max_entries.min(MAX_BROWSE_ENTRIES);
+        if max_frames == 0 {
+            return Err(browse_limit("frames", max_frames, 1));
+        }
+        if limits.max_wire_bytes < 4 {
+            return Err(browse_limit("reply wire bytes", limits.max_wire_bytes, 4));
+        }
+        self.ensure_usable()?;
+        let mut guard = BrowseGuard {
+            stream: &mut self.stream,
+            usable: &mut self.usable,
+            progressed: false,
+            failed: false,
+            completed: false,
+        };
+        let mut terminal_business_error = false;
+        let result = {
+            let mut io = BrowseIo {
+                inner: &mut *guard.stream,
+                progressed: &mut guard.progressed,
+                failed: &mut guard.failed,
+                deadline,
+            };
+            let operation = async {
+                send_plist(
+                    &mut io,
+                    &serde_json::json!({
+                        "Command": "Browse",
+                        "ClientOptions": {
+                            "ApplicationType": "User",
+                            "ShowLaunchProhibitedApps": true,
+                        },
+                    }),
+                )
+                .await?;
+                let mut apps = Vec::new();
+                let mut frames = 0usize;
+                let mut wire_bytes = 0u64;
+                loop {
+                    browse_checkpoint(deadline).await?;
+                    if frames >= max_frames {
+                        return Err(browse_limit("frames", max_frames, frames as u64 + 1));
+                    }
+                    if wire_bytes + 4 > limits.max_wire_bytes as u64 {
+                        return Err(browse_limit(
+                            "reply wire bytes",
+                            limits.max_wire_bytes,
+                            wire_bytes + 4,
+                        ));
+                    }
+                    let mut prefix = [0; 4];
+                    io.read_exact(&mut prefix).await?;
+                    let length = u32::from_be_bytes(prefix) as u64;
+                    // With at most 1,000 prior replies, each limited to four MiB,
+                    // this u64 addition cannot overflow on 32- or 64-bit hosts.
+                    let declared_wire_bytes = wire_bytes + 4 + length;
+                    if declared_wire_bytes > limits.max_wire_bytes as u64 {
+                        return Err(browse_limit(
+                            "reply wire bytes",
+                            limits.max_wire_bytes,
+                            declared_wire_bytes,
+                        ));
+                    }
+                    if length > MAX_PLIST_SIZE as u64 {
+                        return Err(IpError::Protocol(format!(
+                            "plist length {length} exceeds maximum of {MAX_PLIST_SIZE}"
+                        )));
+                    }
+                    wire_bytes = declared_wire_bytes;
+                    frames += 1;
+                    browse_checkpoint(deadline).await?;
+                    let mut data = vec![0; length as usize];
+                    io.read_exact(&mut data).await?;
+                    let mut response: plist::Dictionary = plist::from_bytes(&data)?;
+                    if let Some(error) = response.remove("Error") {
+                        let code = error.into_string().ok_or_else(|| {
+                            IpError::Protocol("Browse Error field is not a string".into())
+                        })?;
+                        let description = response
+                            .remove("ErrorDescription")
+                            .map(|value| {
+                                value.into_string().ok_or_else(|| {
+                                    IpError::Protocol(
+                                        "Browse ErrorDescription field is not a string".into(),
+                                    )
+                                })
+                            })
+                            .transpose()?;
+                        terminal_business_error =
+                            response.get("Status").and_then(plist::Value::as_string)
+                                == Some("Complete");
+                        return Err(IpError::Io(std::io::Error::other(BrowseResponseError {
+                            code,
+                            description,
+                        })));
+                    }
+                    let status = response
+                        .get("Status")
+                        .and_then(plist::Value::as_string)
+                        .ok_or_else(|| {
+                            IpError::Protocol("Browse reply has no string Status".into())
+                        })?;
+                    let complete = status == "Complete";
+                    let current_list = match response.remove("CurrentList") {
+                        None => Vec::new(),
+                        Some(value) => value.into_array().ok_or_else(|| {
+                            IpError::Protocol("Browse CurrentList field is not an array".into())
+                        })?,
+                    };
+                    if current_list
+                        .iter()
+                        .any(|value| value.as_dictionary().is_none())
+                    {
+                        return Err(IpError::Protocol(
+                            "Browse app entry is not a dictionary".into(),
+                        ));
+                    }
+                    let total_entries = apps
+                        .len()
+                        .checked_add(current_list.len())
+                        .ok_or_else(|| browse_limit("entries", max_entries, u64::MAX))?;
+                    if total_entries > max_entries {
+                        return Err(browse_limit("entries", max_entries, total_entries as u64));
+                    }
+                    browse_checkpoint(deadline).await?;
+                    for value in current_list {
+                        apps.push(parse_app_info(value));
+                    }
+                    browse_checkpoint(deadline).await?;
+                    if complete {
+                        return Ok(apps);
+                    }
+                }
+            };
+            let result = match tokio::time::timeout_at(deadline, operation).await {
+                Ok(result) => result,
+                Err(elapsed) => {
+                    Err(std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed).into())
+                }
+            };
+            if result.is_ok() {
+                browse_checkpoint(deadline).await?;
+            }
+            result
+        };
+        guard.completed = result.is_ok() || terminal_business_error;
+        result
     }
 
     /// List user-installed apps with a narrowed set of returned attributes.
@@ -151,6 +554,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         command: &str,
         bundle_id: &str,
     ) -> Result<(), IpError> {
+        self.ensure_usable()?;
         send_plist(
             &mut self.stream,
             &serde_json::json!({
@@ -203,6 +607,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         show_prohibited: bool,
         return_attributes: &[&str],
     ) -> Result<Vec<AppInfo>, IpError> {
+        self.ensure_usable()?;
         let mut client_opts = serde_json::json!({});
         if !app_type.is_empty() {
             client_opts["ApplicationType"] = serde_json::Value::String(app_type.to_string());
@@ -272,6 +677,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InstallationProxy<S> {
         &mut self,
         client_options: serde_json::Value,
     ) -> Result<HashMap<String, plist::Value>, IpError> {
+        self.ensure_usable()?;
         send_plist(
             &mut self.stream,
             &serde_json::json!({
@@ -374,7 +780,6 @@ where
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    const MAX_PLIST_SIZE: usize = 4 * 1024 * 1024;
     if len > MAX_PLIST_SIZE {
         return Err(IpError::Protocol(format!(
             "plist length {len} exceeds maximum of {MAX_PLIST_SIZE}"
@@ -409,6 +814,9 @@ fn json_to_plist(val: &serde_json::Value) -> plist::Value {
         }
     }
 }
+
+#[cfg(test)]
+mod bounded_browse_tests;
 
 #[cfg(test)]
 mod tests {

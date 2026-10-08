@@ -10,7 +10,7 @@ pub use appservice::{
     AppServiceClient, AppServiceError, CoreDeviceEnvelopeMode, LaunchApplicationOptions,
     RunningAppProcess,
 };
-pub use installation::{AppInfo, InstallationProxy};
+pub use installation::{AppInfo, BrowseLimits, InstallationProxy};
 pub use zipconduit::{
     install_ipa, install_ipa_with_checked_progress, CheckedProgressCallback, ZipConduitError,
 };
