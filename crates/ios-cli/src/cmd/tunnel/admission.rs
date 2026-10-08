@@ -1,0 +1,124 @@
+//! Logical admission of manager Source snapshots and owned scan candidates.
+//! Source allocation, vector capacity and allocator/RSS are separate boundaries.
+use std::collections::HashSet;
+
+use anyhow::Result;
+use ios_core::device::PairedMobdev2Device;
+
+use super::source::UsbDevice;
+
+const MAX_RAW_ROWS: usize = 16_384;
+const MAX_FIELD_BYTES: usize = 4096;
+const MAX_RAW_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CANDIDATES: usize = 4096;
+const MAX_CANDIDATE_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+fn snapshot_limit() -> anyhow::Error {
+    crate::output::resource_decision("tunnel discovery snapshot metadata limit")
+}
+
+fn charge_field(total: &mut usize, field: &str) -> Result<()> {
+    anyhow::ensure!(field.len() <= MAX_FIELD_BYTES, snapshot_limit());
+    *total = total
+        .checked_add(field.len())
+        .filter(|bytes| *bytes <= MAX_RAW_TEXT_BYTES)
+        .ok_or_else(snapshot_limit)?;
+    Ok(())
+}
+
+pub(super) fn usb_snapshot(devices: &[UsbDevice]) -> Result<()> {
+    anyhow::ensure!(devices.len() <= MAX_RAW_ROWS, snapshot_limit());
+    let mut bytes = 0;
+    let mut unique = HashSet::new();
+    for device in devices {
+        charge_field(&mut bytes, &device.udid)?;
+        if !unique.contains(device.udid.as_str()) {
+            // Count all raw identities before selection/authorization or clones.
+            anyhow::ensure!(unique.len() < MAX_CANDIDATES, snapshot_limit());
+            unique.insert(device.udid.as_str());
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn paired_snapshot(devices: &[PairedMobdev2Device]) -> Result<()> {
+    anyhow::ensure!(devices.len() <= MAX_RAW_ROWS, snapshot_limit());
+    let mut bytes = 0;
+    for device in devices {
+        charge_field(&mut bytes, &device.udid)?;
+        charge_field(&mut bytes, &device.host)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct CandidateBudget {
+    count: usize,
+    bytes: usize,
+}
+
+pub(super) enum PairedCandidates {
+    Complete {
+        targets: Vec<PairedMobdev2Device>,
+        indices: Vec<usize>,
+    },
+    Incomplete(anyhow::Error),
+}
+
+impl CandidateBudget {
+    pub(super) fn paired_candidates(
+        &self,
+        targets: Vec<PairedMobdev2Device>,
+        usb_seen: &HashSet<String>,
+        permits: impl Fn(&str) -> bool,
+    ) -> PairedCandidates {
+        match paired_snapshot(&targets).and_then(|()| self.paired_plan(&targets, usb_seen, permits))
+        {
+            Ok(indices) => PairedCandidates::Complete { targets, indices },
+            // Reject without retaining the input across USB candidate waits.
+            Err(error) => PairedCandidates::Incomplete(error),
+        }
+    }
+
+    pub(super) fn admit(&mut self, udid_bytes: usize, host_bytes: usize) -> Result<()> {
+        let limit = || crate::output::resource_decision("tunnel scan candidate metadata limit");
+        let count = self
+            .count
+            .checked_add(1)
+            .filter(|count| *count <= MAX_CANDIDATES)
+            .ok_or_else(limit)?;
+        let bytes = self
+            .bytes
+            .checked_add(udid_bytes)
+            .and_then(|bytes| bytes.checked_add(host_bytes))
+            .filter(|bytes| *bytes <= MAX_CANDIDATE_TEXT_BYTES)
+            .ok_or_else(limit)?;
+        self.count = count;
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    pub(super) fn paired_plan(
+        &self,
+        targets: &[PairedMobdev2Device],
+        usb_seen: &HashSet<String>,
+        permits: impl Fn(&str) -> bool,
+    ) -> Result<Vec<usize>> {
+        let mut budget = *self;
+        let mut planned = HashSet::new();
+        let mut indices = Vec::new();
+        for (index, target) in targets.iter().enumerate() {
+            if permits(&target.udid)
+                && !usb_seen.contains(&target.udid)
+                && !planned.contains(target.udid.as_str())
+            {
+                // Admit the entire borrowed plan before any paired String clone
+                // or ticket. Permission rechecks may only remove planned rows.
+                budget.admit(target.udid.len(), target.host.len())?;
+                planned.insert(target.udid.as_str());
+                indices.push(index);
+            }
+        }
+        Ok(indices)
+    }
+}

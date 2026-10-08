@@ -30,6 +30,7 @@ use crate::access::{
     ServerAccessArgs, UpstreamArgs, Upstreams,
 };
 
+mod admission;
 mod lifecycle;
 mod ownership;
 mod retirement;
@@ -846,6 +847,7 @@ impl TunnelAgentState {
                             .paired_devices()
                             .await
                             .context("failed to browse paired mobdev2 devices")?;
+                        admission::paired_snapshot(&targets)?;
                         let Some(target) = targets.into_iter().find(|target| {
                             target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
                         }) else {
@@ -915,6 +917,7 @@ impl TunnelAgentState {
             // checked, within the caller's existing permit/deadline/cancellation.
             match self.inner.source.usb_devices().await {
                 UsbSnapshot::Devices(devices) => {
+                    admission::usb_snapshot(&devices)?;
                     if !devices.iter().any(|attached| {
                         attached.udid == udid && attached.device_id == device.device_id()
                     }) {
@@ -1118,6 +1121,11 @@ impl TunnelAgentState {
                 return Err(error);
             }
         };
+        let admission = admission::usb_snapshot(&devices);
+        if !self.inner.lifecycle.scan_is_current(&scan_generation) {
+            return Ok(());
+        }
+        admission?;
         let attached = devices
             .iter()
             .map(|device| (device.udid.as_str(), device.device_id))
@@ -1141,9 +1149,12 @@ impl TunnelAgentState {
         // A stop while an earlier device stalls invalidates the queued ticket too.
         let mut candidates = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let mut candidate_budget = admission::CandidateBudget::default();
         for device in source::selected_devices(devices) {
             let udid = device.udid;
-            if self.inner.access.permits_device(&udid) && seen.insert(udid.clone()) {
+            if self.inner.access.permits_device(&udid) && !seen.contains(&udid) {
+                candidate_budget.admit(udid.len(), 0)?;
+                seen.insert(udid.clone());
                 let Some(ticket) = control.drive(self.inner.lifecycle.ticket(&udid)).await? else {
                     return Ok(());
                 };
@@ -1176,8 +1187,17 @@ impl TunnelAgentState {
         // The setup clock ends at the paired reply. The remaining candidate
         // handoff, reconciliation and readiness waits keep their existing
         // behavior; each candidate still owns its independent connection total.
-        if let Ok(targets) = &paired {
-            for target in targets {
+        // Keep original Source Err outside the admission decision: a stale
+        // Source success remains quietly discarded, even if its metadata fails
+        // admission. Rejected snapshots are dropped before USB connection waits.
+        let paired = paired.map(|targets| {
+            candidate_budget.paired_candidates(targets, &seen, |udid| {
+                self.inner.access.permits_device(udid)
+            })
+        });
+        if let Ok(admission::PairedCandidates::Complete { targets, indices }) = &paired {
+            for &index in indices {
+                let target = &targets[index];
                 if self.inner.access.permits_device(&target.udid)
                     && seen.insert(target.udid.clone())
                 {
@@ -1196,9 +1216,15 @@ impl TunnelAgentState {
             // Preserve its already acquired error at this final handoff fence.
             return paired.map(|_| ());
         }
-        self.reconcile_failures(&candidates, paired.is_ok()).await;
+        self.reconcile_failures(
+            &candidates,
+            matches!(&paired, Ok(admission::PairedCandidates::Complete { .. })),
+        )
+        .await;
         self.refresh_candidates(candidates).await;
-        paired?;
+        if let admission::PairedCandidates::Incomplete(error) = paired? {
+            return Err(error);
+        }
         self.mark_ready().await;
         Ok(())
     }
