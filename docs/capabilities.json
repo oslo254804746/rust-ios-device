@@ -4,6 +4,25 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-paired-final-aa3c3a4",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Actual localhost TCP partial EOF;native userspace Tokio workers/DuplexStream;private discovery metadata and deterministic test-only epoch boundary hook."
+      ],
+      "required_state": [
+        "3 source files 158+/1-;4newcases;old75395 terminal101/2PASS2FAIL after native recovery;fixed60167 15PASS;454frozenproducts/all7serialgates."
+      ],
+      "tested_commit": "aa3c3a46c19dd19175c879bcb44f5856d24259ec",
+      "date": "2026-10-08",
+      "location": "docs/validation/tunnel-paired-final-fence-2026-10-07.md",
+      "result": "PASS",
+      "scope": "Original paired Err retained by both stale fences;second now covers epoch change after firstcheck. Actualclear/notifyShutdown;originalnative joins/status/EOF/tasks before regressions. Full2740Rust13Python0FAIL2existingignored CLI1079Core1496public55;CLI216/1ignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;UID untouched,no maturity/ACK/device/RSS/performance/platform certification.",
+      "limitations": "Close-success fixture empty;nonemptyclose canCancelledbeforefinalfence. Clear-success mayadmitcoordinator but noSourceconnection/ready. OriginalIOtype/kind/class tested,allocationidentity nottested;no threadedstress/mobdev2/DNS/wholeScan persistence proof."
+    },
+    {
       "id": "linux-tunnel-paired-error-1ab05e3",
       "limitations": "This profile covers clear/close completed inside Source before its reply. The later paired epoch fence can still discard an acquired original error and requires a separate regression/fix.",
       "level": "host-unit/protocol",

@@ -1330,3 +1330,9 @@ pairing or device behavior. Whole-scan post-paired totals/cancellation,out-of-cl
 
 Evidence covers clear/close completed before the Source reply. Error retention
 at the later paired epoch check remains open and needs its own regression.
+
+## Paired discovery final fence
+
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+The second paired stale check now retains its original Source error. This follows the first-check fix and closes its recorded race. Public APIs/options/wire/Core/bindings/clock budgets stay;the corrected error outcome needs pre-1.0 review.
+Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.

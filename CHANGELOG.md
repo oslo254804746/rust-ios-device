@@ -491,6 +491,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve an original paired discovery error at the final epoch check when
+  clear/close occurs after the first reply check.
+  See [final fence evidence](docs/validation/tunnel-paired-final-fence-2026-10-07.md).
+
 - Preserve an original paired discovery error when manager clear/close completes
   inside the Source reply. Successful stale snapshots remain discarded.
   See [error retention evidence](docs/validation/tunnel-paired-error-retention-2026-10-07.md).

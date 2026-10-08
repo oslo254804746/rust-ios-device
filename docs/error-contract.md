@@ -2049,3 +2049,9 @@ Returned error instead of swallowed success needs pre-1.0 review. Whole-scan pos
 The paired fixtures cover clear/close completed before Source returns. A later
 epoch change between the first and second paired checks can still discard that
 original error; this profile does not certify that second fence.
+
+## Original paired error at both stale fences
+
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+Both paired stale branches now map only successful replies to Ok and return their acquired original Err unchanged. The second fence handles an epoch change after the first check passed. Native EOF kind/Io classification remain;no wrapper/error-enum change.
+Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.

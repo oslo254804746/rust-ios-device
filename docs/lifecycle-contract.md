@@ -1174,3 +1174,9 @@ Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;UID unt
 
 This paired profile covers cancellation completed inside the Source reply.
 The later paired epoch fence still needs error-retention regression and repair.
+
+## Paired reply final epoch fence
+
+Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
+Clear/close after the first paired check no longer turns an acquired paired error into success. Nonempty clear-success is discarded before connection/ready;nonempty close can return Cancelled at ticket admission,so universal stale-success Ok is not promised.
+Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
