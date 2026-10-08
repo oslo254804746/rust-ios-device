@@ -32,6 +32,7 @@ struct DeviceGate {
     generation: watch::Sender<Arc<()>>,
 }
 
+#[derive(Clone)]
 pub(super) struct Ticket {
     gate: Arc<DeviceGate>,
     generation: Arc<()>,
@@ -50,6 +51,7 @@ pub(super) struct ConnectionDeadline {
     deadline: Instant,
     timeout_context: &'static str,
     whole: Option<Instant>,
+    retry: std::sync::Mutex<Option<Instant>>,
 }
 
 #[derive(Debug)]
@@ -84,6 +86,7 @@ impl ConnectionDeadline {
             deadline,
             timeout_context,
             whole: None,
+            retry: std::sync::Mutex::new(None),
         })
     }
 
@@ -92,13 +95,31 @@ impl ConnectionDeadline {
         self
     }
 
+    /// Start an episode's clock only at actual Source admission. Every run of
+    /// this candidate observes the same shorter clock, including metadata waits
+    /// after Source returns and a ready poll that crosses the new deadline.
+    pub(super) fn clamp_retry(&self, at: Instant) {
+        let mut retry = self
+            .retry
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *retry = Some(retry.map_or(at, |old| old.min(at)));
+    }
+
+    fn effective(&self) -> Instant {
+        self.retry
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .map_or(self.deadline, |retry| retry.min(self.deadline))
+    }
+
     /// A synchronous fence for side effects inside a poll. Only run converts
     /// this private decision into the independent timer's original Elapsed.
     pub(super) fn check(&self) -> Result<()> {
         if self.whole.is_some_and(|whole| Instant::now() >= whole) {
             return Err(super::scan::DeadlineReached.into());
         }
-        if Instant::now() >= self.deadline {
+        if Instant::now() >= self.effective() {
             Err(ConnectionDeadlineReached.into())
         } else {
             Ok(())
@@ -107,29 +128,48 @@ impl ConnectionDeadline {
 
     pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
         tokio::pin!(work);
-        tokio::select! {
-            biased;
-            expired = tokio::time::timeout_at(self.deadline, std::future::pending::<T>()) => {
-                expired.context(self.timeout_context)
+        let mut at = self.effective();
+        let mut expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
+        std::future::poll_fn(|cx| {
+            let before = self.effective();
+            if before != at {
+                at = before;
+                expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
             }
-            result = std::future::poll_fn(|cx| {
-                // Tokio's timeout polls its work before the timer. Suppress
-                // late ready work, including publication, at the nominal deadline.
-                if Instant::now() >= self.deadline {
-                    std::task::Poll::Pending
-                } else {
-                    match work.as_mut().poll(cx) {
-                        std::task::Poll::Ready(Err(error)) if error.is::<ConnectionDeadlineReached>() => {
-                            std::task::Poll::Pending
-                        }
-                        std::task::Poll::Ready(Ok(_)) if Instant::now() >= self.deadline => {
-                            std::task::Poll::Pending
-                        }
-                        result => result,
-                    }
+            // Poll only an independent pending timer, never a late work future.
+            if let std::task::Poll::Ready(expired) = expiry.as_mut().poll(cx) {
+                return std::task::Poll::Ready(expired.context(self.timeout_context));
+            }
+            if Instant::now() >= at {
+                return std::task::Poll::Pending;
+            }
+            let result = work.as_mut().poll(cx);
+            if let std::task::Poll::Ready(Err(error)) = &result {
+                if !error.is::<ConnectionDeadlineReached>() {
+                    // Preserve a native cause already returned by work even if
+                    // that ready error poll crossed the cooperative clock.
+                    return result;
                 }
-            }) => result,
-        }
+            }
+            let after = self.effective();
+            if after != at {
+                at = after;
+                expiry = Box::pin(tokio::time::timeout_at(at, std::future::pending::<T>()));
+            }
+            // Register a newly clamped timer before returning Pending. A Source
+            // may have begun the episode while this very poll was in progress.
+            if let std::task::Poll::Ready(expired) = expiry.as_mut().poll(cx) {
+                return std::task::Poll::Ready(expired.context(self.timeout_context));
+            }
+            match result {
+                std::task::Poll::Ready(Err(error)) if error.is::<ConnectionDeadlineReached>() => {
+                    std::task::Poll::Pending
+                }
+                std::task::Poll::Ready(Ok(_)) if Instant::now() >= at => std::task::Poll::Pending,
+                result => result,
+            }
+        })
+        .await
     }
 }
 
@@ -343,6 +383,22 @@ impl ScanControl {
 }
 
 impl Ticket {
+    /// Compare immutable identities without borrowing either watch again from
+    /// inside a commit. A ledger row holds this coordinator across scan windows.
+    pub(super) fn same_incarnation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.gate, &other.gate)
+            && Arc::ptr_eq(&self.generation, &other.generation)
+            && Arc::ptr_eq(&self.shutdown_generation, &other.shutdown_generation)
+    }
+
+    pub(super) fn belongs_to_global(&self, old: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.shutdown_generation, old)
+    }
+
+    pub(super) fn belongs_to_device(&self, old: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.generation, old)
+    }
+
     pub(super) fn ownership_stamp(&self) -> super::retirement::OwnershipStamp {
         super::retirement::OwnershipStamp::new(
             Arc::clone(&self.shutdown_generation),

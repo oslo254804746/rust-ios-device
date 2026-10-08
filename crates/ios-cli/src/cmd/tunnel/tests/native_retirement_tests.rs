@@ -16,6 +16,7 @@ mod deadline_tests;
 mod manual_admission_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
+mod reconnect_tests;
 mod scan_outcome_tests;
 mod snapshot_admission_tests;
 mod success_bookkeeping_tests;

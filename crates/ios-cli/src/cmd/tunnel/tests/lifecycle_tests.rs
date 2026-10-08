@@ -22,6 +22,7 @@ mod manual_deadline_tests;
 mod parallel_tests;
 mod publication_commit_tests;
 mod publication_tests;
+mod reconnect_tests;
 mod retention_tests;
 mod scan_setup_tests;
 mod scan_terminal_tests;
