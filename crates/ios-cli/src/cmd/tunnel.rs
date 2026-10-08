@@ -38,7 +38,9 @@ mod retirement;
 mod scan;
 mod server;
 mod source;
-use bookkeeping::{DeferredFailure, FailureIntent};
+use bookkeeping::{
+    DeferredFailure, DeferredSuccess, FailureIntent, ScanAttemptOutcome, ScanIntent, SuccessIntent,
+};
 use lifecycle::{Lifecycle, Ticket};
 use source::{NativeSource, Route, Source, UsbSnapshot};
 
@@ -392,6 +394,10 @@ struct TunnelAgentInner {
     paired_after_first_check: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
     failure_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    success_before_remove: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    success_after_remove: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
 struct ManagedTunnel {
@@ -417,6 +423,9 @@ enum ManagedDevice {
 
 #[derive(Debug, Clone)]
 struct FailedTunnelAttempt {
+    // Every committed failure write gets a fresh identity, even with a paused
+    // clock, a saturated fail count or a reused reservation permit.
+    version: Arc<()>,
     last_attempt: Instant,
     fail_count: u32,
     identity: AttemptIdentity,
@@ -642,6 +651,10 @@ impl TunnelAgentState {
                 paired_after_first_check: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 failure_after_insert: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                success_before_remove: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                success_after_remove: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -1036,8 +1049,36 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
     ) -> Option<DeferredFailure> {
-        self.refresh_connect_with_total(udid, route, ticket, expected_id, None)
+        match self
+            .refresh_connect_with_total(udid, route, ticket, expected_id, None)
             .await
+        {
+            ScanAttemptOutcome::Failure(failed) => Some(failed),
+            ScanAttemptOutcome::Success(success) => {
+                // Keep the original direct-attempt seam's completed cleanup.
+                // Production defers contested writers until the window ends.
+                if let Ok(deadline) = lifecycle::ConnectionDeadline::for_scan_bookkeeping(
+                    self.inner.failure_write_timeout,
+                ) {
+                    let _ = deadline
+                        .run(async {
+                            let mut failed = self.inner.failed_attempts.write().await;
+                            let result = self.remove_success_row(
+                                &mut failed,
+                                udid,
+                                &success,
+                                ticket,
+                                &deadline,
+                            );
+                            drop(failed);
+                            result.map(drop)
+                        })
+                        .await;
+                }
+                None
+            }
+            ScanAttemptOutcome::NoChange => None,
+        }
     }
 
     async fn refresh_connect_with_total(
@@ -1047,7 +1088,7 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
         whole: Option<&scan::Deadline>,
-    ) -> Option<DeferredFailure> {
+    ) -> ScanAttemptOutcome {
         let identity = AttemptIdentity {
             route: route.clone(),
             native_id: expected_id,
@@ -1055,6 +1096,8 @@ impl TunnelAgentState {
         // Keep the reservation outside the cancellable connection future until
         // its failure is recorded or the attempt releases it.
         let mut failure_slot = None;
+        let mut established = false;
+        let mut success = None;
         let result = ticket
             .run(async {
                 let deadline =
@@ -1087,16 +1130,18 @@ impl TunnelAgentState {
                         if existing.is_some() {
                             return Ok(());
                         }
-                        if self
-                            .inner
-                            .failed_attempts
-                            .read()
-                            .await
-                            .get(udid)
-                            .is_some_and(|failed| {
-                                failed.identity == identity && failed.should_skip(Instant::now())
-                            })
-                        {
+                        let (skip, previous_version) =
+                            self.inner.failed_attempts.read().await.get(udid).map_or(
+                                (false, None),
+                                |failed| {
+                                    (
+                                        failed.identity == identity
+                                            && failed.should_skip(Instant::now()),
+                                        Some(Arc::clone(&failed.version)),
+                                    )
+                                },
+                            );
+                        if skip {
                             return Ok(());
                         }
                         failure_slot = Some(self.reserve_failure_slot(udid).await?);
@@ -1104,17 +1149,39 @@ impl TunnelAgentState {
                         deadline.check()?;
                         self.connect_and_store(udid, route, ticket, expected_id, Some(&deadline))
                             .await?;
-                        let mut failed = self.inner.failed_attempts.write().await;
-                        ticket.commit(|| {
-                            deadline.check()?;
-                            failed.remove(udid);
-                            Ok(())
-                        })?;
+                        // Publication completed within the candidate budget.
+                        // Contested cleanup must not queue a writer while later
+                        // candidates still need failure-table reads, or turn a
+                        // successful connection into a failure when cleanup waits.
+                        established = true;
+                        if let Some(version) = previous_version {
+                            let pending = DeferredSuccess { version };
+                            if let Ok(mut failed) = self.inner.failed_attempts.try_write() {
+                                let cleanup = self.remove_success_row(
+                                    &mut failed,
+                                    udid,
+                                    &pending,
+                                    ticket,
+                                    &deadline,
+                                );
+                                drop(failed);
+                                match cleanup {
+                                    Ok(old) => drop(old),
+                                    Err(error) if error.is::<ios_core::OperationCancelled>() => {}
+                                    Err(_) => success = Some(pending),
+                                }
+                            } else {
+                                success = Some(pending);
+                            }
+                        }
                         Ok(())
                     })
                     .await
             })
             .await;
+        if established {
+            return success.map_or(ScanAttemptOutcome::NoChange, ScanAttemptOutcome::Success);
+        }
         if let Err(error) = result {
             // A lifecycle cancellation is not a connection failure and must not restart backoff.
             if ticket.is_current()
@@ -1128,11 +1195,11 @@ impl TunnelAgentState {
                     "tunnel agent: failed to establish tunnel"
                 );
                 if let Some(slot) = failure_slot {
-                    return Some(DeferredFailure { identity, slot });
+                    return ScanAttemptOutcome::Failure(DeferredFailure { identity, slot });
                 }
             }
         }
-        None
+        ScanAttemptOutcome::NoChange
     }
 
     async fn refresh_once(&self) -> Result<()> {
@@ -1377,27 +1444,41 @@ impl TunnelAgentState {
         // every active connection and releases its serial guard/permit.
         let mut connections = futures_util::stream::iter(candidates)
             .map(|(udid, route, ticket, expected_id)| async move {
-                self.refresh_connect_with_total(&udid, route, &ticket, expected_id, Some(whole))
+                match self
+                    .refresh_connect_with_total(&udid, route, &ticket, expected_id, Some(whole))
                     .await
-                    .map(|failed| FailureIntent {
-                        udid,
-                        ticket,
-                        failed,
-                    })
+                {
+                    ScanAttemptOutcome::Failure(failed) => {
+                        Some(ScanIntent::Failure(FailureIntent {
+                            udid,
+                            ticket,
+                            failed,
+                        }))
+                    }
+                    ScanAttemptOutcome::Success(success) => {
+                        Some(ScanIntent::Success(SuccessIntent {
+                            udid,
+                            ticket,
+                            success,
+                        }))
+                    }
+                    ScanAttemptOutcome::NoChange => None,
+                }
             })
             .buffer_unordered(lifecycle::MAX_CONNECTS);
-        let mut failures = Vec::new();
+        let mut intents = Vec::new();
         while let Some(outcome) = connections.next().await {
-            if let Some(failed) = outcome {
-                failures.push(failed);
+            if let Some(intent) = outcome {
+                intents.push(intent);
             }
         }
         drop(connections);
         // Snapshot admission bounds this collection to 4096 candidates. No
-        // writer for these failure outcomes enters Tokio's queue while later
-        // candidates still need their backoff reads or connection slots.
+        // writer for these outcomes enters Tokio's queue while later candidates
+        // still need their backoff reads or connection slots. Uncontended success
+        // cleanup already returned its old reservation through try_write.
         whole.check()?;
-        self.flush_failure_intents_with_total(failures, Some(whole))
+        self.flush_scan_intents_with_total(intents, Some(whole))
             .await
     }
 
@@ -1471,6 +1552,7 @@ impl TunnelAgentState {
             failed
                 .entry(udid.to_string())
                 .and_modify(|attempt| {
+                    attempt.version = Arc::new(());
                     attempt.last_attempt = Instant::now();
                     if attempt.identity == identity {
                         attempt.fail_count = attempt.fail_count.saturating_add(1);
@@ -1480,6 +1562,7 @@ impl TunnelAgentState {
                     }
                 })
                 .or_insert(FailedTunnelAttempt {
+                    version: Arc::new(()),
                     last_attempt: Instant::now(),
                     fail_count: 1,
                     identity,
@@ -2762,6 +2845,7 @@ mod tests {
     fn failed_tunnel_attempt_skip_honors_backoff_window() {
         let now = Instant::now();
         let failed = FailedTunnelAttempt {
+            version: Arc::new(()),
             last_attempt: now - Duration::from_secs(10),
             fail_count: 2,
             identity: AttemptIdentity {
@@ -2773,6 +2857,7 @@ mod tests {
         assert!(failed.should_skip(now));
 
         let expired = FailedTunnelAttempt {
+            version: Arc::new(()),
             last_attempt: now - Duration::from_secs(61),
             fail_count: 2,
             identity: AttemptIdentity {
