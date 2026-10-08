@@ -72,31 +72,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
         &mut self,
         image_type: &str,
     ) -> Result<Vec<Vec<u8>>, ImageMounterError> {
+        let resp = self.lookup_image_response(image_type).await?;
+        check_error(&resp)?;
+        Ok(parse_image_signatures(&resp)?.unwrap_or_default())
+    }
+
+    /// Observe LookupImage signatures without interpreting missing metadata.
+    ///
+    /// `None` means `ImageSignature` was omitted. An explicit empty array is
+    /// `Some(Vec::new())`; data and data arrays preserve their bytes. Invalid
+    /// types remain protocol errors. Signatures alone do not prove that a DDI
+    /// is mounted or usable; some personalized images omit mounted signatures.
+    /// The legacy lookup still defaults an absent field to an empty vector.
+    /// Checked queries reject a non-string `Error` field as malformed protocol;
+    /// the legacy query retains its historical opaque device-error behavior.
+    pub async fn lookup_image_signatures_checked(
+        &mut self,
+        image_type: &str,
+    ) -> Result<Option<Vec<Vec<u8>>>, ImageMounterError> {
+        let resp = self.lookup_image_response(image_type).await?;
+        check_error_checked(&resp)?;
+        parse_image_signatures(&resp)
+    }
+
+    async fn lookup_image_response(
+        &mut self,
+        image_type: &str,
+    ) -> Result<plist::Dictionary, ImageMounterError> {
         let req = plist::Dictionary::from_iter([
             ("Command".to_string(), Value::String("LookupImage".into())),
             ("ImageType".to_string(), Value::String(image_type.into())),
         ]);
         send_plist(&mut self.stream, &Value::Dictionary(req)).await?;
-        let resp = recv_plist(&mut self.stream).await?;
-        check_error(&resp)?;
-
-        match resp.get("ImageSignature") {
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|value| {
-                    value.as_data().map(|bytes| bytes.to_vec()).ok_or_else(|| {
-                        ImageMounterError::Protocol(
-                            "LookupImage ImageSignature entry was not data".into(),
-                        )
-                    })
-                })
-                .collect(),
-            Some(Value::Data(bytes)) => Ok(vec![bytes.clone()]),
-            None => Ok(Vec::new()),
-            Some(_) => Err(ImageMounterError::Protocol(
-                "LookupImage ImageSignature had unexpected type".into(),
-            )),
-        }
+        recv_plist(&mut self.stream).await
     }
 
     /// Mount a standard (pre-iOS 17) developer disk image.
@@ -278,18 +286,45 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
 
     /// Query whether developer mode is enabled on the device.
     pub async fn query_developer_mode_status(&mut self) -> Result<bool, ImageMounterError> {
+        let resp = self.query_developer_mode_response().await?;
+        check_error(&resp)?;
+        Ok(resp
+            .get("DeveloperModeStatus")
+            .and_then(|v| v.as_boolean())
+            .unwrap_or(false))
+    }
+
+    /// Query Developer Mode without treating an absent status as disabled.
+    ///
+    /// `None` means the response omitted `DeveloperModeStatus`; an explicit
+    /// boolean remains `Some(true)` or `Some(false)`. A present non-boolean is
+    /// malformed protocol data. This does not infer support from an OS version
+    /// or change the legacy query's absent/non-boolean default.
+    /// A present non-string `Error` field is also a protocol error here, while
+    /// the legacy query keeps its historical opaque device-error behavior.
+    pub async fn query_developer_mode_status_checked(
+        &mut self,
+    ) -> Result<Option<bool>, ImageMounterError> {
+        let resp = self.query_developer_mode_response().await?;
+        check_error_checked(&resp)?;
+        match resp.get("DeveloperModeStatus") {
+            None => Ok(None),
+            Some(Value::Boolean(enabled)) => Ok(Some(*enabled)),
+            Some(_) => Err(ImageMounterError::Protocol(
+                "QueryDeveloperModeStatus status was not a boolean".into(),
+            )),
+        }
+    }
+
+    async fn query_developer_mode_response(
+        &mut self,
+    ) -> Result<plist::Dictionary, ImageMounterError> {
         let req = plist::Dictionary::from_iter([(
             "Command".to_string(),
             Value::String("QueryDeveloperModeStatus".into()),
         )]);
         send_plist(&mut self.stream, &Value::Dictionary(req)).await?;
-        let resp = recv_plist(&mut self.stream).await?;
-        check_error(&resp)?;
-
-        Ok(resp
-            .get("DeveloperModeStatus")
-            .and_then(|v| v.as_boolean())
-            .unwrap_or(false))
+        recv_plist(&mut self.stream).await
     }
 
     /// Unmount a mounted image at a mount path such as `/Developer` or `/System/Developer`.
@@ -388,6 +423,41 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImageMounterClient<S> {
     }
 }
 
+fn parse_image_signatures(
+    resp: &plist::Dictionary,
+) -> Result<Option<Vec<Vec<u8>>>, ImageMounterError> {
+    match resp.get("ImageSignature") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|value| {
+                value.as_data().map(|bytes| bytes.to_vec()).ok_or_else(|| {
+                    ImageMounterError::Protocol(
+                        "LookupImage ImageSignature entry was not data".into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(Value::Data(bytes)) => Ok(Some(vec![bytes.clone()])),
+        None => Ok(None),
+        Some(_) => Err(ImageMounterError::Protocol(
+            "LookupImage ImageSignature had unexpected type".into(),
+        )),
+    }
+}
+
+fn check_error_checked(resp: &plist::Dictionary) -> Result<(), ImageMounterError> {
+    if resp
+        .get("Error")
+        .is_some_and(|value| value.as_string().is_none())
+    {
+        return Err(ImageMounterError::Protocol(
+            "image mounter Error was not a string".into(),
+        ));
+    }
+    check_error(resp)
+}
+
 fn check_error(resp: &plist::Dictionary) -> Result<(), ImageMounterError> {
     if let Some(err) = resp.get("Error") {
         let msg = err.as_string().unwrap_or("unknown error");
@@ -457,6 +527,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_developer_mode_distinguishes_missing_and_explicit_booleans() {
+        for expected in [None, Some(false), Some(true)] {
+            let mut response = plist::Dictionary::new();
+            if let Some(enabled) = expected {
+                response.insert("DeveloperModeStatus".into(), Value::Boolean(enabled));
+            }
+            let mut stream = MockStream::with_response(Value::Dictionary(response));
+            let actual = ImageMounterClient::new(&mut stream)
+                .query_developer_mode_status_checked()
+                .await
+                .unwrap();
+            assert_eq!(actual, expected);
+            let request: plist::Dictionary = plist::from_bytes(&stream.written[4..]).unwrap();
+            assert_eq!(request.len(), 1);
+            assert_eq!(
+                request["Command"].as_string(),
+                Some("QueryDeveloperModeStatus")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn checked_developer_mode_rejects_malformed_but_preserves_legacy_default() {
+        let response = Value::Dictionary(plist::Dictionary::from_iter([(
+            "DeveloperModeStatus",
+            Value::String("owned-private-malformed-status".into()),
+        )]));
+        let mut checked = MockStream::with_response(response.clone());
+        let error = ImageMounterClient::new(&mut checked)
+            .query_developer_mode_status_checked()
+            .await
+            .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        assert!(!format!("{error} {error:?}").contains("owned-private"));
+        let mut legacy = MockStream::with_response(response);
+        assert!(!ImageMounterClient::new(&mut legacy)
+            .query_developer_mode_status()
+            .await
+            .unwrap());
+        let mut missing = MockStream::with_response(Value::Dictionary(plist::Dictionary::new()));
+        assert!(!ImageMounterClient::new(&mut missing)
+            .query_developer_mode_status()
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn lookup_image_signatures_roundtrips_data_array() {
         let response = Value::Dictionary(plist::Dictionary::from_iter([(
             "ImageSignature".to_string(),
@@ -479,6 +596,123 @@ mod tests {
             dict.get("ImageType").and_then(|v| v.as_string()),
             Some("Developer")
         );
+    }
+
+    #[tokio::test]
+    async fn checked_image_signatures_distinguish_missing_empty_and_data() {
+        for (field, expected) in [
+            (None, None),
+            (Some(Value::Array(vec![])), Some(vec![])),
+            (Some(Value::Data(vec![1, 2])), Some(vec![vec![1, 2]])),
+        ] {
+            let mut response = plist::Dictionary::new();
+            if let Some(field) = field {
+                response.insert("ImageSignature".into(), field);
+            }
+            let mut stream = MockStream::with_response(Value::Dictionary(response.clone()));
+            assert_eq!(
+                ImageMounterClient::new(&mut stream)
+                    .lookup_image_signatures_checked("Personalized")
+                    .await
+                    .unwrap(),
+                expected
+            );
+            let request: plist::Dictionary = plist::from_bytes(&stream.written[4..]).unwrap();
+            assert_eq!(request.len(), 2);
+            assert_eq!(request["Command"].as_string(), Some("LookupImage"));
+            assert_eq!(request["ImageType"].as_string(), Some("Personalized"));
+            let mut legacy = MockStream::with_response(Value::Dictionary(response));
+            assert_eq!(
+                ImageMounterClient::new(&mut legacy)
+                    .lookup_image_signatures("Personalized")
+                    .await
+                    .unwrap(),
+                expected.unwrap_or_default()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn checked_image_metadata_keeps_typed_device_errors_and_rejects_invalid_arrays() {
+        for developer_mode in [false, true] {
+            let mut stream =
+                MockStream::with_response(Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Error",
+                    Value::String("owned-private-device-error".into()),
+                )])));
+            let mut client = ImageMounterClient::new(&mut stream);
+            let error = if developer_mode {
+                client
+                    .query_developer_mode_status_checked()
+                    .await
+                    .unwrap_err()
+            } else {
+                client
+                    .lookup_image_signatures_checked("Developer")
+                    .await
+                    .unwrap_err()
+            };
+            assert!(
+                matches!(error, ImageMounterError::DeviceError(ref code) if code == "owned-private-device-error")
+            );
+            assert_eq!(
+                crate::classify_error(&error),
+                crate::ErrorClass::ServiceFailure
+            );
+        }
+        for field in [
+            Value::Boolean(false),
+            Value::Array(vec![Value::String("private".into())]),
+        ] {
+            let mut stream = MockStream::with_response(Value::Dictionary(
+                plist::Dictionary::from_iter([("ImageSignature", field)]),
+            ));
+            let error = ImageMounterClient::new(&mut stream)
+                .lookup_image_signatures_checked("Developer")
+                .await
+                .unwrap_err();
+            assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+        }
+    }
+
+    #[tokio::test]
+    async fn checked_image_error_field_is_strict_while_legacy_keeps_unknown_device_error() {
+        for developer_mode in [false, true] {
+            for field in [Value::Boolean(false), Value::Array(vec![])] {
+                let response = Value::Dictionary(plist::Dictionary::from_iter([
+                    ("Error", field),
+                    ("DeveloperModeStatus", Value::Boolean(true)),
+                    ("ImageSignature", Value::Array(vec![Value::Data(vec![1])])),
+                ]));
+                let mut checked = MockStream::with_response(response.clone());
+                let mut client = ImageMounterClient::new(&mut checked);
+                let error = if developer_mode {
+                    client
+                        .query_developer_mode_status_checked()
+                        .await
+                        .unwrap_err()
+                } else {
+                    client
+                        .lookup_image_signatures_checked("Developer")
+                        .await
+                        .unwrap_err()
+                };
+                assert_eq!(crate::classify_error(&error), crate::ErrorClass::Protocol);
+                let mut legacy = MockStream::with_response(response);
+                let mut client = ImageMounterClient::new(&mut legacy);
+                let error = if developer_mode {
+                    client.query_developer_mode_status().await.unwrap_err()
+                } else {
+                    client
+                        .lookup_image_signatures("Developer")
+                        .await
+                        .unwrap_err()
+                };
+                assert!(
+                    matches!(error, ImageMounterError::DeviceError(ref code) if code == "unknown error")
+                );
+            }
+        }
     }
 
     #[tokio::test]

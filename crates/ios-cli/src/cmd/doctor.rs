@@ -1,11 +1,24 @@
 use std::{future::Future, time::Duration};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 const MAX_MANAGER_RESPONSE: usize = 1024 * 1024;
 
-/// Read-only host checks. Device trust, Developer Mode and DDI are not probed.
+mod device;
+
+/// Safe typed context for this command's probe interpretation. Keeping it in
+/// anyhow context preserves the original native error and its downcasts.
+#[derive(Debug)]
+pub(crate) struct DoctorProbeClass(pub(crate) ios_core::ErrorClass);
+
+impl std::fmt::Display for DoctorProbeClass {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "selected device probe failed ({})", self.0)
+    }
+}
+
+/// Read-only host checks; an explicit --udid also probes existing device trust.
 #[derive(clap::Args)]
 pub struct DoctorCmd {
     /// Deadline for each probe, in seconds
@@ -74,7 +87,11 @@ impl Report {
 }
 
 impl DoctorCmd {
-    pub async fn run(self, json: bool) -> Result<()> {
+    pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
+        if let Some(udid) = udid {
+            device::validate_target(&udid)?;
+            return self.run_target(&udid, json).await;
+        }
         let report = self.inspect().await;
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
@@ -100,6 +117,59 @@ impl DoctorCmd {
         }
         if report.failed() {
             bail!("host diagnostics found a failed check");
+        }
+        Ok(())
+    }
+
+    async fn run_target(&self, udid: &str, json: bool) -> Result<()> {
+        let work = async {
+            let host = self.inspect().await;
+            let device = device::inspect(
+                &device::NativeSource,
+                udid,
+                Duration::from_secs(self.timeout),
+            )
+            .await;
+            Ok(TargetReport::new(host, device))
+        };
+        let mut report = cancellable(work, tokio::signal::ctrl_c()).await?;
+        if json {
+            crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            crate::output::outln!(
+                "ios {} host and device diagnostics ({} / {})",
+                report.version,
+                report.os,
+                report.arch
+            );
+            for check in &report.checks {
+                crate::output::outln!(
+                    "[{}] {}: {}",
+                    status_label(check.status),
+                    check.id,
+                    check.detail
+                );
+                if let Some(hint) = check.hint {
+                    crate::output::outln!("       {hint}");
+                }
+            }
+            for check in &report.device.checks {
+                crate::output::outln!(
+                    "[{}] {}: {}",
+                    status_label(check.status),
+                    check.id,
+                    check.detail
+                );
+                if let Some(hint) = check.hint {
+                    crate::output::outln!("       {hint}");
+                }
+            }
+        }
+        if report.failed() {
+            if let Some(error) = report.device.take_first_failed_error() {
+                return Err(error.context("selected device diagnostics found a failed check"));
+            }
+            bail!("host or selected device diagnostics found a failed check");
         }
         Ok(())
     }
@@ -153,6 +223,63 @@ impl DoctorCmd {
             version: env!("CARGO_PKG_VERSION"),
             checks,
         }
+    }
+}
+
+/// Schema 2 is selected only by an explicit UDID. Host-only Report stays schema 1.
+#[derive(Debug, Serialize)]
+struct TargetReport {
+    schema_version: u8,
+    scope: &'static str,
+    os: &'static str,
+    arch: &'static str,
+    version: &'static str,
+    checks: Vec<Check>,
+    device: device::Assessment,
+}
+
+impl TargetReport {
+    fn new(host: Report, device: device::Assessment) -> Self {
+        Self {
+            schema_version: 2,
+            scope: "host_and_device",
+            os: host.os,
+            arch: host.arch,
+            version: host.version,
+            checks: host.checks,
+            device,
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| check.status == Status::Failed)
+            || self.device.failed()
+    }
+}
+
+fn status_label(status: Status) -> &'static str {
+    match status {
+        Status::Ok => "OK",
+        Status::Warning => "WARN",
+        Status::Failed => "FAIL",
+        Status::Unknown => "?",
+    }
+}
+
+async fn cancellable<T>(
+    work: impl Future<Output = Result<T>>,
+    signal: impl Future<Output = std::io::Result<()>>,
+) -> Result<T> {
+    tokio::pin!(signal);
+    tokio::select! {
+        biased;
+        signal = &mut signal => {
+            signal.context("waiting for doctor Ctrl-C")?;
+            Err(ios_core::OperationCancelled::new().into())
+        }
+        result = work => result,
     }
 }
 

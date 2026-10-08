@@ -269,7 +269,77 @@ def cli_cases(binary):
             report["contract"] = report["contract"] and b"tunnel agent listening" not in result.stdout + result.stderr and b"usbmux" not in result.stderr
         report["passed"] = report["passed"] and report["contract"]
         reports[name] = report
+    reports.update(doctor_cases(binary, env, variants, value))
     reports.update(credential_cases(binary, env, variants, value))
+    return reports
+
+
+def doctor_cases(binary, env, variants, device):
+    """Exercise actual CLI report selection without contacting a real device."""
+    reports = {}
+    # Keep the port reserved without listening, so all device transport probes
+    # fail at this owned endpoint rather than reaching the host's usbmuxd.
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        case_env = env.copy()
+        case_env["USBMUXD_SOCKET_ADDRESS"] = (
+            "tcp://127.0.0.1:" + str(reservation.getsockname()[1]))
+        for name, args, explicit, human in [
+            ("doctor-host-schema", [], False, False),
+            ("doctor-device-flag", ["--udid", device], True, False),
+            ("doctor-device-env", [], True, False),
+            ("doctor-device-human", ["--udid", device, "--no-json"], True, True),
+        ]:
+            selected_env = case_env.copy()
+            if not explicit:
+                selected_env.pop("IOS_UDID", None)
+            result = capture([str(binary), "-vvvv"] + args
+                             + ["doctor", "--timeout", "1"], env=selected_env)
+            report = assess(result, variants, 1)
+            try:
+                if human:
+                    contract = (b"host and device diagnostics" in result.stdout
+                                and b"trust_session" in result.stdout
+                                and b"rsd_services" in result.stdout)
+                else:
+                    body = json.loads(result.stdout)
+                    contract = body["schema_version"] == (2 if explicit else 1)
+                    contract = contract and body["scope"] == (
+                        "host_and_device" if explicit else "host")
+                    contract = contract and isinstance(body["checks"], list)
+                    if explicit:
+                        checks = {check["id"]: check for check in body["device"]["checks"]}
+                        contract = contract and set(checks) == {
+                            "trust_session", "developer_mode", "ddi_signatures",
+                            "rsd_services", "device_route"}
+                        contract = contract and all(
+                            checks[name]["state"] == "unreachable"
+                            and checks[name]["status"] == "failed"
+                            and checks[name].get("error_class") in {
+                                "io", "disconnected", "timeout"}
+                            and "value" not in checks[name]
+                            for name in ("trust_session", "developer_mode", "ddi_signatures"))
+                        contract = contract and all(
+                            checks[name]["state"] == "not_probed"
+                            and "value" not in checks[name]
+                            for name in ("rsd_services", "device_route"))
+                    else:
+                        contract = contract and "device" not in body
+            except (ValueError, TypeError, KeyError, AttributeError):
+                contract = False
+            report["contract"] = contract
+            report["passed"] = report["passed"] and contract
+            reports[name] = report
+        result = capture([str(binary), "--error-format", "json", "--udid",
+                          "../" + device, "doctor", "--timeout", "1"], env=case_env)
+        report = assess(result, variants, 1)
+        try:
+            report["contract"] = (not result.stdout
+                                  and json.loads(result.stderr)["error"]["class"] == "invalid_input")
+        except (ValueError, TypeError, KeyError):
+            report["contract"] = False
+        report["passed"] = report["passed"] and report["contract"]
+        reports["doctor-invalid-selector"] = report
     return reports
 
 

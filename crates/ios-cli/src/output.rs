@@ -235,8 +235,14 @@ pub(crate) fn operation_failure_message(
     if format == ErrorFormat::Human {
         return Ok(format!("{phase} failed: {diagnostic}"));
     }
-    let (confirmation_required, decision) = cli_decisions(error);
-    let class = decision.unwrap_or_else(|| ios_core::classify_error(error.as_ref()));
+    let (confirmation_required, decision) = cli_decisions(error.as_ref());
+    let class = decision
+        .or_else(|| {
+            error
+                .downcast_ref::<crate::cmd::doctor::DoctorProbeClass>()
+                .map(|probe| probe.0)
+        })
+        .unwrap_or_else(|| ios_core::classify_error(error.as_ref()));
     machine_failure(
         class,
         phase,
@@ -322,6 +328,41 @@ pub fn require_force(force: bool, operation: &str, consequence: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn doctor_probe_context_preserves_cli_decision_priority() {
+        let forced: anyhow::Error = super::ForceRequired {
+            operation: "owned-private-operation".into(),
+            consequence: "owned-private-consequence".into(),
+        }
+        .into();
+        for (error, expected, confirmation) in [
+            (forced, "precondition", true),
+            (
+                super::precondition_decision("owned-private-state"),
+                "precondition",
+                false,
+            ),
+            (
+                super::resource_decision("owned-private-limit"),
+                "resource_limit",
+                false,
+            ),
+        ] {
+            let error = error
+                .context(crate::cmd::doctor::DoctorProbeClass(
+                    ios_core::ErrorClass::PermissionDenied,
+                ))
+                .context("outer safe diagnostic context");
+            let message =
+                super::operation_failure_message(super::ErrorFormat::Json, "doctor", &error)
+                    .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+            assert_eq!(value["error"]["class"], expected);
+            assert_eq!(value["error"]["confirmation_required"], confirmation);
+            assert!(!message.contains("owned-private"));
+        }
+    }
+
     #[test]
     fn lifecycle_fps_resource_marker_is_bounded_private_and_source_free() {
         use std::error::Error;

@@ -203,7 +203,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Devicestate(c) => Box::pin(async move { c.run(udid).await }),
         Commands::Diagnostics(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Discover(c) => Box::pin(async move { c.run(!no_json).await }),
-        Commands::Doctor(c) => Box::pin(async move { c.run(!no_json).await }),
+        Commands::Doctor(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Diskspace(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::Erase(c) => Box::pin(async move { c.run(udid, !no_json).await }),
         Commands::File(c) => Box::pin(async move { c.run(udid, !no_json).await }),
