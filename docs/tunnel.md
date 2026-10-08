@@ -386,3 +386,9 @@ Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,who
 Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
 Failed connection results no longer occupy a connection slot while waiting to write backoff. The scanner collects at most4096 intents,then shares one private1s bookkeeping total. Timeout refuses new readiness and leaves unwritten outcomes without new backoff. See the profile for same-poll rollback,original paired primary/secondary and exact scope.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Whole-scan budget and interrupted discovery
+
+Each manager scan shares one 30-second total from its scan-lock wait through readiness. The existing discovery and per-device 15-second budgets remain. Clear/shutdown cancels the whole scan; stopping one device after discovery leaves other candidates running. Whole expiry creates no new connection backoff or readiness.
+
+An acquired paired or USB-list error survives scanner cancellation and caller Drop. The manager retains up to eight abandoned errors across clear, and server shutdown reports them alongside independent native cleanup. Full history rejects another scan before discovery. These are cooperative host-side limits; they do not establish physical teardown timing or global memory bounds. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).

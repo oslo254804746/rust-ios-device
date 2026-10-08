@@ -1192,3 +1192,9 @@ Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,who
 Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
 Scans finish candidate connection futures before queueing writers for failed outcomes. Admission-bounded intents retain original tickets/permits;one checked absolute1s flush clock covers write-lock wait and the entire batch. StopA skips only A. Late row rollback retains exact old backoff/permit;timely prefix commits stay. This does not certify immediate stop while write-lock admission is pending.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Whole-scan control and retained discovery ownership
+
+The manager now owns a checked 30-second scan total and the clear/close epoch across all discovery, admission, connection, reconciliation, failure-write and readiness waits. Per-device stop remains isolated after discovery. Whole-clock checks participate in candidate publication/failure rollback and global reconciliation; whole expiry adds no failed-attempt backoff or new readiness.
+
+A scan session retains the original acquired paired/List error before any subsequent wait. Caller Drop records it in one of eight fixed slots before releasing the scan lock. Empty/normal sessions release their slot; queued scans reserve none. Clear retains history and terminal closure seals admission. The server snapshots history after dropping its scanner and reports original errors independently from native joins. Details, evidence and remaining limitations are in [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).

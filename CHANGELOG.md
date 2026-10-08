@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Give each manager scan one 30-second total across discovery, connections and
+  metadata waits. Preserve acquired discovery errors through cancellation and
+  scanner Drop in an eight-slot history reported at shutdown. Whole expiry adds
+  no connection backoff or new readiness. See
+  [scan control evidence](docs/validation/tunnel-scan-control-2026-10-08.md).
+
 - Cancel tunnel coordinator lock waits on clear or server shutdown before the
   lock is released, without creating coordinator state. Fresh admission after
   ordinary clear stays available. See

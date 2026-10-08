@@ -2067,3 +2067,9 @@ Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,who
 Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
 Incomplete bookkeeping now returns its original timer Elapsed and skips new readiness. An acquired paired Source Err or admission Incomplete stays primary through original.context(FailureContext);direct IO downcast/CLI resource classification remain and independent actualElapsed secondary is inspectable. CallerDrop persistence is separate.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Interrupted scans and abandoned discovery errors
+
+A whole scan timeout returns native Elapsed. If discovery already failed, its original anyhow error remains primary and a private redacted context retains the secondary elapsed/cancellation; normal returns preserve direct IO downcast. Global cancellation without an acquired primary remains quiet. A whole timeout creates no device-failure backoff.
+
+Caller Drop preserves the original error in immutable bounded history, exposed through the server terminal report's error source and private original-error getter. The wrapper does not promise transparent direct IO downcast. Full eight-slot history returns the existing CLI resource_limit before Source polling. Native and server primary priorities remain. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).

@@ -1348,3 +1348,7 @@ Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,who
 Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
 Private bookkeeping1s begins after the four-item candidate window. Public API/options/enums/Core/bindings/wire/features stay. Backoff formula/count/identity/permit rules stay,but last_attempt records the later metadata commit,so early failed candidates may retry later. Bounded write rejection/timing require pre-1.0 review.
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Manager scan total and abandoned-error capacity
+
+Manager scans now have a private default 30-second whole budget, including queue and metadata waits, alongside existing discovery/candidate sub-budgets. Eight abandoned discovery errors can be retained; full capacity rejects further scans with the existing CLI resource_limit. These are new pre-1.0 timing/admission behaviors requiring compatibility review. Whole expiry creates no new backoff or readiness, and already acquired original discovery errors remain inspectable. No public API, option, error enum or wire format changes. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).

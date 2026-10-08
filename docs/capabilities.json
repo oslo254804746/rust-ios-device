@@ -1,8 +1,27 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-07",
+  "updated": "2026-10-08",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "linux-tunnel-scan-control-5e521e5",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64; Rust1.97.1/MSRV1.80.1; Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Private discovery metadata; actual localhost partial TCP EOF; actual Core userspace native workers, original joins and stream EOF."
+      ],
+      "required_state": [
+        "Related implementation batched before tests. Fifteen additive regressions; final shared full entry point exited zero."
+      ],
+      "tested_commit": "5e521e5f27d2cb1a7da4a9b93847a7e7925d3178",
+      "date": "2026-10-08",
+      "location": "docs/validation/tunnel-scan-control-2026-10-08.md",
+      "result": "PASS",
+      "scope": "Checked 30-second scan total starts before scan-lock wait and spans candidate/reconciliation/failure/readiness waits. Global clear/close cancellation keeps stop-A/continue-B isolation. Original paired/List errors survive caller Drop in fixed eight-slot history; normal IO downcast and repeated terminal original identity retained. Whole expiry creates no new backoff/readiness; publication/failure rollback and native joins/status/EOF covered. Full2781Rust13Python0FAIL2ignored, CLI1120/Core1496/public55; required full gates PASS.",
+      "limitations": "Cooperative timing only; error-count capacity is not an arbitrary payload-byte or RSS bound. Global retained bytes, HTTP/upgrades/blocking/startup, physical freshness/reuse/restart/manual epochs and all other original acceptance remain. Active30 tasks excludingQ04,9complete21unfinished;22device NOT_RUN. No capability maturity/platform/device/performance upgrade."
+    },
     {
       "id": "linux-tunnel-bookkeeping-4415be9",
       "level": "host-unit/protocol",
