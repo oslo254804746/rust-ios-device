@@ -2,6 +2,8 @@
 
 日期：2026-09-30；代码基线：`572c297`。
 
+当前批次、下一批交付边界与外部缺口见[当前工程调度](roadmap-current.md)。
+
 状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
 其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类继续 L01–L04；Q04 已按用户要求排除。当前有效范围30项：9完成、9未开始、12进行中或待条件。
 
@@ -120,7 +122,7 @@
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
-| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、successful-writer fairness、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
+| L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
@@ -8174,3 +8176,17 @@ Final5784 terminal0/all7SERIAL gates PASS，CLI242/1ignored/minCLIalltargets/sta
 PatchSHA256 `3cae15f13acb5092ee0e209a04c7091a1ed053e1b20b540deeeb975c348307e6`；actualiosSHA256 `2c72568a0835e2af5dbd976c534d409db8dc6727a013c35007c73753613e117e`；460products/refsHEADstatus不变；Root独serialRust、activevalidation无source/docs编辑、CARGO_INCREMENTAL=0，无cachedelete/push/publish/historyrewrite/device/credentials/Apple/elevatedTUN；ignored证据 `target/validation/tunnel-bookkeeping-2026-10-08/`。
 Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain. Source allocation/allocator/RSS/CPU/throughput/长运行未认证；ordinaryL01/L02不是Q04全部子项、UID未修复。
 有效30原主项及全部children继续active：9完成/21未完成（9未开始/12进行中或待条件）；其他原验收不豁免。无主项/class4/goal完成，无maturity/设备/ACK/性能/平台认证；旧31行/history/118catalogbody/oldevidence保持。
+
+### L01/L02：成功扫描结果的集中清理（2026-10-08）
+
+实现 `6bceff76ce31bac1006b4e97f1d0d00a28731abc`，父 `b6af4fd`。
+[验收证据](validation/tunnel-success-bookkeeping-2026-10-08.md)。成功连接不再在
+窗口中排队写退避表；无竞争时立即归还原 slot，有竞争时释放连接许可后与失败
+结果统一清理。原 row version 和 ticket 防止旧成功删掉晚到失败；同 poll 跨期限
+恢复未观察的原 row，成功清理超时不再被误记为建连失败。
+
+独立 worktree 并行实现/补回归、主 agent 集中集成和串行编译。冻结470产品文件，
+隧道回归268通过/0失败/1既有忽略；完整统一入口一次通过，Rust2792/Python13，
+0失败/2既有忽略。必需门禁、绑定制品及主机流程均通过；22真机行NOT_RUN。
+其他L01/L02验收继续，本子项不完成主任务；Q04及全部子项保持排除。
+下一批调度与具体条件见[当前工程调度](roadmap-current.md)。

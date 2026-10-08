@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Keep successful tunnel scan cleanup from blocking later candidate reads.
+  Uncontended cleanup returns failure capacity immediately; contested cleanup
+  joins the bounded batch and cannot create a new connection failure. Private
+  row versions preserve newer failures. See
+  [successful bookkeeping evidence](docs/validation/tunnel-success-bookkeeping-2026-10-08.md).
+
 - Give each manager scan one 30-second total across discovery, connections and
   metadata waits. Preserve acquired discovery errors through cancellation and
   scanner Drop in an eight-slot history reported at shutdown. Whole expiry adds

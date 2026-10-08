@@ -392,3 +392,13 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 Each manager scan shares one 30-second total from its scan-lock wait through readiness. The existing discovery and per-device 15-second budgets remain. Clear/shutdown cancels the whole scan; stopping one device after discovery leaves other candidates running. Whole expiry creates no new connection backoff or readiness.
 
 An acquired paired or USB-list error survives scanner cancellation and caller Drop. The manager retains up to eight abandoned errors across clear, and server shutdown reports them alongside independent native cleanup. Full history rejects another scan before discovery. These are cooperative host-side limits; they do not establish physical teardown timing or global memory bounds. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+
+## Successful scan cleanup
+
+Successful candidates clear an observed failure row with a non-queuing
+`try_write` when available. Contested cleanup releases the connection slot and
+joins the bounded bookkeeping batch after the connection window. A cleanup
+timeout cannot record an already published connection as a new failure. Private
+row versions and lifecycle tickets protect later failures from stale success
+cleanup; deadline crossings restore an unobserved removed row. See
+[successful bookkeeping evidence](validation/tunnel-success-bookkeeping-2026-10-08.md).
