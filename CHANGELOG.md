@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add explicitly selected device diagnostics to doctor while retaining host-only
+  schema 1 without a device selector. Fresh existing-trust sessions observe
+  Developer Mode and DDI signature metadata without pairing or setting changes;
+  missing metadata stays unknown. Report and machine-error categories agree.
+  RSD/routes, DDI usability and platform/device acceptance remain pending. See
+  [host evidence](docs/validation/device-doctor-manual-admission-2026-10-08.md).
+- Bound manual tunnel UDID/host selectors to 4096 UTF-8 bytes before lifecycle
+  admission, and carry private resource-limit decisions into manager errors.
+- Reject nonregular pairing files before reads, including Unix FIFOs without
+  writers; preserve regular-file symlinks, system permissions and secret wiping.
+
 - Keep successful tunnel scan cleanup from blocking later candidate reads.
   Uncontended cleanup returns failure capacity immediately; contested cleanup
   joins the bounded batch and cannot create a new connection failure. Private

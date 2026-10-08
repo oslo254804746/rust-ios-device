@@ -5,7 +5,7 @@
 当前批次、下一批交付边界与外部缺口见[当前工程调度](roadmap-current.md)。
 
 状态：第一、二、三类的当前 Linux 主机范围已交付；B01/B02、Q01、S04 完成，
-其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类继续 L01–L04；Q04 已按用户要求排除。当前有效范围30项：9完成、9未开始、12进行中或待条件。
+其余平台、部署、真机及 fixture 子项保留待条件/待验收。第四类继续 L01–L04；Q04 已按用户要求排除。当前有效范围30项：9完成、21保留其余原验收条件。
 
 ## 1. 目标与执行范围
 
@@ -120,12 +120,12 @@
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
-| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 待开始 |
+| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：AFC caller-limit 与有总期限/累计回复预算的 Browse 原生前置已在独立 worktree 静态交付，待集中验收；Python/C owner、取消、并发、绑定/示例及真机原验收尚未完成 |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
-| L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 待开始 |
+| L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：serve 可配置退避、持续预算/状态与原 owner/epoch 回收在独立 worktree 开发，待集中验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续 |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
-| F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 待开始 |
+| F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；RSD/route 仍 not_probed，平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [证据](validation/device-doctor-manual-admission-2026-10-08.md) |
 | F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 待开始 |
 | F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 待开始 |
 | F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 待开始 |
@@ -8190,3 +8190,28 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 0失败/2既有忽略。必需门禁、绑定制品及主机流程均通过；22真机行NOT_RUN。
 其他L01/L02验收继续，本子项不完成主任务；Q04及全部子项保持排除。
 下一批调度与具体条件见[当前工程调度](roadmap-current.md)。
+
+
+### F01 / L01 / L02：显式设备 doctor 与手动准入（2026-10-08）
+
+本地实现提交：手动 selector `f0ec223`，配对文件准入 `82c6c56`，设备 doctor
+`71a59fc`；最终组合代码为 `71a59fc`。[完整主机证据](validation/device-doctor-manual-admission-2026-10-08.md)。
+手动输入在 key/lock/Source 前按4096 UTF-8 bytes拒绝；原native owner保留和实际
+收尾已覆盖。doctor在显式UDID/IOS_UDID下使用3个fresh只读existing-trust session，
+字段省略与false分开，报告与最终machine failure类别一致，原native error/downcast
+保留；无自动配对、tunnel激活、设置修改。DDI只观察signature，不认证mounted/usable。
+Unix FIFO通过nonblocking open及opened-handle regular检查拒绝，普通文件symlink、
+系统可读权限、1MiB上限和secret wiping保留。
+
+CLI受影响回归1159 PASS/1既有ignored，imagemounter35 PASS，pair-record15 PASS；
+最终统一full门禁PASS，Rust2832/Python13，0FAIL/2既有ignored。冻结476产品文件，
+strict check/Clippy/MSRV、66features/4groups、docs、C ABI、wheel/sdist、73tooling、
+118inventory、43raw captures、5host/95CLI/3backup全部通过。仅清理未使用incremental
+cache，源码/产物/证据不变，所有build用CARGO_INCREMENTAL=0。22真机检查仍NOT_RUN。
+
+RSD/route目前仍not_probed；既有RSD route的checked只读API在独立worktree开发，
+不能据设计标完成。平台USB/remoted/目录、DDI真实可用性、物理拔插/服务重启继续。
+OS metadata/regular file IO仍可卡住，spawn_blocking不能被物理取消，runtime退出
+可能等待worker；FIFO修复不完成该项。L01/L02原bytes/生命周期/性能/平台验收保留。
+仅交付主机子项，无主任务或整体目标完成；Q04与全部子项继续排除。下一批按
+[当前调度](roadmap-current.md) 集成manager重连及AFC/Browse SDK前置。

@@ -1352,3 +1352,35 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 ## Manager scan total and abandoned-error capacity
 
 Manager scans now have a private default 30-second whole budget, including queue and metadata waits, alongside existing discovery/candidate sub-budgets. Eight abandoned discovery errors can be retained; full capacity rejects further scans with the existing CLI resource_limit. These are new pre-1.0 timing/admission behaviors requiring compatibility review. Whole expiry creates no new backoff or readiness, and already acquired original discovery errors remain inspectable. No public API, option, error enum or wire format changes. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+
+
+## Explicit device doctor and checked image metadata
+
+Without --udid/IOS_UDID, doctor keeps host schema 1. A selector now requests
+schema 2 (host_and_device), adding device.checks and a hashed target. Previously
+ignored selectors now affect report scope: clear the selector for host-only
+scripts, or accept schema 2. This pre-1.0 behavior change retains command flags,
+stdout/stderr separation and the existing machine failure schema.
+
+Only existing trust and read-only requests are used. Missing metadata is distinct
+from an explicit false, unavailable service, denied access or unprobed route.
+DDI signature observations do not establish mounted/usable state; RSD and route
+probes remain unimplemented in this invocation. Probe budgets cover all async
+phases, with fresh streams and no reuse after cancellation. Physical filesystem
+calls cannot be forcibly cancelled. A private typed context carries the observed
+doctor failure class to CLI output and preserves original native downcasts;
+legacy core classification and CLI decision priority remain unchanged.
+
+ImageMounterClient::query_developer_mode_status_checked and
+lookup_image_signatures_checked are additive methods returning Option for
+omitted fields. Wrong field types are Protocol. Existing methods, missing-field
+defaults, error enum variants and request wire remain unchanged. PairRecord reads
+now reject nonregular paths, preserving links to regular files and existing
+system-readable records. Unix nonblocking open also rejects FIFO replacements;
+this does not promise cancellation of stalled regular-file IO.
+
+Manual tunnel selectors now reject values above 4096 UTF-8 bytes before Source
+or coordinator state. Exact limits and existing selection/empty/NUL behavior
+remain covered. The new managed resource refusal follows the existing CLI/HTTP
+ResourceLimit category; public core APIs are unchanged. These are host work
+items; see [acceptance evidence](validation/device-doctor-manual-admission-2026-10-08.md).

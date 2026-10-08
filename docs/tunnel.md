@@ -402,3 +402,14 @@ timeout cannot record an already published connection as a new failure. Private
 row versions and lifecycle tickets protect later failures from stale success
 cleanup; deadline crossings restore an unobserved removed row. See
 [successful bookkeeping evidence](validation/tunnel-success-bookkeeping-2026-10-08.md).
+
+
+### Manual selector admission
+
+Manual manager starts apply the same 4096-byte UTF-8 limit to UDID and optional
+route host before retaining a lifecycle key or contacting a device. Exact limits
+remain accepted. Rejection uses the existing resource-limit error category and
+does not alter an already-published native tunnel. With the existing 4096-key cap,
+retained gate-key text is at most 16 MiB; this is not a bound on Source allocations,
+HTTP body allocation, arbitrary metadata or RSS. See
+[host admission evidence](validation/device-doctor-manual-admission-2026-10-08.md).

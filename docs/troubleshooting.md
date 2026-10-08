@@ -2,8 +2,9 @@
 
 ## Host diagnostic report
 
-Run `ios doctor` for a read-only JSON report, or `ios --no-json doctor` for
-human-readable output. It does not require a device or create a pairing:
+Run `ios doctor` without `--udid` or `IOS_UDID` for a read-only host JSON report,
+or `ios --no-json doctor` for human-readable output. It does not require a
+device or create a pairing:
 
 ```bash
 ios doctor
@@ -28,9 +29,42 @@ Exit status is 1 when a required check fails (including unavailable usbmuxd).
 Warnings, an absent optional tunnel manager, and unknown checks do not cause a
 failure exit. Enumeration success does not prove device service connectivity;
 no Bonjour responses does not prove that multicast is broken. TUN presence does
-not prove permission to create an interface. Device trust, Developer Mode and
-DDI readiness need separate device checks. The report contains counts, not
-device identifiers or pairing records. CLI logs go to stderr to keep JSON clean.
+not prove permission to create an interface. DDI usability still needs separate
+device checks. The host report contains counts, not device identifiers or pairing
+records. CLI logs go to stderr to keep JSON clean.
+
+## Explicit device diagnostic report
+
+```bash
+ios --udid DEVICE_UDID doctor --timeout 5
+ios --udid DEVICE_UDID --no-json doctor
+```
+
+An explicit `--udid` or `IOS_UDID` selects schema 2 (`host_and_device`), adding
+`device.checks` to the host report. With neither selector the report stays schema
+1 (`host`). Scripts that previously set an ignored doctor target must accept
+schema 2 or clear their device selector to request the original host report.
+
+Each device probe gets a fresh connection and its own total `--timeout`: existing
+trust must complete a read-only lockdown query; Developer Mode records explicit
+true/false or omitted metadata; DDI records signature presence. Signature presence
+does not prove that an image is mounted or usable. Doctor does not pair, activate
+a tunnel, mount an image or change settings. Ctrl-C cancels remaining probes.
+
+Device checks distinguish `not_probed`, `unreachable`, `permission_denied`,
+`service_unavailable`, `metadata_missing` and other `failed` states. An explicit
+false is a warning with `value: false`; unknown metadata has no value. Failed
+checks cause exit 1 after the report; the JSON machine error retains the first
+failed device probe's category. Target IDs are hashed and private response data
+is omitted. RSD services and route checks currently stay `not_probed` because
+this command has no existing RSD-route selector.
+
+Pairing files must be regular files, or existing links to them. Unix FIFOs are
+rejected without waiting for a writer. Filesystem metadata and regular-file reads
+can still block in the OS: a probe deadline cannot forcibly cancel that worker,
+and runtime exit can wait for it. This is not evidence of bounded physical exit
+on stalled filesystems. Platform USB/remoted/directory diagnostics and actual
+device support remain pending; see [host evidence](validation/device-doctor-manual-admission-2026-10-08.md).
 
 ## Device is not listed
 
