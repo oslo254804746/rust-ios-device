@@ -148,6 +148,10 @@ impl Lifecycle {
     }
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
+        // Guard every caller before retaining a key or waiting on the map.
+        // The existing 4096-entry ceiling therefore bounds accepted key text
+        // to 16 MiB, including expired Weak entries awaiting normal pruning.
+        super::admission::selectors(udid, None)?;
         let mut shutdown = self.shutdown.subscribe();
         let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
         let mut devices = tokio::select! {

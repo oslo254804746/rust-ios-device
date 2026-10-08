@@ -17,6 +17,7 @@ mod discovery_tests;
 mod failure_commit_tests;
 mod identity_tests;
 mod liveness_tests;
+mod manual_admission_tests;
 mod manual_deadline_tests;
 mod parallel_tests;
 mod publication_commit_tests;

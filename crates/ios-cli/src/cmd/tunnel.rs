@@ -838,6 +838,7 @@ impl TunnelAgentState {
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
     ) -> Result<TunnelRecord> {
+        admission::selectors(udid, ip_filter)?;
         let deadline = lifecycle::ConnectionDeadline::new(self.inner.connect_timeout)?;
         let ticket = deadline.run(self.inner.lifecycle.ticket(udid)).await?;
         ticket
@@ -1956,7 +1957,7 @@ fn manager_operation_error(
                 "error": ios_core::redaction::diagnostic_error(error).to_string(),
             })),
         ),
-        ios_core::classify_error(error),
+        crate::output::operation_error_class(error),
         crate::http_diagnostics::ErrorPhase::Manager,
     )
 }

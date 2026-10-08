@@ -151,12 +151,16 @@ impl std::error::Error for ForceRequired {}
 const MAX_CONFIRMATION_SOURCES: usize = 32;
 
 fn confirmation_required(error: &anyhow::Error) -> bool {
-    cli_decisions(error).0
+    cli_decisions(error.as_ref()).0
 }
 
-fn cli_decisions(error: &anyhow::Error) -> (bool, Option<ios_core::ErrorClass>) {
+fn cli_decisions(
+    error: &(dyn std::error::Error + 'static),
+) -> (bool, Option<ios_core::ErrorClass>) {
     let mut class = None;
-    for source in error.chain().take(MAX_CONFIRMATION_SOURCES) {
+    let mut current = Some(error);
+    for _ in 0..MAX_CONFIRMATION_SOURCES {
+        let Some(source) = current else { break };
         if source.is::<ForceRequired>() {
             return (true, Some(ios_core::ErrorClass::Precondition));
         }
@@ -167,8 +171,19 @@ fn cli_decisions(error: &anyhow::Error) -> (bool, Option<ios_core::ErrorClass>) 
                 class = Some(ios_core::ErrorClass::ResourceLimit);
             }
         }
+        current = source.source();
     }
     (false, class)
+}
+
+/// Include private CLI decisions at CLI-owned HTTP and machine-output boundaries.
+/// Core cannot classify these private types; their original chain stays intact.
+pub(crate) fn operation_error_class(
+    error: &(dyn std::error::Error + 'static),
+) -> ios_core::ErrorClass {
+    cli_decisions(error)
+        .1
+        .unwrap_or_else(|| ios_core::classify_error(error))
 }
 
 #[derive(serde::Serialize)]

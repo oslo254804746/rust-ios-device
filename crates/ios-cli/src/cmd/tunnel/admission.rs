@@ -1,4 +1,4 @@
-//! Logical admission of manager Source snapshots and owned scan candidates.
+//! Logical admission of manager selectors, Source snapshots and scan candidates.
 //! Source allocation, vector capacity and allocator/RSS are separate boundaries.
 use std::collections::HashSet;
 
@@ -12,6 +12,15 @@ const MAX_FIELD_BYTES: usize = 4096;
 const MAX_RAW_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CANDIDATES: usize = 4096;
 const MAX_CANDIDATE_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+pub(super) fn selectors(udid: &str, route_host: Option<&str>) -> Result<()> {
+    anyhow::ensure!(
+        udid.len() <= MAX_FIELD_BYTES
+            && route_host.map_or(true, |host| host.len() <= MAX_FIELD_BYTES),
+        crate::output::resource_decision("tunnel selector metadata limit")
+    );
+    Ok(())
+}
 
 fn snapshot_limit() -> anyhow::Error {
     crate::output::resource_decision("tunnel discovery snapshot metadata limit")
