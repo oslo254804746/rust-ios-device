@@ -374,3 +374,9 @@ change at the later paired check still needs a separate error-retention fix.
 Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
 Both stale paired checks retain already acquired errors. A clear-success fixture supplies a unique nonempty paired target,which never connects or marks ready. Close-success here is an empty snapshot;coordinator zero-mutation is not claimed.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
+
+## Discovery snapshot limits
+
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+All four manager Source consumers validate complete USB/paired snapshots,including tails after an early matching row/target. Combined planning completes before paired clones/tickets;permission reload can only remove planned rows. See the profile for exact private ceilings and byte accounting;device authorization does not exclude raw USB rows from input limits.
+Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.

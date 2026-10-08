@@ -4,6 +4,25 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-snapshot-327b0ef",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Private Source metadata;actual native userspace workers/DuplexEOF;actual owned localhost HTTP policy reload. No mobdev2/DNS/pairing/device."
+      ],
+      "required_state": [
+        "6 source files 743+/5-;14newtests;47308baseline19PASS5FAIL(7new2PASS5FAIL,17oldPASS),v1 24740/26PASS,v2 93542/28PASS,v3 72932/31PASS. Root aloneRustserial,457products frozen/all7gates,oldasserts retained."
+      ],
+      "tested_commit": "327b0ef38e43576f2313c51c597b5c16cb7abc01",
+      "date": "2026-10-08",
+      "location": "docs/validation/tunnel-snapshot-admission-2026-10-08.md",
+      "result": "PASS",
+      "scope": "Four manager Source consumers have fullraw checks;borrowed entire paired plan beforeclones/tickets. USBbeforeevict,pairedincomplete preservesunknownbackoff/USBpublication,SourceErr remainsouter/staleSourceOk quiet. Exact/over row/unique/UTF-8/aggregate/combined count/bytes;actualHTTPpolicyreload indices-only;twoactualnative fixtures originaljoins/status/EOF/taskbaseline beforeassertions. Full2754Rust13Python0FAIL2existingignored CLI1093Core1496public55;CLI230/1ignored,tools73/help118/raw38/host5/CLI95/backup3 PASS. Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID untouched,no maturity/ACK/device/RSS/performance/platform certification.",
+      "limitations": "Manager accepted/copied logical data only. Source/Core allocation,vector/string capacity/initial publication clones/arbitrary manual input and global retained metadata are separate. Ordinary L01/L02 admission is not Q04 UID/fuzz/resource experiment. Initial unique-overflow baseline was already caught by oldcoordinator cap;subsequent helper asserts no newgates,not falsely called oldfailure."
+    },
+    {
       "id": "linux-tunnel-paired-final-aa3c3a4",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",

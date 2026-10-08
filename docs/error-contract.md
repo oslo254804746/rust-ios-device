@@ -2055,3 +2055,9 @@ original error; this profile does not certify that second fence.
 Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
 Both paired stale branches now map only successful replies to Ok and return their acquired original Err unchanged. The second fence handles an epoch change after the first check passed. Native EOF kind/Io classification remain;no wrapper/error-enum change.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
+
+## Managed snapshot resource decisions
+
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+Oversized snapshots or combined candidate plans now return the existing CLI typed resource_limit. Both USB matching-row and manual paired matching-target paths validate the full snapshot first. Original Source Err is preserved;Source Ok admission refusal becomes private Incomplete until the current scan finishes its legal USB candidates. Stale Source success is still discarded without converting a new admission error into native primary.
+Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.

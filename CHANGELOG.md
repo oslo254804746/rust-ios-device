@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bound manager discovery snapshots and combined candidate metadata before
+  selection, matching or publication. Oversized paired discovery keeps existing
+  backoff and processes legal USB candidates before returning resource_limit.
+  See [admission evidence](docs/validation/tunnel-snapshot-admission-2026-10-08.md).
+
 - Preserve an original paired discovery error at the final epoch check when
   clear/close occurs after the first reply check.
   See [final fence evidence](docs/validation/tunnel-paired-final-fence-2026-10-07.md).

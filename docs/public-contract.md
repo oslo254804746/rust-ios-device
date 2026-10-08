@@ -1336,3 +1336,9 @@ at the later paired epoch check remains open and needs its own regression.
 Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
 The second paired stale check now retains its original Source error. This follows the first-check fix and closes its recorded race. Public APIs/options/wire/Core/bindings/clock budgets stay;the corrected error outcome needs pre-1.0 review.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
+
+## Managed discovery admission
+
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+New private limits reject formerly accepted oversized snapshots:16,384 raw rows per family,4096-byte UTF-8 field,16MiB raw strings per family,4096 USB unique IDs including unauthorized,4096 authorized combined candidates and16MiB candidate UDID+route-host bytes. Public structs/enums/options/wire/Core/bindings/deps/features stay;this pre-1.0 rejection behavior needs review. Ordinary selection and default manual fallback stay.
+Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.

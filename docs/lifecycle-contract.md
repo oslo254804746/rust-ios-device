@@ -1180,3 +1180,9 @@ The later paired epoch fence still needs error-retention regression and repair.
 Implementation `aa3c3a46c19dd19175c879bcb44f5856d24259ec`; [final paired fence evidence](validation/tunnel-paired-final-fence-2026-10-07.md).
 Clear/close after the first paired check no longer turns an acquired paired error into success. Nonempty clear-success is discarded before connection/ready;nonempty close can return Cancelled at ticket admission,so universal stale-success Ok is not promised.
 Whole-scan total/cancellation/paired primary across caller drop,out-of-clock failure bookkeeping,metadata admission and all other original L01-L04/classes5-9 requirements remain.
+
+## Managed snapshot and candidate admission
+
+Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
+Raw USB/paired and complete borrowed candidate plans now have private row/field/UTF-8 byte/count limits. USB rejects before attachment eviction;paired refuses the entire batch as incomplete while legal USB candidates proceed and unknown Mobdev2 backoff stays. Source errors remain outside Complete/Incomplete admission state;stale Source success stays quiet. Tickets/clocks/four-window/individual cancellation stay.
+Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
