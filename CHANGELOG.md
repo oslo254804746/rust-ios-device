@@ -491,6 +491,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Defer scan failure-record writes until candidate connections finish, with
+  a shared finite bookkeeping deadline and rollback of late metadata writes.
+  Keep acquired paired errors primary when bookkeeping also times out.
+  See [bookkeeping evidence](docs/validation/tunnel-bookkeeping-2026-10-08.md).
+
 - Bound manager discovery snapshots and combined candidate metadata before
   selection, matching or publication. Oversized paired discovery keeps existing
   backoff and processes legal USB candidates before returning resource_limit.

@@ -2061,3 +2061,9 @@ Whole-scan total/cancellation/paired primary across caller drop,out-of-clock fai
 Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
 Oversized snapshots or combined candidate plans now return the existing CLI typed resource_limit. Both USB matching-row and manual paired matching-target paths validate the full snapshot first. Original Source Err is preserved;Source Ok admission refusal becomes private Incomplete until the current scan finishes its legal USB candidates. Stale Source success is still discarded without converting a new admission error into native primary.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Failure bookkeeping outcomes
+
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Incomplete bookkeeping now returns its original timer Elapsed and skips new readiness. An acquired paired Source Err or admission Incomplete stays primary through original.context(FailureContext);direct IO downcast/CLI resource classification remain and independent actualElapsed secondary is inspectable. CallerDrop persistence is separate.
+Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.

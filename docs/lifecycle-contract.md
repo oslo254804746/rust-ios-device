@@ -1186,3 +1186,9 @@ Whole-scan total/cancellation/paired primary across caller drop,out-of-clock fai
 Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
 Raw USB/paired and complete borrowed candidate plans now have private row/field/UTF-8 byte/count limits. USB rejects before attachment eviction;paired refuses the entire batch as incomplete while legal USB candidates proceed and unknown Mobdev2 backoff stays. Source errors remain outside Complete/Incomplete admission state;stale Source success stays quiet. Tickets/clocks/four-window/individual cancellation stay.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Deferred failure writes
+
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Scans finish candidate connection futures before queueing writers for failed outcomes. Admission-bounded intents retain original tickets/permits;one checked absolute1s flush clock covers write-lock wait and the entire batch. StopA skips only A. Late row rollback retains exact old backoff/permit;timely prefix commits stay. This does not certify immediate stop while write-lock admission is pending.
+Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.

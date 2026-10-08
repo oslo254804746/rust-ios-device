@@ -1342,3 +1342,9 @@ Whole-scan total/cancellation/paired primary across caller drop,out-of-clock fai
 Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
 New private limits reject formerly accepted oversized snapshots:16,384 raw rows per family,4096-byte UTF-8 field,16MiB raw strings per family,4096 USB unique IDs including unauthorized,4096 authorized combined candidates and16MiB candidate UDID+route-host bytes. Public structs/enums/options/wire/Core/bindings/deps/features stay;this pre-1.0 rejection behavior needs review. Ordinary selection and default manual fallback stay.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Scan failure bookkeeping timing
+
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Private bookkeeping1s begins after the four-item candidate window. Public API/options/enums/Core/bindings/wire/features stay. Backoff formula/count/identity/permit rules stay,but last_attempt records the later metadata commit,so early failed candidates may retry later. Bounded write rejection/timing require pre-1.0 review.
+Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.

@@ -380,3 +380,9 @@ Whole-scan total/cancellation/paired primary across caller drop,out-of-clock fai
 Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`; [snapshot admission evidence](validation/tunnel-snapshot-admission-2026-10-08.md).
 All four manager Source consumers validate complete USB/paired snapshots,including tails after an early matching row/target. Combined planning completes before paired clones/tickets;permission reload can only remove planned rows. See the profile for exact private ceilings and byte accounting;device authorization does not exclude raw USB rows from input limits.
 Source allocation/RSS,global gate/failure/cache/native/list/federation bytes,whole-scan total/cancel/paired primary across caller drop/out-of-clock failure writes,L03-L04/classes5-9 and all other original acceptance remain.
+
+## Failure record writes
+
+Implementation `4415be9a65921a346208f912dbe59e399e471591`; [failure bookkeeping evidence](validation/tunnel-bookkeeping-2026-10-08.md).
+Failed connection results no longer occupy a connection slot while waiting to write backoff. The scanner collects at most4096 intents,then shares one private1s bookkeeping total. Timeout refuses new readiness and leaves unwritten outcomes without new backoff. See the profile for same-poll rollback,original paired primary/secondary and exact scope.
+Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain.

@@ -4,6 +4,25 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-tunnel-bookkeeping-4415be9",
+      "level": "host-unit/protocol",
+      "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "Private discovery metadata;actual Core userspace native reservations/workers/original joins/DuplexEOF;actual localhost TCP partial EOF. No device/mobdev2/DNS/pairing."
+      ],
+      "required_state": [
+        "7 source files 714+/9-;12additivecases;26oldtestfiles unchanged except2modlines;13133baseline0PASS4FAIL;69833disablepostinsert0PASS2FAIL;RootaloneRustserial/460frozenproducts/all7gates."
+      ],
+      "tested_commit": "4415be9a65921a346208f912dbe59e399e471591",
+      "date": "2026-10-08",
+      "location": "docs/validation/tunnel-bookkeeping-2026-10-08.md",
+      "result": "PASS",
+      "scope": "Failed outcome intents do not occupy connection window or queue failure writers before later candidate backoff reads. Single checked1s batch clock/no perrow reset/zero-overflow/actualElapsed;ticket pre-post mutation/rollback exactold row ornewrow removal/timelyprefix/stopA-only. Original paired IO and Incomplete CLIresource remainprimary with actualElapsed contextsecondary.4actualnative fixtures recover joins/status/EOF/taskbaseline/registry/permits before regressions. Full2766Rust13Python0FAIL2existingignored CLI1105Core1496public55;CLI242/1ignored/min/stack5/strict/fmt/full/tools73/help118/raw38/host5/CLI95/backup3 PASS. Whole-scan total/global cancellation/durable paired or List primary across callerDrop,reconciliation/readiness/global metadata,successful-candidate writer fairness,L03-L04/classes5-9 and all other original acceptance remain. Active30/allchildren excludingQ04,9complete21unfinished,22device NOT_RUN;Chromium/installed3.9/3.13 NOT_RERUN;UID/maturity/device/ACK/RSS/performance/platform unchanged.",
+      "limitations": "Failure write staging only. Success failed-row remove may queuewriter;batchlock wait not immediately device-cancelled;last_attempt latercommit maydelay retry. Direct preceding private testAPI wrappers keptcfgtest;newnative regressions actualscanner. Intentcount/strings logical snapshot-derived bounds,no allocator/RSS/CPU/longrun or physicaldevice certification. V1/V2 newfixture synchronization/class/attached-phase expectations corrected without altering oldassertions/types."
+    },
+    {
       "id": "linux-tunnel-snapshot-327b0ef",
       "level": "host-unit/protocol",
       "host_os": "Linux x86_64;Rust1.97.1/MSRV1.80.1;Python3.12.13",
