@@ -379,6 +379,8 @@ struct TunnelAgentInner {
     native: Arc<retirement::Registry>,
     #[cfg(test)]
     publication_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    paired_after_first_check: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
 struct ManagedTunnel {
@@ -622,6 +624,8 @@ impl TunnelAgentState {
                 native: retirement::Registry::new(),
                 #[cfg(test)]
                 publication_after_insert: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                paired_after_first_check: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -1162,6 +1166,13 @@ impl TunnelAgentState {
             // discovery error already acquired in this cancellation poll.
             return paired.map(|_| ());
         }
+        #[cfg(test)]
+        {
+            let callback = self.inner.paired_after_first_check.lock().unwrap().take();
+            if let Some(callback) = callback {
+                callback();
+            }
+        }
         // The setup clock ends at the paired reply. The remaining candidate
         // handoff, reconciliation and readiness waits keep their existing
         // behavior; each candidate still owns its independent connection total.
@@ -1181,7 +1192,9 @@ impl TunnelAgentState {
             }
         }
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
-            return Ok(());
+            // An epoch can change after the first paired reply check too.
+            // Preserve its already acquired error at this final handoff fence.
+            return paired.map(|_| ());
         }
         self.reconcile_failures(&candidates, paired.is_ok()).await;
         self.refresh_candidates(candidates).await;
