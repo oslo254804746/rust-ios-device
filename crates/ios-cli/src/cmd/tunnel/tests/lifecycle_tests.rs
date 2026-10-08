@@ -12,6 +12,7 @@ const B: &str = "synthetic-device-b";
 const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
 mod backoff_tests;
+mod bookkeeping_tests;
 mod discovery_tests;
 mod failure_commit_tests;
 mod identity_tests;

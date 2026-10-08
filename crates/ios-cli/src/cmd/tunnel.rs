@@ -31,11 +31,13 @@ use crate::access::{
 };
 
 mod admission;
+mod bookkeeping;
 mod lifecycle;
 mod ownership;
 mod retirement;
 mod server;
 mod source;
+use bookkeeping::{DeferredFailure, FailureIntent};
 use lifecycle::{Lifecycle, Ticket};
 use source::{NativeSource, Route, Source, UsbSnapshot};
 
@@ -46,6 +48,7 @@ const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_FAILURE_RECORDS: usize = 4096;
+const FAILURE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_LIST_BYTES: usize = 1024 * 1024;
 const BRIDGE_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
@@ -376,12 +379,15 @@ struct TunnelAgentInner {
     scan_lock: Mutex<()>,
     source: Arc<dyn Source>,
     connect_timeout: Duration,
+    failure_write_timeout: Duration,
     shutdown: watch::Sender<bool>,
     native: Arc<retirement::Registry>,
     #[cfg(test)]
     publication_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
     paired_after_first_check: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    failure_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
 struct ManagedTunnel {
@@ -621,12 +627,15 @@ impl TunnelAgentState {
                 scan_lock: Mutex::new(()),
                 source,
                 connect_timeout,
+                failure_write_timeout: FAILURE_WRITE_TIMEOUT,
                 shutdown: watch::channel(false).0,
                 native: retirement::Registry::new(),
                 #[cfg(test)]
                 publication_after_insert: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 paired_after_first_check: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                failure_after_insert: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -994,6 +1003,7 @@ impl TunnelAgentState {
         })
     }
 
+    #[cfg(test)]
     async fn refresh_connect(
         &self,
         udid: &str,
@@ -1001,6 +1011,24 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
     ) {
+        // Keep the original direct-attempt test seam and its immediate failure
+        // write. Production scans defer that write until their window finishes.
+        if let Some(failed) = self
+            .refresh_connect_deferred(udid, route, ticket, expected_id)
+            .await
+        {
+            self.record_failed_attempt(udid, failed.identity, failed.slot, ticket)
+                .await;
+        }
+    }
+
+    async fn refresh_connect_deferred(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+        expected_id: Option<u32>,
+    ) -> Option<DeferredFailure> {
         let identity = AttemptIdentity {
             route: route.clone(),
             native_id: expected_id,
@@ -1049,11 +1077,11 @@ impl TunnelAgentState {
                     "tunnel agent: failed to establish tunnel"
                 );
                 if let Some(slot) = failure_slot {
-                    self.record_failed_attempt(udid, identity, slot, ticket)
-                        .await;
+                    return Some(DeferredFailure { identity, slot });
                 }
             }
         }
+        None
     }
 
     async fn refresh_once(&self) -> Result<()> {
@@ -1221,24 +1249,51 @@ impl TunnelAgentState {
             matches!(&paired, Ok(admission::PairedCandidates::Complete { .. })),
         )
         .await;
-        self.refresh_candidates(candidates).await;
-        if let admission::PairedCandidates::Incomplete(error) = paired? {
-            return Err(error);
+        let bookkeeping = self.refresh_candidates(candidates).await;
+        let primary = paired.and_then(|reply| match reply {
+            admission::PairedCandidates::Complete { .. } => Ok(()),
+            admission::PairedCandidates::Incomplete(error) => Err(error),
+        });
+        match (primary, bookkeeping) {
+            (Err(primary), Err(secondary)) => {
+                return Err(primary.context(bookkeeping::FailureContext::new(secondary)));
+            }
+            (Err(primary), Ok(())) => return Err(primary),
+            (Ok(()), Err(error)) => return Err(error),
+            (Ok(()), Ok(())) => {}
         }
         self.mark_ready().await;
         Ok(())
     }
 
-    async fn refresh_candidates(&self, candidates: Vec<(String, Route, Ticket, Option<u32>)>) {
+    async fn refresh_candidates(
+        &self,
+        candidates: Vec<(String, Route, Ticket, Option<u32>)>,
+    ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
         let mut connections = futures_util::stream::iter(candidates)
             .map(|(udid, route, ticket, expected_id)| async move {
-                self.refresh_connect(&udid, route, &ticket, expected_id)
-                    .await;
+                self.refresh_connect_deferred(&udid, route, &ticket, expected_id)
+                    .await
+                    .map(|failed| FailureIntent {
+                        udid,
+                        ticket,
+                        failed,
+                    })
             })
             .buffer_unordered(lifecycle::MAX_CONNECTS);
-        while connections.next().await.is_some() {}
+        let mut failures = Vec::new();
+        while let Some(outcome) = connections.next().await {
+            if let Some(failed) = outcome {
+                failures.push(failed);
+            }
+        }
+        drop(connections);
+        // Snapshot admission bounds this collection to 4096 candidates. No
+        // writer for these failure outcomes enters Tokio's queue while later
+        // candidates still need their backoff reads or connection slots.
+        self.flush_failure_intents(failures).await
     }
 
     async fn reconcile_failures(
@@ -1292,6 +1347,7 @@ impl TunnelAgentState {
             .map_err(|_| crate::output::resource_decision("tunnel failure record capacity"))
     }
 
+    #[cfg(test)]
     async fn record_failed_attempt(
         &self,
         udid: &str,

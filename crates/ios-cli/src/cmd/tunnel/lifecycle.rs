@@ -70,6 +70,10 @@ impl ConnectionDeadline {
         Self::with_context(timeout, "timed out establishing scanned tunnel")
     }
 
+    pub(super) fn for_scan_bookkeeping(timeout: Duration) -> Result<Self> {
+        Self::with_context(timeout, "tunnel scan failure bookkeeping total expired")
+    }
+
     fn with_context(timeout: Duration, timeout_context: &'static str) -> Result<Self> {
         let deadline = Instant::now()
             .checked_add(timeout)

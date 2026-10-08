@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 const DEVICE: &str = "native-cli-retirement-fixture";
 const OBSERVE: Duration = Duration::from_secs(2);
 
+mod bookkeeping_tests;
 mod deadline_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
