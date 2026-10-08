@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add serve retry delay, attempt and total budgets with bounded identity/epoch
+  episodes and accurate verbose state. Default retry timing and HTTP JSON stay
+  compatible; durable stop/manual recovery and device acceptance remain pending.
+  See [manager evidence](docs/validation/manager-reconnect-2026-10-08.md).
+
 - Add caller-bounded complete AFC reads and a checked InstallationProxy Browse
   total with cumulative reply, frame and entry budgets. Interrupted checked
   Browse clients reject reuse through legacy methods; existing wire and error

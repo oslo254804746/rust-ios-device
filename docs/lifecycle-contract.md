@@ -1208,3 +1208,14 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 The manager now owns a checked 30-second scan total and the clear/close epoch across all discovery, admission, connection, reconciliation, failure-write and readiness waits. Per-device stop remains isolated after discovery. Whole-clock checks participate in candidate publication/failure rollback and global reconciliation; whole expiry adds no failed-attempt backoff or new readiness.
 
 A scan session retains the original acquired paired/List error before any subsequent wait. Caller Drop records it in one of eight fixed slots before releasing the scan lock. Empty/normal sessions release their slot; queued scans reserve none. Clear retains history and terminal closure seals admission. The server snapshots history after dropping its scanner and reports original errors independently from native joins. Details, evidence and remaining limitations are in [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+
+Configured manager reconnect episodes begin at admitted Source work and share
+one checked total across later attempts, idle and metadata waits. Capacity
+refusals cannot start a clock. Exhaustion retains its existing bounded failure
+reservation; old ticket/version cleanup cannot erase a fresh episode. Original
+native owners remain in the retirement registry for joins, without a guarantee
+that all workers join before every retry. A local expired-total Drop records a
+budget Timeout; unexpired caller Drop stays Interrupted and acquired native
+errors retain priority. Emission releases synchronous Mutex/watch borrows while
+existing Tokio serial/scan mutex lifetimes remain. See
+[manager reconnect acceptance](validation/manager-reconnect-2026-10-08.md).

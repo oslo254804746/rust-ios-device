@@ -413,3 +413,14 @@ does not alter an already-published native tunnel. With the existing 4096-key ca
 retained gate-key text is at most 16 MiB; this is not a bound on Source allocations,
 HTTP body allocation, arbitrary metadata or RSS. See
 [host admission evidence](validation/device-doctor-manual-admission-2026-10-08.md).
+
+`tunnel serve` supports `--retry-initial-delay-ms`, `--retry-max-delay-ms`,
+`--retry-max-attempts` and `--retry-total-ms`. The default retains unlimited
+30/60/120/240/300-second automatic retries. A changed policy owns a bounded
+identity/epoch episode whose total includes admitted attempts and idle time;
+exhaustion cannot be renewed by another scan. INFO state events hash identifiers
+and distinguish the authoritative `episode` schedule from `legacy_failure_table`,
+which omits cumulative fields it cannot establish. HTTP JSON and quiet default
+output remain unchanged. Stop cancels old attempts; persistent cross-scan stop
+and explicit manual-route recovery remain pending. See
+[host acceptance and migration](validation/manager-reconnect-2026-10-08.md).

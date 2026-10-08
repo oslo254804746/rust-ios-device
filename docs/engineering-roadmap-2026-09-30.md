@@ -123,7 +123,7 @@
 | A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse 原生前置主机验收；Python/C owner、取消、并发、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
-| L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：serve 可配置退避、持续预算/状态与原 owner/epoch 回收在独立 worktree 开发，待集中验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续 |
+| L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；RSD/route 仍 not_probed，平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [证据](validation/device-doctor-manual-admission-2026-10-08.md) |
 | F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 待开始 |
@@ -8229,3 +8229,19 @@ proposal，manager 的审查修正另行验收，未借此将其标为完成。
 仅 A03 两个原生子项完成；Python/C common owner、bounded query、日志流、
 context/async/GIL、取消/并发/关闭与 C ABI/示例仍待交付，主任务继续进行。
 22 真机行 NOT_RUN，平台/物理/性能和全部原验收继续；Q04 全部子项排除。
+
+### L03：manager 可配置自动重连 episode（2026-10-08）
+
+`1a604af` 集中交付 serve 退避/attempt/total flags、有限持久 episode、
+原 identity/epoch/version/permit/native-owner 边界与准确 INFO 状态。默认保留
+legacy 30/60/120/240/300s；默认日志省略不能证明的累计数据，配置 episode 才
+输出权威计数与期限。真实 A pending 到 1.5s total，同时 B 实际 HTTP GET/DELETE
+各 <1s，原 joins/EOF/tasks/permits 恢复。26 新回归及完整門禁通过；
+[证据与迁移](validation/manager-reconnect-2026-10-08.md) 记录原错误优先和
+本地 expired budget 与未取得 native error 的区别。
+
+仅自动 manager 主机子项完成；DELETE 取消旧 incarnation 后下一 scan 仍可能
+重新发现，durable stop/manual directed-Wi-Fi intent 是下一工作项，Darwin watch
+还需 fresh owner/RSD/services 与 baseline/nonce/count/gap 语义。既有 Tokio
+serial/scan lock 保持，未声称每次重试前已完成所有 native joins。平台/物理/
+性能/长期运行与 22 真机 NOT_RUN 保留，L03 和全部原主任务条件不降格。
