@@ -9,11 +9,19 @@ pub(crate) const MAX_DISCOVERY_PAIR_RECORDS: usize = 128;
 
 /// Shared bounded reader for local pairing stores. The original serialized
 /// private keys are wiped when parsing finishes.
+///
+/// Only regular files are read; existing links to regular files remain valid.
+/// Unix nonblocking open also protects the interval between the path and handle
+/// checks from a FIFO replacement. This does not make filesystem metadata or
+/// regular-file reads cancellable on a stalled filesystem.
 pub(crate) fn read_pair_record_bytes(
     path: &std::path::Path,
 ) -> std::io::Result<Zeroizing<Vec<u8>>> {
     use std::io::Read;
-    let file = std::fs::File::open(path)?;
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(non_regular_pair_record());
+    }
+    let file = open_pair_record_file(path)?;
     let mut bytes = Zeroizing::new(Vec::new());
     file.take(MAX_PAIR_RECORD_BYTES + 1)
         .read_to_end(&mut bytes)?;
@@ -24,6 +32,28 @@ pub(crate) fn read_pair_record_bytes(
         ));
     }
     Ok(bytes)
+}
+
+fn non_regular_pair_record() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "pair record path must be a regular file",
+    )
+}
+
+fn open_pair_record_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(non_regular_pair_record());
+    }
+    Ok(file)
 }
 
 #[cfg(feature = "mdns")]
@@ -198,6 +228,9 @@ fn pair_record_dir_for_platform(
         PathBuf::from("/var/lib/lockdown")
     }
 }
+
+#[cfg(test)]
+mod read_admission_tests;
 
 #[cfg(test)]
 mod tests {
