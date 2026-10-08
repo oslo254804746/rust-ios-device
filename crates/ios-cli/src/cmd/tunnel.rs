@@ -35,6 +35,7 @@ mod bookkeeping;
 mod lifecycle;
 mod ownership;
 mod retirement;
+mod scan;
 mod server;
 mod source;
 use bookkeeping::{DeferredFailure, FailureIntent};
@@ -45,6 +46,7 @@ const DEFAULT_AGENT_HOST: &str = "127.0.0.1";
 const DEFAULT_AGENT_PORT: u16 = 49151;
 const DEFAULT_SCAN_INTERVAL_MS: u64 = 2_000;
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const TUNNEL_SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_FAILURE_RECORDS: usize = 4096;
@@ -377,6 +379,8 @@ struct TunnelAgentInner {
     ready: RwLock<bool>,
     lifecycle: Lifecycle,
     scan_lock: Mutex<()>,
+    scan_outcomes: Arc<scan::Outcomes>,
+    scan_timeout: Duration,
     source: Arc<dyn Source>,
     connect_timeout: Duration,
     failure_write_timeout: Duration,
@@ -625,6 +629,8 @@ impl TunnelAgentState {
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::new(),
                 scan_lock: Mutex::new(()),
+                scan_outcomes: scan::Outcomes::new(),
+                scan_timeout: TUNNEL_SCAN_TIMEOUT,
                 source,
                 connect_timeout,
                 failure_write_timeout: FAILURE_WRITE_TIMEOUT,
@@ -644,13 +650,10 @@ impl TunnelAgentState {
         *self.inner.ready.read().await
     }
 
-    async fn mark_ready(&self) {
-        *self.inner.ready.write().await = true;
-    }
-
     fn notify_shutdown(&self) {
         // Fence both existing and future starts before any async table cleanup.
         self.inner.lifecycle.close();
+        self.inner.scan_outcomes.close();
         self.inner.native.close_and_stop_all();
         self.inner.shutdown.send_replace(true);
     }
@@ -922,6 +925,9 @@ impl TunnelAgentState {
             return Err(lifecycle::cancelled().context("tunnel inactive at admission"));
         }
         if usbmux {
+            if let Some(deadline) = deadline {
+                deadline.check()?;
+            }
             // Keep the completed device owned while the current daemon view is
             // checked, within the caller's existing permit/deadline/cancellation.
             match self.inner.source.usb_devices().await {
@@ -1022,12 +1028,25 @@ impl TunnelAgentState {
         }
     }
 
+    #[cfg(test)]
     async fn refresh_connect_deferred(
         &self,
         udid: &str,
         route: Route,
         ticket: &Ticket,
         expected_id: Option<u32>,
+    ) -> Option<DeferredFailure> {
+        self.refresh_connect_with_total(udid, route, ticket, expected_id, None)
+            .await
+    }
+
+    async fn refresh_connect_with_total(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+        expected_id: Option<u32>,
+        whole: Option<&scan::Deadline>,
     ) -> Option<DeferredFailure> {
         let identity = AttemptIdentity {
             route: route.clone(),
@@ -1039,11 +1058,33 @@ impl TunnelAgentState {
         let result = ticket
             .run(async {
                 let deadline =
-                    lifecycle::ConnectionDeadline::for_scan_candidate(self.inner.connect_timeout)?;
+                    lifecycle::ConnectionDeadline::for_scan_candidate(self.inner.connect_timeout)?
+                        .within_scan(whole);
                 deadline
                     .run(async {
                         let _serial = ticket.serial().await;
-                        if self.get_record(udid).await.is_some() {
+                        let mut tunnels = self.inner.tunnels.write().await;
+                        deadline.check()?;
+                        let (existing, remove_dead) = match tunnels.get(udid) {
+                            Some(tunnel) if tunnel.is_alive() => {
+                                let record = tunnel.record().ok();
+                                deadline.check()?;
+                                (record, false)
+                            }
+                            Some(_) => (None, true),
+                            None => (None, false),
+                        };
+                        let removed = ticket.commit(|| {
+                            deadline.check()?;
+                            Ok(if remove_dead {
+                                tunnels.remove(udid)
+                            } else {
+                                None
+                            })
+                        })?;
+                        drop(tunnels);
+                        drop(removed);
+                        if existing.is_some() {
                             return Ok(());
                         }
                         if self
@@ -1060,9 +1101,15 @@ impl TunnelAgentState {
                         }
                         failure_slot = Some(self.reserve_failure_slot(udid).await?);
                         let _permit = self.inner.lifecycle.connects.acquire().await?;
+                        deadline.check()?;
                         self.connect_and_store(udid, route, ticket, expected_id, Some(&deadline))
                             .await?;
-                        self.inner.failed_attempts.write().await.remove(udid);
+                        let mut failed = self.inner.failed_attempts.write().await;
+                        ticket.commit(|| {
+                            deadline.check()?;
+                            failed.remove(udid);
+                            Ok(())
+                        })?;
                         Ok(())
                     })
                     .await
@@ -1070,7 +1117,11 @@ impl TunnelAgentState {
             .await;
         if let Err(error) = result {
             // A lifecycle cancellation is not a connection failure and must not restart backoff.
-            if ticket.is_current() && !error.is::<ios_core::OperationCancelled>() {
+            if ticket.is_current()
+                && !error.is::<ios_core::OperationCancelled>()
+                && !error.is::<scan::DeadlineReached>()
+                && whole.map_or(true, |whole| whole.check().is_ok())
+            {
                 tracing::warn!(
                     device = %ios_core::redaction::diagnostic_id(udid),
                     error = %crate::output::error_message(&error),
@@ -1086,19 +1137,43 @@ impl TunnelAgentState {
 
     async fn refresh_once(&self) -> Result<()> {
         // Only scans serialize. Queries, stops and explicit starts never take this lock.
+        let whole = scan::Deadline::new(self.inner.scan_timeout)?;
         let mut control = self
             .inner
             .lifecycle
             .scan_control(self.inner.connect_timeout)?;
-        let Some(_scan) = control.drive(self.inner.scan_lock.lock()).await? else {
+        let epoch = control.epoch.clone();
+        let lock = whole
+            .run(&epoch, control.drive(self.inner.scan_lock.lock()))
+            .await?;
+        let Some(lock) = lock.flatten() else {
             return Ok(());
         };
+        let session = self.inner.scan_outcomes.begin(lock)?;
+        let result = whole
+            .run(
+                &epoch,
+                self.refresh_scan(&mut control, &session, &whole, &epoch),
+            )
+            .await;
+        session.finish(result)
+    }
+
+    async fn refresh_scan(
+        &self,
+        control: &mut lifecycle::ScanControl,
+        session: &scan::Session<'_>,
+        whole: &scan::Deadline,
+        epoch: &scan::Epoch,
+    ) -> Result<()> {
         let scan_generation = control.generation.clone();
         let initial = {
             let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
                 return Ok(());
             };
-            tunnels.retain(|device, _| self.inner.access.permits_device(device));
+            epoch.retain(whole, &mut tunnels, |device, _| {
+                self.inner.access.permits_device(device)
+            })?;
             tunnels
                 .iter()
                 .map(|(udid, tunnel)| (udid.clone(), tunnel.publication.clone()))
@@ -1108,15 +1183,22 @@ impl TunnelAgentState {
             let Some(mut failed) = control.drive(self.inner.failed_attempts.write()).await? else {
                 return Ok(());
             };
-            failed.clear();
+            epoch.commit(whole, || {
+                failed.clear();
+                Ok(())
+            })?;
             drop(failed);
             let Some(mut ready) = control.drive(self.inner.ready.write()).await? else {
                 return Ok(());
             };
-            *ready = true;
+            epoch.commit(whole, || {
+                *ready = true;
+                Ok(())
+            })?;
             return Ok(());
         }
 
+        whole.check()?;
         let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
             return Ok(());
         };
@@ -1131,22 +1213,25 @@ impl TunnelAgentState {
             }
             UsbSnapshot::ConnectError(error) => return Err(error),
             UsbSnapshot::ListError(error) => {
+                session.retain(error);
                 match control.drive(self.inner.tunnels.write()).await {
-                    Ok(Some(mut tunnels)) => tunnels.retain(|udid, tunnel| {
-                        !initial
-                            .get(udid)
-                            .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
-                    }),
+                    Ok(Some(mut tunnels)) => {
+                        epoch.retain(whole, &mut tunnels, |udid, tunnel| {
+                            !initial
+                                .get(udid)
+                                .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                        })?;
+                    }
                     Ok(None) => {}
                     Err(cleanup) => {
                         return Err(ScanCleanupFailure {
-                            primary: error,
+                            primary: session.take().expect("acquired list primary"),
                             cleanup,
                         }
                         .into());
                     }
                 }
-                return Err(error);
+                return Err(session.take().expect("acquired list primary"));
             }
         };
         let admission = admission::usb_snapshot(&devices);
@@ -1161,15 +1246,15 @@ impl TunnelAgentState {
         let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
             return Ok(());
         };
-        tunnels.retain(|udid, tunnel| {
+        epoch.retain(whole, &mut tunnels, |udid, tunnel| {
             tunnel.is_alive()
                 && self.inner.access.permits_device(udid)
                 && (!tunnel.usbmux
-                    || attached.contains(&(udid.as_str(), tunnel.device.device_id()))
+                    || attached.contains(&(udid, tunnel.device.device_id()))
                     || !initial
                         .get(udid)
                         .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
-        });
+        })?;
         drop(tunnels);
         drop(attached);
 
@@ -1197,13 +1282,21 @@ impl TunnelAgentState {
         // cannot prevent a known mobdev2 candidate from entering the window.
         // Keep a discovery failure until the USB candidates have been processed,
         // preserving their publication and the original returned source error.
+        whole.check()?;
         let Some(paired) = control.drive(self.inner.source.paired_devices()).await? else {
             return Ok(());
+        };
+        let paired = match paired {
+            Ok(targets) => Some(targets),
+            Err(error) => {
+                session.retain(error);
+                None
+            }
         };
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             // Discard a successful stale snapshot, but preserve the original
             // discovery error already acquired in this cancellation poll.
-            return paired.map(|_| ());
+            return Ok(());
         }
         #[cfg(test)]
         {
@@ -1212,9 +1305,8 @@ impl TunnelAgentState {
                 callback();
             }
         }
-        // The setup clock ends at the paired reply. The remaining candidate
-        // handoff, reconciliation and readiness waits keep their existing
-        // behavior; each candidate still owns its independent connection total.
+        // Discovery and candidate clocks remain independent sub-budgets.
+        // The whole clock and global epoch also cover all later metadata waits.
         // Keep original Source Err outside the admission decision: a stale
         // Source success remains quietly discarded, even if its metadata fails
         // admission. Rejected snapshots are dropped before USB connection waits.
@@ -1223,12 +1315,13 @@ impl TunnelAgentState {
                 self.inner.access.permits_device(udid)
             })
         });
-        if let Ok(admission::PairedCandidates::Complete { targets, indices }) = &paired {
+        if let Some(admission::PairedCandidates::Complete { targets, indices }) = &paired {
             for &index in indices {
                 let target = &targets[index];
                 if self.inner.access.permits_device(&target.udid)
                     && seen.insert(target.udid.clone())
                 {
+                    whole.check()?;
                     let ticket = self.inner.lifecycle.ticket(&target.udid).await?;
                     candidates.push((
                         target.udid.clone(),
@@ -1242,15 +1335,17 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             // An epoch can change after the first paired reply check too.
             // Preserve its already acquired error at this final handoff fence.
-            return paired.map(|_| ());
+            return Ok(());
         }
         self.reconcile_failures(
             &candidates,
-            matches!(&paired, Ok(admission::PairedCandidates::Complete { .. })),
+            matches!(&paired, Some(admission::PairedCandidates::Complete { .. })),
+            whole,
+            epoch,
         )
-        .await;
-        let bookkeeping = self.refresh_candidates(candidates).await;
-        let primary = paired.and_then(|reply| match reply {
+        .await?;
+        let bookkeeping = self.refresh_candidates(candidates, whole).await;
+        let primary = paired.map_or(Ok(()), |reply| match reply {
             admission::PairedCandidates::Complete { .. } => Ok(()),
             admission::PairedCandidates::Incomplete(error) => Err(error),
         });
@@ -1262,19 +1357,27 @@ impl TunnelAgentState {
             (Ok(()), Err(error)) => return Err(error),
             (Ok(()), Ok(())) => {}
         }
-        self.mark_ready().await;
+        if session.has_primary() {
+            return Ok(());
+        }
+        let mut ready = self.inner.ready.write().await;
+        epoch.commit(whole, || {
+            *ready = true;
+            Ok(())
+        })?;
         Ok(())
     }
 
     async fn refresh_candidates(
         &self,
         candidates: Vec<(String, Route, Ticket, Option<u32>)>,
+        whole: &scan::Deadline,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
         let mut connections = futures_util::stream::iter(candidates)
             .map(|(udid, route, ticket, expected_id)| async move {
-                self.refresh_connect_deferred(&udid, route, &ticket, expected_id)
+                self.refresh_connect_with_total(&udid, route, &ticket, expected_id, Some(whole))
                     .await
                     .map(|failed| FailureIntent {
                         udid,
@@ -1293,14 +1396,18 @@ impl TunnelAgentState {
         // Snapshot admission bounds this collection to 4096 candidates. No
         // writer for these failure outcomes enters Tokio's queue while later
         // candidates still need their backoff reads or connection slots.
-        self.flush_failure_intents(failures).await
+        whole.check()?;
+        self.flush_failure_intents_with_total(failures, Some(whole))
+            .await
     }
 
     async fn reconcile_failures(
         &self,
         candidates: &[(String, Route, Ticket, Option<u32>)],
         paired_complete: bool,
-    ) {
+        whole: &scan::Deadline,
+        epoch: &scan::Epoch,
+    ) -> Result<()> {
         let known = candidates
             .iter()
             .map(|(udid, route, _, native_id)| {
@@ -1313,19 +1420,14 @@ impl TunnelAgentState {
                 )
             })
             .collect::<HashMap<_, _>>();
-        self.inner
-            .failed_attempts
-            .write()
-            .await
-            .retain(|udid, failed| {
-                self.inner.access.permits_device(udid)
-                    && match known.get(udid.as_str()) {
-                        Some(identity) => failed.identity == *identity,
-                        None => {
-                            !paired_complete && matches!(failed.identity.route, Route::Mobdev2(_))
-                        }
-                    }
-            });
+        let mut failed = self.inner.failed_attempts.write().await;
+        epoch.retain(whole, &mut failed, |udid, failed| {
+            self.inner.access.permits_device(udid)
+                && match known.get(udid) {
+                    Some(identity) => failed.identity == *identity,
+                    None => !paired_complete && matches!(failed.identity.route, Route::Mobdev2(_)),
+                }
+        })
     }
 
     async fn reserve_failure_slot(&self, udid: &str) -> Result<Arc<OwnedSemaphorePermit>> {

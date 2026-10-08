@@ -167,3 +167,50 @@ async fn automatic_deadline_crossing_scanned_clock_acquired_io_remains_primary()
         ios_core::ErrorClass::Disconnected
     );
 }
+
+#[tokio::test]
+async fn whole_scan_deadline_crossing_real_native_source_metadata_and_publication_are_retired() {
+    for delay in [Delay::SourceSuccess, Delay::Metadata, Delay::Publication] {
+        let expected = baseline();
+        let base = LocalSource::new();
+        let source = Arc::new(DelayedSource {
+            base: base.clone(),
+            records: Arc::new(AtomicUsize::new(0)),
+            paired: AtomicUsize::new(0),
+            delay,
+        });
+        let mut state = TunnelAgentState::with_source(
+            TunMode::Userspace,
+            AccessControl::trusted_test_local(),
+            Upstreams::default(),
+            source.clone(),
+            OBSERVE,
+        );
+        Arc::get_mut(&mut state.inner).unwrap().scan_timeout = BUDGET;
+        if matches!(delay, Delay::Publication) {
+            *state.inner.publication_after_insert.lock().unwrap() =
+                Some(Box::new(|| std::thread::sleep(CROSS)));
+        }
+        let error = state.refresh_once().await.unwrap_err();
+        let unpublished = state.inner.tunnels.read().await.is_empty();
+        let no_backoff = state.inner.failed_attempts.read().await.is_empty();
+        let not_ready = !state.is_ready().await;
+        let recovery = finish(&state, &base, expected).await;
+        assert!(recovery && base.handle().shutdown_status().is_ok());
+        assert!(unpublished && no_backoff && not_ready);
+        elapsed(&error);
+        assert_eq!(base.connect_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            source.records.load(Ordering::SeqCst),
+            usize::from(!matches!(delay, Delay::SourceSuccess))
+        );
+        assert_eq!(
+            base.usb_calls.load(Ordering::SeqCst),
+            if matches!(delay, Delay::Publication) {
+                2
+            } else {
+                1
+            }
+        );
+    }
+}

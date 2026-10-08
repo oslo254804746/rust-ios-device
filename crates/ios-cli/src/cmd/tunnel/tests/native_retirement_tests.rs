@@ -15,6 +15,7 @@ mod bookkeeping_tests;
 mod deadline_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
+mod scan_outcome_tests;
 mod snapshot_admission_tests;
 
 struct NativeDevice {

@@ -36,7 +36,7 @@ impl FailureContext {
 
 impl std::fmt::Display for FailureContext {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("tunnel scan failure bookkeeping also failed")
+        formatter.write_str("tunnel scan completion also failed")
     }
 }
 
@@ -53,13 +53,23 @@ impl std::fmt::Debug for FailureContext {
 }
 
 impl TunnelAgentState {
+    #[cfg(test)]
     pub(super) async fn flush_failure_intents(&self, intents: Vec<FailureIntent>) -> Result<()> {
+        self.flush_failure_intents_with_total(intents, None).await
+    }
+
+    pub(super) async fn flush_failure_intents_with_total(
+        &self,
+        intents: Vec<FailureIntent>,
+        whole: Option<&super::scan::Deadline>,
+    ) -> Result<()> {
         if intents.is_empty() {
             return Ok(());
         }
         let deadline = super::lifecycle::ConnectionDeadline::for_scan_bookkeeping(
             self.inner.failure_write_timeout,
-        )?;
+        )?
+        .within_scan(whole);
         deadline
             .run(async {
                 // Keep displaced rows outside the guards until their original

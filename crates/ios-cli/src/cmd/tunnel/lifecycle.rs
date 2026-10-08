@@ -43,11 +43,13 @@ pub(super) struct ScanControl {
     changes: watch::Receiver<Arc<()>>,
     pub(super) generation: Arc<()>,
     deadline: Instant,
+    pub(super) epoch: super::scan::Epoch,
 }
 
 pub(super) struct ConnectionDeadline {
     deadline: Instant,
     timeout_context: &'static str,
+    whole: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -81,12 +83,21 @@ impl ConnectionDeadline {
         Ok(Self {
             deadline,
             timeout_context,
+            whole: None,
         })
+    }
+
+    pub(super) fn within_scan(mut self, whole: Option<&super::scan::Deadline>) -> Self {
+        self.whole = whole.map(|whole| whole.at);
+        self
     }
 
     /// A synchronous fence for side effects inside a poll. Only run converts
     /// this private decision into the independent timer's original Elapsed.
     pub(super) fn check(&self) -> Result<()> {
+        if self.whole.is_some_and(|whole| Instant::now() >= whole) {
+            return Err(super::scan::DeadlineReached.into());
+        }
         if Instant::now() >= self.deadline {
             Err(ConnectionDeadlineReached.into())
         } else {
@@ -283,13 +294,16 @@ impl Lifecycle {
         let generation = changes.borrow_and_update().clone();
         // A completed close may already be marked seen by this subscription.
         // Terminal shutdown is monotonic, so reject it after capturing the epoch.
-        if self.shutdown.borrow().is_none() {
-            return Err(cancelled());
-        }
+        let mut global = self.shutdown.subscribe();
+        let global_generation = global.borrow_and_update().clone().ok_or_else(cancelled)?;
         Ok(ScanControl {
             changes,
             generation,
             deadline,
+            epoch: super::scan::Epoch {
+                changes: global,
+                generation: global_generation,
+            },
         })
     }
 
