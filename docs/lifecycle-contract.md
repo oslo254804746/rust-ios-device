@@ -103,6 +103,16 @@ caller-owned, and borrowed raw transports must not bypass invalid state. Existin
 packet-number acceptance and frame/whole-file limits remain. See
 [AFC fixture boundaries and migration](validation/afc-lifecycle-2026-10-04.md).
 
+Caller-bounded AFC reads retain that same request/file ownership policy. A fully
+consumed byte-limit refusal plus successful close can retain reuse; an undrained
+declared-length refusal or Drop after open requires a fresh transport. The new
+InstallationProxy bounded Browse owns one total from first poll through final
+parsing, preserving acquired native errors while suppressing late success.
+Committed failure/cancellation invalidates all subsequent legacy client entries;
+explicit Complete business errors can preserve reuse. Neither method truncates
+a successful result. See
+[bounded service acceptance](validation/bounded-service-read-2026-10-08.md).
+
 H2Framer guards its frame I/O entries and the borrowed finish-connect stage.
 Cancellation after reported bytes, transport errors and native EOF invalidate
 local framing, clear retained H2 buffers/queues/accounting and reject further

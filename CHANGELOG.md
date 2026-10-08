@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add caller-bounded complete AFC reads and a checked InstallationProxy Browse
+  total with cumulative reply, frame and entry budgets. Interrupted checked
+  Browse clients reject reuse through legacy methods; existing wire and error
+  variants remain. See [host evidence and migration](docs/validation/bounded-service-read-2026-10-08.md).
+
 - Add explicitly selected device diagnostics to doctor while retaining host-only
   schema 1 without a device selector. Fresh existing-trust sessions observe
   Developer Mode and DDI signature metadata without pairing or setting changes;

@@ -120,7 +120,7 @@
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
-| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：AFC caller-limit 与有总期限/累计回复预算的 Browse 原生前置已在独立 worktree 静态交付，待集中验收；Python/C owner、取消、并发、绑定/示例及真机原验收尚未完成 |
+| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse 原生前置主机验收；Python/C owner、取消、并发、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：serve 可配置退避、持续预算/状态与原 owner/epoch 回收在独立 worktree 开发，待集中验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续 |
@@ -8215,3 +8215,17 @@ OS metadata/regular file IO仍可卡住，spawn_blocking不能被物理取消，
 可能等待worker；FIFO修复不完成该项。L01/L02原bytes/生命周期/性能/平台验收保留。
 仅交付主机子项，无主任务或整体目标完成；Q04与全部子项继续排除。下一批按
 [当前调度](roadmap-current.md) 集成manager重连及AFC/Browse SDK前置。
+
+### A03：有界文件读取与 Browse 原生前置（2026-10-08）
+
+`655733c` 集中交付 AFC caller-limit 和 InstallationProxy checked Browse。
+前者不依赖 file-size 声明、不返回截断成功，沿用单请求/独立 close 预算；
+后者用一个 total 覆盖 request/all replies/parse，检查累计 wire/帧/条目并在
+committed 取消/失败后拒绝全部旧入口复用。30 个新增真实协议/owned TCP 回归、
+最小 afc/apps features 与完整门禁通过；准确源码/日志边界与迁移见
+[证据](validation/bounded-service-read-2026-10-08.md)。完整运行含 pending manager
+proposal，manager 的审查修正另行验收，未借此将其标为完成。
+
+仅 A03 两个原生子项完成；Python/C common owner、bounded query、日志流、
+context/async/GIL、取消/并发/关闭与 C ABI/示例仍待交付，主任务继续进行。
+22 真机行 NOT_RUN，平台/物理/性能和全部原验收继续；Q04 全部子项排除。

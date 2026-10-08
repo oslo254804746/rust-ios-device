@@ -45,3 +45,10 @@ entry budget. MobileBackup2 uses bounded file-transfer buffers and reports
 available-space context for insufficient-space failures. These limits are
 implementation safeguards; callers should surface the resulting protocol
 errors and retry only after checking device/service state.
+
+The additive checked Browse also budgets cumulative framed replies under one
+total, rejects malformed CurrentList/Status shapes and invalidates interrupted
+committed clients. Caller-bounded AFC reads request only the remaining allowance
+plus one detection byte (at most 64 KiB), and check reply lengths before body
+allocation; oversize results are errors rather than truncated successes. See
+[host protocol evidence](validation/bounded-service-read-2026-10-08.md).

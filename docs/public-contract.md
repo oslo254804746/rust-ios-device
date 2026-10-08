@@ -313,6 +313,24 @@ category; single failures retain their original variants. Drop cannot await
 close. Existing error enums/wire/limits/C/Python interfaces stay. See
 [AFC migration and host acceptance](validation/afc-lifecycle-2026-10-04.md).
 
+The additive `AfcClient::read_file_with_limit(path, max_bytes)` returns the whole
+file or an error, with an effective ceiling of min(caller limit, 256 MiB); zero
+permits only an empty file. It does not trust remote file-size metadata. The
+existing per-request and independent close budgets remain, without a whole-file
+deadline or asynchronous Drop cleanup. Caller-limit errors classify as
+resource_limit through the existing Io variant.
+
+`InstallationProxy::list_user_apps_with_limits(BrowseLimits::new(total))` shares
+one checked total across send, all responses and parsing. Defaults are 10,000
+entries, 16 MiB cumulative framed replies and 1,000 frames, retaining existing
+hard per-frame/entry/frame ceilings. It distinguishes malformed metadata from
+an empty completed list. After committed timeout/cancellation/parse/limit failure,
+all older client entry points also reject reuse before I/O. Discard that client;
+`is_usable()` reports only local framing state. Legacy Browse timing, wire and
+error variants remain. These logical bounds do not establish peak memory or
+device workflow support. See
+[bounded service evidence and migration](validation/bounded-service-read-2026-10-08.md).
+
 The instruments feature adds iter_frame_commit_timestamps, an allocation-free
 iterator borrowing the input chunk and copying Mach timebase values. Existing
 parse_frame_commit_timestamps still returns Vec with the same conversion/filter

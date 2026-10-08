@@ -2073,3 +2073,12 @@ Whole-scan total/global cancellation/durable paired or List primary across calle
 A whole scan timeout returns native Elapsed. If discovery already failed, its original anyhow error remains primary and a private redacted context retains the secondary elapsed/cancellation; normal returns preserve direct IO downcast. Global cancellation without an acquired primary remains quiet. A whole timeout creates no device-failure backoff.
 
 Caller Drop preserves the original error in immutable bounded history, exposed through the server terminal report's error source and private original-error getter. The wrapper does not promise transparent direct IO downcast. Full eight-slot history returns the existing CLI resource_limit before Source polling. Native and server primary priorities remain. See [scan control evidence](validation/tunnel-scan-control-2026-10-08.md).
+
+Caller-bounded AFC reads and checked InstallationProxy Browse retain their
+existing public error variants. Private typed limit observations inside Io map
+to resource_limit; Browse's owned explicit remote business error maps to
+service_failure without echoing its code/description. Malformed checked
+metadata maps to protocol. Actual Browse elapsed/native errors retain original
+sources and late native errors keep priority. AFC primary/cleanup classification
+continues to follow the original primary error; callers must inspect reuse and
+cleanup separately. See [bounded service evidence](validation/bounded-service-read-2026-10-08.md).
