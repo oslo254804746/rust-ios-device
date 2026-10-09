@@ -29,6 +29,9 @@ pub struct BrowserCdpRefresh {
 #[derive(Debug)]
 pub struct BrowserCdpState {
     browser_id: String,
+    // The bridge models one default context. This local CDP identity does not
+    // imply WebKit browser-context creation or isolated cookies/downloads.
+    default_context_id: String,
     targets: IndexMap<String, Value>,
     browser_sessions: HashSet<String>,
     page_sessions: HashMap<String, String>, // CDP session ID -> qualified target ID
@@ -41,8 +44,10 @@ pub struct BrowserCdpState {
 
 impl BrowserCdpState {
     pub fn new(browser_id: impl Into<String>) -> Self {
+        let browser_id = browser_id.into();
         Self {
-            browser_id: browser_id.into(),
+            default_context_id: format!("{browser_id}:default"),
+            browser_id,
             targets: IndexMap::new(),
             browser_sessions: HashSet::new(),
             page_sessions: HashMap::new(),
@@ -169,6 +174,7 @@ impl BrowserCdpState {
                     "url": item.page.url.as_deref().unwrap_or(""),
                     "attached": self.target_sessions.contains_key(&target_id),
                     "canAccessOpener": false,
+                    "browserContextId": self.default_context_id,
                 }),
             );
         }
@@ -697,6 +703,60 @@ mod tests {
             json!({"id": 9, "method": "Browser.getWindowForTarget"}),
         );
         assert_eq!(unsupported[0]["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn default_context_identity_is_consistent_without_claiming_context_creation() {
+        let mut state = BrowserCdpState::new("owned-browser");
+        let pages = [
+            page("PID:42", "1", WirType::WebPage),
+            page("PID:43", "2", WirType::JavaScript),
+        ];
+        state.refresh(&pages);
+        let targets = sent(&mut state, json!({"id": 1, "method": "Target.getTargets"}));
+        for info in targets[0]["result"]["targetInfos"].as_array().unwrap() {
+            assert_eq!(info["browserContextId"], "owned-browser:default");
+        }
+        let discover = sent(
+            &mut state,
+            json!({"id": 2, "method": "Target.setDiscoverTargets", "params": {"discover": true}}),
+        );
+        for event in &discover[1..] {
+            assert_eq!(
+                event["params"]["targetInfo"]["browserContextId"],
+                "owned-browser:default"
+            );
+        }
+        let info = sent(
+            &mut state,
+            json!({"id": 3, "method": "Target.getTargetInfo", "params": {"targetId": "PID:43:2"}}),
+        );
+        assert_eq!(
+            info[0]["result"]["targetInfo"]["browserContextId"],
+            "owned-browser:default"
+        );
+        let session = state.register_attachment("PID:43:2").unwrap();
+        assert_eq!(
+            state.attached_event(&session).unwrap()["params"]["targetInfo"]["browserContextId"],
+            "owned-browser:default"
+        );
+        state.refresh(&pages);
+        assert_eq!(
+            state.attached_event(&session).unwrap()["params"]["targetInfo"]["browserContextId"],
+            "owned-browser:default"
+        );
+        let contexts = sent(
+            &mut state,
+            json!({"id": 4, "method": "Target.getBrowserContexts"}),
+        );
+        assert_eq!(contexts[0]["result"]["browserContextIds"], json!([]));
+        for method in [
+            "Target.createBrowserContext",
+            "Target.disposeBrowserContext",
+        ] {
+            let result = sent(&mut state, json!({"id": 5, "method": method}));
+            assert_eq!(result[0]["error"]["code"], -32601);
+        }
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{
+  "name": "rust-ios-device-cdp-fixtures",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned actual CDP clients for owned Rust bridge fixtures",
+  "dependencies": {
+    "playwright-core": "1.63.0",
+    "puppeteer-core": "25.12.0"
+  }
+}

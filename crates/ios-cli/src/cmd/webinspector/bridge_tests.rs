@@ -1,6 +1,9 @@
 //! Actual Rust HTTP/WebSocket adapters over owned synthetic plist streams.
 //! These fixtures use the existing core WebInspector protocol tests, not a device.
 
+mod client_fixtures;
+mod client_tests;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
