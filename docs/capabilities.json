@@ -21,7 +21,7 @@
       "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
       "result": "PASS",
       "scope": "Actual Puppeteer25.12.0 completes a finite JSContext Runtime workflow through the protected production Rust bridge and owned synthetic plist service; context/evaluate/reject/detach/disconnect order captured.",
-      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03/F04 main criteria and maturity unchanged."
+      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
     },
     {
       "id": "linux-cdp-playwright-3e697fd",
@@ -41,7 +41,7 @@
       "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
       "result": "FAIL",
       "scope": "Actual Playwright1.63.0 connectOverCDP fails Browser.setDownloadBehavior with correlated -32601; expected-rejection gate passes, full client workflow remains unsupported.",
-      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03/F04 main criteria and maturity unchanged."
+      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
     },
     {
       "id": "linux-cdp-cancel-3e697fd",
@@ -61,7 +61,7 @@
       "location": "docs/validation/cdp-client-workflow-2026-10-09.md",
       "result": "PASS",
       "scope": "Actual client waiter cancellation after consumed Runtime.enable reaps the original Node process and joins original bounded pipes/native peers with strict EOF.",
-      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03/F04 main criteria and maturity unchanged."
+      "limitations": "Synthetic service only. Negative Playwright contract is not client initialization success; unsupported download guarantee remains. Original full command failed lint after check; remaining gates and explicit final Node3 exited0. 22 device rows NOT_RUN; F03 original client-fixture acceptance met; F04 domain/device criteria and maturity unchanged."
     },
     {
       "id": "linux-sdk-owned-session-2b906d7",

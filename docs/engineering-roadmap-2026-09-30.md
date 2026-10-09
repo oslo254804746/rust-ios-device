@@ -127,7 +127,7 @@
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；`838c4ed` 完成显式既有 RSD route/完整目录/目标核对主机子项，未选择 route 时仍 not_probed；平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [RSD 证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 待开始 |
-| F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 进行中：`3e697fd` 实际 pinned-client 框架、Puppeteer JSContext Runtime 与 Playwright download 初始化拒绝/真实回收已验收；完整客户端承诺及剩余原协议范围待交付 |
+| F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 已完成：`3e697fd` 固定实际客户端经生产 Rust bridge/合成 WebInspector，Puppeteer 有限 Runtime 全流程、Playwright 初始化明确拒绝、完整 trace/原 owner 回收及下载协议依据/实现方案满足原 F03 验收；F04 各域和真机验收继续。见 [证据](validation/cdp-client-workflow-2026-10-09.md) |
 | F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 待开始 |
 | F05 | 完成媒体查看器、VNC 与双向剪贴板 | P3 | S02、S03、L03、Q02 | 待开始 |
 | F06 | 完成恢复预检入口与实验恢复执行流程 | P3 | A02、L01、Q02、Q04 | 待开始 |
@@ -8294,3 +8294,22 @@ Rust2954/Python13通过。ordinary5ignored中三个Node gates在final499路径�
 
 F03主任务仍进行中，F04各域、真实页面/JSContext/设备与平台原验收不缩减；22真机
 NOT_RUN。Q04及全部子项继续排除；主任务数量不因新增测试/导出增加而改变。
+
+### 2026-10-09 F03 原验收收口复核
+
+按原 F03 定义逐项核对 `3e697fd` 的既有实际证据，主任务完成：固定
+Playwright/Puppeteer 库、可重复 fixture、生产 protected Rust HTTP/WS bridge
+到 owned synthetic WebInspector、实际请求/event/关闭 trace 和原 child/pipe/peer
+回收均已交付。Puppeteer 覆盖初始化、发现、附着、上下文、求值和分离；Playwright
+产生可复现、关联的 Browser.setDownloadBehavior/-32601。官方协议依据与实际下载
+实现方案见 [客户端说明](cdp-client-workflow.md)。
+
+原 F03 明确接受缺少初始化语义时提供协议证据与真实实现方案，因此此前以完整
+Playwright 成功或 F04 真机条件延后 F03 收口扩大了原要求，本次更正当前状态。
+Playwright 初始化 observation 仍 FAIL，负合同 gate PASS 不能转换成工作流成功。
+F04 的 console/context destruction、Page/iframe、Input/截图、Fetch/下载、指标
+和代表真机验收仍分别未完成，capability maturity 不升级。有效任务现为10完成/
+20未完成；这是按原工作项交付收口，不由测试数量推导。
+
+用户已明确真机测试后续统一安排；22真机行继续 NOT_RUN，其他平台缺口和 Q04
+全部子项排除保持。主机可执行工作、验收和本地提交继续；不推送、发布或部署。

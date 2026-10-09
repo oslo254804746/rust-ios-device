@@ -16,10 +16,10 @@
 | A03 日志取消/失效 framing | 主机子项已验收 | `f077674`；取消保留已读前缀、EOF/IO/超长后 terminal 并拒绝复用；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | A03 SDK session 前置 | 主机子项已验收 | `2b906d7`；共同 owner、单一绝对期限/取消/并发、checked existing-trust session 与 owned prepared-service 观察；[证据](validation/sdk-owned-session-2026-10-09.md)。设备 factory/query/binding 接线仍待交付 |
 | L03 manual route/跨扫描 stop | 独立 worktree 未验收 | 成功实际 route 意图、持续 stop、原授权 lease/epoch/version 与 4096 admission；不扩大到 Darwin watch |
-| F03 实际 CDP 客户端框架 | 主机子项已验收 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。主任务及 F04 原验收继续 |
+| F03 实际 CDP 客户端框架 | 主任务已完成 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。符合原 F03 可复现结果/缺初始化语义时的协议依据与方案要求；F04 各域及真机验收继续 |
 | A03 Python/C 常用 SDK | 待开发 | 设备/应用/文件/日志句柄，Python context/async 和 C ownership/error/取消/并发合同与示例集中交付 |
 
-当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
+真机测试按用户要求留待其后续统一安排，相关任务不标完成。当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
 回归入口的 22 项真机行仍为 NOT_RUN；缺 macOS、Windows/UNC 和其他发布目标的
 实际运行证据。恢复执行还缺明确机型、固件、模式转换和真实协议证据；不能用
 现有 codec 或离线测试替代恢复循环。RSD/remoted 共存、实际 DDI 可用性、媒体/HID

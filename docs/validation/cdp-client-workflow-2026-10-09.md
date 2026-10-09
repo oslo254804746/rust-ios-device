@@ -1,8 +1,9 @@
 # Actual pinned clients through the Rust CDP bridge
 
 Accepted host boundary on Linux x86_64, 2026-10-09. Implementation: `3e697fd210f5276a59070ac7502e7991969a3ee4`.
-This is the F03 client framework/default-context work item. Full Playwright and
-physical page/JSContext/domain workflows retain their original acceptance.
+This meets the original F03 client-fixture acceptance, including reproducible
+client failure and its protocol evidence/implementation plan. Full domain and
+representative physical workflows retain the F04 acceptance.
 
 ## Delivered behavior and actual outcomes
 
@@ -82,8 +83,18 @@ Actual client artifacts SHA256: `2f37ea258bd2163a5e24da54b92e9183350b3415d1dbb48
 CLI SHA256: `ba1445ba71e5476d4b76443c8d37b0b991ec1ede42fc7b05472f6acfc0ee357d`.
 
 [Reproduction and download implementation boundary](../cdp-client-workflow.md).
-F03 remains in progress; F04 console/context destruction, page/iframe, input,
+F03 is complete against its original definition. F04 console/context destruction, page/iframe, input,
 download/interception, metrics and representative physical workflows remain.
-No main-task or maturity upgrade follows these aggregate tests. Selected authorized
+F03 completion follows its actual deliverables and explicit acceptance, not the
+aggregate test count. Capability maturity stays unchanged. Selected authorized
 hardware/iOS/USB/Wi-Fi and macOS/Windows conditions remain missing. Q04 and all
 children remain excluded.
+
+The completion audit on 2026-10-09 maps each original F03 requirement to the
+actual framework, pinned lockfile, complete traces, three executed gates and
+the download protocol evidence/implementation plan above. F03 explicitly permits
+reproducible initialization rejection with that evidence/plan; successful full
+Playwright initialization and physical domain workflows are not extra F03 gates.
+The earlier in-progress conclusion imposed those F04 conditions and is corrected.
+Playwright's observation remains FAIL. Device testing is deferred to the user's
+later arrangement; no physical test has been executed or accepted here.
