@@ -133,9 +133,17 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_expires_before_release() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
-    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    // Enter USB discovery before holding its later coordinator admission.
+    // Initial desired-state capture has its own separate regression below.
+    let usb_gate = Arc::new(Semaphore::new(0));
+    *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
+    assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
+    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    usb_gate.add_permits(1);
+    assert!(futures_util::poll!(&mut scan).is_pending());
+    *source.usb_gate.lock().unwrap() = None;
     let observed = tokio::time::timeout(LOCAL_BUDGET, scan).await;
     assert_elapsed(
         &observed
@@ -157,9 +165,17 @@ async fn lifecycle_tunnel_scan_setup_usb_coordinator_clear_and_shutdown_cancel_b
         let source = FakeSource::new();
         source.usb.lock().unwrap().push(A.into());
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-        let coordinator = state.inner.lifecycle.hold_coordinator().await;
+        // Enter USB discovery before holding its later coordinator admission.
+        // Initial desired-state capture has its own separate regression below.
+        let usb_gate = Arc::new(Semaphore::new(0));
+        *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
         let mut scan = Box::pin(state.refresh_once());
         assert!(futures_util::poll!(&mut scan).is_pending());
+        assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
+        let coordinator = state.inner.lifecycle.hold_coordinator().await;
+        usb_gate.add_permits(1);
+        assert!(futures_util::poll!(&mut scan).is_pending());
+        *source.usb_gate.lock().unwrap() = None;
         if terminal {
             state.notify_shutdown();
         } else {
@@ -193,9 +209,17 @@ async fn lifecycle_tunnel_scan_setup_late_usb_coordinator_unlock_does_not_insert
     source.usb.lock().unwrap().push(A.into());
     let state = state(source.clone(), Duration::from_millis(80));
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
-    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    // Enter USB discovery before holding its later coordinator admission.
+    // Initial desired-state capture has its own separate regression below.
+    let usb_gate = Arc::new(Semaphore::new(0));
+    *source.usb_gate.lock().unwrap() = Some(usb_gate.clone());
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
+    assert_eq!(source.usb_active.load(Ordering::SeqCst), 1);
+    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    usb_gate.add_permits(1);
+    assert!(futures_util::poll!(&mut scan).is_pending());
+    *source.usb_gate.lock().unwrap() = None;
     tokio::time::sleep(Duration::from_millis(120)).await;
     drop(coordinator);
     let error = tokio::time::timeout(LOCAL_BUDGET, scan)
@@ -624,4 +648,91 @@ async fn lifecycle_tunnel_scan_setup_returned_usb_errors_survive_same_poll_epoch
             assert!(state.inner.tunnels.read().await.is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_expires_before_release() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let state = state(source.clone(), Duration::from_millis(80));
+    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    let mut scan = Box::pin(state.refresh_once());
+    assert!(futures_util::poll!(&mut scan).is_pending());
+    let observed = tokio::time::timeout(LOCAL_BUDGET, scan).await;
+    assert_elapsed(
+        &observed
+            .expect("initial intent coordinator wait ignored setup total")
+            .unwrap_err(),
+    );
+    assert_sources(&source, 0);
+    assert!(!state.is_ready().await);
+    assert_scan_released(&state);
+    drop(coordinator);
+    state.refresh_once().await.unwrap();
+    assert_eq!(source.count(A), 1);
+    state.clear().await;
+}
+
+#[tokio::test]
+async fn lifecycle_tunnel_scan_setup_initial_intent_coordinator_clear_and_shutdown_cancel_before_release(
+) {
+    for terminal in [false, true] {
+        let source = FakeSource::new();
+        source.usb.lock().unwrap().push(A.into());
+        let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let coordinator = state.inner.lifecycle.hold_coordinator().await;
+        let mut scan = Box::pin(state.refresh_once());
+        assert!(futures_util::poll!(&mut scan).is_pending());
+        if terminal {
+            state.notify_shutdown();
+        } else {
+            state.inner.lifecycle.clear();
+        }
+        tokio::time::timeout(LOCAL_BUDGET, scan)
+            .await
+            .expect("initial intent coordinator wait ignored setup cancellation")
+            .unwrap();
+        assert_sources(&source, 0);
+        assert!(!state.is_ready().await);
+        assert_scan_released(&state);
+        drop(coordinator);
+        if terminal {
+            assert!(state
+                .refresh_once()
+                .await
+                .unwrap_err()
+                .is::<ios_core::OperationCancelled>());
+        } else {
+            state.refresh_once().await.unwrap();
+            assert_eq!(source.count(A), 1);
+        }
+        state.clear().await;
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_tunnel_scan_setup_late_initial_intent_coordinator_unlock_does_not_insert_gate() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let state = state(source.clone(), Duration::from_millis(80));
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
+    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    let mut scan = Box::pin(state.refresh_once());
+    assert!(futures_util::poll!(&mut scan).is_pending());
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    drop(coordinator);
+    let error = tokio::time::timeout(LOCAL_BUDGET, scan)
+        .await
+        .expect("late coordinator release kept the expired scan waiting")
+        .unwrap_err();
+    assert_elapsed(&error);
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
+    assert_sources(&source, 0);
+    assert!(!state.is_ready().await);
+    assert_scan_released(&state);
+    assert!(state.inner.tunnels.read().await.is_empty());
+    state.refresh_once().await.unwrap();
+    assert!(state.is_ready().await);
+    assert_eq!(source.count(A), 1);
+    state.clear().await;
 }

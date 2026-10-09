@@ -426,10 +426,18 @@ async fn admission_policy_reload_removes_planned_target_without_adding_new_one()
         source.clone(),
         TUNNEL_CONNECT_TIMEOUT,
     );
-    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    let paired_gate = Arc::new(Semaphore::new(0));
+    *source.paired_gate.lock().unwrap() = Some(paired_gate.clone());
     let mut scan = Box::pin(state.refresh_once());
+    assert!(futures_util::poll!(&mut scan).is_pending());
+    assert_eq!(source.paired_active.load(Ordering::SeqCst), 1);
+    // Pause the original post-discovery ticket admission, rather than the
+    // newly added initial desired-state read of this same coordinator map.
+    let coordinator = state.inner.lifecycle.hold_coordinator().await;
+    paired_gate.add_permits(1);
     let pending = futures_util::poll!(&mut scan).is_pending();
     let paired_calls = source.paired_calls.load(Ordering::SeqCst);
+    *source.paired_gate.lock().unwrap() = None;
     policy_devices(&fixture, &[A, C]);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let response = client()

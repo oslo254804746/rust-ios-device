@@ -32,6 +32,7 @@ use crate::access::{
 
 mod admission;
 mod bookkeeping;
+mod intent;
 mod lifecycle;
 mod ownership;
 mod reconnect;
@@ -406,11 +407,21 @@ struct TunnelAgentInner {
     success_after_remove: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
+struct ConnectionContext<'a> {
+    expected_id: Option<u32>,
+    deadline: Option<&'a lifecycle::ConnectionDeadline>,
+    retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
+    manual: Option<&'a intent::ManualRequest>,
+}
+
 struct ManagedTunnel {
     device: ManagedDevice,
     publication: Arc<()>,
     usbmux: bool,
     native: Option<retirement::NativeLease>,
+    // Actual selector established by Source, not the next caller's request.
+    route_intent: intent::RouteIntent,
+    _ticket: Ticket,
 }
 
 impl Drop for ManagedTunnel {
@@ -858,8 +869,23 @@ impl TunnelAgentState {
         }
     }
 
+    #[cfg(test)]
     async fn remove_tunnel(&self, udid: &str) -> bool {
+        self.stop_tunnel(udid).await.unwrap_or(false)
+    }
+
+    async fn stop_tunnel(&self, udid: &str) -> Result<bool> {
+        admission::selectors(udid, None)?;
+        // Reserve the durable stopped key before mutation. At capacity a
+        // published/pending known target reuses its gate; an unknown target is
+        // rejected explicitly, never evicting another stop or recovery intent.
+        let ticket = self.inner.lifecycle.ticket(udid).await?;
+        self.stop_tunnel_with_ticket(udid, &ticket).await
+    }
+
+    async fn stop_tunnel_with_ticket(&self, udid: &str, ticket: &Ticket) -> Result<bool> {
         let mut tunnels = self.inner.tunnels.write().await;
+        anyhow::ensure!(ticket.is_current(), lifecycle::cancelled());
         let old_epoch = self.inner.lifecycle.stop_owned(udid).await;
         let alive = tunnels.get(udid).is_some_and(ManagedTunnel::is_alive);
         let old = tunnels.remove(udid);
@@ -873,22 +899,63 @@ impl TunnelAgentState {
             reconnect::Ledger::cancelled(retired, reconnect::Reason::Stopped);
         }
         drop(old);
-        alive
+        Ok(alive)
     }
 
+    #[cfg(test)]
     async fn ensure_tunnel(
         &self,
         udid: &str,
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
     ) -> Result<TunnelRecord> {
+        self.ensure_tunnel_with_intent(udid, ip_filter, requested_connection_type, None)
+            .await
+    }
+
+    async fn ensure_tunnel_with_intent(
+        &self,
+        udid: &str,
+        ip_filter: Option<&str>,
+        requested_connection_type: Option<StartTunnelConnectionType>,
+        manual: Option<intent::ManualRequest>,
+    ) -> Result<TunnelRecord> {
         admission::selectors(udid, ip_filter)?;
+        anyhow::ensure!(
+            manual.is_none() || !udid.is_empty(),
+            crate::output::input_decision(
+                "manual tunnel recovery requires an exact device identifier"
+            )
+        );
         let deadline = lifecycle::ConnectionDeadline::new(self.inner.connect_timeout)?;
         let ticket = deadline.run(self.inner.lifecycle.ticket(udid)).await?;
         ticket
             .run(deadline.run(async {
                 let _serial = ticket.serial().await;
                 if let Some(record) = self.get_record(udid).await {
+                    if let Some(manual) = &manual {
+                        let tunnels = self.inner.tunnels.write().await;
+                        if let Some(current) =
+                            tunnels.get(udid).filter(|current| current.is_alive())
+                        {
+                            // Preserve the legacy live shortcut's actual route.
+                            // The requested different transport never ran Source.
+                            let route = current.route_intent.clone();
+                            ticket.commit(|| {
+                                manual.authority.commit(udid, || {
+                                    ticket.establish_manual(
+                                        route,
+                                        manual.authority.clone(),
+                                        ticket.failure_version(),
+                                        Some(&deadline),
+                                    )
+                                })
+                            })?;
+                        } else {
+                            return Err(lifecycle::cancelled());
+                        }
+                    }
+                    self.try_manual_success(udid, &ticket, &deadline);
                     return Ok(record);
                 }
                 let _permit = self.inner.lifecycle.connects.acquire().await?;
@@ -902,7 +969,17 @@ impl TunnelAgentState {
                     Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
                 };
                 match self
-                    .connect_and_store(udid, route, &ticket, None, Some(&deadline))
+                    .connect_and_store_with_context(
+                        udid,
+                        route,
+                        &ticket,
+                        ConnectionContext {
+                            expected_id: None,
+                            deadline: Some(&deadline),
+                            retry: None,
+                            manual: manual.as_ref(),
+                        },
+                    )
                     .await
                 {
                     Ok(record) => Ok(record),
@@ -923,12 +1000,16 @@ impl TunnelAgentState {
                         }) else {
                             return Err(usbmux_error.context("no paired mobdev2 target matched"));
                         };
-                        self.connect_and_store(
+                        self.connect_and_store_with_context(
                             udid,
                             Route::Mobdev2(target.host),
                             &ticket,
-                            None,
-                            Some(&deadline),
+                            ConnectionContext {
+                                expected_id: None,
+                                deadline: Some(&deadline),
+                                retry: None,
+                                manual: manual.as_ref(),
+                            },
                         )
                         .await
                     }
@@ -937,6 +1018,7 @@ impl TunnelAgentState {
             .await
     }
 
+    #[cfg(test)]
     async fn connect_and_store(
         &self,
         udid: &str,
@@ -958,10 +1040,62 @@ impl TunnelAgentState {
         deadline: Option<&lifecycle::ConnectionDeadline>,
         retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
     ) -> Result<TunnelRecord> {
+        self.connect_and_store_with_context(
+            udid,
+            route,
+            ticket,
+            ConnectionContext {
+                expected_id,
+                deadline,
+                retry,
+                manual: None,
+            },
+        )
+        .await
+    }
+
+    async fn connect_and_store_with_context(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+        context: ConnectionContext<'_>,
+    ) -> Result<TunnelRecord> {
+        let ConnectionContext {
+            expected_id,
+            deadline,
+            retry,
+            manual,
+        } = context;
         if let Some(deadline) = deadline {
             deadline.check()?;
         }
         let usbmux = matches!(route, Route::Usbmux | Route::Usb(_));
+        let desired = ticket.desired();
+        let authority = manual.map(|request| request.authority.clone()).or_else(|| {
+            if let intent::Desired::Manual { authority, .. } = &desired.desired {
+                Some(authority.clone())
+            } else {
+                None
+            }
+        });
+        let route_intent = match (&manual, &desired.desired) {
+            (None, intent::Desired::Manual { route, .. }) => route.clone(),
+            _ => intent::RouteIntent::established(
+                &route,
+                manual.and_then(|request| request.host_filter.as_deref()),
+            ),
+        };
+        let previous_failure = if manual.is_some() {
+            self.inner
+                .failed_attempts
+                .try_read()
+                .ok()
+                .and_then(|failed| failed.get(udid).map(|failed| failed.version.clone()))
+                .or_else(|| ticket.failure_version())
+        } else {
+            None
+        };
         let ownership = ownership::Ownership::admitted(Arc::clone(&self.inner.native), ticket)?;
         let manual_version = if retry.is_none() {
             ticket.commit(|| Ok(self.inner.retry.version(udid, ticket)))?
@@ -1030,6 +1164,12 @@ impl TunnelAgentState {
                 return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
             }
             let record = device.record_for_mode(self.inner.tun_mode)?;
+            if authority.is_some() && record.udid != udid {
+                return Err(ios_core::CoreError::Protocol(
+                    "tunnel Source identity differs from authorized device".into(),
+                )
+                .into());
+            }
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
@@ -1072,7 +1212,7 @@ impl TunnelAgentState {
             // retires it after lifecycle watch/table guards have been released.
             let mut acquired = Some((device, native));
             let mut late_record = None;
-            let result = ticket.commit(|| {
+            let publish = || {
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
@@ -1090,6 +1230,8 @@ impl TunnelAgentState {
                         publication: Arc::new(()),
                         usbmux,
                         native,
+                        route_intent: route_intent.clone(),
+                        _ticket: ticket.clone(),
                     },
                 );
                 #[cfg(test)]
@@ -1099,19 +1241,42 @@ impl TunnelAgentState {
                         callback();
                     }
                 }
-                if let Some(deadline) = deadline {
-                    if let Err(error) = deadline.check() {
-                        // Nothing has observed this row while the table and epoch
-                        // fences are held. Restore the displaced original row and
-                        // retire the late runtime only after releasing those guards.
-                        late_record = tunnels.remove(udid);
-                        if let Some(old) = old {
-                            tunnels.insert(udid.to_owned(), old);
+                let late = deadline
+                    .map_or(Ok(()), |deadline| deadline.check())
+                    .and_then(|()| {
+                        authority
+                            .as_ref()
+                            .map_or(Ok(()), |authority| authority.check_clock())
+                    })
+                    .and_then(|()| {
+                        if let Some(manual) = manual {
+                            ticket.establish_manual(
+                                route_intent,
+                                manual.authority.clone(),
+                                previous_failure,
+                                deadline,
+                            )?;
                         }
-                        return Err(error);
+                        Ok(())
+                    });
+                if let Err(error) = late {
+                    // Nothing has observed this row while the table and epoch
+                    // fences are held. Restore the displaced original row and
+                    // retire the late runtime only after releasing those guards.
+                    late_record = tunnels.remove(udid);
+                    if let Some(old) = old {
+                        tunnels.insert(udid.to_owned(), old);
                     }
+                    return Err(error);
                 }
                 Ok((record, old))
+            };
+            let result = ticket.commit(|| {
+                if let Some(authority) = &authority {
+                    authority.commit(udid, publish)
+                } else {
+                    publish()
+                }
             });
             drop(tunnels);
             drop(late_record);
@@ -1128,8 +1293,34 @@ impl TunnelAgentState {
             if let Some(version) = manual_version {
                 self.inner.retry.recovered(udid, ticket, &version);
             }
+            if let Some(deadline) = deadline {
+                self.try_manual_success(udid, ticket, deadline);
+            }
         }
         result
+    }
+
+    // Cleanup is optional after successful publication: a held writer/expired
+    // metadata budget leaves one exact-version outcome on the bounded gate.
+    // It never rolls back a successfully established route or spawns a task.
+    fn try_manual_success(
+        &self,
+        udid: &str,
+        ticket: &Ticket,
+        deadline: &lifecycle::ConnectionDeadline,
+    ) {
+        let Some((desired, success)) = ticket.pending_success() else {
+            return;
+        };
+        let fenced = ticket.fenced();
+        if let Ok(mut failed) = self.inner.failed_attempts.try_write() {
+            let result = self.remove_success_row(&mut failed, udid, &success, &fenced, deadline);
+            drop(failed);
+            if let Ok(old) = result {
+                ticket.clear_success(&desired, &success.version);
+                drop(old);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1208,113 +1399,129 @@ impl TunnelAgentState {
         let mut failure_slot = None;
         let mut established = false;
         let mut success = None;
-        let result = ticket
-            .run(async {
-                let deadline =
-                    lifecycle::ConnectionDeadline::for_scan_candidate(self.inner.connect_timeout)?
-                        .within_scan(whole);
-                let (retry, until) = ticket.commit(|| {
-                    Ok((
-                        self.inner.retry.admission(udid, &identity, ticket),
-                        self.inner.retry.deadline(udid, &identity, ticket),
-                    ))
-                })?;
-                self.inner.retry.emit_pending(udid, ticket);
-                if retry != reconnect::Admission::Ready {
-                    return Ok(());
-                }
-                // An existing episode also bounds serial/metadata/permit waits.
-                // A first episode still starts only when Source is admitted.
-                if let Some(until) = until {
-                    deadline.clamp_retry(until);
-                }
-                deadline
-                    .run(async {
-                        let _serial = ticket.serial().await;
-                        let mut tunnels = self.inner.tunnels.write().await;
-                        deadline.check()?;
-                        let (existing, remove_dead) = match tunnels.get(udid) {
-                            Some(tunnel) if tunnel.is_alive() => {
-                                let record = tunnel.record().ok();
-                                deadline.check()?;
-                                (record, false)
-                            }
-                            Some(_) => (None, true),
-                            None => (None, false),
-                        };
-                        let removed = ticket.commit(|| {
+        let authority = match ticket.desired().desired {
+            intent::Desired::Stopped => return ScanAttemptOutcome::NoChange,
+            intent::Desired::Manual { authority, .. } => Some(authority),
+            intent::Desired::Automatic => None,
+        };
+        let work = ticket.run(async {
+            let deadline =
+                lifecycle::ConnectionDeadline::for_scan_candidate(self.inner.connect_timeout)?
+                    .within_scan(whole);
+            let (retry, until) = ticket.commit(|| {
+                Ok((
+                    self.inner.retry.admission(udid, &identity, ticket),
+                    self.inner.retry.deadline(udid, &identity, ticket),
+                ))
+            })?;
+            self.inner.retry.emit_pending(udid, ticket);
+            if retry != reconnect::Admission::Ready {
+                return Ok(());
+            }
+            // An existing episode also bounds serial/metadata/permit waits.
+            // A first episode still starts only when Source is admitted.
+            if let Some(until) = until {
+                deadline.clamp_retry(until);
+            }
+            deadline
+                .run(async {
+                    let _serial = ticket.serial().await;
+                    let mut tunnels = self.inner.tunnels.write().await;
+                    deadline.check()?;
+                    let (existing, remove_dead) = match tunnels.get(udid) {
+                        Some(tunnel) if tunnel.is_alive() => {
+                            let record = tunnel.record().ok();
                             deadline.check()?;
-                            Ok(if remove_dead {
-                                tunnels.remove(udid)
-                            } else {
-                                None
-                            })
-                        })?;
-                        drop(tunnels);
-                        drop(removed);
-                        if existing.is_some() {
-                            return Ok(());
+                            (record, false)
                         }
-                        let (skip, previous_version) =
-                            self.inner.failed_attempts.read().await.get(udid).map_or(
-                                (false, None),
-                                |failed| {
-                                    (
-                                        failed.identity == identity
-                                            && failed.should_skip_with_policy(
-                                                Instant::now(),
-                                                self.inner.retry.policy(),
-                                            ),
-                                        Some(Arc::clone(&failed.version)),
-                                    )
-                                },
-                            );
-                        if skip {
-                            return Ok(());
-                        }
-                        let slot = self.reserve_failure_slot(udid).await?;
-                        failure_slot = Some(Arc::clone(&slot));
-                        let _permit = self.inner.lifecycle.connects.acquire().await?;
+                        Some(_) => (None, true),
+                        None => (None, false),
+                    };
+                    let removed = ticket.commit(|| {
                         deadline.check()?;
-                        self.connect_and_store_with_retry(
-                            udid,
-                            route,
-                            ticket,
-                            expected_id,
-                            Some(&deadline),
-                            Some((identity.clone(), slot)),
-                        )
-                        .await?;
-                        // Publication completed within the candidate budget.
-                        // Contested cleanup must not queue a writer while later
-                        // candidates still need failure-table reads, or turn a
-                        // successful connection into a failure when cleanup waits.
-                        established = true;
-                        if let Some(version) = previous_version {
-                            let pending = DeferredSuccess { version };
-                            if let Ok(mut failed) = self.inner.failed_attempts.try_write() {
-                                let cleanup = self.remove_success_row(
-                                    &mut failed,
-                                    udid,
-                                    &pending,
-                                    ticket,
-                                    &deadline,
-                                );
-                                drop(failed);
-                                match cleanup {
-                                    Ok(old) => drop(old),
-                                    Err(error) if error.is::<ios_core::OperationCancelled>() => {}
-                                    Err(_) => success = Some(pending),
-                                }
-                            } else {
-                                success = Some(pending);
+                        Ok(if remove_dead {
+                            tunnels.remove(udid)
+                        } else {
+                            None
+                        })
+                    })?;
+                    drop(tunnels);
+                    drop(removed);
+                    if existing.is_some() {
+                        return Ok(());
+                    }
+                    let (skip, previous_version) =
+                        self.inner.failed_attempts.read().await.get(udid).map_or(
+                            (false, None),
+                            |failed| {
+                                (
+                                    ticket.failure_is_current(&failed.version)
+                                        && failed.identity == identity
+                                        && failed.should_skip_with_policy(
+                                            Instant::now(),
+                                            self.inner.retry.policy(),
+                                        ),
+                                    Some(Arc::clone(&failed.version)),
+                                )
+                            },
+                        );
+                    if skip {
+                        return Ok(());
+                    }
+                    let slot = self.reserve_failure_slot(udid).await?;
+                    failure_slot = Some(Arc::clone(&slot));
+                    let _permit = self.inner.lifecycle.connects.acquire().await?;
+                    deadline.check()?;
+                    self.connect_and_store_with_retry(
+                        udid,
+                        route,
+                        ticket,
+                        expected_id,
+                        Some(&deadline),
+                        Some((identity.clone(), slot)),
+                    )
+                    .await?;
+                    // Publication completed within the candidate budget.
+                    // Contested cleanup must not queue a writer while later
+                    // candidates still need failure-table reads, or turn a
+                    // successful connection into a failure when cleanup waits.
+                    established = true;
+                    if let Some(version) = previous_version {
+                        let pending = DeferredSuccess { version };
+                        if let Ok(mut failed) = self.inner.failed_attempts.try_write() {
+                            let cleanup = self.remove_success_row(
+                                &mut failed,
+                                udid,
+                                &pending,
+                                ticket,
+                                &deadline,
+                            );
+                            drop(failed);
+                            match cleanup {
+                                Ok(old) => drop(old),
+                                Err(error) if error.is::<ios_core::OperationCancelled>() => {}
+                                Err(_) => success = Some(pending),
                             }
+                        } else {
+                            success = Some(pending);
                         }
-                        Ok(())
-                    })
-                    .await
-            })
-            .await;
+                    }
+                    Ok(())
+                })
+                .await
+        });
+        let result = match &authority {
+            Some(authority) => authority.run(work).await,
+            None => work.await,
+        };
+        if authority
+            .as_ref()
+            .is_some_and(|authority| !authority.current())
+        {
+            // The captured desired version prevents revocation cleanup from
+            // stopping a later independently authorized explicit publication.
+            let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
+        }
         if established {
             return success.map_or(ScanAttemptOutcome::NoChange, ScanAttemptOutcome::Success);
         }
@@ -1375,6 +1582,28 @@ impl TunnelAgentState {
         epoch: &scan::Epoch,
     ) -> Result<()> {
         let scan_generation = control.generation.clone();
+        let Some(desired) = control.drive(self.inner.lifecycle.desired()).await? else {
+            return Ok(());
+        };
+        let mut manual = HashMap::new();
+        let mut suppressed = std::collections::HashSet::new();
+        for (udid, ticket, snapshot) in desired {
+            match snapshot.desired {
+                intent::Desired::Manual { route, authority } if authority.current() => {
+                    manual.insert(udid, (ticket, route));
+                }
+                intent::Desired::Manual { .. } => {
+                    // Use this exact captured desired version: a concurrent
+                    // authorized explicit start must survive obsolete cleanup.
+                    let _ = self.stop_tunnel_with_ticket(&udid, &ticket).await;
+                    suppressed.insert(udid);
+                }
+                intent::Desired::Stopped => {
+                    suppressed.insert(udid);
+                }
+                intent::Desired::Automatic => {}
+            }
+        }
         let initial = {
             let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
                 return Ok(());
@@ -1413,6 +1642,7 @@ impl TunnelAgentState {
         let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
             return Ok(());
         };
+        let mut usb_complete = true;
         let devices = match snapshot {
             UsbSnapshot::Devices(devices) => {
                 // Fence successful old snapshots without discarding a native
@@ -1422,15 +1652,23 @@ impl TunnelAgentState {
                 }
                 devices
             }
-            UsbSnapshot::ConnectError(error) => return Err(error),
+            UsbSnapshot::ConnectError(error) => {
+                if manual.is_empty() {
+                    return Err(error);
+                }
+                usb_complete = false;
+                session.retain(scan::Source::Usb, error);
+                Vec::new()
+            }
             UsbSnapshot::ListError(error) => {
-                session.retain(error);
+                session.retain(scan::Source::Usb, error);
                 match control.drive(self.inner.tunnels.write()).await {
                     Ok(Some(mut tunnels)) => {
                         epoch.retain(whole, &mut tunnels, |udid, tunnel| {
                             !initial
                                 .get(udid)
                                 .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                                || manual.contains_key(udid)
                         })?;
                     }
                     Ok(None) => {}
@@ -1442,14 +1680,25 @@ impl TunnelAgentState {
                         .into());
                     }
                 }
-                return Err(session.take().expect("acquired list primary"));
+                if manual.is_empty() {
+                    return Err(session.take().expect("acquired list primary"));
+                }
+                usb_complete = false;
+                Vec::new()
             }
         };
         let admission = admission::usb_snapshot(&devices);
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        admission?;
+        if let Err(error) = admission {
+            if manual.is_empty() {
+                return Err(error);
+            }
+            usb_complete = false;
+            session.retain(scan::Source::Usb, error);
+        }
+        let devices = if usb_complete { devices } else { Vec::new() };
         let attached = devices
             .iter()
             .map(|device| (device.udid.as_str(), device.device_id))
@@ -1461,6 +1710,7 @@ impl TunnelAgentState {
             tunnel.is_alive()
                 && self.inner.access.permits_device(udid)
                 && (!tunnel.usbmux
+                    || !usb_complete
                     || attached.contains(&(udid, tunnel.device.device_id()))
                     || !initial
                         .get(udid)
@@ -1474,15 +1724,69 @@ impl TunnelAgentState {
         let mut candidates = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut candidate_budget = admission::CandidateBudget::default();
-        for device in source::selected_devices(devices) {
+        let selected = source::selected_devices(devices);
+        let attached_ids = selected
+            .iter()
+            .map(|device| (device.udid.as_str(), device.device_id))
+            .collect::<HashMap<_, _>>();
+        // Manual intent wins over ordinary discovery for the same exact key.
+        // Hostless Wi-Fi is rediscovered inside NativeSource on each admitted
+        // attempt; no old ConnectedDevice, RSD address or service is replayed.
+        let mut pending_mobdev2 = Vec::new();
+        for (udid, (ticket, route)) in &manual {
+            if !ticket.is_current() {
+                continue;
+            }
+            let (route, expected_id) = match route {
+                intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
+                intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
+                    let id = attached_ids.get(udid.as_str()).copied();
+                    if usb_complete && id.is_none() {
+                        continue;
+                    }
+                    let route = match route {
+                        intent::RouteIntent::Usb(host) => Route::Usb(host.clone()),
+                        _ => Route::Usbmux,
+                    };
+                    (route, id)
+                }
+                intent::RouteIntent::Mobdev2(host) => {
+                    pending_mobdev2.push((udid.clone(), ticket.clone(), host.clone()));
+                    continue;
+                }
+            };
+            let bytes = match &route {
+                Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),
+                _ => 0,
+            };
+            candidate_budget.admit(udid.len(), bytes)?;
+            seen.insert(udid.clone());
+            candidates.push((udid.clone(), route, ticket.clone(), expected_id));
+        }
+        drop(attached_ids);
+        for device in selected {
             let udid = device.udid;
-            if self.inner.access.permits_device(&udid) && !seen.contains(&udid) {
+            if self.inner.access.permits_device(&udid)
+                && !seen.contains(&udid)
+                && !manual.contains_key(&udid)
+                && !suppressed.contains(&udid)
+            {
                 candidate_budget.admit(udid.len(), 0)?;
                 seen.insert(udid.clone());
                 let Some(ticket) = control.drive(self.inner.lifecycle.ticket(&udid)).await? else {
                     return Ok(());
                 };
-                let ticket = ticket?;
+                let ticket = match ticket {
+                    Ok(ticket) => ticket.fenced(),
+                    Err(error)
+                        if crate::output::operation_error_class(error.as_ref())
+                            == ios_core::ErrorClass::ResourceLimit =>
+                    {
+                        session.retain(scan::Source::Coordinator, error);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 candidates.push((udid, Route::Usbmux, ticket, Some(device.device_id)));
             }
         }
@@ -1500,7 +1804,7 @@ impl TunnelAgentState {
         let paired = match paired {
             Ok(targets) => Some(targets),
             Err(error) => {
-                session.retain(error);
+                session.retain(scan::Source::Paired, error);
                 None
             }
         };
@@ -1521,19 +1825,64 @@ impl TunnelAgentState {
         // Keep original Source Err outside the admission decision: a stale
         // Source success remains quietly discarded, even if its metadata fails
         // admission. Rejected snapshots are dropped before USB connection waits.
+        // Admit complete paired metadata before a saved Mobdev2 selector uses
+        // it. A failed/partial browse preserves that selector and episode.
         let paired = paired.map(|targets| {
-            candidate_budget.paired_candidates(targets, &seen, |udid| {
+            if let Err(error) = admission::paired_snapshot(&targets) {
+                return admission::PairedCandidates::Incomplete(error);
+            }
+            let mut planned = Vec::new();
+            for (udid, ticket, host) in pending_mobdev2 {
+                if let Some(index) = targets.iter().position(|target| {
+                    target.udid == udid && host.as_ref().map_or(true, |host| *host == target.host)
+                }) {
+                    if let Err(error) =
+                        candidate_budget.admit(udid.len(), targets[index].host.len())
+                    {
+                        return admission::PairedCandidates::Incomplete(error);
+                    }
+                    planned.push((udid, ticket, index));
+                }
+            }
+            let reply = candidate_budget.paired_candidates(targets, &seen, |udid| {
                 self.inner.access.permits_device(udid)
-            })
+                    && !suppressed.contains(udid)
+                    && !manual.contains_key(udid)
+            });
+            if let admission::PairedCandidates::Complete { targets, .. } = &reply {
+                for (udid, ticket, index) in planned {
+                    if seen.insert(udid.clone()) {
+                        candidates.push((
+                            udid,
+                            Route::Mobdev2(targets[index].host.clone()),
+                            ticket,
+                            None,
+                        ));
+                    }
+                }
+            }
+            reply
         });
         if let Some(admission::PairedCandidates::Complete { targets, indices }) = &paired {
             for &index in indices {
                 let target = &targets[index];
                 if self.inner.access.permits_device(&target.udid)
+                    && !manual.contains_key(&target.udid)
+                    && !suppressed.contains(&target.udid)
                     && seen.insert(target.udid.clone())
                 {
                     whole.check()?;
-                    let ticket = self.inner.lifecycle.ticket(&target.udid).await?;
+                    let ticket = match self.inner.lifecycle.ticket(&target.udid).await {
+                        Ok(ticket) => ticket.fenced(),
+                        Err(error)
+                            if crate::output::operation_error_class(error.as_ref())
+                                == ios_core::ErrorClass::ResourceLimit =>
+                        {
+                            session.retain(scan::Source::Coordinator, error);
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     candidates.push((
                         target.udid.clone(),
                         Route::Mobdev2(target.host.clone()),
@@ -1548,26 +1897,25 @@ impl TunnelAgentState {
             // Preserve its already acquired error at this final handoff fence.
             return Ok(());
         }
+        // Retain rejected current metadata before any candidate waits. A caller
+        // drop must keep its original cause in the same bounded history slot.
+        let paired = match paired {
+            Some(admission::PairedCandidates::Incomplete(error)) => {
+                session.retain(scan::Source::Paired, error);
+                None
+            }
+            complete => complete,
+        };
         self.reconcile_failures(
             &candidates,
             matches!(&paired, Some(admission::PairedCandidates::Complete { .. })),
+            usb_complete,
+            &manual,
             whole,
             epoch,
         )
         .await?;
-        let bookkeeping = self.refresh_candidates(candidates, whole).await;
-        let primary = paired.map_or(Ok(()), |reply| match reply {
-            admission::PairedCandidates::Complete { .. } => Ok(()),
-            admission::PairedCandidates::Incomplete(error) => Err(error),
-        });
-        match (primary, bookkeeping) {
-            (Err(primary), Err(secondary)) => {
-                return Err(primary.context(bookkeeping::FailureContext::new(secondary)));
-            }
-            (Err(primary), Ok(())) => return Err(primary),
-            (Ok(()), Err(error)) => return Err(error),
-            (Ok(()), Ok(())) => {}
-        }
+        self.refresh_candidates(candidates, whole).await?;
         if session.has_primary() {
             return Ok(());
         }
@@ -1622,14 +1970,46 @@ impl TunnelAgentState {
         // still need their backoff reads or connection slots. Uncontended success
         // cleanup already returned its old reservation through try_write.
         whole.check()?;
+        self.flush_manual_successes(whole).await?;
         self.flush_scan_intents_with_total(intents, Some(whole))
             .await
+    }
+
+    async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
+        whole.check()?;
+        let rows = self.inner.lifecycle.desired().await;
+        let mut intents = Vec::new();
+        let mut completed = Vec::new();
+        for (udid, ticket, snapshot) in rows {
+            if !matches!(&snapshot.desired, intent::Desired::Manual { authority, .. } if authority.current())
+            {
+                continue;
+            }
+            if let Some((desired, success)) = ticket.pending_success() {
+                completed.push((ticket.clone(), desired, success.version.clone()));
+                intents.push(ScanIntent::Success(SuccessIntent {
+                    udid,
+                    ticket,
+                    success,
+                }));
+            }
+        }
+        // A separate bounded batch keeps both collections <=4096 and queues
+        // no writer until every candidate in the Source window has finished.
+        self.flush_scan_intents_with_total(intents, Some(whole))
+            .await?;
+        for (ticket, desired, failure) in completed {
+            ticket.clear_success(&desired, &failure);
+        }
+        Ok(())
     }
 
     async fn reconcile_failures(
         &self,
         candidates: &[(String, Route, Ticket, Option<u32>)],
         paired_complete: bool,
+        usb_complete: bool,
+        manual: &HashMap<String, (Ticket, intent::RouteIntent)>,
         whole: &scan::Deadline,
         epoch: &scan::Epoch,
     ) -> Result<()> {
@@ -1650,7 +2030,14 @@ impl TunnelAgentState {
             self.inner.access.permits_device(udid)
                 && match known.get(udid) {
                     Some(identity) => failed.identity == *identity,
-                    None => !paired_complete && matches!(failed.identity.route, Route::Mobdev2(_)),
+                    None => {
+                        (!paired_complete && matches!(failed.identity.route, Route::Mobdev2(_)))
+                            || (!usb_complete
+                                && matches!(failed.identity.route, Route::Usbmux | Route::Usb(_)))
+                            || manual.get(udid).is_some_and(|(_, route)| {
+                                matches!(route, intent::RouteIntent::Wifi(_))
+                            })
+                    }
                 }
         })?;
         drop(failed);
@@ -1659,7 +2046,14 @@ impl TunnelAgentState {
                 !self.inner.access.permits_device(udid)
                     || match known.get(udid) {
                         Some(current) => identity != current,
-                        None => paired_complete || !matches!(identity.route, Route::Mobdev2(_)),
+                        None => {
+                            !((!paired_complete && matches!(identity.route, Route::Mobdev2(_)))
+                                || (!usb_complete
+                                    && matches!(identity.route, Route::Usbmux | Route::Usb(_)))
+                                || manual.get(udid).is_some_and(|(_, route)| {
+                                    matches!(route, intent::RouteIntent::Wifi(_))
+                                }))
+                        }
                     }
             })
         })?;
@@ -2406,7 +2800,17 @@ async fn agent_delete_tunnel(
     Path(udid): Path<String>,
 ) -> Result<Json<serde_json::Value>, Response> {
     principal.require(Permission::ManageTunnels, Some(&udid), None)?;
-    if principal.run(state.remove_tunnel(&udid)).await? {
+    let removed = principal
+        .run(state.stop_tunnel(&udid))
+        .await?
+        .map_err(|error| {
+            manager_operation_error(
+                StatusCode::BAD_GATEWAY,
+                "failed to stop tunnel",
+                error.as_ref(),
+            )
+        })?;
+    if removed {
         Ok(Json(
             json!({ "operation": "cancel", "udid": udid, "data": true }),
         ))
@@ -2445,8 +2849,26 @@ async fn agent_start_tunnel(
         ));
     }
 
+    // Bound selectors before the authority retains the exact target string.
+    admission::selectors(&query.udid, query.ip.as_deref()).map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_GATEWAY,
+            "failed to create tunnel",
+            error.as_ref(),
+        )
+    })?;
+    let authority = principal.device_authority(Permission::ManageTunnels, &query.udid)?;
+    let manual = intent::ManualRequest {
+        authority,
+        host_filter: query.ip.clone(),
+    };
     principal
-        .run(state.ensure_tunnel(&query.udid, query.ip.as_deref(), query.connection_type))
+        .run(state.ensure_tunnel_with_intent(
+            &query.udid,
+            query.ip.as_deref(),
+            query.connection_type,
+            Some(manual),
+        ))
         .await?
         .map(StartTunnelResponse::from_record)
         .map(Json)

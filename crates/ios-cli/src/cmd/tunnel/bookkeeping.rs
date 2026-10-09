@@ -119,9 +119,11 @@ impl TunnelAgentState {
                 callback();
             }
         }
+        let failure_stamp = ticket.failure_stamp();
         ticket.commit(|| {
             deadline.check()?;
             let old = failed.remove_entry(udid);
+            ticket.clear_failure_version(&success.version);
             #[cfg(test)]
             {
                 let callback = self.inner.success_after_remove.lock().unwrap().take();
@@ -133,6 +135,7 @@ impl TunnelAgentState {
                 if let Some((key, old)) = old {
                     failed.insert(key, old);
                 }
+                ticket.restore_failure_stamp(failure_stamp);
                 return Err(error);
             }
             Ok(old.map(|(_, old)| old))
@@ -183,14 +186,22 @@ impl TunnelAgentState {
                                 }
                                 #[cfg(test)]
                                 self.inner.lifecycle.before_failure_record();
+                                let previous_current =
+                                    failed.get(&intent.udid).is_some_and(|old| {
+                                        intent.ticket.failure_is_current(&old.version)
+                                    });
                                 intent.ticket.commit(|| {
                                     deadline.check()?;
+                                    let failure_stamp = intent.ticket.failure_stamp();
                                     let previous = failed.get(&intent.udid);
                                     let next = FailedTunnelAttempt {
                                         version: Arc::new(()),
                                         last_attempt: Instant::now(),
                                         fail_count: previous
-                                            .filter(|old| old.identity == intent.failed.identity)
+                                            .filter(|old| {
+                                                previous_current
+                                                    && old.identity == intent.failed.identity
+                                            })
                                             .map_or(1, |old| old.fail_count.saturating_add(1)),
                                         identity: intent.failed.identity,
                                         slot: previous.map_or_else(
@@ -198,7 +209,9 @@ impl TunnelAgentState {
                                             |old| old.slot.clone(),
                                         ),
                                     };
+                                    let version = next.version.clone();
                                     let old = failed.insert(intent.udid.clone(), next);
+                                    intent.ticket.remember_failure(Some(version));
                                     #[cfg(test)]
                                     {
                                         let callback =
@@ -216,6 +229,7 @@ impl TunnelAgentState {
                                         if let Some(old) = old {
                                             failed.insert(intent.udid, old);
                                         }
+                                        intent.ticket.restore_failure_stamp(failure_stamp);
                                         return Err(error);
                                     }
                                     if let Some(old) = old {

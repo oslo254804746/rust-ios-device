@@ -13,6 +13,8 @@ const OBSERVE: Duration = Duration::from_secs(2);
 
 mod bookkeeping_tests;
 mod deadline_tests;
+mod discovery_intent_tests;
+mod intent_tests;
 mod manual_admission_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;

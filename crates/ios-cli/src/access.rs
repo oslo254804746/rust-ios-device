@@ -16,8 +16,8 @@ mod http_boundary;
 pub(crate) use http_boundary::{HttpBoundary, HttpBoundaryArgs};
 mod runtime;
 pub(crate) use runtime::{
-    admission, denied_for, loopback_address, AccessControl, Admission, ClientAccessArgs, Principal,
-    ServerAccessArgs,
+    admission, denied_for, loopback_address, AccessControl, Admission, ClientAccessArgs,
+    DeviceAuthority, Principal, ServerAccessArgs,
 };
 mod tickets;
 mod upstream;

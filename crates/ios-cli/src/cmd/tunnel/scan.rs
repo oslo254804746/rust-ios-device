@@ -47,7 +47,7 @@ impl Outcomes {
         Ok(Session {
             outcomes: Arc::clone(self),
             index,
-            primary: StdMutex::new(None),
+            acquired: StdMutex::new(Acquired::default()),
             _lock: lock,
         })
     }
@@ -73,43 +73,145 @@ impl Outcomes {
 pub(super) struct Session<'a> {
     outcomes: Arc<Outcomes>,
     index: usize,
-    primary: StdMutex<Option<anyhow::Error>>,
+    acquired: StdMutex<Acquired>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
 }
 
-impl Session<'_> {
-    pub(super) fn has_primary(&self) -> bool {
-        self.primary
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some()
+#[derive(Clone, Copy)]
+pub(super) enum Source {
+    Usb,
+    Paired,
+    Coordinator,
+}
+
+/// Fixed source slots: repeated unknown keys never extend an error chain.
+#[derive(Default)]
+struct Acquired {
+    usb: Option<anyhow::Error>,
+    paired: Option<anyhow::Error>,
+    coordinator: Option<anyhow::Error>,
+}
+
+impl Acquired {
+    fn is_empty(&self) -> bool {
+        self.usb.is_none() && self.paired.is_none() && self.coordinator.is_none()
     }
-    pub(super) fn retain(&self, error: anyhow::Error) {
-        let mut primary = self.primary.lock().unwrap_or_else(|p| p.into_inner());
-        debug_assert!(primary.is_none(), "one discovery primary per scan");
-        if primary.is_none() {
-            *primary = Some(error);
+
+    fn retain(&mut self, source: Source, error: anyhow::Error) {
+        let slot = match source {
+            Source::Usb => &mut self.usb,
+            Source::Paired => &mut self.paired,
+            Source::Coordinator => &mut self.coordinator,
+        };
+        if slot.is_none() {
+            *slot = Some(error);
         }
     }
 
-    pub(super) fn take(&self) -> Option<anyhow::Error> {
-        self.primary
+    fn finish(mut self, mut completion: Option<anyhow::Error>) -> Option<anyhow::Error> {
+        let primary = self
+            .usb
+            .take()
+            .or_else(|| self.paired.take())
+            .or_else(|| self.coordinator.take())
+            .or_else(|| completion.take())?;
+        if self.is_empty() {
+            // Keep the existing one-source completion context and its typed
+            // secondary accessor for callers already inspecting that contract.
+            return Some(match completion {
+                Some(error) => primary.context(super::bookkeeping::FailureContext::new(error)),
+                None => primary,
+            });
+        }
+        Some(primary.context(SourceContext {
+            usb: self.usb,
+            paired: self.paired,
+            coordinator: self.coordinator,
+            completion,
+        }))
+    }
+}
+
+/// The primary remains the original anyhow object. Independent causes are
+/// owned by one safe typed context, without exposing their arbitrary strings.
+pub(super) struct SourceContext {
+    usb: Option<anyhow::Error>,
+    paired: Option<anyhow::Error>,
+    coordinator: Option<anyhow::Error>,
+    completion: Option<anyhow::Error>,
+}
+
+#[cfg(test)]
+impl SourceContext {
+    pub(super) fn secondary(&self, source: Source) -> Option<&anyhow::Error> {
+        match source {
+            Source::Usb => self.usb.as_ref(),
+            Source::Paired => self.paired.as_ref(),
+            Source::Coordinator => self.coordinator.as_ref(),
+        }
+    }
+
+    pub(super) fn completion(&self) -> Option<&anyhow::Error> {
+        self.completion.as_ref()
+    }
+}
+
+impl std::fmt::Display for SourceContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tunnel scan has additional source or completion failures")
+    }
+}
+
+impl std::fmt::Debug for SourceContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let class = |error: &Option<anyhow::Error>| {
+            error
+                .as_ref()
+                .map(|error| crate::output::operation_error_class(error.as_ref()))
+        };
+        f.debug_struct("TunnelScanSources")
+            .field("usb_class", &class(&self.usb))
+            .field("paired_class", &class(&self.paired))
+            .field("coordinator_class", &class(&self.coordinator))
+            .field("completion_class", &class(&self.completion))
+            .finish()
+    }
+}
+
+impl Session<'_> {
+    pub(super) fn has_primary(&self) -> bool {
+        !self
+            .acquired
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .take()
+            .is_empty()
+    }
+    pub(super) fn retain(&self, source: Source, error: anyhow::Error) {
+        self.acquired
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(source, error);
+    }
+
+    pub(super) fn take(&self) -> Option<anyhow::Error> {
+        self.take_acquired().finish(None)
+    }
+
+    fn take_acquired(&self) -> Acquired {
+        std::mem::take(&mut *self.acquired.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     pub(super) fn finish(&self, result: Result<Option<()>>) -> Result<()> {
-        match (self.take(), result) {
-            (Some(primary), Err(secondary)) => {
-                Err(primary.context(super::bookkeeping::FailureContext::new(secondary)))
-            }
-            (Some(primary), Ok(None)) => Err(primary.context(
-                super::bookkeeping::FailureContext::new(super::lifecycle::cancelled()),
-            )),
-            (Some(primary), Ok(Some(()))) => Err(primary),
-            (None, result) => result.map(|_| ()),
+        let acquired = self.take_acquired();
+        let completion = match result {
+            Err(error) => Some(error),
+            Ok(None) if !acquired.is_empty() => Some(super::lifecycle::cancelled()),
+            Ok(_) => None,
+        };
+        match acquired.finish(completion) {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }

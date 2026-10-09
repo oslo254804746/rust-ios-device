@@ -273,6 +273,105 @@ struct AuthenticatedPrincipal {
 #[derive(Clone)]
 pub(crate) struct Principal(Option<AuthenticatedPrincipal>);
 
+/// An exact-device permission already admitted by a request. Retains the
+/// revision/expiry evidence, never the bearer or an obsolete policy snapshot.
+#[derive(Clone)]
+pub(crate) struct DeviceAuthority {
+    device: Arc<str>,
+    revision: Option<DeviceRevision>,
+}
+
+#[derive(Clone)]
+struct DeviceRevision {
+    updates: watch::Receiver<Arc<Snapshot>>,
+    expected: u64,
+    deadline: tokio::time::Instant,
+    expires_unix: u64,
+}
+
+impl DeviceAuthority {
+    pub(crate) fn current(&self) -> bool {
+        self.revision.as_ref().map_or(true, |revision| {
+            revision.updates.borrow().revision == revision.expected && self.check_clock().is_ok()
+        })
+    }
+
+    // Publication checks this again after mutation while its revision guard
+    // is still held, so a clock crossing can roll back the unobserved row.
+    pub(crate) fn check_clock(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.revision.as_ref().map_or(true, |revision| {
+                tokio::time::Instant::now() < revision.deadline
+                    && unix_seconds().is_ok_and(|now| now < revision.expires_unix)
+            }),
+            authority_cancelled()
+        );
+        Ok(())
+    }
+
+    pub(crate) fn commit<T>(
+        &self,
+        device: &str,
+        action: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        anyhow::ensure!(self.device.as_ref() == device, authority_cancelled());
+        let revision = self
+            .revision
+            .as_ref()
+            .map(|revision| revision.updates.borrow());
+        anyhow::ensure!(
+            revision
+                .as_ref()
+                .zip(self.revision.as_ref())
+                .map_or(true, |(live, expected)| {
+                    live.revision == expected.expected
+                }),
+            authority_cancelled()
+        );
+        self.check_clock()?;
+        let result = action();
+        drop(revision);
+        result
+    }
+
+    pub(crate) async fn run<T>(
+        &self,
+        work: impl std::future::Future<Output = anyhow::Result<T>>,
+    ) -> anyhow::Result<T> {
+        tokio::select! {
+            biased;
+            _ = self.revoked() => Err(authority_cancelled()),
+            result = work => result,
+        }
+    }
+
+    async fn revoked(&self) {
+        let Some(mut revision) = self.revision.clone() else {
+            std::future::pending::<()>().await;
+            return;
+        };
+        loop {
+            if revision.updates.borrow().revision != revision.expected
+                || self.check_clock().is_err()
+            {
+                return;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep_until(revision.deadline) => return,
+                changed = revision.updates.changed() => {
+                    if changed.is_err() { return; }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+        }
+    }
+}
+
+fn authority_cancelled() -> anyhow::Error {
+    anyhow::Error::new(ios_core::OperationCancelled::new())
+        .context("manual tunnel authorization revoked")
+}
+
 pub(crate) struct ScopeDenied;
 
 impl From<ScopeDenied> for Response {
@@ -292,6 +391,31 @@ impl std::fmt::Debug for Principal {
 }
 
 impl Principal {
+    pub(crate) fn device_authority(
+        &self,
+        permission: Permission,
+        device: &str,
+    ) -> Result<DeviceAuthority, ScopeDenied> {
+        self.require(permission, Some(device), None)?;
+        let revision = self.0.as_ref().map(|principal| DeviceRevision {
+            updates: principal.updates.clone(),
+            expected: principal.snapshot.revision,
+            deadline: principal.deadline,
+            expires_unix: principal.snapshot.policy.grants[principal.index]
+                .scope
+                .expires_unix,
+        });
+        let authority = DeviceAuthority {
+            device: Arc::from(device),
+            revision,
+        };
+        if authority.current() {
+            Ok(authority)
+        } else {
+            Err(ScopeDenied)
+        }
+    }
+
     fn is_for(&self, configured: &ConfiguredAccess) -> bool {
         self.0.as_ref().is_some_and(|principal| {
             Arc::ptr_eq(&configured.snapshot.borrow(), &principal.snapshot)

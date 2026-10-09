@@ -13,9 +13,11 @@ const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
 mod backoff_tests;
 mod bookkeeping_tests;
+mod discovery_intent_tests;
 mod discovery_tests;
 mod failure_commit_tests;
 mod identity_tests;
+mod intent_tests;
 mod liveness_tests;
 mod manual_admission_tests;
 mod manual_deadline_tests;

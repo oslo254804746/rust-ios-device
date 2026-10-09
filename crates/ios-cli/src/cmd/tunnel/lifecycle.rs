@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -16,7 +16,10 @@ const MAX_DEVICE_GATES: usize = 4096;
 type LifecycleCallback = Box<dyn FnOnce(&Lifecycle) + Send>;
 
 pub(super) struct Lifecycle {
-    devices: Mutex<HashMap<String, Weak<DeviceGate>>>,
+    // One namespace/ceiling for automatic gates, manual intent and stop state.
+    // Idle Automatic entries are pruned exactly as expired Weak entries were;
+    // published owners/tickets and persistent desired states retain their gate.
+    devices: Mutex<HashMap<String, Arc<DeviceGate>>>,
     pub(super) connects: Semaphore,
     // Some is a reusable clear epoch; None is terminal server shutdown.
     shutdown: watch::Sender<Option<Arc<()>>>,
@@ -30,6 +33,7 @@ pub(super) struct Lifecycle {
 struct DeviceGate {
     serial: Mutex<()>,
     generation: watch::Sender<Arc<()>>,
+    intent: super::intent::Cell,
 }
 
 #[derive(Clone)]
@@ -38,6 +42,7 @@ pub(super) struct Ticket {
     generation: Arc<()>,
     shutdown: watch::Receiver<Option<Arc<()>>>,
     shutdown_generation: Arc<()>,
+    intent_version: Option<Arc<()>>,
 }
 
 pub(super) struct ScanControl {
@@ -190,7 +195,8 @@ impl Lifecycle {
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
         // Guard every caller before retaining a key or waiting on the map.
         // The existing 4096-entry ceiling therefore bounds accepted key text
-        // to 16 MiB, including expired Weak entries awaiting normal pruning.
+        // to 16 MiB, including idle entries awaiting normal pruning. Each
+        // retained host filter is also at most 4 KiB, hence at most 16 MiB.
         super::admission::selectors(udid, None)?;
         let mut shutdown = self.shutdown.subscribe();
         let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
@@ -208,11 +214,21 @@ impl Lifecycle {
         {
             return Err(cancelled());
         }
-        let gate = match devices.get(udid).and_then(Weak::upgrade) {
+        // Clear never waits on this map. Reset old desired states on the next
+        // admission, retaining the canonical gate while old tickets still own
+        // it. Removing/replacing those Arcs would evade the live 4096 ceiling.
+        for gate in devices.values() {
+            if !gate.intent.is_epoch(&shutdown_generation) {
+                gate.intent.reset(shutdown_generation.clone());
+                gate.generation.send_replace(Arc::new(()));
+            }
+        }
+        let gate = match devices.get(udid).cloned() {
             Some(gate) => gate,
             None => {
                 if devices.len() >= MAX_DEVICE_GATES {
-                    devices.retain(|_, gate| gate.strong_count() != 0);
+                    devices
+                        .retain(|_, gate| Arc::strong_count(gate) > 1 || gate.intent.persistent());
                     anyhow::ensure!(
                         devices.len() < MAX_DEVICE_GATES,
                         crate::output::resource_decision("tunnel device coordinator limit")
@@ -221,8 +237,9 @@ impl Lifecycle {
                 let gate = Arc::new(DeviceGate {
                     serial: Mutex::new(()),
                     generation: watch::channel(Arc::new(())).0,
+                    intent: super::intent::Cell::new(shutdown_generation.clone()),
                 });
-                devices.insert(udid.to_owned(), Arc::downgrade(&gate));
+                devices.insert(udid.to_owned(), gate.clone());
                 gate
             }
         };
@@ -232,7 +249,39 @@ impl Lifecycle {
             generation,
             shutdown,
             shutdown_generation,
+            intent_version: None,
         })
+    }
+
+    pub(super) async fn desired(&self) -> Vec<(String, Ticket, super::intent::Snapshot)> {
+        let shutdown = self.shutdown.subscribe();
+        let Some(epoch) = shutdown.borrow().clone() else {
+            return Vec::new();
+        };
+        let devices = self.devices.lock().await;
+        devices
+            .iter()
+            .filter_map(|(udid, gate)| {
+                let snapshot = gate.intent.snapshot();
+                if !Arc::ptr_eq(&snapshot.epoch, &epoch) {
+                    return None;
+                }
+                if matches!(&snapshot.desired, super::intent::Desired::Automatic) {
+                    return None;
+                }
+                Some((
+                    udid.clone(),
+                    Ticket {
+                        gate: gate.clone(),
+                        generation: gate.generation.borrow().clone(),
+                        shutdown: shutdown.clone(),
+                        shutdown_generation: epoch.clone(),
+                        intent_version: Some(snapshot.version.clone()),
+                    },
+                    snapshot,
+                ))
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -285,9 +334,12 @@ impl Lifecycle {
     pub(super) async fn stop_owned(&self, udid: &str) -> Option<Arc<()>> {
         let gate = {
             let devices = self.devices.lock().await;
-            devices.get(udid).and_then(Weak::upgrade)
+            devices.get(udid).cloned()
         };
-        let previous = gate.map(|gate| gate.generation.send_replace(Arc::new(())));
+        let previous = gate.map(|gate| {
+            gate.intent.replace(super::intent::Desired::Stopped);
+            gate.generation.send_replace(Arc::new(()))
+        });
         self.scan.send_replace(Arc::new(()));
         previous
     }
@@ -383,6 +435,116 @@ impl ScanControl {
 }
 
 impl Ticket {
+    pub(super) fn fenced(&self) -> Self {
+        let mut ticket = self.clone();
+        ticket.intent_version = Some(self.gate.intent.snapshot().version);
+        ticket
+    }
+
+    pub(super) fn desired(&self) -> super::intent::Snapshot {
+        self.gate.intent.snapshot()
+    }
+
+    // Only an unfenced explicit start establishes a new desired selector. The
+    // caller already owns the tunnel table and both ticket epoch guards.
+    pub(super) fn establish_manual(
+        &self,
+        route: super::intent::RouteIntent,
+        authority: crate::access::DeviceAuthority,
+        failure: Option<Arc<()>>,
+        deadline: Option<&ConnectionDeadline>,
+    ) -> Result<()> {
+        debug_assert!(self.intent_version.is_none());
+        self.gate.intent.checked_replace(
+            super::intent::Desired::Manual {
+                route,
+                authority: authority.clone(),
+            },
+            failure,
+            || {
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                authority.check_clock()
+            },
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn on_next_manual_establish(
+        &self,
+        after_candidate: bool,
+        callback: impl FnOnce() + Send + 'static,
+    ) {
+        self.gate
+            .intent
+            .on_next_checked_replace(after_candidate, callback);
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_manual_intent(&self, pending: bool, action: impl FnOnce()) {
+        self.gate.intent.hold_replace_lock(pending, action);
+    }
+
+    #[cfg(test)]
+    pub(super) fn subscribe_intent(&self) -> watch::Receiver<Arc<()>> {
+        self.gate.intent.subscribe()
+    }
+
+    pub(super) fn failure_version(&self) -> Option<Arc<()>> {
+        self.gate.intent.failure().map(|(row, _)| row)
+    }
+
+    pub(super) fn failure_stamp(&self) -> Option<(Arc<()>, Arc<()>)> {
+        self.gate.intent.failure()
+    }
+
+    pub(super) fn restore_failure_stamp(&self, stamp: Option<(Arc<()>, Arc<()>)>) {
+        self.gate.intent.set_failure(stamp);
+    }
+
+    pub(super) fn clear_failure_version(&self, version: &Arc<()>) {
+        let stamp = self.failure_stamp();
+        if stamp
+            .as_ref()
+            .is_some_and(|(row, _)| Arc::ptr_eq(row, version))
+        {
+            self.restore_failure_stamp(None);
+        }
+    }
+
+    // Called under the original failure-table writer/commit, including rollback.
+    pub(super) fn remember_failure(&self, version: Option<Arc<()>>) {
+        let desired = self
+            .intent_version
+            .clone()
+            .unwrap_or_else(|| self.desired().version);
+        self.gate
+            .intent
+            .set_failure(version.map(|version| (version, desired)));
+    }
+
+    pub(super) fn failure_is_current(&self, version: &Arc<()>) -> bool {
+        let desired = self.desired();
+        matches!(desired.desired, super::intent::Desired::Automatic)
+            || self.gate.intent.failure().is_some_and(|(row, intent)| {
+                Arc::ptr_eq(&row, version) && Arc::ptr_eq(&intent, &desired.version)
+            })
+    }
+
+    pub(super) fn pending_success(&self) -> Option<(Arc<()>, super::bookkeeping::DeferredSuccess)> {
+        self.gate
+            .intent
+            .pending_success()
+            .filter(|(desired, _)| self.gate.intent.matches(desired))
+            .map(|(desired, version)| (desired, super::bookkeeping::DeferredSuccess { version }))
+    }
+
+    pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &Arc<()>) {
+        self.gate.intent.clear_success(desired, failure);
+    }
+
     /// Compare immutable identities without borrowing either watch again from
     /// inside a commit. A ledger row holds this coordinator across scan windows.
     pub(super) fn same_incarnation(&self, other: &Self) -> bool {
@@ -407,7 +569,10 @@ impl Ticket {
     }
 
     pub(super) fn is_current(&self) -> bool {
-        Arc::ptr_eq(&self.gate.generation.borrow(), &self.generation)
+        self.intent_version
+            .as_ref()
+            .map_or(true, |version| self.gate.intent.matches(version))
+            && Arc::ptr_eq(&self.gate.generation.borrow(), &self.generation)
             && self
                 .shutdown
                 .borrow()
@@ -429,7 +594,20 @@ impl Ticket {
         {
             return Err(cancelled());
         }
+        let intent = self
+            .intent_version
+            .as_ref()
+            .map(|_| self.gate.intent.lock());
+        if self
+            .intent_version
+            .as_ref()
+            .zip(intent.as_ref())
+            .is_some_and(|(expected, current)| !Arc::ptr_eq(expected, &current.version))
+        {
+            return Err(cancelled());
+        }
         let result = action();
+        drop(intent);
         drop(shutdown);
         drop(generation);
         result
@@ -449,6 +627,13 @@ impl Ticket {
             biased;
             _ = device.changed() => Err(cancelled()),
             _ = shutdown.changed() => Err(cancelled()),
+            _ = async {
+                if let Some(version) = &self.intent_version {
+                    self.gate.intent.changed(version).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => Err(cancelled()),
             result = work => result,
         }
     }

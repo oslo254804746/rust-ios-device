@@ -613,7 +613,10 @@ async fn reconnect_old_epoch_drop_cannot_clear_fresh_exhausted_episode() {
     let mut old =
         Box::pin(state.refresh_connect_with_total(A, Route::Usbmux, &old_ticket, None, None));
     assert!(futures_util::poll!(&mut old).is_pending());
-    state.remove_tunnel(A).await;
+    // A reusable clear admits a fresh automatic incarnation. DELETE now
+    // deliberately keeps this device stopped; its reactivation is separately
+    // exercised through an authorized successful HTTP start.
+    state.clear().await;
     // The old Source future still owns the original serial guard. It must drop
     // before a new connection can proceed; its eventual completion stays stale.
     assert!(matches!(old.await, ScanAttemptOutcome::NoChange));
