@@ -85,6 +85,8 @@ pub mod redaction;
 /// Owner-only persistence for files containing private-key material.
 pub mod secret_file;
 pub mod services;
+/// Bounded ownership and cancellation for finite existing-trust operations.
+pub mod session;
 pub(crate) mod staged_file;
 #[cfg(test)]
 pub(crate) mod test_native;

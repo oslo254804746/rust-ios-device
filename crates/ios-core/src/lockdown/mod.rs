@@ -3,6 +3,7 @@
 //!
 //! Use [`LockdownClient`] to read device values, start services, and manage pairing.
 
+mod checked_session;
 pub mod client;
 mod error_context;
 mod response_error;
@@ -15,6 +16,7 @@ pub(crate) mod session;
 #[cfg(feature = "supervised-pair")]
 pub(crate) mod supervised_pair;
 
+pub(crate) use checked_session::start_existing_trust_session;
 pub use client::LockdownClient;
 pub use pair_record::{default_pair_record_path, PairRecord, PairRecordError};
 pub use protocol::{

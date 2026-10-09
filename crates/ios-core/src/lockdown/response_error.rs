@@ -13,7 +13,11 @@ pub struct LockdownResponseError {
 }
 
 impl LockdownResponseError {
-    /// The fixed request name, currently GetValue or StartService.
+    pub(super) fn new(operation: &'static str, code: String) -> Self {
+        Self { operation, code }
+    }
+
+    /// The fixed request name, including checked QueryType/StartSession.
     pub fn operation(&self) -> &'static str {
         self.operation
     }
@@ -26,6 +30,13 @@ impl LockdownResponseError {
     /// Classify only known codes in their owning request, never diagnostic text.
     pub fn class(&self) -> ErrorClass {
         match (self.operation, self.code.as_str()) {
+            (
+                "StartSession",
+                "InvalidHostID"
+                | "UserDeniedPairing"
+                | "PairingDialogResponsePending"
+                | "PasswordProtected",
+            ) => ErrorClass::PermissionDenied,
             ("GetValue", "MissingValue") => ErrorClass::NotFound,
             ("StartService", "InvalidService") => ErrorClass::ServiceMissing,
             _ => ErrorClass::ServiceFailure,

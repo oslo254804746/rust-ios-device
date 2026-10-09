@@ -86,7 +86,9 @@ where
     ))
 }
 
-fn build_rustls_config(pair_record: &PairRecord) -> Result<Arc<ClientConfig>, LockdownError> {
+pub(super) fn build_rustls_config(
+    pair_record: &PairRecord,
+) -> Result<Arc<ClientConfig>, LockdownError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut cert_reader = Cursor::new(&pair_record.host_certificate);
