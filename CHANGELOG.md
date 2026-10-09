@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retain successful manager routes with their original grant revision/expiry,
+  recover through fresh Source metadata and keep DELETE stopped across scans.
+  Late intent publication restores exact original rows and fixed discovery slots
+  retain independent causes. [Contract](docs/manager-route-intent.md) and
+  [host evidence](docs/validation/manager-route-intent-2026-10-09.md).
+
 - Add explicit existing-trust device queries with fresh owned sockets, one total,
   cumulative reply/metadata/output budgets and finite typed information. Add a
   bounded caller-loaded pair-record parser. [Contract](docs/owned-device-query.md).
@@ -36,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add serve retry delay, attempt and total budgets with bounded identity/epoch
   episodes and accurate verbose state. Default retry timing and HTTP JSON stay
-  compatible; durable stop/manual recovery and device acceptance remain pending.
+  compatible; durable stop/manual recovery have subsequent host acceptance above; Darwin watch
+  and device acceptance remain pending.
   See [manager evidence](docs/validation/manager-reconnect-2026-10-08.md).
 
 - Add caller-bounded complete AFC reads and a checked InstallationProxy Browse

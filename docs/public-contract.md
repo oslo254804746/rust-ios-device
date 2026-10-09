@@ -1458,3 +1458,14 @@ remain distinct; unknown mux Result codes classify ServiceFailure. Existing
 constructors/paths/wire APIs remain available. PairRecord::from_bytes adds a
 bounded file-free input profile with original parse causes. [Contract and host
 acceptance](owned-device-query.md); binding/physical A03 acceptance continues.
+
+## Manager stop and manual recovery
+
+`DELETE /tunnel/{udid}` now keeps that exact key stopped across scans/replug,
+including a 404 response. A successful authorized POST or reusable global clear
+reactivates it; unsuccessful requests cannot. State lasts within the manager
+process and shares the 4096 gate limit. Successful manual recovery uses the
+actually established route and original grant revision/expiry with fresh Source
+metadata; a live shortcut cannot select an unexecuted new transport.
+[Migration and bounds](manager-route-intent.md). JSON shapes/error headers retain
+the existing contract; unknown-key capacity refusal is explicit resource_limit.

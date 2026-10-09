@@ -1255,3 +1255,15 @@ Failure/cancellation drops the original socket before lease retirement; another
 query refreshes DeviceID. Last-client Drop broadcasts cancellation because prepared
 jobs retain no client handle. Close waits actual leases; timeout retains closed
 state/counts until original jobs retire. [Budgets and boundaries](owned-device-query.md).
+
+## Authorized route intent and persistent stop
+
+Successful manager manual routes retain their actual family/filter and original
+grant revision/expiry. Durable DELETE suppresses later discovery until an
+explicit authorized success or reusable clear. All intent states share the
+existing bounded coordinator. Mutable-lock and candidate clock checks restore
+exact unobserved intent/pending/native rows on expiry; old version cleanup cannot
+erase newer outcomes. Fixed discovery cause slots preserve acquired originals
+through caller Drop. [Contract](manager-route-intent.md) and
+[host acceptance](validation/manager-route-intent-2026-10-09.md). Darwin watch,
+physical workflows and all other original lifecycle requirements remain.

@@ -59,8 +59,13 @@ startup and whole-scan totals remain separate conditions. See
 Stop cancels active and queued starts for that device and rejects their late
 publication. An absent record still returns404 even if a pending start was
 cancelled; that start receives the existing502 with a cancelled error header.
-A later explicit start is allowed. Subsequent scans may recreate a present
-device, so stop is not a persistent exclusion policy.
+Stop persists across scans and replug, including an absent target. A successful
+authorized explicit start or reusable global clear can reactivate it; failed,
+denied or cancelled starts cannot. This state shares the bounded device
+coordinator namespace and survives only within this manager process. Successful
+manual starts recover the actual established transport/filter using fresh Source
+metadata and their original grant revision/expiry. See
+[route recovery and durable stop](manager-route-intent.md).
 
 Automatic scans deduplicate USB and existing-trust mobdev2 candidates together
 and own up to four connection futures. Healthy B can publish while A stalls;
@@ -74,9 +79,11 @@ while held. A lock released after expiry cannot advance the scan. An already
 returned native USB error survives cancellation; ListError cleanup expiry
 retains the primary and cleanup errors separately. See
 [scan setup evidence](validation/tunnel-scan-setup-2026-10-06.md).
-The setup clock ends at the paired reply; each candidate retains its own
-connection budget. Post-paired handoff, reconciliation/final ready, whole-scan
-and metadata CPU budgets remain pending. See
+Each candidate retains its own connection budget. A subsequent checked
+30-second whole-scan clock now also covers post-paired handoff, reconciliation,
+failure writes and final readiness; synchronous metadata CPU preemption remains
+outside that guarantee. See [whole-scan acceptance](validation/tunnel-scan-control-2026-10-08.md)
+and the earlier
 [scan discovery evidence](validation/tunnel-discovery-2026-10-06.md).
 Failure backoff stays30/60/120/240/300 seconds for
 the same observed native ID and route/paired host. A newly observed ID or known
