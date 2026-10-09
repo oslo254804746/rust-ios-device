@@ -18,6 +18,9 @@ pub(super) fn class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     if let Some(error) = error.downcast_ref::<crate::session::SessionFailure>() {
         return Some(error.class());
     }
+    if let Some(error) = error.downcast_ref::<crate::session::MuxResponseError>() {
+        return Some(error.class());
+    }
     #[cfg(feature = "tunnel")]
     if let Some(error) = error.downcast_ref::<crate::ExistingRsdProbeError>() {
         return Some(error.class());

@@ -7,6 +7,9 @@ mod checked_session;
 pub mod client;
 mod error_context;
 mod response_error;
+#[cfg(test)]
+#[path = "checked_session/test_assets.rs"]
+pub(crate) mod test_assets;
 crate::redaction::error_debug!(LockdownError);
 pub(crate) mod pair_record;
 #[cfg(feature = "tunnel")]
@@ -16,7 +19,9 @@ pub(crate) mod session;
 #[cfg(feature = "supervised-pair")]
 pub(crate) mod supervised_pair;
 
-pub(crate) use checked_session::start_existing_trust_session;
+pub(crate) use checked_session::{
+    start_existing_trust_session, start_existing_trust_session_with_budget,
+};
 pub use client::LockdownClient;
 pub use pair_record::{default_pair_record_path, PairRecord, PairRecordError};
 pub use protocol::{

@@ -19,8 +19,7 @@ use crate::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
 
-#[path = "test_assets.rs"]
-mod test_assets;
+use crate::lockdown::test_assets;
 
 const SERVICE: &str = "owned.private.checked.service";
 const SESSION_ID: &str = "owned-private-checked-session";

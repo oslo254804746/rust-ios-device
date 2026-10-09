@@ -161,6 +161,29 @@ where
 }
 
 impl PairRecord {
+    /// Decode an already loaded pairing record without filesystem or device IO.
+    ///
+    /// Empty inputs and inputs above the existing 1MiB serialized-record limit
+    /// are rejected as InvalidInput before decoding. Parse failures retain the
+    /// original plist error behind safe diagnostics. The parsed private key is
+    /// zeroized on drop; callers retain ownership of their input bytes. Ordinary
+    /// plist decoding does not provide a CPU or temporary-allocation bound.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, std::io::Error> {
+        if data.is_empty() || data.len() as u64 > MAX_PAIR_RECORD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid serialized pairing record length",
+            ));
+        }
+        plist::from_bytes(data).map_err(|error| {
+            crate::error::context::retained_io(
+                std::io::ErrorKind::InvalidInput,
+                "parse provided pairing record plist",
+                error,
+            )
+        })
+    }
+
     /// Load from the platform default path.
     pub fn load(udid: &str) -> Result<Self, PairRecordError> {
         let path = default_pair_record_path(udid);
@@ -330,6 +353,43 @@ mod tests {
     <key>SystemBUID</key><string>BUID</string>
 </dict>
 </plist>"#;
+
+    #[test]
+    fn provided_pair_record_bytes_admit_exact_limit_and_reject_empty_or_oversized() {
+        let record = PairRecord::from_bytes(PAIR_RECORD_PLIST).unwrap();
+        assert_eq!(record.host_private_key.as_slice(), &[7, 8, 9]);
+        assert_eq!(record.host_id, "HOST-ID");
+        let mut exact = PAIR_RECORD_PLIST.to_vec();
+        exact.resize(MAX_PAIR_RECORD_BYTES as usize, b' ');
+        assert!(PairRecord::from_bytes(&exact).is_ok());
+        exact.push(b' ');
+        for data in [&[][..], exact.as_slice()] {
+            let error = PairRecord::from_bytes(data).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn provided_pair_record_parse_failure_retains_original_cause_with_safe_diagnostics() {
+        let input = b"synthetic-private-pair-record-input";
+        let error = PairRecord::from_bytes(input).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let mut cause = std::error::Error::source(&error);
+        let mut found = false;
+        while let Some(error) = cause {
+            found |= error.downcast_ref::<plist::Error>().is_some();
+            cause = error.source();
+        }
+        assert!(found);
+        for output in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!output.contains(std::str::from_utf8(input).unwrap()));
+        }
+    }
 
     #[test]
     fn load_from_path_decodes_plist_data_into_the_secret_wrapper() {

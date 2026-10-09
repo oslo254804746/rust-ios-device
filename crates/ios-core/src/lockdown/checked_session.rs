@@ -5,16 +5,22 @@
 //! or starts/stops a tunnel. QueryType, StartSession, TLS and StartService share
 //! the borrowed operation context's absolute budget and cancellation signal.
 
-use std::{fmt, io};
+use std::{fmt, io, sync::Arc};
+
+mod bounded;
+mod query;
 
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+#[cfg(test)]
+use super::recv_lockdown;
 use super::{
-    recv_lockdown, send_lockdown, LockdownError, LockdownResponseError, PairRecord,
-    QueryTypeRequest, ServiceInfo, StartServiceRequest, StartSessionRequest,
+    send_lockdown, LockdownError, LockdownResponseError, PairRecord, QueryTypeRequest, ServiceInfo,
+    StartServiceRequest, StartSessionRequest,
 };
-use crate::session::OperationContext;
+use crate::session::reply_budget::ReplyBudget;
+use crate::session::{OperationContext, OperationIo};
 
 trait SessionIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> SessionIo for S {}
@@ -33,6 +39,7 @@ pub(crate) struct CheckedSession<'ctx> {
     #[cfg(test)]
     session_id: String,
     tls: bool,
+    budget: Option<Arc<ReplyBudget>>,
 }
 
 impl fmt::Debug for CheckedSession<'_> {
@@ -75,7 +82,8 @@ impl<'ctx> CheckedSession<'ctx> {
                     },
                 )
                 .await?;
-                let reply: plist::Dictionary = recv_lockdown(&mut stream).await?;
+                let reply: plist::Dictionary =
+                    bounded::recv(&mut stream, self.budget.as_ref()).await?;
                 check_response(&reply, "StartService")?;
                 let port = reply
                     .get("Port")
@@ -130,9 +138,33 @@ pub(crate) async fn start_existing_trust_session<'ctx, S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'ctx,
 {
+    start_guarded_session(context, context.guard(stream), pair_record, None).await
+}
+
+/// Query routing has already guarded the same fresh socket during mux IO.
+pub(crate) async fn start_existing_trust_session_with_budget<'ctx, S>(
+    context: &'ctx OperationContext,
+    stream: OperationIo<'ctx, S>,
+    pair_record: &PairRecord,
+    budget: Arc<ReplyBudget>,
+) -> Result<CheckedSession<'ctx>, LockdownError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'ctx,
+{
+    start_guarded_session(context, stream, pair_record, Some(budget)).await
+}
+
+async fn start_guarded_session<'ctx, S>(
+    context: &'ctx OperationContext,
+    mut stream: OperationIo<'ctx, S>,
+    pair_record: &PairRecord,
+    budget: Option<Arc<ReplyBudget>>,
+) -> Result<CheckedSession<'ctx>, LockdownError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'ctx,
+{
     context
         .run(async move {
-            let mut stream = context.guard(stream);
             send_lockdown(
                 &mut stream,
                 &QueryTypeRequest {
@@ -141,7 +173,7 @@ where
                 },
             )
             .await?;
-            let reply: plist::Dictionary = recv_lockdown(&mut stream).await?;
+            let reply: plist::Dictionary = bounded::recv(&mut stream, budget.as_ref()).await?;
             check_response(&reply, "QueryType")?;
             if reply.get("Type").and_then(plist::Value::as_string)
                 != Some("com.apple.mobile.lockdown")
@@ -159,7 +191,7 @@ where
                 },
             )
             .await?;
-            let reply: plist::Dictionary = recv_lockdown(&mut stream).await?;
+            let reply: plist::Dictionary = bounded::recv(&mut stream, budget.as_ref()).await?;
             check_response(&reply, "StartSession")?;
             reply
                 .get("SessionID")
@@ -211,6 +243,7 @@ where
                 #[cfg(test)]
                 session_id,
                 tls,
+                budget,
             })
         })
         .await

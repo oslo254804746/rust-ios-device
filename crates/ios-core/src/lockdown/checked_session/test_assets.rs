@@ -1,6 +1,6 @@
 //! Offline synthetic TLS certificate/key copied from the existing protocol fixture.
 
-pub(super) const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
+pub(crate) const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----
 MIIC/zCCAeegAwIBAgIUIcm1BZEI6nF3fXhXJuEND4sUAfcwDQYJKoZIhvcNAQEL
 BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA0MzAwNDM5MzBaFw0yNzA0MzAwNDM5
 MzBaMA8xDTALBgNVBAMMBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
@@ -19,7 +19,7 @@ BMGvz0c6Jfe9c3vifv+9GmvYETZyPxbNxwA33vTOLKtq0Wcb8zPvOq05rgeXOoVU
 61OsIR2URv16qBoNfdhIS3UJ4eYt65mnXOQg1Bagotzvq3sy3B5MOJyXUMjhtuAG
 f/68
 -----END CERTIFICATE-----";
-pub(super) const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+pub(crate) const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC79dsRr759iA4c
 borijwjiNsZzHQvL9J5PGJlShqIC2aL9UMKCU1EPtYTR5F4SDz6HDS3IeXPoEErn
 03hNkHopg463XbVgiFXOZwzPZbahNrKksGp+Klvc0cNbnClv/gmKro1Q9vp3IieR

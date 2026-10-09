@@ -7,20 +7,28 @@
 //! cancels active work, but retains an unpolled lease's count until real Drop.
 //! It reports local release, without a remote teardown acknowledgement.
 //!
-//! Only the finite prepared entry below drives a public operation. Generic
+//! Only finite prepared entries drive public operations. Generic
 //! closures and borrowed contexts remain crate-internal; successful values
 //! cannot be transports. A native Ready(Err) candidate can survive an upper
 //! future's Pending until cancellation/expiry. Core code which handles that
 //! error before a non-IO wait must explicitly acknowledge the handling; this
 //! framework cannot infer arbitrary future intent. Zero-byte reads are never
-//! manufactured into native errors. Credentials, discovery, dialed sockets
-//! or aliases retained by the caller are outside this operation's ownership.
+//! manufactured into native errors. Caller-retained credentials or transport
+//! aliases remain outside lease ownership. Device queries create and destroy
+//! their own discovery/connected socket inside the lease.
 
+mod device;
 mod operation;
 mod owner;
+pub(crate) mod reply_budget;
 
-pub(crate) use operation::OperationContext;
+pub(crate) use device::QueryStrings;
+pub use device::{
+    DeviceInfoFields, DeviceMetadata, DeviceQuery, DeviceQueryLimits, DeviceQueryObservation,
+    ExistingTrustDevice, MuxResponseError, PreparedDeviceQuery, UsbmuxEndpoint,
+};
 pub use operation::{OperationCancel, OperationOptions};
+pub(crate) use operation::{OperationContext, OperationIo};
 pub use owner::{OperationLease, SessionOwner, SharedAdmission};
 
 use crate::{CoreError, ErrorClass};
