@@ -124,7 +124,7 @@
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续；`2b906d7` 完成原生 SDK owner 单一绝对期限/取消/准入子项。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；`8947fc1` 完成 manual 实际 route/原 grant 恢复、跨扫描 stop、过期发布回滚的主机子项；Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
-| L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 进行中：同 fixture 修改前 1/4/16、30s/104轮 native 测量已执行；修改后比较与 RSS 增长归因继续；文件/吞吐/长时间流/平台真机未完成 |
+| L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 进行中：同 fixture 修改前后 1/4/16、30s/104轮及独立60s资源归因主机子项已验收；文件/吞吐/长时间流/平台真机未完成 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；`838c4ed` 完成显式既有 RSD route/完整目录/目标核对主机子项，未选择 route 时仍 not_probed；平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [RSD 证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 待开始 |
 | F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 已完成：`3e697fd` 固定实际客户端经生产 Rust bridge/合成 WebInspector，Puppeteer 有限 Runtime 全流程、Playwright 初始化明确拒绝、完整 trace/原 owner 回收及下载协议依据/实现方案满足原 F03 验收；F04 各域和真机验收继续。见 [证据](validation/cdp-client-workflow-2026-10-09.md) |
@@ -8326,3 +8326,14 @@ owned输出预算。21新query fixtures与2pair-byte用例；失败根因和最�
 均实际执行，505冻结path与实现提交blobs一致。335 minimal与21专项此前通过；五个
 ordinary ignored不代表客户端执行。22真机行NOT_RUN，用户后续统一安排；A03绑定/
 应用/文件/日志及原例子/平台/设备验收继续。无主任务或maturity升级，Q04所有子项排除。
+
+### L04：manager/native 资源基线主机子项（2026-10-09）
+
+[验收与归因](validation/manager-resource-baseline-2026-10-09.md)，
+[结构化结果](validation/manager-resource-baseline-2026-10-09.json)。
+修改前 `2964c1c`、修改后 `e53e0bb` 使用逐字节相同的fixture、同工具链/
+all-features/debug输入，1/4/16和30s/104轮测量已比较，原owner收尾通过。
+另用原二进制进行60s/208及207轮分配器/匿名与文件页诊断，末10秒RSS稳定，
+原FD/socket/任务/registry/permit恢复；记录测得延迟和从基线派生的主机比较阈值。
+此子项完成额度中断时的测量与资源归因；L04主任务的吞吐、文件、服务流、
+平台和真机验收继续，能力成熟度不升级。

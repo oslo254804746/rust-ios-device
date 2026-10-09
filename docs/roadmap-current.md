@@ -18,6 +18,7 @@
 | L03 manual route/跨扫描 stop | 主机子项已验收 | `8947fc1`；成功实际 route、持续 stop、原授权 revision/expiry、过期事务回滚和原 native owner；[证据](validation/manager-route-intent-2026-10-09.md)。Darwin watch/真机仍未验收 |
 | F03 实际 CDP 客户端框架 | 主任务已完成 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。符合原 F03 可复现结果/缺初始化语义时的协议依据与方案要求；F04 各域及真机验收继续 |
 | A03 有限 Rust device query | 主机子项已验收 | `6f582c9`；fresh socket/DeviceID、单一总期限、wire/metadata/owned output 预算、TCP/Unix/TLS 与原 owner 退役；[证据](validation/sdk-device-query-2026-10-09.md) |
+| L04 manager/native 资源基线 | 主机子项已验收 | 同 fixture 修改前后 1/4/16、30s/104轮测量和独立60s分配器/RSS归因；[证据](validation/manager-resource-baseline-2026-10-09.md)。吞吐/文件/服务流/其他平台与真机继续 |
 | A03 Python/C 常用 SDK | Python 有限 query 静态包已冻结，C 继续独立开发；均未验收 | 设备/应用/文件/日志句柄，Python context/async 和 C ownership/error/取消/并发合同与示例集中交付 |
 
 真机测试按用户要求留待其后续统一安排，相关任务不标完成。当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
@@ -32,7 +33,8 @@ worker；Unix FIFO 已拒绝，此限制仍需独立处理。上述条件不阻�
 
 当前执行：Rust query/实际 CDP 框架和 manager 路由恢复/持续 stop 均已验收并本地提交。
 Python 有限 query 六文件静态包已冻结；C 句柄/linked fixtures 正在冻结前复核，
-均尚未编译/运行验收。Darwin watch 在独立树承接开发。L04 修改前的同 fixture
-测量已执行：1/4/16 规模、16 devices 的 30s/104 轮真实 native 启停/断连，原
-joins/严格 EOF/任务与 FD 回收通过；RSS 增长 344064 bytes 仍需归因。
-修改后测量与比较继续，吞吐、文件/长时间流及真机指标保持原验收。
+均尚未编译/运行验收。Darwin watch 在独立树承接开发。L04 同 fixture 修改前后测量与资源归因已完成：
+1/4/16 规模、16 devices 的30s/104轮真实 native 启停/断连，原joins/严格EOF/
+任务与FD恢复通过。独立60s诊断拆分匿名/文件页及分配器数据，末10秒RSS稳定；
+验收仅限本主机子项，吞吐、文件/长时间流及平台真机继续。
+Python/C尚待集中集成验收；先处理重复制品验证产生的持久缓存增长。

@@ -1,0 +1,1861 @@
+{
+  "diagnostics": {
+    "allocator-after-pages": {
+      "allocator_xml_sha256": "11bf1314b064ebae84fe4cd56600683bb1207e5d8c2d273bbde3f20d4ab5e3ea",
+      "cleanup": {
+        "after_process": {
+          "fd_count": 11,
+          "fd_sampler_directory_included": true,
+          "method": "linux-proc-self-status-and-fd-readlink",
+          "peak_rss_bytes": 60362752,
+          "process_threads": 5,
+          "rss_bytes": 60362752,
+          "socket_fd_count": 3
+        },
+        "after_tokio_tasks": 0,
+        "before_process": {
+          "fd_count": 11,
+          "fd_sampler_directory_included": true,
+          "method": "linux-proc-self-status-and-fd-readlink",
+          "peak_rss_bytes": 19247104,
+          "process_threads": 5,
+          "rss_bytes": 19247104,
+          "socket_fd_count": 3
+        },
+        "before_tokio_tasks": 0,
+        "final_native_drain_class": null,
+        "final_original_certificates": [],
+        "http_original_join": true,
+        "original_joins_and_strict_eof": true,
+        "permits_recovered": true,
+        "registry_closed_and_empty": true,
+        "tokio_task_recovery": true
+      },
+      "diagnostic_only": true,
+      "final_samples": [
+        {
+          "anonymous_rss_bytes": 4009984,
+          "arena_free_bytes": 687112,
+          "arena_system_bytes": 737280,
+          "arenas": 5,
+          "file_rss_bytes": 54611968,
+          "mmap_bytes": 0,
+          "non_free_estimate_bytes": 50168,
+          "phase": "before_trim",
+          "rss_bytes": 58621952,
+          "seconds": 60.569749,
+          "shared_rss_bytes": 0,
+          "trim_result": -1
+        },
+        {
+          "anonymous_rss_bytes": 3981312,
+          "arena_free_bytes": 572424,
+          "arena_system_bytes": 622592,
+          "arenas": 5,
+          "file_rss_bytes": 54611968,
+          "mmap_bytes": 0,
+          "non_free_estimate_bytes": 50168,
+          "phase": "after_trim",
+          "rss_bytes": 58593280,
+          "seconds": 60.569931,
+          "shared_rss_bytes": 0,
+          "trim_result": 1
+        }
+      ],
+      "full_summary_sha256": "f509f19a1c3546fdbf811101d2ba69d2995d2071eb2c9774c6d115209acade4e",
+      "interpretation": "All glibc arenas; non-free estimate includes allocator overhead and tcache, not exact live Rust objects. Asynchronous samples include active rounds. One extra thread/FILE; no performance conclusion or zero-leak proof.",
+      "longrun": {
+        "cycles": 207,
+        "elapsed_ms": 60077,
+        "maximum_concurrent_devices": 16
+      },
+      "probe_source_and_driver_sha256": {
+        "/home/oslo/projects/rust-ios-device/scripts/manager_allocator_diagnostic.py": "4526bdf2f8e59a63585980437a2b24767d121050c64626e2603862b6b17b0202",
+        "/home/oslo/projects/rust-ios-device/scripts/manager_allocator_probe.c": "90f7a086c09fa83dda1313321c8655f1f80fd3ed263cf6ba38eab5a0415a5cce",
+        "/home/oslo/projects/rust-ios-device/scripts/manager_resource_baseline.py": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/allocator-probe.so": "b878da888d0e1c3c0923078ec8c77998c5c66d84c75b979345e7ce8697121a44"
+      },
+      "run": {
+        "command": [
+          "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/after-ios-test",
+          "cmd::tunnel::tests::native_retirement_tests::resource_baseline_tests::manager_native_resource_baseline",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "compilation": "NOT_STARTED: existing compiled native test executable only",
+        "declared_build_mode": "debug",
+        "driver_sha256": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "execution": {
+          "capture_limit_bytes": 8388608,
+          "captured_bytes": 1966884,
+          "elapsed_seconds": 60.57656765897991,
+          "failure": null,
+          "owned_process_reaped": true,
+          "returncode": 0
+        },
+        "fixture_json_sha256": "633a7445a2c33e0dcf091888469999c0c68137b1f647e206cb0dbaf2f87969dd",
+        "fixture_source": "/home/oslo/projects/rust-ios-device/crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+        "fixture_source_sha256": "5a81963d96062f39dffd77d980c669b57b767a5737e6d47c27cc391a81addfc5",
+        "host": {
+          "cpu_model": "AMD Ryzen 5 5600G with Radeon Graphics",
+          "hardware_product": "Standard PC (Q35 + ICH9, 2009)\n",
+          "kernel": "7.0.0-34-generic",
+          "logical_cpu_count": 8,
+          "machine": "x86_64",
+          "memory_info": "MemTotal:       15777160 kB\nMemFree:         2943064 kB\nMemAvailable:   14892964 kB\nBuffers:          649644 kB\nCached:         10393848 kB\nSwapCached:         5012 kB\nActive:          9139940 kB\nInactive:        2072252 kB\nActive(anon):     169372 kB\nInactive(anon):    11296 kB\nActive(file):    8970568 kB\nInactive(file):  2060956 kB\nUnevictable:       13024 kB\nMlocked:            9024 kB\nSwapTotal:       4194300 kB\nSwapFree:        4112844 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:              3588 kB\nWriteback:             0 kB\nAnonPages:        180600 kB\nMapped:           199692 kB\nShmem:              5144 kB\nKReclaimable:    1260216 kB\nSlab:            1488272 kB\nSReclaimable:    1260216 kB\nSUnreclaim:       228056 kB\nKernelStack:        4816 kB\nPageTables:         7048 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12082880 kB\nCommitted_AS:    1458628 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       25548 kB\nVmallocChunk:          0 kB\nPercpu:             5024 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:    229376 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:               0 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      220068 kB\nDirectMap2M:     6002688 kB\nDirectMap1G:    12582912 kB\n",
+          "metadata_method": "platform-and-readable-linux-proc-sys",
+          "not_observed": [
+            "CPU frequency/governor",
+            "CPU affinity",
+            "background load",
+            "physical USB/Wi-Fi device hardware"
+          ],
+          "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+          "python": "3.14.4"
+        },
+        "label": "diagnostic-after-pages",
+        "log_sha256": "1a0931dd6753021900c7ca3e9834bacffbb24626ea46234154dbe5a0ede20cba",
+        "production_source_commit": "e53e0bb8b2dc5f5c1e61260cfde6b345c1f591b8",
+        "rust_version_evidence": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6",
+        "rust_version_evidence_sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+        "schema_version": 1,
+        "source_freeze": "external main-agent validation runner required; this driver does not establish a freeze",
+        "started_utc": "2026-10-09T08:37:45Z",
+        "summary_json_sha256": "1b6dbdfc4bd7a594d5592daed6bac2a06d49f5cb93229566d254c1af7c28d65f",
+        "test_binary": "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/after-ios-test",
+        "test_binary_sha256": "a305225c644aeb2bded3c15bf105c81aadc93d60a93d9c781733958dcf53e056",
+        "test_binary_sha256_after": "a305225c644aeb2bded3c15bf105c81aadc93d60a93d9c781733958dcf53e056",
+        "test_overlay": "same test-only source and parent module registration added to each production revision; retain the external freeze/patch evidence"
+      },
+      "ten_second_windows": [
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5644288,
+            "minimum": 3416064
+          },
+          "arena_free_bytes": {
+            "maximum": 842874,
+            "minimum": 132593
+          },
+          "file_rss_bytes": {
+            "maximum": 54464512,
+            "minimum": 9228288
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 965854,
+            "minimum": 2575
+          },
+          "rss_bytes": {
+            "maximum": 60108800,
+            "minimum": 12644352
+          },
+          "samples": 20,
+          "start_seconds": 0
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5689344,
+            "minimum": 5664768
+          },
+          "arena_free_bytes": {
+            "maximum": 886847,
+            "minimum": 721413
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 904699,
+            "minimum": 741601
+          },
+          "rss_bytes": {
+            "maximum": 60284928,
+            "minimum": 60260352
+          },
+          "samples": 20,
+          "start_seconds": 10
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5709824,
+            "minimum": 5689344
+          },
+          "arena_free_bytes": {
+            "maximum": 902289,
+            "minimum": 654821
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 1016347,
+            "minimum": 766516
+          },
+          "rss_bytes": {
+            "maximum": 60305408,
+            "minimum": 60284928
+          },
+          "samples": 20,
+          "start_seconds": 20
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5726208,
+            "minimum": 5713920
+          },
+          "arena_free_bytes": {
+            "maximum": 894298,
+            "minimum": 737135
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 934033,
+            "minimum": 776870
+          },
+          "rss_bytes": {
+            "maximum": 60321792,
+            "minimum": 60309504
+          },
+          "samples": 20,
+          "start_seconds": 30
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5750784,
+            "minimum": 5726208
+          },
+          "arena_free_bytes": {
+            "maximum": 924187,
+            "minimum": 684345
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 1019591,
+            "minimum": 779749
+          },
+          "rss_bytes": {
+            "maximum": 60346368,
+            "minimum": 60321792
+          },
+          "samples": 20,
+          "start_seconds": 40
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5750784,
+            "minimum": 5750784
+          },
+          "arena_free_bytes": {
+            "maximum": 914695,
+            "minimum": 750172
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 953764,
+            "minimum": 789241
+          },
+          "rss_bytes": {
+            "maximum": 60346368,
+            "minimum": 60346368
+          },
+          "samples": 20,
+          "start_seconds": 50
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5750784,
+            "minimum": 5750784
+          },
+          "arena_free_bytes": {
+            "maximum": 901501,
+            "minimum": 901501
+          },
+          "file_rss_bytes": {
+            "maximum": 54595584,
+            "minimum": 54595584
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 802435,
+            "minimum": 802435
+          },
+          "rss_bytes": {
+            "maximum": 60346368,
+            "minimum": 60346368
+          },
+          "samples": 1,
+          "start_seconds": 60
+        }
+      ],
+      "trim_rss_released_bytes": 28672
+    },
+    "allocator-before-pages": {
+      "allocator_xml_sha256": "2b3c4c50ff231cb0dea1798fccc6ffc5ae5728f8b25153116ee6fdba83b6aa5f",
+      "cleanup": {
+        "after_process": {
+          "fd_count": 11,
+          "fd_sampler_directory_included": true,
+          "method": "linux-proc-self-status-and-fd-readlink",
+          "peak_rss_bytes": 64401408,
+          "process_threads": 5,
+          "rss_bytes": 64401408,
+          "socket_fd_count": 3
+        },
+        "after_tokio_tasks": 0,
+        "before_process": {
+          "fd_count": 11,
+          "fd_sampler_directory_included": true,
+          "method": "linux-proc-self-status-and-fd-readlink",
+          "peak_rss_bytes": 20697088,
+          "process_threads": 5,
+          "rss_bytes": 20697088,
+          "socket_fd_count": 3
+        },
+        "before_tokio_tasks": 0,
+        "final_native_drain_class": null,
+        "final_original_certificates": [],
+        "http_original_join": true,
+        "original_joins_and_strict_eof": true,
+        "permits_recovered": true,
+        "registry_closed_and_empty": true,
+        "tokio_task_recovery": true
+      },
+      "diagnostic_only": true,
+      "final_samples": [
+        {
+          "anonymous_rss_bytes": 4206592,
+          "arena_free_bytes": 912392,
+          "arena_system_bytes": 962560,
+          "arenas": 5,
+          "file_rss_bytes": 58806272,
+          "mmap_bytes": 0,
+          "non_free_estimate_bytes": 50168,
+          "phase": "before_trim",
+          "rss_bytes": 63012864,
+          "seconds": 60.575201,
+          "shared_rss_bytes": 0,
+          "trim_result": -1
+        },
+        {
+          "anonymous_rss_bytes": 4186112,
+          "arena_free_bytes": 797704,
+          "arena_system_bytes": 847872,
+          "arenas": 5,
+          "file_rss_bytes": 58806272,
+          "mmap_bytes": 0,
+          "non_free_estimate_bytes": 50168,
+          "phase": "after_trim",
+          "rss_bytes": 62992384,
+          "seconds": 60.575341,
+          "shared_rss_bytes": 0,
+          "trim_result": 1
+        }
+      ],
+      "full_summary_sha256": "d0d76ed66da1510d80fb4545f04f052132c182f5fbec701fbc47ccba34cced48",
+      "interpretation": "All glibc arenas; non-free estimate includes allocator overhead and tcache, not exact live Rust objects. Asynchronous samples include active rounds. One extra thread/FILE; no performance conclusion or zero-leak proof.",
+      "longrun": {
+        "cycles": 208,
+        "elapsed_ms": 60289,
+        "maximum_concurrent_devices": 16
+      },
+      "probe_source_and_driver_sha256": {
+        "/home/oslo/projects/rust-ios-device/scripts/manager_allocator_diagnostic.py": "4526bdf2f8e59a63585980437a2b24767d121050c64626e2603862b6b17b0202",
+        "/home/oslo/projects/rust-ios-device/scripts/manager_allocator_probe.c": "90f7a086c09fa83dda1313321c8655f1f80fd3ed263cf6ba38eab5a0415a5cce",
+        "/home/oslo/projects/rust-ios-device/scripts/manager_resource_baseline.py": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/allocator-probe.so": "b878da888d0e1c3c0923078ec8c77998c5c66d84c75b979345e7ce8697121a44"
+      },
+      "run": {
+        "command": [
+          "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/baseline-ios-test",
+          "cmd::tunnel::tests::native_retirement_tests::resource_baseline_tests::manager_native_resource_baseline",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "compilation": "NOT_STARTED: existing compiled native test executable only",
+        "declared_build_mode": "debug",
+        "driver_sha256": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "execution": {
+          "capture_limit_bytes": 8388608,
+          "captured_bytes": 1975989,
+          "elapsed_seconds": 60.58072816900676,
+          "failure": null,
+          "owned_process_reaped": true,
+          "returncode": 0
+        },
+        "fixture_json_sha256": "32ad7928c16d9be03d2aef890ff1d903ab3289db3e3295c0c5c812cb973df95a",
+        "fixture_source": "/home/oslo/projects/rust-ios-device-manager-before-intent/crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+        "fixture_source_sha256": "5a81963d96062f39dffd77d980c669b57b767a5737e6d47c27cc391a81addfc5",
+        "host": {
+          "cpu_model": "AMD Ryzen 5 5600G with Radeon Graphics",
+          "hardware_product": "Standard PC (Q35 + ICH9, 2009)\n",
+          "kernel": "7.0.0-34-generic",
+          "logical_cpu_count": 8,
+          "machine": "x86_64",
+          "memory_info": "MemTotal:       15777160 kB\nMemFree:         2940848 kB\nMemAvailable:   14884444 kB\nBuffers:          649524 kB\nCached:         10387688 kB\nSwapCached:         5012 kB\nActive:          9138716 kB\nInactive:        2065984 kB\nActive(anon):     168156 kB\nInactive(anon):    11296 kB\nActive(file):    8970560 kB\nInactive(file):  2054688 kB\nUnevictable:       13024 kB\nMlocked:            9024 kB\nSwapTotal:       4194300 kB\nSwapFree:        4112844 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:               732 kB\nWriteback:            56 kB\nAnonPages:        179656 kB\nMapped:           200200 kB\nShmem:              5144 kB\nKReclaimable:    1260188 kB\nSlab:            1487876 kB\nSReclaimable:    1260188 kB\nSUnreclaim:       227688 kB\nKernelStack:        4924 kB\nPageTables:         7876 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12082880 kB\nCommitted_AS:    1458256 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       25596 kB\nVmallocChunk:          0 kB\nPercpu:             5024 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:    227328 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:               0 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      220068 kB\nDirectMap2M:     6002688 kB\nDirectMap1G:    12582912 kB\n",
+          "metadata_method": "platform-and-readable-linux-proc-sys",
+          "not_observed": [
+            "CPU frequency/governor",
+            "CPU affinity",
+            "background load",
+            "physical USB/Wi-Fi device hardware"
+          ],
+          "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+          "python": "3.14.4"
+        },
+        "label": "diagnostic-before-pages",
+        "log_sha256": "04c40636d34c1bbd440fe0ed5f2824e3122ffa221415fa444714791d64a2abd4",
+        "production_source_commit": "2964c1c2109b0368237e9ebaf13f99e3cbb0da13",
+        "rust_version_evidence": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6",
+        "rust_version_evidence_sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+        "schema_version": 1,
+        "source_freeze": "external main-agent validation runner required; this driver does not establish a freeze",
+        "started_utc": "2026-10-09T08:36:24Z",
+        "summary_json_sha256": "ad73b263b3baee5840a5d731d7e94009646cd50a4c1d16521fa1f5b43048d1cc",
+        "test_binary": "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/baseline-ios-test",
+        "test_binary_sha256": "2aacd3286a0453c7f9e36ebde4b9cda3bd7fb8c9c2aeea1215e6dd435c4eac22",
+        "test_binary_sha256_after": "2aacd3286a0453c7f9e36ebde4b9cda3bd7fb8c9c2aeea1215e6dd435c4eac22",
+        "test_overlay": "same test-only source and parent module registration added to each production revision; retain the external freeze/patch evidence"
+      },
+      "ten_second_windows": [
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5521408,
+            "minimum": 3395584
+          },
+          "arena_free_bytes": {
+            "maximum": 836871,
+            "minimum": 132593
+          },
+          "file_rss_bytes": {
+            "maximum": 58675200,
+            "minimum": 9605120
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 930979,
+            "minimum": 2575
+          },
+          "rss_bytes": {
+            "maximum": 64196608,
+            "minimum": 13000704
+          },
+          "samples": 20,
+          "start_seconds": 0
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5533696,
+            "minimum": 5521408
+          },
+          "arena_free_bytes": {
+            "maximum": 833225,
+            "minimum": 572305
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 984175,
+            "minimum": 723255
+          },
+          "rss_bytes": {
+            "maximum": 64339968,
+            "minimum": 64327680
+          },
+          "samples": 20,
+          "start_seconds": 10
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5554176,
+            "minimum": 5533696
+          },
+          "arena_free_bytes": {
+            "maximum": 806759,
+            "minimum": 549637
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 1010939,
+            "minimum": 753817
+          },
+          "rss_bytes": {
+            "maximum": 64360448,
+            "minimum": 64339968
+          },
+          "samples": 20,
+          "start_seconds": 20
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5582848,
+            "minimum": 5554176
+          },
+          "arena_free_bytes": {
+            "maximum": 828078,
+            "minimum": 580966
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 1016474,
+            "minimum": 769643
+          },
+          "rss_bytes": {
+            "maximum": 64389120,
+            "minimum": 64360448
+          },
+          "samples": 20,
+          "start_seconds": 30
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5595136,
+            "minimum": 5586944
+          },
+          "arena_free_bytes": {
+            "maximum": 847513,
+            "minimum": 617586
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 1004430,
+            "minimum": 774503
+          },
+          "rss_bytes": {
+            "maximum": 64401408,
+            "minimum": 64393216
+          },
+          "samples": 20,
+          "start_seconds": 40
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5595136,
+            "minimum": 5595136
+          },
+          "arena_free_bytes": {
+            "maximum": 840343,
+            "minimum": 652823
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 969193,
+            "minimum": 781673
+          },
+          "rss_bytes": {
+            "maximum": 64401408,
+            "minimum": 64401408
+          },
+          "samples": 20,
+          "start_seconds": 50
+        },
+        {
+          "anonymous_rss_bytes": {
+            "maximum": 5595136,
+            "minimum": 5595136
+          },
+          "arena_free_bytes": {
+            "maximum": 828481,
+            "minimum": 828481
+          },
+          "file_rss_bytes": {
+            "maximum": 58806272,
+            "minimum": 58806272
+          },
+          "non_free_estimate_bytes": {
+            "maximum": 793535,
+            "minimum": 793535
+          },
+          "rss_bytes": {
+            "maximum": 64401408,
+            "minimum": 64401408
+          },
+          "samples": 1,
+          "start_seconds": 60
+        }
+      ],
+      "trim_rss_released_bytes": 20480
+    }
+  },
+  "performance_comparison": {
+    "acceptance": "review source freeze, compiler/input/host parity and attribute growth before accepting the host subitem; performance budgets remain to be established from observations",
+    "after": {
+      "run": {
+        "command": [
+          "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/after-ios-test",
+          "cmd::tunnel::tests::native_retirement_tests::resource_baseline_tests::manager_native_resource_baseline",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "compilation": "NOT_STARTED: existing compiled native test executable only",
+        "declared_build_mode": "debug",
+        "driver_sha256": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "execution": {
+          "capture_limit_bytes": 8388608,
+          "captured_bytes": 1026679,
+          "elapsed_seconds": 30.355854009045288,
+          "failure": null,
+          "owned_process_reaped": true,
+          "returncode": 0
+        },
+        "fixture_json_sha256": "514de2c47c226f3621eec5b34cd3d5dc7fc278434a9bb036e742857f111818ba",
+        "fixture_source": "/home/oslo/projects/rust-ios-device/crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+        "fixture_source_sha256": "5a81963d96062f39dffd77d980c669b57b767a5737e6d47c27cc391a81addfc5",
+        "host": {
+          "cpu_model": "AMD Ryzen 5 5600G with Radeon Graphics",
+          "hardware_product": "Standard PC (Q35 + ICH9, 2009)\n",
+          "kernel": "7.0.0-34-generic",
+          "logical_cpu_count": 8,
+          "machine": "x86_64",
+          "memory_info": "MemTotal:       15777160 kB\nMemFree:         4809080 kB\nMemAvailable:   14728876 kB\nBuffers:           65548 kB\nCached:          9737308 kB\nSwapCached:        15484 kB\nActive:          9069920 kB\nInactive:         925828 kB\nActive(anon):     175700 kB\nInactive(anon):    29180 kB\nActive(file):    8894220 kB\nInactive(file):   896648 kB\nUnevictable:       13024 kB\nMlocked:            9024 kB\nSwapTotal:       4194300 kB\nSwapFree:        4090852 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:            570512 kB\nWriteback:             0 kB\nAnonPages:        204400 kB\nMapped:           159848 kB\nShmem:              5128 kB\nKReclaimable:     470768 kB\nSlab:             628212 kB\nSReclaimable:     470768 kB\nSUnreclaim:       157444 kB\nKernelStack:        4768 kB\nPageTables:         6992 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12082880 kB\nCommitted_AS:    1491728 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       25524 kB\nVmallocChunk:          0 kB\nPercpu:             5024 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:    194560 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:               0 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      220068 kB\nDirectMap2M:     6002688 kB\nDirectMap1G:    12582912 kB\n",
+          "metadata_method": "platform-and-readable-linux-proc-sys",
+          "not_observed": [
+            "CPU frequency/governor",
+            "CPU affinity",
+            "background load",
+            "physical USB/Wi-Fi device hardware"
+          ],
+          "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+          "python": "3.14.4"
+        },
+        "label": "after",
+        "log_sha256": "a5656792d77cd979d499b806fa78174f889c5c166ecd9004a7cd5b8c6004b79a",
+        "production_source_commit": "e53e0bb8b2dc5f5c1e61260cfde6b345c1f591b8",
+        "rust_version_evidence": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6",
+        "rust_version_evidence_sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+        "schema_version": 1,
+        "source_freeze": "external main-agent validation runner required; this driver does not establish a freeze",
+        "started_utc": "2026-10-09T07:54:13Z",
+        "summary_json_sha256": "1ff35613de44803618f775299d64d404ad6dc5352131c99ec68ca666a116ff7c",
+        "test_binary": "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/after-ios-test",
+        "test_binary_sha256": "a305225c644aeb2bded3c15bf105c81aadc93d60a93d9c781733958dcf53e056",
+        "test_binary_sha256_after": "a305225c644aeb2bded3c15bf105c81aadc93d60a93d9c781733958dcf53e056",
+        "test_overlay": "same test-only source and parent module registration added to each production revision; retain the external freeze/patch evidence"
+      },
+      "summary": {
+        "latency_distributions": [
+          {
+            "devices": 16,
+            "maximum": 842411,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 546346,
+            "p50": 625274,
+            "p95": 719660,
+            "phase": "delete_stop",
+            "samples": 832,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 10803921,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 9048656,
+            "p50": 9710470,
+            "p95": 10794615,
+            "phase": "disconnect_to_absent",
+            "samples": 52,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 807145,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 487556,
+            "p50": 560242,
+            "p95": 640022,
+            "phase": "get",
+            "samples": 1664,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 1934011,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 814059,
+            "p50": 1251078,
+            "p95": 1417231,
+            "phase": "native_cleanup",
+            "samples": 104,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 2420643,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 775035,
+            "p50": 898536,
+            "p95": 1813846,
+            "phase": "post_start",
+            "samples": 1664,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 44447251,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 37111049,
+            "p50": 39740064,
+            "p95": 42123959,
+            "phase": "round_total",
+            "samples": 104,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 764635,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 629962,
+            "p50": 644471,
+            "p95": 764635,
+            "phase": "delete_stop",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 604816,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 512171,
+            "p50": 571594,
+            "p95": 604816,
+            "phase": "get",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 496843,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 437141,
+            "p50": 478498,
+            "p95": 496843,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 1413414,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 1032939,
+            "p50": 1122387,
+            "p95": 1413414,
+            "phase": "post_start",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 4817364,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 3990310,
+            "p50": 4069068,
+            "p95": 4817364,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 754446,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 568397,
+            "p50": 652485,
+            "p95": 687311,
+            "phase": "delete_stop",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 622318,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 501291,
+            "p50": 573968,
+            "p95": 621076,
+            "phase": "get",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 591460,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 532449,
+            "p50": 555422,
+            "p95": 591460,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 1381204,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 901463,
+            "p50": 973457,
+            "p95": 1258732,
+            "phase": "post_start",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 11795073,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 11065143,
+            "p50": 11265670,
+            "p95": 11795073,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 819447,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 609374,
+            "p50": 658818,
+            "p95": 733518,
+            "phase": "delete_stop",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 765748,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 509957,
+            "p50": 582814,
+            "p95": 620705,
+            "phase": "get",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 910269,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 862720,
+            "p50": 890272,
+            "p95": 910269,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 1233967,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 833183,
+            "p50": 946167,
+            "p95": 1085297,
+            "phase": "post_start",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 47611671,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 39696972,
+            "p50": 40551046,
+            "p95": 47611671,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          }
+        ],
+        "longrun": {
+          "cycles": 104,
+          "elapsed_ms": 30054,
+          "maximum_concurrent_devices": 16
+        },
+        "not_run": {
+          "file_transfer": {
+            "reason": "no AFC/file workflow in this manager host fixture",
+            "status": "NOT_RUN"
+          },
+          "physical_devices": {
+            "reason": "authorized physical device and USB/Wi-Fi workflows required",
+            "status": "NOT_RUN"
+          },
+          "throughput": {
+            "reason": "proxy children own idle connections; no transferred payload measurement",
+            "status": "NOT_RUN"
+          }
+        },
+        "released_longrun_resources": {
+          "device_coordinators": {
+            "first": 16,
+            "first_half_maximum": 16,
+            "last": 16,
+            "last_minus_first": 0,
+            "maximum": 16,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 16,
+            "p50": 16,
+            "p95": 16,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 16,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "fd_count": {
+            "first": 13,
+            "first_half_maximum": 13,
+            "last": 13,
+            "last_minus_first": 0,
+            "maximum": 13,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 13,
+            "p50": 13,
+            "p95": 13,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 13,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "peak_rss_bytes": {
+            "first": 61583360,
+            "first_half_maximum": 61841408,
+            "last": 61898752,
+            "last_minus_first": 315392,
+            "maximum": 61898752,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 61583360,
+            "p50": 61841408,
+            "p95": 61894656,
+            "positive_last_minus_first_requires_attribution": true,
+            "samples": 104,
+            "second_half_maximum": 61898752,
+            "second_half_range": 57344,
+            "status": "OBSERVED"
+          },
+          "registry_occupied": {
+            "first": 0,
+            "first_half_maximum": 0,
+            "last": 0,
+            "last_minus_first": 0,
+            "maximum": 0,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 0,
+            "p50": 0,
+            "p95": 0,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 0,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "rss_bytes": {
+            "first": 61583360,
+            "first_half_maximum": 61841408,
+            "last": 61898752,
+            "last_minus_first": 315392,
+            "maximum": 61898752,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 61583360,
+            "p50": 61841408,
+            "p95": 61894656,
+            "positive_last_minus_first_requires_attribution": true,
+            "samples": 104,
+            "second_half_maximum": 61898752,
+            "second_half_range": 57344,
+            "status": "OBSERVED"
+          },
+          "socket_fd_count": {
+            "first": 6,
+            "first_half_maximum": 6,
+            "last": 6,
+            "last_minus_first": 0,
+            "maximum": 6,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 6,
+            "p50": 6,
+            "p95": 6,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 6,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "tokio_alive_tasks": {
+            "first": 5,
+            "first_half_maximum": 5,
+            "last": 5,
+            "last_minus_first": 0,
+            "maximum": 5,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 5,
+            "p50": 5,
+            "p95": 5,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 5,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          }
+        },
+        "resource_interpretation": "numeric observations only; growing RSS/FD/task rows require reviewer attribution; no automatic plateau/leak or latency budget claim",
+        "sampling_methods": {
+          "active_resource_scope": "whole test process, including owned fixture TCP peers, proxy clients and authenticated HTTP connections",
+          "cleanup": "original native joins, strict original peer EOF and registry/permit checks",
+          "latency": "unpaused monotonic elapsed; HTTP includes response-body consumption",
+          "rss_fd_socket": "Linux /proc/self/status and /proc/self/fd readlink; own sampling directory included in fd count",
+          "tokio": "Handle::current().metrics().num_alive_tasks() on dedicated 2-worker runtime"
+        }
+      }
+    },
+    "before": {
+      "run": {
+        "command": [
+          "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/baseline-ios-test",
+          "cmd::tunnel::tests::native_retirement_tests::resource_baseline_tests::manager_native_resource_baseline",
+          "--exact",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "compilation": "NOT_STARTED: existing compiled native test executable only",
+        "declared_build_mode": "debug",
+        "driver_sha256": "6318ef70c4f8e1f13ed50738d0faae61b358837c14581ae4f7847782473f4fe9",
+        "execution": {
+          "capture_limit_bytes": 8388608,
+          "captured_bytes": 1026663,
+          "elapsed_seconds": 30.295964709017426,
+          "failure": null,
+          "owned_process_reaped": true,
+          "returncode": 0
+        },
+        "fixture_json_sha256": "0c881505891d8ef02ca69bbffa83a928199e2198ebfaab8508ed8d1a26afb18e",
+        "fixture_source": "/home/oslo/projects/rust-ios-device-manager-before-intent/crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+        "fixture_source_sha256": "5a81963d96062f39dffd77d980c669b57b767a5737e6d47c27cc391a81addfc5",
+        "host": {
+          "cpu_model": "AMD Ryzen 5 5600G with Radeon Graphics",
+          "hardware_product": "Standard PC (Q35 + ICH9, 2009)\n",
+          "kernel": "7.0.0-34-generic",
+          "logical_cpu_count": 8,
+          "machine": "x86_64",
+          "memory_info": "MemTotal:       15777160 kB\nMemFree:         4389588 kB\nMemAvailable:   14755240 kB\nBuffers:           58296 kB\nCached:         10176292 kB\nSwapCached:        15568 kB\nActive:          7995348 kB\nInactive:        2415064 kB\nActive(anon):     157104 kB\nInactive(anon):    30324 kB\nActive(file):    7838244 kB\nInactive(file):  2384740 kB\nUnevictable:       13024 kB\nMlocked:            9024 kB\nSwapTotal:       4194300 kB\nSwapFree:        4090620 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:            565324 kB\nWriteback:             0 kB\nAnonPages:        187676 kB\nMapped:           158264 kB\nShmem:              4768 kB\nKReclaimable:     484508 kB\nSlab:             641080 kB\nSReclaimable:     484508 kB\nSUnreclaim:       156572 kB\nKernelStack:        4884 kB\nPageTables:         6948 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12082880 kB\nCommitted_AS:    1528064 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       25636 kB\nVmallocChunk:          0 kB\nPercpu:             5024 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:    241664 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:               0 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      220068 kB\nDirectMap2M:     6002688 kB\nDirectMap1G:    12582912 kB\n",
+          "metadata_method": "platform-and-readable-linux-proc-sys",
+          "not_observed": [
+            "CPU frequency/governor",
+            "CPU affinity",
+            "background load",
+            "physical USB/Wi-Fi device hardware"
+          ],
+          "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+          "python": "3.14.4"
+        },
+        "label": "before",
+        "log_sha256": "32a4f5d660d665fdbe798caf4504ef88a3a6f10df1c74e7f02ea1ce8084bc1eb",
+        "production_source_commit": "2964c1c2109b0368237e9ebaf13f99e3cbb0da13",
+        "rust_version_evidence": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6",
+        "rust_version_evidence_sha256": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4",
+        "schema_version": 1,
+        "source_freeze": "external main-agent validation runner required; this driver does not establish a freeze",
+        "started_utc": "2026-10-09T07:19:40Z",
+        "summary_json_sha256": "bbea7a7f001837b48787720dc3e406ab3974cdf6ffee7769852c602a84d7774f",
+        "test_binary": "/home/oslo/projects/rust-ios-device/target/validation/manager-resource-baseline-2026-10-09/baseline-ios-test",
+        "test_binary_sha256": "2aacd3286a0453c7f9e36ebde4b9cda3bd7fb8c9c2aeea1215e6dd435c4eac22",
+        "test_binary_sha256_after": "2aacd3286a0453c7f9e36ebde4b9cda3bd7fb8c9c2aeea1215e6dd435c4eac22",
+        "test_overlay": "same test-only source and parent module registration added to each production revision; retain the external freeze/patch evidence"
+      },
+      "summary": {
+        "latency_distributions": [
+          {
+            "devices": 16,
+            "maximum": 833686,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 504888,
+            "p50": 584707,
+            "p95": 674075,
+            "phase": "delete_stop",
+            "samples": 832,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 10903748,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 9149215,
+            "p50": 9978603,
+            "p95": 10830351,
+            "phase": "disconnect_to_absent",
+            "samples": 52,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 736983,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 493186,
+            "p50": 563779,
+            "p95": 640934,
+            "phase": "get",
+            "samples": 1664,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 1589665,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 831832,
+            "p50": 1005236,
+            "p95": 1383718,
+            "phase": "native_cleanup",
+            "samples": 104,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 2557922,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 772772,
+            "p50": 886134,
+            "p95": 1789939,
+            "phase": "post_start",
+            "samples": 1664,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 43492494,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 36885331,
+            "p50": 39262373,
+            "p95": 41699227,
+            "phase": "round_total",
+            "samples": 104,
+            "scenario": "longrun",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 598814,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 568888,
+            "p50": 582103,
+            "p95": 598814,
+            "phase": "delete_stop",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 610306,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 505099,
+            "p50": 567746,
+            "p95": 610306,
+            "phase": "get",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 523232,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 447058,
+            "p50": 448333,
+            "p95": 523232,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 1325088,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 1036296,
+            "p50": 1171619,
+            "p95": 1325088,
+            "phase": "post_start",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 1,
+            "maximum": 4423343,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 3907495,
+            "p50": 4092652,
+            "p95": 4423343,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 684845,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 518284,
+            "p50": 584106,
+            "p95": 674145,
+            "phase": "delete_stop",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 658747,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 517351,
+            "p50": 549001,
+            "p95": 649118,
+            "phase": "get",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 891855,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 530045,
+            "p50": 534223,
+            "p95": 891855,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 1489856,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 818607,
+            "p50": 973006,
+            "p95": 1324396,
+            "phase": "post_start",
+            "samples": 20,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 4,
+            "maximum": 12784610,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 10792749,
+            "p50": 11156272,
+            "p95": 12784610,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 691890,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 517151,
+            "p50": 581902,
+            "p95": 660720,
+            "phase": "delete_stop",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 676760,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 509587,
+            "p50": 578265,
+            "p95": 640803,
+            "phase": "get",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 1207096,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 833566,
+            "p50": 916742,
+            "p95": 1207096,
+            "phase": "native_cleanup",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 1169745,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 804640,
+            "p50": 920267,
+            "p95": 1084987,
+            "phase": "post_start",
+            "samples": 80,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          },
+          {
+            "devices": 16,
+            "maximum": 47635261,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 37225850,
+            "p50": 39163990,
+            "p95": 47635261,
+            "phase": "round_total",
+            "samples": 5,
+            "scenario": "scale",
+            "unit": "nanoseconds"
+          }
+        ],
+        "longrun": {
+          "cycles": 104,
+          "elapsed_ms": 30000,
+          "maximum_concurrent_devices": 16
+        },
+        "not_run": {
+          "file_transfer": {
+            "reason": "no AFC/file workflow in this manager host fixture",
+            "status": "NOT_RUN"
+          },
+          "physical_devices": {
+            "reason": "authorized physical device and USB/Wi-Fi workflows required",
+            "status": "NOT_RUN"
+          },
+          "throughput": {
+            "reason": "proxy children own idle connections; no transferred payload measurement",
+            "status": "NOT_RUN"
+          }
+        },
+        "released_longrun_resources": {
+          "device_coordinators": {
+            "first": 16,
+            "first_half_maximum": 16,
+            "last": 16,
+            "last_minus_first": 0,
+            "maximum": 16,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 16,
+            "p50": 16,
+            "p95": 16,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 16,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "fd_count": {
+            "first": 13,
+            "first_half_maximum": 13,
+            "last": 13,
+            "last_minus_first": 0,
+            "maximum": 13,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 13,
+            "p50": 13,
+            "p95": 13,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 13,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "peak_rss_bytes": {
+            "first": 60850176,
+            "first_half_maximum": 61136896,
+            "last": 61194240,
+            "last_minus_first": 344064,
+            "maximum": 61194240,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 60850176,
+            "p50": 61136896,
+            "p95": 61194240,
+            "positive_last_minus_first_requires_attribution": true,
+            "samples": 104,
+            "second_half_maximum": 61194240,
+            "second_half_range": 57344,
+            "status": "OBSERVED"
+          },
+          "registry_occupied": {
+            "first": 0,
+            "first_half_maximum": 0,
+            "last": 0,
+            "last_minus_first": 0,
+            "maximum": 0,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 0,
+            "p50": 0,
+            "p95": 0,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 0,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "rss_bytes": {
+            "first": 60850176,
+            "first_half_maximum": 61136896,
+            "last": 61194240,
+            "last_minus_first": 344064,
+            "maximum": 61194240,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 60850176,
+            "p50": 61136896,
+            "p95": 61194240,
+            "positive_last_minus_first_requires_attribution": true,
+            "samples": 104,
+            "second_half_maximum": 61194240,
+            "second_half_range": 57344,
+            "status": "OBSERVED"
+          },
+          "socket_fd_count": {
+            "first": 6,
+            "first_half_maximum": 6,
+            "last": 6,
+            "last_minus_first": 0,
+            "maximum": 6,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 6,
+            "p50": 6,
+            "p95": 6,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 6,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          },
+          "tokio_alive_tasks": {
+            "first": 5,
+            "first_half_maximum": 5,
+            "last": 5,
+            "last_minus_first": 0,
+            "maximum": 5,
+            "method": "nearest-rank-all-recorded-samples",
+            "minimum": 5,
+            "p50": 5,
+            "p95": 5,
+            "positive_last_minus_first_requires_attribution": false,
+            "samples": 104,
+            "second_half_maximum": 5,
+            "second_half_range": 0,
+            "status": "OBSERVED"
+          }
+        },
+        "resource_interpretation": "numeric observations only; growing RSS/FD/task rows require reviewer attribution; no automatic plateau/leak or latency budget claim",
+        "sampling_methods": {
+          "active_resource_scope": "whole test process, including owned fixture TCP peers, proxy clients and authenticated HTTP connections",
+          "cleanup": "original native joins, strict original peer EOF and registry/permit checks",
+          "latency": "unpaused monotonic elapsed; HTTP includes response-body consumption",
+          "rss_fd_socket": "Linux /proc/self/status and /proc/self/fd readlink; own sampling directory included in fd count",
+          "tokio": "Handle::current().metrics().num_alive_tasks() on dedicated 2-worker runtime"
+        }
+      }
+    },
+    "latency_deltas": [
+      {
+        "after_samples": 832,
+        "before_samples": 832,
+        "devices": 16,
+        "p50_delta_nanoseconds": 40567,
+        "p95_delta_nanoseconds": 45585,
+        "p95_percent_change": 6.762600600823343,
+        "phase": "delete_stop",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 52,
+        "before_samples": 52,
+        "devices": 16,
+        "p50_delta_nanoseconds": -268133,
+        "p95_delta_nanoseconds": -35736,
+        "p95_percent_change": -0.3299616051224974,
+        "phase": "disconnect_to_absent",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 1664,
+        "before_samples": 1664,
+        "devices": 16,
+        "p50_delta_nanoseconds": -3537,
+        "p95_delta_nanoseconds": -912,
+        "p95_percent_change": -0.14229234211322606,
+        "phase": "get",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 104,
+        "before_samples": 104,
+        "devices": 16,
+        "p50_delta_nanoseconds": 245842,
+        "p95_delta_nanoseconds": 33513,
+        "p95_percent_change": 2.421953028001367,
+        "phase": "native_cleanup",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 1664,
+        "before_samples": 1664,
+        "devices": 16,
+        "p50_delta_nanoseconds": 12402,
+        "p95_delta_nanoseconds": 23907,
+        "p95_percent_change": 1.3356321081333,
+        "phase": "post_start",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 104,
+        "before_samples": 104,
+        "devices": 16,
+        "p50_delta_nanoseconds": 477691,
+        "p95_delta_nanoseconds": 424732,
+        "p95_percent_change": 1.0185608476627195,
+        "phase": "round_total",
+        "scenario": "longrun"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 1,
+        "p50_delta_nanoseconds": 62368,
+        "p95_delta_nanoseconds": 165821,
+        "p95_percent_change": 27.691570337366866,
+        "phase": "delete_stop",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 1,
+        "p50_delta_nanoseconds": 3848,
+        "p95_delta_nanoseconds": -5490,
+        "p95_percent_change": -0.8995487509544375,
+        "phase": "get",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 1,
+        "p50_delta_nanoseconds": 30165,
+        "p95_delta_nanoseconds": -26389,
+        "p95_percent_change": -5.0434606446088885,
+        "phase": "native_cleanup",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 1,
+        "p50_delta_nanoseconds": -49232,
+        "p95_delta_nanoseconds": 88326,
+        "p95_percent_change": 6.665670506411647,
+        "phase": "post_start",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 1,
+        "p50_delta_nanoseconds": -23584,
+        "p95_delta_nanoseconds": 394021,
+        "p95_percent_change": 8.907765009405777,
+        "phase": "round_total",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 20,
+        "before_samples": 20,
+        "devices": 4,
+        "p50_delta_nanoseconds": 68379,
+        "p95_delta_nanoseconds": 13166,
+        "p95_percent_change": 1.9529923087763024,
+        "phase": "delete_stop",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 20,
+        "before_samples": 20,
+        "devices": 4,
+        "p50_delta_nanoseconds": 24967,
+        "p95_delta_nanoseconds": -28042,
+        "p95_percent_change": -4.320015775251962,
+        "phase": "get",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 4,
+        "p50_delta_nanoseconds": 21199,
+        "p95_delta_nanoseconds": -300395,
+        "p95_percent_change": -33.68204472700158,
+        "phase": "native_cleanup",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 20,
+        "before_samples": 20,
+        "devices": 4,
+        "p50_delta_nanoseconds": 451,
+        "p95_delta_nanoseconds": -65664,
+        "p95_percent_change": -4.958033699890363,
+        "phase": "post_start",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 4,
+        "p50_delta_nanoseconds": 109398,
+        "p95_delta_nanoseconds": -989537,
+        "p95_percent_change": -7.7400640301112045,
+        "phase": "round_total",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 80,
+        "before_samples": 80,
+        "devices": 16,
+        "p50_delta_nanoseconds": 76916,
+        "p95_delta_nanoseconds": 72798,
+        "p95_percent_change": 11.017980385034498,
+        "phase": "delete_stop",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 80,
+        "before_samples": 80,
+        "devices": 16,
+        "p50_delta_nanoseconds": 4549,
+        "p95_delta_nanoseconds": -20098,
+        "p95_percent_change": -3.13637732657307,
+        "phase": "get",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 16,
+        "p50_delta_nanoseconds": -26470,
+        "p95_delta_nanoseconds": -296827,
+        "p95_percent_change": -24.59017344105191,
+        "phase": "native_cleanup",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 80,
+        "before_samples": 80,
+        "devices": 16,
+        "p50_delta_nanoseconds": 25900,
+        "p95_delta_nanoseconds": 310,
+        "p95_percent_change": 0.028571770906005156,
+        "phase": "post_start",
+        "scenario": "scale"
+      },
+      {
+        "after_samples": 5,
+        "before_samples": 5,
+        "devices": 16,
+        "p50_delta_nanoseconds": 1387056,
+        "p95_delta_nanoseconds": -23590,
+        "p95_percent_change": -0.04952213865271338,
+        "phase": "round_total",
+        "scenario": "scale"
+      }
+    ],
+    "main_l04": "INCOMPLETE: file throughput, payload streams and representative physical-device/platform measurements remain",
+    "same_reported_hardware_fields": true,
+    "schema_version": 1,
+    "status": "observed-host-comparison"
+  },
+  "scope": "L04 Linux manager/native host subitem only",
+  "source_manifests": {
+    "after-build": {
+      "freeze_sha256": "0f915706bae506568af47485005fbd90488901bcfc115aabda5d2fb51f7357b6",
+      "result": {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "ios-cli",
+          "--bin",
+          "ios",
+          "--all-features",
+          "--locked",
+          "--no-run",
+          "--message-format=json"
+        ],
+        "exit_code": 0,
+        "frozen_files": 513,
+        "label": "after-build",
+        "log_sha256": "36bb091f9711d8ccdaa00e85394a36a781d23aaebef86f3c96e9ae894ef1c35d",
+        "seconds": 52.734,
+        "source_unchanged": true
+      }
+    },
+    "after-lint": {
+      "freeze_sha256": "0f915706bae506568af47485005fbd90488901bcfc115aabda5d2fb51f7357b6",
+      "result": {
+        "command": [
+          "cargo",
+          "clippy",
+          "-p",
+          "ios-cli",
+          "--all-targets",
+          "--all-features",
+          "--locked",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "frozen_files": 513,
+        "label": "after-lint",
+        "log_sha256": "e9b0cca569d302d4698e705c1ce8689929049875f0e68dcb008d191ede6e3773",
+        "seconds": 40.474,
+        "source_unchanged": true
+      }
+    },
+    "allocator-after-pages": {
+      "freeze_sha256": "fb5613dcf3c343d38554bfaf1668a980201af5301d96451516d460a9b4d03ecf",
+      "result": {
+        "command": [
+          "python3",
+          "scripts/manager_allocator_diagnostic.py",
+          "--probe",
+          "target/validation/manager-resource-baseline-2026-10-09/allocator-probe.so",
+          "--test-binary",
+          "target/validation/manager-resource-baseline-2026-10-09/after-ios-test",
+          "--fixture-source",
+          "crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+          "--rust-version-file",
+          "target/validation/manager-resource-baseline-2026-10-09/after-toolchain.log",
+          "--revision",
+          "e53e0bb8b2dc5f5c1e61260cfde6b345c1f591b8",
+          "--label",
+          "diagnostic-after-pages",
+          "--output",
+          "target/validation/manager-resource-baseline-2026-10-09/allocator-after-pages"
+        ],
+        "exit_code": 0,
+        "frozen_files": 515,
+        "label": "allocator-after-pages",
+        "log_sha256": "1d4c0374d871288b727b471c2e35f28fe47b5130bd8677d9bcf5fa306073441c",
+        "seconds": 61.428,
+        "source_unchanged": true
+      }
+    },
+    "allocator-before-pages": {
+      "freeze_sha256": "fb5613dcf3c343d38554bfaf1668a980201af5301d96451516d460a9b4d03ecf",
+      "result": {
+        "command": [
+          "python3",
+          "scripts/manager_allocator_diagnostic.py",
+          "--probe",
+          "target/validation/manager-resource-baseline-2026-10-09/allocator-probe.so",
+          "--test-binary",
+          "target/validation/manager-resource-baseline-2026-10-09/baseline-ios-test",
+          "--fixture-source",
+          "/home/oslo/projects/rust-ios-device-manager-before-intent/crates/ios-cli/src/cmd/tunnel/tests/native_retirement_tests/resource_baseline_tests.rs",
+          "--rust-version-file",
+          "target/validation/manager-resource-baseline-2026-10-09/baseline-toolchain.log",
+          "--revision",
+          "2964c1c2109b0368237e9ebaf13f99e3cbb0da13",
+          "--label",
+          "diagnostic-before-pages",
+          "--output",
+          "target/validation/manager-resource-baseline-2026-10-09/allocator-before-pages"
+        ],
+        "exit_code": 0,
+        "frozen_files": 515,
+        "label": "allocator-before-pages",
+        "log_sha256": "bb8f41121cf9fe9648277e84c7c1fcacb271d0183520bfd627cd86a53388ca54",
+        "seconds": 61.379,
+        "source_unchanged": true
+      }
+    },
+    "baseline-build": {
+      "freeze_sha256": "8b0e71c77251141d24ef94c3c671744da0343147de3e9fff605a713330db7f6c",
+      "result": {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "ios-cli",
+          "--bin",
+          "ios",
+          "--all-features",
+          "--locked",
+          "--no-run",
+          "--message-format=json"
+        ],
+        "exit_code": 0,
+        "frozen_files": 507,
+        "label": "baseline-build",
+        "log_sha256": "a93b6418e9b9a333d57366fb207058886005ebd579eb662b23827b899b29e691",
+        "seconds": 69.099,
+        "source_unchanged": true
+      }
+    }
+  }
+}

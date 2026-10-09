@@ -578,3 +578,5 @@ async fn native_cli_clear_and_stop_fence_unpublished_real_runtime_before_query_r
         assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
     }
 }
+
+mod resource_baseline_tests;
