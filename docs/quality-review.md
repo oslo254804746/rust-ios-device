@@ -5,6 +5,12 @@ When cadence changes, record the reason and next review date; retain previous
 conclusions. This template starts D02 governance, not 1.0 readiness or release
 authorization. The roadmap retains every unfinished task and subtask.
 
+On 2026-10-09 the user changed development accounting: delivered implementations
+awaiting verification count as development-complete. The current development
+total is 19 complete / 11 with missing implementation; see the authoritative
+[development backlog](development-backlog.md). Actual test results and maturity
+remain separate. Older review totals below describe their recorded checkpoint.
+
 Current implementation review: 2026-10-07. Monthly review remains planned for 2026-10-30.
 Execution scope changed by the user on2026-10-06: Q04 and all its subtasks are
 excluded. The effective scope is30 tasks (9 complete/9 not started/12 in progress
