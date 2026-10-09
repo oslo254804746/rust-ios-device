@@ -1,4 +1,4 @@
-use std::{future::Future, time::Duration};
+use std::{future::Future, net::SocketAddrV6, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -30,6 +30,15 @@ pub struct DoctorCmd {
     /// Port of the optional tunnel manager on 127.0.0.1
     #[arg(long, default_value_t = 49151, value_parser = clap::value_parser!(u16).range(1..))]
     tunnel_port: u16,
+    /// Explicit already established RSD IPv6 endpoint, including its port
+    #[arg(long, value_name = "[IPV6%SCOPE]:PORT")]
+    rsd_address: Option<SocketAddrV6>,
+    /// Existing userspace proxy port on 127.0.0.1; no tunnel is started
+    #[arg(long, requires = "rsd_address", value_parser = clap::value_parser!(u16).range(1..))]
+    rsd_proxy_port: Option<u16>,
+    /// Observe one service advertisement without connecting to that service
+    #[arg(long, requires = "rsd_address")]
+    rsd_service: Option<String>,
     #[command(flatten)]
     access: crate::access::ClientAccessArgs,
 }
@@ -88,9 +97,12 @@ impl Report {
 
 impl DoctorCmd {
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
+        // Validate every selector before host probes, credential reads, device
+        // enumeration or route IO, including programmatically built commands.
+        let rsd = self.rsd_request(udid.as_deref())?;
         if let Some(udid) = udid {
             device::validate_target(&udid)?;
-            return self.run_target(&udid, json).await;
+            return self.run_target(&udid, json, rsd.as_ref()).await;
         }
         let report = self.inspect().await;
         if json {
@@ -121,15 +133,30 @@ impl DoctorCmd {
         Ok(())
     }
 
-    async fn run_target(&self, udid: &str, json: bool) -> Result<()> {
+    fn rsd_request(&self, udid: Option<&str>) -> Result<Option<device::rsd::Request>> {
+        device::rsd::Request::from_selectors(
+            udid,
+            self.rsd_address,
+            self.rsd_proxy_port,
+            self.rsd_service.as_deref(),
+        )
+    }
+
+    async fn run_target(
+        &self,
+        udid: &str,
+        json: bool,
+        rsd: Option<&device::rsd::Request>,
+    ) -> Result<()> {
         let work = async {
             let host = self.inspect().await;
-            let device = device::inspect(
-                &device::NativeSource,
-                udid,
-                Duration::from_secs(self.timeout),
-            )
-            .await;
+            let timeout = Duration::from_secs(self.timeout);
+            let device = match rsd {
+                Some(request) => {
+                    device::inspect_with_rsd(&device::NativeSource, udid, timeout, request).await
+                }
+                None => device::inspect(&device::NativeSource, udid, timeout).await,
+            };
             Ok(TargetReport::new(host, device))
         };
         let mut report = cancellable(work, tokio::signal::ctrl_c()).await?;

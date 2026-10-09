@@ -105,6 +105,11 @@ pub use device::{
     InitialRsdProbe, InitialRsdProbeSkipReason, InitialRsdProbeState, InternationalConfiguration,
     PairedMobdev2Device, ServiceStream, TunnelOwner, TunnelReservation,
 };
+#[cfg(feature = "tunnel")]
+pub use device::{
+    observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
+    ExistingRsdService, ExistingRsdServiceEvidence,
+};
 #[cfg(feature = "mdns")]
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
 pub use discovery::{DeviceEvent, DeviceInfo};

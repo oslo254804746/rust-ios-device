@@ -112,6 +112,13 @@ mod deactivation_error;
 pub use deactivation_error::DeactivationFallbackError;
 mod connected;
 mod connection;
+#[cfg(feature = "tunnel")]
+pub(crate) mod existing_rsd;
+#[cfg(feature = "tunnel")]
+pub use existing_rsd::{
+    observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
+    ExistingRsdService, ExistingRsdServiceEvidence,
+};
 #[cfg(any(feature = "mdns", feature = "tunnel"))]
 pub(crate) mod error_context;
 mod lockdown_transport;

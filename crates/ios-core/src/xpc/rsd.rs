@@ -232,38 +232,12 @@ where
         )
         .await?;
         let attempt = async {
-            let mut framer =
-                rsd_timeout(Duration::from_secs(3), "RSD bootstrap timed out", async {
-                    let mut framer = if matches!(mode, HandshakeMode::Active) {
-                        let mut framer = H2Framer::begin_connect(stream)
-                            .await
-                            .map_err(|err| h2_error("RSD H2: ", err))?;
-                        queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
-                        framer
-                            .finish_connect()
-                            .await
-                            .map_err(|err| h2_error("RSD H2: ", err))?;
-                        framer
-                    } else {
-                        H2Framer::connect(stream)
-                            .await
-                            .map_err(|err| h2_error("RSD H2: ", err))?
-                    };
-                    match mode {
-                        HandshakeMode::Active => {
-                            send_device_handshake_on_framer(&mut framer, identity).await?
-                        }
-                        HandshakeMode::Queued => {
-                            queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?
-                        }
-                        HandshakeMode::Legacy => {
-                            initialize_xpc_connection_on_framer(&mut framer).await?
-                        }
-                        HandshakeMode::Passive => {}
-                    }
-                    Ok(framer)
-                })
-                .await?;
+            let mut framer = rsd_timeout(
+                Duration::from_secs(3),
+                "RSD bootstrap timed out",
+                bootstrap_rsd(stream, mode, identity),
+            )
+            .await?;
             let response_timeout = match mode {
                 HandshakeMode::Active | HandshakeMode::Queued => Duration::from_secs(4),
                 HandshakeMode::Legacy => Duration::from_secs(3),
@@ -286,6 +260,313 @@ where
         }
     }
     Err(last_error.expect("RSD attempted every bootstrap mode"))
+}
+
+#[cfg(feature = "tunnel")]
+async fn bootstrap_rsd<S>(
+    stream: S,
+    mode: HandshakeMode,
+    identity: uuid::Uuid,
+) -> Result<H2Framer<S>, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut framer = if matches!(mode, HandshakeMode::Active) {
+        let mut framer = H2Framer::begin_connect(stream)
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?;
+        queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
+        framer
+            .finish_connect()
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?;
+        framer
+    } else {
+        H2Framer::connect(stream)
+            .await
+            .map_err(|error| h2_error("RSD H2: ", error))?
+    };
+    match mode {
+        HandshakeMode::Active => send_device_handshake_on_framer(&mut framer, identity).await?,
+        HandshakeMode::Queued => queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?,
+        HandshakeMode::Legacy => initialize_xpc_connection_on_framer(&mut framer).await?,
+        HandshakeMode::Passive => {}
+    }
+    Ok(framer)
+}
+
+/// The caller guards every socket poll and owns one deadline across identity,
+/// connector/prelude and all bootstrap modes. A decoded Handshake is final:
+/// missing fields are observations; malformed fields are original protocol
+/// errors, never a reason to replace them with another dial or timeout.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_with_connector<F, Fut, S>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use std::time::Duration;
+    let mut last_error = None;
+    for mode in [
+        HandshakeMode::Active,
+        HandshakeMode::Queued,
+        HandshakeMode::Legacy,
+        HandshakeMode::Passive,
+    ] {
+        if tokio::time::Instant::now() >= deadline {
+            return match last_error {
+                Some(error) => Err(error),
+                None => tokio::time::timeout_at(
+                    deadline,
+                    std::future::pending::<
+                        Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError>,
+                    >(),
+                )
+                .await
+                .map_err(|source| {
+                    crate::xpc::native_error(
+                        std::io::ErrorKind::TimedOut,
+                        "existing RSD discovery deadline",
+                        source,
+                    )
+                })?,
+            };
+        }
+        let stream = connector().await?;
+        let bootstrap = rsd_timeout(
+            Duration::from_secs(3),
+            "RSD bootstrap timed out",
+            bootstrap_rsd(stream, mode, identity),
+        )
+        .await;
+        let mut framer = match bootstrap {
+            Ok(framer) => framer,
+            Err(error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let response_budget = match mode {
+            HandshakeMode::Active | HandshakeMode::Queued => Duration::from_secs(4),
+            HandshakeMode::Legacy => Duration::from_secs(3),
+            HandshakeMode::Passive => Duration::from_secs(2),
+        };
+        match tokio::time::timeout(response_budget, read_checked_handshake(&mut framer)).await {
+            Ok(Ok(observation)) => return Ok(observation),
+            Ok(Err(CheckedReadError::Final(error))) => return Err(error),
+            Ok(Err(CheckedReadError::Retry(error))) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+            Err(source) => {
+                let error = crate::xpc::native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "RSD response timed out",
+                    source,
+                );
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("RSD attempted every bootstrap mode"))
+}
+
+#[cfg(feature = "tunnel")]
+enum CheckedReadError {
+    Retry(XpcError),
+    Final(XpcError),
+}
+
+#[cfg(feature = "tunnel")]
+async fn read_checked_handshake<S>(
+    framer: &mut H2Framer<S>,
+) -> Result<crate::device::existing_rsd::ExistingRsdObservation, CheckedReadError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut operation = RsdOperation::begin(framer).map_err(CheckedReadError::Retry)?;
+    let mut result = Err(CheckedReadError::Retry(XpcError::Tls(
+        "RSD: no handshake message received".into(),
+    )));
+    for _ in 0..6 {
+        let message =
+            match read_xpc_on_client_server(operation.framer, &mut operation.progressed).await {
+                Ok(message) => message,
+                Err(error) => {
+                    result = Err(CheckedReadError::Retry(error));
+                    break;
+                }
+            };
+        let Some(dictionary) = message.body.as_ref().and_then(XpcValue::as_dict) else {
+            continue;
+        };
+        match dictionary.get("MessageType") {
+            None => continue,
+            Some(XpcValue::String(value)) if value != "Handshake" => continue,
+            Some(XpcValue::String(_)) => {
+                result =
+                    parse_checked_handshake_dictionary(dictionary).map_err(CheckedReadError::Final);
+                break;
+            }
+            Some(_) => {
+                result = Err(CheckedReadError::Final(XpcError::Tls(
+                    "RSD: MessageType was not a string".into(),
+                )));
+                break;
+            }
+        }
+    }
+    // The socket is fresh and owned by the probe. Keep the same logical frame
+    // invalidation contract as the legacy borrowed operation on any failure.
+    operation.completed = true;
+    if result.is_err() && operation.progressed {
+        operation.framer.invalidate();
+    }
+    result
+}
+
+#[cfg(feature = "tunnel")]
+fn parse_checked_handshake_dictionary(
+    dictionary: &indexmap::IndexMap<String, XpcValue>,
+) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError> {
+    use crate::device::existing_rsd::{
+        ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdService, MAX_FEATURES,
+        MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
+    };
+    let protocol = |message: &'static str| XpcError::Tls(message.into());
+    let mut text_bytes = 0usize;
+    let mut feature_count = 0usize;
+    let mut admit_text = |value: &str| -> Result<(), XpcError> {
+        text_bytes = text_bytes.saturating_add(value.len());
+        if value.len() > MAX_FIELD_BYTES || text_bytes > MAX_TEXT_BYTES {
+            return Err(ExistingRsdProbeError::metadata_limit());
+        }
+        Ok(())
+    };
+    let properties = match dictionary.get("Properties") {
+        None => None,
+        Some(XpcValue::Dictionary(properties)) => Some(properties),
+        Some(_) => return Err(protocol("RSD: Properties was not a dictionary")),
+    };
+    let udid = match properties.and_then(|properties| properties.get("UniqueDeviceID")) {
+        None => None,
+        Some(XpcValue::String(udid)) if !udid.is_empty() => {
+            admit_text(udid)?;
+            Some(udid)
+        }
+        Some(_) => return Err(protocol("RSD: UniqueDeviceID was not a nonempty string")),
+    };
+    let services = match dictionary.get("Services") {
+        None => None,
+        Some(XpcValue::Dictionary(services)) if services.len() <= MAX_SERVICES => Some(services),
+        Some(XpcValue::Dictionary(_)) => return Err(ExistingRsdProbeError::metadata_limit()),
+        Some(_) => return Err(protocol("RSD: Services was not a dictionary")),
+    };
+    // Admit the whole borrowed snapshot before retaining additional strings.
+    // A partial/incomplete directory cannot certify a selected service missing.
+    if let Some(services) = services {
+        for (name, value) in services {
+            admit_text(name)?;
+            let service = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: service entry was not a dictionary"))?;
+            if let Some(value) = service.get("Port") {
+                if let XpcValue::String(value) = value {
+                    if value.len() > MAX_FIELD_BYTES {
+                        return Err(ExistingRsdProbeError::metadata_limit());
+                    }
+                }
+                checked_service_port(value)?;
+            }
+            let properties = match service.get("Properties") {
+                None => None,
+                Some(XpcValue::Dictionary(properties)) => Some(properties),
+                Some(_) => return Err(protocol("RSD: service Properties was not a dictionary")),
+            };
+            if let Some(value) = properties.and_then(|properties| properties.get("Features")) {
+                let XpcValue::Array(features) = value else {
+                    return Err(protocol("RSD: Features was not an array"));
+                };
+                feature_count = feature_count.saturating_add(features.len());
+                if feature_count > MAX_FEATURES {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                for feature in features {
+                    let feature = feature
+                        .as_str()
+                        .ok_or_else(|| protocol("RSD: feature identifier was not a string"))?;
+                    admit_text(feature)?;
+                }
+            }
+        }
+    }
+    let services = services
+        .map(|services| {
+            services
+                .iter()
+                .map(|(name, value)| {
+                    let service = value.as_dict().expect("checked service dictionary");
+                    let port = service.get("Port").map(checked_service_port).transpose()?;
+                    let features = service
+                        .get("Properties")
+                        .and_then(XpcValue::as_dict)
+                        .and_then(|properties| properties.get("Features"))
+                        .map(|features| {
+                            let XpcValue::Array(features) = features else {
+                                unreachable!("checked feature array")
+                            };
+                            features
+                                .iter()
+                                .map(|feature| {
+                                    feature.as_str().expect("checked feature string").to_owned()
+                                })
+                                .collect()
+                        });
+                    Ok((name.clone(), ExistingRsdService::new(port, features)))
+                })
+                .collect::<Result<HashMap<_, _>, XpcError>>()
+        })
+        .transpose()?;
+    Ok(ExistingRsdObservation::new(udid.cloned(), services))
+}
+
+#[cfg(feature = "tunnel")]
+fn checked_service_port(value: &XpcValue) -> Result<u16, XpcError> {
+    let port = match value {
+        XpcValue::String(port) => port.parse::<u16>().map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                None,
+                source,
+            ))
+        })?,
+        XpcValue::Uint64(port) => u16::try_from(*port).map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                Some(*port),
+                source,
+            ))
+        })?,
+        _ => return Err(XpcError::Tls("RSD: Port had an invalid type".into())),
+    };
+    if port == 0 {
+        Err(XpcError::Tls("RSD: service Port was zero".into()))
+    } else {
+        Ok(port)
+    }
 }
 
 #[cfg(feature = "tunnel")]

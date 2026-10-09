@@ -340,6 +340,55 @@ def doctor_cases(binary, env, variants, device):
             report["contract"] = False
         report["passed"] = report["passed"] and report["contract"]
         reports["doctor-invalid-selector"] = report
+    # Invalid existing-route selectors must fail before host/device/proxy IO.
+    # A listening trap records actual connections; the CLI never receives an
+    # answer that could disguise accidental work as a successful validation.
+    with socket.socket() as trap:
+        trap.bind(("127.0.0.1", 0))
+        trap.listen()
+        trap.setblocking(False)
+        port = str(trap.getsockname()[1])
+        endpoint = "[fd00:5678:1234::cafe]:58783"
+        service = "synthetic-private-rsd-service-" * 160
+        checked_variants = set(variants)
+        checked_variants.update(secret_variants(endpoint.encode()))
+        checked_variants.update(secret_variants(service.encode()))
+        selected_env = env.copy()
+        selected_env.pop("IOS_UDID", None)
+        selected_env["USBMUXD_SOCKET_ADDRESS"] = "tcp://127.0.0.1:" + port
+        for name, target, args, code, category in [
+            ("doctor-rsd-needs-target", [], ["--rsd-address", endpoint], 1, "invalid_input"),
+            ("doctor-rsd-zero-endpoint", ["--udid", device],
+             ["--rsd-address", "[::1]:0"], 1, "invalid_input"),
+            ("doctor-rsd-proxy-scope", ["--udid", device],
+             ["--rsd-address", "[fd00:5678:1234::cafe%3]:58783",
+              "--rsd-proxy-port", port], 1, "invalid_input"),
+            ("doctor-rsd-service-limit", ["--udid", device],
+             ["--rsd-address", endpoint, "--rsd-proxy-port", port,
+              "--rsd-service", service], 1, "resource_limit"),
+            ("doctor-rsd-zero-proxy", ["--udid", device],
+             ["--rsd-address", endpoint, "--rsd-proxy-port", "0"], 2, "invalid_input"),
+        ]:
+            result = capture([str(binary), "-vvvv", "--error-format", "json"]
+                             + target + ["doctor", "--timeout", "1"] + args,
+                             env=selected_env)
+            connections = 0
+            while True:
+                try:
+                    peer, _ = trap.accept()
+                except BlockingIOError:
+                    break
+                with peer:
+                    connections += 1
+            report = assess(result, checked_variants, code)
+            try:
+                report["contract"] = (not result.stdout and connections == 0
+                                      and json.loads(result.stderr)["error"]["class"] == category)
+            except (ValueError, TypeError, KeyError):
+                report["contract"] = False
+            report["device_proxy_connections"] = connections
+            report["passed"] = report["passed"] and report["contract"]
+            reports[name] = report
     return reports
 
 

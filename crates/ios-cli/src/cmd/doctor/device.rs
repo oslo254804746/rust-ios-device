@@ -28,6 +28,8 @@ use tokio::time::Instant;
 
 use super::Status;
 
+pub(super) mod rsd;
+
 pub(super) trait Source: Send + Sync {
     fn devices(&self) -> BoxFuture<'_, Result<Vec<DeviceInfo>>>;
     fn pair_record<'a>(&'a self, udid: &'a str) -> BoxFuture<'a, Result<Arc<PairRecord>>>;
@@ -104,6 +106,8 @@ pub(super) struct Check {
     // nor Debug exposes an arbitrary response, identity, credential or path.
     #[serde(skip)]
     error: Option<anyhow::Error>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rsd: Option<rsd::Metadata>,
 }
 
 impl fmt::Debug for Check {
@@ -143,6 +147,7 @@ impl Check {
             },
             hint: None,
             error: None,
+            rsd: None,
         }
     }
 
@@ -180,6 +185,7 @@ impl Check {
                 _ => None,
             },
             error: Some(error),
+            rsd: None,
         }
     }
 
@@ -193,6 +199,7 @@ impl Check {
             detail,
             hint: Some(hint),
             error: None,
+            rsd: None,
         }
     }
 }
@@ -257,6 +264,21 @@ pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) 
         transport: "usbmux_existing_trust",
         checks,
     }
+}
+
+pub(super) async fn inspect_with_rsd(
+    source: &dyn Source,
+    udid: &str,
+    timeout: Duration,
+    request: &rsd::Request,
+) -> Assessment {
+    // Preserve the three existing-trust checks and their order. A failure in
+    // that transport does not skip the independently selected existing route.
+    let mut assessment = inspect(source, udid, timeout).await;
+    let [services, route] = rsd::inspect(request, udid, timeout).await;
+    assessment.checks[3] = services;
+    assessment.checks[4] = route;
+    assessment
 }
 
 #[derive(Clone, Copy)]
