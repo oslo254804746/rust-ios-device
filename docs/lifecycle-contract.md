@@ -1234,3 +1234,15 @@ call on that stream. EOF, IO failure or oversized input permanently disables it;
 later calls reject locally. Dropping the owned client/stream releases its socket;
 retaining a terminal client does not claim an automatic transport shutdown or
 reconnect. [Acceptance](validation/doctor-rsd-syslog-2026-10-09.md).
+
+## SDK owner admission and actual lease retirement
+
+One checked absolute total begins at lease admission, including unpolled waiting,
+QueryType, StartSession, real TLS and StartService. Close seals admission,
+broadcasts cancellation and waits for actual lease retirement using a separate
+cleanup budget. Timeout keeps outstanding count/permits; repeated close can
+finish later. Last client handle Drop cancels; leases alone are not client
+handles. Native stream/future Drop precedes admission release and zero count.
+Prepared operations keep no hidden SessionOwner clone. Pools apply only to owners
+sharing that pool. Cooperative clocks cannot preempt synchronous crypto/parse/OS
+work. [Evidence and limits](validation/sdk-owned-session-2026-10-09.md).

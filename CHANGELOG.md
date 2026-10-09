@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add finite existing-trust session operations with shared/local admission, one
+  absolute total, cancellation and close that waits for actual lease retirement.
+  Checked QueryType/StartSession/TLS/StartService return owned port/SSL metadata;
+  no implicit pairing or retry. Device queries and Python/C SDK remain pending.
+  [Host acceptance](docs/validation/sdk-owned-session-2026-10-09.md).
+
 - Observe explicitly selected existing RSD IPv6/proxy routes with one total,
   checked directory metadata and exact doctor target attribution. Missing fields
   stay unknown; advertisement does not execute a service. Legacy doctor schemas

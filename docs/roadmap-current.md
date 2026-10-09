@@ -14,8 +14,9 @@
 | L03 manager 可配置 episode | 主机子项已验收 | `1a604af`；serve 退避/有限预算/准确状态、identity/epoch/version 与原 native owner 回收；[证据](validation/manager-reconnect-2026-10-08.md)。manual 恢复、跨扫描停止与 Darwin watch 仍待交付 |
 | A03 原生有界读取 | 主机子项已验收 | `655733c`；AFC caller byte limit；Browse checked 总期限、累计 wire/帧/条目预算和失效后复用拒绝；[证据与迁移](validation/bounded-service-read-2026-10-08.md) |
 | A03 日志取消/失效 framing | 主机子项已验收 | `f077674`；取消保留已读前缀、EOF/IO/超长后 terminal 并拒绝复用；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
-| A03 SDK session 前置 | 两个独立 worktree 开发中 | checked existing-trust session、共同 owner 的期限/取消/并发与 owned prepared-service 观察；设备 factory/query/binding 接线待交付 |
-| L03 manual route/跨扫描 stop | 独立 worktree 开发中 | 成功实际 route 意图、持续 stop、原授权 lease/epoch/version 与 4096 admission；不扩大到 Darwin watch |
+| A03 SDK session 前置 | 主机子项已验收 | `2b906d7`；共同 owner、单一绝对期限/取消/并发、checked existing-trust session 与 owned prepared-service 观察；[证据](validation/sdk-owned-session-2026-10-09.md)。设备 factory/query/binding 接线仍待交付 |
+| L03 manual route/跨扫描 stop | 独立 worktree 未验收 | 成功实际 route 意图、持续 stop、原授权 lease/epoch/version 与 4096 admission；不扩大到 Darwin watch |
+| F03 实际 CDP 客户端门禁 | 静态交付待验收 | 独立 JSContext peer 对生产 protected router；Puppeteer runtime 流程、Playwright 初始化明确拒绝和真实子进程取消/回收。不能以 ordinary ignored tests 代替执行 |
 | A03 Python/C 常用 SDK | 待开发 | 设备/应用/文件/日志句柄，Python context/async 和 C ownership/error/取消/并发合同与示例集中交付 |
 
 当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
@@ -27,3 +28,5 @@ worker；Unix FIFO 已拒绝，此限制仍需独立处理。上述条件不阻�
 
 主 agent 统一集成、冻结被测源码、串行编译和批量验收。子 agent 在独立 worktree
 开发或只读审查，禁止启动 Rust 编译。验收通过后本地提交；不推送、发布或部署。
+
+当前执行限制：manager 子 agent 触及额度后停止，未验收改动保留在独立 worktree；不得将其视为已集成或仍在运行。主 agent 继续串行验收其他已交付工作。

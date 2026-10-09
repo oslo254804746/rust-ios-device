@@ -2098,3 +2098,18 @@ terminal. Later `next_message` calls return local InvalidData/Protocol without
 reading a cached tail or polling transport. Cancellation alone retains the prefix
 and permits resumption. Debug/output do not include remote content.
 [Host tests and limits](validation/doctor-rsd-syslog-2026-10-09.md).
+
+## Finite SDK operation failures
+
+Private SessionFailure preserves typed ResourceLimit, Conflict, Precondition,
+Cancelled and local total Timeout without inventing native Elapsed. Checked
+existing-trust replies validate Error before metadata and enforce request identity,
+nonempty SessionID, explicit SSL boolean and nonzero u16 service port. Owning
+StartSession permission codes classify PermissionDenied; legacy GetValue and
+StartService classifications stay unchanged. Original native IO/Elapsed/rustls
+causes remain inspectable. A crossing native error wins; late Ok is suppressed.
+The IO fence retains an actual native error across an upper Pending until a
+terminal result, another allowed native poll or explicit handled-error acknowledgement.
+Arbitrary future causality is not inferred. Failed partially consumed service
+operations drop their private stream and reject reuse. Diagnostic text excludes
+remote error codes and trust contents. [Acceptance](validation/sdk-owned-session-2026-10-09.md).

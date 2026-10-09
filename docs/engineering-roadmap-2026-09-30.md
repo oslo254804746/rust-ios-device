@@ -120,8 +120,8 @@
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
-| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；Python/C owner、取消、并发、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
-| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
+| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；`2b906d7` 完成共同 owner/checked existing-trust 原生前置；Python/C 句柄、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
+| L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续；`2b906d7` 完成原生 SDK owner 单一绝对期限/取消/准入子项。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
@@ -8261,3 +8261,19 @@ F01/A03/L01 仅新增上述主机子项，主任务不标完成；22真机行仍
 DDI usability、阻塞文件 IO、绑定和设备工作流原验收继续。下一批 SDK 共同 owner/
 checked existing-trust、L03 manual route/跨 scan stop 已划定独立 worktree 边界，
 主 agent 集成、串行编译并冻结被测源码。Q04及全部子项继续排除。
+
+## 2026-10-09：SDK 共同 owner 与 checked existing-trust 前置
+
+`2b906d7` 完成有限 owned service observation、单一绝对期限、取消、无等待队列的
+owner/shared 准入、close/last-handle Drop 和实际 lease 回收。checked lockdown 共用
+QueryType/StartSession/真实 TLS/StartService 时钟，严格 Error-first 和必要元数据；
+原 native IO/Elapsed/rustls source 保留。调用方已有 stream 和 Arc<PairRecord>；
+未建立设备 factory/query 或 Python/C 常用 SDK，StartService 的远端效果没有回滚证明。
+
+初始完整入口在已通过 fmt/check 后发现测试多余解引用；修正后串行恢复所有剩余
+必需门禁，退出0，Rust2953/Python13，493产品路径及提交blob与冻结manifest一致。
+完整入口本身的失败和分段验收分别保留，未伪称单次 full 成功。
+[边界、失败修正与验收证据](validation/sdk-owned-session-2026-10-09.md)。
+
+A03/L01 仅此原生子项验收，不标主任务完成；22真机项仍 NOT_RUN，原全部绑定、
+工作流、平台、OS worker与协议验收继续。Q04及全部子项排除，有效30项9完成/21未完成。

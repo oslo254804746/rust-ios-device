@@ -1424,3 +1424,15 @@ message limit make the client terminal; additive `is_usable()` reports that loca
 state, and subsequent reads fail locally before polling cached tails or transport.
 Use a fresh stream after terminal failure. Existing success framing/UTF-8/vis and
 infinite idle behavior remain. [Acceptance and migration](validation/doctor-rsd-syslog-2026-10-09.md).
+
+## Owned finite existing-trust operations
+
+The additive `ios_core::session` module exports SharedAdmission, SessionOwner,
+OperationOptions, OperationCancel and consumed OperationLease. Limits admit
+synchronously without queues. prepared_service_observation takes an owned stream,
+existing Arc<PairRecord>, lease and explicit service, returning only owned checked
+port/SSL metadata. It does not enumerate, connect the advertised port or retry.
+Selectors admit before factory IO. Private borrowed factories/IO cannot escape
+through a raw public checked-session or transport handle. Existing APIs and
+error enum variants remain. StartService can have remote effects; local Drop
+does not acknowledge rollback. [Acceptance](validation/sdk-owned-session-2026-10-09.md).
