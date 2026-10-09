@@ -4,6 +4,26 @@
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
+      "id": "linux-sdk-query-6f582c9",
+      "level": "simulated-flow",
+      "host_os": "Linux x86_64",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "owned TCP/Unix usbmux",
+        "checked Lockdown and actual Rustls TLS"
+      ],
+      "required_state": [
+        "Explicit selected device and caller-loaded credentials; root-only serial Rust gates; 505 frozen product paths."
+      ],
+      "tested_commit": "6f582c9a6eddfc49f7e161f44ad20f507c7986d2",
+      "date": "2026-10-09",
+      "location": "docs/validation/sdk-device-query-2026-10-09.md",
+      "result": "PASS",
+      "scope": "Finite fresh device queries: owned typed/root fields, one total/cancel/admission, declared reply/metadata/output budgets, TCP/Unix/TLS native causes and original retirement. 21 actual owned query fixtures and two pair-byte admission/cause tests.",
+      "limitations": "No physical devices or completed Python/C query/app/file/log workflow. Logical budgets exclude requests/TLS/parser temporary allocations/CPU/RSS. Original full entry failed strict lint after check; final remaining required stages passed separately. 22 device rows NOT_RUN; A03 and maturity unchanged."
+    },
+    {
       "id": "linux-cdp-puppeteer-3e697fd",
       "level": "simulated-flow",
       "host_os": "Linux x86_64",
@@ -2281,7 +2301,57 @@
     {"id":"service:imagemounter","surface":"ios_core::services::imagemounter","source":"crates/ios-core/src/services/imagemounter/mod.rs","protocol_paths":{"service_families":["imagemounter"],"declared_selectors":[],"client_imports":[],"unresolved":["Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."]},"implementation":"public-surface-present","maturity":"experimental","required_state":["Host platform and installed service dependencies must be checked for the chosen operation.","Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.","No device pairing, installation or destructive operation is authorized by this catalog."],"compatibility_scope":[],"observations":[{"level":"host-unit/protocol","result":"PASS","evidence":"linux-build-3013799","scope":"Compilation of the public surface only."},{"level":"simulated-flow","result":"NOT_RUN","reason":"Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."},{"level":"real-device","result":"NOT_RUN","reason":"No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."},{"level":"host-unit/protocol","result":"PASS","evidence":"linux-checked-image-metadata-71a59fc","scope":"Additive checked image metadata, missing/false/malformed distinction and legacy wire/default compatibility only."}],"limitations":["Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.","Checked signature presence is distinct from mounted state and image usability; physical image workflows remain NOT_RUN."],"topic":"docs/usage.md"},
     {"id":"service:cryptex","surface":"ios_core::services::cryptex","source":"crates/ios-core/src/services/cryptex/mod.rs","protocol_paths":{"service_families":["cryptex"],"declared_selectors":["com.apple.security.cryptexd.remote"],"client_imports":["crate::xpc::message","crate::xpc","crate::imagemounter::protocol","crate::imagemounter::ImageMounterClient","crate::imagemounter::tss"],"unresolved":[]},"implementation":"public-surface-present","maturity":"experimental","required_state":["Host platform and installed service dependencies must be checked for the chosen operation.","Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.","No device pairing, installation or destructive operation is authorized by this catalog."],"compatibility_scope":[],"observations":[{"level":"host-unit/protocol","result":"PASS","evidence":"linux-build-3013799","scope":"Compilation of the public surface only."},{"level":"simulated-flow","result":"NOT_RUN","reason":"Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."},{"level":"real-device","result":"NOT_RUN","reason":"No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."}],"limitations":["Host fixtures exist; real TSS and physical installation remain unverified."],"topic":"docs/cryptex-ddi.md"},
     {"id":"service:diagnostics","surface":"ios_core::services::diagnostics","source":"crates/ios-core/src/services/diagnostics.rs","protocol_paths":{"service_families":["diagnostics"],"declared_selectors":["com.apple.mobile.diagnostics_relay"],"client_imports":[],"unresolved":[]},"implementation":"public-surface-present","maturity":"experimental","required_state":["Host platform and installed service dependencies must be checked for the chosen operation.","Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.","No device pairing, installation or destructive operation is authorized by this catalog."],"compatibility_scope":[],"observations":[{"level":"host-unit/protocol","result":"PASS","evidence":"linux-build-3013799","scope":"Compilation of the public surface only."},{"level":"simulated-flow","result":"NOT_RUN","reason":"Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."},{"level":"real-device","result":"NOT_RUN","reason":"No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."}],"limitations":["Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."],"topic":"docs/usage.md"},
-    {"id": "api:rust-connect", "surface": "ios_core::{connect,list_devices,watch_devices}", "source": "crates/ios-core/src/lib.rs", "protocol_paths": {"service_families": [], "declared_selectors": [], "client_imports": [], "unresolved": ["USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies."]}, "implementation": "public-surface-present", "maturity": "experimental", "required_state": ["Operation-specific platform/device/fixture conditions must be recorded."], "compatibility_scope": ["Additive ExistingRsdRoute/observe_existing_rsd under tunnel, explicit owned observation; legacy RSD parser/bootstrap remains compatible.", "Additive ios_core::session owner/prepared operation API; legacy lockdown client/default wire unchanged."], "observations": [{"level": "real-device", "result": "NOT_RUN", "reason": "USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies."}, {"level": "host-unit/protocol", "result": "PASS", "evidence": "linux-existing-rsd-core-838c4ed", "scope": "Checked caller-selected RSD route, whole-directory retained metadata admission, missing/malformed distinction, original IO and owned socket release; advertisement only, no device route setup/service execution."}, {"level": "host-unit/protocol", "result": "PASS", "evidence": "linux-sdk-owned-session-2b906d7", "scope": "Finite owned existing-trust service observations, shared/local admission, total/cancellation and actual lease retirement; caller-supplied stream and trust only, no device factory or binding workflow."}], "limitations": ["USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies."], "topic": "docs/engineering-roadmap-2026-09-30.md"},
+    {
+      "id": "api:rust-connect",
+      "surface": "ios_core::{connect,list_devices,watch_devices}",
+      "source": "crates/ios-core/src/lib.rs",
+      "protocol_paths": {
+        "service_families": [],
+        "declared_selectors": [],
+        "client_imports": [],
+        "unresolved": [
+          "USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies."
+        ]
+      },
+      "implementation": "public-surface-present",
+      "maturity": "experimental",
+      "required_state": [
+        "Operation-specific platform/device/fixture conditions must be recorded."
+      ],
+      "compatibility_scope": [
+        "Additive ExistingRsdRoute/observe_existing_rsd under tunnel, explicit owned observation; legacy RSD parser/bootstrap remains compatible.",
+        "Additive ios_core::session owner/prepared operation API; legacy lockdown client/default wire unchanged."
+      ],
+      "observations": [
+        {
+          "level": "real-device",
+          "result": "NOT_RUN",
+          "reason": "USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "linux-existing-rsd-core-838c4ed",
+          "scope": "Checked caller-selected RSD route, whole-directory retained metadata admission, missing/malformed distinction, original IO and owned socket release; advertisement only, no device route setup/service execution."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "linux-sdk-owned-session-2b906d7",
+          "scope": "Finite owned existing-trust service observations, shared/local admission, total/cancellation and actual lease retirement; caller-supplied stream and trust only, no device factory or binding workflow."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "linux-sdk-query-6f582c9"
+        }
+      ],
+      "limitations": [
+        "USB/usbmuxd, TCP lockdown, direct RSD and optional tunnel strategies.",
+        "Finite explicit Rust device queries are host-accepted at 6f582c9; Python/C applications/files/logs and physical A03 acceptance remain pending."
+      ],
+      "topic": "docs/engineering-roadmap-2026-09-30.md"
+    },
     {"id":"api:c-device-tunnel","surface":"C device/lockdown/tunnel functions","source":"crates/ios-ffi/src/lib.rs","protocol_paths":{"service_families":[],"declared_selectors":[],"client_imports":[],"unresolved":["Runtime plus opaque owned handles; per-device successful allocation and release need fake/physical flows."]},"implementation":"public-surface-present","maturity":"experimental","required_state":["Operation-specific platform/device/fixture conditions must be recorded."],"compatibility_scope":[],"observations":[{"level":"real-device","result":"NOT_RUN","reason":"Runtime plus opaque owned handles; per-device successful allocation and release need fake/physical flows."}],"limitations":["Runtime plus opaque owned handles; per-device successful allocation and release need fake/physical flows."],"topic":"docs/engineering-roadmap-2026-09-30.md"},
     {"id":"api:python-tunnel","surface":"ios_rs.list_devices/start_tunnel/Tunnel","source":"crates/ios-py/src/lib.rs","protocol_paths":{"service_families":[],"declared_selectors":[],"client_imports":[],"unresolved":["Device discovery/tunnel metadata and asyncio transport bridge; not general Python service bindings."]},"implementation":"public-surface-present","maturity":"experimental","required_state":["Operation-specific platform/device/fixture conditions must be recorded."],"compatibility_scope":[],"observations":[{"level":"real-device","result":"NOT_RUN","reason":"Device discovery/tunnel metadata and asyncio transport bridge; not general Python service bindings."}],"limitations":["Device discovery/tunnel metadata and asyncio transport bridge; not general Python service bindings."],"topic":"docs/engineering-roadmap-2026-09-30.md"},
     {"id":"workflow:cdp-clients","surface":"Playwright/Puppeteer through Rust bridge","source":"crates/ios-cli/src/cmd/webinspector.rs","protocol_paths":{"service_families":[],"declared_selectors":[],"client_imports":[],"unresolved":["Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."]},"implementation":"partial-foundation","maturity":"experimental","required_state":["Operation-specific platform/device/fixture conditions must be recorded."],"compatibility_scope":[],"observations":[{"level":"real-device","result":"NOT_RUN","reason":"Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."}],"limitations":["Standalone fake-CDP probe is request discovery, not a client workflow through the Rust bridge."],"topic":"docs/engineering-roadmap-2026-09-30.md"},

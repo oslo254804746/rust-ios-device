@@ -103,6 +103,10 @@ the matching feature.
 
 ## Documentation
 
+- [Finite existing-trust device queries](../../docs/owned-device-query.md) expose
+  explicit device selection, caller-loaded credentials, owned information and
+  checked total/cancellation/reply budgets without implicit pairing or retry.
+
 - [Error and RSD evidence contracts](../../docs/error-contract.md) describe
   additive typed classification, caller-observed cancellation and successful
   directory capability evidence. CLI final machine failures are opt-in;

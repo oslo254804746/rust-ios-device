@@ -2113,3 +2113,9 @@ terminal result, another allowed native poll or explicit handled-error acknowled
 Arbitrary future causality is not inferred. Failed partially consumed service
 operations drop their private stream and reject reuse. Diagnostic text excludes
 remote error codes and trust contents. [Acceptance](validation/sdk-owned-session-2026-10-09.md).
+
+Finite SDK queries retain nonzero usbmux Result as public session::MuxResponseError
+and original numeric code under ServiceFailure, without guessing device meanings.
+Native IO/plist/TLS/Elapsed causes remain inspectable; checked response Error wins
+over selected Value. Missing Value, missing field and empty string are observations;
+explicit remote MissingValue remains NotFound. [Query contract](owned-device-query.md).

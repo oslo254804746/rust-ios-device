@@ -1246,3 +1246,12 @@ handles. Native stream/future Drop precedes admission release and zero count.
 Prepared operations keep no hidden SessionOwner clone. Pools apply only to owners
 sharing that pool. Cooperative clocks cannot preempt synchronous crypto/parse/OS
 work. [Evidence and limits](validation/sdk-owned-session-2026-10-09.md).
+
+## Explicit finite SDK device queries
+
+PreparedDeviceQuery shares its owner's admission/absolute total and cancellation
+through fresh mux discovery/connect, checked Lockdown session/TLS and GetValue.
+Failure/cancellation drops the original socket before lease retirement; another
+query refreshes DeviceID. Last-client Drop broadcasts cancellation because prepared
+jobs retain no client handle. Close waits actual leases; timeout retains closed
+state/counts until original jobs retire. [Budgets and boundaries](owned-device-query.md).

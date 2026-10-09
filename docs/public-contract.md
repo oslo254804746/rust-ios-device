@@ -1446,3 +1446,15 @@ Apple storage isolation. Existing getBrowserContexts returns an empty created
 context list; creation/disposal and Browser.setDownloadBehavior retain explicit
 -32601. Actual Puppeteer Runtime acceptance and Playwright's initialization
 failure are recorded separately. [Client scope and reproduction](cdp-client-workflow.md).
+
+## Finite explicit device information
+
+`ios_core::session` adds ExistingTrustDevice, UsbmuxEndpoint, DeviceQuery,
+DeviceInfoFields, DeviceQueryLimits, DeviceMetadata, DeviceQueryObservation,
+PreparedDeviceQuery and MuxResponseError. The prepared Send future owns one lease
+and immutable inputs, without a hidden client handle. Queries use fresh routing
+and return only selected owned information. Missing Value/field and empty string
+remain distinct; unknown mux Result codes classify ServiceFailure. Existing
+constructors/paths/wire APIs remain available. PairRecord::from_bytes adds a
+bounded file-free input profile with original parse causes. [Contract and host
+acceptance](owned-device-query.md); binding/physical A03 acceptance continues.

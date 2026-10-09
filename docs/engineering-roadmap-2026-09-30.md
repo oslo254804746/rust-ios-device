@@ -120,7 +120,7 @@
 | R04 | 统一 plist/JSON 转换与输出策略 | P2 | A01 | 完成（主机编码与stdout合同验收） |
 | A01 | 建立 Rust、CLI、C、Python 兼容规则 | P2 | B03 | 完成：候选合同、版本/迁移与现有 public 字段/enum 风险登记；Linux 代表性下游/CLI/C 与 Python 3.9/3.12/3.13 通过，设备成熟度不因此升级 |
 | A02 | 建立稳定错误分类与输出合同 | P2 | A01、R04 | 主机范围已交付；平台/真机待验收，保留明确的 legacy Unknown/void/zero/ALLOC 兼容 profiles |
-| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；`2b906d7` 完成共同 owner/checked existing-trust 原生前置；Python/C 句柄、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
+| A03 | 扩展常用任务的 Python/C SDK | P3 | A01、A02 | 进行中：`655733c` 完成 AFC caller-limit 与有总期限/累计回复预算的 Browse，`f077674` 完成 Syslog 取消续读/terminal 原生前置主机验收；`2b906d7` 完成共同 owner/checked existing-trust 原生前置；`6f582c9` 完成有限 fresh device query/预算/TCP-Unix-TLS 主机子项；Python/C 句柄、绑定/示例及真机原验收尚未完成。见 [证据](validation/bounded-service-read-2026-10-08.md) |
 | L01 | 统一期限、取消和连接失效规则 | P2 | B03、R03 | 进行中：既有协议/CLI/session/native ownership 主机 profiles 已交付；本批完成 tunnel 全扫描 checked30s total、全局取消、paired/List 原错误跨 caller Drop 保留、8-slot 历史与退出报告，15s discovery/candidate 子期限保留；global retained metadata bytes、generic HTTP/upgrades/blocking/startup、physical freshness/reuse/restart/manual epoch、其余协议/清理及平台/真机原验收条件继续；`2b906d7` 完成原生 SDK owner 单一绝对期限/取消/准入子项。证据见 [扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L02 | 隔离多设备生命周期与连接并发 | P2 | L01、S01 | 进行中：查询/停止隔离、同设备协调、4 个连接许可、snapshot admission、4096 failure/native retained owners 与 native joins 已交付；本批完成 whole-scan total/cancel、reconciliation/readiness waits、whole-clock publication/failure rollback 与 bounded discovery-error history，stop A 后 B 继续，whole expiry 不新增 backoff/ready；global metadata/bytes、physical freshness/reuse/restart/manual epoch、HTTP/upgrades/blocking/startup、CPU/平台/真机及其他原验收条件继续 |
 | L03 | 增加隧道、剪贴板自动重连 | P2 | L01、Q01 | 进行中：`1a604af` 完成 serve 可配置退避、持续预算/准确状态与原 owner/epoch 回收的主机子项验收；manual attachment 恢复、跨扫描停止语义、Darwin watch 基线/去重/断线语义及平台/真机验收继续。见 [证据](validation/manager-reconnect-2026-10-08.md) |
@@ -8313,3 +8313,16 @@ F04 的 console/context destruction、Page/iframe、Input/截图、Fetch/下载�
 
 用户已明确真机测试后续统一安排；22真机行继续 NOT_RUN，其他平台缺口和 Q04
 全部子项排除保持。主机可执行工作、验收和本地提交继续；不推送、发布或部署。
+
+### 2026-10-09 有限 Rust device query 子项验收
+
+`6f582c9` 完成显式目标、already-loaded PairRecord、fresh usbmux/Lockdown/TLS
+GetValue，有限 selected/root projection、同一总期限/取消/并发和累计回复/metadata/
+owned输出预算。21新query fixtures与2pair-byte用例；失败根因和最终门禁见
+[验收证据](validation/sdk-device-query-2026-10-09.md)。
+
+最终剩余必需门禁 exit0/863.130s：Rust2977/Python13、零失败；workspace check保留
+先前31.1s单独证据，test-only TLS素材模块共享修正后的完整Rust/strict lint/其他阶段
+均实际执行，505冻结path与实现提交blobs一致。335 minimal与21专项此前通过；五个
+ordinary ignored不代表客户端执行。22真机行NOT_RUN，用户后续统一安排；A03绑定/
+应用/文件/日志及原例子/平台/设备验收继续。无主任务或maturity升级，Q04所有子项排除。

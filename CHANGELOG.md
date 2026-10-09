@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add explicit existing-trust device queries with fresh owned sockets, one total,
+  cumulative reply/metadata/output budgets and finite typed information. Add a
+  bounded caller-loaded pair-record parser. [Contract](docs/owned-device-query.md).
+
 - Identify the CDP bridge's default logical browser context consistently. Add
   pinned actual-client gates through the protected Rust bridge: Puppeteer
   JSContext Runtime workflow, Playwright's explicit download rejection and
