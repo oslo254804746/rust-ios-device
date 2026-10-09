@@ -28,6 +28,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use tokio::runtime::Runtime;
 
+mod device_session;
+
 static RUNTIME: LazyLock<std::io::Result<Runtime>> = LazyLock::new(Runtime::new);
 
 /// Ordinary initialization errors are cached and do not invoke device work.
@@ -119,6 +121,7 @@ fn ios_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_tunnel, m)?)?;
     m.add_class::<Tunnel>()?;
     m.add_class::<AsyncioProxyPatch>()?;
+    device_session::register(m)?;
     Ok(())
 }
 
