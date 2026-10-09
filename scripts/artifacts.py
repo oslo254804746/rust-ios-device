@@ -146,12 +146,18 @@ def python_artifacts(directory, interpreter, build_sdist=False):
                     raise RuntimeError(f"sdist missing {suffix}")
     with tempfile.TemporaryDirectory(prefix="ios-wheel-") as temporary:
         venv = Path(temporary) / "venv"
+        # These archives have a new temporary path on every validation run.
+        # Keep their wheels/extracted Rust build trees inside this run's lifetime,
+        # including when installation or the installed smoke check fails.
+        cache = Path(temporary) / "uv-cache"
         run("wheel venv", ["uv", "venv", "--python", interpreter, str(venv)])
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        run("wheel install", ["uv", "pip", "install", "--python", str(python), str(wheel)])
+        run("wheel install", ["uv", "pip", "install", "--cache-dir", str(cache),
+            "--python", str(python), str(wheel)])
         run("installed Python API/error contract", [str(python), "-I", str(ROOT / "scripts/python-smoke.py")])
         if build_sdist:
-            run("sdist build/install", ["uv", "pip", "install", "--python", str(python),
+            run("sdist build/install", ["uv", "pip", "install", "--cache-dir", str(cache),
+                "--python", str(python),
                 "--reinstall", "--no-deps", str(sources[0])])
             run("installed sdist API", [str(python), "-I", str(ROOT / "scripts/python-smoke.py")])
     for path in wheels + sources:

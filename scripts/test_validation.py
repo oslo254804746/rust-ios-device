@@ -1,17 +1,72 @@
 """Failure-path checks for the release gate and shared runner."""
 import json
+import io
 from pathlib import Path
 import re
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 import artifacts
 import validate
 
 
 class ValidationTests(unittest.TestCase):
+    def python_artifact_fixture(self, directory):
+        metadata = "Name: rust-ios-device-tunnel\nVersion: 0.0.0\nRequires-Python: >=3.9\n"
+        with zipfile.ZipFile(directory / "fixture.whl", "w") as archive:
+            archive.writestr("fixture.dist-info/METADATA", metadata)
+            archive.writestr("fixture.dist-info/WHEEL", "Tag: cp39-abi3-linux_x86_64\n")
+        with tarfile.open(directory / "fixture.tar.gz", "w:gz") as archive:
+            for name in ("PKG-INFO", "Cargo.lock", "crates/ios-core/Cargo.toml",
+                         "crates/ios-py/Cargo.toml"):
+                data = (metadata if name == "PKG-INFO" else "fixture").encode()
+                member = tarfile.TarInfo("fixture/" + name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+
+    def check_python_cache_cleanup(self, fail_label=None):
+        caches, labels = [], []
+        def install(label, command):
+            labels.append(label)
+            if label in ("wheel install", "sdist build/install"):
+                cache = Path(command[command.index("--cache-dir") + 1])
+                self.assertTrue(cache.parent.is_dir())
+                self.assertNotEqual(str(cache), "/inherited-global-cache")
+                cache.mkdir(exist_ok=True)
+                (cache / "retained-rust-build").write_bytes(b"cached build")
+                caches.append(cache)
+            if label == fail_label:
+                raise RuntimeError("synthetic artifact failure")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.python_artifact_fixture(directory)
+            with patch.object(artifacts, "version", return_value="0.0.0"), \
+                    patch.object(artifacts, "run", side_effect=install), \
+                    patch.dict("os.environ", {"UV_CACHE_DIR": "/inherited-global-cache"}):
+                if fail_label:
+                    with self.assertRaisesRegex(RuntimeError, "synthetic artifact failure"):
+                        artifacts.python_artifacts(directory, sys.executable, build_sdist=True)
+                else:
+                    artifacts.python_artifacts(directory, sys.executable, build_sdist=True)
+                    artifacts.verify_seal(directory / "fixture.whl")
+                    artifacts.verify_seal(directory / "fixture.tar.gz")
+        self.assertEqual(len(caches), 2)
+        self.assertEqual(caches[0], caches[1])
+        self.assertFalse(caches[0].parent.exists(), "validation left its build cache behind")
+        return labels
+
+    def test_python_package_discards_per_run_build_cache(self):
+        self.assertIn("installed sdist API", self.check_python_cache_cleanup())
+
+    def test_python_package_discards_build_cache_on_failure(self):
+        for label in ("sdist build/install", "installed sdist API"):
+            with self.subTest(label=label):
+                self.check_python_cache_cleanup(fail_label=label)
+
     def test_every_publisher_waits_for_required_gates(self):
         workflow = (validate.ROOT / ".github/workflows/ci.yml").read_text()
         jobs = {}

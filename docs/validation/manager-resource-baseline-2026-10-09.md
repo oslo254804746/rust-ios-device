@@ -82,8 +82,8 @@ attempts to return free heap pages. No trimming was added to production code.
 
 ## Verification and retained evidence
 
-The previous serial builds and strict CLI Clippy succeeded; their 513 frozen
-product paths are still byte-identical. The exact accepted binary hashes, source
+At host acceptance, the previous serial builds and strict CLI Clippy had
+succeeded and their 513 frozen product paths were verified byte-identical. The exact accepted binary hashes, source
 manifests, toolchain, test overlays, raw logs, full ordered samples and certificates
 remain under `target/validation/manager-resource-baseline-2026-10-09/`.
 The comparison was rerun successfully with artifact-hash and receipt checks.

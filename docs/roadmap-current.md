@@ -37,4 +37,6 @@ Python 有限 query 六文件静态包已冻结；C 句柄/linked fixtures 正�
 1/4/16 规模、16 devices 的30s/104轮真实 native 启停/断连，原joins/严格EOF/
 任务与FD恢复通过。独立60s诊断拆分匿名/文件页及分配器数据，末10秒RSS稳定；
 验收仅限本主机子项，吞吐、文件/长时间流及平台真机继续。
-Python/C尚待集中集成验收；先处理重复制品验证产生的持久缓存增长。
+Python/C尚待集中集成验收。重复制品验证的uv缓存已改为随本次验收结束清理；
+旧缓存已回收，磁盘从98%降到31%，dirty worktree源码完整保留。
+后续[构建缓存与worktree维护](build-cache-management.md)优先复用已有树并按交付边界验收。
