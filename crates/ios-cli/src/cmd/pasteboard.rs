@@ -14,6 +14,7 @@ use tokio::io::AsyncReadExt;
 const MAX_CLI_DATA_BYTES: usize = 64 * 1024 * 1024;
 
 mod connection_error;
+mod reconnect;
 
 #[derive(clap::Args)]
 pub struct PasteboardCmd {
@@ -143,6 +144,8 @@ enum PasteboardSub {
             help = "Use experimental AUTONOTIFY/PUSH instead of Darwin notifications"
         )]
         autonotify: bool,
+        #[command(flatten)]
+        recovery: reconnect::WatchOptions,
     },
     /// Resolve and export one item (an explicit alias for `resolve --out`)
     Export {
@@ -177,6 +180,32 @@ impl PasteboardCmd {
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         self.sub.validate_experimental()?;
         let udid = udid.ok_or_else(|| anyhow!("--udid required for pasteboard"))?;
+        if let PasteboardSub::Watch {
+            pasteboard, policy, show_data, autonotify, recovery, ..
+        } = &self.sub {
+            recovery.validate(!*autonotify)?;
+            if !*autonotify {
+                let policy = parse_policy(policy)?;
+                reconnect::selectors(&udid, pasteboard, policy)?;
+                return reconnect::run(&reconnect::DeviceSource, &udid, pasteboard, policy,
+                    recovery, tokio::signal::ctrl_c(), |event| match event {
+                        reconnect::WatchEvent::Snapshot(snapshot) => render_event(
+                            &PasteboardEvent::Push(pasteboard::PasteboardPush { snapshot: snapshot.clone() }),
+                            *show_data, json_output),
+                        reconnect::WatchEvent::State(state) if recovery.reconnect => {
+                            let record = if json_output { serde_json::to_string(&state)? } else {
+                                format!("Pasteboard watch: {} (attempt {}, reclaimed={}, class={}){}",
+                                    state.state, state.attempt, state.native_reclaimed,
+                                    state.error_class.map_or("none", |class| class.as_str()),
+                                    state.gap.map_or("", |_| "; changes during disconnect are not replayed"))
+                            };
+                            crate::output::write_error_line(format_args!("{record}"))?;
+                            Ok(())
+                        }
+                        reconnect::WatchEvent::State(_) => Ok(()),
+                    }).await.map(|_| ());
+            }
+        }
         let device = connect(
             &udid,
             ConnectOptions {
@@ -186,17 +215,6 @@ impl PasteboardCmd {
             },
         )
         .await?;
-        if let PasteboardSub::Watch {
-            pasteboard,
-            policy,
-            show_data,
-            autonotify: false,
-            ..
-        } = &self.sub
-        {
-            let policy = parse_policy(policy)?;
-            return watch_notifications(&device, pasteboard, policy, *show_data, json_output).await;
-        }
         let xpc = device.connect_xpc_service(pasteboard::SERVICE_NAME).await?;
         let mut client = PasteboardClient::new(xpc);
 
@@ -309,6 +327,7 @@ impl PasteboardCmd {
                 show_data,
                 experimental: _,
                 autonotify: _,
+                recovery: _,
             } => {
                 let policy = parse_policy(&policy)?;
                 let mut subscription = client.subscribe(&pasteboard, Some(policy)).await?;
@@ -359,44 +378,6 @@ impl PasteboardSub {
             );
         }
         Ok(())
-    }
-}
-
-async fn watch_notifications(
-    device: &ios_core::ConnectedDevice,
-    name: &str,
-    policy: DataInclusionPolicy,
-    show_data: bool,
-    json_output: bool,
-) -> Result<()> {
-    let watch = async {
-        let stream = device
-            .connect_rsd_service(ios_core::notificationproxy::RSD_SERVICE_NAME)
-            .await?;
-        let mut monitor = pasteboard::PasteboardMonitor::start(
-            stream,
-            |policy| {
-                read_notification_snapshot(
-                    device.connect_xpc_service(pasteboard::SERVICE_NAME),
-                    name,
-                    policy,
-                )
-            },
-            policy,
-        )
-        .await?;
-        loop {
-            let snapshot = monitor.next_change().await?;
-            render_event(
-                &PasteboardEvent::Push(pasteboard::PasteboardPush { snapshot }),
-                show_data,
-                json_output,
-            )?;
-        }
-    };
-    tokio::select! {
-        result = watch => result,
-        signal = tokio::signal::ctrl_c() => signal.context("waiting for Ctrl-C"),
     }
 }
 
