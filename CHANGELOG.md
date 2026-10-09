@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Identify the CDP bridge's default logical browser context consistently. Add
+  pinned actual-client gates through the protected Rust bridge: Puppeteer
+  JSContext Runtime workflow, Playwright's explicit download rejection and
+  owned child/native cleanup. [Scope and reproduction](docs/cdp-client-workflow.md).
+
 - Add finite existing-trust session operations with shared/local admission, one
   absolute total, cancellation and close that waits for actual lease retirement.
   Checked QueryType/StartSession/TLS/StartService return owned port/SSL metadata;

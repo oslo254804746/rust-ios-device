@@ -14,8 +14,11 @@ protected CDP and Selenium routers. Owned host tests now traverse the Rust page
 and browser WebSockets through synthetic plist peers, covering discovery,
 unpaused Target attachment, Runtime replies/errors, flattened session routing,
 detach and teardown. See [module/injection acceptance](validation/webinspector-boundaries-2026-10-01.md).
-This supplies the F03 fixture entry point; Playwright/Puppeteer and physical
-Safari/WebView/JSContext workflow acceptance remain pending.
+The actual pinned-client framework now uses this production entry point.
+Puppeteer25.12.0 completes a synthetic JSContext Runtime workflow; Playwright1.63.0
+records actual Browser.setDownloadBehavior/-32601 initialization failure.
+[Reproduction and scope](cdp-client-workflow.md). Physical Safari/WebView/JSContext
+and the remaining domain workflows retain their acceptance.
 
 The Rust CDP and Selenium servers now require `--auth-config` or explicit
 loopback `--local-unauthenticated`. Native HTTP and WebSocket clients need the
@@ -34,7 +37,7 @@ The following CDP domains remain **unimplemented** as compatible domains:
 
 | Domain | Missing evidence and next validation |
 | --- | --- |
-| JSContext Runtime | The synthetic WebInspector sequence passes, but no real Playwright/Puppeteer session has selected a JavaScript target through the Rust bridge. Capture that client sequence and check context selection, evaluation, and console events before declaring compatibility. |
+| JSContext Runtime | Actual Puppeteer selects the synthetic context through the Rust bridge, evaluates and rejects an unknown context ID. Console events and context destruction, full Playwright initialization and representative physical JSContext workflows remain pending. |
 | iframe / Page | Capture WebInspector frame-tree, navigation, and execution-context events from a page with a same-origin and cross-origin iframe. Run an actual client frame selection and navigation sequence through an injectable fake WebInspector service, then compare IDs and event order. |
 | Input / screenshot | Capture WebInspector touch/key and screenshot requests plus image metadata. Run a client click, type, and screenshot sequence against a synthetic page, checking coordinates, modifiers, image encoding, and failures. |
 | Fetch | Capture interception enable, paused request, continue/fulfill/fail, and cancellation events. Test request interception and response delivery with a real client against a fake service. |
@@ -67,6 +70,12 @@ the fake endpoint but found zero pages. Playwright requested
 `connectOverCDP` failed. The bridge now accepts the trailing slash on
 `/json/version/` used by Playwright's HTTP endpoint lookup. Download behavior
 remains unimplemented; returning an empty success would claim unsupported
-download handling. The next end-to-end gate is to run these clients against
-the Rust bridge with an injectable synthetic WebInspector service and record
-the complete command/event flow for each domain above.
+download handling. The [actual Rust bridge gate](cdp-client-workflow.md) now records pinned client
+commands/events and original native/child close order. The standalone probe
+remains request discovery only. Download translation and the remaining domain
+workflows retain their explicit gaps.
+
+The single default logical context now has a stable `<browser_id>:default`
+TargetInfo.browserContextId across listing/discovery/attachment/refresh. This
+fixes Playwright's earlier missing-context assertion, allowing it to reach the
+explicit download rejection. It does not implement context creation or isolation.

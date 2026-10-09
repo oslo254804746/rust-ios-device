@@ -127,7 +127,7 @@
 | L04 | 建立性能、资源与长时间运行基线 | P2 | L02、L03 | 待开始 |
 | F01 | 扩展 doctor 的设备能力诊断 | P3 | Q01、L01、S04 | 进行中：显式设备 existing-trust/Developer Mode/DDI signature 主机子项已验收，host schema1 保留、target schema2；`838c4ed` 完成显式既有 RSD route/完整目录/目标核对主机子项，未选择 route 时仍 not_probed；平台 USB/remoted/目录、DDI usability 与真机验收未完成。见 [RSD 证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | F02 | 完成应用、测试、日志与结果工作流 | P3 | F01、A02、L03 | 待开始 |
-| F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 待开始 |
+| F03 | 建立经过 Rust 桥的真实 CDP 客户端测试 | P3 | R02、S02、B03 | 进行中：`3e697fd` 实际 pinned-client 框架、Puppeteer JSContext Runtime 与 Playwright download 初始化拒绝/真实回收已验收；完整客户端承诺及剩余原协议范围待交付 |
 | F04 | 按协议域完成 CDP 兼容流程 | P3 | F03、Q02 | 待开始 |
 | F05 | 完成媒体查看器、VNC 与双向剪贴板 | P3 | S02、S03、L03、Q02 | 待开始 |
 | F06 | 完成恢复预检入口与实验恢复执行流程 | P3 | A02、L01、Q02、Q04 | 待开始 |
@@ -8277,3 +8277,20 @@ QueryType/StartSession/真实 TLS/StartService 时钟，严格 Error-first 和�
 
 A03/L01 仅此原生子项验收，不标主任务完成；22真机项仍 NOT_RUN，原全部绑定、
 工作流、平台、OS worker与协议验收继续。Q04及全部子项排除，有效30项9完成/21未完成。
+
+## 2026-10-09：F03 实际 pinned-client bridge 框架
+
+`3e697fd` 在生产 authenticated/protected Rust HTTP/WS bridge 上运行固定
+Puppeteer25.12.0 和 Playwright1.63.0。Puppeteer完成目标发现、附着、真实合成上下文
+选择/求值、未知context拒绝、分离/断开；Playwright实际下载初始化得到原-32601。
+首次真实客户端发现缺少browserContextId导致更早断言，已补既有单一默认逻辑context
+标识；未提供上下文创建、隔离或虚假下载成功。实际child取消、wait、原pipes/native
+peer EOF/joins与bounded trace分别验收。standalone假CDP探针仍仅请求发现工具。
+
+初始full fmt/check通过后发现fixture冗余lifetime；修正后剩余必需门禁分段退出0，
+Rust2954/Python13通过。ordinary5ignored中三个Node gates在final499路径另外执行
+3PASS/0FAIL/0ignored；所有提交blob与冻结manifest相同。完整入口原失败和分段证据
+均保留，不伪称单次full成功。[协议证据、下载真实实现方案与复现](cdp-client-workflow.md)。
+
+F03主任务仍进行中，F04各域、真实页面/JSContext/设备与平台原验收不缩减；22真机
+NOT_RUN。Q04及全部子项继续排除；主任务数量不因新增测试/导出增加而改变。

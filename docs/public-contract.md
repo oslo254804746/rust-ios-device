@@ -1436,3 +1436,13 @@ Selectors admit before factory IO. Private borrowed factories/IO cannot escape
 through a raw public checked-session or transport handle. Existing APIs and
 error enum variants remain. StartService can have remote effects; local Drop
 does not acknowledge rollback. [Acceptance](validation/sdk-owned-session-2026-10-09.md).
+
+## CDP default context identity
+
+TargetInfo adds a stable `<browser_id>:default` browserContextId for the bridge's
+existing default logical context, consistently across listing, discovery,
+attachment and refresh. It is a local target namespace and does not establish
+Apple storage isolation. Existing getBrowserContexts returns an empty created
+context list; creation/disposal and Browser.setDownloadBehavior retain explicit
+-32601. Actual Puppeteer Runtime acceptance and Playwright's initialization
+failure are recorded separately. [Client scope and reproduction](cdp-client-workflow.md).
