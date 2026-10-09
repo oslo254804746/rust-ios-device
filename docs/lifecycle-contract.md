@@ -1219,3 +1219,18 @@ budget Timeout; unexpired caller Drop stays Interrupted and acquired native
 errors retain priority. Emission releases synchronous Mutex/watch borrows while
 existing Tokio serial/scan mutex lifetimes remain. See
 [manager reconnect acceptance](validation/manager-reconnect-2026-10-08.md).
+
+## Existing RSD socket ownership and Syslog prefix resumption
+
+An existing RSD observation owns fresh sockets and has one cooperative total
+across host identity, connection, H2/RemoteXPC and four fresh compatibility paths.
+Cancellation/expiry drops only those sockets, retaining original acquired native
+errors; it does not own or terminate the supplied proxy/tunnel. Late successful
+results are fenced before further IO and report publication. Synchronous OS work
+still cannot be forcibly preempted.
+
+Syslog read cancellation preserves already consumed framing bytes for the next
+call on that stream. EOF, IO failure or oversized input permanently disables it;
+later calls reject locally. Dropping the owned client/stream releases its socket;
+retaining a terminal client does not claim an automatic transport shutdown or
+reconnect. [Acceptance](validation/doctor-rsd-syslog-2026-10-09.md).

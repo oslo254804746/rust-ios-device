@@ -1402,3 +1402,25 @@ or coordinator state. Exact limits and existing selection/empty/NUL behavior
 remain covered. The new managed resource refusal follows the existing CLI/HTTP
 ResourceLimit category; public core APIs are unchanged. These are host work
 items; see [acceptance evidence](validation/device-doctor-manual-admission-2026-10-08.md).
+
+## Existing-route RSD observations and resumable Syslog
+
+Under `tunnel`, `ExistingRsdRoute::{direct,via_userspace_proxy}` and
+`observe_existing_rsd(route,total)` add a checked owned observation. Direct routes
+preserve IPv6 scope/flow; proxy routes reject unsupported scope/flow. Identity,
+services, Port and Features use missing-versus-present states; `Some([])` Features
+is distinct from omission. Whole-directory admission bounds retained text before
+cloning (4KiB/field, 4096 services, 16384 features, 1MiB text). Advertisement and
+absence are observations, without executing services or claiming decoder/RSS limits.
+
+Doctor adds `--rsd-address`, `--rsd-proxy-port`, `--rsd-service` with a required
+explicit device target. No RSD selector preserves existing schemas/check order;
+explicit routes replace the last two device observations, check identity first and
+add only optional safe category/completeness/feature-count fields.
+
+`SyslogStream::next_message` retains an incomplete consumed prefix when its
+future is dropped. Success clears the prefix. EOF, native IO and the existing raw
+message limit make the client terminal; additive `is_usable()` reports that local
+state, and subsequent reads fail locally before polling cached tails or transport.
+Use a fresh stream after terminal failure. Existing success framing/UTF-8/vis and
+infinite idle behavior remain. [Acceptance and migration](validation/doctor-rsd-syslog-2026-10-09.md).

@@ -56,8 +56,8 @@ Device checks distinguish `not_probed`, `unreachable`, `permission_denied`,
 false is a warning with `value: false`; unknown metadata has no value. Failed
 checks cause exit 1 after the report; the JSON machine error retains the first
 failed device probe's category. Target IDs are hashed and private response data
-is omitted. RSD services and route checks currently stay `not_probed` because
-this command has no existing RSD-route selector.
+is omitted. Without an explicit existing RSD route, its service/route checks
+stay `not_probed`.
 
 Pairing files must be regular files, or existing links to them. Unix FIFOs are
 rejected without waiting for a writer. Filesystem metadata and regular-file reads
@@ -65,6 +65,28 @@ can still block in the OS: a probe deadline cannot forcibly cancel that worker,
 and runtime exit can wait for it. This is not evidence of bounded physical exit
 on stalled filesystems. Platform USB/remoted/directory diagnostics and actual
 device support remain pending; see [host evidence](validation/device-doctor-manual-admission-2026-10-08.md).
+
+## Observe an existing RSD route
+
+```bash
+ios --udid DEVICE_UDID doctor --rsd-address '[fd00::1]:58783'
+ios --udid DEVICE_UDID doctor --rsd-address '[fd00::1]:58783' --rsd-proxy-port 49152 --rsd-service com.apple.coredevice.deviceinfo
+```
+
+Use an already established IPv6 RSD endpoint; the optional existing userspace
+proxy listens on IPv4 loopback. Both ports must be nonzero. Direct routes preserve
+numeric scope/flow; proxy routes reject scope/flow because their 20-byte prelude
+cannot carry them. An explicit target is required and checked against RSD identity
+before attributing an advertisement. Doctor owns its fresh observation sockets and
+does not start, stop or adopt the tunnel/proxy, pair, or execute the selected service.
+
+Each observation uses one total `--timeout` across identity, dial, bootstrap and
+fresh compatibility attempts. Missing metadata remains unknown; malformed metadata
+fails. A complete checked directory can establish advertisement/absence, and only
+complete port metadata supports positive route observations. This proves neither
+selected-service execution nor DDI usability. Reports omit raw endpoints, selectors
+and Features; unrelated earlier existing-trust failures can remain the machine-error
+primary. [Scope and host evidence](validation/doctor-rsd-syslog-2026-10-09.md).
 
 ## Device is not listed
 

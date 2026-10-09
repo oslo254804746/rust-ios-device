@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Observe explicitly selected existing RSD IPv6/proxy routes with one total,
+  checked directory metadata and exact doctor target attribution. Missing fields
+  stay unknown; advertisement does not execute a service. Legacy doctor schemas
+  remain compatible without RSD selectors. See
+  [host evidence](docs/validation/doctor-rsd-syslog-2026-10-09.md).
+- Preserve consumed Syslog prefixes across cancelled reads. EOF/IO/oversize now
+  makes framing terminal and subsequent reads reject locally; `is_usable()`
+  exposes local state. Successful wire/decode and infinite idle remain.
+
+
 - Add serve retry delay, attempt and total budgets with bounded identity/epoch
   episodes and accurate verbose state. Default retry timing and HTTP JSON stay
   compatible; durable stop/manual recovery and device acceptance remain pending.
@@ -23,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema 1 without a device selector. Fresh existing-trust sessions observe
   Developer Mode and DDI signature metadata without pairing or setting changes;
   missing metadata stays unknown. Report and machine-error categories agree.
-  RSD/routes, DDI usability and platform/device acceptance remain pending. See
+  DDI usability and platform/device acceptance remain pending. Existing-route
+  RSD observation has subsequent host acceptance above. See
   [host evidence](docs/validation/device-doctor-manual-admission-2026-10-08.md).
 - Bound manual tunnel UDID/host selectors to 4096 UTF-8 bytes before lifecycle
   admission, and carry private resource-limit decisions into manager errors.

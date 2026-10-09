@@ -2082,3 +2082,19 @@ metadata maps to protocol. Actual Browse elapsed/native errors retain original
 sources and late native errors keep priority. AFC primary/cleanup classification
 continues to follow the original primary error; callers must inspect reuse and
 cleanup separately. See [bounded service evidence](validation/bounded-service-read-2026-10-08.md).
+
+## Checked existing-route RSD and Syslog terminal errors
+
+`ExistingRsdProbeError::class()` exposes a safe typed class under `tunnel` while
+native IO/Elapsed remain downcastable in the source chain. Invalid route selectors
+fail before dial; checked retained-metadata limits classify ResourceLimit. Missing
+fields remain unknown; malformed handshake metadata is Protocol and stops
+compatibility fallback. Doctor target mismatch is Precondition, and selected
+service absence is ServiceMissing only for a complete directory. Per-check classes
+remain distinct; an earlier failed existing-trust check can stay overall primary.
+
+Syslog preserves its first original EOF/native IO/limit error, then marks framing
+terminal. Later `next_message` calls return local InvalidData/Protocol without
+reading a cached tail or polling transport. Cancellation alone retains the prefix
+and permits resumption. Debug/output do not include remote content.
+[Host tests and limits](validation/doctor-rsd-syslog-2026-10-09.md).
