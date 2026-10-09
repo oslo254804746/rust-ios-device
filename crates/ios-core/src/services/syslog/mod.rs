@@ -21,6 +21,7 @@ const MAX_SYSLOG_MESSAGE: usize = 1024 * 1024;
 pub struct SyslogStream<S> {
     stream: BufReader<S>,
     buf: Vec<u8>,
+    usable: bool,
 }
 
 impl<S: AsyncRead + Unpin> SyslogStream<S> {
@@ -28,15 +29,44 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
         Self {
             stream: BufReader::new(stream),
             buf: Vec::with_capacity(4096),
+            usable: true,
         }
     }
 
+    /// Whether local framing still permits another message read.
+    /// This does not establish peer liveness or safe retry on another stream.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+
     /// Read one null-terminated log message (blocking until available).
+    ///
+    /// Cancelling this future retains bytes already consumed from the stream;
+    /// the next call resumes the same message. Only a successfully completed
+    /// message clears the accumulated raw bytes. Idle waiting has no fixed
+    /// request deadline.
+    ///
+    /// A raw-message limit refusal, native I/O error, or EOF makes this stream
+    /// terminal. The first failure retains its original I/O error; subsequent
+    /// calls reject locally with InvalidData without consuming a cached tail or
+    /// polling the transport. Drop the stream and open a fresh connection.
     pub async fn next_message(&mut self) -> Result<String, std::io::Error> {
-        self.buf.clear();
+        if !self.usable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "syslog stream is unusable; reconnect before reading another message",
+            ));
+        }
         loop {
-            let available = self.stream.fill_buf().await?;
+            let available = match self.stream.fill_buf().await {
+                Ok(available) => available,
+                Err(error) => {
+                    self.usable = false;
+                    return Err(error);
+                }
+            };
             if available.is_empty() {
+                self.usable = false;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "syslog stream closed",
@@ -46,6 +76,7 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
             let terminator = available.iter().position(|&b| b == 0);
             let len = terminator.unwrap_or(available.len());
             if self.buf.len() + len > MAX_SYSLOG_MESSAGE {
+                self.usable = false;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("syslog message exceeds {MAX_SYSLOG_MESSAGE} bytes"),
@@ -54,7 +85,9 @@ impl<S: AsyncRead + Unpin> SyslogStream<S> {
             self.buf.extend_from_slice(&available[..len]);
             if terminator.is_some() {
                 self.stream.consume(len + 1);
-                return Ok(decode_vis(&String::from_utf8_lossy(&self.buf)));
+                let message = decode_vis(&String::from_utf8_lossy(&self.buf));
+                self.buf.clear();
+                return Ok(message);
             }
             self.stream.consume(len);
         }
@@ -271,6 +304,9 @@ fn extract_message(s: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod tests {
