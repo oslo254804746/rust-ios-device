@@ -21,7 +21,14 @@ include = ["IosDevice", "IosDeviceHandle", "IosTunMode", "ios_runtime_init",
            "ios_tunnel_server_address",
            "ios_tunnel_rsd_port", "ios_tunnel_userspace_port",
            "ios_tunnel_rsd_port_checked", "ios_tunnel_userspace_port_checked",
-           "ios_tunnel_rsd_services_json"]
+           "ios_tunnel_rsd_services_json",
+           "IosDeviceSession", "IosOperationCancel", "IosDeviceSessionConfig",
+           "IosDeviceQueryOptions", "ios_device_query_options_default",
+           "ios_device_session_create", "ios_device_session_retain",
+           "ios_device_session_close", "ios_device_session_destroy_checked",
+           "ios_device_session_query_json", "ios_operation_cancel_create",
+           "ios_operation_cancel_retain", "ios_operation_cancel",
+           "ios_operation_cancel_destroy_checked"]
 exclude = ["IosTunnel"]
 
 [export.rename]

@@ -293,6 +293,161 @@ int ios_tunnel_userspace_port_checked(const IosTunnel *tunnel, uint16_t *port_ou
  */
 int ios_tunnel_rsd_services_json(const IosTunnel *tunnel, char **json_out);
 
+/* ── Finite existing-trust device information (additive API) ───────────────── */
+
+typedef struct IosDeviceSession IosDeviceSession;
+typedef struct IosOperationCancel IosOperationCancel;
+
+#define IOS_DEVICE_INFO_PRODUCT_TYPE UINT32_C(1)
+#define IOS_DEVICE_INFO_PRODUCT_VERSION UINT32_C(2)
+#define IOS_DEVICE_INFO_DEVICE_NAME UINT32_C(4)
+#define IOS_DEVICE_INFO_ALL UINT32_C(7)
+
+/** Borrowed buffers, valid only during create. Lengths exclude any terminator.
+ * Text is UTF-8, nonempty, contains no NUL, and is at most 4096 bytes. Endpoint
+ * is explicit tcp://<numeric SocketAddr> with nonzero port, or on Unix an
+ * absolute unix:///socket/path. No environment/default endpoint or DNS lookup.
+ * Pair bytes are caller-loaded serialized plist, nonempty and <=1MiB. Caller
+ * owns/clears its buffer; the parsed host private key is zeroized on final Drop.
+ * concurrent_operations is exactly 1..4, sharing 64 active operation leases
+ * across sessions in this linked library. There is no admission waiter queue.
+ */
+typedef struct IosDeviceSessionConfig {
+    const char *udid;
+    size_t udid_len;
+    const char *endpoint;
+    size_t endpoint_len;
+    const uint8_t *pair_record;
+    size_t pair_record_len;
+    uint32_t concurrent_operations;
+} IosDeviceSessionConfig;
+
+/** Native reply limits count the two mux framed replies and three framed
+ * lockdown replies. Requests and TLS handshake/record bytes do not count.
+ * Metadata/selected UTF-8 limits apply after ordinary plist decoding, before
+ * retained clones; they are not parser CPU/temporary allocation/RSS guarantees.
+ * json_bytes bounds serialized C output before append, excluding the final NUL.
+ * total_ms accepts 0..86400000; zero native query total gives timeout before IO.
+ * reply_wire_bytes: 1..46137356; output_utf8_bytes: 1..16777216;
+ * mux_frame_bytes: 16..16777216; lockdown_body_bytes: 1..4194304;
+ * metadata_entries: 1..1000000; metadata_utf8_bytes: 1..16777216;
+ * json_bytes: 1..100664320. Larger/zero byte limits are invalid_input.
+ */
+typedef struct IosDeviceQueryOptions {
+    uint64_t total_ms;
+    size_t reply_wire_bytes;
+    size_t output_utf8_bytes;
+    size_t mux_frame_bytes;
+    size_t lockdown_body_bytes;
+    size_t metadata_entries;
+    size_t metadata_utf8_bytes;
+    size_t json_bytes;
+} IosDeviceQueryOptions;
+
+/** Fill defaults: 5000ms; 1MiB native reply/mux/lockdown/metadata/JSON;
+ * 64KiB retained UTF-8; 1024 metadata entries. Required writable output.
+ */
+int ios_device_query_options_default(IosDeviceQueryOptions *options_out);
+
+/** Create without IO, file loading, pairing, saving, service start or tunnel.
+ * Config and all supplied buffers must be valid for their exact lengths.
+ * Required writable output is cleared to NULL before validation/fallible work.
+ * Outputs/config/buffers must not overlap. Invalid addresses are not validated.
+ * Ordinary parse/native errors use IOS_ERR_CORE and their typed category.
+ */
+int ios_device_session_create(const IosDeviceSessionConfig *config,
+                              IosDeviceSession **session_out);
+
+/** Create a distinct owned C allocation sharing the original session owner.
+ * Borrowed handle stays live throughout; output is distinct/writable and cleared
+ * before validation. Retaining a closed session does not reopen it.
+ */
+int ios_device_session_retain(const IosDeviceSession *session,
+                              IosDeviceSession **session_out);
+
+/** Seal ALL retained aliases, broadcast actual cancellation, await actual local
+ * Core lease release under cleanup_ms (0..86400000), without freeing this handle.
+ * Query/close may run concurrently on live handles; timeout retains closed state
+ * and original outstanding counts. Repeated close can finish after real release.
+ * Invalid budget is rejected before sealing. A valid close seals before runtime
+ * refusal/failure; such failure does not acknowledge lease retirement.
+ * No caller OS-thread join or remote StopSession/Apple teardown acknowledgement.
+ * Blocking query/close must run on foreign threads outside an entered Tokio
+ * runtime; refusal is IOS_ERR_RUNTIME/precondition. Runtime initialization IO
+ * failure is IOS_ERR_RUNTIME with its original category.
+ */
+int ios_device_session_close(const IosDeviceSession *session, uint64_t cleanup_ms);
+
+/** Consume ONE exclusively owned C allocation and clear writable owner storage
+ * before release. NULL owner storage: IOS_ERR_NULL; NULL owned value: success.
+ * Destroying one retained allocation does not close other live allocations.
+ * Last allocation Drop seals/cancels, but destroy does not async join leases.
+ * Caller must stop and JOIN all calls using THIS allocation before destroy;
+ * raw pointer aliases to it are invalid afterwards, including on failure.
+ * Other independently retained allocations can remain in use. No arbitrary,
+ * dangling or concurrent-use pointer validation is supplied. For an observable
+ * release receipt, explicitly close, join caller threads, then destroy owners.
+ */
+int ios_device_session_destroy_checked(IosDeviceSession **session_in_out);
+
+/** Select only ProductType/ProductVersion/DeviceName with a nonempty bitset.
+ * Unknown bits are invalid_input. One bit sends that finite GetValue key;
+ * multiple bits request root but retain/project only selected fields.
+ * Every admitted operation dials a fresh owned socket, relists exact UDID,
+ * routes fresh DeviceID, and performs checked existing-trust StartSession/TLS.
+ * No Pair/save/tunnel/service/file-loader/DNS/retry path is called.
+ * Options, session and required cancel handle must stay live throughout call.
+ * Writable output is cleared to NULL before validation; no partial string.
+ * JSON includes value_present, requested_fields, values, selected device_id/
+ * connection_type/product_id and enable_session_ssl. Selected absent strings
+ * are null; present empty strings are ""; unselected fields are omitted. Missing
+ * Value differs from an empty root dictionary. Explicit remote MissingValue
+ * stays an error. JSON escaping preserves embedded NUL in device strings.
+ * Free success output with ios_free_string or ios_free_string_checked.
+ * Runtime initialization/validation precede the C parent clock. Native total
+ * starts inside immediate lease preparation; the separate C parent deadline is
+ * minted just before prepare. After prepare and on block_on's first poll, a
+ * parent cancel/closed/deadline fence drops an expired unpolled job before IO.
+ * Projection also checks that parent fence before append/publication. These
+ * are separate cooperative clocks, not a shared C-entry absolute deadline.
+ * Synchronous parsing/serialization cannot be physically preempted. Native Err
+ * acquired by the prepared operation remains primary over a later C fence.
+ * Close acknowledges lease release, not completion/join of a caller's entire
+ * C function: JOIN caller threads before freeing their handles/output storage.
+ * Admission/reply/output byte limits do not cap global CPU/RSS or the number
+ * of successful output strings still retained by callers.
+ * No output/options/input may overlap an opaque handle. All pointers require
+ * valid ownership/lifetimes; null checks do not validate arbitrary addresses.
+ */
+int ios_device_session_query_json(const IosDeviceSession *session,
+                                  uint32_t fields,
+                                  const IosDeviceQueryOptions *options,
+                                  const IosOperationCancel *cancel,
+                                  char **json_out);
+
+/** Required writable output is cleared before allocation. No runtime/IO. */
+int ios_operation_cancel_create(IosOperationCancel **cancel_out);
+
+/** Distinct owned allocation sharing the same actual cancellation token.
+ * Borrowed token stays live; writable output is distinct and cleared first.
+ * Give a retained allocation to each independently owned C thread.
+ */
+int ios_operation_cancel_retain(const IosOperationCancel *cancel,
+                               IosOperationCancel **cancel_out);
+
+/** Idempotently cancel all queries using this token's prepared snapshot.
+ * Live token required. Cancellation is permanent; create a new token for reuse.
+ * No remote rollback acknowledgement or synchronous caller-thread join.
+ */
+int ios_operation_cancel(const IosOperationCancel *cancel);
+
+/** Consume/clear one owned allocation after all calls on it stopped/joined.
+ * NULL owner storage is IOS_ERR_NULL; NULL owned value succeeds repeatedly.
+ * Does NOT cancel: prepared jobs/other retained allocations keep the snapshot.
+ * Never destroy an allocation concurrently being used, or reuse raw aliases.
+ */
+int ios_operation_cancel_destroy_checked(IosOperationCancel **cancel_in_out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

@@ -175,6 +175,171 @@ asynchronous lifecycle contracts.
 
 ## Linking
 
+The additive `IosDeviceSession` API provides bounded existing-trust queries for
+`ProductType`, `ProductVersion` and `DeviceName`. It takes an explicit UDID,
+`tcp://` numeric socket address or an absolute Unix socket endpoint, and
+caller-loaded serialized pairing bytes of at most 1MiB. Creation decodes/copies
+the borrowed inputs without initializing the runtime or opening a socket. It
+does not load files, resolve DNS, pair/save records, start services or tunnels.
+The three finite selector bits are defined in the public header; there is no
+arbitrary key parameter. Each admitted query opens its own socket, relists the
+exact UDID and connects the fresh DeviceID to lockdown before the checked
+QueryType/StartSession and optional TLS exchange.
+
+```c
+IosDeviceSessionConfig config = {
+    udid, udid_len, endpoint, endpoint_len, pair_bytes, pair_len, 1
+};
+IosDeviceSession *session = NULL;
+IosOperationCancel *cancel = NULL;
+IosDeviceQueryOptions options;
+char *json = NULL;
+int status = ios_device_session_create(&config, &session);
+if (status == IOS_SUCCESS) status = ios_operation_cancel_create(&cancel);
+if (status == IOS_SUCCESS) status = ios_device_query_options_default(&options);
+if (status == IOS_SUCCESS) {
+    status = ios_device_session_query_json(session, IOS_DEVICE_INFO_ALL,
+                                           &options, cancel, &json);
+}
+const char *query_class = ios_last_error_class();
+/* Use json on success; save status/query_class before int-status cleanup. */
+ios_free_string_checked(&json);
+if (session) ios_device_session_close(session, 1000);
+ios_device_session_destroy_checked(&session);
+ios_operation_cancel_destroy_checked(&cancel);
+```
+
+[device_info.c](examples/device_info.c) is a complete synchronous caller. The
+example loads pairing bytes from stdin as caller code and clears that buffer
+immediately after create; the library never owns or clears the caller buffer.
+Core zeroizes the parsed host private key on its actual final Drop. Avoid
+printing pairing records or credentials. Successful JSON is a library-owned
+string using the existing string-free protocol. The output includes selected
+values, `value_present`, the field mask and selected routing/session metadata.
+Absent selected strings are `null`; present empty strings are `""`. Missing
+wire `Value` has `value_present: false`, while an empty root dictionary has
+`value_present: true`. Explicit remote `MissingValue` remains a typed error.
+Unselected fields are omitted, including on a root query; embedded NUL in a
+selected string is escaped in JSON rather than truncating the C string.
+
+Sessions share 64 active Core leases in this linked library, with a configured
+local bound of 1..4. Admission has no wait queue: local exhaustion returns
+`IOS_ERR_CORE`/`conflict`, shared exhaustion `resource_limit`. Options have
+checked finite native-reply, retained UTF-8, metadata and C-JSON limits. Native
+reply accounting includes reply framing/declared bodies, excluding requests and
+TLS handshake/record overhead. JSON is bounded before each append and excludes
+its final C NUL. These limits do not bound ordinary plist parser temporary
+allocations, physical CPU preemption or process RSS. Total/cleanup inputs accept
+0..86400000ms; a query total of zero times out before native IO. The native
+absolute total starts inside immediate lease preparation. The separate C parent
+clock is minted just before prepare, after validation/runtime initialization;
+it is not a shared absolute deadline beginning at the C call entrance. After
+prepare and on the first `block_on` poll, cancellation/closed/deadline checks
+drop an expired unpolled job and its real lease before native IO. C projection
+checks the parent deadline/cancellation again before append/publication. An
+already obtained native error preserves its original category over a later
+output fence. Every error clears the output and returns no partial string.
+
+Each `retain` returns an independently owned opaque C allocation sharing the
+same owner/token. Give independently retained handles to separately owned C
+threads. Destroying one session allocation leaves other allocations open;
+destroying the last broadcasts owner close/cancellation without promising an
+asynchronous lease join. Explicit `close` seals **all** session aliases,
+broadcasts actual cancellation and waits for actual Core lease retirement under
+the cleanup budget. Timeout keeps the session closed and its outstanding leases
+intact; repeated close can succeed after they actually release. An invalid
+cleanup budget does not seal it. Destroy consumes/clears only one caller owner;
+repeating with the cleared NULL pointer is a successful no-op.
+
+Query and close may run concurrently while their borrowed allocations remain
+live. Before destroying an allocation, callers must stop new uses and join all
+original threads/functions using **that allocation**, including retained raw
+pointer aliases. A successful close acknowledges Core lease release, not the
+completion of C projection, an OS-thread join, remote StopSession or Apple
+cleanup. It does not authorize freeing an in-flight caller's handle, output or
+options. Cancellation is a permanent, idempotent signal on the actual Core
+token; it can be sent from another C thread through a separately retained token.
+Token destroy does not signal cancellation, and prepared jobs keep their own
+token snapshot until real Drop. Checked destroys validate NULL owner storage,
+consume/clear a library-owned live value and tolerate a NULL owned value. They
+cannot validate arbitrary addresses, dangling pointers or concurrent use/free.
+All specified input buffers must be valid for the stated lengths; writable
+outputs must not overlap inputs/opaque allocations. Old handle layouts,
+statuses, signatures and enum values are unchanged.
+Admission/byte bounds do not cap global CPU/RSS or the number of session/token
+allocations and successful output strings still retained by callers.
+
+Blocking query/close calls require a foreign thread outside an entered Tokio
+runtime. An entered runtime is refused before query admission with
+`IOS_ERR_RUNTIME`/`precondition`; valid close still seals before this refusal.
+The existing shared runtime's cached ordinary initialization failure remains
+`IOS_ERR_RUNTIME` with its original typed category. It has no global shutdown
+API. Create/retain/token signal/destroy need no runtime or native source. Read
+`ios_last_error_class()` on the exact caller thread before another int-status
+call, including cleanup. Native business/IO failures keep the Core cause;
+truncated native `UnexpectedEof` remains `io` rather than being guessed as a
+device disconnect.
+
+The dedicated host gate is `scripts/ffi_device_session.py`, separate from the
+ordinary FFI smoke. It never starts a Rust compiler. Static C checks require no
+library:
+
+```sh
+python3 scripts/ffi_device_session.py --static
+python3 scripts/ffi_device_session.py --fingerprint
+```
+
+The integration agent first freezes the sources and runs the required Rust
+build/tests in the shared serial build queue, separately from this runner. For
+example, the explicit build action is `cargo build -p ios-ffi --release`; the
+runner itself does not perform that action. Save the successful build log and
+record its SHA together with the fingerprint of the frozen inputs and the
+fresh dynamic library in a JSON build-evidence file with these required fields:
+
+```json
+{
+  "build_result": "passed",
+  "source_fingerprint": "SHA256 from the --fingerprint sha256 field",
+  "library_sha256": "SHA256 of the freshly built dynamic library",
+  "rust_build_command": "cargo build -p ios-ffi --release",
+  "rust_toolchain": "the actual toolchain used by the integration agent",
+  "build_mode": "release",
+  "build_log": { "path": "/absolute/path/to/build.log", "sha256": "actual log SHA256" }
+}
+```
+
+Run the linked gate as another serial validation action with a new evidence
+directory:
+
+```sh
+python3 scripts/ffi_device_session.py \
+  --library target/release/libios_ffi.so \
+  --build-evidence /absolute/path/to/build-evidence.json \
+  --output /absolute/path/to/new-c-device-evidence
+```
+
+It rejects mismatched library/source/log evidence, installs the exact hashed
+header/library in its private prefix, strictly links the real C caller and
+checks the actual loaded library path. Every native scenario uses the production
+query path over usbmux framing, checked lockdown and, where selected, a real TLS
+handshake. Original C pthreads are joined; the original Python peer then records
+strict raw TCP EOF and joins before allowing the C behavior assertions. TLS
+`recv() == b""`, a reset or a timeout is insufficient TCP EOF evidence. It does
+not claim TLS close_notify or Apple acknowledgement. Scenarios cover all finite
+single keys/root selection, missing/empty/binary-NUL output, fresh DeviceIDs,
+typed native/business failures, bounded reply/UTF-8/JSON failure, timeout,
+cross-thread real cancellation/close and local admission with no second source.
+The no-source scenario covers invalid inputs, NULLs and repeat checked frees.
+Source/library hashes are checked again after the batch; full bounded C output
+and native phase/EOF/join evidence are saved even on failure. The runner uses no
+background daemon, concurrent C batch or stale result file as acceptance.
+
+This is a finite A03 host subitem. Rust compilation/tests and this linked gate
+must actually pass after integration; static C success alone does not accept
+it. Physical devices, other platform counterparts, actual global runtime
+resource exhaustion, file/apps/log operations and the A03 main task remain
+unaccepted until their own requirements and external conditions are met.
+
 A minimal CMake snippet:
 
 ```cmake

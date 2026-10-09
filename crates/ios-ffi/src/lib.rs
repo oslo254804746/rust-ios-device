@@ -34,6 +34,15 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::runtime::Runtime;
 
+mod device_session;
+pub use device_session::{
+    ios_device_query_options_default, ios_device_session_close, ios_device_session_create,
+    ios_device_session_destroy_checked, ios_device_session_query_json, ios_device_session_retain,
+    ios_operation_cancel, ios_operation_cancel_create, ios_operation_cancel_destroy_checked,
+    ios_operation_cancel_retain, IosDeviceQueryOptions, IosDeviceSession, IosDeviceSessionConfig,
+    IosOperationCancel,
+};
+
 #[cfg(test)]
 mod lifecycle_contract_tests;
 
