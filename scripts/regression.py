@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Host regression evidence with bounded capture and owned cleanup (Python 3.9+)."""
+"""Host and real-device regression evidence with bounded capture, precondition checks and owned cleanup (Python 3.9+)."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -11,21 +12,77 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
 import time
+from typing import Optional
 
 from diagnostics import ROOT, assess, capture, group_alive, raw_hits, secret_variants
 
 MATRIX = ROOT / "docs/regression-matrix.json"
-PUBLIC_ARGUMENTS = frozenset(("--version", "-vvvv", "forward", "62078", "-c", "/", "."))
+PUBLIC_ARGUMENTS = frozenset(("--version", "-vvvv", "forward", "62078", "-c", "/", ".",
+                              "info", "list", "apps", "fs", "ls", "download", "tunnel",
+                              "pasteboard", "watch", "doctor", "--device", "--json"))
 HOST_IDS = frozenset(("host-argv", "host-cli-version", "host-cli-rejection",
                      "host-agent", "host-artifacts"))
 PROVENANCE_FIELDS = frozenset(("commit", "working_tree_dirty", "binary_sha256", "binary_version",
                               "matrix_sha256", "runner_sha256", "capture_sha256", "python_version",
                               "platform", "architecture", "date"))
 ARCHITECTURES = frozenset(("x86_64", "aarch64", "arm64", "i686", "AMD64", "unrecorded"))
+
+UDID_PATTERN = re.compile(r"^[0-9a-fA-F]{24,40}$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{16}$")
+
+
+def validate_udid(udid: str) -> str:
+    if not isinstance(udid, str) or not UDID_PATTERN.match(udid):
+        raise ValueError("invalid-device-udid")
+    return udid
+
+
+@dataclass
+class DeviceTarget:
+    udid: str
+    transport: str = "USB"
+    name: str = "target-device"
+    ios_version: str = "17.0"
+    device_state: str = "connected"
+    services: frozenset = frozenset(("lockdown", "afc", "syslog", "installation_proxy"))
+    has_wifi_trust: bool = False
+    has_rsd_identity: bool = False
+    has_identity: bool = False
+    is_coredevice: bool = False
+
+    def __post_init__(self):
+        validate_udid(self.udid)
+
+
+@dataclass
+class ExecutionContext:
+    binary: Path
+    device: Optional[DeviceTarget] = None
+    scopes: frozenset = frozenset(("read-scope", "binary-provenance"))
+    fixtures: dict = field(default_factory=dict)
+    observed_services: frozenset = frozenset()
+    observed_modes: frozenset = frozenset()
+    evidence: dict = field(default_factory=dict)
+
+
+def detect_device(binary: Path) -> Optional[DeviceTarget]:
+    if not binary or not Path(binary).is_file():
+        return None
+    try:
+        res = capture([str(binary), "list"], timeout=5)
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.decode("utf-8", errors="replace").splitlines():
+                line = line.strip()
+                match = re.search(r"([0-9a-fA-F]{40}|[0-9a-fA-F]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{16})", line)
+                if match:
+                    return DeviceTarget(udid=match.group(1))
+    except Exception:
+        pass
+    return None
 
 
 def check_provenance(value):
@@ -90,8 +147,8 @@ class Session:
     """Only allowlisted metadata is written. Raw bytes and private paths stay in RAM.
 
     Commands and contract callbacks are trusted Python callers, not user-supplied
-    shell/manifest text. Real-device operation adapters are intentionally gated
-    until their exact fixture, device and operation scope can be validated.
+    shell/manifest text. Real-device operation adapters are validated against
+    exact fixtures, devices and granted operation scopes before execution.
     """
 
     def __init__(self, parent=None):
@@ -191,6 +248,49 @@ class Session:
             self.results[case_id] = report
             return report
 
+    def run_device_case(self, case_id, command, *, expected_code=0, contract=None, env=None, timeout=15):
+        self.ensure_open()
+        matrix_ids = set(c["id"] for c in self.matrix["cases"])
+        if case_id not in matrix_ids or case_id in HOST_IDS or case_id in self.results:
+            raise ValueError("case-id")
+        if contract is None or not 0 < timeout <= 90:
+            raise ValueError("case-contract-budget")
+        self.arguments(command)
+        started = time.monotonic()
+        try:
+            result = capture(command, env=env, timeout=timeout)
+            try:
+                matched = bool(contract(result))
+            except Exception:
+                matched = False
+            checked = assess(result, self.variants, expected_code)
+            passed = checked.pop("passed") and matched
+            report = dict(checked, id=case_id, status="PASS" if passed else "FAIL",
+                          contract=bool(matched), expected_code=expected_code,
+                          duration_ms=result.duration_ms, pid=result.pid,
+                          cleanup_scope=result.cleanup_scope, stop_requested=result.stop_requested,
+                          argv=self.arguments(command), argv_observation="direct-subprocess-input")
+            self.results[case_id] = report
+            return report
+        except OSError:
+            report = dict(id=case_id, status="FAIL", reason="process-capture-failed",
+                          returncode=None, expected_code=expected_code, contract=False,
+                          duration_ms=round((time.monotonic() - started) * 1000),
+                          cleanup_complete=False, cleanup_scope="unconfirmed", pid=None,
+                          argv=self.arguments(command))
+            self.results[case_id] = report
+            return report
+
+    def record_not_run(self, case_id, reason, missing_requirements=None):
+        self.ensure_open()
+        matrix_ids = set(c["id"] for c in self.matrix["cases"])
+        if case_id not in matrix_ids or case_id in self.results:
+            raise ValueError("case-id")
+        report = dict(id=case_id, status="NOT_RUN", reason=reason,
+                      missing_requirements=list(missing_requirements or []))
+        self.results[case_id] = report
+        return report
+
     def agent(self, command, *, timeout=10):
         self.ensure_open()
         if os.name != "posix" or not sys.platform.startswith("linux"):
@@ -282,18 +382,43 @@ class Session:
         self.key = b""
         return self.cleanup_report
 
-    def finish(self, provenance):
+    def finish(self, provenance, device=None):
+        device_tag = (hmac.new(self.key, device.udid.encode(), hashlib.sha256).hexdigest()[:16]
+                      if device and self.key else None)
         cleanup = self.cleanup()
         check_provenance(provenance)
         rows = []
         for case in self.matrix["cases"]:
             result = self.results.get(case["id"], dict(id=case["id"], status="NOT_RUN", reason=case["reason"]))
-            rows.append(dict(case, result=result, device=None, ios=None,
-                             device_states="not-observed", service_availability="not-probed"))
+            if case["id"] in HOST_IDS or device is None:
+                dev_val = None
+                ios_val = None
+                dev_states = "not-observed"
+                serv_avail = "not-probed"
+            else:
+                dev_val = device_tag
+                ios_val = device.ios_version
+                dev_states = device.device_state
+                serv_avail = "probed" if device.services else "not-probed"
+            rows.append(dict(case, result=result, device=dev_val, ios=ios_val,
+                             device_states=dev_states, service_availability=serv_avail))
+
+        applicable_host_ids = set(
+            row["id"] for row in rows
+            if row["id"] in HOST_IDS and (row["platform"] == "current" or row["platform"] == sys.platform
+                                          or (row["platform"] == "linux" and sys.platform.startswith("linux")))
+        )
+        host_passed = cleanup["complete"] and all(
+            row["result"]["status"] == "PASS" for row in rows if row["id"] in applicable_host_ids
+        ) and bool(applicable_host_ids)
+
+        real_device_executed = any(
+            row["result"]["status"] in ("PASS", "FAIL") and row["id"] not in HOST_IDS
+            for row in rows
+        )
         report = dict(version=1, provenance=provenance, cases=rows, cleanup=cleanup,
-                      host_passed=cleanup["complete"] and all(
-                          row["result"]["status"] == "PASS" for row in rows if row["id"] in HOST_IDS),
-                      real_device_executed=False)
+                      host_passed=host_passed,
+                      real_device_executed=real_device_executed)
         encoded = (json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2) + "\n").encode()
         if raw_hits(encoded, self.variants):
             raise ValueError("evidence-secret-detected")
@@ -306,48 +431,220 @@ class Session:
         return report
 
 
-def host_run(binary, parent=None):
+def check_preconditions(case: dict, context: ExecutionContext):
+    """Validate platform, device, fixtures, and operation scopes for a case."""
+    # 1. Platform check
+    if case["platform"] == "Windows" and sys.platform != "win32":
+        return False, "windows-host-required", ["windows-host"]
+    if case["platform"] == "macOS" and sys.platform != "darwin":
+        return False, "macos-host-required", ["macos-host"]
+    if case["platform"] == "linux" and not sys.platform.startswith("linux"):
+        return False, "linux-host-required", ["owned-process-group"]
+
+    # 2. Requirements check
+    missing = []
+    for req in case.get("requires", []):
+        if req == "selected-device":
+            if context.device is None:
+                missing.append(req)
+        elif req == "read-scope":
+            if "read-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "binary-provenance":
+            if "binary-provenance" not in context.scopes:
+                missing.append(req)
+        elif req == "windows-host":
+            if sys.platform != "win32":
+                missing.append(req)
+        elif req == "macos-host":
+            if sys.platform != "darwin":
+                missing.append(req)
+        elif req == "service-observed":
+            avail = context.observed_services or (context.device.services if context.device else set())
+            if not avail:
+                missing.append(req)
+        elif req == "existing-wifi-trust":
+            if not (context.device and context.device.has_wifi_trust and context.device.transport == "Wi-Fi"):
+                missing.append(req)
+        elif req == "existing-rsd-identity":
+            if not (context.device and context.device.has_rsd_identity):
+                missing.append(req)
+        elif req == "mode-observed":
+            if not context.observed_modes:
+                missing.append(req)
+        elif req == "coexistence-scope":
+            if "coexistence-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "existing-identity":
+            if not (context.device and context.device.has_identity):
+                missing.append(req)
+        elif req == "identity-observation-scope":
+            if "identity-observation-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "approved-ddi":
+            if "approved-ddi" not in context.fixtures:
+                missing.append(req)
+        elif req == "install-scope":
+            if "install-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "protocol-evidence":
+            if "protocol-evidence" not in context.evidence:
+                missing.append(req)
+        elif req == "observed-services":
+            avail = context.observed_services or (context.device.services if context.device else set())
+            if not avail:
+                missing.append(req)
+        elif req == "display-input-scope":
+            if "display-input-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "synthetic-clipboard":
+            if "synthetic-clipboard" not in context.fixtures:
+                missing.append(req)
+        elif req == "clipboard-scope":
+            if "clipboard-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "format-evidence":
+            if "format-evidence" not in context.evidence:
+                missing.append(req)
+        elif req == "test-application":
+            if "test-application" not in context.fixtures:
+                missing.append(req)
+        elif req == "application-operation-scope":
+            if "application-operation-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "afc-fixture":
+            if "afc-fixture" not in context.fixtures:
+                missing.append(req)
+        elif req == "test-bundle":
+            if "test-bundle" not in context.fixtures:
+                missing.append(req)
+        elif req == "test-operation-scope":
+            if "test-operation-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "authorized-unc-share":
+            if "authorized-unc-share" not in context.fixtures:
+                missing.append(req)
+        elif req == "protocol-observation-scope":
+            if "protocol-observation-scope" not in context.scopes:
+                missing.append(req)
+        elif req == "synthetic-operation":
+            if "synthetic-operation" not in context.scopes:
+                missing.append(req)
+        elif req == "built-cli":
+            if not (context.binary and context.binary.is_file()):
+                missing.append(req)
+        elif req == "owned-process-group":
+            if not sys.platform.startswith("linux"):
+                missing.append(req)
+        else:
+            missing.append(req)
+
+    if missing:
+        return False, case.get("reason", "prerequisite-missing"), missing
+    return True, "preconditions-satisfied", []
+
+
+def make_device_command(case_id: str, context: ExecutionContext):
+    udid = context.device.udid
+    binary = str(context.binary)
+    if case_id in ("traditional-usb", "traditional-wifi", "private-mac-altirk", "display-hid-stop"):
+        return [binary, "info", "--device", udid], lambda r: r.returncode == 0
+    elif case_id in ("coredevice-usb", "modern-rsd-wifi"):
+        return [binary, "tunnel", "list", "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "remoted-coexistence":
+        return [binary, "doctor", "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "cryptex-install":
+        ddi = str(context.fixtures.get("approved-ddi", ""))
+        return [binary, "ddi", "mount", ddi, "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "rich-clipboard-watch":
+        return [binary, "pasteboard", "watch", "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "application-workflow":
+        return [binary, "apps", "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "file-workflow":
+        return [binary, "fs", "ls", "/", "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "xctest-workflow":
+        bundle = str(context.fixtures.get("test-bundle", ""))
+        return [binary, "test", "run", bundle, "--device", udid], lambda r: r.returncode == 0
+    elif case_id.startswith("windows-afc-"):
+        dest = str(context.fixtures.get("afc-local-dest", "output.bin"))
+        src = str(context.fixtures.get("afc-remote-file", "/test"))
+        return [binary, "fs", "download", src, dest, "--device", udid], lambda r: r.returncode == 0
+    elif case_id == "installcoordination-wire":
+        return [binary, "apps", "--device", udid], lambda r: r.returncode == 0
+    return [binary, "info", "--device", udid], lambda r: r.returncode == 0
+
+
+def execute_device_case(session: Session, case: dict, context: ExecutionContext):
+    case_id = case["id"]
+    satisfied, reason, missing = check_preconditions(case, context)
+    if not satisfied:
+        session.record_not_run(case_id, reason=reason, missing_requirements=missing)
+        return session.results[case_id]
+    command, contract = make_device_command(case_id, context)
+    return session.run_device_case(case_id, command, contract=contract, expected_code=0)
+
+
+def run_device_matrix(session: Session, context: ExecutionContext, case_filter=None):
+    results = {}
+    for case in session.matrix["cases"]:
+        if case["id"] in HOST_IDS:
+            continue
+        if case_filter and case["id"] not in case_filter:
+            continue
+        results[case["id"]] = execute_device_case(session, case, context)
+    return results
+
+
+def run_host_cases(session: Session, binary: Path, provenance: dict):
+    secret = ("synthetic-regression-" + os.urandom(16).hex()).encode()
+    identity = session.private_file("synthetic-identity", secret)
+    # The child observes its own argv, without a shell or MSYS conversion.
+    expected = ["/", ".", "synthetic-path-does-not-exist", "synthetic-路径", str(identity)]
+    command = [sys.executable, "-c", "import json,sys;print(json.dumps(sys.argv[1:]))"] + expected
+    session.run("host-argv", command, contract=lambda r: json.loads(r.stdout) == expected)
+    session.results["host-argv"]["argv_observation"] = "child-sys.argv-compared-in-ram"
+
+    def version_contract(result):
+        if re.fullmatch(rb"ios [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\r?\n", result.stdout) and not result.stderr:
+            provenance["binary_version"] = result.stdout.strip().decode("ascii")[4:]
+            return True
+        return False
+
+    session.run("host-cli-version", [str(binary), "--version"], contract=version_contract)
+    env = os.environ.copy()
+    env.update(IOS_UDID=secret.decode(), USBMUXD_SOCKET_ADDRESS="tcp://127.0.0.1:" + secret.decode())
+    session.run("host-cli-rejection", [str(binary), "-vvvv", "forward", secret.decode(), "62078"],
+                env=env, expected_code=2,
+                contract=lambda r: b"ValueValidation" in r.stderr and b"argument parsing failed" in r.stderr
+                and b"usbmux" not in r.stderr)
+    if sys.platform.startswith("linux"):
+        ready = session.private_file("agent-ready", b"pending-agent-ready")
+        command = [sys.executable, "-c",
+                   "import pathlib,sys,time;print('fixture-ready',flush=True);"
+                   "pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(30)", str(ready)]
+        owned = session.agent(command)
+        deadline = time.monotonic() + 3
+        while ready.read_bytes() != b"ready" and not owned[3].done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        result = session.stop_agent(owned)
+        session.record("host-agent", command, result, -15,
+                       ready.read_bytes() == b"ready" and b"fixture-ready" in result.stdout and result.stop_requested
+                       and group_alive(result.pid) is False)
+
+
+def host_run(binary, parent=None, device=None, context=None, case_filter=None):
     session = Session(parent)
     try:
         provenance = session.provenance(binary)
-        secret = ("synthetic-regression-" + os.urandom(16).hex()).encode()
-        identity = session.private_file("synthetic-identity", secret)
-        # The child observes its own argv, without a shell or MSYS conversion.
-        expected = ["/", ".", "synthetic-path-does-not-exist", "synthetic-路径", str(identity)]
-        command = [sys.executable, "-c", "import json,sys;print(json.dumps(sys.argv[1:]))"] + expected
-        session.run("host-argv", command, contract=lambda r: json.loads(r.stdout) == expected)
-        session.results["host-argv"]["argv_observation"] = "child-sys.argv-compared-in-ram"
-        def version_contract(result):
-            if re.fullmatch(rb"ios [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\r?\n", result.stdout) and not result.stderr:
-                provenance["binary_version"] = result.stdout.strip().decode("ascii")[4:]
-                return True
-            return False
-
-        session.run("host-cli-version", [str(binary), "--version"], contract=version_contract)
-        env = os.environ.copy()
-        env.update(IOS_UDID=secret.decode(), USBMUXD_SOCKET_ADDRESS="tcp://127.0.0.1:" + secret.decode())
-        session.run("host-cli-rejection", [str(binary), "-vvvv", "forward", secret.decode(), "62078"],
-                    env=env, expected_code=2,
-                    contract=lambda r: b"ValueValidation" in r.stderr and b"argument parsing failed" in r.stderr
-                    and b"usbmux" not in r.stderr)
-        if sys.platform.startswith("linux"):
-            ready = session.private_file("agent-ready", b"pending-agent-ready")
-            command = [sys.executable, "-c",
-                       "import pathlib,sys,time;print('fixture-ready',flush=True);"
-                       "pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(30)", str(ready)]
-            owned = session.agent(command)
-            deadline = time.monotonic() + 3
-            while ready.read_bytes() != b"ready" and not owned[3].done() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            result = session.stop_agent(owned)
-            session.record("host-agent", command, result, -15,
-                           ready.read_bytes() == b"ready" and b"fixture-ready" in result.stdout and result.stop_requested
-                           and group_alive(result.pid) is False)
+        run_host_cases(session, binary, provenance)
+        if context is None:
+            context = ExecutionContext(binary=binary, device=device)
+        run_device_matrix(session, context, case_filter=case_filter)
         # Local cleanup is a filesystem API, not an uncaptured shell command.
         cleanup = session.cleanup()
         session.results["host-artifacts"] = dict(id="host-artifacts", status="PASS" if cleanup["complete"] else "FAIL",
                                                  contract=cleanup["complete"], private_outside_evidence=True)
-        return session.finish(provenance), session.evidence
+        return session.finish(provenance, device=context.device), session.evidence
     finally:
         session.cleanup()
 
@@ -356,12 +653,36 @@ def main():
     parser = SafeArgumentParser(prog="regression.py", description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug" / ("ios.exe" if os.name == "nt" else "ios"))
     parser.add_argument("--output-parent", type=Path, help="existing safe directory outside the checkout; creates new private run directories")
+    parser.add_argument("--device", type=str, default=None, help="UDID of target device or 'auto'")
+    parser.add_argument("--cases", type=str, default=None, help="comma-separated list of case IDs to run")
+    parser.add_argument("--scope", type=str, default="read-scope,binary-provenance", help="comma-separated list of granted operation scopes")
+    parser.add_argument("--fixture-dir", type=Path, default=None, help="path to directory containing test fixtures")
+    parser.add_argument("--build-cli", action="store_true", help="build the ios CLI binary before running")
     args = parser.parse_args()
-    report, evidence = host_run(args.binary, args.output_parent)
+
+    if args.build_cli and not args.binary.is_file():
+        subprocess.run(["cargo", "build", "-p", "ios-cli", "--locked"], cwd=ROOT, check=True)
+
+    device = None
+    if args.device == "auto":
+        device = detect_device(args.binary)
+    elif args.device:
+        device = DeviceTarget(udid=validate_udid(args.device))
+
+    scopes = frozenset(s.strip() for s in (args.scope or "").split(",") if s.strip())
+    case_filter = set(c.strip() for c in args.cases.split(",")) if args.cases else None
+
+    context = ExecutionContext(
+        binary=args.binary,
+        device=device,
+        scopes=scopes,
+    )
+
+    report, evidence = host_run(args.binary, args.output_parent, device=device, context=context, case_filter=case_filter)
     # CLI paths are user input and may contain secrets; stdout exposes only the
     # generated public run basename. Caller chooses/knows the output parent.
     print(json.dumps(dict(host_passed=report["host_passed"], evidence_directory=evidence.name,
-                          real_device_executed=False, statuses={status: sum(
+                          real_device_executed=report["real_device_executed"], statuses={status: sum(
                               row["result"]["status"] == status for row in report["cases"])
                               for status in ("PASS", "FAIL", "NOT_RUN")})))
     return 0 if report["host_passed"] else 1
