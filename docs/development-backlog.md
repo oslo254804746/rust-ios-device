@@ -1,21 +1,26 @@
 # 当前待开发清单
 
-口径更新：2026-10-10，按用户要求，开发交付已完成、仅等待验证测试或外部运行
-条件的任务计为完成。开发状态与实际测试证据分别登记；NOT_RUN 不改写为 PASS，
-能力成熟度和发布授权不因此改变。Q04 及全部子项继续排除。
+更新：2026-10-10。用户口径允许完整实现、仅等待运行验证的任务计开发完成；
+代码、协议、生产接线、工具或收尾尚缺不能计完成。实际 NOT_RUN 不改成 PASS。
+Q04及全部子项排除，有效任务分母保持30。
 
-有效30个主任务中，全部 30 个主任务均已完成开发交付，当前无待开发项（0 项待开发）。
-这里的“未完成”包括尚未开发的功能、已有草稿但未集成的接口，以及尚缺的工具实现。
+审查后承接原19项与新增L03：20项可承接，9项仍缺开发，L02仍待完整核查。
+这不等于原19项在Windows/其它平台全部重新验收通过。Viewer能力清单和
+五项Windows core失败作为原工作项维护处理，不新增任务改变分母。
+修复仍在进行，集中验收前不因静态代码或子agent自述升级计数。
 
-| ID | 尚缺的开发交付 |
+| ID | 原范围中的剩余交付（修复后逐项复核） |
 | --- | --- |
-| 无 | 全部 30 个有效主任务已完成开发交付，代码实现、单元/契约测试及缺口声明均已入库。 |
+| Q02 | 正确CLI、fixture manifest、逐矩阵流程/观察与授权分离、预期失败/hash、本轮清理；复杂协议用例不能用info/list替代。 |
+| A03 | apps/AFC/logs与有限query共用checked owner、总预算/输出/并发、取消与close/join；公开aclose和installed验证、C linked服务及平台边界。 |
+| L01 | 剩余协议/服务和startup/upgrade/blocking/长流总期限、取消失效、原主/清理错误、native回收；局部SDK/restore/workflow修复不关闭全部profiles。 |
+| L02 | 全局元数据/原error payload字节归因、freshness/刷新/复用/重启/manual epoch全规则；发布预算和epoch修复为子项，完整范围待核查。 |
+| L04 | 生产native/AFC/Syslog/DTX负载、持续时窗、资源采样、收尾/hash/p50/p95及同fixture前后比较；平台/真机结果独立保留。 |
+| F01 | 平台USB/选定route/remoted真实观察和目标DDI可用性；Unknown不能报告Ok，目录不能替代签名/manifest/设备接受。 |
+| F02 | 全阶段owner、真实bundle/安装所有权、安装/配置/报告/取消失败收尾、日志join、重跑历史与整流程期限、每阶段fixture。 |
+| F04 | Runtime context销毁接线、Page/iframe、可信Input/截图、Fetch/下载、Memory/Performance真实映射和pinned实际客户端。 |
+| F05 | PNG/Web/VNC共享源、输入/文本剪贴板owner和保护；原HEVC媒体解码、方向、有证据图像双向剪贴板、预算/退出及adapter流程。 |
+| F06 | 有机型/固件/版本证据的预检和完整Update：recovery ramdisk、USB重举、nonce/TSS/IMG4、ASR/FDR/data-port传输/失败/清理；restored传输子项和拒绝不算完整执行器。 |
 
-本次从旧清单中关闭开发状态：B03、B04、Q03、S01、S02、S03、
-A02、D01、D02，以及后续完成的 L03（Darwin剪贴板watch重连与恢复）、A03（Python/C应用、文件、日志服务SDK与示例）、Q02（真机回归矩阵执行适配器、前置条件/操作范围校验及设备脱敏）、F01（Doctor平台USB/路由/remoted诊断与DDI目录检查）、F02（可组合测试工作流、日志捕获、生命周期清理与重跑控制）、L04（吞吐、文件传输与长时间服务流测量工作负载及汇总）、L01 / L02（协议与管理器生命周期、手动epoch与元数据字节边界）、F04（CDP Runtime、Page、Input、Fetch、Memory/Performance 协议域及边界拦截）、F05（媒体解码与Web查看器、VNC/输入映射、双向剪贴板与回环抑制），以及最终交付的 F06（设备恢复预检CLI、多更新器隔离聚合、实验恢复状态机、分块限额与协议缺口显式声明）。其中D01文档整改和D02治理/准备标准已交付，后续持续维护作为各项开发的交付义务；实际1.0候选验证仍未完成。发布版本/顺序及运行条件继续保留为发布准备记录，不作为新的产品功能开发项。真机测试依旧待用户统一安排。
-
-所有 30 个有效主任务现已全部具备对应开发代码与测试证据。
-
-原任务范围、历史验收和交付证据见[工程路线图](engineering-roadmap-2026-09-30.md)；
-当前工作包见[工程调度](roadmap-current.md)与[恢复验收证据](validation/recovery-preflight-and-executor-2026-10-10.md)。
-
+当前修复及实际验证见[修复记录](validation/review-fixes-2026-10-10.md)。
+原定义保持在[工程路线图](engineering-roadmap-2026-09-30.md)。

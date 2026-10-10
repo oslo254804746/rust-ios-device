@@ -49,9 +49,13 @@ class CapabilityPolicyTests(unittest.TestCase):
             cli = root / "crates/ios-cli/src"
             cli.mkdir(parents=True)
             (cli / "main.rs").write_text(
-                "enum Commands {\n    List(cmd::list::ListArgs),\n}\n",
+                "enum Commands {\n    List(cmd::list::ListArgs),\n    Viewer(cmd::viewer::ViewerArgs),\n}\n",
                 encoding="utf-8",
             )
+            (cli / "cmd").mkdir()
+            (cli / "cmd/list.rs").write_text("", encoding="utf-8")
+            (cli / "cmd/viewer").mkdir()
+            (cli / "cmd/viewer/mod.rs").write_text("", encoding="utf-8")
             services = root / "crates/ios-core/src/services"
             services.mkdir(parents=True)
             (services / "mod.rs").write_text(
@@ -64,7 +68,8 @@ class CapabilityPolicyTests(unittest.TestCase):
             (services / "nested/mod.rs").write_text("", encoding="utf-8")
             with patch.object(capabilities, "ROOT", root):
                 commands, actual = capabilities.source_inventory()
-            self.assertEqual(commands, {"cli:list": "crates/ios-cli/src/cmd/list.rs"})
+            self.assertEqual(commands, {"cli:list": "crates/ios-cli/src/cmd/list.rs",
+                                        "cli:viewer": "crates/ios-cli/src/cmd/viewer/mod.rs"})
             self.assertEqual(actual, {
                 "service:flat": "crates/ios-core/src/services/flat.rs",
                 "service:nested": "crates/ios-core/src/services/nested/mod.rs",

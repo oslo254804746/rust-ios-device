@@ -86,7 +86,7 @@ where
     ))
 }
 
-pub(super) fn build_rustls_config(
+pub(crate) fn build_rustls_config(
     pair_record: &PairRecord,
 ) -> Result<Arc<ClientConfig>, LockdownError> {
     let _ = rustls::crypto::ring::default_provider().install_default();

@@ -95,8 +95,20 @@ impl Cell {
     }
 
     pub(super) fn reset(&self, epoch: Arc<()>) {
-        self.lock().epoch = epoch;
-        self.replace(Desired::Automatic);
+        // Explicit global clear resets desired states, unlike durable per-device
+        // stop across ordinary scans. Do this atomically with the new version.
+        let version = {
+            let mut state = self.lock();
+            state.epoch = epoch;
+            state.desired = Desired::Automatic;
+            state.version = Arc::new(());
+            *self
+                .pending_success
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
+            state.version.clone()
+        };
+        self.changes.send_replace(version);
         self.set_failure(None);
     }
 

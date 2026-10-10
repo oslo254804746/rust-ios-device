@@ -91,6 +91,9 @@ int ios_runtime_init_checked(void);
  * or acknowledge device cleanup. Existing numeric status values are unchanged.
  */
 const char *ios_last_error_class(void);
+/* Secondary partial-service JSON projection error; borrowed static text.
+ * Read before any next int-status call; "none" means no secondary failure. */
+const char *ios_last_service_projection_error_class(void);
 
 /* ── Device listing ─────────────────────────────────────────────────────────── */
 
@@ -217,10 +220,20 @@ int ios_free_bytes_checked(uint8_t **data_in_out, size_t *len_in_out);
 /**
  * Read log messages from syslog service as newly-allocated JSON array of strings.
  *
- * Reads up to max_messages or until timeout_ms expires.
- * Free the returned string with ios_free_string() or ios_free_string_checked().
+ * The total includes connection setup; fixed default byte/entry budgets apply.
+ * Requests max_messages complete messages. EOF/IO/timeout/cancel is nonzero;
+ * json_out may then own completed partial messages. Free it on every outcome.
+ * A zero count still requires a live checked owner and admission.
  */
 int ios_device_syslog_read_json(const IosDeviceHandle *handle, size_t max_messages, uint64_t timeout_ms, char **json_out);
+
+/** Seal/cancel this handle's checked service owner without consuming it; wait
+ * for actual local lease release under cleanup_ms. May run concurrently with
+ * service calls while this allocation remains live. Join caller threads before
+ * ios_device_close_checked destroys the allocation. Repeated close succeeds;
+ * after close, new apps/AFC/log calls return precondition.
+ */
+int ios_device_services_close(const IosDeviceHandle *handle, uint64_t cleanup_ms);
 
 /**
  * Free a UTF-8 string returned by an ios-rs string-output function.
@@ -465,6 +478,74 @@ int ios_device_session_query_json(const IosDeviceSession *session,
                                   const IosDeviceQueryOptions *options,
                                   const IosOperationCancel *cancel,
                                   char **json_out);
+
+/** Read-only apps/AFC/log operations on the SAME owner/admission as query.
+ * total_ms: 0..86400000; zero gives timeout before IO.
+ * reply_wire_bytes: 1..64MiB decrypted service bytes cumulatively;
+ * output_bytes: 1..16MiB retained data/text; max_entries: 0..100000;
+ * max_frame_bytes: 48..4MiB AFC body admitted before allocation;
+ * json_bytes: 1..100MiB serialized C output admitted before append.
+ * Discovery/Lockdown/service-Connect share a separate 16MiB control-plane
+ * reply budget. Logical limits exclude TLS wire overhead, parser temporaries,
+ * CPU/RSS and caller-retained successful output allocations.
+ */
+typedef struct IosDeviceServiceOptions {
+    uint64_t total_ms;
+    size_t reply_wire_bytes;
+    size_t output_bytes;
+    size_t max_entries;
+    size_t max_frame_bytes;
+    size_t json_bytes;
+} IosDeviceServiceOptions;
+int ios_device_service_options_default(IosDeviceServiceOptions *options_out);
+
+/** Create a services-only IosDeviceHandle alias sharing this session's checked
+ * owner. It supports existing apps/AFC/syslog functions with their fixed
+ * defaults and ios_device_services_close; generic legacy lockdown functions
+ * reject this handle with precondition. Use session_query_json for finite
+ * queries. Closing the derived handle seals all aliases sharing the owner;
+ * creation from a closed session does not reopen it. Free via
+ * ios_device_close_checked after caller OS threads join. Borrowed session and
+ * distinct writable output remain live throughout this creation call.
+ */
+int ios_device_handle_from_session(const IosDeviceSession *session, IosDeviceHandle **handle_out);
+
+/** selector: 1=apps, 2=AFC list directory, 3=syslog messages.
+ * Selector 2 requires path/path_len (1..4096 UTF-8 bytes, no NUL); other
+ * selectors ignore it. syslog max_messages must be <= max_entries.
+ * Fresh discovery/session/service sockets are covered by one native absolute
+ * deadline and the supplied cancellation token. No pairing/tunnel/retry.
+ * The C projection has a stricter parent clock minted just before preparation;
+ * native errors remain primary. Synchronous decoding/serialization is
+ * cooperative and cannot be physically preempted.
+ * On syslog EOF/IO/timeout/cancel/output refusal, return nonzero and preserve
+ * the typed primary category. json_out MAY own completed partial messages;
+ * free it even on error. Partial projection is byte-bounded with a separate
+ * 100ms cooperative cleanup budget; a failed projection leaves it NULL.
+ * A completed empty log request performs no IO but still checks admission,
+ * closed state and cancellation. Apps/files errors have no partial output.
+ * Session/options/cancel/path remain borrowed until this synchronous call
+ * returns; output storage is distinct and writable and is cleared first.
+ * Close/cancel may run concurrently. JOIN all calls on an allocation before
+ * destroying it; close acknowledges lease release, not caller OS-thread join.
+ */
+int ios_device_session_service_json(const IosDeviceSession *session,
+    uint32_t selector, const char *path, size_t path_len, size_t max_messages,
+    const IosDeviceServiceOptions *options, const IosOperationCancel *cancel,
+    char **json_out);
+
+/** Complete AFC file read, never truncated success. max_bytes must be <=
+ * options.output_bytes; zero permits an empty file and probes for extra data.
+ * Ownership/synchronization follow the service JSON call. NULL/0 outputs on
+ * every error and on an empty successful file. Free nonempty output with its
+ * exact length using ios_free_bytes_checked. All AFC requests including local
+ * close are covered by the native total; cancellation destroys local sockets
+ * without asserting remote FileClose acknowledgement.
+ */
+int ios_device_session_afc_read_file(const IosDeviceSession *session,
+    const char *path, size_t path_len, size_t max_bytes,
+    const IosDeviceServiceOptions *options, const IosOperationCancel *cancel,
+    uint8_t **data_out, size_t *len_out);
 
 /** Required writable output is cleared before allocation. No runtime/IO. */
 int ios_operation_cancel_create(IosOperationCancel **cancel_out);

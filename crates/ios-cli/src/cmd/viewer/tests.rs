@@ -6,13 +6,52 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use super::clipboard::*;
 use super::vnc::*;
 use super::web::*;
-use crate::access::test_support::{grant, JsonRequest, PolicyFixture, TOKEN};
+use crate::access::test_support::{grant, JsonRequest, PolicyFixture, DEVICE, TOKEN};
 use crate::access::{AccessControl, Permission};
+
+fn observed_backend() -> (
+    mpsc::Sender<DeviceRequest>,
+    mpsc::UnboundedReceiver<VncInputAction>,
+) {
+    let (sender, mut receiver) = mpsc::channel::<DeviceRequest>(8);
+    let (observe, observed) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(request) = receiver.recv().await {
+            let value = match request.command {
+                DeviceCommand::Input(action) => {
+                    observe.send(action).unwrap();
+                    None
+                }
+                DeviceCommand::ReadClipboard => Some(ClipboardPayload::Text("actual text".into())),
+            };
+            let _ = request.reply.send(Ok(value));
+        }
+    });
+    (sender, observed)
+}
+async fn observe_web_backend(state: &WebViewerState) -> mpsc::UnboundedReceiver<VncInputAction> {
+    let (sender, receiver) = observed_backend();
+    *state.backend.write().await = Some(sender);
+    receiver
+}
+async fn test_vnc_state(
+    password: Option<String>,
+) -> (Arc<VncServerState>, mpsc::UnboundedReceiver<VncInputAction>) {
+    let principal = AccessControl::trusted_test_local()
+        .authenticate(&axum::http::HeaderMap::new())
+        .unwrap();
+    let (backend, receiver) = observed_backend();
+    let state = VncServerState::new(100, 200, password, principal, false, backend);
+    state
+        .update_frame(100, 200, vec![0; 100 * 200 * 4], 1)
+        .await;
+    (state, receiver)
+}
 
 fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -49,7 +88,7 @@ async fn web_viewer_index_and_stream_lifecycle() {
     let access = AccessControl::from_file(fixture.path.clone())
         .await
         .unwrap();
-    let state = WebViewerState::new(access);
+    let state = WebViewerState::new(access, DEVICE.into(), 12345, true);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
 
@@ -91,11 +130,14 @@ async fn web_viewer_index_and_stream_lifecycle() {
 
 #[tokio::test]
 async fn web_viewer_auth_rejection() {
-    let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::Debug])]);
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
     let access = AccessControl::from_file(fixture.path.clone())
         .await
         .unwrap();
-    let state = WebViewerState::new(access);
+    let state = WebViewerState::new(access, DEVICE.into(), 12345, true);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
 
@@ -134,10 +176,10 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
     let access = AccessControl::from_file(fixture.path.clone())
         .await
         .unwrap();
-    let state = WebViewerState::new(access);
+    let state = WebViewerState::new(access, DEVICE.into(), 12345, true);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
-    let mut rx = state.input_tx.subscribe();
+    let mut rx = observe_web_backend(&state).await;
 
     // 1. Pointer input
     let ptr_resp = client
@@ -204,10 +246,7 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
         .send()
         .await
         .unwrap();
-    assert_eq!(ori_resp.status(), StatusCode::OK);
-
-    let ori_act = rx.recv().await.unwrap();
-    assert_eq!(ori_act, VncInputAction::Rotate { direction: "left" });
+    assert_eq!(ori_resp.status(), StatusCode::NOT_IMPLEMENTED);
 
     let _ = shutdown.send(());
     let _ = handle.await;
@@ -215,7 +254,7 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
 
 #[tokio::test]
 async fn vnc_server_handshake_and_pointer_cleanup() {
-    let state = VncServerState::new(100, 200, None);
+    let (state, mut rx) = test_vnc_state(None).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -265,8 +304,6 @@ async fn vnc_server_handshake_and_pointer_cleanup() {
     client.read_exact(&mut name).await.unwrap();
     assert_eq!(&name, b"iOS Screen");
 
-    let mut rx = state.input_tx.subscribe();
-
     // 5. Send PointerEvent down (left click bit 0)
     // msg_type=5, button_mask=1, x=50, y=80
     client
@@ -302,12 +339,12 @@ async fn vnc_server_handshake_and_pointer_cleanup() {
 
 #[tokio::test]
 async fn vnc_server_hotkeys_and_buttons_mapping() {
-    let state = VncServerState::new(100, 200, None);
+    let (state, mut rx) = test_vnc_state(None).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let state_clone = state.clone();
-    tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         let session = VncSession::new(stream, peer, state_clone);
         let _ = session.run().await;
@@ -326,8 +363,6 @@ async fn vnc_server_hotkeys_and_buttons_mapping() {
     let mut init_buf = vec![0u8; 4 + 16 + 4 + 10];
     client.read_exact(&mut init_buf).await.unwrap();
 
-    let mut rx = state.input_tx.subscribe();
-
     // 1. Send Ctrl down (keysym 0xFFE3)
     // KeyEvent: type=4, down=1, pad=0,0, keysym=0x0000FFE3
     client
@@ -341,6 +376,13 @@ async fn vnc_server_hotkeys_and_buttons_mapping() {
         .await
         .unwrap();
 
+    assert_eq!(
+        rx.recv().await.unwrap(),
+        VncInputAction::Key {
+            usage: 0xe0,
+            down: true
+        }
+    );
     let act_down = rx.recv().await.unwrap();
     assert_eq!(
         act_down,
@@ -392,6 +434,7 @@ async fn vnc_server_hotkeys_and_buttons_mapping() {
     );
 
     state.stop();
+    let _ = server_task.await;
 }
 
 #[tokio::test]
@@ -451,4 +494,136 @@ fn extended_clipboard_compression_round_trip() {
         parsed.text.as_deref(),
         Some("Testing Extended Clipboard with \n CRLF and special chars!")
     );
+}
+
+#[test]
+fn vnc_des_matches_independent_pycryptodome_vector_and_not_xor() {
+    // PyCryptodome DES ECB with the RFC 6143 reversed-bit password key.
+    let challenge = std::array::from_fn(|i| i as u8);
+    let response = vnc_encrypt_challenge(&challenge, "password");
+    assert_eq!(hex::encode(response), "b866924125c8eebb9debc1db61c538e2");
+    let old_xor: Vec<_> = challenge
+        .iter()
+        .enumerate()
+        .map(|(i, byte)| byte ^ b"password"[i % 8].reverse_bits())
+        .collect();
+    assert_ne!(response.as_slice(), old_xor);
+}
+
+#[tokio::test]
+async fn viewer_owner_policy_checks_exact_device_port_and_requires_credential() {
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
+    assert!(super::owner_principal(&access, None, DEVICE, 12345).is_err());
+    assert!(
+        super::owner_principal(&access, Some(&fixture.token_path), "another-device", 12345)
+            .is_err()
+    );
+    assert!(super::owner_principal(&access, Some(&fixture.token_path), DEVICE, 5900).is_err());
+    assert!(super::owner_principal(&access, Some(&fixture.token_path), DEVICE, 12345).is_ok());
+}
+
+#[tokio::test]
+async fn web_scope_and_device_acknowledgements_prevent_false_success() {
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
+    let state = WebViewerState::new(access.clone(), "another-device".into(), 12345, true);
+    let (base, handle, stop) = spawn_test_server(state).await;
+    let client = test_client();
+    assert_eq!(
+        client
+            .get(format!("{base}/"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let _ = stop.send(());
+    handle.await.unwrap();
+    let state = WebViewerState::new(access.clone(), DEVICE.into(), 5900, true);
+    let (base, handle, stop) = spawn_test_server(state).await;
+    assert_eq!(
+        client
+            .get(format!("{base}/"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let _ = stop.send(());
+    handle.await.unwrap();
+    let state = WebViewerState::new(access, DEVICE.into(), 12345, true);
+    let (base, handle, stop) = spawn_test_server(state.clone()).await;
+    let pointer = || {
+        client
+            .post(format!("{base}/input/pointer"))
+            .bearer_auth(TOKEN)
+            .json(&serde_json::json!({"x":1,"y":1,"action":"down"}))
+    };
+    assert_eq!(
+        pointer().send().await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (sender, mut receiver) = mpsc::channel::<DeviceRequest>(1);
+    *state.backend.write().await = Some(sender);
+    let backend = tokio::spawn(async move {
+        let request = receiver.recv().await.unwrap();
+        request
+            .reply
+            .send(Err(anyhow::anyhow!("synthetic device failure")))
+            .unwrap();
+    });
+    assert_eq!(
+        pointer().send().await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    backend.await.unwrap();
+    let _observed = observe_web_backend(&state).await;
+    let response = client
+        .get(format!("{base}/clipboard"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(content["text"], "actual text");
+    let _ = stop.send(());
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn vnc_stop_wakes_original_silent_handshake_and_closes_socket() {
+    let (state, _observed) = test_vnc_state(None).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let session_state = state.clone();
+    let server = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        VncSession::new(stream, peer, session_state).run().await
+    });
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut version = [0; 12];
+    client.read_exact(&mut version).await.unwrap();
+    state.stop();
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(client.read(&mut version).await.unwrap(), 0);
 }

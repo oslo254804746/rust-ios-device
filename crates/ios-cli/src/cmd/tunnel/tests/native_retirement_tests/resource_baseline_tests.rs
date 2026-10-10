@@ -21,6 +21,7 @@ struct Input {
     workload: String,
     #[serde(default)]
     workload_payload_kb: usize,
+    workload_duration_ms: u64,
 }
 
 impl Input {
@@ -49,10 +50,23 @@ impl Input {
             cycle_pause_ms: number("IOS_MANAGER_BASELINE_PAUSE_MS", 250, 0, 5_000)?,
             workload,
             workload_payload_kb,
+            workload_duration_ms: number(
+                "IOS_MANAGER_BASELINE_WORKLOAD_DURATION_MS",
+                50,
+                1,
+                60_000,
+            )?,
         };
         anyhow::ensure!(
             input.longrun_min_cycles <= input.longrun_max_cycles,
             "minimum cycles exceed the bounded maximum"
+        );
+        anyhow::ensure!(
+            matches!(
+                input.workload.as_str(),
+                "idle" | "all" | "throughput" | "file_transfer" | "service_stream"
+            ),
+            "unknown workload selection"
         );
         Ok(input)
     }
@@ -328,6 +342,7 @@ struct Evidence {
     latencies: Vec<serde_json::Value>,
     resources: Vec<serde_json::Value>,
     rounds: Vec<serde_json::Value>,
+    workloads: Vec<serde_json::Value>,
     longrun_elapsed_ms: u128,
     longrun_cycles: usize,
     events_emitted: usize,
@@ -342,12 +357,14 @@ impl Evidence {
             "latency_samples": self.latencies,
             "resource_samples": self.resources,
             "rounds": self.rounds,
+            "workload_samples": self.workloads,
         });
         println!("{EVENT_PREFIX}{}", serde_json::to_string(&event).unwrap());
         self.events_emitted += 1;
         self.latencies.clear();
         self.resources.clear();
         self.rounds.clear();
+        self.workloads.clear();
     }
 
     fn latency(
@@ -505,6 +522,7 @@ async fn collect_originals(originals: &mut [Original]) -> CollectedOriginals {
 }
 
 struct RoundSpec<'a> {
+    input: &'a Input,
     scenario: &'a str,
     devices: usize,
     round: usize,
@@ -520,6 +538,7 @@ async fn measure_round(
     spec: RoundSpec<'_>,
 ) -> Result<()> {
     let RoundSpec {
+        input,
         scenario,
         devices,
         round,
@@ -591,6 +610,45 @@ async fn measure_round(
     evidence
         .resource(state, "active", scenario, devices, round)
         .await;
+
+    // Workloads run while the exact manager-published native owners are active,
+    // before DELETE/FIN and resource recovery. Service fixtures use production
+    // protocol clients; only the device peers are synthetic.
+    for original in originals_slice.iter_mut() {
+        for workload in ["throughput", "file_transfer", "service_stream"] {
+            if input.workload != "all" && input.workload != workload {
+                continue;
+            }
+            evidence
+                .resource(state, "workload-before", workload, devices, round)
+                .await;
+            let started = MeasureInstant::now();
+            let result = match workload {
+                "throughput" => {
+                    measure_throughput_workload(
+                        &mut original.peer,
+                        input.workload_payload_kb * 1024,
+                    )
+                    .await?
+                }
+                "file_transfer" => {
+                    measure_file_transfer_workload(4, input.workload_payload_kb * 1024 / 4).await?
+                }
+                _ => {
+                    measure_service_stream_workload(
+                        Duration::from_millis(input.workload_duration_ms),
+                        state,
+                    )
+                    .await?
+                }
+            };
+            evidence.latency("workload-total", workload, devices, round, started);
+            evidence.workloads.push(json!({"workload": workload, "scenario": scenario, "devices": devices, "round": round, "metrics": result}));
+            evidence
+                .resource(state, "workload-released", workload, devices, round)
+                .await;
+        }
+    }
 
     if disconnect {
         let start = MeasureInstant::now();
@@ -732,6 +790,7 @@ async fn measurement(
                 base,
                 evidence,
                 RoundSpec {
+                    input,
                     scenario: "scale",
                     devices,
                     round,
@@ -750,6 +809,7 @@ async fn measurement(
             base,
             evidence,
             RoundSpec {
+                input,
                 scenario: "longrun",
                 devices: MAX_DEVICES,
                 round,
@@ -769,205 +829,10 @@ async fn measurement(
     anyhow::bail!("bounded cycle count exhausted before requested duration/minimum cycles")
 }
 
-/// Workload measurement: throughput benchmark over a local duplex TCP pair.
-async fn measure_throughput_workload(payload_bytes: usize) -> Result<serde_json::Value> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let address = listener.local_addr()?;
-    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
-    let (mut server, _) = accepted;
-    drop(listener);
-    client.set_nodelay(true)?;
-    server.set_nodelay(true)?;
-
-    let chunk_size = 64 * 1024;
-    let total_chunks = payload_bytes.div_ceil(chunk_size).max(1);
-    let actual_total_bytes = total_chunks * chunk_size;
-    let chunk_data = vec![0x5au8; chunk_size];
-
-    let mut chunk_latencies = Vec::with_capacity(total_chunks);
-
-    let start = MeasureInstant::now();
-
-    let server_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; chunk_size];
-        let mut received = 0;
-        while received < actual_total_bytes {
-            let n = server.read_exact(&mut buf).await?;
-            received += n;
-            server.write_all(&buf[..n]).await?;
-        }
-        Ok::<_, anyhow::Error>(received)
-    });
-
-    let mut echo_buf = vec![0u8; chunk_size];
-    for _ in 0..total_chunks {
-        let chunk_start = MeasureInstant::now();
-        client.write_all(&chunk_data).await?;
-        client.read_exact(&mut echo_buf).await?;
-        let chunk_dur = chunk_start.elapsed().as_nanos() as u64;
-        chunk_latencies.push(chunk_dur);
-    }
-
-    let server_received = server_task.await??;
-    let elapsed = start.elapsed();
-    let elapsed_ns = elapsed.as_nanos() as u64;
-    let elapsed_secs = elapsed.as_secs_f64().max(0.000001);
-    let bytes_per_sec = (server_received as f64) / elapsed_secs;
-
-    chunk_latencies.sort_unstable();
-    let p50 = chunk_latencies[chunk_latencies.len() / 2];
-    let p95_idx = ((chunk_latencies.len() as f64) * 0.95).floor() as usize;
-    let p95 = chunk_latencies[p95_idx.min(chunk_latencies.len() - 1)];
-
-    Ok(json!({
-        "status": "passed",
-        "transferred_bytes": actual_total_bytes,
-        "elapsed_nanoseconds": elapsed_ns,
-        "throughput_bytes_per_sec": bytes_per_sec,
-        "p50_chunk_ns": p50,
-        "p95_chunk_ns": p95,
-    }))
-}
-
-/// Workload measurement: file transfer benchmark (chunked write, read back, sha256 checksum).
-async fn measure_file_transfer_workload(
-    file_count: usize,
-    file_size_bytes: usize,
-) -> Result<serde_json::Value> {
-    use sha2::{Digest, Sha256};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let address = listener.local_addr()?;
-    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
-    let (mut server, _) = accepted;
-    drop(listener);
-    client.set_nodelay(true)?;
-    server.set_nodelay(true)?;
-
-    let total_bytes = file_count * file_size_bytes;
-
-    let server_task = tokio::spawn(async move {
-        let mut stored_files = Vec::with_capacity(file_count);
-        for _ in 0..file_count {
-            let mut file_buf = vec![0u8; file_size_bytes];
-            server.read_exact(&mut file_buf).await?;
-            stored_files.push(file_buf);
-        }
-        for file in stored_files {
-            server.write_all(&file).await?;
-        }
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let mut generated_files = Vec::with_capacity(file_count);
-    for idx in 0..file_count {
-        let mut file_data = vec![0u8; file_size_bytes];
-        for (b_idx, b) in file_data.iter_mut().enumerate() {
-            *b = ((idx * 31 + b_idx) % 251) as u8;
-        }
-        generated_files.push(file_data);
-    }
-
-    let upload_start = MeasureInstant::now();
-    for file in &generated_files {
-        client.write_all(file).await?;
-    }
-    let upload_elapsed = upload_start.elapsed();
-
-    let download_start = MeasureInstant::now();
-    let mut verified = true;
-    for file in &generated_files {
-        let mut downloaded = vec![0u8; file_size_bytes];
-        client.read_exact(&mut downloaded).await?;
-        let expected_hash = Sha256::digest(file);
-        let actual_hash = Sha256::digest(&downloaded);
-        if expected_hash != actual_hash {
-            verified = false;
-        }
-    }
-    let download_elapsed = download_start.elapsed();
-
-    server_task.await??;
-
-    let upload_secs = upload_elapsed.as_secs_f64().max(0.000001);
-    let download_secs = download_elapsed.as_secs_f64().max(0.000001);
-
-    Ok(json!({
-        "status": "passed",
-        "files_transferred": file_count,
-        "total_bytes": total_bytes,
-        "upload_throughput_bytes_per_sec": (total_bytes as f64) / upload_secs,
-        "download_throughput_bytes_per_sec": (total_bytes as f64) / download_secs,
-        "integrity_verified": verified,
-    }))
-}
-
-/// Workload measurement: service stream benchmark (continuous event messaging).
-async fn measure_service_stream_workload(
-    duration: Duration,
-    events_count: usize,
-) -> Result<serde_json::Value> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let address = listener.local_addr()?;
-    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
-    let (mut server, _) = accepted;
-    drop(listener);
-    client.set_nodelay(true)?;
-    server.set_nodelay(true)?;
-
-    let server_task = tokio::spawn(async move {
-        let mut stream_bytes = 0;
-        let mut received_events = 0;
-        let mut len_buf = [0u8; 4];
-        while received_events < events_count {
-            server.read_exact(&mut len_buf).await?;
-            let len = u32::from_be_bytes(len_buf) as usize;
-            let mut event_buf = vec![0u8; len];
-            server.read_exact(&mut event_buf).await?;
-            stream_bytes += 4 + len;
-            received_events += 1;
-        }
-        Ok::<_, anyhow::Error>((received_events, stream_bytes))
-    });
-
-    let stream_start = MeasureInstant::now();
-    let mut total_sent_bytes = 0;
-    for seq in 0..events_count {
-        let event_line = format!(
-            "[service_stream seq={seq} ts={} event=syslog_line_log_entry_payload_data]\n",
-            seq * 10
-        );
-        let event_bytes = event_line.as_bytes();
-        let len = event_bytes.len() as u32;
-        client.write_all(&len.to_be_bytes()).await?;
-        client.write_all(event_bytes).await?;
-        total_sent_bytes += 4 + event_bytes.len();
-        if duration > Duration::ZERO && seq % 100 == 0 {
-            tokio::task::yield_now().await;
-        }
-    }
-    let elapsed = stream_start.elapsed();
-    let (received_events, _) = server_task.await??;
-
-    let elapsed_secs = elapsed.as_secs_f64().max(0.000001);
-    let events_per_sec = (received_events as f64) / elapsed_secs;
-    let bandwidth = (total_sent_bytes as f64) / elapsed_secs;
-
-    Ok(json!({
-        "status": "passed",
-        "stream_duration_ns": elapsed.as_nanos() as u64,
-        "events_streamed": received_events,
-        "stream_bytes": total_sent_bytes,
-        "events_per_second": events_per_sec,
-        "bandwidth_bytes_per_sec": bandwidth,
-        "dropped_events": events_count.saturating_sub(received_events),
-    }))
-}
+mod workloads;
+use workloads::{
+    measure_file_transfer_workload, measure_service_stream_workload, measure_throughput_workload,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "explicit L04 measured gate; run scripts/manager_resource_baseline.py against this compiled test binary"]
@@ -1065,34 +930,6 @@ async fn manager_native_resource_baseline() {
         && state.inner.lifecycle.connects.available_permits() == lifecycle::MAX_CONNECTS
         && state.inner.failure_slots.available_permits() == MAX_FAILURE_RECORDS;
     let measured_ok = matches!(&measured, Ok(Ok(())));
-    let throughput_workload = if input.workload == "idle"
-        || (!input.workload.contains("throughput") && input.workload != "all")
-    {
-        json!({"status": "NOT_RUN", "reason": "workload set to idle"})
-    } else {
-        measure_throughput_workload(input.workload_payload_kb * 1024)
-            .await
-            .expect("throughput workload measurement")
-    };
-    let file_transfer_workload = if input.workload == "idle"
-        || (!input.workload.contains("file_transfer") && input.workload != "all")
-    {
-        json!({"status": "NOT_RUN", "reason": "workload set to idle"})
-    } else {
-        measure_file_transfer_workload(4, (input.workload_payload_kb * 1024) / 4)
-            .await
-            .expect("file transfer workload measurement")
-    };
-    let service_stream_workload = if input.workload == "idle"
-        || (!input.workload.contains("service_stream") && input.workload != "all")
-    {
-        json!({"status": "NOT_RUN", "reason": "workload set to idle"})
-    } else {
-        measure_service_stream_workload(Duration::from_millis(50), 500)
-            .await
-            .expect("service stream workload measurement")
-    };
-
     let report = json!({
         "schema_version": 1, "fixture": "production-manager-original-native-host-workers",
         "status": if measured_ok && resources_recovered {"passed"} else {"failed"},
@@ -1106,9 +943,11 @@ async fn manager_native_resource_baseline() {
         "events_emitted": evidence.events_emitted,
         "instrumentation": "external event stream; only one round of JSON retained in measured process",
         "longrun": {"elapsed_ms": evidence.longrun_elapsed_ms, "cycles": evidence.longrun_cycles, "maximum_concurrent_devices": 16},
-        "throughput": throughput_workload,
-        "file_transfer": file_transfer_workload,
-        "service_stream": service_stream_workload,
+        "workload_samples": evidence.workloads,
+        "workload_selection": input.workload,
+        "throughput": {"status": "NOT_RUN", "reason": "physical TCP forwarding workload not run; see native ICMPv6 production workload_samples"},
+        "file_transfer": {"status": "NOT_RUN", "reason": "physical device AFC not run; see production AFC protocol fixture workload_samples"},
+        "service_stream": {"status": "NOT_RUN", "reason": "DTX and physical device streams not run; see production SyslogStream fixture workload_samples"},
         "physical_devices": {"status": "NOT_RUN", "reason": "authorized physical device and USB/Wi-Fi workflows required"},
         "cleanup": {
             "original_joins_and_strict_eof": final_originals.validation.is_ok(),
@@ -1137,50 +976,29 @@ async fn manager_native_resource_baseline() {
 }
 
 #[tokio::test]
-async fn test_throughput_workload_measurement() {
-    let result = measure_throughput_workload(64 * 1024).await.unwrap();
-    assert_eq!(
-        result.get("status").and_then(serde_json::Value::as_str),
-        Some("passed")
-    );
-    assert!(
-        result
-            .get("throughput_bytes_per_sec")
-            .unwrap()
-            .as_f64()
-            .unwrap()
-            > 0.0
-    );
-}
-
-#[tokio::test]
-async fn test_file_transfer_workload_measurement() {
+async fn production_afc_workload_verifies_disk_and_cleanup() {
     let result = measure_file_transfer_workload(2, 16 * 1024).await.unwrap();
-    assert_eq!(
-        result.get("status").and_then(serde_json::Value::as_str),
-        Some("passed")
-    );
-    assert_eq!(
-        result
-            .get("integrity_verified")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
+    assert_eq!(result["integrity_verified"], true);
+    assert_eq!(result["strict_peer_eof"], true);
+    assert_eq!(result["owned_files_removed"], true);
+    assert_eq!(result["total_bytes"], 65536);
 }
 
-#[tokio::test]
-async fn test_service_stream_workload_measurement() {
-    let result = measure_service_stream_workload(Duration::from_millis(20), 100)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_syslog_workload_honors_real_window() {
+    let source = MeasurementSource::new();
+    let state = TunnelAgentState::with_source(
+        TunMode::Userspace,
+        AccessControl::trusted_test_local(),
+        Upstreams::default(),
+        source,
+        CLEANUP,
+    );
+    let result = measure_service_stream_workload(Duration::from_millis(500), &state)
         .await
         .unwrap();
-    assert_eq!(
-        result.get("status").and_then(serde_json::Value::as_str),
-        Some("passed")
-    );
-    assert_eq!(
-        result
-            .get("dropped_events")
-            .and_then(serde_json::Value::as_u64),
-        Some(0)
-    );
+    assert!(result["stream_duration_ns"].as_u64().unwrap() >= 500_000_000);
+    assert_eq!(result["strict_peer_eof"], true);
+    assert_eq!(result["dropped_events"], 0);
+    assert!(result["resource_samples"].as_array().unwrap().len() >= 2);
 }

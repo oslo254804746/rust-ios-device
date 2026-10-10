@@ -117,6 +117,23 @@ impl RunXcTestCmd {
         }
 
         self.workflow.preflight()?;
+        anyhow::ensure!(
+            self.wait || (!self.workflow.uninstall_on_finish && self.workflow.rerun_failed == 0),
+            "workflow cleanup and reruns require --wait"
+        );
+        if let Some(path) = &self.workflow.install_runner {
+            anyhow::ensure!(
+                crate::cmd::test_workflow::package_bundle_id(path)? == self.test_runner_bundle_id,
+                "installed runner package identifier does not match the selected test runner"
+            );
+        }
+        if let Some(path) = &self.workflow.install_app {
+            anyhow::ensure!(
+                Some(crate::cmd::test_workflow::package_bundle_id(path)?.as_str())
+                    == self.bundle_id.as_deref(),
+                "installed application package identifier does not match the selected target"
+            );
+        }
 
         // Build and validate every user-controlled field before opening a
         // device connection. This also ensures an invalid selector cannot
@@ -136,232 +153,293 @@ impl RunXcTestCmd {
             None
         };
 
-        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
-            &udid,
-            self.workflow.install_app.as_deref(),
-            &mut app_tracker,
-        )
-        .await
-        {
-            write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            return Err(error);
-        }
-
-        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
-            &udid,
-            self.workflow.install_runner.as_deref(),
-            &mut app_tracker,
-        )
-        .await
-        {
-            write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            app_tracker.cleanup(&udid).await;
-            return Err(error);
-        }
-
-        let device = match until(
-            deadline,
-            "connecting to testmanagerd",
-            crate::cmd::runtest::connect_testmanager_device(&udid),
-        )
-        .await
-        {
-            Ok(device) => device,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                if let Some(guard) = log_guard {
-                    guard.stop().await;
-                }
-                app_tracker.cleanup(&udid).await;
-                return Err(error);
-            }
-        };
-        let runner = match until(
-            deadline,
-            "looking up the XCTest runner",
-            lookup_installed_app(&device, &direct_plan.test_runner_bundle_id),
-        )
-        .await
-        {
-            Ok(runner) => runner,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                if let Some(guard) = log_guard {
-                    guard.stop().await;
-                }
-                app_tracker.cleanup(&udid).await;
-                return Err(error);
-            }
-        };
-        let target = match direct_plan.bundle_id.as_deref() {
-            Some(bundle_id) => match until(
+        let mut workflow_sessions = Vec::new();
+        let work = async {
+            if let Err(error) = tokio::time::timeout_at(
                 deadline,
-                "looking up the application under test",
-                lookup_installed_app(&device, bundle_id),
+                crate::cmd::test_workflow::install_package_if_present(
+                    &udid,
+                    self.workflow.install_app.as_deref(),
+                    &mut app_tracker,
+                ),
+            )
+            .await
+            .context("XCTest deadline expired during package installation")?
+            {
+                let report_result =
+                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
+                if let Err(report_error) = report_result {
+                    return crate::cmd::test_workflow::combine_results(
+                        Err(error),
+                        Err(report_error),
+                        "workflow diagnostic report failed",
+                    );
+                }
+                return Err(error);
+            }
+
+            if let Err(error) = tokio::time::timeout_at(
+                deadline,
+                crate::cmd::test_workflow::install_package_if_present(
+                    &udid,
+                    self.workflow.install_runner.as_deref(),
+                    &mut app_tracker,
+                ),
+            )
+            .await
+            .context("XCTest deadline expired during package installation")?
+            {
+                let report_result =
+                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
+                if let Err(report_error) = report_result {
+                    return crate::cmd::test_workflow::combine_results(
+                        Err(error),
+                        Err(report_error),
+                        "workflow diagnostic report failed",
+                    );
+                }
+                return Err(error);
+            }
+
+            let device = match until(
+                deadline,
+                "connecting to testmanagerd",
+                crate::cmd::runtest::connect_testmanager_device(&udid),
             )
             .await
             {
-                Ok(target) => Some(target),
+                Ok(device) => device,
                 Err(error) => {
-                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
+                    let report_result =
+                        write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
                     }
-                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
-            },
-            None => None,
-        };
-        let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
-        let configuration_name = launch_plan.xctest_bundle_name.clone();
+            };
+            let runner = match until(
+                deadline,
+                "looking up the XCTest runner",
+                lookup_installed_app(&device, &direct_plan.test_runner_bundle_id),
+            )
+            .await
+            {
+                Ok(runner) => runner,
+                Err(error) => {
+                    let report_result =
+                        write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+            let target = match direct_plan.bundle_id.as_deref() {
+                Some(bundle_id) => match until(
+                    deadline,
+                    "looking up the application under test",
+                    lookup_installed_app(&device, bundle_id),
+                )
+                .await
+                {
+                    Ok(target) => Some(target),
+                    Err(error) => {
+                        let report_result = write_junit_diagnostic(
+                            junit_output,
+                            &incomplete_summary(false),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                },
+                None => None,
+            };
+            let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
+            let configuration_name = launch_plan.xctest_bundle_name.clone();
 
-        let mut session =
-            match start_test_plan_session_until(&udid, launch_plan.clone(), deadline).await {
+            let session = match start_test_plan_session_until(&udid, launch_plan.clone(), deadline)
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => {
-                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
+                    let report_result =
+                        write_junit_diagnostic(junit_output, &incomplete_summary(false), &error);
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
                     }
-                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
             };
-        let startup = session.startup_result().clone();
+            workflow_sessions.push(session);
+            let session = workflow_sessions
+                .last_mut()
+                .expect("stored active XCTest session");
+            let startup = session.startup_result().clone();
 
-        if self.wait {
-            let mut summary = match until(
-                deadline,
-                "waiting for XCTest results",
-                session.wait_for_results(),
-            )
-            .await
-            {
-                Ok(summary) => summary,
-                Err(error) => {
-                    // Dropping the active DTX connections stops result
-                    // delivery. The process is killed by the bounded cleanup
-                    // in ActiveTestPlan when a deadline/cancellation occurs.
-                    session.terminate().await;
-                    write_junit_diagnostic(junit_output, &incomplete_summary(true), &error)?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
+            if self.wait {
+                let mut summary = match until(
+                    deadline,
+                    "waiting for XCTest results",
+                    session.wait_for_results(),
+                )
+                .await
+                {
+                    Ok(summary) => summary,
+                    Err(error) => {
+                        // Dropping the active DTX connections stops result
+                        // delivery. The process is killed by the bounded cleanup
+                        // in ActiveTestPlan when a deadline/cancellation occurs.
+                        session.terminate().await;
+                        let report_result =
+                            write_junit_diagnostic(junit_output, &incomplete_summary(true), &error);
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
                     }
-                    app_tracker.cleanup(&udid).await;
-                    return Err(error);
+                };
+                // XCTest normally exits after the finish event, but some runner
+                // bundles keep their host process alive. Release the device-side
+                // process explicitly so a completed direct run cannot leak a
+                // runner into the next invocation; a race with normal process
+                // exit is harmless and intentionally ignored by terminate().
+                session.terminate().await;
+
+                // Rerun failed tests if requested
+                if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
+                    for rerun_idx in 0..self.workflow.rerun_failed {
+                        let failed_selectors =
+                            crate::cmd::test_workflow::extract_failed_selectors(&summary);
+                        if failed_selectors.is_empty() {
+                            break;
+                        }
+                        tracing::info!(
+                            attempt = rerun_idx + 1,
+                            failed_count = failed_selectors.len(),
+                            "test workflow: rerunning failed test selectors"
+                        );
+                        let mut rerun_plan = launch_plan.clone();
+                        rerun_plan.tests_to_run = failed_selectors;
+                        rerun_plan.tests_to_skip.clear();
+
+                        let rerun_session = match until(
+                            deadline,
+                            "restarting test runner for failed selectors",
+                            start_test_plan_session_until(&udid, rerun_plan, deadline),
+                        )
+                        .await
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "test workflow: rerun startup failed");
+                                break;
+                            }
+                        };
+
+                        workflow_sessions.push(rerun_session);
+                        let rerun_session = workflow_sessions
+                            .last_mut()
+                            .expect("stored active rerun session");
+                        let rerun_res = until(
+                            deadline,
+                            "waiting for rerun results",
+                            rerun_session.wait_for_results(),
+                        )
+                        .await;
+                        rerun_session.terminate().await;
+                        if let Ok(rerun_summary) = rerun_res {
+                            crate::cmd::test_workflow::merge_rerun_summary(
+                                &mut summary,
+                                rerun_summary,
+                            );
+                            if summary.failed_tests == 0 {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
-            };
-            // XCTest normally exits after the finish event, but some runner
-            // bundles keep their host process alive. Release the device-side
-            // process explicitly so a completed direct run cannot leak a
-            // runner into the next invocation; a race with normal process
-            // exit is harmless and intentionally ignored by terminate().
+
+                write_junit_summary(junit_output, &summary)?;
+
+                print_result(
+                    json_output,
+                    serde_json::json!({
+                        "status": "finished",
+                        "configuration": configuration_name,
+                        "runner_bundle_id": startup.runner_bundle_id,
+                        "target_bundle_id": startup.target_bundle_id,
+                        "pid": startup.pid,
+                        "protocol_version": startup.protocol_version,
+                        "minimum_version": startup.minimum_version,
+                        "summary": summary,
+                    }),
+                )?;
+
+                if summary.failed_tests > 0 {
+                    return Err(anyhow::anyhow!(
+                        "XCTest run completed with {} failed test(s)",
+                        summary.failed_tests
+                    ));
+                }
+            } else {
+                print_result(
+                    json_output,
+                    serde_json::json!({
+                        "status": "started",
+                        "configuration": configuration_name,
+                        "runner_bundle_id": startup.runner_bundle_id,
+                        "target_bundle_id": startup.target_bundle_id,
+                        "pid": startup.pid,
+                        "protocol_version": startup.protocol_version,
+                        "minimum_version": startup.minimum_version,
+                        "note": "The runner was started; use --wait to collect XCTest result events.",
+                    }),
+                )?;
+            }
+
+            Ok(())
+        };
+        let outcome = tokio::select! {
+            result = tokio::time::timeout_at(deadline, work) => result
+                .map_err(|error| anyhow::Error::new(error).context("XCTest workflow deadline expired")).and_then(|result| result),
+            signal = tokio::signal::ctrl_c() => {
+                match signal {
+                    Ok(()) => Err(anyhow::Error::new(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted, "XCTest workflow cancelled"))),
+                    Err(error) => Err(anyhow::Error::new(error).context("waiting for XCTest cancellation")),
+                }
+            }
+        };
+        for session in &mut workflow_sessions {
             session.terminate().await;
-
-            // Rerun failed tests if requested
-            if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
-                for rerun_idx in 0..self.workflow.rerun_failed {
-                    let failed_selectors =
-                        crate::cmd::test_workflow::extract_failed_selectors(&summary);
-                    if failed_selectors.is_empty() {
-                        break;
-                    }
-                    tracing::info!(
-                        attempt = rerun_idx + 1,
-                        failed_count = failed_selectors.len(),
-                        "test workflow: rerunning failed test selectors"
-                    );
-                    let mut rerun_plan = launch_plan.clone();
-                    rerun_plan.tests_to_run = failed_selectors;
-                    rerun_plan.tests_to_skip.clear();
-
-                    let mut rerun_session = match until(
-                        deadline,
-                        "restarting test runner for failed selectors",
-                        start_test_plan_session_until(&udid, rerun_plan, deadline),
-                    )
-                    .await
-                    {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "test workflow: rerun startup failed");
-                            break;
-                        }
-                    };
-
-                    let rerun_res = until(
-                        deadline,
-                        "waiting for rerun results",
-                        rerun_session.wait_for_results(),
-                    )
-                    .await;
-                    rerun_session.terminate().await;
-                    if let Ok(rerun_summary) = rerun_res {
-                        crate::cmd::test_workflow::merge_rerun_summary(&mut summary, rerun_summary);
-                        if summary.failed_tests == 0 {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            write_junit_summary(junit_output, &summary)?;
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            app_tracker.cleanup(&udid).await;
-
-            print_result(
-                json_output,
-                serde_json::json!({
-                    "status": "finished",
-                    "configuration": configuration_name,
-                    "runner_bundle_id": startup.runner_bundle_id,
-                    "target_bundle_id": startup.target_bundle_id,
-                    "pid": startup.pid,
-                    "protocol_version": startup.protocol_version,
-                    "minimum_version": startup.minimum_version,
-                    "summary": summary,
-                }),
-            )?;
-
-            if summary.failed_tests > 0 {
-                return Err(anyhow::anyhow!(
-                    "XCTest run completed with {} failed test(s)",
-                    summary.failed_tests
-                ));
-            }
-        } else {
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            app_tracker.cleanup(&udid).await;
-
-            print_result(
-                json_output,
-                serde_json::json!({
-                    "status": "started",
-                    "configuration": configuration_name,
-                    "runner_bundle_id": startup.runner_bundle_id,
-                    "target_bundle_id": startup.target_bundle_id,
-                    "pid": startup.pid,
-                    "protocol_version": startup.protocol_version,
-                    "minimum_version": startup.minimum_version,
-                    "note": "The runner was started; use --wait to collect XCTest result events.",
-                }),
-            )?;
         }
-
-        Ok(())
+        crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome).await
     }
 }
 

@@ -2,6 +2,7 @@
 //! syslog streaming capture, JUnit XML reporting, cancellation recovery, and failure reruns (F02).
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -40,14 +41,14 @@ impl TestWorkflowArgs {
     pub fn preflight(&self) -> Result<()> {
         if let Some(path) = &self.install_app {
             anyhow::ensure!(
-                path.exists(),
+                path.is_file(),
                 "test workflow preflight: application package '{}' does not exist",
                 path.display()
             );
         }
         if let Some(path) = &self.install_runner {
             anyhow::ensure!(
-                path.exists(),
+                path.is_file(),
                 "test workflow preflight: test runner package '{}' does not exist",
                 path.display()
             );
@@ -63,6 +64,12 @@ impl TestWorkflowArgs {
                 }
             }
         }
+        for path in [&self.install_app, &self.install_runner]
+            .into_iter()
+            .flatten()
+        {
+            package_bundle_id(path)?;
+        }
         Ok(())
     }
 }
@@ -70,7 +77,7 @@ impl TestWorkflowArgs {
 /// Active background syslog capture handle.
 pub struct LogCaptureGuard {
     stop_tx: Option<oneshot::Sender<()>>,
-    join_handle: Option<tokio::task::JoinHandle<()>>,
+    join_handle: Option<tokio::task::JoinHandle<Result<()>>>,
     #[allow(dead_code)]
     destination: PathBuf,
 }
@@ -79,83 +86,90 @@ impl LogCaptureGuard {
     /// Start capturing syslog lines to the destination file in the background.
     /// If syslog connection fails, records an explanatory banner so partial logs are never missing.
     pub async fn start(udid: &str, destination: PathBuf) -> Self {
-        let (stop_tx, mut stop_rx) = oneshot::channel();
-        let path = destination.clone();
         let target_udid = udid.to_string();
-
-        let join_handle = tokio::spawn(async move {
-            let file_result = tokio::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&path)
-                .await;
-
-            let mut file = match file_result {
-                Ok(f) => f,
-                Err(err) => {
-                    tracing::warn!(error = %err, "test workflow failed opening log file");
-                    return;
-                }
-            };
-
-            let header = format!(
-                "[test workflow log capture started: {} (udid: [PRIVATE])]\n",
-                chrono::Utc::now().to_rfc3339()
-            );
-            let _ = file.write_all(header.as_bytes()).await;
-            let _ = file.flush().await;
-
-            // Attempt to connect to syslog
+        Self::start_connecting(destination, async move {
             let connect_opts = ios_core::device::ConnectOptions {
                 tun_mode: ios_core::TunMode::Userspace,
                 pair_record_path: None,
                 skip_tunnel: true,
             };
+            let device = ios_core::connect(&target_udid, connect_opts).await?;
+            Ok(device
+                .connect_service(ios_core::syslog::SERVICE_NAME)
+                .await?)
+        })
+        .await
+    }
 
-            let stream_opt = match ios_core::connect(&target_udid, connect_opts).await {
-                Ok(dev) => dev
-                    .connect_service(ios_core::syslog::SERVICE_NAME)
-                    .await
-                    .ok(),
-                Err(_) => None,
-            };
+    async fn start_connecting(
+        destination: PathBuf,
+        connect: impl std::future::Future<Output = Result<ios_core::device::ServiceStream>>
+            + Send
+            + 'static,
+    ) -> Self {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let path = destination.clone();
 
-            if let Some(stream) = stream_opt {
+        let join_handle = tokio::spawn(async move {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .await
+                .context("opening workflow log")?;
+
+            let header = format!(
+                "[test workflow log capture started: {} (udid: [PRIVATE])]\n",
+                chrono::Utc::now().to_rfc3339()
+            );
+            file.write_all(header.as_bytes()).await?;
+            file.flush().await?;
+
+            let capture = async {
+                let stream = connect.await?;
                 let log_stream = ios_core::syslog::into_stream(stream);
                 tokio::pin!(log_stream);
+                let mut bytes_written = header.len();
                 loop {
-                    tokio::select! {
-                        _ = &mut stop_rx => {
-                            break;
+                    match log_stream.next().await {
+                        Some(Ok(line)) => {
+                            let mut line_bytes = line.into_bytes();
+                            line_bytes.push(b'\n');
+                            bytes_written = bytes_written
+                                .checked_add(line_bytes.len())
+                                .context("workflow log size overflow")?;
+                            anyhow::ensure!(
+                                bytes_written <= 16 * 1024 * 1024,
+                                "workflow log output limit exceeded"
+                            );
+                            file.write_all(&line_bytes).await?;
                         }
-                        item = log_stream.next() => {
-                            match item {
-                                Some(Ok(line)) => {
-                                    let mut line_bytes = line.into_bytes();
-                                    line_bytes.push(b'\n');
-                                    let _ = file.write_all(&line_bytes).await;
-                                }
-                                Some(Err(_)) | None => {
-                                    break;
-                                }
-                            }
+                        Some(Err(error)) => {
+                            return Err(anyhow::Error::new(error).context("reading workflow syslog"))
                         }
+                        None => anyhow::bail!("workflow syslog ended before capture was stopped"),
                     }
                 }
-            } else {
-                let banner = "[syslog service not available on device or mocked host]\n";
-                let _ = file.write_all(banner.as_bytes()).await;
-                // Wait for stop signal
-                let _ = stop_rx.await;
-            }
+            };
+            // Dropping the complete future closes an in-flight mux/service
+            // connection too; stop is not limited to the streaming phase.
+            let result: Result<()> = tokio::select! {
+                _ = &mut stop_rx => Ok(()),
+                result = capture => result,
+            };
 
             let footer = format!(
                 "[test workflow log capture finished: {}]\n",
                 chrono::Utc::now().to_rfc3339()
             );
-            let _ = file.write_all(footer.as_bytes()).await;
-            let _ = file.flush().await;
+            let footer_result = async {
+                file.write_all(footer.as_bytes()).await?;
+                file.flush().await?;
+                Ok(())
+            }
+            .await;
+            combine_results(result, footer_result, "workflow log footer failed")
         });
 
         Self {
@@ -166,12 +180,27 @@ impl LogCaptureGuard {
     }
 
     /// Stop log capture and wait bounded time for flush.
-    pub async fn stop(mut self) {
+    pub async fn stop(mut self) -> Result<()> {
         if let Some(tx) = self.stop_tx.take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = self.join_handle.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+        if let Some(mut handle) = self.join_handle.take() {
+            match tokio::time::timeout(Duration::from_secs(3), &mut handle).await {
+                Ok(result) => result.context("joining workflow log capture")?,
+                Err(elapsed) => {
+                    handle.abort();
+                    let joined = handle.await;
+                    anyhow::ensure!(
+                        joined.is_err(),
+                        "aborted workflow log task unexpectedly succeeded"
+                    );
+                    Err(anyhow::Error::new(elapsed).context(
+                        "workflow log flush deadline expired; original task aborted and joined",
+                    ))
+                }
+            }
+        } else {
+            Ok(())
         }
     }
 
@@ -185,6 +214,9 @@ impl Drop for LogCaptureGuard {
     fn drop(&mut self) {
         if let Some(tx) = self.stop_tx.take() {
             let _ = tx.send(());
+        }
+        if let Some(handle) = self.join_handle.take() {
+            handle.abort();
         }
     }
 }
@@ -214,12 +246,26 @@ pub fn merge_rerun_summary(primary: &mut TestRunSummary, rerun: TestRunSummary) 
         for case in &mut suite.cases {
             let key = (case.class_name.clone(), case.method_name.clone());
             if let Some(new_case) = rerun_cases.remove(&key) {
+                // Preserve the initial failure in the collected run artifact
+                // before replacing its current outcome with the rerun result.
+                if matches!(case.status, Some(TestCaseStatus::Failed)) {
+                    primary
+                        .debug_logs
+                        .push(format!("workflow rerun prior result: {case:?}"));
+                }
                 *case = new_case;
             }
             if matches!(case.status, Some(TestCaseStatus::Failed)) {
                 failed_count += 1;
             }
         }
+        suite.failures = Some(
+            suite
+                .cases
+                .iter()
+                .filter(|case| matches!(case.status, Some(TestCaseStatus::Failed)))
+                .count() as u64,
+        );
     }
     primary.failed_tests = failed_count;
     primary.logs.extend(rerun.logs);
@@ -248,27 +294,44 @@ impl AppLifecycleTracker {
     }
 
     /// Perform cleanup if `--uninstall-on-finish` was specified.
-    pub async fn cleanup(&self, udid: &str) {
+    pub async fn cleanup(&self, udid: &str) -> Result<()> {
         if !self.should_cleanup || self.installed_bundles.is_empty() {
-            return;
+            return Ok(());
         }
         let connect_opts = ios_core::device::ConnectOptions {
             tun_mode: ios_core::TunMode::Userspace,
             pair_record_path: None,
             skip_tunnel: true,
         };
-        if let Ok(device) = ios_core::connect(udid, connect_opts).await {
-            if let Ok(stream) = device
+        let cleanup = async {
+            let device = ios_core::connect(udid, connect_opts).await?;
+            let stream = device
                 .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
-                .await
-            {
-                let mut proxy = ios_core::apps::InstallationProxy::new(stream);
-                for bundle_id in &self.installed_bundles {
-                    tracing::info!(bundle_id = %bundle_id, "test workflow: uninstalling bundle");
-                    let _ = proxy.uninstall(bundle_id).await;
+                .await?;
+            let mut proxy = ios_core::apps::InstallationProxy::new(stream);
+            let mut result = Ok(());
+            for bundle_id in self.installed_bundles.iter().rev() {
+                match proxy.lookup_app(bundle_id).await {
+                    Ok(None) => continue, // A failed install may create no application.
+                    Ok(Some(_)) => {}
+                    Err(error) => {
+                        result = combine_results(
+                            result,
+                            Err(error.into()),
+                            "workflow ownership lookup failed",
+                        );
+                        continue;
+                    }
                 }
+                tracing::info!(bundle_id = %bundle_id, "test workflow: uninstalling bundle");
+                let uninstall = proxy.uninstall(bundle_id).await.map_err(anyhow::Error::new);
+                result = combine_results(result, uninstall, "workflow uninstall failed");
             }
-        }
+            result
+        };
+        tokio::time::timeout(Duration::from_secs(15), cleanup)
+            .await
+            .context("workflow uninstall cleanup deadline expired")?
     }
 }
 
@@ -282,10 +345,11 @@ pub async fn install_package_if_present(
         return Ok(());
     };
     anyhow::ensure!(
-        path.exists(),
+        path.is_file(),
         "package path '{}' does not exist",
         path.display()
     );
+    let bundle_id = package_bundle_id(path)?;
 
     let connect_opts = ios_core::device::ConnectOptions {
         tun_mode: ios_core::TunMode::Userspace,
@@ -295,6 +359,19 @@ pub async fn install_package_if_present(
     let device = ios_core::connect(udid, connect_opts)
         .await
         .context("connecting to device for test package installation")?;
+
+    let lookup_stream = device
+        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+        .await
+        .context("checking package ownership before installation")?;
+    let mut proxy = ios_core::apps::InstallationProxy::new(lookup_stream);
+    let existed = proxy.lookup_app(&bundle_id).await?.is_some();
+    // Record an absent bundle before the first possible install write so a
+    // partially successful installation is cleaned after an error too. An
+    // existing application is never owned by this run and never uninstalled.
+    if !existed {
+        tracker.track(bundle_id);
+    }
 
     tracing::info!(package = %path.display(), "test workflow: installing package");
     let svc_name = ios_core::apps::zipconduit::SERVICE_NAME;
@@ -306,11 +383,115 @@ pub async fn install_package_if_present(
         .await
         .with_context(|| format!("failed installing package '{}'", path.display()))?;
 
-    // Attempt to read bundle identifier from path filename as a fallback identifier
-    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-        tracker.track(stem.to_string());
-    }
     Ok(())
+}
+
+/// Read the sole top-level application's identifier, never the archive filename.
+pub(crate) fn package_bundle_id(path: &Path) -> Result<String> {
+    let file = std::fs::File::open(path).context("opening workflow package")?;
+    let mut archive = zip::ZipArchive::new(file).context("reading workflow package ZIP")?;
+    anyhow::ensure!(
+        archive.len() <= 100_000,
+        "workflow package entry limit exceeded"
+    );
+    let names: Vec<String> = archive
+        .file_names()
+        .filter(|name| {
+            let parts: Vec<_> = name.split('/').collect();
+            parts.len() == 3
+                && parts[0] == "Payload"
+                && parts[1].ends_with(".app")
+                && parts[2] == "Info.plist"
+        })
+        .map(str::to_owned)
+        .collect();
+    anyhow::ensure!(
+        names.len() == 1,
+        "workflow package must contain exactly one Payload application Info.plist"
+    );
+    let mut entry = archive
+        .by_name(&names[0])
+        .context("opening package Info.plist")?;
+    anyhow::ensure!(
+        entry.size() <= 1024 * 1024,
+        "workflow package Info.plist limit exceeded"
+    );
+    let mut bytes = Vec::new();
+    entry
+        .by_ref()
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 1024 * 1024,
+        "workflow package Info.plist limit exceeded"
+    );
+    let plist = plist::Value::from_reader(std::io::Cursor::new(bytes))
+        .context("decoding package Info.plist")?;
+    let id = plist
+        .as_dictionary()
+        .and_then(|dict| dict.get("CFBundleIdentifier"))
+        .and_then(plist::Value::as_string)
+        .context("package lacks CFBundleIdentifier")?;
+    anyhow::ensure!(
+        !id.is_empty()
+            && id.len() <= 255
+            && id.split('.').all(|part| !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')),
+        "invalid package CFBundleIdentifier"
+    );
+    Ok(id.to_string())
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkflowSecondaryFailure {
+    phase: &'static str,
+    pub(crate) error: anyhow::Error,
+}
+
+impl std::fmt::Display for WorkflowSecondaryFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} ({})",
+            self.phase,
+            ios_core::classify_error(self.error.as_ref())
+        )
+    }
+}
+
+pub(crate) fn combine_results(
+    primary: Result<()>,
+    secondary: Result<()>,
+    phase: &'static str,
+) -> Result<()> {
+    match (primary, secondary) {
+        (Ok(()), result) => result,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(secondary)) => Err(error.context(WorkflowSecondaryFailure {
+            phase,
+            error: secondary,
+        })),
+    }
+}
+
+/// Every stage outcome, including reporting errors, passes through this owner.
+pub(crate) async fn finish_workflow(
+    udid: &str,
+    tracker: &AppLifecycleTracker,
+    logs: Option<LogCaptureGuard>,
+    primary: Result<()>,
+) -> Result<()> {
+    let mut result = primary;
+    if let Some(logs) = logs {
+        result = combine_results(result, logs.stop().await, "workflow log cleanup failed");
+    }
+    combine_results(
+        result,
+        tracker.cleanup(udid).await,
+        "workflow application cleanup failed",
+    )
 }
 
 #[cfg(test)]
@@ -467,12 +648,112 @@ mod tests {
         let guard = LogCaptureGuard::start("mock-udid", log_file.clone()).await;
         assert_eq!(guard.destination(), log_file.as_path());
         tokio::time::sleep(Duration::from_millis(50)).await;
-        guard.stop().await;
+        let _ = guard.stop().await; // Missing synthetic target is a retained failure.
 
         let content = std::fs::read_to_string(&log_file).unwrap();
         assert!(content.contains("[test workflow log capture started"));
         assert!(content.contains("[test workflow log capture finished"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn stopping_pending_connection_joins_original_task_and_closes_peer() {
+        use tokio::io::AsyncReadExt;
+        let directory =
+            std::env::temp_dir().join(format!("workflow-pending-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("log.txt");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (client, accepted) = tokio::try_join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        )
+        .unwrap();
+        let (mut peer, _) = accepted;
+        let (entered, entering) = oneshot::channel();
+        let guard = LogCaptureGuard::start_connecting(path.clone(), async move {
+            let retained = client;
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+            Ok(Box::new(retained) as ios_core::device::ServiceStream)
+        })
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), entering)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), guard.stop())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("log capture finished"));
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn archive_identifier_is_used_even_when_filename_names_another_bundle() {
+        let path =
+            std::env::temp_dir().join(format!("com.other.existing-{}.ipa", uuid::Uuid::new_v4()));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "Payload/Runner.app/Info.plist",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        let mut dictionary = plist::Dictionary::new();
+        dictionary.insert(
+            "CFBundleIdentifier".into(),
+            "com.synthetic.actual-runner".into(),
+        );
+        plist::Value::Dictionary(dictionary)
+            .to_writer_xml(&mut archive)
+            .unwrap();
+        archive.finish().unwrap();
+        assert_eq!(
+            package_bundle_id(&path).unwrap(),
+            "com.synthetic.actual-runner"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn secondary_cleanup_error_retains_primary_and_secondary_objects() {
+        let primary = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        let secondary = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let error = combine_results(
+            Err(primary.into()),
+            Err(secondary.into()),
+            "synthetic cleanup",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::ConnectionRefused
+        );
+        let cleanup = error.downcast_ref::<WorkflowSecondaryFailure>().unwrap();
+        assert_eq!(
+            cleanup
+                .error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 }

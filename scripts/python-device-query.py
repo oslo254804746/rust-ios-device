@@ -390,7 +390,10 @@ def invalid_inputs(pair, context):
     assert peer.accepted == 0
     for error, category in results:
         error_contract(error, category, kind=ValueError, effects="not_started")
-    error_contract(malformed_pair, "protocol", effects="not_started")
+    # The supplied local credential bytes are input, not an on-wire peer
+    # reply. PairRecord::from_bytes retains its original plist source behind
+    # InvalidInput; A02 maps native InvalidInput to ValueError.
+    error_contract(malformed_pair, "invalid_input", kind=ValueError, effects="not_started")
     error_contract(zero_timeout, "timeout", effects="not_started")
     error_contract(cancelled, "cancelled", effects="not_started")
     assert type(no_loop) is RuntimeError and "running event loop" in str(no_loop)

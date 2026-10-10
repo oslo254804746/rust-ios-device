@@ -1,6 +1,7 @@
 use tokio::time::Duration;
 
 pub mod cdp_browser;
+pub mod cdp_page;
 
 mod model;
 mod wire;

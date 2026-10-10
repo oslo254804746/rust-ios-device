@@ -73,6 +73,7 @@ pub(crate) fn build_request(
 /// identifier.  ScreenCaptureService uses this shape; keeping it next to the
 /// ordinary builder prevents its CoreDevice version and identifier fields from
 /// drifting from the other feature services.
+#[cfg(any(feature = "display", feature = "screencapture"))]
 pub(crate) fn build_request_with_action(
     _device_identifier: &str,
     feature_identifier: &str,
@@ -106,6 +107,7 @@ fn build_modern_request(feature_identifier: &str, input: XpcValue) -> XpcValue {
 /// ConfigurationService uses `CoreDevice.actionIdentifier` and deliberately
 /// omits `CoreDevice.featureIdentifier`/`CoreDevice.action`; this is the exact
 /// action-only shape emitted by pymobiledevice3's `CoreDeviceService.invoke`.
+#[cfg(any(test, feature = "configuration"))]
 pub(crate) fn build_action_request(
     _device_identifier: &str,
     action_identifier: &str,

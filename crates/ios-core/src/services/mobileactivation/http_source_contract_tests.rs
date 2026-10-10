@@ -63,7 +63,9 @@ async fn public_https_refusal_keeps_request_cause_and_private_url() {
         socket.local_addr().unwrap()
     );
     let client =
-        ActivationHttpClient::with_endpoints(&endpoint, &endpoint, true, Duration::from_secs(1))
+        // This fixture tests refusal, independently of the timeout fixture
+        // below. Winsock needs ~2s to produce the original dial failure.
+        ActivationHttpClient::with_endpoints(&endpoint, &endpoint, true, Duration::from_secs(if cfg!(windows) { 5 } else { 1 }))
             .unwrap();
     let error = client
         .post_drm_handshake(&plist::Dictionary::new())

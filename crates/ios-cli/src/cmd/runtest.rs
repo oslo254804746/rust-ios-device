@@ -61,6 +61,39 @@ impl RunTestCmd {
             ));
         }
         self.workflow.preflight()?;
+        anyhow::ensure!(
+            self.wait || (!self.workflow.uninstall_on_finish && self.workflow.rerun_failed == 0),
+            "workflow cleanup and reruns require --wait"
+        );
+        let validated_configs = parse_xctestrun_file(&self.xctestrun)
+            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))?;
+        let config = select_configuration(&validated_configs, self.configuration.as_deref())
+            .context("selected test configuration does not exist")?;
+        let scheme = select_test_target(config, self.test_target.as_deref())
+            .context("selected test target does not exist")?;
+        if let Some(path) = &self.workflow.install_runner {
+            anyhow::ensure!(
+                crate::cmd::test_workflow::package_bundle_id(path)?
+                    == scheme.test_host_bundle_identifier,
+                "installed runner package identifier does not match xctestrun selection"
+            );
+        }
+        if let Some(path) = &self.workflow.install_app {
+            let id = crate::cmd::test_workflow::package_bundle_id(path)?;
+            anyhow::ensure!(infer_target_bundle_id(scheme, None).as_deref() == Some(id.as_str()),
+                "installation requires an explicit matching UITargetAppBundleIdentifier in xctestrun");
+        }
+        anyhow::ensure!(
+            self.startup_timeout_secs > 0 && (!self.wait || self.result_timeout_secs > 0),
+            "XCTest startup and result deadlines must be greater than zero"
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(
+                self.startup_timeout_secs
+                    .checked_add(self.result_timeout_secs)
+                    .ok_or_else(|| crate::output::input_decision("XCTest timeout is too large"))?,
+            ))
+            .ok_or_else(|| crate::output::input_decision("XCTest timeout is too large"))?;
         let log_guard = if let Some(log_path) = self.workflow.log_output.clone() {
             Some(crate::cmd::test_workflow::LogCaptureGuard::start(&udid, log_path).await)
         } else {
@@ -69,221 +102,299 @@ impl RunTestCmd {
         let mut app_tracker =
             crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
 
-        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
-            &udid,
-            self.workflow.install_app.as_deref(),
-            &mut app_tracker,
-        )
-        .await
-        {
-            write_junit_diagnostic(
-                self.junit_output.as_deref(),
-                &incomplete_summary(false),
-                &error,
-            )?;
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            return Err(error);
-        }
-
-        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
-            &udid,
-            self.workflow.install_runner.as_deref(),
-            &mut app_tracker,
-        )
-        .await
-        {
-            write_junit_diagnostic(
-                self.junit_output.as_deref(),
-                &incomplete_summary(false),
-                &error,
-            )?;
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            return Err(error);
-        }
-
-        crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
-
-        let device = match connect_testmanager_device(&udid).await {
-            Ok(device) => device,
-            Err(error) => {
-                write_junit_diagnostic(
-                    self.junit_output.as_deref(),
-                    &incomplete_summary(false),
-                    &error,
-                )?;
-                if let Some(guard) = log_guard {
-                    guard.stop().await;
-                }
-                app_tracker.cleanup(&udid).await;
-                return Err(error);
-            }
-        };
-        let configs = match parse_xctestrun_file(&self.xctestrun)
-            .with_context(|| format!("failed to parse {}", self.xctestrun.display()))
-        {
-            Ok(configs) => configs,
-            Err(error) => {
-                write_junit_diagnostic(
-                    self.junit_output.as_deref(),
-                    &incomplete_summary(false),
-                    &error,
-                )?;
-                return Err(error);
-            }
-        };
-        let (configuration_name, plan) = match build_plan_from_xctestrun(
-            &device,
-            &self.xctestrun,
-            &configs,
-            self.configuration.as_deref(),
-            self.test_target.as_deref(),
-        )
-        .await
-        {
-            Ok(plan) => plan,
-            Err(error) => {
-                write_junit_diagnostic(
-                    self.junit_output.as_deref(),
-                    &incomplete_summary(false),
-                    &error,
-                )?;
-                return Err(error);
-            }
-        };
-
-        if self.wait {
-            let startup = tokio::time::timeout(
-                std::time::Duration::from_secs(self.startup_timeout_secs),
-                start_test_plan_session(&udid, plan.clone()),
+        let mut workflow_sessions = Vec::new();
+        let work = async {
+            if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+                &udid,
+                self.workflow.install_app.as_deref(),
+                &mut app_tracker,
             )
-            .await;
-            let mut session = match startup {
-                Err(elapsed) => {
-                    let error =
-                        xctest_wait_timeout(elapsed, "timed out waiting for XCTest startup");
-                    write_junit_diagnostic(
-                        self.junit_output.as_deref(),
-                        &incomplete_summary(false),
-                        &error,
-                    )?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
-                    }
-                    app_tracker.cleanup(&udid).await;
-                    return Err(error);
-                }
-                Ok(Err(error)) => {
-                    write_junit_diagnostic(
-                        self.junit_output.as_deref(),
-                        &incomplete_summary(false),
-                        &error,
-                    )?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
-                    }
-                    app_tracker.cleanup(&udid).await;
-                    return Err(error);
-                }
-                Ok(Ok(session)) => session,
-            };
-            let result = session.startup_result().clone();
-            let result_wait = tokio::time::timeout(
-                std::time::Duration::from_secs(self.result_timeout_secs),
-                session.wait_for_results(),
-            )
-            .await;
-            let mut summary = match result_wait {
-                Err(elapsed) => {
-                    session.terminate().await;
-                    let error =
-                        xctest_wait_timeout(elapsed, "timed out waiting for XCTest results");
-                    write_junit_diagnostic(
-                        self.junit_output.as_deref(),
-                        &incomplete_summary(true),
-                        &error,
-                    )?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
-                    }
-                    app_tracker.cleanup(&udid).await;
-                    return Err(error);
-                }
-                Ok(Err(error)) => {
-                    session.terminate().await;
-                    write_junit_diagnostic(
-                        self.junit_output.as_deref(),
-                        &incomplete_summary(true),
-                        &error,
-                    )?;
-                    if let Some(guard) = log_guard {
-                        guard.stop().await;
-                    }
-                    app_tracker.cleanup(&udid).await;
-                    return Err(error);
-                }
-                Ok(Ok(summary)) => summary,
-            };
-            session.terminate().await;
-
-            // Rerun failed tests if requested
-            if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
-                for rerun_idx in 0..self.workflow.rerun_failed {
-                    let failed_selectors =
-                        crate::cmd::test_workflow::extract_failed_selectors(&summary);
-                    if failed_selectors.is_empty() {
-                        break;
-                    }
-                    tracing::info!(
-                        attempt = rerun_idx + 1,
-                        failed_count = failed_selectors.len(),
-                        "test workflow: rerunning failed test selectors"
+            .await
+            {
+                let report_result = write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                );
+                if let Err(report_error) = report_result {
+                    return crate::cmd::test_workflow::combine_results(
+                        Err(error),
+                        Err(report_error),
+                        "workflow diagnostic report failed",
                     );
-                    let mut rerun_plan = plan.clone();
-                    rerun_plan.tests_to_run = failed_selectors;
-                    rerun_plan.tests_to_skip.clear();
+                }
+                return Err(error);
+            }
 
-                    let mut rerun_session = match tokio::time::timeout(
-                        std::time::Duration::from_secs(self.startup_timeout_secs),
-                        start_test_plan_session(&udid, rerun_plan),
-                    )
-                    .await
-                    {
-                        Ok(Ok(s)) => s,
-                        _ => break,
-                    };
+            if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+                &udid,
+                self.workflow.install_runner.as_deref(),
+                &mut app_tracker,
+            )
+            .await
+            {
+                let report_result = write_junit_diagnostic(
+                    self.junit_output.as_deref(),
+                    &incomplete_summary(false),
+                    &error,
+                );
+                if let Err(report_error) = report_result {
+                    return crate::cmd::test_workflow::combine_results(
+                        Err(error),
+                        Err(report_error),
+                        "workflow diagnostic report failed",
+                    );
+                }
+                return Err(error);
+            }
 
-                    let rerun_res = tokio::time::timeout(
-                        std::time::Duration::from_secs(self.result_timeout_secs),
-                        rerun_session.wait_for_results(),
-                    )
-                    .await;
-                    rerun_session.terminate().await;
-                    if let Ok(Ok(rerun_summary)) = rerun_res {
-                        crate::cmd::test_workflow::merge_rerun_summary(&mut summary, rerun_summary);
-                        if summary.failed_tests == 0 {
+            crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
+
+            let device = match connect_testmanager_device(&udid).await {
+                Ok(device) => device,
+                Err(error) => {
+                    let report_result = write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    );
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+            let configs = match parse_xctestrun_file(&self.xctestrun)
+                .with_context(|| format!("failed to parse {}", self.xctestrun.display()))
+            {
+                Ok(configs) => configs,
+                Err(error) => {
+                    let report_result = write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    );
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+            let (configuration_name, plan) = match build_plan_from_xctestrun(
+                &device,
+                &self.xctestrun,
+                &configs,
+                self.configuration.as_deref(),
+                self.test_target.as_deref(),
+            )
+            .await
+            {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let report_result = write_junit_diagnostic(
+                        self.junit_output.as_deref(),
+                        &incomplete_summary(false),
+                        &error,
+                    );
+                    if let Err(report_error) = report_result {
+                        return crate::cmd::test_workflow::combine_results(
+                            Err(error),
+                            Err(report_error),
+                            "workflow diagnostic report failed",
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+
+            if self.wait {
+                let startup = tokio::time::timeout(
+                    std::time::Duration::from_secs(self.startup_timeout_secs),
+                    start_test_plan_session(&udid, plan.clone()),
+                )
+                .await;
+                let session = match startup {
+                    Err(elapsed) => {
+                        let error =
+                            xctest_wait_timeout(elapsed, "timed out waiting for XCTest startup");
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output.as_deref(),
+                            &incomplete_summary(false),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Err(error)) => {
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output.as_deref(),
+                            &incomplete_summary(false),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Ok(session)) => session,
+                };
+                workflow_sessions.push(session);
+                let session = workflow_sessions
+                    .last_mut()
+                    .expect("stored active XCTest session");
+                let result = session.startup_result().clone();
+                let result_wait = tokio::time::timeout(
+                    std::time::Duration::from_secs(self.result_timeout_secs),
+                    session.wait_for_results(),
+                )
+                .await;
+                let mut summary = match result_wait {
+                    Err(elapsed) => {
+                        session.terminate().await;
+                        let error =
+                            xctest_wait_timeout(elapsed, "timed out waiting for XCTest results");
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output.as_deref(),
+                            &incomplete_summary(true),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Err(error)) => {
+                        session.terminate().await;
+                        let report_result = write_junit_diagnostic(
+                            self.junit_output.as_deref(),
+                            &incomplete_summary(true),
+                            &error,
+                        );
+                        if let Err(report_error) = report_result {
+                            return crate::cmd::test_workflow::combine_results(
+                                Err(error),
+                                Err(report_error),
+                                "workflow diagnostic report failed",
+                            );
+                        }
+                        return Err(error);
+                    }
+                    Ok(Ok(summary)) => summary,
+                };
+                session.terminate().await;
+
+                // Rerun failed tests if requested
+                if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
+                    for rerun_idx in 0..self.workflow.rerun_failed {
+                        let failed_selectors =
+                            crate::cmd::test_workflow::extract_failed_selectors(&summary);
+                        if failed_selectors.is_empty() {
                             break;
                         }
-                    } else {
-                        break;
+                        tracing::info!(
+                            attempt = rerun_idx + 1,
+                            failed_count = failed_selectors.len(),
+                            "test workflow: rerunning failed test selectors"
+                        );
+                        let mut rerun_plan = plan.clone();
+                        rerun_plan.tests_to_run = failed_selectors;
+                        rerun_plan.tests_to_skip.clear();
+
+                        let rerun_session = match tokio::time::timeout(
+                            std::time::Duration::from_secs(self.startup_timeout_secs),
+                            start_test_plan_session(&udid, rerun_plan),
+                        )
+                        .await
+                        {
+                            Ok(Ok(s)) => s,
+                            _ => break,
+                        };
+
+                        workflow_sessions.push(rerun_session);
+                        let rerun_session = workflow_sessions
+                            .last_mut()
+                            .expect("stored active rerun session");
+                        let rerun_res = tokio::time::timeout(
+                            std::time::Duration::from_secs(self.result_timeout_secs),
+                            rerun_session.wait_for_results(),
+                        )
+                        .await;
+                        rerun_session.terminate().await;
+                        if let Ok(Ok(rerun_summary)) = rerun_res {
+                            crate::cmd::test_workflow::merge_rerun_summary(
+                                &mut summary,
+                                rerun_summary,
+                            );
+                            if summary.failed_tests == 0 {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
                     }
                 }
+
+                write_junit_summary(self.junit_output.as_deref(), &summary)?;
+
+                crate::output::outln!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "finished",
+                        "untested": true,
+                        "configuration": configuration_name,
+                        "runner_bundle_id": result.runner_bundle_id,
+                        "target_bundle_id": result.target_bundle_id,
+                        "pid": result.pid,
+                        "protocol_version": result.protocol_version,
+                        "minimum_version": result.minimum_version,
+                        "summary": summary,
+                        "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
+                    }))?
+                );
+                if summary.failed_tests > 0 {
+                    return Err(anyhow::anyhow!(
+                        "XCTest run completed with {} failed test(s)",
+                        summary.failed_tests
+                    ));
+                }
+                return Ok(());
             }
 
-            write_junit_summary(self.junit_output.as_deref(), &summary)?;
-
-            if let Some(guard) = log_guard {
-                guard.stop().await;
-            }
-            app_tracker.cleanup(&udid).await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(self.startup_timeout_secs),
+                start_test_plan(&udid, plan),
+            )
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(error).context("timed out waiting for XCTest startup")
+            })??;
 
             crate::output::outln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "finished",
+                    "status": "started",
                     "untested": true,
                     "configuration": configuration_name,
                     "runner_bundle_id": result.runner_bundle_id,
@@ -291,49 +402,27 @@ impl RunTestCmd {
                     "pid": result.pid,
                     "protocol_version": result.protocol_version,
                     "minimum_version": result.minimum_version,
-                    "summary": summary,
-                    "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
+                    "note": "Current Rust workflow stops after _IDE_startExecutingTestPlanWithProtocolVersion and does not yet stream XCTest result events.",
                 }))?
             );
-            if summary.failed_tests > 0 {
-                return Err(anyhow::anyhow!(
-                    "XCTest run completed with {} failed test(s)",
-                    summary.failed_tests
-                ));
+
+            Ok(())
+        };
+        let outcome = tokio::select! {
+            result = tokio::time::timeout_at(deadline, work) => result
+                .map_err(|error| anyhow::Error::new(error).context("XCTest workflow deadline expired")).and_then(|result| result),
+            signal = tokio::signal::ctrl_c() => {
+                match signal {
+                    Ok(()) => Err(anyhow::Error::new(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted, "XCTest workflow cancelled"))),
+                    Err(error) => Err(anyhow::Error::new(error).context("waiting for XCTest cancellation")),
+                }
             }
-            return Ok(());
+        };
+        for session in &mut workflow_sessions {
+            session.terminate().await;
         }
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(self.startup_timeout_secs),
-            start_test_plan(&udid, plan),
-        )
-        .await
-        .map_err(|error| {
-            anyhow::Error::new(error).context("timed out waiting for XCTest startup")
-        })??;
-
-        if let Some(guard) = log_guard {
-            guard.stop().await;
-        }
-        app_tracker.cleanup(&udid).await;
-
-        crate::output::outln!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": "started",
-                "untested": true,
-                "configuration": configuration_name,
-                "runner_bundle_id": result.runner_bundle_id,
-                "target_bundle_id": result.target_bundle_id,
-                "pid": result.pid,
-                "protocol_version": result.protocol_version,
-                "minimum_version": result.minimum_version,
-                "note": "Current Rust workflow stops after _IDE_startExecutingTestPlanWithProtocolVersion and does not yet stream XCTest result events.",
-            }))?
-        );
-
-        Ok(())
+        crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome).await
     }
 }
 

@@ -62,28 +62,28 @@ impl Default for IosDeviceQueryOptions {
     }
 }
 
-struct Session {
-    device: ExistingTrustDevice,
+pub(super) struct Session {
+    pub(super) device: ExistingTrustDevice,
 }
 
 /// Each allocation is a distinct C owner; retaining does not clone the device.
 #[repr(C)]
 pub struct IosDeviceSession {
-    state: Arc<Session>,
+    pub(super) state: Arc<Session>,
 }
 
 /// A distinct C owner of the actual idempotent Core cancellation token.
 #[repr(C)]
 pub struct IosOperationCancel {
-    cancel: OperationCancel,
+    pub(super) cancel: OperationCancel,
 }
 
-fn decision(class: ErrorClass) -> c_int {
+pub(super) fn decision(class: ErrorClass) -> c_int {
     LAST_ERROR_CLASS.with(|state| state.set(Some(class)));
     IOS_ERR_CORE
 }
 
-fn duration(milliseconds: u64) -> Result<Duration, c_int> {
+pub(super) fn duration(milliseconds: u64) -> Result<Duration, c_int> {
     if milliseconds > MAX_DURATION_MS {
         return Err(decision(ErrorClass::InvalidInput));
     }
@@ -179,7 +179,7 @@ fn limits(options: IosDeviceQueryOptions) -> Result<(DeviceQueryLimits, Duration
         .map_err(|error| error_status(IOS_ERR_CORE, &error))
 }
 
-fn blocking_runtime() -> Result<&'static Runtime, c_int> {
+pub(super) fn blocking_runtime() -> Result<&'static Runtime, c_int> {
     // Calling a blocking C query from within an entered Tokio runtime cannot
     // safely block_on that thread. Refuse before preparing/admitting any IO.
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -187,6 +187,21 @@ fn blocking_runtime() -> Result<&'static Runtime, c_int> {
         return Err(IOS_ERR_RUNTIME);
     }
     runtime()
+}
+
+pub(super) fn checked_services(
+    device: &ios_core::ConnectedDevice,
+) -> Result<ExistingTrustDevice, ios_core::CoreError> {
+    let owner = SessionOwner::new(ADMISSION.clone(), 4)?;
+    device.existing_trust_device(owner, UsbmuxEndpoint::system()?)
+}
+
+pub(super) fn close_services(device: &ExistingTrustDevice, cleanup_ms: u64) -> Result<(), c_int> {
+    let cleanup = duration(cleanup_ms)?;
+    device.request_close();
+    blocking_runtime()?
+        .block_on(device.close(cleanup))
+        .map_err(|error| error_status(IOS_ERR_CORE, &error))
 }
 
 /// # Safety
@@ -330,16 +345,16 @@ pub unsafe extern "C" fn ios_device_query_options_default(
     })
 }
 
-struct JsonBuffer<'a> {
-    bytes: Vec<u8>,
-    limit: usize,
-    deadline: Instant,
-    cancel: &'a OperationCancel,
-    device: &'a ExistingTrustDevice,
-    failure: Option<ErrorClass>,
+pub(super) struct JsonBuffer<'a> {
+    pub(super) bytes: Vec<u8>,
+    pub(super) limit: usize,
+    pub(super) deadline: Instant,
+    pub(super) cancel: &'a OperationCancel,
+    pub(super) device: &'a ExistingTrustDevice,
+    pub(super) failure: Option<ErrorClass>,
 }
 
-fn output_fence(
+pub(super) fn output_fence(
     cancel: &OperationCancel,
     device: &ExistingTrustDevice,
     deadline: Instant,

@@ -128,12 +128,164 @@ impl<R: Read + Seek> IpswPreflight<R> {
         &self.identity
     }
 
+    /// Read every file referenced by the selected identity to EOF. ZIP CRC,
+    /// exact uncompressed size, names and aggregate bytes are checked without
+    /// retaining whole system images. This checks archive integrity, not Apple's
+    /// signatures or the undocumented meaning of every Manifest Digest field.
+    pub fn validate_components(
+        &mut self,
+        max_total: u64,
+    ) -> Result<Vec<ComponentInspection>, RestoreError> {
+        use sha2::{Digest, Sha256};
+        let manifest = self
+            .identity
+            .get("Manifest")
+            .and_then(plist::Value::as_dictionary)
+            .ok_or_else(|| RestoreError::Protocol("identity missing Manifest".into()))?;
+        let mut requested = std::collections::BTreeSet::new();
+        for (name, component) in manifest {
+            let path = component
+                .as_dictionary()
+                .and_then(|c| c.get("Info"))
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|i| i.get("Path"))
+                .and_then(plist::Value::as_string)
+                .ok_or_else(|| {
+                    RestoreError::Protocol(format!("component {name} missing Info.Path"))
+                })?;
+            if !safe_ipsw_path(path) {
+                return Err(RestoreError::Protocol("unsafe component path".into()));
+            }
+            requested.insert(path.to_owned());
+        }
+        if requested.is_empty() {
+            return Err(RestoreError::Protocol("identity has no components".into()));
+        }
+        let mut entries = HashMap::new();
+        for index in 0..self.archive.len() {
+            let file = self
+                .archive
+                .by_index_raw(index)
+                .map_err(|e| native_zip("inspect component ZIP entry", e))?;
+            if entries.insert(file.name().to_owned(), index).is_some() {
+                return Err(RestoreError::Protocol("duplicate IPSW ZIP member".into()));
+            }
+        }
+        let mut total = 0u64;
+        let mut results = Vec::new();
+        for path in requested {
+            let index = entries
+                .get(&path)
+                .ok_or_else(|| RestoreError::Protocol(format!("missing component {path}")))?;
+            let mut file = self
+                .archive
+                .by_index(*index)
+                .map_err(|e| native_zip("open component", e))?;
+            let expected = file.size();
+            total = total
+                .checked_add(expected)
+                .filter(|n| *n <= max_total)
+                .ok_or_else(|| {
+                    RestoreError::Protocol("IPSW component byte budget exceeded".into())
+                })?;
+            if file.is_dir()
+                || file
+                    .unix_mode()
+                    .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                return Err(RestoreError::Protocol(
+                    "component must be a regular ZIP file".into(),
+                ));
+            }
+            let mut read = 0u64;
+            let mut hash = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = file
+                    .read(&mut buffer)
+                    .map_err(|e| native_io("read component and verify ZIP CRC", e))?;
+                if count == 0 {
+                    break;
+                }
+                read = read
+                    .checked_add(count as u64)
+                    .filter(|n| *n <= expected)
+                    .ok_or_else(|| {
+                        RestoreError::Protocol("component exceeds advertised size".into())
+                    })?;
+                hash.update(&buffer[..count]);
+            }
+            if read != expected {
+                return Err(RestoreError::Protocol("component size mismatch".into()));
+            }
+            results.push(ComponentInspection {
+                path,
+                bytes: read,
+                sha256: hex::encode(hash.finalize()),
+            });
+        }
+        Ok(results)
+    }
+
     /// Build a payload for one updater. The service uses a fresh connection per updater.
     pub fn payload_for_updater(&mut self, updater: &str) -> Result<XpcValue, RestoreError> {
         build_device_side_preflight_payload(&self.identity, updater, |path| {
             read_zip_member(&mut self.archive, path, MAX_PREFLIGHT_FIRMWARE_BYTES)
         })
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ComponentInspection {
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+/// Correlate a saved request/response envelope with the current hardware and
+/// nonce. This is metadata correlation only; Apple ticket signature and IMG4
+/// personalization are not implemented here. A raw ticket with no saved request
+/// cannot establish correlation and is rejected.
+pub fn inspect_saved_tss(
+    envelope: &plist::Value,
+    ecid: u64,
+    board: u64,
+    chip: u64,
+    ap_nonce: &[u8],
+    sep_nonce: Option<&[u8]>,
+) -> Result<(), RestoreError> {
+    let root = envelope
+        .as_dictionary()
+        .ok_or_else(|| RestoreError::Protocol("saved TSS envelope must be a dictionary".into()))?;
+    let request = root.get("Request").and_then(plist::Value::as_dictionary)
+        .ok_or_else(|| RestoreError::Protocol("saved TSS must include its original Request; raw tickets cannot establish nonce/device association".into()))?;
+    let response = root
+        .get("Response")
+        .and_then(plist::Value::as_dictionary)
+        .ok_or_else(|| RestoreError::Protocol("saved TSS envelope missing Response".into()))?;
+    if ap_nonce.is_empty()
+        || plist_u64(request, "ApECID") != Some(ecid)
+        || plist_u64(request, "ApBoardID") != Some(board)
+        || plist_u64(request, "ApChipID") != Some(chip)
+        || request.get("ApNonce").and_then(plist::Value::as_data) != Some(ap_nonce)
+        || sep_nonce.is_some_and(|nonce| {
+            request.get("SepNonce").and_then(plist::Value::as_data) != Some(nonce)
+        })
+    {
+        return Err(RestoreError::Protocol(
+            "saved TSS request does not match current device/nonces".into(),
+        ));
+    }
+    if !response
+        .get("ApImg4Ticket")
+        .and_then(plist::Value::as_data)
+        .is_some_and(|ticket| !ticket.is_empty())
+    {
+        return Err(RestoreError::Protocol(
+            "saved TSS response missing AP IMG4 ticket".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn plist_u64(dict: &plist::Dictionary, key: &str) -> Option<u64> {
@@ -226,6 +378,71 @@ pub struct CollectedPreflightRequests {
     pub failed_updaters: Vec<PreflightUpdaterFailure>,
 }
 
+/// Typed causes retained independently of the serializable partial summary.
+/// The legacy summary API remains available; new callers should use outcomes.
+pub struct PreflightNativeFailure {
+    pub updater: String,
+    pub phase: &'static str,
+    pub cause: RestoreError,
+}
+
+pub struct PreflightCollection {
+    pub summary: CollectedPreflightRequests,
+    pub failures: Vec<PreflightNativeFailure>,
+}
+
+impl std::fmt::Debug for PreflightNativeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreflightNativeFailure")
+            .field("phase", &self.phase)
+            .field("updater", &crate::redaction::diagnostic_id(&self.updater))
+            .field("class", &crate::classify_error(&self.cause))
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for PreflightCollection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreflightCollection")
+            .field("failures", &self.failures)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for PreflightCollection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "preflight collection has {} failed updater operations",
+            self.failures.len()
+        )
+    }
+}
+impl std::error::Error for PreflightCollection {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failures
+            .first()
+            .map(|failure| &failure.cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+fn retain_failure(
+    collected: &mut CollectedPreflightRequests,
+    failures: &mut Vec<PreflightNativeFailure>,
+    updater: &str,
+    phase: &'static str,
+    cause: RestoreError,
+) {
+    collected.failed_updaters.push(PreflightUpdaterFailure {
+        updater: updater.to_owned(),
+        error: format!("{phase}: {}", crate::redaction::diagnostic_error(&cause)),
+    });
+    failures.push(PreflightNativeFailure {
+        updater: updater.to_owned(),
+        phase,
+        cause,
+    });
+}
+
 /// Ask the device to build the TSS requests of each peripheral updater for an IPSW.
 ///
 /// Restoreserviced consumes and aborts the connection after each `getdevicesidepreflightinfo`
@@ -234,7 +451,7 @@ pub struct CollectedPreflightRequests {
 pub async fn collect_device_side_preflight_requests<R, F, S, Fut>(
     ipsw: &mut IpswPreflight<R>,
     updaters: &[&str],
-    mut connect_service: F,
+    connect_service: F,
     per_updater_timeout: std::time::Duration,
 ) -> Result<CollectedPreflightRequests, RestoreError>
 where
@@ -243,59 +460,102 @@ where
     Fut: std::future::Future<Output = Result<super::RestoreServiceClient<S>, RestoreError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    collect_device_side_preflight_outcomes(ipsw, updaters, connect_service, per_updater_timeout)
+        .await
+        .map(|outcome| outcome.summary)
+}
+
+/// Collect partial results without discarding native failures or timeout objects.
+/// Each updater uses one deadline for package preparation, connect and request.
+pub async fn collect_device_side_preflight_outcomes<R, F, S, Fut>(
+    ipsw: &mut IpswPreflight<R>,
+    updaters: &[&str],
+    mut connect_service: F,
+    per_updater_timeout: std::time::Duration,
+) -> Result<PreflightCollection, RestoreError>
+where
+    R: Read + Seek,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<super::RestoreServiceClient<S>, RestoreError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut collected = CollectedPreflightRequests::default();
+    let mut failures = Vec::new();
+    if updaters.len() > UPDATERS.len()
+        || updaters.iter().copied().collect::<HashSet<_>>().len() != updaters.len()
+    {
+        return Err(RestoreError::Protocol(
+            "too many or duplicate preflight updaters".into(),
+        ));
+    }
+    if per_updater_timeout.is_zero() {
+        return Err(RestoreError::Protocol(
+            "preflight timeout must be positive".into(),
+        ));
+    }
     for updater in updaters {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(per_updater_timeout)
+            .ok_or_else(|| RestoreError::Protocol("preflight deadline overflow".into()))?;
         let payload = match ipsw.payload_for_updater(updater) {
             Ok(payload) => payload,
             Err(err) => {
-                collected.failed_updaters.push(PreflightUpdaterFailure {
-                    updater: (*updater).to_string(),
-                    error: err.to_string(),
-                });
+                retain_failure(
+                    &mut collected,
+                    &mut failures,
+                    updater,
+                    "prepare payload",
+                    err,
+                );
                 continue;
             }
         };
 
-        let client = match tokio::time::timeout(per_updater_timeout, connect_service()).await {
+        let client = match tokio::time::timeout_at(deadline, connect_service()).await {
             Ok(Ok(client)) => client,
             Ok(Err(err)) => {
-                collected.failed_updaters.push(PreflightUpdaterFailure {
-                    updater: (*updater).to_string(),
-                    error: format!("connect failed: {err}"),
-                });
+                retain_failure(&mut collected, &mut failures, updater, "connect", err);
                 continue;
             }
-            Err(_) => {
-                collected.failed_updaters.push(PreflightUpdaterFailure {
-                    updater: (*updater).to_string(),
-                    error: format!("connect timed out after {:?}", per_updater_timeout),
-                });
+            Err(elapsed) => {
+                retain_failure(
+                    &mut collected,
+                    &mut failures,
+                    updater,
+                    "connect",
+                    native_error(
+                        std::io::ErrorKind::TimedOut,
+                        "preflight connect deadline",
+                        elapsed,
+                    ),
+                );
                 continue;
             }
         };
 
-        let info = match tokio::time::timeout(
-            per_updater_timeout,
+        let info = match tokio::time::timeout_at(
+            deadline,
             client.get_device_side_preflight_info(Some(payload)),
         )
         .await
         {
             Ok(Ok(info)) => info,
             Ok(Err(err)) => {
-                collected.failed_updaters.push(PreflightUpdaterFailure {
-                    updater: (*updater).to_string(),
-                    error: format!("preflight request failed: {err}"),
-                });
+                retain_failure(&mut collected, &mut failures, updater, "request", err);
                 continue;
             }
-            Err(_) => {
-                collected.failed_updaters.push(PreflightUpdaterFailure {
-                    updater: (*updater).to_string(),
-                    error: format!(
-                        "preflight request timed out after {:?}",
-                        per_updater_timeout
+            Err(elapsed) => {
+                retain_failure(
+                    &mut collected,
+                    &mut failures,
+                    updater,
+                    "request",
+                    native_error(
+                        std::io::ErrorKind::TimedOut,
+                        "preflight request deadline",
+                        elapsed,
                     ),
-                });
+                );
                 continue;
             }
         };
@@ -328,7 +588,10 @@ where
         }
     }
 
-    Ok(collected)
+    Ok(PreflightCollection {
+        summary: collected,
+        failures,
+    })
 }
 
 fn prefixes(updater: &str) -> Option<&'static [&'static str]> {
@@ -562,6 +825,55 @@ mod tests {
     }
 
     #[test]
+    fn component_inspection_reads_real_members_and_rejects_missing_or_budget() {
+        let identity = selected_identity("Update", "Upgrade Install (IPSW)", "Firmware/rose.bin");
+        let mut reader = IpswPreflight::open(
+            Cursor::new(ipsw(
+                vec![identity.clone()],
+                &[("Firmware/rose.bin", b"rose")],
+            )),
+            selector(),
+        )
+        .unwrap();
+        let components = reader.validate_components(4).unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].bytes, 4);
+        use sha2::{Digest, Sha256};
+        assert_eq!(components[0].sha256, hex::encode(Sha256::digest(b"rose")));
+        assert!(reader.validate_components(3).is_err());
+        let mut missing =
+            IpswPreflight::open(Cursor::new(ipsw(vec![identity], &[])), selector()).unwrap();
+        assert!(missing.validate_components(1024).is_err());
+    }
+
+    #[test]
+    fn saved_tss_requires_original_device_nonce_request_and_nonempty_ticket() {
+        let request = plist::Dictionary::from_iter([
+            ("ApECID", plist::Value::Integer(42.into())),
+            ("ApBoardID", plist::Value::Integer(16.into())),
+            ("ApChipID", plist::Value::Integer(32.into())),
+            ("ApNonce", plist::Value::Data(vec![1, 2])),
+            ("SepNonce", plist::Value::Data(vec![3, 4])),
+        ]);
+        let envelope = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            ("Request", plist::Value::Dictionary(request)),
+            (
+                "Response",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "ApImg4Ticket",
+                    plist::Value::Data(vec![9]),
+                )])),
+            ),
+        ]));
+        inspect_saved_tss(&envelope, 42, 16, 32, &[1, 2], Some(&[3, 4])).unwrap();
+        assert!(inspect_saved_tss(&envelope, 43, 16, 32, &[1, 2], Some(&[3, 4])).is_err());
+        assert!(inspect_saved_tss(&envelope, 42, 16, 32, &[7, 8], Some(&[3, 4])).is_err());
+        assert!(
+            inspect_saved_tss(&plist::Value::Data(vec![9]), 42, 16, 32, &[1, 2], None).is_err()
+        );
+    }
+
+    #[test]
     fn ipsw_selects_exact_update_identity_and_reads_firmware() {
         let bytes = ipsw(
             vec![
@@ -724,7 +1036,7 @@ mod tests {
         .unwrap();
 
         let updaters = ["Rose", "T200"];
-        let collected = collect_device_side_preflight_requests(
+        let outcome = collect_device_side_preflight_outcomes(
             &mut ipsw,
             &updaters,
             || async {
@@ -736,16 +1048,19 @@ mod tests {
         )
         .await
         .unwrap();
-
+        let collected = &outcome.summary;
         assert_eq!(collected.failed_updaters.len(), 2);
         assert_eq!(collected.failed_updaters[0].updater, "Rose");
-        assert!(collected.failed_updaters[0]
+        assert!(!collected.failed_updaters[0]
             .error
             .contains("simulated connect error"));
+        assert!(
+            matches!(&outcome.failures[0].cause,RestoreError::Protocol(message) if message == "simulated connect error for Rose")
+        );
         assert_eq!(collected.failed_updaters[1].updater, "T200");
-        assert!(collected.failed_updaters[1]
-            .error
-            .contains("no firmware paths found"));
+        assert!(
+            matches!(&outcome.failures[1].cause,RestoreError::Protocol(message) if message.contains("no firmware paths found"))
+        );
     }
 
     fn entry(path: &str) -> plist::Value {

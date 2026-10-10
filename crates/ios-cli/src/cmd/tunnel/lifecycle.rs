@@ -214,7 +214,7 @@ impl Lifecycle {
         {
             return Err(cancelled());
         }
-        // Clear never waits on this map. Reset old desired states on the next
+        // Clear never waits on this map. Renew old desired states on the next
         // admission, retaining the canonical gate while old tickets still own
         // it. Removing/replacing those Arcs would evade the live 4096 ceiling.
         for gate in devices.values() {
@@ -646,6 +646,36 @@ pub(super) fn cancelled() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn global_clear_resets_desired_intent_and_invalidates_old_ticket() {
+        let lifecycle = Lifecycle::new();
+        let old = lifecycle.ticket("synthetic-stopped").await.unwrap();
+        old.gate
+            .intent
+            .replace(super::super::intent::Desired::Stopped);
+        let before = old.gate.intent.snapshot();
+        lifecycle.clear();
+        assert!(!old.is_current());
+        let desired = lifecycle.desired().await;
+        assert_eq!(
+            desired.len(),
+            0,
+            "global clear must fence old desired snapshots"
+        );
+        let fresh = lifecycle.ticket("synthetic-stopped").await.unwrap();
+        assert!(fresh.is_current());
+        let after = fresh.gate.intent.snapshot();
+        assert!(matches!(
+            after.desired,
+            super::super::intent::Desired::Automatic
+        ));
+        assert!(!Arc::ptr_eq(&before.epoch, &after.epoch));
+        assert!(!Arc::ptr_eq(&before.version, &after.version));
+        assert!(Arc::ptr_eq(&old.gate, &fresh.gate));
+        lifecycle.close();
+        assert!(lifecycle.ticket("synthetic-stopped").await.is_err());
+    }
 
     #[tokio::test]
     async fn lifecycle_tunnel_coordinator_cancel_returns_before_held_lock_release() {

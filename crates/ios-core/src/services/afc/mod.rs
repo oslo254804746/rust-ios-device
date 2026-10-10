@@ -234,6 +234,7 @@ pub struct AfcClient<S> {
     packet_num: u64,
     usable: bool,
     request_timeout: Option<Duration>,
+    max_frame_body: usize,
 }
 
 struct AfcStream<S> {
@@ -368,7 +369,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
             packet_num: 1,
             usable: true,
             request_timeout: None,
+            max_frame_body: Self::MAX_IN_MEMORY_FILE,
         }
+    }
+
+    /// Add a smaller frame allocation ceiling for a bounded SDK operation.
+    /// This cannot raise the legacy 256 MiB ceiling and is checked before the
+    /// header/payload vectors are allocated.
+    pub fn with_max_frame_body(mut self, bytes: usize) -> Self {
+        self.max_frame_body = bytes.min(Self::MAX_IN_MEMORY_FILE);
+        self
     }
 
     /// Whether framing and request ownership still permit another operation.
@@ -556,11 +566,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AfcClient<S> {
 
         // Sanity check against DoS.  Bound the complete frame body because
         // both vectors below are allocated before the operation is decoded.
-        const MAX_AFC_MSG: usize = 256 * 1024 * 1024; // 256 MiB
+        let max_afc_msg = self.max_frame_body;
         let frame_body_len = entire_len - AfcHeader::SIZE;
-        if frame_body_len > MAX_AFC_MSG {
+        if frame_body_len > Self::MAX_IN_MEMORY_FILE {
             return Err(AfcError::Protocol(format!(
-                "AFC frame too large: body={frame_body_len} limit={MAX_AFC_MSG}"
+                "AFC frame too large: body={frame_body_len} limit={}",
+                Self::MAX_IN_MEMORY_FILE
+            )));
+        }
+        if frame_body_len > max_afc_msg {
+            return Err(AfcError::Io(std::io::Error::other(
+                crate::session::reply_budget::limit("AFC frame body exceeds SDK allocation limit"),
             )));
         }
 

@@ -23,8 +23,8 @@ from diagnostics import ROOT, assess, capture, group_alive, raw_hits, secret_var
 
 MATRIX = ROOT / "docs/regression-matrix.json"
 PUBLIC_ARGUMENTS = frozenset(("--version", "-vvvv", "forward", "62078", "-c", "/", ".",
-                              "info", "list", "apps", "fs", "ls", "download", "tunnel",
-                              "pasteboard", "watch", "doctor", "--device", "--json"))
+                              "info", "list", "apps", "file", "ls", "pull", "tunnel",
+                              "pasteboard", "watch", "doctor", "--udid", "--force"))
 HOST_IDS = frozenset(("host-argv", "host-cli-version", "host-cli-rejection",
                      "host-agent", "host-artifacts"))
 PROVENANCE_FIELDS = frozenset(("commit", "working_tree_dirty", "binary_sha256", "binary_version",
@@ -44,11 +44,11 @@ def validate_udid(udid: str) -> str:
 @dataclass
 class DeviceTarget:
     udid: str
-    transport: str = "USB"
+    transport: str = "unobserved"
     name: str = "target-device"
-    ios_version: str = "17.0"
-    device_state: str = "connected"
-    services: frozenset = frozenset(("lockdown", "afc", "syslog", "installation_proxy"))
+    ios_version: str = "unobserved"
+    device_state: str = "unobserved"
+    services: frozenset = frozenset()
     has_wifi_trust: bool = False
     has_rsd_identity: bool = False
     has_identity: bool = False
@@ -67,6 +67,9 @@ class ExecutionContext:
     observed_services: frozenset = frozenset()
     observed_modes: frozenset = frozenset()
     evidence: dict = field(default_factory=dict)
+    environment: Optional[dict] = None
+    fixture_peer: bool = False
+    fixture_manifest_sha256: Optional[str] = None
 
 
 def detect_device(binary: Path) -> Optional[DeviceTarget]:
@@ -75,11 +78,13 @@ def detect_device(binary: Path) -> Optional[DeviceTarget]:
     try:
         res = capture([str(binary), "list"], timeout=5)
         if res.returncode == 0 and res.stdout:
-            for line in res.stdout.decode("utf-8", errors="replace").splitlines():
-                line = line.strip()
-                match = re.search(r"([0-9a-fA-F]{40}|[0-9a-fA-F]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{16})", line)
-                if match:
-                    return DeviceTarget(udid=match.group(1))
+            entries = json.loads(res.stdout)
+            # Selection is deliberately ambiguous when more than one device is
+            # present. List proves transport/discovery, never trust or services.
+            if isinstance(entries, list) and len(entries) == 1:
+                entry = entries[0]
+                transport = {"USB": "USB", "Network": "Wi-Fi"}.get(entry.get("connection_type"), "unobserved")
+                return DeviceTarget(udid=entry["udid"], transport=transport, device_state="discovered")
     except Exception:
         pass
     return None
@@ -267,6 +272,7 @@ class Session:
             passed = checked.pop("passed") and matched
             report = dict(checked, id=case_id, status="PASS" if passed else "FAIL",
                           contract=bool(matched), expected_code=expected_code,
+                          evidence_origin="unclassified-subprocess",
                           duration_ms=result.duration_ms, pid=result.pid,
                           cleanup_scope=result.cleanup_scope, stop_requested=result.stop_requested,
                           argv=self.arguments(command), argv_observation="direct-subprocess-input")
@@ -382,7 +388,7 @@ class Session:
         self.key = b""
         return self.cleanup_report
 
-    def finish(self, provenance, device=None):
+    def finish(self, provenance, device=None, context=None):
         device_tag = (hmac.new(self.key, device.udid.encode(), hashlib.sha256).hexdigest()[:16]
                       if device and self.key else None)
         cleanup = self.cleanup()
@@ -414,9 +420,12 @@ class Session:
 
         real_device_executed = any(
             row["result"]["status"] in ("PASS", "FAIL") and row["id"] not in HOST_IDS
+            and row["result"].get("evidence_origin") == "selected-device-cli"
             for row in rows
         )
         report = dict(version=1, provenance=provenance, cases=rows, cleanup=cleanup,
+                      adapter_source_sha256=sha256_file(ROOT / "scripts/regression_adapters.py"),
+                      fixture_manifest_sha256=context.fixture_manifest_sha256 if context else None,
                       host_passed=host_passed,
                       real_device_executed=real_device_executed)
         encoded = (json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2) + "\n").encode()
@@ -443,6 +452,10 @@ def check_preconditions(case: dict, context: ExecutionContext):
 
     # 2. Requirements check
     missing = []
+    if case["level"] == "real-device" and context.device is None:
+        missing.append("selected-device")
+    if context.device and case["transport"] in ("USB", "Wi-Fi") and context.device.transport != case["transport"]:
+        missing.append("selected-transport-observed")
     for req in case.get("requires", []):
         if req == "selected-device":
             if context.device is None:
@@ -545,33 +558,9 @@ def check_preconditions(case: dict, context: ExecutionContext):
 
 
 def make_device_command(case_id: str, context: ExecutionContext):
-    udid = context.device.udid
-    binary = str(context.binary)
-    if case_id in ("traditional-usb", "traditional-wifi", "private-mac-altirk", "display-hid-stop"):
-        return [binary, "info", "--device", udid], lambda r: r.returncode == 0
-    elif case_id in ("coredevice-usb", "modern-rsd-wifi"):
-        return [binary, "tunnel", "list", "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "remoted-coexistence":
-        return [binary, "doctor", "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "cryptex-install":
-        ddi = str(context.fixtures.get("approved-ddi", ""))
-        return [binary, "ddi", "mount", ddi, "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "rich-clipboard-watch":
-        return [binary, "pasteboard", "watch", "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "application-workflow":
-        return [binary, "apps", "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "file-workflow":
-        return [binary, "fs", "ls", "/", "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "xctest-workflow":
-        bundle = str(context.fixtures.get("test-bundle", ""))
-        return [binary, "test", "run", bundle, "--device", udid], lambda r: r.returncode == 0
-    elif case_id.startswith("windows-afc-"):
-        dest = str(context.fixtures.get("afc-local-dest", "output.bin"))
-        src = str(context.fixtures.get("afc-remote-file", "/test"))
-        return [binary, "fs", "download", src, dest, "--device", udid], lambda r: r.returncode == 0
-    elif case_id == "installcoordination-wire":
-        return [binary, "apps", "--device", udid], lambda r: r.returncode == 0
-    return [binary, "info", "--device", udid], lambda r: r.returncode == 0
+    """Compatibility entry point for single-query adapters; no fallback query."""
+    from regression_adapters import query_command
+    return query_command(case_id, context)
 
 
 def execute_device_case(session: Session, case: dict, context: ExecutionContext):
@@ -580,12 +569,22 @@ def execute_device_case(session: Session, case: dict, context: ExecutionContext)
     if not satisfied:
         session.record_not_run(case_id, reason=reason, missing_requirements=missing)
         return session.results[case_id]
-    command, contract = make_device_command(case_id, context)
-    return session.run_device_case(case_id, command, contract=contract, expected_code=0)
+    from regression_adapters import execute
+    return execute(session, case, context)
 
 
 def run_device_matrix(session: Session, context: ExecutionContext, case_filter=None):
     results = {}
+    if context.device is not None and "read-scope" in context.scopes:
+        try:
+            observed = capture([str(context.binary), "list"], env=context.environment, timeout=5, max_bytes=65536)
+            entries = json.loads(observed.stdout) if observed.returncode == 0 and observed.cleanup_complete and not observed.timed_out else []
+            matches = [row for row in entries if isinstance(row, dict) and row.get("udid") == context.device.udid]
+            if len(matches) == 1:
+                context.device.transport = {"USB": "USB", "Network": "Wi-Fi"}.get(matches[0].get("connection_type"), "unobserved")
+                context.device.device_state = "discovered"
+        except Exception:
+            pass
     for case in session.matrix["cases"]:
         if case["id"] in HOST_IDS:
             continue
@@ -644,7 +643,7 @@ def host_run(binary, parent=None, device=None, context=None, case_filter=None):
         cleanup = session.cleanup()
         session.results["host-artifacts"] = dict(id="host-artifacts", status="PASS" if cleanup["complete"] else "FAIL",
                                                  contract=cleanup["complete"], private_outside_evidence=True)
-        return session.finish(provenance, device=context.device), session.evidence
+        return session.finish(provenance, device=context.device, context=context), session.evidence
     finally:
         session.cleanup()
 
@@ -677,6 +676,9 @@ def main():
         device=device,
         scopes=scopes,
     )
+    if args.fixture_dir is not None:
+        from regression_adapters import load_fixture_manifest
+        load_fixture_manifest(args.fixture_dir, context)
 
     report, evidence = host_run(args.binary, args.output_parent, device=device, context=context, case_filter=case_filter)
     # CLI paths are user input and may contain secrets; stdout exposes only the

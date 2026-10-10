@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "open device failed (%s)\n", ios_last_error_class());
         return 1;
     }
+    int failed = 0;
 
     /* 1. Get product version */
     char *version = NULL;
@@ -37,7 +38,8 @@ int main(int argc, char **argv) {
         printf("Installed Apps: %s\n", apps_json);
         ios_free_string_checked(&apps_json);
     } else {
-        printf("List apps skipped or failed (%s)\n", ios_last_error_class());
+        fprintf(stderr, "List apps failed (%s)\n", ios_last_error_class());
+        failed = 1;
     }
 
     /* 3. List AFC root directory */
@@ -46,7 +48,8 @@ int main(int argc, char **argv) {
         printf("AFC Root Files: %s\n", files_json);
         ios_free_string_checked(&files_json);
     } else {
-        printf("AFC list skipped or failed (%s)\n", ios_last_error_class());
+        fprintf(stderr, "AFC list failed (%s)\n", ios_last_error_class());
+        failed = 1;
     }
 
     /* 4. Read file via AFC */
@@ -55,18 +58,23 @@ int main(int argc, char **argv) {
     if (ios_device_afc_read_file(device, "/iTunesArtwork", 65536, &data, &len) == IOS_SUCCESS) {
         printf("Read AFC file /iTunesArtwork: %zu bytes\n", len);
         ios_free_bytes_checked(&data, &len);
+    } else {
+        fprintf(stderr, "AFC read failed (%s)\n", ios_last_error_class());
+        failed = 1;
     }
 
     /* 5. Read syslog messages */
     char *logs_json = NULL;
     if (ios_device_syslog_read_json(device, 5, 2000, &logs_json) == IOS_SUCCESS) {
         printf("Syslog: %s\n", logs_json);
-        ios_free_string_checked(&logs_json);
     } else {
-        printf("Syslog read skipped or failed (%s)\n", ios_last_error_class());
+        fprintf(stderr, "Syslog read failed (%s), completed prefix: %s\n",
+                ios_last_error_class(), logs_json ? logs_json : "[]");
+        failed = 1;
     }
+    if (ios_free_string_checked(&logs_json) != IOS_SUCCESS) failed = 1;
 
     /* Clean shutdown */
     status = ios_device_close_checked(&device);
-    return status == IOS_SUCCESS ? 0 : 1;
+    return status == IOS_SUCCESS && !failed ? 0 : 1;
 }

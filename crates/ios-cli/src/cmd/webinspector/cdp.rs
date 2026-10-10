@@ -17,6 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use ios_core::webinspector::cdp_browser::{
     self, BrowserCdpAction, BrowserCdpState, JsContextCdpAdapter,
 };
+use ios_core::webinspector::cdp_page::PageCdpAdapter;
 use ios_core::webinspector::{ApplicationPage, InspectorSession, WebInspectorClient, WirType};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
@@ -197,6 +198,7 @@ async fn handle_cdp_socket(
         )
         .await?;
 
+    let mut page_adapter = js_adapter.is_none().then(|| PageCdpAdapter::new(timeout));
     let (mut sender, mut receiver) = socket.split();
     let bridge_result = tokio::select! {
         biased;
@@ -207,17 +209,12 @@ async fn handle_cdp_socket(
             // Each message turn yields back to the directly owned lease
             // control while preserving the existing unbiased traffic choice.
             tokio::task::yield_now().await;
+            let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
             tokio::select! {
                 inbound = receiver.next() => {
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             let message: JsonValue = serde_json::from_str(text.as_ref())?;
-                            if let Some(responses) = cdp_browser::handle_verified_page_method(&message) {
-                                for resp in responses {
-                                    sender.send(Message::Text(resp.to_string())).await?;
-                                }
-                                continue;
-                            }
                             if cdp_browser::unverified_page_method(&message) {
                                 sender.send(Message::Text(cdp_browser::error(&message, -32601, "CDP domain not implemented").to_string())).await?;
                                 continue;
@@ -230,12 +227,29 @@ async fn handle_cdp_socket(
                                 adapter.outgoing(message)
                             } else { vec![message] };
                             for message in outgoing {
-                                session.send_bridge_message(&mut client, &message).await?;
+                                if let Some(adapter) = &mut page_adapter {
+                                    let translated = adapter.outgoing(message);
+                                    for response in translated.client { sender.send(Message::Text(response.to_string())).await?; }
+                                    for wire in translated.wire { session.send_bridge_message(&mut client, &wire).await?; }
+                                } else { session.send_bridge_message(&mut client, &message).await?; }
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
                         Some(Ok(_)) => {}
                         Some(Err(error)) => return Err(error.into()),
+                    }
+                }
+                expired = async {
+                    match translation_deadline {
+                        Some(at) => tokio::time::timeout_at(at.into(), std::future::pending::<()>()).await.unwrap_err(),
+                        None => std::future::pending::<tokio::time::error::Elapsed>().await,
+                    }
+                } => {
+                    // A periodic timer must never drop a partial native read.
+                    // Only a real outstanding command deadline may interrupt it.
+                    if !client.is_usable() { return Err(anyhow::Error::new(expired).context("CDP translated command deadline expired during native IO")); }
+                    if let Some(adapter) = &mut page_adapter {
+                        for message in adapter.expired() { sender.send(Message::Text(message.to_string())).await?; }
                     }
                 }
                 outbound = session.next_raw_message(&mut client, timeout) => {
@@ -246,8 +260,13 @@ async fn handle_cdp_socket(
                                     adapter.incoming(message)
                                 } else { vec![message] };
                                 for message in incoming {
-                                    let message = diagnostic_cdp_response(message);
-                                    sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+                                    if let Some(adapter) = &mut page_adapter {
+                                        let translated = adapter.incoming(message);
+                                        for wire in translated.wire { session.send_bridge_message(&mut client, &wire).await?; }
+                                        for message in translated.client {
+                                            sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?;
+                                        }
+                                    } else { sender.send(Message::Text(diagnostic_cdp_response(message).to_string())).await?; }
                                 }
                             }
                         }
@@ -528,6 +547,7 @@ async fn open_cdp_browser_page(
     let task = tokio::spawn(async move {
         let _guard = guard;
         let _device = device;
+        let mut page_adapter = js_adapter.is_none().then(|| PageCdpAdapter::new(timeout));
         let stop = async {
             loop {
                 if *cancellation.borrow() {
@@ -545,6 +565,7 @@ async fn open_cdp_browser_page(
             result = async {
         loop {
             tokio::task::yield_now().await;
+            let translation_deadline = page_adapter.as_ref().and_then(PageCdpAdapter::next_deadline);
             tokio::select! {
                 inbound = receiver.recv() => {
                     match inbound {
@@ -557,10 +578,29 @@ async fn open_cdp_browser_page(
                                 adapter.outgoing(message)
                             } else { vec![message] };
                             for message in messages {
-                                inspector.send_bridge_message(&mut client, &message).await?;
+                                if let Some(adapter) = &mut page_adapter {
+                                    let translated = adapter.outgoing(message);
+                                    for message in translated.client {
+                                        output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                    }
+                                    for wire in translated.wire { inspector.send_bridge_message(&mut client, &wire).await?; }
+                                } else { inspector.send_bridge_message(&mut client, &message).await?; }
                             }
                         }
                         None => break,
+                    }
+                }
+                expired = async {
+                    match translation_deadline {
+                        Some(at) => tokio::time::timeout_at(at.into(), std::future::pending::<()>()).await.unwrap_err(),
+                        None => std::future::pending::<tokio::time::error::Elapsed>().await,
+                    }
+                } => {
+                    if !client.is_usable() { return Err(anyhow::Error::new(expired).context("CDP browser translated command deadline expired during native IO")); }
+                    if let Some(adapter) = &mut page_adapter {
+                        for message in adapter.expired() {
+                            output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                        }
                     }
                 }
                 outbound = inspector.next_raw_message(&mut client, timeout) => {
@@ -572,8 +612,17 @@ async fn open_cdp_browser_page(
                                     adapter.incoming(message)
                                 } else { vec![message] };
                                 for message in messages {
-                                    let message = diagnostic_cdp_response(message);
-                                    output.send(BrowserPageOutput::Message {session_id: cdp_session_id.clone(), message}).await?;
+                                    if let Some(adapter) = &mut page_adapter {
+                                        let translated = adapter.incoming(message);
+                                        for wire in translated.wire { inspector.send_bridge_message(&mut client, &wire).await?; }
+                                        for message in translated.client {
+                                            let message = diagnostic_cdp_response(message);
+                                            output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                        }
+                                    } else {
+                                        let message = diagnostic_cdp_response(message);
+                                        output.send(BrowserPageOutput::Message { session_id: cdp_session_id.clone(), message }).await?;
+                                    }
                                 }
                             }
                         },

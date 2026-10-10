@@ -1,53 +1,30 @@
 # 当前工程调度
 
-更新：2026-10-10。任务定义与最终验收以
-[原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
-不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
+更新：2026-10-10。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
+开发计数与真实验收分开，Q04及全部子项继续排除。
 
-按2026-10-10用户修订的开发口径，有效30个主任务中，全部 30 个已开发完成交付（0 项剩余）。
-只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
-代码/工具交付全集见[待开发清单](development-backlog.md)。
+当前批次修复独立review确认的R01–R15。起点af20f6a，修复分支
+codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留。
+审查否定了Antigravity的30/30声明：承接原19项、L03新增1项，9项仍缺开发、L02待核查。
+见[待开发清单](development-backlog.md)和[本轮修复/验收](validation/review-fixes-2026-10-10.md)。
 
-| 工作项 | 当前状态 | 交付边界和证据 |
-| --- | --- | --- |
-| F06 设备恢复预检与实验恢复状态机 | 主任务开发交付 | 预检CLI、多更新器隔离连接与超时聚合、实验恢复状态机、Nonce漂移防护、固件分块限额与协议缺口显式声明；[证据](validation/recovery-preflight-and-executor-2026-10-10.md) |
-| F05 查看器、VNC 与双向剪贴板 | 主任务开发交付 | HTML5 Web 查看器、RFB 3.8 VNC 服务端、触控/指针/键盘映射、双向剪贴板与回环抑制；[证据](validation/viewer-vnc-clipboard-2026-10-10.md) |
-| F04 CDP 多领域协议拓展与适配 | 主任务开发交付 | Runtime/Page/Input/Fetch/Memory/Performance 协议域、JsContextCdpAdapter 扩展与 unverified/side-effect 严格拦截；[证据](validation/cdp-domain-protocols-2026-10-10.md) |
-| L01/L02 完整扫描控制 | 主机子项已验收 | 原提交 `5e521e5`；[扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
-| L01/L02 成功连接后的退避清理 | 主机子项已验收 | `6bceff7`；窗口公平性、版本保护、期限回滚及原 native owner 收尾；[证据](validation/tunnel-success-bookkeeping-2026-10-08.md) |
-| L01/L02 手动 selector 与 gate key 文本上限 | 主机子项已验收 | `f0ec223`；既有 4KiB/4096 上限在 key/lock/Source 前生效，原 native owner 保留/收尾；[证据](validation/device-doctor-manual-admission-2026-10-08.md) |
-| L01/L02 隧道与管理器生命周期及元数据字节边界 | 主任务开发交付 | 全端点4096字节上限、POST /refresh与POST /epoch管理端点、手动epoch切换与重连追踪修复；[证据](validation/tunnel-lifecycle-and-metadata-limits-2026-10-10.md) |
-| F01 显式设备 doctor | 主机子项已验收 | `71a59fc`；既有信任只读 session、Developer Mode/DDI signature，host schema1/target schema2，typed 类别与原 error；`82c6c56` 拒绝 Unix FIFO；[证据](validation/device-doctor-manual-admission-2026-10-08.md) |
-| F01 既有 RSD route | 主机子项已验收 | `838c4ed`；显式 IPv6/已有 proxy 的总期限只读观察、目标核对、完整目录与 missing/malformed 分开；不激活/接管 tunnel 或执行 advertised 服务；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
-| F01 平台USB/路由/remoted与DDI探测 | 主任务开发交付 | 平台USB (Linux/Windows/macOS)、IPv6路由绑定、remoted共存与DDI目录探测交付；Windows主线程栈溢出保护落地；[证据](validation/doctor-platform-probes-2026-10-10.md) |
-| L03 manager 可配置 episode | 主机子项已验收 | `1a604af`；serve 退避/有限预算/准确状态、identity/epoch/version 与原 native owner 回收；[证据](validation/manager-reconnect-2026-10-08.md)。manual 恢复/跨扫描 stop 已另行验收；Darwin watch 继续 |
-| A03 原生有界读取 | 主机子项已验收 | `655733c`；AFC caller byte limit；Browse checked 总期限、累计 wire/帧/条目预算和失效后复用拒绝；[证据与迁移](validation/bounded-service-read-2026-10-08.md) |
-| A03 日志取消/失效 framing | 主机子项已验收 | `f077674`；取消保留已读前缀、EOF/IO/超长后 terminal 并拒绝复用；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
-| A03 SDK session 前置 | 主机子项已验收 | `2b906d7`；共同 owner、单一绝对期限/取消/并发、checked existing-trust session 与 owned prepared-service 观察；[证据](validation/sdk-owned-session-2026-10-09.md)。Rust device query 已另行验收；binding 接线继续 |
-| L03 Darwin剪贴板watch重连 | 主任务开发交付 | `3d90d12`；Darwin watch 错误类型分类解包、重连 episode 取消时机、事件断线抑制与恢复完整交付 |
-| F03 实际 CDP 客户端框架 | 主任务已完成 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。符合原 F03 可复现结果/缺初始化语义时的协议依据与方案要求；F04 各域及真机验收继续 |
-| A03 有限 Rust device query | 主机子项已验收 | `6f582c9`；fresh socket/DeviceID、单一总期限、wire/metadata/owned output 预算、TCP/Unix/TLS 与原 owner 退役；[证据](validation/sdk-device-query-2026-10-09.md) |
-| L04 manager/native 资源与负载基线 | 主任务开发交付 | 同 fixture 修改前后测量、分配器归因，及吞吐、文件传输、服务流工作负载驱动与汇总完整交付；[证据](validation/manager-workload-measurements-2026-10-10.md) |
-| A03 Python/C 常用 SDK | 主任务开发交付 | 设备/应用/文件/日志句柄，Python context/async/Tunnel扩展，C checked释放、状态分类与双语言示例集中交付 |
-| Q02 真机回归矩阵执行适配器 | 主任务开发交付 | 真实设备发现、前置条件与范围校验、矩阵用例命令适配与HMAC脱敏交付；[证据](validation/real-device-regression-adapters-2026-10-10.md) |
-| F02 完整自动化测试工作流 | 主任务开发交付 | 组合工作流、预检与按需安装、syslog流捕获、结果/诊断JUnit原子落盘、用例重跑及清理完整交付；[证据](validation/test-workflow-automation-2026-10-10.md) |
+| 范围 | 本轮工作与验收出口 |
+| --- | --- |
+| Viewer/S01/S02/F05 | Principal设备/端口范围与撤销、DES认证；真实PNG/Web/VNC共享源、设备输入/文本剪贴板、统一owner预算与退出。原HEVC/方向/图像子项独立登记。 |
+| CDP/F04 | 清除生产常量和空成功，真实WebInspector请求/响应/event关联；实际pinned客户端验证每域，未知字段/无法保证语义明确拒绝。 |
+| SDK/A03/L01 | apps/AFC/logs接共同checked trust owner，Python/C总期限/取消/并发/close/join，公开aclose、installed wheel和C实际ABI peer gate。 |
+| Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
+| Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。 |
+| F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
+| L02/L04 | 元数据发布准入、持久意图epoch；完整全局归因/刷新规则继续。负载经过生产native/AFC/Syslog、真实时窗与资源/收尾采样，不以独立TCP代替。 |
+| 原门禁维护 | 能力登记含目录mod.rs、Windows五项core失败诊断；保持原错误source、严格EOF、native join/worker恢复断言。 |
 
-真机测试按用户要求留待其后续统一安排，相关任务不标完成。当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
-回归入口的 22 项真机行仍为 NOT_RUN；缺 macOS、Windows/UNC 和其他发布目标的
-实际运行证据。恢复执行还缺明确机型、固件、模式转换和真实协议证据；不能用
-现有 codec 或离线测试替代恢复循环。RSD/remoted 共存、实际 DDI 可用性、媒体/HID
-和富内容剪贴板按原任务分别待条件。doctor 的 OS metadata/regular file IO 不能物理取消，runtime 退出可能等待 blocking
-worker；Unix FIFO 已拒绝，此限制仍需独立处理。上述条件不阻止其他主机工作继续。
+主agent串行构建Rust和maturin，子agent只编辑/纯脚本；开发检查用冻结快照，
+集中验收固定源码hash与受测提交。不会终止其它会话进程或覆盖用户改动。
+修复可本地提交，不推送、发布、部署。
 
-主 agent 统一集成、冻结被测源码、串行编译和批量验收。子 agent 在独立 worktree
-开发或只读审查，禁止启动 Rust 编译。验收通过后本地提交；不推送、发布或部署。
-
-当前执行：Rust query/实际 CDP 框架和 manager 路由恢复/持续 stop 均已验收并本地提交。
-Python 有限 query 六文件静态包已冻结；C 句柄/linked fixtures 正在冻结前复核，
-均尚未编译/运行验收。Darwin watch 在独立树承接开发。L04 同 fixture 修改前后测量与资源归因已完成：
-1/4/16 规模、16 devices 的30s/104轮真实 native 启停/断连，原joins/严格EOF/
-任务与FD恢复通过。独立60s诊断拆分匿名/文件页及分配器数据，末10秒RSS稳定；
-验收仅限本主机子项，吞吐、文件/长时间流及平台真机继续。
-Python/C尚待集中集成验收。重复制品验证的uv缓存已改为随本次验收结束清理；
-旧缓存已回收，磁盘从98%降到31%，dirty worktree源码完整保留。
-后续[构建缓存与worktree维护](build-cache-management.md)优先复用已有树并按交付边界验收。
+用户后续统一安排真机。没有指定设备操作范围，本轮不执行恢复、擦除、配对、
+安装等设备变更；真实设备流程仍NOT_RUN。POSIX pthread、Linux/glibc资源探针、
+macOS/Linux及Python最低版本/其它制品平台按真实运行范围保留NOT_RUN。
+原19项是交付账本，不冒充本次全部平台重新验收。缺代码或协议的路径不能只列
+硬件NOT_RUN或靠--force打开。独立可完成的修复和实现继续推进。

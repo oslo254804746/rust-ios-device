@@ -63,9 +63,79 @@ where
 }
 
 impl ConnectedDevice {
+    /// Snapshot already loaded trust for the bounded read-only SDK profile.
+    /// Each job rediscovers this UDID through the explicit mux endpoint. Direct
+    /// network lockdown routes are not silently converted into a different route.
+    pub fn existing_trust_device(
+        &self,
+        owner: crate::session::SessionOwner,
+        endpoint: crate::session::UsbmuxEndpoint,
+    ) -> Result<crate::session::ExistingTrustDevice, CoreError> {
+        if !matches!(
+            self.lockdown_transport,
+            super::LockdownTransport::Usbmux { .. }
+        ) {
+            return Err(CoreError::Unsupported(
+                "checked SDK service profile requires an existing usbmux route".into(),
+            ));
+        }
+        crate::session::ExistingTrustDevice::new(
+            self.info.udid.clone(),
+            Arc::clone(self.pair_record()?),
+            owner,
+            endpoint,
+        )
+    }
     /// The RSD handshake result, if available (iOS 17+ with tunnel).
     pub fn rsd(&self) -> Option<&RsdHandshake> {
         self.rsd.as_ref()
+    }
+
+    /// Conservatively charge owned directory/identity/credential buffer
+    /// capacities for manager admission. Shared credentials are charged once
+    /// per owner. Opaque native error causes and tunnel runtime buffers are
+    /// separate; this is not a process RSS estimate or their byte bound.
+    pub fn retained_metadata_bytes(&self) -> Option<usize> {
+        let mut bytes = std::mem::size_of::<Self>();
+        let mut add = |amount: usize| -> Option<()> {
+            bytes = bytes.checked_add(amount)?;
+            Some(())
+        };
+        add(self.info.udid.capacity())?;
+        add(self.info.connection_type.capacity())?;
+        if let Some(rsd) = &self.rsd {
+            add(rsd.udid.capacity())?;
+            add(rsd.services.capacity().checked_mul(
+                std::mem::size_of::<(String, crate::xpc::rsd::ServiceDescriptor)>() + 16,
+            )?)?;
+            for (name, descriptor) in &rsd.services {
+                add(name.capacity())?;
+                add(descriptor
+                    .features
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<String>())?)?;
+                for feature in &descriptor.features {
+                    add(feature.capacity())?;
+                }
+            }
+        }
+        if let Some(pair) = &self.pair_record {
+            add(std::mem::size_of::<PairRecord>())?;
+            for buffer in [
+                &pair.device_certificate,
+                &pair.host_certificate,
+                &pair.root_certificate,
+                &*pair.host_private_key,
+            ] {
+                add(buffer.capacity())?;
+            }
+            add(pair.host_id.capacity())?;
+            add(pair.system_buid.capacity())?;
+            if let Some(mac) = &pair.wifi_mac_address {
+                add(mac.capacity())?;
+            }
+        }
+        Some(bytes)
     }
 
     /// Historical optional probe performed during connection establishment.
@@ -675,8 +745,12 @@ mod tests {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let (device, receiver) = owned_rsd_device(None, socket.local_addr().unwrap().port());
+        // Winsock's loopback SYN refusal is delivered after ~2 seconds. This
+        // public retry path makes five real attempts; observe the native refusal
+        // rather than replacing it with this fixture's outer timeout.
+        let observation_budget = if cfg!(windows) { 20 } else { 5 };
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(observation_budget),
             device.connect_rsd_service("synthetic.private.service"),
         )
         .await

@@ -101,7 +101,8 @@ mod rsd_proxy_tests {
         socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let port = socket.local_addr().unwrap().port();
         let result = tokio::time::timeout(
-            Duration::from_secs(2),
+            // Native Winsock refusal itself takes ~2s before RSD retries.
+            Duration::from_secs(if cfg!(windows) { 10 } else { 2 }),
             attempt_rsd_via_proxy(port, "fd00::42", 58783),
         )
         .await

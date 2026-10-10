@@ -3,9 +3,11 @@
 The [capability catalog](capabilities.md) describes implementation/maturity.
 [regression-matrix.json](regression-matrix.json) selects representative risks and
 their independent preconditions. A host result cannot satisfy a real-device row.
-The current runner executes five host cases and writes 22 real-device NOT_RUN
-records. It does not discover/select devices, pair, install DDI/applications,
-start Apple services or operate a third-party agent.
+Without an explicit target the runner executes five host cases and writes 22
+real-device NOT_RUN records. `--device UDID` selects one target;
+`--device auto` accepts only an unambiguous one-device JSON enumeration. Current
+enumeration observes transport, not trust, service availability or iOS version.
+No device state, version or service is assumed by default.
 
 ```sh
 cargo build -p ios-cli --locked
@@ -78,11 +80,10 @@ material or user file cleanup occurs. These checks share the repository's
 trusted parent-directory boundary and are not an atomic defense against an
 adversary concurrently swapping directory components.
 
-The trusted Python `Session.run`/`agent` API is reusable by later workflow
-adapters; the CLI accepts no arbitrary command manifest and no real-device
-executor today. Per-case device adapters still need exact selected-device and
-fixture checks, owner operation scope, service/protocol evidence and observed
-file/result contracts. Missing service, permission, identity, platform or fixture
+The trusted Python `Session.run`/`agent` API remains reusable. The CLI accepts no
+arbitrary commands. `regression_adapters.py` constructs real product argv with
+the root `--udid`, loads a hash-bound fixture manifest, and runs finite operation
+sequences only when their separate operation scopes are granted. Missing service, permission, identity, platform or fixture
 must remain NOT_RUN/INCONCLUSIVE with a reason. Adding a matrix row or observing
 source code does not constitute execution. Use 60 seconds for ordinary device
 commands, 90 seconds for special connection cases, at most two retries after the
@@ -98,3 +99,50 @@ HID, clipboard, application, XCTest and Cryptex workflows require their own
 explicit scopes; this runner does not infer those from general roadmap consent.
 The current [FUP review](real-device-followup-tasks-2026-08-30.md) records what
 already exists and what is missing.
+
+## Repair boundary, 2026-10-10
+
+`--fixture-dir` loads `manifest.json` (at most 64 KiB), with exactly `version: 1`,
+`target_udid`, `fixtures`, `observations` and `evidence`. Its selected target must
+match the CLI target. Observations/evidence never grant the `--scope` permissions.
+Evidence entries contain a root-relative regular-file path and SHA-256; symlinks,
+paths outside the fixture root, mismatched package hashes and mismatched IPA
+`CFBundleIdentifier` values are rejected. The evidence report also records the
+adapter source hash and admitted manifest hash.
+
+Supported fixtures are `afc-fixture` (`remote_path`, `size`, `sha256`),
+`test-application`/`test-runner` (`path`, `sha256`, `bundle_id`), `test-bundle`
+(`runner_bundle_id`, `xctest_config`, nonempty exact `tests`, `timeout_secs`),
+`authorized-unc-share` (`directory`) and `existing-rsd-route` (`address`, optional
+`proxy_port`). Package and evidence paths stay inside the selected root. The UNC
+fixture names an already existing, explicitly selected share directory; the
+runner creates one exclusive child there and removes only that child's known
+files. Read-only observations still require `read-scope`; app/XCTest operations
+require their own matrix scopes. An AFC fixture is an owner-placed remote file,
+so this runner never creates or removes remote AFC content.
+
+The file adapters perform real `file pull` operations, compare full size/SHA-256,
+check existing-file refusal and Windows native read-only-file refusal, preserve
+directory markers, inspect exact staging residue, exercise force/recovery and
+Unicode/long/verbatim output paths, then remove only exact locally owned files.
+Unknown residue is preserved and fails cleanup. Application sequences inspect
+preexistence, install, query the real bundle ID, launch, kill and uninstall only
+an absent bundle owned by this run; cleanup also runs after partial installation
+failure. XCTest uses finite `runxctest --wait` selectors and checks the JUnit
+case selection and log completion footer.
+
+Private MAC/altIRK correlation, exact Cryptex ownership, Display/HID state
+restoration, rich clipboard watch/deduplication, same-client InstallCoordination
+wire recovery, and queued/direct/legacy/passive RSD mode selection still require
+production observers. They remain specifically NOT_RUN; no `info`, directory
+listing or unrelated successful query substitutes for those workflows. macOS
+remoted needs an explicitly selected existing RSD endpoint. All physical-device
+flows, actual authorized UNC and platform-specific processes remain unverified
+until separately executed. Q02 is therefore still incomplete.
+
+`test_regression_adapters.py` can check an already built CLI with
+`IOS_REGRESSION_CLI`. It never builds Rust. Its Windows protocol fixture runs the
+actual executable through synthetic usbmux, Lockdown TLS and AFC peers using a
+private `ALLUSERSPROFILE`, checks all original worker joins and strict EOF, and
+labels its results `localhost-protocol-fixture`. Those results cannot set
+`real_device_executed` or satisfy a physical-device matrix row.

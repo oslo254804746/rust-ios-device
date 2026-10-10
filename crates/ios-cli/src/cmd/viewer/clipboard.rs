@@ -8,8 +8,8 @@ use ios_core::flate2::Compression;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
-pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
-pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 
 // Extended Clipboard pseudo-encoding (0xC0A1E5CE as int32)
 pub const ENC_EXTENDED_CLIPBOARD: i32 = -1063131698;
@@ -181,14 +181,8 @@ pub fn decode_classic_cut_text(bytes: &[u8]) -> Result<String> {
 
 /// Extended Clipboard caps advertisement.
 pub fn encode_extended_caps() -> Vec<u8> {
-    let flags = ACTION_CAPS
-        | ACTION_REQUEST
-        | ACTION_PEEK
-        | ACTION_NOTIFY
-        | ACTION_PROVIDE
-        | FORMAT_TEXT
-        | FORMAT_IMAGE_PNG
-        | FORMAT_IMAGE_JPEG;
+    let flags =
+        ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE | FORMAT_TEXT;
     let mut body = flags.to_be_bytes().to_vec();
     body.extend_from_slice(&0u32.to_be_bytes()); // Unsolicited size 0
     let len_field = -(body.len() as i32);

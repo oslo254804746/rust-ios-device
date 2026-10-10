@@ -164,7 +164,7 @@ fn select(
 
 /// The returned IO borrows the operation context and is never a public result.
 /// The socket is new for each invocation, then upgraded in place by Connect.
-pub(super) async fn connect_lockdown<'ctx>(
+pub(crate) async fn connect_lockdown<'ctx>(
     context: &'ctx OperationContext,
     route: &Route,
     limits: DeviceQueryLimits,
@@ -222,4 +222,53 @@ pub(super) async fn connect_lockdown<'ctx>(
         );
     }
     Ok((metadata, stream))
+}
+
+/// Open the exact discovered device's advertised service through a fresh mux
+/// connection. The original operation clock also fences the Connect handshake.
+pub(crate) async fn connect_port<'ctx>(
+    context: &'ctx OperationContext,
+    route: &Route,
+    device_id: u32,
+    port: u16,
+    budget: &ReplyBudget,
+) -> Result<OperationIo<'ctx, UsbmuxStream>, CoreError> {
+    let raw = context
+        .run(async {
+            match &route.endpoint.0 {
+                Endpoint::Tcp(address) => tokio::net::TcpStream::connect(*address)
+                    .await
+                    .map(UsbmuxStream::Tcp),
+                #[cfg(unix)]
+                Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
+                    .await
+                    .map(UsbmuxStream::Unix),
+            }
+        })
+        .await?;
+    let mut stream = context.guard(raw);
+    send_plist(
+        &mut stream,
+        &ConnectRequest {
+            message_type: "Connect",
+            prog_name: "ios-rs",
+            client_version_string: "ios-rs-0.1",
+            bundle_id: "rs.ios",
+            lib_usbmux_version: 3,
+            device_id,
+            port_number: port.swap_bytes(),
+        },
+        1,
+    )
+    .await?;
+    let reply = recv_reply(&mut stream, 1, budget).await?;
+    if check_result(&reply)? != Some(0)
+        || reply.get("MessageType").and_then(plist::Value::as_string) != Some("Result")
+    {
+        return Err(protocol(
+            "SDK mux service Connect did not return an explicit successful Result",
+        )
+        .into());
+    }
+    Ok(stream)
 }

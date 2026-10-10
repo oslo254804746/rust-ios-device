@@ -356,6 +356,75 @@ On Windows you may also need to link `ws2_32`, `bcrypt`, and `userenv` when
 linking against the static library. On Linux and macOS, link with `pthread`
 and `dl`.
 
+## Checked application, AFC and log services
+
+`ios_device_session_service_json` and `ios_device_session_afc_read_file` use the
+same `ExistingTrustDevice`/`SessionOwner` as finite queries. The former selects
+apps (1), AFC directory names (2), or a requested number of syslog messages
+(3). They use explicit loaded credentials/endpoints, a supplied cancellation
+token, and fresh owned discovery/Lockdown/service sockets. One native absolute
+total covers all connection stages, TLS, requests and reads. No pairing,
+installation, file mutation, tunnel startup or automatic retry occurs.
+
+`IosDeviceServiceOptions` exposes cumulative decrypted service reply bytes,
+retained output, entry count, AFC frame body and C JSON limits. Defaults are
+15s total, 16MiB service replies, 1MiB retained output, 10,000 entries, 1MiB
+AFC bodies and 8MiB JSON. The finite control plane separately admits at most
+16MiB replies and 1MiB mux/Lockdown frames. Browse/syslog keep their existing
+hard parser/message bounds. These logical/task limits exclude TLS wire,
+parser temporaries, CPU/RSS and outputs still retained by the C caller.
+
+File success requires complete EOF and never truncates excess data. Empty
+files return NULL/0; `max_bytes=0` permits only an empty file. Syslog EOF,
+native IO, deadline, cancel or output refusal returns nonzero. Its JSON output
+may own completed partial messages, so always free the output on either
+success or failure. Capture `ios_last_error_class()` on the original caller
+thread before any int-status cleanup resets it. The original typed error
+remains primary; UnexpectedEof keeps A02 `io`, rather than inferring a device
+disconnect. Partial JSON projection is byte-bounded with a separate 100ms
+cooperative cleanup budget. Failed partial projection leaves NULL.
+
+`ios_device_session_close` seals both queries and services, cancels the actual
+native tokens and waits for lease release. Calls execute on their caller OS
+threads with no detached SDK service task. Close does not join those OS
+threads: join them before destroying their C allocations or output storage.
+Cancellation destroys local transports without acknowledging remote FileClose
+or Apple teardown. Repeated close is supported; timeout keeps closed state
+and original outstanding counts.
+
+The existing `ios_device_*` apps/AFC/log functions now call this checked
+service implementation with fixed defaults. Their ordinary `ios_device_open`
+connection has a 15s finite timeout; legacy generic lockdown queries remain
+on the existing compatibility path. For explicit input/budget/cancel control,
+use the configured session API. `ios_device_handle_from_session` creates a
+services-only alias for the existing apps/AFC/log functions that shares the
+configured owner. Finite queries use the session API. The bridge's generic
+legacy lockdown functions reject before IO. `ios_device_services_close`
+seals service admission without consuming the handle; closing any alias seals
+the common owner. Local trust-file loading by legacy open is separate and is
+not physically cancellable on a stalled filesystem.
+
+[finite_device_services.c](examples/finite_device_services.c) demonstrates the
+configured read-only API. With an already built native library, the portable
+linked ctypes fixture runs actual exported C functions and caller OS threads:
+
+```powershell
+python -I scripts/sdk-device-services.py --ffi-library target/debug/ios_ffi.dll
+```
+
+It checks service TLS, apps data, exact AFC data/hash and empty-file EOF,
+budget refusals, total/cancel in four connection stages, shared query-service
+conflict, active close, partial log errors and original peer/OS-thread
+EOF/joins. It also drives the legacy apps/AFC/log exports through a configured
+owner alias. This Windows-capable gate does not replace the existing POSIX
+pthread finite-query gate or certify device services, other release platforms,
+allocator/RSS/FD baselines or arbitrary pointer safety.
+
+When a log operation fails, `ios_last_error_class()` retains its primary category.
+If byte/deadline limits prevent projecting the retained log prefix, the output
+is NULL and `ios_last_service_projection_error_class()` reports the secondary
+projection category. Read both getters before another int-status call clears them.
+
 ## Requirements
 
 - Rust **1.80+** for source builds.

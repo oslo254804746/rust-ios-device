@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 mod tests;
-mod transport;
+pub(super) mod transport;
 
 use std::{
     fmt,
@@ -356,18 +356,18 @@ impl fmt::Debug for DeviceQueryObservation {
 }
 impl OperationValue for DeviceQueryObservation {}
 
-struct Route {
-    udid: String,
-    endpoint: UsbmuxEndpoint,
+pub(super) struct Route {
+    pub(super) udid: String,
+    pub(super) endpoint: UsbmuxEndpoint,
 }
 
 /// An explicit target using credentials already loaded by the caller.
 /// Construction performs no IO or authentication. Clones are client handles;
 /// prepared jobs never retain one. Close only acknowledges local lease release.
 pub struct ExistingTrustDevice {
-    route: Arc<Route>,
-    pair_record: Arc<PairRecord>,
-    owner: SessionOwner,
+    pub(super) route: Arc<Route>,
+    pub(super) pair_record: Arc<PairRecord>,
+    pub(super) owner: SessionOwner,
 }
 
 impl Clone for ExistingTrustDevice {

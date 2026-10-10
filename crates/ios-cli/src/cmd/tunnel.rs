@@ -38,6 +38,8 @@ mod ownership;
 mod reconnect;
 mod retirement;
 mod scan;
+mod scoped;
+pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;
 use bookkeeping::{
@@ -54,6 +56,7 @@ const TUNNEL_SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_FAILURE_RECORDS: usize = 4096;
+const MAX_PUBLISHED_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const FAILURE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_LIST_BYTES: usize = 1024 * 1024;
 const BRIDGE_BUFFER_SIZE: usize = 16 * 1024;
@@ -385,6 +388,7 @@ struct TunnelAgentInner {
     failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
     retry: Arc<reconnect::Ledger>,
     failure_slots: Arc<Semaphore>,
+    metadata_bytes: Arc<Semaphore>,
     ready: RwLock<bool>,
     lifecycle: Lifecycle,
     scan_lock: Mutex<()>,
@@ -422,6 +426,7 @@ struct ManagedTunnel {
     // Actual selector established by Source, not the next caller's request.
     route_intent: intent::RouteIntent,
     _ticket: Ticket,
+    _metadata: OwnedSemaphorePermit,
 }
 
 impl Drop for ManagedTunnel {
@@ -679,6 +684,7 @@ impl TunnelAgentState {
                 failed_attempts: RwLock::new(HashMap::new()),
                 retry: reconnect::Ledger::new(retry),
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
+                metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::new(),
                 scan_lock: Mutex::new(()),
@@ -1141,6 +1147,30 @@ impl TunnelAgentState {
                 result
             })
             .await?;
+            if let Some(deadline) = deadline {
+                deadline.check()?;
+            }
+            let metadata_size = match &device {
+                ManagedDevice::Native(device) => {
+                    device.retained_metadata_bytes().ok_or_else(|| {
+                        crate::output::resource_decision("tunnel retained metadata size overflow")
+                    })?
+                }
+                #[cfg(test)]
+                ManagedDevice::Fake(_) => std::mem::size_of::<ManagedDevice>() + udid.len(),
+            };
+            let metadata = self
+                .inner
+                .metadata_bytes
+                .clone()
+                .try_acquire_many_owned(u32::try_from(metadata_size).map_err(|_| {
+                    crate::output::resource_decision("tunnel metadata admission overflow")
+                })?)
+                .map_err(|_| {
+                    crate::output::resource_decision(
+                        "tunnel published metadata byte limit exceeded",
+                    )
+                })?;
             let native = match device.native_handle() {
                 Some(handle) => Some(ownership.take_completed(handle)?),
                 None => {
@@ -1232,6 +1262,7 @@ impl TunnelAgentState {
                         native,
                         route_intent: route_intent.clone(),
                         _ticket: ticket.clone(),
+                        _metadata: metadata,
                     },
                 );
                 #[cfg(test)]
