@@ -150,9 +150,15 @@ fn selector(fields: u32) -> Result<DeviceQuery, c_int> {
         4 => Ok(DeviceQuery::device_name()),
         _ => {
             let mut selected = DeviceInfoFields::new();
-            if fields & 1 != 0 { selected = selected.with_product_type(); }
-            if fields & 2 != 0 { selected = selected.with_product_version(); }
-            if fields & 4 != 0 { selected = selected.with_device_name(); }
+            if fields & 1 != 0 {
+                selected = selected.with_product_type();
+            }
+            if fields & 2 != 0 {
+                selected = selected.with_product_version();
+            }
+            if fields & 4 != 0 {
+                selected = selected.with_device_name();
+            }
             DeviceQuery::root(selected).map_err(|error| error_status(IOS_ERR_CORE, &error))
         }
     }
@@ -166,7 +172,9 @@ fn limits(options: IosDeviceQueryOptions) -> Result<(DeviceQueryLimits, Duration
     DeviceQueryLimits::new(options.reply_wire_bytes, options.output_utf8_bytes)
         .and_then(|limits| limits.with_mux_frame_bytes(options.mux_frame_bytes))
         .and_then(|limits| limits.with_lockdown_body_bytes(options.lockdown_body_bytes))
-        .and_then(|limits| limits.with_metadata_limits(options.metadata_entries, options.metadata_utf8_bytes))
+        .and_then(|limits| {
+            limits.with_metadata_limits(options.metadata_entries, options.metadata_utf8_bytes)
+        })
         .map(|limits| (limits, total))
         .map_err(|error| error_status(IOS_ERR_CORE, &error))
 }
@@ -189,28 +197,52 @@ pub unsafe extern "C" fn ios_device_session_create(
     out: *mut *mut IosDeviceSession,
 ) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if !out.is_null() { *out = std::ptr::null_mut(); }
-        if out.is_null() || config.is_null() { return IOS_ERR_NULL; }
+        if !out.is_null() {
+            *out = std::ptr::null_mut();
+        }
+        if out.is_null() || config.is_null() {
+            return IOS_ERR_NULL;
+        }
         let config = *config;
         if !(1..=4).contains(&config.concurrent_operations) {
             return decision(ErrorClass::InvalidInput);
         }
-        if config.pair_record.is_null() { return IOS_ERR_NULL; }
-        if config.pair_record_len == 0 { return decision(ErrorClass::InvalidInput); }
-        if config.pair_record_len > MAX_PAIR_BYTES { return decision(ErrorClass::ResourceLimit); }
-        let udid = match input_text(config.udid, config.udid_len) { Ok(value) => value, Err(code) => return code };
-        let route = match input_text(config.endpoint, config.endpoint_len).and_then(endpoint) { Ok(value) => value, Err(code) => return code };
-        let pair = match ios_core::PairRecord::from_bytes(std::slice::from_raw_parts(config.pair_record, config.pair_record_len)) {
+        if config.pair_record.is_null() {
+            return IOS_ERR_NULL;
+        }
+        if config.pair_record_len == 0 {
+            return decision(ErrorClass::InvalidInput);
+        }
+        if config.pair_record_len > MAX_PAIR_BYTES {
+            return decision(ErrorClass::ResourceLimit);
+        }
+        let udid = match input_text(config.udid, config.udid_len) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let route = match input_text(config.endpoint, config.endpoint_len).and_then(endpoint) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let pair = match ios_core::PairRecord::from_bytes(std::slice::from_raw_parts(
+            config.pair_record,
+            config.pair_record_len,
+        )) {
             Ok(pair) => pair,
             Err(error) => return error_status(IOS_ERR_CORE, &error),
         };
-        let owner = match SessionOwner::new(ADMISSION.clone(), config.concurrent_operations as usize) {
-            Ok(owner) => owner, Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
+        let owner =
+            match SessionOwner::new(ADMISSION.clone(), config.concurrent_operations as usize) {
+                Ok(owner) => owner,
+                Err(error) => return error_status(IOS_ERR_CORE, &error),
+            };
         let device = match ExistingTrustDevice::new(udid.to_owned(), Arc::new(pair), owner, route) {
-            Ok(device) => device, Err(error) => return error_status(IOS_ERR_CORE, &error),
+            Ok(device) => device,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
         };
-        *out = Box::into_raw(Box::new(IosDeviceSession { state: Arc::new(Session { device }) }));
+        *out = Box::into_raw(Box::new(IosDeviceSession {
+            state: Arc::new(Session { device }),
+        }));
         IOS_SUCCESS
     }))
 }
@@ -223,9 +255,15 @@ pub unsafe extern "C" fn ios_device_session_retain(
     out: *mut *mut IosDeviceSession,
 ) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if !out.is_null() { *out = std::ptr::null_mut(); }
-        if out.is_null() || session.is_null() { return IOS_ERR_NULL; }
-        *out = Box::into_raw(Box::new(IosDeviceSession { state: Arc::clone(&(*session).state) }));
+        if !out.is_null() {
+            *out = std::ptr::null_mut();
+        }
+        if out.is_null() || session.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = Box::into_raw(Box::new(IosDeviceSession {
+            state: Arc::clone(&(*session).state),
+        }));
         IOS_SUCCESS
     }))
 }
@@ -239,11 +277,20 @@ pub unsafe extern "C" fn ios_device_session_close(
     cleanup_ms: u64,
 ) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if session.is_null() { return IOS_ERR_NULL; }
-        let cleanup = match duration(cleanup_ms) { Ok(value) => value, Err(code) => return code };
-        let device = &(*session).state.device;
+        if session.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let cleanup = match duration(cleanup_ms) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let session_ref = &*session;
+        let device = &session_ref.state.device;
         device.request_close();
-        let runtime = match blocking_runtime() { Ok(runtime) => runtime, Err(code) => return code };
+        let runtime = match blocking_runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
         match runtime.block_on(device.close(cleanup)) {
             Ok(()) => IOS_SUCCESS,
             Err(error) => error_status(IOS_ERR_CORE, &error),
@@ -260,18 +307,24 @@ pub unsafe extern "C" fn ios_device_session_close(
 pub unsafe extern "C" fn ios_device_session_destroy_checked(
     owner: *mut *mut IosDeviceSession,
 ) -> c_int {
-    ffi_status(AssertUnwindSafe(|| consume_pointer(owner, |pointer| {
-        drop(Box::from_raw(pointer));
-        IOS_SUCCESS
-    })))
+    ffi_status(AssertUnwindSafe(|| {
+        consume_pointer(owner, |pointer| {
+            drop(Box::from_raw(pointer));
+            IOS_SUCCESS
+        })
+    }))
 }
 
 /// # Safety
 /// Writable options must not overlap any live handle/input allocation.
 #[no_mangle]
-pub unsafe extern "C" fn ios_device_query_options_default(out: *mut IosDeviceQueryOptions) -> c_int {
+pub unsafe extern "C" fn ios_device_query_options_default(
+    out: *mut IosDeviceQueryOptions,
+) -> c_int {
     ffi_status(|| {
-        if out.is_null() { return IOS_ERR_NULL; }
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
         *out = IosDeviceQueryOptions::default();
         IOS_SUCCESS
     })
@@ -286,7 +339,11 @@ struct JsonBuffer<'a> {
     failure: Option<ErrorClass>,
 }
 
-fn output_fence(cancel: &OperationCancel, device: &ExistingTrustDevice, deadline: Instant) -> Result<(), ErrorClass> {
+fn output_fence(
+    cancel: &OperationCancel,
+    device: &ExistingTrustDevice,
+    deadline: Instant,
+) -> Result<(), ErrorClass> {
     if cancel.is_cancelled() || device.is_closed() {
         Err(ErrorClass::Cancelled)
     } else if Instant::now() >= deadline {
@@ -309,14 +366,21 @@ impl JsonBuffer<'_> {
 impl Write for JsonBuffer<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.check()?;
-        if !self.bytes.len().checked_add(bytes.len()).is_some_and(|length| length <= self.limit) {
+        if !self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .is_some_and(|length| length <= self.limit)
+        {
             self.failure = Some(ErrorClass::ResourceLimit);
             return Err(io::Error::other("finite C JSON byte budget exceeded"));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> io::Result<()> { self.check() }
+    fn flush(&mut self) -> io::Result<()> {
+        self.check()
+    }
 }
 
 fn project_json(
@@ -325,22 +389,31 @@ fn project_json(
     output: &mut JsonBuffer<'_>,
 ) -> Result<(), c_int> {
     let mut values = BTreeMap::new();
-    if fields & 1 != 0 { values.insert("ProductType", observation.product_type()); }
-    if fields & 2 != 0 { values.insert("ProductVersion", observation.product_version()); }
-    if fields & 4 != 0 { values.insert("DeviceName", observation.device_name()); }
+    if fields & 1 != 0 {
+        values.insert("ProductType", observation.product_type());
+    }
+    if fields & 2 != 0 {
+        values.insert("ProductVersion", observation.product_version());
+    }
+    if fields & 4 != 0 {
+        values.insert("DeviceName", observation.device_name());
+    }
     // Values borrow owned strings. No raw plist, unselected value or credential
     // is cloned into the C projection. Serialization is bounded before append.
     // Serialize borrowed standard values using the existing serde_json dependency
     // rather than adding a derive dependency or building a cloned JSON Value.
     macro_rules! raw {
         ($bytes:expr) => {
-            output.write_all($bytes).map_err(|_| decision(output.failure.unwrap_or(ErrorClass::Unknown)))?;
+            output
+                .write_all($bytes)
+                .map_err(|_| decision(output.failure.unwrap_or(ErrorClass::Unknown)))?;
         };
     }
     macro_rules! json {
         ($value:expr) => {
-            serde_json::to_writer(&mut *output, $value).map_err(|error| {
-                match output.failure { Some(class) => decision(class), None => error_status(IOS_ERR_CORE, &error) }
+            serde_json::to_writer(&mut *output, $value).map_err(|error| match output.failure {
+                Some(class) => decision(class),
+                None => error_status(IOS_ERR_CORE, &error),
             })?;
         };
     }
@@ -359,7 +432,9 @@ fn project_json(
     raw!(b",\"enable_session_ssl\":");
     json!(&observation.enable_session_ssl());
     raw!(b"}");
-    output.check().map_err(|_| decision(output.failure.unwrap_or(ErrorClass::Unknown)))
+    output
+        .check()
+        .map_err(|_| decision(output.failure.unwrap_or(ErrorClass::Unknown)))
 }
 
 /// # Safety
@@ -374,25 +449,48 @@ pub unsafe extern "C" fn ios_device_session_query_json(
     out: *mut *mut c_char,
 ) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if !out.is_null() { *out = std::ptr::null_mut(); }
-        if session.is_null() || options.is_null() || cancel.is_null() || out.is_null() { return IOS_ERR_NULL; }
-        let query = match selector(fields) { Ok(query) => query, Err(code) => return code };
-        let options = *options;
-        let (limits, total) = match limits(options) { Ok(value) => value, Err(code) => return code };
-        let runtime = match blocking_runtime() { Ok(runtime) => runtime, Err(code) => return code };
-        let cancel = (*cancel).cancel.clone();
-        let device = &(*session).state.device;
-        let deadline = match Instant::now().checked_add(total) { Some(deadline) => deadline, None => return decision(ErrorClass::InvalidInput) };
-        let prepared = match device.prepare_query(query, limits, OperationOptions::new(total), cancel.clone()) {
-            Ok(prepared) => prepared, Err(error) => return error_status(IOS_ERR_CORE, &error),
+        if !out.is_null() {
+            *out = std::ptr::null_mut();
+        }
+        if session.is_null() || options.is_null() || cancel.is_null() || out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let query = match selector(fields) {
+            Ok(query) => query,
+            Err(code) => return code,
         };
+        let options = *options;
+        let (limits, total) = match limits(options) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let runtime = match blocking_runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let cancel = (*cancel).cancel.clone();
+        let session_ref = &*session;
+        let device = &session_ref.state.device;
+        let deadline = match Instant::now().checked_add(total) {
+            Some(deadline) => deadline,
+            None => return decision(ErrorClass::InvalidInput),
+        };
+        let prepared =
+            match device.prepare_query(query, limits, OperationOptions::new(total), cancel.clone())
+            {
+                Ok(prepared) => prepared,
+                Err(error) => return error_status(IOS_ERR_CORE, &error),
+            };
         if let Err(class) = output_fence(&cancel, device, deadline) {
             drop(prepared); // Actual immediate lease retirement before any poll/IO.
             return decision(class);
         }
         // The job contains its original lease/immutable input snapshots. Neither
         // the C Arc, ExistingTrustDevice nor SessionOwner is cloned into it.
-        enum QueryError { Fence(ErrorClass), Native(ios_core::CoreError) }
+        enum QueryError {
+            Fence(ErrorClass),
+            Native(ios_core::CoreError),
+        }
         let observation = match runtime.block_on(async {
             // Cover time between the synchronous check and block_on's first poll.
             // PreparedDeviceQuery exposes no Core absolute deadline getter, so
@@ -408,13 +506,24 @@ pub unsafe extern "C" fn ios_device_session_query_json(
             Err(QueryError::Native(error)) => return error_status(IOS_ERR_CORE, &error),
         };
         let mut output = JsonBuffer {
-            bytes: Vec::with_capacity(options.json_bytes.min(4096)), limit: options.json_bytes,
-            deadline, cancel: &cancel, device, failure: None,
+            bytes: Vec::with_capacity(options.json_bytes.min(4096)),
+            limit: options.json_bytes,
+            deadline,
+            cancel: &cancel,
+            device,
+            failure: None,
         };
-        if let Err(code) = project_json(&observation, fields, &mut output) { return code; }
-        let text = match CString::new(output.bytes) { Ok(text) => text, Err(_) => return decision(ErrorClass::Protocol) };
+        if let Err(code) = project_json(&observation, fields, &mut output) {
+            return code;
+        }
+        let text = match CString::new(output.bytes) {
+            Ok(text) => text,
+            Err(_) => return decision(ErrorClass::Protocol),
+        };
         // CString allocation is synchronous. Recheck before publishing its owner.
-        if let Err(class) = output_fence(&cancel, device, deadline) { return decision(class); }
+        if let Err(class) = output_fence(&cancel, device, deadline) {
+            return decision(class);
+        }
         *out = text.into_raw();
         IOS_SUCCESS
     }))
@@ -425,9 +534,13 @@ pub unsafe extern "C" fn ios_device_session_query_json(
 #[no_mangle]
 pub unsafe extern "C" fn ios_operation_cancel_create(out: *mut *mut IosOperationCancel) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if out.is_null() { return IOS_ERR_NULL; }
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
         *out = std::ptr::null_mut();
-        *out = Box::into_raw(Box::new(IosOperationCancel { cancel: OperationCancel::new() }));
+        *out = Box::into_raw(Box::new(IosOperationCancel {
+            cancel: OperationCancel::new(),
+        }));
         IOS_SUCCESS
     }))
 }
@@ -440,9 +553,15 @@ pub unsafe extern "C" fn ios_operation_cancel_retain(
     out: *mut *mut IosOperationCancel,
 ) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if !out.is_null() { *out = std::ptr::null_mut(); }
-        if cancel.is_null() || out.is_null() { return IOS_ERR_NULL; }
-        *out = Box::into_raw(Box::new(IosOperationCancel { cancel: (*cancel).cancel.clone() }));
+        if !out.is_null() {
+            *out = std::ptr::null_mut();
+        }
+        if cancel.is_null() || out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = Box::into_raw(Box::new(IosOperationCancel {
+            cancel: (*cancel).cancel.clone(),
+        }));
         IOS_SUCCESS
     }))
 }
@@ -452,7 +571,9 @@ pub unsafe extern "C" fn ios_operation_cancel_retain(
 #[no_mangle]
 pub unsafe extern "C" fn ios_operation_cancel(cancel: *const IosOperationCancel) -> c_int {
     ffi_status(AssertUnwindSafe(|| {
-        if cancel.is_null() { return IOS_ERR_NULL; }
+        if cancel.is_null() {
+            return IOS_ERR_NULL;
+        }
         (*cancel).cancel.cancel();
         IOS_SUCCESS
     }))
@@ -462,9 +583,13 @@ pub unsafe extern "C" fn ios_operation_cancel(cancel: *const IosOperationCancel)
 /// # Safety
 /// Exclusive owner storage; all calls on this allocation have stopped/joined.
 #[no_mangle]
-pub unsafe extern "C" fn ios_operation_cancel_destroy_checked(owner: *mut *mut IosOperationCancel) -> c_int {
-    ffi_status(AssertUnwindSafe(|| consume_pointer(owner, |pointer| {
-        drop(Box::from_raw(pointer));
-        IOS_SUCCESS
-    })))
+pub unsafe extern "C" fn ios_operation_cancel_destroy_checked(
+    owner: *mut *mut IosOperationCancel,
+) -> c_int {
+    ffi_status(AssertUnwindSafe(|| {
+        consume_pointer(owner, |pointer| {
+            drop(Box::from_raw(pointer));
+            IOS_SUCCESS
+        })
+    }))
 }
