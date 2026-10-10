@@ -48,6 +48,8 @@ pub struct RunTestCmd {
         help = "Write the completed XCTest result as atomically-written JUnit XML (requires --wait)"
     )]
     pub junit_output: Option<PathBuf>,
+    #[command(flatten)]
+    pub workflow: crate::cmd::test_workflow::TestWorkflowArgs,
 }
 
 impl RunTestCmd {
@@ -58,6 +60,51 @@ impl RunTestCmd {
                 "--junit-output requires --wait because an early XCTest startup result is not a complete test report"
             ));
         }
+        self.workflow.preflight()?;
+        let log_guard = if let Some(log_path) = self.workflow.log_output.clone() {
+            Some(crate::cmd::test_workflow::LogCaptureGuard::start(&udid, log_path).await)
+        } else {
+            None
+        };
+        let mut app_tracker =
+            crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
+
+        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+            &udid,
+            self.workflow.install_app.as_deref(),
+            &mut app_tracker,
+        )
+        .await
+        {
+            write_junit_diagnostic(
+                self.junit_output.as_deref(),
+                &incomplete_summary(false),
+                &error,
+            )?;
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+            &udid,
+            self.workflow.install_runner.as_deref(),
+            &mut app_tracker,
+        )
+        .await
+        {
+            write_junit_diagnostic(
+                self.junit_output.as_deref(),
+                &incomplete_summary(false),
+                &error,
+            )?;
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            return Err(error);
+        }
+
         crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
 
         let device = match connect_testmanager_device(&udid).await {
@@ -68,6 +115,10 @@ impl RunTestCmd {
                     &incomplete_summary(false),
                     &error,
                 )?;
+                if let Some(guard) = log_guard {
+                    guard.stop().await;
+                }
+                app_tracker.cleanup(&udid).await;
                 return Err(error);
             }
         };
@@ -107,7 +158,7 @@ impl RunTestCmd {
         if self.wait {
             let startup = tokio::time::timeout(
                 std::time::Duration::from_secs(self.startup_timeout_secs),
-                start_test_plan_session(&udid, plan),
+                start_test_plan_session(&udid, plan.clone()),
             )
             .await;
             let mut session = match startup {
@@ -119,6 +170,10 @@ impl RunTestCmd {
                         &incomplete_summary(false),
                         &error,
                     )?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
                 Ok(Err(error)) => {
@@ -127,6 +182,10 @@ impl RunTestCmd {
                         &incomplete_summary(false),
                         &error,
                     )?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
                 Ok(Ok(session)) => session,
@@ -137,8 +196,9 @@ impl RunTestCmd {
                 session.wait_for_results(),
             )
             .await;
-            let summary = match result_wait {
+            let mut summary = match result_wait {
                 Err(elapsed) => {
+                    session.terminate().await;
                     let error =
                         xctest_wait_timeout(elapsed, "timed out waiting for XCTest results");
                     write_junit_diagnostic(
@@ -146,19 +206,79 @@ impl RunTestCmd {
                         &incomplete_summary(true),
                         &error,
                     )?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
                 Ok(Err(error)) => {
+                    session.terminate().await;
                     write_junit_diagnostic(
                         self.junit_output.as_deref(),
                         &incomplete_summary(true),
                         &error,
                     )?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
                 Ok(Ok(summary)) => summary,
             };
+            session.terminate().await;
+
+            // Rerun failed tests if requested
+            if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
+                for rerun_idx in 0..self.workflow.rerun_failed {
+                    let failed_selectors =
+                        crate::cmd::test_workflow::extract_failed_selectors(&summary);
+                    if failed_selectors.is_empty() {
+                        break;
+                    }
+                    tracing::info!(
+                        attempt = rerun_idx + 1,
+                        failed_count = failed_selectors.len(),
+                        "test workflow: rerunning failed test selectors"
+                    );
+                    let mut rerun_plan = plan.clone();
+                    rerun_plan.tests_to_run = failed_selectors;
+                    rerun_plan.tests_to_skip.clear();
+
+                    let mut rerun_session = match tokio::time::timeout(
+                        std::time::Duration::from_secs(self.startup_timeout_secs),
+                        start_test_plan_session(&udid, rerun_plan),
+                    )
+                    .await
+                    {
+                        Ok(Ok(s)) => s,
+                        _ => break,
+                    };
+
+                    let rerun_res = tokio::time::timeout(
+                        std::time::Duration::from_secs(self.result_timeout_secs),
+                        rerun_session.wait_for_results(),
+                    )
+                    .await;
+                    rerun_session.terminate().await;
+                    if let Ok(Ok(rerun_summary)) = rerun_res {
+                        crate::cmd::test_workflow::merge_rerun_summary(&mut summary, rerun_summary);
+                        if summary.failed_tests == 0 {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             write_junit_summary(self.junit_output.as_deref(), &summary)?;
+
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            app_tracker.cleanup(&udid).await;
 
             crate::output::outln!(
                 "{}",
@@ -175,6 +295,12 @@ impl RunTestCmd {
                     "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
                 }))?
             );
+            if summary.failed_tests > 0 {
+                return Err(anyhow::anyhow!(
+                    "XCTest run completed with {} failed test(s)",
+                    summary.failed_tests
+                ));
+            }
             return Ok(());
         }
 
@@ -186,6 +312,11 @@ impl RunTestCmd {
         .map_err(|error| {
             anyhow::Error::new(error).context("timed out waiting for XCTest startup")
         })??;
+
+        if let Some(guard) = log_guard {
+            guard.stop().await;
+        }
+        app_tracker.cleanup(&udid).await;
 
         crate::output::outln!(
             "{}",
@@ -1154,5 +1285,36 @@ mod tests {
 
         wait.await.unwrap().unwrap();
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn parses_runtest_workflow_options() {
+        let parsed = TestCli::parse_from([
+            "runtest",
+            "Tests.xctestrun",
+            "--install-app",
+            "test_app.ipa",
+            "--install-runner",
+            "test_runner.ipa",
+            "--log-output",
+            "syslog.log",
+            "--uninstall-on-finish",
+            "--rerun-failed",
+            "3",
+        ]);
+        assert_eq!(
+            parsed.command.workflow.install_app,
+            Some(PathBuf::from("test_app.ipa"))
+        );
+        assert_eq!(
+            parsed.command.workflow.install_runner,
+            Some(PathBuf::from("test_runner.ipa"))
+        );
+        assert_eq!(
+            parsed.command.workflow.log_output,
+            Some(PathBuf::from("syslog.log"))
+        );
+        assert!(parsed.command.workflow.uninstall_on_finish);
+        assert_eq!(parsed.command.workflow.rerun_failed, 3);
     }
 }

@@ -63,6 +63,9 @@ pub struct RunXcTestCmd {
     /// Write the completed result (or a diagnostic on failure) as JUnit XML.
     #[arg(long, value_name = "PATH")]
     pub junit_output: Option<PathBuf>,
+    /// Composable test execution workflow options (installation, logging, cleanup, rerun).
+    #[command(flatten)]
+    pub workflow: crate::cmd::test_workflow::TestWorkflowArgs,
 }
 
 impl RunXcTestCmd {
@@ -113,6 +116,8 @@ impl RunXcTestCmd {
             ));
         }
 
+        self.workflow.preflight()?;
+
         // Build and validate every user-controlled field before opening a
         // device connection. This also ensures an invalid selector cannot
         // result in a partially-started runner.
@@ -122,6 +127,43 @@ impl RunXcTestCmd {
             .checked_add(Duration::from_secs(self.timeout_secs))
             .ok_or_else(|| crate::output::input_decision("--timeout is too large"))?;
         let junit_output = self.junit_output.as_deref();
+
+        let mut app_tracker =
+            crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
+        let log_guard = if let Some(log_path) = self.workflow.log_output.clone() {
+            Some(crate::cmd::test_workflow::LogCaptureGuard::start(&udid, log_path).await)
+        } else {
+            None
+        };
+
+        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+            &udid,
+            self.workflow.install_app.as_deref(),
+            &mut app_tracker,
+        )
+        .await
+        {
+            write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
+            &udid,
+            self.workflow.install_runner.as_deref(),
+            &mut app_tracker,
+        )
+        .await
+        {
+            write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            app_tracker.cleanup(&udid).await;
+            return Err(error);
+        }
 
         let device = match until(
             deadline,
@@ -133,6 +175,10 @@ impl RunXcTestCmd {
             Ok(device) => device,
             Err(error) => {
                 write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+                if let Some(guard) = log_guard {
+                    guard.stop().await;
+                }
+                app_tracker.cleanup(&udid).await;
                 return Err(error);
             }
         };
@@ -146,6 +192,10 @@ impl RunXcTestCmd {
             Ok(runner) => runner,
             Err(error) => {
                 write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+                if let Some(guard) = log_guard {
+                    guard.stop().await;
+                }
+                app_tracker.cleanup(&udid).await;
                 return Err(error);
             }
         };
@@ -160,6 +210,10 @@ impl RunXcTestCmd {
                 Ok(target) => Some(target),
                 Err(error) => {
                     write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
             },
@@ -168,17 +222,21 @@ impl RunXcTestCmd {
         let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
         let configuration_name = launch_plan.xctest_bundle_name.clone();
 
-        let mut session = match start_test_plan_session_until(&udid, launch_plan, deadline).await {
+        let mut session = match start_test_plan_session_until(&udid, launch_plan.clone(), deadline).await {
             Ok(session) => session,
             Err(error) => {
                 write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+                if let Some(guard) = log_guard {
+                    guard.stop().await;
+                }
+                app_tracker.cleanup(&udid).await;
                 return Err(error);
             }
         };
         let startup = session.startup_result().clone();
 
         if self.wait {
-            let summary = match until(
+            let mut summary = match until(
                 deadline,
                 "waiting for XCTest results",
                 session.wait_for_results(),
@@ -192,6 +250,10 @@ impl RunXcTestCmd {
                     // in ActiveTestPlan when a deadline/cancellation occurs.
                     session.terminate().await;
                     write_junit_diagnostic(junit_output, &incomplete_summary(true), &error)?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
                     return Err(error);
                 }
             };
@@ -201,7 +263,62 @@ impl RunXcTestCmd {
             // runner into the next invocation; a race with normal process
             // exit is harmless and intentionally ignored by terminate().
             session.terminate().await;
+
+            // Rerun failed tests if requested
+            if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
+                for rerun_idx in 0..self.workflow.rerun_failed {
+                    let failed_selectors =
+                        crate::cmd::test_workflow::extract_failed_selectors(&summary);
+                    if failed_selectors.is_empty() {
+                        break;
+                    }
+                    tracing::info!(
+                        attempt = rerun_idx + 1,
+                        failed_count = failed_selectors.len(),
+                        "test workflow: rerunning failed test selectors"
+                    );
+                    let mut rerun_plan = launch_plan.clone();
+                    rerun_plan.tests_to_run = failed_selectors;
+                    rerun_plan.tests_to_skip.clear();
+
+                    let mut rerun_session = match until(
+                        deadline,
+                        "restarting test runner for failed selectors",
+                        start_test_plan_session_until(&udid, rerun_plan, deadline),
+                    )
+                    .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "test workflow: rerun startup failed");
+                            break;
+                        }
+                    };
+
+                    let rerun_res = until(
+                        deadline,
+                        "waiting for rerun results",
+                        rerun_session.wait_for_results(),
+                    )
+                    .await;
+                    rerun_session.terminate().await;
+                    if let Ok(rerun_summary) = rerun_res {
+                        crate::cmd::test_workflow::merge_rerun_summary(&mut summary, rerun_summary);
+                        if summary.failed_tests == 0 {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             write_junit_summary(junit_output, &summary)?;
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            app_tracker.cleanup(&udid).await;
+
             print_result(
                 json_output,
                 serde_json::json!({
@@ -215,7 +332,19 @@ impl RunXcTestCmd {
                     "summary": summary,
                 }),
             )?;
+
+            if summary.failed_tests > 0 {
+                return Err(anyhow::anyhow!(
+                    "XCTest run completed with {} failed test(s)",
+                    summary.failed_tests
+                ));
+            }
         } else {
+            if let Some(guard) = log_guard {
+                guard.stop().await;
+            }
+            app_tracker.cleanup(&udid).await;
+
             print_result(
                 json_output,
                 serde_json::json!({
@@ -471,5 +600,55 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("deadline expired"));
+    }
+
+    #[test]
+    fn parses_workflow_options_in_runxctest() {
+        let cmd = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--install-app",
+            "app.ipa",
+            "--install-runner",
+            "runner.ipa",
+            "--log-output",
+            "device.log",
+            "--uninstall-on-finish",
+            "--rerun-failed",
+            "2",
+        ])
+        .command;
+        assert_eq!(cmd.workflow.install_app, Some(PathBuf::from("app.ipa")));
+        assert_eq!(
+            cmd.workflow.install_runner,
+            Some(PathBuf::from("runner.ipa"))
+        );
+        assert_eq!(cmd.workflow.log_output, Some(PathBuf::from("device.log")));
+        assert!(cmd.workflow.uninstall_on_finish);
+        assert_eq!(cmd.workflow.rerun_failed, 2);
+    }
+
+    #[tokio::test]
+    async fn preflight_rejects_missing_package_in_runxctest() {
+        let cmd = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--install-app",
+            "nonexistent_package_for_test.ipa",
+        ])
+        .command;
+        let err = cmd
+            .run(Some("test-device".to_string()), true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
     }
 }
