@@ -120,7 +120,14 @@ not capture a full sysdiagnose.
 | Function / Class | Description |
 |---|---|
 | `ios_rs.list_devices()` | Returns a list of dicts with `udid`, `device_id`, and `connection_type` for each connected device. |
+| `ios_rs.open_device(udid)` | Opens a device session for application, AFC file, and syslog services. Returns a `Device` object. Supports sync and async context managers. |
 | `ios_rs.start_tunnel(udid, mode="userspace")` | Opens a CoreDevice tunnel. Returns a `Tunnel` object. |
+| `Device.product_version()` | Query iOS product version string (sync and `async_product_version()`). |
+| `Device.list_apps()` | List user-installed apps as dicts with bundle ID, display name, version, path (sync and `async_list_apps()`). |
+| `Device.list_files(path="/")` | List AFC directory contents (sync and `async_list_files()`). |
+| `Device.read_file(path, max_bytes=1048576)` | Read AFC file up to byte limit (sync and `async_read_file()`). |
+| `Device.read_syslog(max_messages=100, timeout_ms=5000)` | Stream syslog messages (sync and `async_read_syslog()`). |
+| `Device.close()` / `await Device.aclose()` | Close device handle and release underlying session. |
 | `Tunnel.server_address` | Device tunnel IPv6 address. |
 | `Tunnel.rsd_port` | Remote Service Discovery port. |
 | `Tunnel.userspace_port` | Local TCP proxy port (userspace mode only). |
@@ -129,7 +136,9 @@ not capture a full sysdiagnose.
 | `Tunnel.service_features` | Dict mapping every RSD service to advertised capability identifiers; an empty list means metadata was not advertised. |
 | `Tunnel.connect_info()` | Dict summarizing connection parameters. |
 | `Tunnel.asyncio_proxy()` | Context manager that patches `asyncio.open_connection`. |
-| `Tunnel.close()` | Requests closure; installed asyncio patches retain the resource until restored. |
+| `Tunnel.get_device()` | Return a `Device` handle sharing this tunnel's connection. |
+| `Tunnel.list_apps()` / `list_files()` / `read_file()` / `read_syslog()` | Tunnel service forwarders (sync and async equivalents). |
+| `Tunnel.close()` / `await Tunnel.aclose()` | Requests closure; installed asyncio patches retain the resource until restored. |
 
 ## Error handling
 

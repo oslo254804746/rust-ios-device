@@ -4,8 +4,8 @@
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，19个开发完成、
-11个仍缺开发交付：Q02、A03、L01–L04、F01、F02、F04–F06。
+按2026-10-09用户修订的开发口径，有效30个主任务中，21个开发完成、
+9个仍缺开发交付：Q02、L01、L02、L04、F01、F02、F04–F06。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
 具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
 
@@ -20,11 +20,11 @@
 | A03 原生有界读取 | 主机子项已验收 | `655733c`；AFC caller byte limit；Browse checked 总期限、累计 wire/帧/条目预算和失效后复用拒绝；[证据与迁移](validation/bounded-service-read-2026-10-08.md) |
 | A03 日志取消/失效 framing | 主机子项已验收 | `f077674`；取消保留已读前缀、EOF/IO/超长后 terminal 并拒绝复用；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | A03 SDK session 前置 | 主机子项已验收 | `2b906d7`；共同 owner、单一绝对期限/取消/并发、checked existing-trust session 与 owned prepared-service 观察；[证据](validation/sdk-owned-session-2026-10-09.md)。Rust device query 已另行验收；binding 接线继续 |
-| L03 manual route/跨扫描 stop | 主机子项已验收 | `8947fc1`；成功实际 route、持续 stop、原授权 revision/expiry、过期事务回滚和原 native owner；[证据](validation/manager-route-intent-2026-10-09.md)。Darwin watch/真机仍未验收 |
+| L03 Darwin剪贴板watch重连 | 主任务开发交付 | `3d90d12`；Darwin watch 错误类型分类解包、重连 episode 取消时机、事件断线抑制与恢复完整交付 |
 | F03 实际 CDP 客户端框架 | 主任务已完成 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。符合原 F03 可复现结果/缺初始化语义时的协议依据与方案要求；F04 各域及真机验收继续 |
 | A03 有限 Rust device query | 主机子项已验收 | `6f582c9`；fresh socket/DeviceID、单一总期限、wire/metadata/owned output 预算、TCP/Unix/TLS 与原 owner 退役；[证据](validation/sdk-device-query-2026-10-09.md) |
 | L04 manager/native 资源基线 | 主机子项已验收 | 同 fixture 修改前后 1/4/16、30s/104轮测量和独立60s分配器/RSS归因；[证据](validation/manager-resource-baseline-2026-10-09.md)。吞吐/文件/服务流/其他平台与真机继续 |
-| A03 Python/C 常用 SDK | Python 有限 query 静态包已冻结，C 继续独立开发；均未验收 | 设备/应用/文件/日志句柄，Python context/async 和 C ownership/error/取消/并发合同与示例集中交付 |
+| A03 Python/C 常用 SDK | 主任务开发交付 | 设备/应用/文件/日志句柄，Python context/async/Tunnel扩展，C checked释放、状态分类与双语言示例集中交付 |
 
 真机测试按用户要求留待其后续统一安排，相关任务不标完成。当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
 回归入口的 22 项真机行仍为 NOT_RUN；缺 macOS、Windows/UNC 和其他发布目标的

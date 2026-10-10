@@ -305,3 +305,59 @@ fn consumption_clears_owner_before_release_failure_or_destructor_unwind() {
         assert_eq!(last_class(), "none");
     }
 }
+
+#[test]
+fn test_device_services_null_and_closed_handling() {
+    let mut out_str: *mut c_char = std::ptr::null_mut();
+    let mut out_bytes: *mut u8 = std::ptr::null_mut();
+    let mut out_len: usize = 99;
+
+    unsafe {
+        // 1. NULL handle checks
+        assert_eq!(ios_device_list_apps_json(std::ptr::null(), &mut out_str), IOS_ERR_NULL);
+        assert_eq!(last_class(), "invalid_input");
+        assert!(out_str.is_null());
+
+        assert_eq!(ios_device_afc_list_files_json(std::ptr::null(), c"/".as_ptr(), &mut out_str), IOS_ERR_NULL);
+        assert_eq!(last_class(), "invalid_input");
+
+        assert_eq!(ios_device_afc_read_file(std::ptr::null(), c"/test".as_ptr(), 1024, &mut out_bytes, &mut out_len), IOS_ERR_NULL);
+        assert_eq!(last_class(), "invalid_input");
+        assert!(out_bytes.is_null());
+        assert_eq!(out_len, 0);
+
+        assert_eq!(ios_device_syslog_read_json(std::ptr::null(), 10, 1000, &mut out_str), IOS_ERR_NULL);
+        assert_eq!(last_class(), "invalid_input");
+
+        // 2. Closed handle (handle with None device)
+        let handle = device_handle();
+        let handle_ptr = &*handle as *const IosDeviceHandle;
+
+        assert_eq!(ios_device_list_apps_json(handle_ptr, &mut out_str), IOS_ERR_STATE);
+        assert_eq!(last_class(), "precondition");
+
+        assert_eq!(ios_device_afc_list_files_json(handle_ptr, c"/".as_ptr(), &mut out_str), IOS_ERR_STATE);
+        assert_eq!(last_class(), "precondition");
+
+        assert_eq!(ios_device_afc_read_file(handle_ptr, c"/test".as_ptr(), 1024, &mut out_bytes, &mut out_len), IOS_ERR_STATE);
+        assert_eq!(last_class(), "precondition");
+
+        assert_eq!(ios_device_syslog_read_json(handle_ptr, 10, 1000, &mut out_str), IOS_ERR_STATE);
+        assert_eq!(last_class(), "precondition");
+
+        // 3. Checked bytes free
+        assert_eq!(ios_free_bytes_checked(std::ptr::null_mut(), &mut out_len), IOS_ERR_NULL);
+        assert_eq!(ios_free_bytes_checked(&mut out_bytes, std::ptr::null_mut()), IOS_ERR_NULL);
+        assert_eq!(ios_free_bytes_checked(&mut out_bytes, &mut out_len), IOS_SUCCESS);
+        assert!(out_bytes.is_null());
+        assert_eq!(out_len, 0);
+
+        // 4. Zero messages syslog
+        assert_eq!(ios_device_syslog_read_json(handle_ptr, 0, 1000, &mut out_str), IOS_SUCCESS);
+        assert!(!out_str.is_null());
+        let json_text = CStr::from_ptr(out_str).to_str().unwrap();
+        assert_eq!(json_text, "[]");
+        assert_eq!(ios_free_string_checked(&mut out_str), IOS_SUCCESS);
+        assert!(out_str.is_null());
+    }
+}

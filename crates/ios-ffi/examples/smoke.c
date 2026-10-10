@@ -43,12 +43,20 @@ int main(int argc, char **argv) {
     int (*checked_rsd_fn)(const IosTunnel *, uint16_t *) = ios_tunnel_rsd_port_checked;
     int (*checked_proxy_fn)(const IosTunnel *, uint16_t *) = ios_tunnel_userspace_port_checked;
     int (*services_fn)(const IosTunnel *, char **) = ios_tunnel_rsd_services_json;
+    int (*list_apps_fn)(const IosDeviceHandle *, char **) = ios_device_list_apps_json;
+    int (*afc_list_fn)(const IosDeviceHandle *, const char *, char **) = ios_device_afc_list_files_json;
+    int (*afc_read_fn)(const IosDeviceHandle *, const char *, size_t, uint8_t **, size_t *) = ios_device_afc_read_file;
+    void (*free_bytes_fn)(uint8_t *, size_t) = ios_free_bytes;
+    int (*checked_free_bytes_fn)(uint8_t **, size_t *) = ios_free_bytes_checked;
+    int (*syslog_fn)(const IosDeviceHandle *, size_t, uint64_t, char **) = ios_device_syslog_read_json;
     assert(runtime_fn && list_fn && free_devices_fn && open_fn && close_device_fn &&
            version_fn && value_fn && free_string_fn && start_fn && close_tunnel_fn &&
            address_fn && rsd_fn && proxy_fn && services_fn && class_fn && checked_list_fn &&
            checked_rsd_fn && checked_proxy_fn && checked_runtime_fn &&
            checked_free_devices_fn && checked_close_device_fn &&
-           checked_free_string_fn && checked_close_tunnel_fn);
+           checked_free_string_fn && checked_close_tunnel_fn &&
+           list_apps_fn && afc_list_fn && afc_read_fn && free_bytes_fn &&
+           checked_free_bytes_fn && syslog_fn);
     assert(strcmp(class_fn(), "none") == 0);
     assert(checked_runtime_fn() == IOS_SUCCESS);
     assert(strcmp(class_fn(), "none") == 0);
@@ -120,6 +128,15 @@ int main(int argc, char **argv) {
     assert(ios_start_tunnel(NULL, IOS_TUN_USERSPACE, &tunnel) == IOS_ERR_NULL);
     assert(ios_get_product_version(NULL, &text) == IOS_ERR_NULL && text == NULL);
     assert(ios_get_lockdown_value_json(NULL, NULL, &text) == IOS_ERR_NULL);
+    assert(ios_device_list_apps_json(NULL, &text) == IOS_ERR_NULL && text == NULL);
+    assert(ios_device_afc_list_files_json(NULL, "/", &text) == IOS_ERR_NULL && text == NULL);
+    uint8_t *file_data = NULL;
+    size_t file_len = 0;
+    assert(ios_device_afc_read_file(NULL, "/test", 100, &file_data, &file_len) == IOS_ERR_NULL && file_data == NULL);
+    assert(checked_free_bytes_fn(NULL, NULL) == IOS_ERR_NULL);
+    assert(checked_free_bytes_fn(&file_data, &file_len) == IOS_SUCCESS);
+    ios_free_bytes(NULL, 0);
+    assert(ios_device_syslog_read_json(NULL, 10, 1000, &text) == IOS_ERR_NULL && text == NULL);
     assert(ios_tunnel_rsd_services_json(NULL, &text) == IOS_ERR_NULL);
     assert(ios_tunnel_server_address(NULL, address, sizeof(address)) == IOS_ERR_NULL);
     uint16_t port = UINT16_MAX;

@@ -651,6 +651,282 @@ pub unsafe extern "C" fn ios_get_lockdown_value_json(
     })
 }
 
+/// List installed user applications as newly-allocated JSON array string.
+///
+/// Returns an array of objects:
+///   [{"bundle_id": "...", "display_name": "...", "version": "...", "app_type": "...", "path": "..."}]
+/// Free the returned string with `ios_free_string` or `ios_free_string_checked`.
+///
+/// # Safety
+/// Caller must pass a valid `IosDeviceHandle` pointer and a non-null `out` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ios_device_list_apps_json(
+    handle: *const IosDeviceHandle,
+    out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(|| {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let apps = match runtime.block_on(async {
+            let stream = device
+                .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+                .await?;
+            let mut proxy = ios_core::apps::InstallationProxy::new(stream);
+            let apps = proxy.list_user_apps().await.map_err(|e| match e {
+                ios_core::apps::installation::IpError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::apps::installation::IpError::Plist(err) => ios_core::CoreError::Protocol(err.to_string()),
+                ios_core::apps::installation::IpError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+                ios_core::apps::installation::IpError::Install(msg) => ios_core::CoreError::Other(msg),
+            })?;
+            Ok::<_, ios_core::CoreError>(apps)
+        }) {
+            Ok(apps) => apps,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        let json_array: Vec<_> = apps
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "bundle_id": a.bundle_id,
+                    "display_name": a.display_name,
+                    "version": a.version,
+                    "app_type": a.app_type,
+                    "path": a.path,
+                })
+            })
+            .collect();
+        let json_text = match serde_json::to_string(&json_array) {
+            Ok(text) => text,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        write_owned_c_string(out, json_text)
+    })
+}
+
+/// List directory contents via AFC as newly-allocated JSON array of file names.
+///
+/// Free the returned string with `ios_free_string` or `ios_free_string_checked`.
+///
+/// # Safety
+/// Caller must pass a valid `IosDeviceHandle` pointer, a non-null `path` string, and a non-null `out` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ios_device_afc_list_files_json(
+    handle: *const IosDeviceHandle,
+    path: *const c_char,
+    out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(|| {
+        if out.is_null() || path.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return IOS_ERR_UTF8,
+        };
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let files = match runtime.block_on(async {
+            let stream = device
+                .connect_service(ios_core::afc::AFC_SERVICE)
+                .await?;
+            let mut client = ios_core::afc::AfcClient::new(stream);
+            let files = client.list_dir(&path_str).await.map_err(|e| match e {
+                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::afc::AfcError::Status(status) => ios_core::CoreError::Protocol(format!("AFC status: {status:?}")),
+                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+            })?;
+            Ok::<_, ios_core::CoreError>(files)
+        }) {
+            Ok(files) => files,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        let json_text = match serde_json::to_string(&files) {
+            Ok(text) => text,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        write_owned_c_string(out, json_text)
+    })
+}
+
+/// Read a file via AFC with an upper byte limit.
+///
+/// On success, allocates buffer at `*data_out` and sets `*len_out` to read bytes.
+/// Free the buffer with `ios_free_bytes` or `ios_free_bytes_checked`.
+///
+/// # Safety
+/// Caller must pass a valid `IosDeviceHandle` pointer, a non-null `path` string, and valid `data_out` and `len_out` pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ios_device_afc_read_file(
+    handle: *const IosDeviceHandle,
+    path: *const c_char,
+    max_bytes: usize,
+    data_out: *mut *mut u8,
+    len_out: *mut usize,
+) -> c_int {
+    ffi_status(|| {
+        if data_out.is_null() || len_out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *data_out = std::ptr::null_mut();
+        *len_out = 0;
+        if path.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return IOS_ERR_UTF8,
+        };
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let bytes = match runtime.block_on(async {
+            let stream = device
+                .connect_service(ios_core::afc::AFC_SERVICE)
+                .await?;
+            let mut client = ios_core::afc::AfcClient::new(stream);
+            let bytes = client.read_file_with_limit(&path_str, max_bytes).await.map_err(|e| match e {
+                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::afc::AfcError::Status(status) => ios_core::CoreError::Protocol(format!("AFC status: {status:?}")),
+                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+            })?;
+            Ok::<_, ios_core::CoreError>(bytes)
+        }) {
+            Ok(bytes) => bytes,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        let mut slice = bytes.to_vec().into_boxed_slice();
+        let ptr = slice.as_mut_ptr();
+        let len = slice.len();
+        std::mem::forget(slice);
+        *data_out = ptr;
+        *len_out = len;
+        IOS_SUCCESS
+    })
+}
+
+/// Free a byte buffer returned by `ios_device_afc_read_file`.
+///
+/// # Safety
+/// Caller must pass a buffer previously returned by `ios_device_afc_read_file` with its exact length, or null.
+#[no_mangle]
+pub unsafe extern "C" fn ios_free_bytes(data: *mut u8, len: usize) {
+    ffi_void(|| {
+        if !data.is_null() && len > 0 {
+            drop(Box::from_raw(std::slice::from_raw_parts_mut(data, len)));
+        }
+    });
+}
+
+/// Consume/free a byte buffer and reset caller pointers.
+///
+/// # Safety
+/// Caller must pass writable pointer storage.
+#[no_mangle]
+pub unsafe extern "C" fn ios_free_bytes_checked(
+    data_in_out: *mut *mut u8,
+    len_in_out: *mut usize,
+) -> c_int {
+    ffi_status(|| {
+        if data_in_out.is_null() || len_in_out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        let data = *data_in_out;
+        let len = *len_in_out;
+        *data_in_out = std::ptr::null_mut();
+        *len_in_out = 0;
+        if !data.is_null() && len > 0 {
+            drop(Box::from_raw(std::slice::from_raw_parts_mut(data, len)));
+        }
+        IOS_SUCCESS
+    })
+}
+
+/// Read log lines from syslog service as newly-allocated JSON array of strings.
+///
+/// Reads up to `max_messages` or until `timeout_ms` expires.
+/// Free the returned string with `ios_free_string` or `ios_free_string_checked`.
+///
+/// # Safety
+/// Caller must pass a valid `IosDeviceHandle` pointer and a non-null `out` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ios_device_syslog_read_json(
+    handle: *const IosDeviceHandle,
+    max_messages: usize,
+    timeout_ms: u64,
+    out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(|| {
+        if out.is_null() {
+            return IOS_ERR_NULL;
+        }
+        *out = std::ptr::null_mut();
+        if max_messages == 0 {
+            let empty = "[]".to_string();
+            return write_owned_c_string(out, empty);
+        }
+        let device = match device_from_handle(handle) {
+            Ok(device) => device,
+            Err(code) => return code,
+        };
+        let runtime = match runtime() {
+            Ok(runtime) => runtime,
+            Err(code) => return code,
+        };
+        let timeout_duration = std::time::Duration::from_millis(timeout_ms.min(86_400_000));
+        let messages = match runtime.block_on(async {
+            let stream = device
+                .connect_service(ios_core::syslog::SERVICE_NAME)
+                .await?;
+            let mut syslog = ios_core::syslog::SyslogStream::new(stream);
+            let mut collected = Vec::new();
+            let start = tokio::time::Instant::now();
+            while collected.len() < max_messages {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout_duration {
+                    break;
+                }
+                let remaining = timeout_duration - elapsed;
+                match tokio::time::timeout(remaining, syslog.next_message()).await {
+                    Ok(Ok(msg)) => collected.push(msg),
+                    Ok(Err(_io_err)) => break,
+                    Err(_elapsed) => break,
+                }
+            }
+            Ok::<_, ios_core::CoreError>(collected)
+        }) {
+            Ok(msgs) => msgs,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        let json_text = match serde_json::to_string(&messages) {
+            Ok(text) => text,
+            Err(error) => return error_status(IOS_ERR_CORE, &error),
+        };
+        write_owned_c_string(out, json_text)
+    })
+}
+
 /// Free a UTF-8 C string returned by an ios-rs string-output function.
 ///
 /// # Safety
