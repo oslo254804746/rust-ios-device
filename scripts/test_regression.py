@@ -50,7 +50,7 @@ class RegressionTests(unittest.TestCase):
     def test_failure_exit_and_contract_are_separate(self):
         report = self.session.run("host-cli-rejection", [sys.executable, "-c",
             "print('synthetic-rejection');raise SystemExit(17)"], expected_code=17,
-            contract=lambda r: r.stdout == b"synthetic-rejection\n")
+            contract=lambda r: r.stdout.replace(b"\r\n", b"\n") == b"synthetic-rejection\n")
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(report["returncode"], 17)
         self.assertGreater(report["duration_ms"], 0)
@@ -214,6 +214,75 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(json.loads(result.stderr)["reason"], "regression-run-failed")
 
+    def test_device_udid_validation(self):
+        valid_40 = "0123456789abcdef0123456789abcdef01234567"
+        valid_24 = "0123456789abcdef01234567"
+        valid_dash = "00008030-00123456789abcde"
+        self.assertEqual(regression.validate_udid(valid_40), valid_40)
+        self.assertEqual(regression.validate_udid(valid_24), valid_24)
+        self.assertEqual(regression.validate_udid(valid_dash), valid_dash)
+        for invalid in ["short", "with spaces in it", "../path/traversal", "semi;colon", "0" * 45]:
+            with self.assertRaises(ValueError):
+                regression.validate_udid(invalid)
+
+    def test_precondition_validation_missing_device(self):
+        context = regression.ExecutionContext(binary=Path("dummy"))
+        case = next(c for c in self.session.matrix["cases"] if c["id"] == "traditional-usb")
+        satisfied, reason, missing = regression.check_preconditions(case, context)
+        self.assertFalse(satisfied)
+        self.assertIn("selected-device", missing)
+
+    def test_precondition_validation_platform_mismatch(self):
+        device = regression.DeviceTarget(udid="0123456789abcdef0123456789abcdef01234567")
+        context = regression.ExecutionContext(binary=Path("dummy"), device=device)
+        if sys.platform != "darwin":
+            case = next(c for c in self.session.matrix["cases"] if c["id"] == "remoted-coexistence")
+            satisfied, reason, missing = regression.check_preconditions(case, context)
+            self.assertFalse(satisfied)
+            self.assertEqual(reason, "macos-host-required")
+
+    def test_precondition_validation_scope_gated(self):
+        device = regression.DeviceTarget(udid="0123456789abcdef0123456789abcdef01234567")
+        context = regression.ExecutionContext(
+            binary=Path("dummy"),
+            device=device,
+            scopes=frozenset(("read-scope", "binary-provenance")),
+            fixtures={"approved-ddi": Path("ddi.dmg")},
+            evidence={"protocol-evidence": True}
+        )
+        case = next(c for c in self.session.matrix["cases"] if c["id"] == "cryptex-install")
+        satisfied, reason, missing = regression.check_preconditions(case, context)
+        self.assertFalse(satisfied)
+        self.assertIn("install-scope", missing)
+
+    def test_device_adapter_execution_records_pass_and_masks_udid(self):
+        udid = "0123456789abcdef0123456789abcdef01234567"
+        device = regression.DeviceTarget(udid=udid)
+        command = [sys.executable, "-c", "import sys;print('device-info-mock');sys.exit(0)"]
+        report = self.session.run_device_case("traditional-usb", command,
+                                              contract=lambda r: b"device-info-mock" in r.stdout)
+        self.assertEqual(report["status"], "PASS")
+        self.assertTrue(report["contract"])
+        self.assertEqual(report["id"], "traditional-usb")
+        evidence = self.session.finish(fixture_provenance(), device=device)
+        self.assertTrue(evidence["real_device_executed"])
+        data = (self.session.evidence / "report.json").read_bytes()
+        self.assertNotIn(udid.encode(), data)
+
+    def test_device_adapter_records_not_run_when_prerequisites_missing(self):
+        device = regression.DeviceTarget(udid="0123456789abcdef0123456789abcdef01234567")
+        context = regression.ExecutionContext(
+            binary=Path("dummy"),
+            device=device,
+            scopes=frozenset(("read-scope", "binary-provenance"))
+        )
+        case = next(c for c in self.session.matrix["cases"] if c["id"] == "cryptex-install")
+        res = regression.execute_device_case(self.session, case, context)
+        self.assertEqual(res["status"], "NOT_RUN")
+        self.assertIn("missing_requirements", res)
+        self.assertIn("install-scope", res["missing_requirements"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

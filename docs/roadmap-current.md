@@ -4,8 +4,8 @@
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，21个开发完成、
-9个仍缺开发交付：Q02、L01、L02、L04、F01、F02、F04–F06。
+按2026-10-09用户修订的开发口径，有效30个主任务中，22个开发完成、
+8个仍缺开发交付：L01、L02、L04、F01、F02、F04–F06。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
 具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
 
@@ -25,6 +25,7 @@
 | A03 有限 Rust device query | 主机子项已验收 | `6f582c9`；fresh socket/DeviceID、单一总期限、wire/metadata/owned output 预算、TCP/Unix/TLS 与原 owner 退役；[证据](validation/sdk-device-query-2026-10-09.md) |
 | L04 manager/native 资源基线 | 主机子项已验收 | 同 fixture 修改前后 1/4/16、30s/104轮测量和独立60s分配器/RSS归因；[证据](validation/manager-resource-baseline-2026-10-09.md)。吞吐/文件/服务流/其他平台与真机继续 |
 | A03 Python/C 常用 SDK | 主任务开发交付 | 设备/应用/文件/日志句柄，Python context/async/Tunnel扩展，C checked释放、状态分类与双语言示例集中交付 |
+| Q02 真机回归矩阵执行适配器 | 主任务开发交付 | 真实设备发现、前置条件与范围校验、矩阵用例命令适配与HMAC脱敏交付；[证据](validation/real-device-regression-adapters-2026-10-10.md) |
 
 真机测试按用户要求留待其后续统一安排，相关任务不标完成。当前外部缺口：没有已指定的授权设备、iOS/USB/Wi-Fi 状态及对应 workflow fixture，
 回归入口的 22 项真机行仍为 NOT_RUN；缺 macOS、Windows/UNC 和其他发布目标的

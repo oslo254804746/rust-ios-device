@@ -15,20 +15,20 @@ RESULTS = {"PASS", "FAIL", "INCONCLUSIVE", "NOT_RUN"}
 
 def source_inventory():
     commands = {}
-    source = (ROOT / "crates/ios-cli/src/main.rs").read_text()
+    source = (ROOT / "crates/ios-cli/src/main.rs").read_text(encoding="utf-8")
     body = source.split("enum Commands {", 1)[1].split("\n}", 1)[0]
     for variant, module in re.findall(r"^    (\w+)\(cmd::(\w+)::\w+\),$", body, re.M):
         name = re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower()
         commands["cli:" + name] = f"crates/ios-cli/src/cmd/{module}.rs"
     services = {}
-    source = (ROOT / "crates/ios-core/src/services/mod.rs").read_text()
+    source = (ROOT / "crates/ios-core/src/services/mod.rs").read_text(encoding="utf-8")
     for module in re.findall(r"(?m)^pub mod (\w+);$", source):
         path = ROOT / f"crates/ios-core/src/services/{module}"
         # A flat service entry may also own a same-name submodule directory.
         entry = path.with_suffix(".rs")
         if not entry.is_file():
             entry = path / "mod.rs"
-        services["service:" + module] = str(entry.relative_to(ROOT))
+        services["service:" + module] = entry.relative_to(ROOT).as_posix()
     if not commands or not services:
         raise ValueError("source inventory is empty; update parser for new declaration syntax")
     return commands, services
