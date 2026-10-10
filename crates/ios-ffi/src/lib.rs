@@ -684,9 +684,15 @@ pub unsafe extern "C" fn ios_device_list_apps_json(
             let mut proxy = ios_core::apps::InstallationProxy::new(stream);
             let apps = proxy.list_user_apps().await.map_err(|e| match e {
                 ios_core::apps::installation::IpError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::apps::installation::IpError::Plist(err) => ios_core::CoreError::Protocol(err.to_string()),
-                ios_core::apps::installation::IpError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
-                ios_core::apps::installation::IpError::Install(msg) => ios_core::CoreError::Other(msg),
+                ios_core::apps::installation::IpError::Plist(err) => {
+                    ios_core::CoreError::Protocol(err.to_string())
+                }
+                ios_core::apps::installation::IpError::Protocol(msg) => {
+                    ios_core::CoreError::Protocol(msg)
+                }
+                ios_core::apps::installation::IpError::Install(msg) => {
+                    ios_core::CoreError::Other(msg)
+                }
             })?;
             Ok::<_, ios_core::CoreError>(apps)
         }) {
@@ -743,13 +749,13 @@ pub unsafe extern "C" fn ios_device_afc_list_files_json(
             Err(code) => return code,
         };
         let files = match runtime.block_on(async {
-            let stream = device
-                .connect_service(ios_core::afc::AFC_SERVICE)
-                .await?;
+            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
             let mut client = ios_core::afc::AfcClient::new(stream);
             let files = client.list_dir(&path_str).await.map_err(|e| match e {
                 ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::afc::AfcError::Status(status) => ios_core::CoreError::Protocol(format!("AFC status: {status:?}")),
+                ios_core::afc::AfcError::Status(status) => {
+                    ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
+                }
                 ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
             })?;
             Ok::<_, ios_core::CoreError>(files)
@@ -802,15 +808,18 @@ pub unsafe extern "C" fn ios_device_afc_read_file(
             Err(code) => return code,
         };
         let bytes = match runtime.block_on(async {
-            let stream = device
-                .connect_service(ios_core::afc::AFC_SERVICE)
-                .await?;
+            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
             let mut client = ios_core::afc::AfcClient::new(stream);
-            let bytes = client.read_file_with_limit(&path_str, max_bytes).await.map_err(|e| match e {
-                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::afc::AfcError::Status(status) => ios_core::CoreError::Protocol(format!("AFC status: {status:?}")),
-                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
-            })?;
+            let bytes = client
+                .read_file_with_limit(&path_str, max_bytes)
+                .await
+                .map_err(|e| match e {
+                    ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                    ios_core::afc::AfcError::Status(status) => {
+                        ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
+                    }
+                    ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+                })?;
             Ok::<_, ios_core::CoreError>(bytes)
         }) {
             Ok(bytes) => bytes,

@@ -554,17 +554,28 @@ pub fn handle_verified_page_method(message: &Value) -> Option<Vec<Value>> {
                 .and_then(Value::as_str)
                 .unwrap_or("about:blank");
             Some(vec![
-                reply(message, json!({"frameId": "main-frame", "loaderId": "main-loader"})),
-                event_for_request(message, "Page.frameNavigated", json!({
-                    "frame": {
-                        "id": "main-frame",
-                        "loaderId": "main-loader",
-                        "url": url,
-                        "securityOrigin": url,
-                        "mimeType": "text/html"
-                    }
-                })),
-                event_for_request(message, "Page.domContentEventFired", json!({"timestamp": 1000.0})),
+                reply(
+                    message,
+                    json!({"frameId": "main-frame", "loaderId": "main-loader"}),
+                ),
+                event_for_request(
+                    message,
+                    "Page.frameNavigated",
+                    json!({
+                        "frame": {
+                            "id": "main-frame",
+                            "loaderId": "main-loader",
+                            "url": url,
+                            "securityOrigin": url,
+                            "mimeType": "text/html"
+                        }
+                    }),
+                ),
+                event_for_request(
+                    message,
+                    "Page.domContentEventFired",
+                    json!({"timestamp": 1000.0}),
+                ),
                 event_for_request(message, "Page.loadEventFired", json!({"timestamp": 1001.0})),
             ])
         }
@@ -999,39 +1010,75 @@ mod tests {
         let session = state.register_attachment("PID:42:1").unwrap();
 
         // F04-2: Page domain
-        let frame_tree = sent(&mut state, json!({"id": 1, "sessionId": session, "method": "Page.getFrameTree"}));
+        let frame_tree = sent(
+            &mut state,
+            json!({"id": 1, "sessionId": session, "method": "Page.getFrameTree"}),
+        );
         assert_eq!(frame_tree[0]["id"], 1);
-        assert_eq!(frame_tree[0]["result"]["frameTree"]["frame"]["id"], "main-frame");
+        assert_eq!(
+            frame_tree[0]["result"]["frameTree"]["frame"]["id"],
+            "main-frame"
+        );
 
-        let navigate = sent(&mut state, json!({"id": 2, "sessionId": session, "method": "Page.navigate", "params": {"url": "https://example.test/app"}}));
+        let navigate = sent(
+            &mut state,
+            json!({"id": 2, "sessionId": session, "method": "Page.navigate", "params": {"url": "https://example.test/app"}}),
+        );
         assert_eq!(navigate[0]["result"]["frameId"], "main-frame");
         assert_eq!(navigate[1]["method"], "Page.frameNavigated");
-        assert_eq!(navigate[1]["params"]["frame"]["url"], "https://example.test/app");
+        assert_eq!(
+            navigate[1]["params"]["frame"]["url"],
+            "https://example.test/app"
+        );
         assert_eq!(navigate[2]["method"], "Page.domContentEventFired");
         assert_eq!(navigate[3]["method"], "Page.loadEventFired");
 
         // F04-3: Input & Screenshot
-        let screenshot = sent(&mut state, json!({"id": 3, "sessionId": session, "method": "Page.captureScreenshot"}));
-        assert!(screenshot[0]["result"]["data"].as_str().unwrap().starts_with("iVBORw"));
+        let screenshot = sent(
+            &mut state,
+            json!({"id": 3, "sessionId": session, "method": "Page.captureScreenshot"}),
+        );
+        assert!(screenshot[0]["result"]["data"]
+            .as_str()
+            .unwrap()
+            .starts_with("iVBORw"));
 
-        let click = sent(&mut state, json!({"id": 4, "sessionId": session, "method": "Input.dispatchMouseEvent", "params": {"type": "mousePressed", "x": 100, "y": 200, "button": "left"}}));
+        let click = sent(
+            &mut state,
+            json!({"id": 4, "sessionId": session, "method": "Input.dispatchMouseEvent", "params": {"type": "mousePressed", "x": 100, "y": 200, "button": "left"}}),
+        );
         assert_eq!(click[0]["result"], json!({}));
 
-        let key = sent(&mut state, json!({"id": 5, "sessionId": session, "method": "Input.dispatchKeyEvent", "params": {"type": "keyDown", "text": "a"}}));
+        let key = sent(
+            &mut state,
+            json!({"id": 5, "sessionId": session, "method": "Input.dispatchKeyEvent", "params": {"type": "keyDown", "text": "a"}}),
+        );
         assert_eq!(key[0]["result"], json!({}));
 
         // F04-4: Fetch domain
-        let fetch_enable = sent(&mut state, json!({"id": 6, "sessionId": session, "method": "Fetch.enable"}));
+        let fetch_enable = sent(
+            &mut state,
+            json!({"id": 6, "sessionId": session, "method": "Fetch.enable"}),
+        );
         assert_eq!(fetch_enable[0]["result"], json!({}));
 
-        let fetch_continue = sent(&mut state, json!({"id": 7, "sessionId": session, "method": "Fetch.continueRequest", "params": {"requestId": "req-1"}}));
+        let fetch_continue = sent(
+            &mut state,
+            json!({"id": 7, "sessionId": session, "method": "Fetch.continueRequest", "params": {"requestId": "req-1"}}),
+        );
         assert_eq!(fetch_continue[0]["result"], json!({}));
 
         // F04-5: Memory & Performance domains
-        let perf = sent(&mut state, json!({"id": 8, "sessionId": session, "method": "Performance.getMetrics"}));
+        let perf = sent(
+            &mut state,
+            json!({"id": 8, "sessionId": session, "method": "Performance.getMetrics"}),
+        );
         assert!(perf[0]["result"]["metrics"].as_array().unwrap().len() >= 5);
 
-        let mem = sent(&mut state, json!({"id": 9, "sessionId": session, "method": "Memory.getDOMCounters"}));
+        let mem = sent(
+            &mut state,
+            json!({"id": 9, "sessionId": session, "method": "Memory.getDOMCounters"}),
+        );
         assert_eq!(mem[0]["result"]["documents"], 1);
     }
 
@@ -1078,7 +1125,10 @@ mod tests {
         assert_eq!(console_msg.len(), 2);
         assert_eq!(console_msg[1]["method"], "Runtime.consoleAPICalled");
         assert_eq!(console_msg[1]["params"]["type"], "warn");
-        assert_eq!(console_msg[1]["params"]["args"][0]["value"], "hello from app");
+        assert_eq!(
+            console_msg[1]["params"]["args"][0]["value"],
+            "hello from app"
+        );
 
         let destroyed = adapter.context_destroyed().unwrap();
         assert_eq!(destroyed["method"], "Runtime.executionContextDestroyed");

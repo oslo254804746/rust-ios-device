@@ -71,6 +71,7 @@ impl TestWorkflowArgs {
 pub struct LogCaptureGuard {
     stop_tx: Option<oneshot::Sender<()>>,
     join_handle: Option<tokio::task::JoinHandle<()>>,
+    #[allow(dead_code)]
     destination: PathBuf,
 }
 
@@ -113,7 +114,10 @@ impl LogCaptureGuard {
             };
 
             let stream_opt = match ios_core::connect(&target_udid, connect_opts).await {
-                Ok(dev) => dev.connect_service(ios_core::syslog::SERVICE_NAME).await.ok(),
+                Ok(dev) => dev
+                    .connect_service(ios_core::syslog::SERVICE_NAME)
+                    .await
+                    .ok(),
                 Err(_) => None,
             };
 
@@ -171,6 +175,7 @@ impl LogCaptureGuard {
         }
     }
 
+    #[allow(dead_code)]
     pub fn destination(&self) -> &Path {
         &self.destination
     }

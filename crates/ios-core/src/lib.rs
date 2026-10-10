@@ -116,6 +116,7 @@ pub use device::{
 pub use discovery::{browse_mobdev2, browse_remotepairing, BonjourService, MdnsDevice};
 pub use discovery::{DeviceEvent, DeviceInfo};
 pub use error::{classify_error, CoreError, ErrorClass, OperationCancelled};
+pub use flate2;
 pub use lockdown::{
     default_pair_record_path, handshake_only_service_tls, recv_lockdown, send_lockdown,
     start_lockdown_session, start_service, start_service_preserving_errors, strip_service_tls,
@@ -234,7 +235,6 @@ pub use services::testmanager::workflow::{
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
-pub use flate2;
 #[cfg(feature = "tunnel")]
 pub use tunnel::forward::ForwardReaderCleanup;
 #[cfg(feature = "tunnel-userspace")]

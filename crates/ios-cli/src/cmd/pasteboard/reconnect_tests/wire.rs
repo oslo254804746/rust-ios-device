@@ -103,6 +103,8 @@ impl Episode {
     }
 }
 
+type NativeSlot = (Arc<TunnelHandle>, DuplexStream, Arc<native::Probe>);
+
 #[derive(Default)]
 pub(super) struct Observations {
     pub(super) selectors: Mutex<Vec<String>>,
@@ -110,7 +112,7 @@ pub(super) struct Observations {
     pub(super) policies: Mutex<Vec<(usize, DataInclusionPolicy)>>,
     pub(super) registration_before_baseline: AtomicBool,
     pub(super) device_slots: AtomicUsize,
-    pub(super) native_slots: Mutex<Vec<(Arc<TunnelHandle>, DuplexStream, Arc<native::Probe>)>>,
+    pub(super) native_slots: Mutex<Vec<NativeSlot>>,
     pub(super) peers: Mutex<Vec<tokio::task::JoinHandle<bool>>>,
     pub(super) discoveries: AtomicUsize,
     pub(super) partials: AtomicUsize,

@@ -1,4 +1,5 @@
 //! C-owner/ABI decisions; linked wire/TLS evidence is a separate explicit gate.
+#![allow(clippy::needless_borrow)]
 use super::*;
 
 #[path = "../../../ios-core/src/lockdown/checked_session/test_assets.rs"]

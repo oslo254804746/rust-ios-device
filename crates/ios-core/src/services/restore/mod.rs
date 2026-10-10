@@ -11,8 +11,14 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 mod error_mapping;
 pub mod preflight;
+pub mod state_machine;
 pub mod tss;
 use error_mapping::{native_h2, native_xpc};
+
+pub use state_machine::{
+    run_experimental_restore_loop, RestoreExecutionReport, RestoreFailure, RestoreProtocolGaps,
+    RestoreState, RestoreStateMachine, RestoreStepOutcome,
+};
 
 #[cfg(test)]
 mod native_source_contract_tests;
@@ -923,6 +929,128 @@ mod tests {
                 finished: true,
             }
         );
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn experimental_restore_loop_runs_against_simulated_service_and_produces_report() {
+        let (client, mut server) = tokio::io::duplex(32 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            perform_h2_handshake(&mut server).await;
+            perform_remote_xpc_bootstrap(&mut server).await;
+
+            // 1. DataRequestMsg
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("DataRequestMsg".into()),
+                    ),
+                    (
+                        "DataType".to_string(),
+                        XpcValue::String("SystemImageData".into()),
+                    ),
+                    ("DataPort".to_string(), XpcValue::Uint64(1234)),
+                ])),
+            )
+            .await;
+
+            // 2. ProgressMsg: Flashing
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_string(),
+                        XpcValue::String("Flashing NOR".into()),
+                    ),
+                    ("Progress".to_string(), XpcValue::Uint64(30)),
+                ])),
+            )
+            .await;
+
+            // 3. CheckpointMsg
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("CheckpointMsg".into()),
+                    ),
+                    (
+                        "Checkpoint".to_string(),
+                        XpcValue::String("nor_complete".into()),
+                    ),
+                ])),
+            )
+            .await;
+
+            // 4. ProgressMsg: Verifying
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    (
+                        "MsgType".to_string(),
+                        XpcValue::String("ProgressMsg".into()),
+                    ),
+                    (
+                        "Operation".to_string(),
+                        XpcValue::String("Verifying RootFS".into()),
+                    ),
+                    ("Progress".to_string(), XpcValue::Uint64(90)),
+                ])),
+            )
+            .await;
+
+            // 5. StatusMsg: Success
+            write_xpc_response(
+                &mut server,
+                1,
+                XpcValue::Dictionary(IndexMap::from([
+                    ("MsgType".to_string(), XpcValue::String("StatusMsg".into())),
+                    ("Status".to_string(), XpcValue::Uint64(0)),
+                    (
+                        "Log".to_string(),
+                        XpcValue::String("Restore finished successfully".into()),
+                    ),
+                ])),
+            )
+            .await;
+        });
+
+        let mut client = RestoreServiceClient::connect(client).await.unwrap();
+        let sm = state_machine::RestoreStateMachine::new();
+        let report = state_machine::run_experimental_restore_loop(
+            &mut client,
+            sm,
+            |_dt, _port| Ok(vec![1, 2, 3, 4]),
+            std::time::Duration::from_secs(5),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.final_state, state_machine::RestoreState::Completed);
+        assert_eq!(report.progress_percent, Some(90));
+        assert_eq!(report.checkpoints_reached, ["nor_complete"]);
+        assert_eq!(report.data_requests_served, ["SystemImageData"]);
+        assert!(report
+            .operations_observed
+            .contains(&"Flashing NOR".to_string()));
+        assert!(report
+            .operations_observed
+            .contains(&"Verifying RootFS".to_string()));
+        assert!(!report.protocol_gaps.tss_live_signing.is_empty());
 
         server_task.await.unwrap();
     }

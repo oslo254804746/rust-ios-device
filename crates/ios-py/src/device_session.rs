@@ -611,6 +611,7 @@ impl DeviceSession {
     /// Reserve/start immediately; awaiting drives observation, never transport.
     #[pyo3(signature = (field, *, timeout = 15.0, max_reply_wire_bytes = 1048576,
         max_output_utf8_bytes = 4096, cancel = None, cleanup_timeout = 5.0))]
+    #[allow(clippy::too_many_arguments)]
     fn query_async(
         &self,
         py: Python<'_>,

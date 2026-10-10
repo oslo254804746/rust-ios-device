@@ -42,8 +42,13 @@ async fn spawn_test_server(
 
 #[tokio::test]
 async fn web_viewer_index_and_stream_lifecycle() {
-    let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::Debug, Permission::Connect])]);
-    let access = AccessControl::from_file(fixture.path.clone()).await.unwrap();
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
     let state = WebViewerState::new(access);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
@@ -61,7 +66,9 @@ async fn web_viewer_index_and_stream_lifecycle() {
 
     // 2. Push frame
     let fake_png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-    state.push_frame("image/png", fake_png.clone(), 1170, 2532, 1000).await;
+    state
+        .push_frame("image/png", fake_png.clone(), 1170, 2532, 1000)
+        .await;
     {
         let guard = state.frame.read().await;
         assert!(guard.is_some());
@@ -85,7 +92,9 @@ async fn web_viewer_index_and_stream_lifecycle() {
 #[tokio::test]
 async fn web_viewer_auth_rejection() {
     let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::Debug])]);
-    let access = AccessControl::from_file(fixture.path.clone()).await.unwrap();
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
     let state = WebViewerState::new(access);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
@@ -118,8 +127,13 @@ async fn web_viewer_auth_rejection() {
 
 #[tokio::test]
 async fn web_viewer_input_endpoints_dispatch_actions() {
-    let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::Debug, Permission::Connect])]);
-    let access = AccessControl::from_file(fixture.path.clone()).await.unwrap();
+    let fixture = PolicyFixture::new(vec![grant(
+        TOKEN,
+        vec![Permission::Debug, Permission::Connect],
+    )]);
+    let access = AccessControl::from_file(fixture.path.clone())
+        .await
+        .unwrap();
     let state = WebViewerState::new(access);
     let (base, handle, shutdown) = spawn_test_server(state.clone()).await;
     let client = test_client();
@@ -140,7 +154,14 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
     assert_eq!(ptr_resp.status(), StatusCode::OK);
 
     let action = rx.recv().await.unwrap();
-    assert_eq!(action, VncInputAction::Touch { contact: true, x: 100, y: 200 });
+    assert_eq!(
+        action,
+        VncInputAction::Touch {
+            contact: true,
+            x: 100,
+            y: 200
+        }
+    );
 
     // 2. Button input (Home)
     let btn_resp = client
@@ -155,9 +176,23 @@ async fn web_viewer_input_endpoints_dispatch_actions() {
     assert_eq!(btn_resp.status(), StatusCode::OK);
 
     let down_act = rx.recv().await.unwrap();
-    assert_eq!(down_act, VncInputAction::Button { page: BTN_HOME.0, code: BTN_HOME.1, down: true });
+    assert_eq!(
+        down_act,
+        VncInputAction::Button {
+            page: BTN_HOME.0,
+            code: BTN_HOME.1,
+            down: true
+        }
+    );
     let up_act = rx.recv().await.unwrap();
-    assert_eq!(up_act, VncInputAction::Button { page: BTN_HOME.0, code: BTN_HOME.1, down: false });
+    assert_eq!(
+        up_act,
+        VncInputAction::Button {
+            page: BTN_HOME.0,
+            code: BTN_HOME.1,
+            down: false
+        }
+    );
 
     // 3. Orientation input
     let ori_resp = client
@@ -234,15 +269,32 @@ async fn vnc_server_handshake_and_pointer_cleanup() {
 
     // 5. Send PointerEvent down (left click bit 0)
     // msg_type=5, button_mask=1, x=50, y=80
-    client.write_all(&[RFB_CLIENT_POINTER_EVENT, 1, 0, 50, 0, 80]).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_POINTER_EVENT, 1, 0, 50, 0, 80])
+        .await
+        .unwrap();
 
     let act1 = rx.recv().await.unwrap();
-    assert_eq!(act1, VncInputAction::Touch { contact: true, x: 50, y: 80 });
+    assert_eq!(
+        act1,
+        VncInputAction::Touch {
+            contact: true,
+            x: 50,
+            y: 80
+        }
+    );
 
     // 6. Abruptly drop client -> verify disconnect cleanup releases contact!
     drop(client);
     let act_cleanup = rx.recv().await.unwrap();
-    assert_eq!(act_cleanup, VncInputAction::Touch { contact: false, x: 50, y: 80 });
+    assert_eq!(
+        act_cleanup,
+        VncInputAction::Touch {
+            contact: false,
+            x: 50,
+            y: 80
+        }
+    );
 
     state.stop();
     let _ = server_task.await;
@@ -278,26 +330,66 @@ async fn vnc_server_hotkeys_and_buttons_mapping() {
 
     // 1. Send Ctrl down (keysym 0xFFE3)
     // KeyEvent: type=4, down=1, pad=0,0, keysym=0x0000FFE3
-    client.write_all(&[RFB_CLIENT_KEY_EVENT, 1, 0, 0, 0, 0, 0xFF, 0xE3]).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_KEY_EVENT, 1, 0, 0, 0, 0, 0xFF, 0xE3])
+        .await
+        .unwrap();
 
     // 2. Send 'h' down (keysym 0x68) while Ctrl is held -> Home button trigger!
-    client.write_all(&[RFB_CLIENT_KEY_EVENT, 1, 0, 0, 0, 0, 0, 0x68]).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_KEY_EVENT, 1, 0, 0, 0, 0, 0, 0x68])
+        .await
+        .unwrap();
 
     let act_down = rx.recv().await.unwrap();
-    assert_eq!(act_down, VncInputAction::Button { page: BTN_HOME.0, code: BTN_HOME.1, down: true });
+    assert_eq!(
+        act_down,
+        VncInputAction::Button {
+            page: BTN_HOME.0,
+            code: BTN_HOME.1,
+            down: true
+        }
+    );
     let act_up = rx.recv().await.unwrap();
-    assert_eq!(act_up, VncInputAction::Button { page: BTN_HOME.0, code: BTN_HOME.1, down: false });
+    assert_eq!(
+        act_up,
+        VncInputAction::Button {
+            page: BTN_HOME.0,
+            code: BTN_HOME.1,
+            down: false
+        }
+    );
 
     // 3. Send Middle click (button_mask bit 1 = 2) -> Lock button trigger!
     // PointerEvent: type=5, mask=2, x=0, y=0
-    client.write_all(&[RFB_CLIENT_POINTER_EVENT, 2, 0, 0, 0, 0]).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_POINTER_EVENT, 2, 0, 0, 0, 0])
+        .await
+        .unwrap();
     let lock_down = rx.recv().await.unwrap();
-    assert_eq!(lock_down, VncInputAction::Button { page: BTN_LOCK.0, code: BTN_LOCK.1, down: true });
+    assert_eq!(
+        lock_down,
+        VncInputAction::Button {
+            page: BTN_LOCK.0,
+            code: BTN_LOCK.1,
+            down: true
+        }
+    );
 
     // Release middle click
-    client.write_all(&[RFB_CLIENT_POINTER_EVENT, 0, 0, 0, 0, 0]).await.unwrap();
+    client
+        .write_all(&[RFB_CLIENT_POINTER_EVENT, 0, 0, 0, 0, 0])
+        .await
+        .unwrap();
     let lock_up = rx.recv().await.unwrap();
-    assert_eq!(lock_up, VncInputAction::Button { page: BTN_LOCK.0, code: BTN_LOCK.1, down: false });
+    assert_eq!(
+        lock_up,
+        VncInputAction::Button {
+            page: BTN_LOCK.0,
+            code: BTN_LOCK.1,
+            down: false
+        }
+    );
 
     state.stop();
 }
@@ -355,5 +447,8 @@ fn extended_clipboard_compression_round_trip() {
 
     let body = &encoded[8..];
     let parsed = parse_extended_cut_text(body).unwrap();
-    assert_eq!(parsed.text.as_deref(), Some("Testing Extended Clipboard with \n CRLF and special chars!"));
+    assert_eq!(
+        parsed.text.as_deref(),
+        Some("Testing Extended Clipboard with \n CRLF and special chars!")
+    );
 }

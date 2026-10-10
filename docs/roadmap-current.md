@@ -1,16 +1,16 @@
 # 当前工程调度
 
-更新：2026-10-09。任务定义与最终验收以
+更新：2026-10-10。任务定义与最终验收以
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，29个开发完成、
-1个仍缺开发交付：F06。
+按2026-10-10用户修订的开发口径，有效30个主任务中，全部 30 个已开发完成交付（0 项剩余）。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
-具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
+代码/工具交付全集见[待开发清单](development-backlog.md)。
 
 | 工作项 | 当前状态 | 交付边界和证据 |
 | --- | --- | --- |
+| F06 设备恢复预检与实验恢复状态机 | 主任务开发交付 | 预检CLI、多更新器隔离连接与超时聚合、实验恢复状态机、Nonce漂移防护、固件分块限额与协议缺口显式声明；[证据](validation/recovery-preflight-and-executor-2026-10-10.md) |
 | F05 查看器、VNC 与双向剪贴板 | 主任务开发交付 | HTML5 Web 查看器、RFB 3.8 VNC 服务端、触控/指针/键盘映射、双向剪贴板与回环抑制；[证据](validation/viewer-vnc-clipboard-2026-10-10.md) |
 | F04 CDP 多领域协议拓展与适配 | 主任务开发交付 | Runtime/Page/Input/Fetch/Memory/Performance 协议域、JsContextCdpAdapter 扩展与 unverified/side-effect 严格拦截；[证据](validation/cdp-domain-protocols-2026-10-10.md) |
 | L01/L02 完整扫描控制 | 主机子项已验收 | 原提交 `5e521e5`；[扫描控制](validation/tunnel-scan-control-2026-10-08.md) |

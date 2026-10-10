@@ -1,18 +1,18 @@
 //! RFB 3.8 (VNC) server for streaming device display and handling touch/pointer/keyboard input (F05-2).
 #![allow(dead_code)]
 
+use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use anyhow::{bail, ensure, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use super::clipboard::{
-    self, decode_classic_cut_text, encode_extended_caps, parse_extended_cut_text,
-    ClipboardPayload, ClipboardSource, ClipboardSyncState, ENC_EXTENDED_CLIPBOARD,
+    self, decode_classic_cut_text, encode_extended_caps, parse_extended_cut_text, ClipboardPayload,
+    ClipboardSource, ClipboardSyncState, ENC_EXTENDED_CLIPBOARD,
 };
 
 pub const RFB_VERSION_3_8: &[u8; 12] = b"RFB 003.008\n";
@@ -78,23 +78,10 @@ impl FramebufferImage {
 /// Dispatched input actions from VNC clients
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VncInputAction {
-    Touch {
-        contact: bool,
-        x: u16,
-        y: u16,
-    },
-    Button {
-        page: u32,
-        code: u32,
-        down: bool,
-    },
-    Key {
-        usage: u8,
-        down: bool,
-    },
-    Rotate {
-        direction: &'static str,
-    },
+    Touch { contact: bool, x: u16, y: u16 },
+    Button { page: u32, code: u32, down: bool },
+    Key { usage: u8, down: bool },
+    Rotate { direction: &'static str },
     ClipboardOut(ClipboardPayload),
 }
 
@@ -193,25 +180,34 @@ impl VncSession {
             self.touch_pressed = false;
         }
         for usage in self.active_keys.drain() {
-            let _ = self.state.input_tx.send(VncInputAction::Key {
-                usage,
-                down: false,
-            });
+            let _ = self
+                .state
+                .input_tx
+                .send(VncInputAction::Key { usage, down: false });
         }
     }
 
     async fn handle_session(&mut self) -> Result<()> {
         // 1. Handshake ProtocolVersion
-        self.stream.write_all(RFB_VERSION_3_8).await.context("write version")?;
+        self.stream
+            .write_all(RFB_VERSION_3_8)
+            .await
+            .context("write version")?;
         let mut client_version = [0u8; 12];
-        self.stream.read_exact(&mut client_version).await.context("read version")?;
+        self.stream
+            .read_exact(&mut client_version)
+            .await
+            .context("read version")?;
 
         // 2. Security Handshake
         if let Some(pwd) = &self.state.password {
             // Require VNC Authentication
             self.stream.write_all(&[1, RFB_SECURITY_VNC_AUTH]).await?;
             let chosen_sec = self.stream.read_u8().await?;
-            ensure!(chosen_sec == RFB_SECURITY_VNC_AUTH, "client rejected VNC authentication");
+            ensure!(
+                chosen_sec == RFB_SECURITY_VNC_AUTH,
+                "client rejected VNC authentication"
+            );
 
             // Generate 16-byte random challenge
             let mut challenge = [0u8; 16];
@@ -235,7 +231,10 @@ impl VncSession {
             // None
             self.stream.write_all(&[1, RFB_SECURITY_NONE]).await?;
             let chosen_sec = self.stream.read_u8().await?;
-            ensure!(chosen_sec == RFB_SECURITY_NONE, "client rejected security None");
+            ensure!(
+                chosen_sec == RFB_SECURITY_NONE,
+                "client rejected security None"
+            );
             self.stream.write_u32(0).await?; // SecurityResult: OK
         }
 
@@ -284,7 +283,8 @@ impl VncSession {
                     let y = self.stream.read_u16().await?;
                     let w = self.stream.read_u16().await?;
                     let h = self.stream.read_u16().await?;
-                    self.handle_framebuffer_request(incremental, x, y, w, h).await?;
+                    self.handle_framebuffer_request(incremental, x, y, w, h)
+                        .await?;
                 }
                 RFB_CLIENT_KEY_EVENT => {
                     let down_flag = self.stream.read_u8().await? != 0;
@@ -320,12 +320,7 @@ impl VncSession {
         msg.extend_from_slice(&width.to_be_bytes());
         msg.extend_from_slice(&height.to_be_bytes());
         // Pixel format: 32 bpp, 24 depth, big_endian=0, true_color=1, red_max=255, green_max=255, blue_max=255, red_shift=16, green_shift=8, blue_shift=0, 3 pad
-        msg.extend_from_slice(&[
-            32, 24, 0, 1,
-            0, 255, 0, 255, 0, 255,
-            16, 8, 0,
-            0, 0, 0,
-        ]);
+        msg.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
         msg.extend_from_slice(&(name.len() as u32).to_be_bytes());
         msg.extend_from_slice(name);
         self.stream.write_all(&msg).await?;
@@ -347,7 +342,9 @@ impl VncSession {
 
         if width == 0 || height == 0 || data.is_empty() {
             // Send empty frame with 0 rectangles
-            self.stream.write_all(&[RFB_SERVER_FRAMEBUFFER_UPDATE, 0, 0, 0]).await?;
+            self.stream
+                .write_all(&[RFB_SERVER_FRAMEBUFFER_UPDATE, 0, 0, 0])
+                .await?;
             return Ok(());
         }
 
@@ -392,8 +389,16 @@ impl VncSession {
             };
             if let Some((page, code)) = button {
                 // Send button click (down then up)
-                let _ = self.state.input_tx.send(VncInputAction::Button { page, code, down: true });
-                let _ = self.state.input_tx.send(VncInputAction::Button { page, code, down: false });
+                let _ = self.state.input_tx.send(VncInputAction::Button {
+                    page,
+                    code,
+                    down: true,
+                });
+                let _ = self.state.input_tx.send(VncInputAction::Button {
+                    page,
+                    code,
+                    down: false,
+                });
                 return Ok(());
             }
         }
@@ -410,9 +415,7 @@ impl VncSession {
             0xFF52 => Some(HID_USAGE_UP),
             0xFF53 => Some(HID_USAGE_RIGHT),
             0xFF54 => Some(HID_USAGE_DOWN),
-            ascii if (0x20..=0x7E).contains(&ascii) => {
-                ascii_to_hid_usage(ascii as u8)
-            }
+            ascii if (0x20..=0x7E).contains(&ascii) => ascii_to_hid_usage(ascii as u8),
             _ => None,
         };
 
@@ -422,10 +425,10 @@ impl VncSession {
             } else {
                 self.active_keys.remove(&code);
             }
-            let _ = self.state.input_tx.send(VncInputAction::Key {
-                usage: code,
-                down,
-            });
+            let _ = self
+                .state
+                .input_tx
+                .send(VncInputAction::Key { usage: code, down });
         }
 
         Ok(())
@@ -497,7 +500,10 @@ impl VncSession {
         if length > 0 {
             // Classic text (Latin-1)
             let len = length as usize;
-            ensure!(len <= clipboard::MAX_TEXT_BYTES, "classic cut text too long");
+            ensure!(
+                len <= clipboard::MAX_TEXT_BYTES,
+                "classic cut text too long"
+            );
             let mut buf = vec![0u8; len];
             self.stream.read_exact(&mut buf).await?;
             let text = decode_classic_cut_text(&buf)?;
@@ -505,12 +511,18 @@ impl VncSession {
 
             let mut sync = self.state.clipboard_sync.lock().await;
             if sync.should_sync(&payload, ClipboardSource::Host) {
-                let _ = self.state.input_tx.send(VncInputAction::ClipboardOut(payload));
+                let _ = self
+                    .state
+                    .input_tx
+                    .send(VncInputAction::ClipboardOut(payload));
             }
         } else if length < 0 {
             // Extended clipboard
             let len = (-length) as usize;
-            ensure!(len <= clipboard::MAX_IMAGE_BYTES, "extended cut text too long");
+            ensure!(
+                len <= clipboard::MAX_IMAGE_BYTES,
+                "extended cut text too long"
+            );
             let mut buf = vec![0u8; len];
             self.stream.read_exact(&mut buf).await?;
             let ext = parse_extended_cut_text(&buf)?;
@@ -519,19 +531,28 @@ impl VncSession {
                 let payload = ClipboardPayload::Text(text);
                 let mut sync = self.state.clipboard_sync.lock().await;
                 if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self.state.input_tx.send(VncInputAction::ClipboardOut(payload));
+                    let _ = self
+                        .state
+                        .input_tx
+                        .send(VncInputAction::ClipboardOut(payload));
                 }
             } else if let Some(png) = ext.image_png {
                 let payload = ClipboardPayload::ImagePng(png);
                 let mut sync = self.state.clipboard_sync.lock().await;
                 if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self.state.input_tx.send(VncInputAction::ClipboardOut(payload));
+                    let _ = self
+                        .state
+                        .input_tx
+                        .send(VncInputAction::ClipboardOut(payload));
                 }
             } else if let Some(jpeg) = ext.image_jpeg {
                 let payload = ClipboardPayload::ImageJpeg(jpeg);
                 let mut sync = self.state.clipboard_sync.lock().await;
                 if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self.state.input_tx.send(VncInputAction::ClipboardOut(payload));
+                    let _ = self
+                        .state
+                        .input_tx
+                        .send(VncInputAction::ClipboardOut(payload));
                 }
             }
         }

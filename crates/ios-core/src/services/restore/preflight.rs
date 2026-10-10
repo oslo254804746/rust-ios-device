@@ -203,6 +203,134 @@ pub const UPDATERS: &[&str] = &[
     "T200", "Rose", "SE", "Vinyl", "Savage", "Centauri", "Baseband",
 ];
 
+/// Default updaters queried during normal-mode preflight.
+/// Baseband is excluded by default because normal-mode preflight fails on-device and its firmware is ~200 MB.
+pub const DEFAULT_PREFLIGHT_UPDATERS: &[&str] =
+    &["T200", "Rose", "SE", "Vinyl", "Savage", "Centauri"];
+
+/// Record of an updater that failed during device-side preflight collection.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PreflightUpdaterFailure {
+    pub updater: String,
+    pub error: String,
+}
+
+/// Merged result of device-side preflight collection across updaters.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CollectedPreflightRequests {
+    pub device_info: std::collections::BTreeMap<String, serde_json::Value>,
+    pub device_info_tags: std::collections::BTreeMap<String, serde_json::Value>,
+    pub device_info_requests: std::collections::BTreeMap<String, serde_json::Value>,
+    pub device_info_failures: std::collections::BTreeMap<String, serde_json::Value>,
+    pub ap_parameters: Option<serde_json::Value>,
+    pub failed_updaters: Vec<PreflightUpdaterFailure>,
+}
+
+/// Ask the device to build the TSS requests of each peripheral updater for an IPSW.
+///
+/// Restoreserviced consumes and aborts the connection after each `getdevicesidepreflightinfo`
+/// command, so the caller provides a connection factory `connect_service` that yields a fresh
+/// `RestoreServiceClient` for each updater.
+pub async fn collect_device_side_preflight_requests<R, F, S, Fut>(
+    ipsw: &mut IpswPreflight<R>,
+    updaters: &[&str],
+    mut connect_service: F,
+    per_updater_timeout: std::time::Duration,
+) -> Result<CollectedPreflightRequests, RestoreError>
+where
+    R: Read + Seek,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<super::RestoreServiceClient<S>, RestoreError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut collected = CollectedPreflightRequests::default();
+    for updater in updaters {
+        let payload = match ipsw.payload_for_updater(updater) {
+            Ok(payload) => payload,
+            Err(err) => {
+                collected.failed_updaters.push(PreflightUpdaterFailure {
+                    updater: (*updater).to_string(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+
+        let client = match tokio::time::timeout(per_updater_timeout, connect_service()).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(err)) => {
+                collected.failed_updaters.push(PreflightUpdaterFailure {
+                    updater: (*updater).to_string(),
+                    error: format!("connect failed: {err}"),
+                });
+                continue;
+            }
+            Err(_) => {
+                collected.failed_updaters.push(PreflightUpdaterFailure {
+                    updater: (*updater).to_string(),
+                    error: format!("connect timed out after {:?}", per_updater_timeout),
+                });
+                continue;
+            }
+        };
+
+        let info = match tokio::time::timeout(
+            per_updater_timeout,
+            client.get_device_side_preflight_info(Some(payload)),
+        )
+        .await
+        {
+            Ok(Ok(info)) => info,
+            Ok(Err(err)) => {
+                collected.failed_updaters.push(PreflightUpdaterFailure {
+                    updater: (*updater).to_string(),
+                    error: format!("preflight request failed: {err}"),
+                });
+                continue;
+            }
+            Err(_) => {
+                collected.failed_updaters.push(PreflightUpdaterFailure {
+                    updater: (*updater).to_string(),
+                    error: format!(
+                        "preflight request timed out after {:?}",
+                        per_updater_timeout
+                    ),
+                });
+                continue;
+            }
+        };
+
+        for (src_key, target_map) in [
+            ("DeviceInfo", &mut collected.device_info),
+            ("DeviceInfoTags", &mut collected.device_info_tags),
+            ("DeviceInfoRequests", &mut collected.device_info_requests),
+        ] {
+            if let Some(XpcValue::Dictionary(dict)) = info.get(src_key) {
+                if let Some(updater_val) = dict.get(*updater) {
+                    target_map.insert(
+                        (*updater).to_string(),
+                        super::xpc_value_to_json(updater_val),
+                    );
+                }
+            }
+        }
+
+        if let Some(XpcValue::Dictionary(failures)) = info.get("DeviceInfoFailures") {
+            for (k, v) in failures {
+                collected
+                    .device_info_failures
+                    .insert(k.clone(), super::xpc_value_to_json(v));
+            }
+        }
+
+        if let Some(ap) = info.get("ApParameters") {
+            collected.ap_parameters = Some(super::xpc_value_to_json(ap));
+        }
+    }
+
+    Ok(collected)
+}
+
 fn prefixes(updater: &str) -> Option<&'static [&'static str]> {
     match updater {
         "T200" => Some(&["BMU,"]),
@@ -551,6 +679,73 @@ mod tests {
             .collect();
         assert_eq!(empty.len(), 2);
         assert_eq!(empty[0].as_dict().unwrap()["DataSize"], XpcValue::Int64(0));
+    }
+
+    #[tokio::test]
+    async fn collect_device_side_preflight_requests_merges_updaters_and_handles_failures() {
+        let info = plist::Dictionary::from_iter([
+            ("DeviceClass", plist::Value::String("d63ap".into())),
+            ("RestoreBehavior", plist::Value::String("Update".into())),
+        ]);
+        let identity = plist::Dictionary::from_iter([
+            ("ApBoardID", plist::Value::Integer(16.into())),
+            ("ApChipID", plist::Value::Integer(32.into())),
+            ("Info", plist::Value::Dictionary(info)),
+            (
+                "Manifest",
+                plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                    "Rap,RTKitOS",
+                    entry("Firmware/rose.bin"),
+                )])),
+            ),
+        ]);
+        let manifest = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "BuildIdentities",
+            plist::Value::Array(vec![plist::Value::Dictionary(identity)]),
+        )]));
+        let mut manifest_bytes = Vec::new();
+        plist::to_writer_xml(&mut manifest_bytes, &manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("BuildManifest.plist", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("Firmware/rose.bin", options).unwrap();
+        writer.write_all(b"rose").unwrap();
+
+        let mut ipsw = IpswPreflight::open(
+            Cursor::new(writer.finish().unwrap().into_inner()),
+            IpswIdentitySelector {
+                board_id: 16,
+                chip_id: 32,
+                device_class: "d63ap",
+                restore_behavior: "Update",
+            },
+        )
+        .unwrap();
+
+        let updaters = ["Rose", "T200"];
+        let collected = collect_device_side_preflight_requests(
+            &mut ipsw,
+            &updaters,
+            || async {
+                Err::<super::super::RestoreServiceClient<tokio::io::DuplexStream>, _>(
+                    RestoreError::Protocol("simulated connect error for Rose".into()),
+                )
+            },
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(collected.failed_updaters.len(), 2);
+        assert_eq!(collected.failed_updaters[0].updater, "Rose");
+        assert!(collected.failed_updaters[0]
+            .error
+            .contains("simulated connect error"));
+        assert_eq!(collected.failed_updaters[1].updater, "T200");
+        assert!(collected.failed_updaters[1]
+            .error
+            .contains("no firmware paths found"));
     }
 
     fn entry(path: &str) -> plist::Value {

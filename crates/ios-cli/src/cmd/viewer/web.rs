@@ -18,7 +18,9 @@ use super::clipboard::{
     ClipboardPayload, ClipboardSource, ClipboardSyncState, MAX_IMAGE_BYTES, MAX_TEXT_BYTES,
     UTI_JPEG, UTI_PLAIN_TEXT, UTI_PNG,
 };
-use super::vnc::{VncInputAction, BTN_HOME, BTN_LOCK, BTN_MUTE, BTN_SIRI, BTN_VOL_DOWN, BTN_VOL_UP};
+use super::vnc::{
+    VncInputAction, BTN_HOME, BTN_LOCK, BTN_MUTE, BTN_SIRI, BTN_VOL_DOWN, BTN_VOL_UP,
+};
 use crate::access::{AccessControl, Permission};
 
 pub const MAX_WEB_FRAME_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
@@ -56,9 +58,19 @@ impl WebViewerState {
         })
     }
 
-    pub async fn push_frame(&self, mime: &'static str, data: Vec<u8>, width: u32, height: u32, ts: u64) {
+    pub async fn push_frame(
+        &self,
+        mime: &'static str,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        ts: u64,
+    ) {
         if data.len() > MAX_WEB_FRAME_BYTES {
-            tracing::warn!(len = data.len(), "frame exceeds web viewer memory budget; dropped");
+            tracing::warn!(
+                len = data.len(),
+                "frame exceeds web viewer memory budget; dropped"
+            );
             return;
         }
         let frame = WebFrame {
@@ -94,13 +106,19 @@ pub fn create_viewer_router(state: Arc<WebViewerState>) -> Router {
         .route("/input/button", post(handle_button))
         .route("/input/key", post(handle_key))
         .route("/orientation", post(handle_orientation))
-        .route("/clipboard", get(handle_get_clipboard).post(handle_set_clipboard))
+        .route(
+            "/clipboard",
+            get(handle_get_clipboard).post(handle_set_clipboard),
+        )
         .with_state(state)
 }
 
 fn check_auth(headers: &HeaderMap, access: &AccessControl) -> Result<(), StatusCode> {
-    let principal = access.authenticate(headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    if principal.has_permission(Permission::Debug) || principal.has_permission(Permission::Connect) {
+    let principal = access
+        .authenticate(headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if principal.has_permission(Permission::Debug) || principal.has_permission(Permission::Connect)
+    {
         Ok(())
     } else {
         Err(StatusCode::FORBIDDEN)
@@ -143,10 +161,18 @@ async fn handle_stream(
                     frame.data.len(),
                     frame.timestamp_ms
                 );
-                if tx.send(Ok::<_, std::io::Error>(bytes::Bytes::from(part_header))).await.is_err() {
+                if tx
+                    .send(Ok::<_, std::io::Error>(bytes::Bytes::from(part_header)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
-                if tx.send(Ok(bytes::Bytes::copy_from_slice(&frame.data))).await.is_err() {
+                if tx
+                    .send(Ok(bytes::Bytes::copy_from_slice(&frame.data)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 if tx.send(Ok(bytes::Bytes::from("\r\n"))).await.is_err() {
@@ -235,9 +261,17 @@ async fn handle_button(
         _ => return Err(StatusCode::BAD_REQUEST),
     };
 
-    let _ = state.input_tx.send(VncInputAction::Button { page, code, down: true });
+    let _ = state.input_tx.send(VncInputAction::Button {
+        page,
+        code,
+        down: true,
+    });
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _ = state.input_tx.send(VncInputAction::Button { page, code, down: false });
+    let _ = state.input_tx.send(VncInputAction::Button {
+        page,
+        code,
+        down: false,
+    });
     Ok(StatusCode::OK)
 }
 
@@ -276,7 +310,9 @@ async fn handle_orientation(
         "right" => "right",
         _ => return Err(StatusCode::BAD_REQUEST),
     };
-    let _ = state.input_tx.send(VncInputAction::Rotate { direction: dir });
+    let _ = state
+        .input_tx
+        .send(VncInputAction::Rotate { direction: dir });
     Ok(StatusCode::OK)
 }
 
@@ -293,11 +329,7 @@ async fn handle_get_clipboard(
 ) -> Result<Json<ClipboardResponse>, StatusCode> {
     check_auth(&headers, &state.access)?;
     let sync = state.clipboard_sync.lock().await;
-    let text = if let Some(hash) = sync.last_synced_hash() {
-        Some(hex::encode(hash))
-    } else {
-        None
-    };
+    let text = sync.last_synced_hash().map(hex::encode);
     Ok(Json(ClipboardResponse {
         text,
         uti: UTI_PLAIN_TEXT.to_string(),

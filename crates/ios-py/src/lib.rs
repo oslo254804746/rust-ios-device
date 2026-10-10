@@ -355,9 +355,7 @@ fn execute_list_files(
 ) -> Result<Result<Vec<String>, ios_core::CoreError>, &'static std::io::Error> {
     with_runtime(&RUNTIME, |rt| {
         rt.block_on(async {
-            let stream = device
-                .connect_service(ios_core::afc::AFC_SERVICE)
-                .await?;
+            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
             let mut client = ios_core::afc::AfcClient::new(stream);
             let files = client.list_dir(path).await.map_err(|e| match e {
                 ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
@@ -386,17 +384,21 @@ fn execute_read_file(
 ) -> Result<Result<Vec<u8>, ios_core::CoreError>, &'static std::io::Error> {
     with_runtime(&RUNTIME, |rt| {
         rt.block_on(async {
-            let stream = device
-                .connect_service(ios_core::afc::AFC_SERVICE)
-                .await?;
+            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
             let mut client = ios_core::afc::AfcClient::new(stream);
-            let bytes = client.read_file_with_limit(path, max_bytes).await.map_err(|e| match e {
-                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::afc::AfcError::Status(status) => {
-                    ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
-                }
-                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
-            })?;
+            let bytes =
+                client
+                    .read_file_with_limit(path, max_bytes)
+                    .await
+                    .map_err(|e| match e {
+                        ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                        ios_core::afc::AfcError::Status(status) => {
+                            ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
+                        }
+                        ios_core::afc::AfcError::Protocol(msg) => {
+                            ios_core::CoreError::Protocol(msg)
+                        }
+                    })?;
             Ok::<_, ios_core::CoreError>(bytes.to_vec())
         })
     })
@@ -582,7 +584,9 @@ impl Device {
             "ios_rs_async_device.py",
             "ios_rs_async_device",
         )?;
-        helpers.getattr("device_aexit")?.call1((slf, exc_type, exc, tb))
+        helpers
+            .getattr("device_aexit")?
+            .call1((slf, exc_type, exc, tb))
     }
 
     /// Query product version from the device.
@@ -708,7 +712,9 @@ impl Device {
             "ios_rs_async_device",
         )?;
         let method = slf.getattr("read_file")?;
-        helpers.getattr("run_async")?.call1((method, path, max_bytes))
+        helpers
+            .getattr("run_async")?
+            .call1((method, path, max_bytes))
     }
 
     /// Async adapter for read_syslog.
@@ -726,7 +732,9 @@ impl Device {
             "ios_rs_async_device",
         )?;
         let method = slf.getattr("read_syslog")?;
-        helpers.getattr("run_async")?.call1((method, max_messages, timeout_ms))
+        helpers
+            .getattr("run_async")?
+            .call1((method, max_messages, timeout_ms))
     }
 }
 
@@ -917,7 +925,8 @@ impl Tunnel {
         timeout_ms: u64,
         py: Python<'_>,
     ) -> PyResult<PyObject> {
-        self.get_device(py)?.read_syslog(max_messages, timeout_ms, py)
+        self.get_device(py)?
+            .read_syslog(max_messages, timeout_ms, py)
     }
 
     /// Async adapter for close.
@@ -978,7 +987,9 @@ impl Tunnel {
             "ios_rs_async_device",
         )?;
         let method = slf.getattr("read_file")?;
-        helpers.getattr("run_async")?.call1((method, path, max_bytes))
+        helpers
+            .getattr("run_async")?
+            .call1((method, path, max_bytes))
     }
 
     /// Async adapter for read_syslog.
@@ -996,7 +1007,9 @@ impl Tunnel {
             "ios_rs_async_device",
         )?;
         let method = slf.getattr("read_syslog")?;
-        helpers.getattr("run_async")?.call1((method, max_messages, timeout_ms))
+        helpers
+            .getattr("run_async")?
+            .call1((method, max_messages, timeout_ms))
     }
 }
 
@@ -1665,19 +1678,27 @@ mod tests {
             assert_eq!(phase, "device access");
             assert_eq!(effects, "not_started");
 
-            let err = device.list_files("/", py).expect_err("closed device should fail");
+            let err = device
+                .list_files("/", py)
+                .expect_err("closed device should fail");
             let (_, c, _, _) = metadata(py, &err);
             assert_eq!(c, "precondition");
 
-            let err = device.read_file("/test", 100, py).expect_err("closed device should fail");
+            let err = device
+                .read_file("/test", 100, py)
+                .expect_err("closed device should fail");
             let (_, c, _, _) = metadata(py, &err);
             assert_eq!(c, "precondition");
 
-            let err = device.read_syslog(10, 1000, py).expect_err("closed device should fail");
+            let err = device
+                .read_syslog(10, 1000, py)
+                .expect_err("closed device should fail");
             let (_, c, _, _) = metadata(py, &err);
             assert_eq!(c, "precondition");
 
-            let err = device.product_version(py).expect_err("closed device should fail");
+            let err = device
+                .product_version(py)
+                .expect_err("closed device should fail");
             let (_, c, _, _) = metadata(py, &err);
             assert_eq!(c, "precondition");
         });
@@ -1719,7 +1740,8 @@ async def test_acm(d):
 
 asyncio.run(test_acm(dev))
 "#;
-            py.run_bound(code, None, Some(&locals)).expect("run async context manager");
+            py.run_bound(code, None, Some(&locals))
+                .expect("run async context manager");
             assert!(py_dev2.borrow().closed());
         });
     }
@@ -1739,18 +1761,65 @@ asyncio.run(test_acm(dev))
             let py_list = apps_to_pylist(py, &[app_info]).expect("apps to pylist");
             let list_bound = py_list.bind(py).downcast::<PyList>().expect("is list");
             assert_eq!(list_bound.len(), 1);
-            let item = list_bound.get_item(0).unwrap().downcast::<PyDict>().unwrap().clone();
-            assert_eq!(item.get_item("bundle_id").unwrap().unwrap().extract::<String>().unwrap(), "com.example.test");
-            assert_eq!(item.get_item("display_name").unwrap().unwrap().extract::<String>().unwrap(), "TestApp");
-            assert_eq!(item.get_item("version").unwrap().unwrap().extract::<String>().unwrap(), "1.0.0");
-            assert_eq!(item.get_item("app_type").unwrap().unwrap().extract::<String>().unwrap(), "User");
+            let item = list_bound
+                .get_item(0)
+                .unwrap()
+                .downcast::<PyDict>()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                item.get_item("bundle_id")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "com.example.test"
+            );
+            assert_eq!(
+                item.get_item("display_name")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "TestApp"
+            );
+            assert_eq!(
+                item.get_item("version")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "1.0.0"
+            );
+            assert_eq!(
+                item.get_item("app_type")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "User"
+            );
 
             let files = vec!["Photos".to_string(), "DCIM".to_string()];
             let py_files = files_to_pylist(py, &files).expect("files to pylist");
             let files_bound = py_files.bind(py).downcast::<PyList>().expect("is list");
             assert_eq!(files_bound.len(), 2);
-            assert_eq!(files_bound.get_item(0).unwrap().extract::<String>().unwrap(), "Photos");
-            assert_eq!(files_bound.get_item(1).unwrap().extract::<String>().unwrap(), "DCIM");
+            assert_eq!(
+                files_bound
+                    .get_item(0)
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "Photos"
+            );
+            assert_eq!(
+                files_bound
+                    .get_item(1)
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "DCIM"
+            );
         });
     }
 }
