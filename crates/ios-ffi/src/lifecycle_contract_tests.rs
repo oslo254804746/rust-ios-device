@@ -22,6 +22,7 @@ fn seed_timeout() {
 fn device_handle() -> Box<IosDeviceHandle> {
     Box::new(IosDeviceHandle {
         _device: Mutex::new(None),
+        services: None,
     })
 }
 
@@ -397,15 +398,12 @@ fn test_device_services_null_and_closed_handling() {
         assert!(out_bytes.is_null());
         assert_eq!(out_len, 0);
 
-        // 4. Zero messages syslog
+        // 4. Zero messages cannot bypass a closed/absent checked owner.
         assert_eq!(
             ios_device_syslog_read_json(handle_ptr, 0, 1000, &mut out_str),
-            IOS_SUCCESS
+            IOS_ERR_STATE
         );
-        assert!(!out_str.is_null());
-        let json_text = CStr::from_ptr(out_str).to_str().unwrap();
-        assert_eq!(json_text, "[]");
-        assert_eq!(ios_free_string_checked(&mut out_str), IOS_SUCCESS);
         assert!(out_str.is_null());
+        assert_eq!(last_class(), "precondition");
     }
 }

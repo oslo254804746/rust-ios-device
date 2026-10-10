@@ -1,0 +1,331 @@
+//! Device adapters use the same protocol clients as the standalone HID/pasteboard commands.
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+use anyhow::{ensure, Context, Result};
+use ios_core::display::{DisplayServiceClient, MediaStreamOptions, MediaStreamSession};
+use ios_core::hid::{
+    ButtonState, IndigoHidServiceClient, KeyboardUsage, TouchCoordinate, TouchPhase,
+    UniversalHidServiceClient, DEFAULT_KEYBOARD_SERVICE_ID, DEFAULT_TOUCHSCREEN_SERVICE_ID,
+};
+use ios_core::pasteboard::{DataInclusionPolicy, PasteboardClient, PasteboardLimits};
+
+use super::clipboard::{ClipboardPayload, MAX_TEXT_BYTES};
+use super::vnc::VncInputAction;
+
+pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+pub const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub struct DeviceInput {
+    udid: String,
+    device: Option<crate::cmd::tunnel::NativeConnection>,
+    pasteboard_device: Option<crate::cmd::tunnel::NativeConnection>,
+    indigo_device: Option<crate::cmd::tunnel::NativeConnection>,
+    native: crate::cmd::tunnel::NativeScope,
+    universal: Option<UniversalHidServiceClient>,
+    media: Option<MediaStreamSession>,
+    indigo: Option<IndigoHidServiceClient>,
+    pasteboard: Option<PasteboardClient>,
+    keyboard: Option<u64>,
+    keys: BTreeSet<u8>,
+    buttons: BTreeSet<(u16, u16)>,
+    contact: Option<TouchCoordinate>,
+    pub dimensions: (u16, u16),
+    pub share_clipboard: bool,
+}
+
+impl DeviceInput {
+    pub fn new(
+        udid: String,
+        share_clipboard: bool,
+        native: crate::cmd::tunnel::NativeScope,
+    ) -> Self {
+        Self {
+            udid,
+            device: None,
+            pasteboard_device: None,
+            indigo_device: None,
+            native,
+            universal: None,
+            media: None,
+            indigo: None,
+            pasteboard: None,
+            keyboard: None,
+            keys: BTreeSet::new(),
+            buttons: BTreeSet::new(),
+            contact: None,
+            dimensions: (0, 0),
+            share_clipboard,
+        }
+    }
+
+    async fn universal(&mut self) -> Result<()> {
+        if self.universal.is_some() {
+            return Ok(());
+        }
+        let device = self
+            .native
+            .connect(&self.udid, ios_core::TunMode::Kernel)
+            .await
+            .context(
+                "viewer HID requires a kernel tunnel for the UDP authorization side channel",
+            )?;
+        let sender_ip = device
+            .server_address()
+            .context("missing tunnel device address")?
+            .to_owned();
+        let receiver_ip = device
+            .client_address()
+            .context("missing tunnel host address")?
+            .to_owned();
+        let (xpc, metadata) = device
+            .connect_xpc_service_with_metadata(ios_core::display::SERVICE_NAME)
+            .await?;
+        let display = DisplayServiceClient::from_resolved_metadata(xpc, &metadata)?;
+        self.media = Some(
+            MediaStreamSession::start_video(
+                display,
+                MediaStreamOptions {
+                    sender_ip,
+                    receiver_ip,
+                    ..MediaStreamOptions::default()
+                },
+            )
+            .await?,
+        );
+        self.media.as_mut().expect("media installed").spawn_drain();
+        self.device = Some(device);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (xpc, metadata) = self
+            .device
+            .as_ref()
+            .expect("device installed")
+            .connect_xpc_service_with_metadata(ios_core::hid::UNIVERSAL_SERVICE_NAME)
+            .await?;
+        self.universal = Some(UniversalHidServiceClient::from_resolved_metadata(
+            xpc, &metadata,
+        )?);
+        Ok(())
+    }
+
+    async fn pasteboard(&mut self) -> Result<&mut PasteboardClient> {
+        ensure!(
+            self.share_clipboard,
+            "clipboard sharing is disabled; use --share-clipboard"
+        );
+        if self.pasteboard.is_none() {
+            let device = self
+                .native
+                .connect(&self.udid, ios_core::TunMode::Userspace)
+                .await?;
+            let xpc = device
+                .connect_xpc_service(ios_core::pasteboard::SERVICE_NAME)
+                .await?;
+            self.pasteboard = Some(PasteboardClient::with_timeout_and_limits(
+                xpc,
+                OPERATION_TIMEOUT,
+                PasteboardLimits {
+                    max_items: 8,
+                    max_representations: 24,
+                    max_data_bytes: MAX_TEXT_BYTES,
+                    max_metadata_bytes: 16 * 1024,
+                    max_events: 8,
+                },
+            ));
+            self.pasteboard_device = Some(device);
+        }
+        Ok(self.pasteboard.as_mut().expect("pasteboard installed"))
+    }
+
+    pub async fn read_clipboard(&mut self) -> Result<Option<ClipboardPayload>> {
+        let snapshot = self
+            .pasteboard()
+            .await?
+            .get_snapshot(
+                ios_core::pasteboard::GENERAL_PASTEBOARD,
+                DataInclusionPolicy::Threshold(MAX_TEXT_BYTES as i64),
+            )
+            .await?;
+        let value = snapshot.text().map(ClipboardPayload::Text);
+        if let Some(value) = &value {
+            value.validate_bounds()?;
+        }
+        Ok(value)
+    }
+
+    pub async fn apply(&mut self, action: &VncInputAction) -> Result<()> {
+        match action {
+            VncInputAction::Touch { contact, x, y } => {
+                ensure!(
+                    self.dimensions.0 > 0 && self.dimensions.1 > 0,
+                    "no device frame available for pointer coordinates"
+                );
+                ensure!(
+                    *x < self.dimensions.0 && *y < self.dimensions.1,
+                    "pointer outside device frame"
+                );
+                let coordinate = TouchCoordinate::new(
+                    *x as f64 / self.dimensions.0.saturating_sub(1).max(1) as f64,
+                    *y as f64 / self.dimensions.1.saturating_sub(1).max(1) as f64,
+                )?;
+                let phase = match (*contact, self.contact.is_some()) {
+                    (true, false) => TouchPhase::Down,
+                    (true, true) => TouchPhase::Move,
+                    (false, true) => TouchPhase::Up,
+                    (false, false) => return Ok(()),
+                };
+                self.universal().await?;
+                // Retain a potentially sent down/move until its release is acknowledged.
+                if *contact {
+                    self.contact = Some(coordinate);
+                }
+                self.universal
+                    .as_mut()
+                    .expect("HID installed")
+                    .send_touchscreen(phase, coordinate, DEFAULT_TOUCHSCREEN_SERVICE_ID, None)
+                    .await?;
+                self.contact = contact.then_some(coordinate);
+            }
+            VncInputAction::Key { usage, down } => {
+                let key = KeyboardUsage::new(*usage).context("unsupported HID usage")?;
+                self.universal().await?;
+                if self.keyboard.is_none() {
+                    self.keyboard = Some(
+                        self.universal
+                            .as_mut()
+                            .expect("HID installed")
+                            .create_keyboard_service(
+                                DEFAULT_KEYBOARD_SERVICE_ID,
+                                "ios viewer keyboard",
+                                "rust-ios-device",
+                                0x05ac,
+                                0x0250,
+                            )
+                            .await?,
+                    );
+                }
+                let mut keys = self.keys.clone();
+                if *down {
+                    keys.insert(key.value());
+                } else {
+                    keys.remove(&key.value());
+                }
+                ensure!(keys.len() <= 240, "HID keyboard bitmap exceeds 240 usages");
+                let usages: Vec<_> = keys
+                    .iter()
+                    .copied()
+                    .map(|usage| KeyboardUsage::new(usage).expect("validated key"))
+                    .collect();
+                self.keys.extend(keys.iter().copied());
+                self.universal
+                    .as_mut()
+                    .expect("HID installed")
+                    .send_keyboard(self.keyboard.expect("keyboard installed"), &usages, None)
+                    .await?;
+                self.keys = keys;
+            }
+            VncInputAction::Button { page, code, down } => {
+                let (page, code) = (u16::try_from(*page)?, u16::try_from(*code)?);
+                if self.indigo.is_none() {
+                    let device = self
+                        .native
+                        .connect(&self.udid, ios_core::TunMode::Userspace)
+                        .await?;
+                    let (xpc, metadata) = device
+                        .connect_xpc_service_with_metadata(ios_core::hid::INDIGO_SERVICE_NAME)
+                        .await?;
+                    self.indigo = Some(IndigoHidServiceClient::from_resolved_metadata(
+                        xpc, &metadata,
+                    )?);
+                    self.indigo_device = Some(device);
+                }
+                if *down {
+                    self.buttons.insert((page, code));
+                }
+                self.indigo
+                    .as_mut()
+                    .expect("Indigo installed")
+                    .send_button(
+                        page,
+                        code,
+                        if *down {
+                            ButtonState::Down
+                        } else {
+                            ButtonState::Up
+                        },
+                    )
+                    .await?;
+                if *down {
+                    self.buttons.insert((page, code));
+                } else {
+                    self.buttons.remove(&(page, code));
+                }
+            }
+            VncInputAction::Rotate { .. } => {
+                anyhow::bail!("CoreDevice orientation injection has no verified protocol mapping")
+            }
+            VncInputAction::ClipboardOut(payload) => {
+                payload.validate_bounds()?;
+                let ClipboardPayload::Text(text) = payload else {
+                    anyhow::bail!(
+                        "image clipboard formats lack verified device interoperability evidence"
+                    );
+                };
+                self.pasteboard().await?.set_text(text).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        let mut failures = Vec::new();
+        if let Some(client) = &mut self.universal {
+            if let Some(coordinate) = self.contact.take() {
+                if let Err(error) = client
+                    .send_touchscreen(
+                        TouchPhase::Cancel,
+                        coordinate,
+                        DEFAULT_TOUCHSCREEN_SERVICE_ID,
+                        None,
+                    )
+                    .await
+                {
+                    failures.push(anyhow::Error::new(error));
+                }
+            }
+            if let Some(service) = self.keyboard.take() {
+                if let Err(error) = client.send_keyboard(service, &[], None).await {
+                    failures.push(error.into());
+                }
+            }
+        }
+        if let Some(client) = &mut self.indigo {
+            for (page, code) in std::mem::take(&mut self.buttons) {
+                if let Err(error) = client.send_button(page, code, ButtonState::Canceled).await {
+                    failures.push(error.into());
+                }
+            }
+        }
+        self.universal = None;
+        self.keys.clear();
+        self.contact = None;
+        self.indigo = None;
+        self.pasteboard = None;
+        if let Some(mut media) = self.media.take() {
+            if let Err(error) = media.stop(CLEANUP_TIMEOUT).await {
+                failures.push(error.into());
+            }
+        }
+        self.device = None;
+        self.pasteboard_device = None;
+        self.indigo_device = None;
+        if let Err(error) = self.native.collect(CLEANUP_TIMEOUT).await {
+            failures.push(error);
+        }
+        let mut result = Ok(());
+        for error in failures {
+            result = super::finish(result, Err(error));
+        }
+        result
+    }
+}

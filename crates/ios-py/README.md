@@ -125,8 +125,8 @@ not capture a full sysdiagnose.
 | `Device.product_version()` | Query iOS product version string (sync and `async_product_version()`). |
 | `Device.list_apps()` | List user-installed apps as dicts with bundle ID, display name, version, path (sync and `async_list_apps()`). |
 | `Device.list_files(path="/")` | List AFC directory contents (sync and `async_list_files()`). |
-| `Device.read_file(path, max_bytes=1048576)` | Read AFC file up to byte limit (sync and `async_read_file()`). |
-| `Device.read_syslog(max_messages=100, timeout_ms=5000)` | Stream syslog messages (sync and `async_read_syslog()`). |
+| `Device.read_file(path, max_bytes=1048576)` | Read a complete AFC file, rejecting excess bytes (sync and `async_read_file()`). |
+| `Device.read_syslog(max_messages=100, timeout_ms=5000)` | Read the requested message count under a total, returning partial evidence on errors (sync and `async_read_syslog()`). |
 | `Device.close()` / `await Device.aclose()` | Close device handle and release underlying session. |
 | `Tunnel.server_address` | Device tunnel IPv6 address. |
 | `Tunnel.rsd_port` | Remote Service Discovery port. |
@@ -323,7 +323,10 @@ subject to the additional global cap.
 Native failures use safe exception text and the existing metadata fields
 `ios_error_schema_version`, `ios_error_class`, `ios_error_phase`, and
 `ios_error_effects`. Native InvalidInput uses ValueError; other native classes use
-RuntimeError. Python argument type conversions retain ordinary TypeError or
+RuntimeError. This includes malformed caller-supplied local pairing bytes:
+their original plist parsing source is retained as invalid_input before any
+device IO. A malformed on-wire reply is protocol and remains RuntimeError.
+Python argument type conversions retain ordinary TypeError or
 OverflowError. Async cancellation-cleanup timeout uses TimeoutError as above.
 
 [finite_device_query.py](examples/finite_device_query.py) is an executable caller
@@ -341,3 +344,73 @@ strict native TCP EOF, and original peer/thread joins before behavioral checks.
 It never substitutes Python results, builds Rust, or certifies physical device,
 application, file, or log functionality. Keep the existing installed API/error
 smoke and host runtime/tunnel tests alongside this finite-query validator.
+
+## Checked application, AFC and log services
+
+`DeviceSession.service(operation, ...)` and `service_async(operation, ...)`
+share the finite-query owner, admission pool, cancellation token, original-task
+receipts and close path. Operations are `apps`, `files`, `read_file`, and `logs`.
+The SDK opens fresh owned usbmux/Lockdown/service sockets for each admitted job;
+discovery, StartSession, optional TLS, StartService, service Connect, requests
+and replies all use the same native absolute total. No pairing, installation,
+file write, tunnel creation, mutation replay or automatic reconnect occurs.
+
+```python
+async with ios_rs.DeviceSession(udid, pair_bytes, endpoint, concurrency=1) as dev:
+    apps = await dev.service_async("apps", timeout=5.0)
+    names = await dev.service_async("files", path="/", timeout=5.0)
+    content = await dev.service_async("read_file", path="/owned-file",
+                                      max_bytes=65536, output_bytes=65536)
+```
+
+Defaults: 15s total, 16MiB cumulative decrypted service reply bytes, 1MiB
+retained text/data, 10,000 entries and 1MiB AFC frame bodies. The finite
+control-plane reply budget is separately 16MiB, with 1MiB mux/Lockdown frames
+and bounded discovery metadata. Native validation caps service bytes at 64MiB,
+retained output at 16MiB, entries at 100,000 and AFC bodies at 4MiB. Each AFC
+body is admitted before allocation. Browse retains its existing four-MiB
+plist and 1,000-frame hard bounds. Syslog retains its one-MiB raw-message
+ceiling. These are logical byte/task limits, not parser temporary-allocation,
+TLS wire, CPU or RSS bounds.
+
+File reads require complete EOF evidence and never return truncated success.
+`max_bytes=0` permits only an empty file. Logs require the requested message
+count; EOF, native IO, deadline, cancellation and output refusal are errors.
+The exception's `ios_partial_result` owns already completed/admitted messages,
+including when an async Future is cancelled. The primary typed native error
+and original source remain in the job receipt. A raw UnexpectedEof retains
+the A02 `io` category; it is not guessed to be a device disconnect.
+
+`Future.cancel()` cancels the actual Core token and waits for the original
+native JoinHandle through the same receipt adapter as queries. Close seals
+query/service admission, cancels active jobs and waits for their original
+joins. A cleanup timeout retains the closed owner and outstanding receipts for
+a subsequent close. Destroying local sockets does not acknowledge remote
+FileClose or Apple teardown.
+
+The convenience `open_device` handle uses the same checked implementation;
+apps/files have a 15s total and fixed default limits, file reads use their
+caller ceiling, and `read_syslog(timeout_ms=...)` includes connection setup.
+Local pairing-file loading precedes the checked operation, is bounded to a
+regular file of at most 1MiB, and cannot physically cancel stalled filesystem
+IO. Use explicit `DeviceSession` bytes/endpoints to keep file loading outside
+the operation. `Device.aclose()` uses the real close receipt and supports
+repeated close. Tunnel forwarding shares one checked service owner;
+RSD-only routes are explicitly unsupported by this usbmux profile. The
+existing userspace proxy bridge remains available for RSD clients.
+
+[finite_device_services.py](examples/finite_device_services.py) demonstrates
+the configured interface. With a newly installed wheel, run:
+
+```sh
+python -I scripts/sdk-device-services.py
+```
+
+The gate drives the actual installed extension through owned protocol peers:
+service TLS, apps data, exact AFC data/hash/empty EOF, budget refusals,
+totals/cancellation in four stages, shared query-service conflict, active
+close, partial-log errors and original peer/thread EOF/joins. It adds native
+async cancellation/admission checks and a Windows isolated-trust public
+`Device.aclose()` case. Other platforms' local-trust case stays NOT_RUN;
+configured peers are portable. These host fixtures do not certify physical
+apps/AFC/syslog or other release platforms.

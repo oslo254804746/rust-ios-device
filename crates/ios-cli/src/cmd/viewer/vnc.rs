@@ -1,14 +1,18 @@
 //! RFB 3.8 (VNC) server for streaming device display and handling touch/pointer/keyboard input (F05-2).
 #![allow(dead_code)]
 
+use super::web::{DeviceCommand, DeviceRequest};
+use crate::access::Principal;
 use anyhow::{bail, ensure, Context, Result};
+use des::cipher::{BlockEncrypt, KeyInit};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
 
 use super::clipboard::{
     self, decode_classic_cut_text, encode_extended_caps, parse_extended_cut_text, ClipboardPayload,
@@ -88,21 +92,36 @@ pub enum VncInputAction {
 /// Shared state for the VNC streaming server
 pub struct VncServerState {
     pub frame: RwLock<FramebufferImage>,
-    pub input_tx: broadcast::Sender<VncInputAction>,
+    pub backend: mpsc::Sender<DeviceRequest>,
     pub clipboard_sync: Mutex<ClipboardSyncState>,
     pub password: Option<String>,
     pub stopped: AtomicBool,
+    pub stop_signal: watch::Sender<bool>,
+    pub frame_changed: Notify,
+    pub principal: Principal,
+    pub share_clipboard: bool,
 }
 
 impl VncServerState {
-    pub fn new(initial_width: u16, initial_height: u16, password: Option<String>) -> Arc<Self> {
-        let (input_tx, _) = broadcast::channel(512);
+    pub fn new(
+        initial_width: u16,
+        initial_height: u16,
+        password: Option<String>,
+        principal: Principal,
+        share_clipboard: bool,
+        backend: mpsc::Sender<DeviceRequest>,
+    ) -> Arc<Self> {
+        let (stop_signal, _) = watch::channel(false);
         Arc::new(Self {
             frame: RwLock::new(FramebufferImage::new_empty(initial_width, initial_height)),
-            input_tx,
+            backend,
             clipboard_sync: Mutex::new(ClipboardSyncState::new()),
             password,
             stopped: AtomicBool::new(false),
+            stop_signal,
+            frame_changed: Notify::new(),
+            principal,
+            share_clipboard,
         })
     }
 
@@ -112,6 +131,42 @@ impl VncServerState {
         guard.height = height;
         guard.bgra_data = Arc::new(bgra);
         guard.timestamp_ms = ts;
+        self.frame_changed.notify_waiters();
+    }
+
+    pub async fn update_decoded_frame(&self, frame: super::media::DecodedFrame) {
+        *self.frame.write().await = FramebufferImage {
+            width: frame.width,
+            height: frame.height,
+            bgra_data: frame.bgra,
+            timestamp_ms: frame.timestamp_ms,
+        };
+        self.frame_changed.notify_waiters();
+    }
+
+    async fn request(&self, command: DeviceCommand) -> Result<Option<ClipboardPayload>> {
+        let (reply, response) = oneshot::channel();
+        self.backend
+            .try_send(DeviceRequest {
+                command,
+                principal: self.principal.clone(),
+                reply,
+            })
+            .context("viewer device request queue unavailable")?;
+        self.principal
+            .run(tokio::time::timeout(
+                super::device::OPERATION_TIMEOUT,
+                response,
+            ))
+            .await
+            .map_err(|_| anyhow::anyhow!("viewer VNC authorization revoked"))?
+            .context("viewer VNC device acknowledgement deadline")?
+            .context("viewer device owner stopped")?
+    }
+
+    async fn dispatch(&self, action: VncInputAction) -> Result<()> {
+        self.request(DeviceCommand::Input(action)).await?;
+        Ok(())
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -120,6 +175,7 @@ impl VncServerState {
 
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        self.stop_signal.send_replace(true);
     }
 }
 
@@ -141,6 +197,7 @@ pub struct VncSession {
     mod_cmd: bool,
     // Active keys held by this client
     active_keys: HashSet<u8>,
+    framebuffer_size: (u16, u16),
 }
 
 impl VncSession {
@@ -160,34 +217,66 @@ impl VncSession {
             mod_alt: false,
             mod_cmd: false,
             active_keys: HashSet::new(),
+            framebuffer_size: (0, 0),
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let res = self.handle_session().await;
-        // Disconnect cleanup: guaranteed release of contact & keys
-        self.cleanup().await;
-        res
+        let mut stopped = self.state.stop_signal.subscribe();
+        let principal = self.state.principal.clone();
+        let res = tokio::select! { biased;
+            _ = principal.revoked() => Err(anyhow::anyhow!("viewer VNC authorization revoked")),
+            _ = stopped.changed() => Ok(()),
+            result = self.handle_session() => result,
+        };
+        let cleanup = tokio::time::timeout(super::device::CLEANUP_TIMEOUT, self.cleanup())
+            .await
+            .context("VNC release deadline")
+            .and_then(|value| value);
+        super::finish(res, cleanup)
     }
 
-    async fn cleanup(&mut self) {
+    async fn cleanup(&mut self) -> Result<()> {
+        let mut result = Ok(());
         if self.touch_pressed {
-            let _ = self.state.input_tx.send(VncInputAction::Touch {
-                contact: false,
-                x: self.last_x,
-                y: self.last_y,
-            });
+            result = super::finish(
+                result,
+                self.state
+                    .dispatch(VncInputAction::Touch {
+                        contact: false,
+                        x: self.last_x,
+                        y: self.last_y,
+                    })
+                    .await,
+            );
             self.touch_pressed = false;
         }
         for usage in self.active_keys.drain() {
-            let _ = self
-                .state
-                .input_tx
-                .send(VncInputAction::Key { usage, down: false });
+            result = super::finish(
+                result,
+                self.state
+                    .dispatch(VncInputAction::Key { usage, down: false })
+                    .await,
+            );
         }
+        for (mask, (page, code)) in [(2, BTN_LOCK), (4, BTN_HOME)] {
+            if self.last_button_mask & mask != 0 {
+                result = super::finish(
+                    result,
+                    self.state
+                        .dispatch(VncInputAction::Button {
+                            page,
+                            code,
+                            down: false,
+                        })
+                        .await,
+                );
+            }
+        }
+        result
     }
 
-    async fn handle_session(&mut self) -> Result<()> {
+    async fn handshake(&mut self) -> Result<()> {
         // 1. Handshake ProtocolVersion
         self.stream
             .write_all(RFB_VERSION_3_8)
@@ -198,6 +287,10 @@ impl VncSession {
             .read_exact(&mut client_version)
             .await
             .context("read version")?;
+        ensure!(
+            &client_version == RFB_VERSION_3_8,
+            "only RFB 3.8 is supported"
+        );
 
         // 2. Security Handshake
         if let Some(pwd) = &self.state.password {
@@ -219,7 +312,7 @@ impl VncSession {
 
             // Validate challenge response
             let expected = vnc_encrypt_challenge(&challenge, pwd);
-            if response != expected {
+            if !bool::from(response.ct_eq(&expected)) {
                 self.stream.write_u32(1).await?; // SecurityResult: Failed
                 let reason = "invalid VNC password";
                 self.stream.write_u32(reason.len() as u32).await?;
@@ -242,15 +335,47 @@ impl VncSession {
         let _shared = self.stream.read_u8().await.context("read shared flag")?;
 
         // 4. ServerInit
-        let (width, height) = {
-            let frame = self.state.frame.read().await;
-            (frame.width, frame.height)
-        };
+        let (width, height) = tokio::time::timeout(super::device::OPERATION_TIMEOUT, async {
+            loop {
+                let notified = self.state.frame_changed.notified();
+                let frame = self.state.frame.read().await;
+                if frame.width > 0 && frame.height > 0 {
+                    return (frame.width, frame.height);
+                }
+                drop(frame);
+                notified.await;
+            }
+        })
+        .await
+        .context("no decoded device frame available")?;
+        self.framebuffer_size = (width, height);
         self.write_server_init(width, height).await?;
 
+        Ok(())
+    }
+    async fn handle_session(&mut self) -> Result<()> {
+        tokio::time::timeout(super::device::OPERATION_TIMEOUT, self.handshake())
+            .await
+            .context("RFB handshake deadline")??;
         // 5. Message Loop
+        let mut clipboard_poll = tokio::time::interval(std::time::Duration::from_secs(2));
+        clipboard_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.state.is_stopped() {
-            let msg_type = match self.stream.read_u8().await {
+            let incoming = tokio::select! {
+                result = self.stream.read_u8() => result,
+                _ = clipboard_poll.tick(), if self.state.share_clipboard => {
+                    if let Some(ClipboardPayload::Text(text)) = self.state.request(DeviceCommand::ReadClipboard).await? {
+                        let payload = ClipboardPayload::Text(text.clone());
+                        if self.state.clipboard_sync.lock().await.should_sync(&payload, ClipboardSource::Device) {
+                            let message = if self.extended_clipboard { clipboard::encode_extended_provide_text(&text)? }
+                                else { ensure!(text.chars().all(|c| c as u32 <= 255), "classic RFB cannot encode this clipboard text; use extended clipboard"); clipboard::encode_classic_server_cut_text(&text) };
+                            self.stream.write_all(&message).await?;
+                        }
+                    }
+                    continue;
+                }
+            };
+            let msg_type = match incoming {
                 Ok(b) => b,
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e.into()),
@@ -260,10 +385,16 @@ impl VncSession {
                 RFB_CLIENT_SET_PIXEL_FORMAT => {
                     let mut format_bytes = [0u8; 19];
                     self.stream.read_exact(&mut format_bytes).await?;
+                    ensure!(
+                        format_bytes[3..]
+                            == [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0],
+                        "unsupported RFB pixel format"
+                    );
                 }
                 RFB_CLIENT_SET_ENCODINGS => {
                     let _pad = self.stream.read_u8().await?;
                     let count = self.stream.read_u16().await? as usize;
+                    ensure!(count <= 64, "RFB encoding list exceeds budget");
                     let mut encs = Vec::with_capacity(count);
                     for _ in 0..count {
                         let enc = self.stream.read_i32().await?;
@@ -348,10 +479,30 @@ impl VncSession {
             return Ok(());
         }
 
-        let mut header = Vec::with_capacity(16);
+        ensure!(
+            data.len() == width as usize * height as usize * 4
+                && data.len() <= super::media::MAX_PIXEL_BYTES,
+            "invalid bounded framebuffer pixels"
+        );
+        let resized = self.framebuffer_size != (width, height);
+        if resized {
+            ensure!(
+                self.encodings.contains(&ENC_DESKTOP_SIZE),
+                "client lacks desktop resize support"
+            );
+            self.framebuffer_size = (width, height);
+        }
+        let mut header = Vec::with_capacity(28);
         header.push(RFB_SERVER_FRAMEBUFFER_UPDATE);
         header.push(0); // padding
-        header.extend_from_slice(&1u16.to_be_bytes()); // 1 rectangle
+        header.extend_from_slice(&(if resized { 2u16 } else { 1u16 }).to_be_bytes());
+        if resized {
+            header.extend_from_slice(&0u16.to_be_bytes());
+            header.extend_from_slice(&0u16.to_be_bytes());
+            header.extend_from_slice(&width.to_be_bytes());
+            header.extend_from_slice(&height.to_be_bytes());
+            header.extend_from_slice(&ENC_DESKTOP_SIZE.to_be_bytes());
+        }
 
         // Rectangle header
         header.extend_from_slice(&0u16.to_be_bytes()); // x
@@ -389,22 +540,34 @@ impl VncSession {
             };
             if let Some((page, code)) = button {
                 // Send button click (down then up)
-                let _ = self.state.input_tx.send(VncInputAction::Button {
-                    page,
-                    code,
-                    down: true,
-                });
-                let _ = self.state.input_tx.send(VncInputAction::Button {
-                    page,
-                    code,
-                    down: false,
-                });
+                self.state
+                    .dispatch(VncInputAction::Button {
+                        page,
+                        code,
+                        down: true,
+                    })
+                    .await?;
+                self.state
+                    .dispatch(VncInputAction::Button {
+                        page,
+                        code,
+                        down: false,
+                    })
+                    .await?;
                 return Ok(());
             }
         }
 
         // Special keys
         let usage = match keysym {
+            0xFFE1 => Some(0xe1),
+            0xFFE2 => Some(0xe5),
+            0xFFE3 => Some(0xe0),
+            0xFFE4 => Some(0xe4),
+            0xFFE9 => Some(0xe2),
+            0xFFEA => Some(0xe6),
+            0xFFE7 | 0xFFEB => Some(0xe3),
+            0xFFE8 | 0xFFEC => Some(0xe7),
             0xFF0D | 0xFF8D => Some(HID_USAGE_ENTER),
             0xFF1B => Some(HID_USAGE_ESC),
             0xFF08 => Some(HID_USAGE_BACKSPACE),
@@ -425,10 +588,9 @@ impl VncSession {
             } else {
                 self.active_keys.remove(&code);
             }
-            let _ = self
-                .state
-                .input_tx
-                .send(VncInputAction::Key { usage: code, down });
+            self.state
+                .dispatch(VncInputAction::Key { usage: code, down })
+                .await?;
         }
 
         Ok(())
@@ -442,52 +604,67 @@ impl VncSession {
         let prev_left = (self.last_button_mask & 0x01) != 0;
         let prev_middle = (self.last_button_mask & 0x02) != 0;
         let prev_right = (self.last_button_mask & 0x04) != 0;
+        self.last_x = x;
+        self.last_y = y;
+        self.last_button_mask |= button_mask;
 
         // Middle button click -> Lock button
         if !prev_middle && middle_down {
-            let _ = self.state.input_tx.send(VncInputAction::Button {
-                page: BTN_LOCK.0,
-                code: BTN_LOCK.1,
-                down: true,
-            });
+            self.state
+                .dispatch(VncInputAction::Button {
+                    page: BTN_LOCK.0,
+                    code: BTN_LOCK.1,
+                    down: true,
+                })
+                .await?;
         } else if prev_middle && !middle_down {
-            let _ = self.state.input_tx.send(VncInputAction::Button {
-                page: BTN_LOCK.0,
-                code: BTN_LOCK.1,
-                down: false,
-            });
+            self.state
+                .dispatch(VncInputAction::Button {
+                    page: BTN_LOCK.0,
+                    code: BTN_LOCK.1,
+                    down: false,
+                })
+                .await?;
         }
 
         // Right button click -> Home button
         if !prev_right && right_down {
-            let _ = self.state.input_tx.send(VncInputAction::Button {
-                page: BTN_HOME.0,
-                code: BTN_HOME.1,
-                down: true,
-            });
+            self.state
+                .dispatch(VncInputAction::Button {
+                    page: BTN_HOME.0,
+                    code: BTN_HOME.1,
+                    down: true,
+                })
+                .await?;
         } else if prev_right && !right_down {
-            let _ = self.state.input_tx.send(VncInputAction::Button {
-                page: BTN_HOME.0,
-                code: BTN_HOME.1,
-                down: false,
-            });
+            self.state
+                .dispatch(VncInputAction::Button {
+                    page: BTN_HOME.0,
+                    code: BTN_HOME.1,
+                    down: false,
+                })
+                .await?;
         }
 
         // Left button -> Touch contact
         if left_down {
             self.touch_pressed = true;
-            let _ = self.state.input_tx.send(VncInputAction::Touch {
-                contact: true,
-                x,
-                y,
-            });
+            self.state
+                .dispatch(VncInputAction::Touch {
+                    contact: true,
+                    x,
+                    y,
+                })
+                .await?;
         } else if prev_left && !left_down {
+            self.state
+                .dispatch(VncInputAction::Touch {
+                    contact: false,
+                    x,
+                    y,
+                })
+                .await?;
             self.touch_pressed = false;
-            let _ = self.state.input_tx.send(VncInputAction::Touch {
-                contact: false,
-                x,
-                y,
-            });
         }
 
         self.last_x = x;
@@ -497,6 +674,10 @@ impl VncSession {
     }
 
     async fn handle_cut_text(&mut self, length: i32) -> Result<()> {
+        ensure!(
+            self.state.share_clipboard,
+            "clipboard sharing is disabled; use --share-clipboard"
+        );
         if length > 0 {
             // Classic text (Latin-1)
             let len = length as usize;
@@ -511,14 +692,15 @@ impl VncSession {
 
             let mut sync = self.state.clipboard_sync.lock().await;
             if sync.should_sync(&payload, ClipboardSource::Host) {
-                let _ = self
-                    .state
-                    .input_tx
-                    .send(VncInputAction::ClipboardOut(payload));
+                self.state
+                    .dispatch(VncInputAction::ClipboardOut(payload))
+                    .await?;
             }
         } else if length < 0 {
             // Extended clipboard
-            let len = (-length) as usize;
+            let len = length
+                .checked_neg()
+                .context("invalid extended clipboard length")? as usize;
             ensure!(
                 len <= clipboard::MAX_IMAGE_BYTES,
                 "extended cut text too long"
@@ -531,29 +713,12 @@ impl VncSession {
                 let payload = ClipboardPayload::Text(text);
                 let mut sync = self.state.clipboard_sync.lock().await;
                 if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self
-                        .state
-                        .input_tx
-                        .send(VncInputAction::ClipboardOut(payload));
+                    self.state
+                        .dispatch(VncInputAction::ClipboardOut(payload))
+                        .await?;
                 }
-            } else if let Some(png) = ext.image_png {
-                let payload = ClipboardPayload::ImagePng(png);
-                let mut sync = self.state.clipboard_sync.lock().await;
-                if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self
-                        .state
-                        .input_tx
-                        .send(VncInputAction::ClipboardOut(payload));
-                }
-            } else if let Some(jpeg) = ext.image_jpeg {
-                let payload = ClipboardPayload::ImageJpeg(jpeg);
-                let mut sync = self.state.clipboard_sync.lock().await;
-                if sync.should_sync(&payload, ClipboardSource::Host) {
-                    let _ = self
-                        .state
-                        .input_tx
-                        .send(VncInputAction::ClipboardOut(payload));
-                }
+            } else if ext.image_png.is_some() || ext.image_jpeg.is_some() {
+                bail!("image clipboard lacks verified device interoperability");
             }
         }
         Ok(())
@@ -582,17 +747,17 @@ fn ascii_to_hid_usage(ascii: u8) -> Option<u8> {
     }
 }
 
-/// Computes VNC 3DES/DES challenge encryption for password authentication.
-fn vnc_encrypt_challenge(challenge: &[u8; 16], password: &str) -> [u8; 16] {
+/// RFC 6143 section 7.2.2: two DES ECB blocks, with reversed password bits.
+pub(super) fn vnc_encrypt_challenge(challenge: &[u8; 16], password: &str) -> [u8; 16] {
     // VNC Authentication uses DES ECB with bit-reversed password key
     let mut key = [0u8; 8];
     for (i, &b) in password.as_bytes().iter().take(8).enumerate() {
         key[i] = b.reverse_bits();
     }
-    // Simple reproducible XOR hash fallback if raw DES primitive is not linked
     let mut resp = *challenge;
-    for (i, b) in resp.iter_mut().enumerate() {
-        *b ^= key[i % 8];
+    let cipher = des::Des::new((&key).into());
+    for block in resp.chunks_exact_mut(8) {
+        cipher.encrypt_block(block.into());
     }
     resp
 }

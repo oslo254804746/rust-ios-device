@@ -232,9 +232,6 @@ impl BrowserCdpState {
         if let Some(session_id) = &session_id {
             if !self.browser_sessions.contains(session_id) {
                 if self.page_sessions.contains_key(session_id) {
-                    if let Some(responses) = handle_verified_page_method(&message) {
-                        return BrowserCdpAction::Send(responses);
-                    }
                     if unverified_page_method(&message) {
                         return BrowserCdpAction::Send(
                             id.map(|_| vec![error(&message, -32601, "CDP domain not implemented")])
@@ -506,114 +503,22 @@ pub fn event_for_request(request: &Value, method: &str, params: Value) -> Value 
     event
 }
 
+/// Methods with a stateful WebInspector translation in PageCdpAdapter.
 pub fn is_verified_page_domain_method(method: &str) -> bool {
     matches!(
         method,
         "Page.enable"
             | "Page.disable"
             | "Page.getFrameTree"
+            | "Page.getResourceTree"
             | "Page.navigate"
             | "Page.captureScreenshot"
-            | "Input.dispatchMouseEvent"
-            | "Input.dispatchKeyEvent"
             | "Fetch.enable"
             | "Fetch.disable"
             | "Fetch.continueRequest"
             | "Fetch.failRequest"
             | "Fetch.fulfillRequest"
-            | "Performance.enable"
-            | "Performance.disable"
-            | "Performance.getMetrics"
-            | "Memory.getDOMCounters"
     )
-}
-
-pub fn handle_verified_page_method(message: &Value) -> Option<Vec<Value>> {
-    let method = message.get("method").and_then(Value::as_str)?;
-    let params = message.get("params").and_then(Value::as_object);
-    match method {
-        "Page.enable" | "Page.disable" => Some(vec![reply(message, json!({}))]),
-        "Page.getFrameTree" => {
-            let tree = json!({
-                "frameTree": {
-                    "frame": {
-                        "id": "main-frame",
-                        "loaderId": "main-loader",
-                        "url": "https://example.test/",
-                        "securityOrigin": "https://example.test",
-                        "mimeType": "text/html"
-                    },
-                    "childFrames": []
-                }
-            });
-            Some(vec![reply(message, tree)])
-        }
-        "Page.navigate" => {
-            let url = params
-                .and_then(|p| p.get("url"))
-                .and_then(Value::as_str)
-                .unwrap_or("about:blank");
-            Some(vec![
-                reply(
-                    message,
-                    json!({"frameId": "main-frame", "loaderId": "main-loader"}),
-                ),
-                event_for_request(
-                    message,
-                    "Page.frameNavigated",
-                    json!({
-                        "frame": {
-                            "id": "main-frame",
-                            "loaderId": "main-loader",
-                            "url": url,
-                            "securityOrigin": url,
-                            "mimeType": "text/html"
-                        }
-                    }),
-                ),
-                event_for_request(
-                    message,
-                    "Page.domContentEventFired",
-                    json!({"timestamp": 1000.0}),
-                ),
-                event_for_request(message, "Page.loadEventFired", json!({"timestamp": 1001.0})),
-            ])
-        }
-        "Page.captureScreenshot" => {
-            let png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-            Some(vec![reply(message, json!({ "data": png_base64 }))])
-        }
-        "Input.dispatchMouseEvent" => Some(vec![reply(message, json!({}))]),
-        "Input.dispatchKeyEvent" => Some(vec![reply(message, json!({}))]),
-        "Fetch.enable" | "Fetch.disable" => Some(vec![reply(message, json!({}))]),
-        "Fetch.continueRequest" | "Fetch.failRequest" | "Fetch.fulfillRequest" => {
-            Some(vec![reply(message, json!({}))])
-        }
-        "Performance.enable" | "Performance.disable" => Some(vec![reply(message, json!({}))]),
-        "Performance.getMetrics" => {
-            let metrics = json!({
-                "metrics": [
-                    {"name": "Timestamp", "value": 1000.0},
-                    {"name": "Documents", "value": 1.0},
-                    {"name": "Frames", "value": 1.0},
-                    {"name": "JSEventListeners", "value": 0.0},
-                    {"name": "Nodes", "value": 2.0},
-                    {"name": "JSHeapUsedSize", "value": 102400.0},
-                    {"name": "JSHeapTotalSize", "value": 204800.0}
-                ]
-            });
-            Some(vec![reply(message, metrics)])
-        }
-        "Memory.getDOMCounters" => {
-            let counters = json!({
-                "documents": 1,
-                "nodes": 2,
-                "jsEventListeners": 0
-            });
-            Some(vec![reply(message, counters)])
-        }
-        _ => None,
-    }
 }
 
 /// WebKit and CDP share some method names while differing in parameters and results.
@@ -706,19 +611,34 @@ impl JsContextCdpAdapter {
                 }}
             }));
         }
-        if message.get("method").and_then(Value::as_str) == Some("Console.messageAdded") {
+        let method = message.get("method").and_then(Value::as_str);
+        if method == Some("Runtime.executionContextsCleared") {
+            return vec![self.contexts_cleared()];
+        }
+        if method == Some("Inspector.detached") || method == Some("Target.targetDestroyed") {
+            if let Some(event) = self.context_destroyed() {
+                messages.push(event);
+            }
+        }
+        if method == Some("Console.messageAdded") && self.context_announced {
             if let Some(msg) = message.get("params").and_then(|p| p.get("message")) {
                 let text = msg.get("text").and_then(Value::as_str).unwrap_or("");
                 let level = msg.get("level").and_then(Value::as_str).unwrap_or("log");
-                messages.push(json!({
-                    "method": "Runtime.consoleAPICalled",
-                    "params": {
-                        "type": level,
-                        "args": [{"type": "string", "value": text}],
-                        "executionContextId": 1,
-                        "timestamp": 1000.0
-                    }
-                }));
+                if let Some(timestamp) = msg
+                    .get("timestamp")
+                    .and_then(Value::as_f64)
+                    .filter(|time| time.is_finite() && *time >= 0.0)
+                {
+                    messages.push(json!({
+                        "method": "Runtime.consoleAPICalled",
+                        "params": {
+                            "type": level,
+                            "args": [{"type": "string", "value": text}],
+                            "executionContextId": 1,
+                            "timestamp": timestamp * 1000.0
+                        }
+                    }));
+                }
             }
         }
         messages
@@ -1004,82 +924,39 @@ mod tests {
     }
 
     #[test]
-    fn verified_cdp_domain_methods_handle_page_input_fetch_memory_performance() {
+    fn translated_page_methods_are_forwarded_and_unsupported_domains_are_refused() {
         let mut state = BrowserCdpState::new("ios-cli");
         state.refresh(&[page("PID:42", "1", WirType::WebPage)]);
         let session = state.register_attachment("PID:42:1").unwrap();
-
-        // F04-2: Page domain
-        let frame_tree = sent(
-            &mut state,
-            json!({"id": 1, "sessionId": session, "method": "Page.getFrameTree"}),
-        );
-        assert_eq!(frame_tree[0]["id"], 1);
-        assert_eq!(
-            frame_tree[0]["result"]["frameTree"]["frame"]["id"],
-            "main-frame"
-        );
-
-        let navigate = sent(
-            &mut state,
-            json!({"id": 2, "sessionId": session, "method": "Page.navigate", "params": {"url": "https://example.test/app"}}),
-        );
-        assert_eq!(navigate[0]["result"]["frameId"], "main-frame");
-        assert_eq!(navigate[1]["method"], "Page.frameNavigated");
-        assert_eq!(
-            navigate[1]["params"]["frame"]["url"],
-            "https://example.test/app"
-        );
-        assert_eq!(navigate[2]["method"], "Page.domContentEventFired");
-        assert_eq!(navigate[3]["method"], "Page.loadEventFired");
-
-        // F04-3: Input & Screenshot
-        let screenshot = sent(
-            &mut state,
-            json!({"id": 3, "sessionId": session, "method": "Page.captureScreenshot"}),
-        );
-        assert!(screenshot[0]["result"]["data"]
-            .as_str()
-            .unwrap()
-            .starts_with("iVBORw"));
-
-        let click = sent(
-            &mut state,
-            json!({"id": 4, "sessionId": session, "method": "Input.dispatchMouseEvent", "params": {"type": "mousePressed", "x": 100, "y": 200, "button": "left"}}),
-        );
-        assert_eq!(click[0]["result"], json!({}));
-
-        let key = sent(
-            &mut state,
-            json!({"id": 5, "sessionId": session, "method": "Input.dispatchKeyEvent", "params": {"type": "keyDown", "text": "a"}}),
-        );
-        assert_eq!(key[0]["result"], json!({}));
-
-        // F04-4: Fetch domain
-        let fetch_enable = sent(
-            &mut state,
-            json!({"id": 6, "sessionId": session, "method": "Fetch.enable"}),
-        );
-        assert_eq!(fetch_enable[0]["result"], json!({}));
-
-        let fetch_continue = sent(
-            &mut state,
-            json!({"id": 7, "sessionId": session, "method": "Fetch.continueRequest", "params": {"requestId": "req-1"}}),
-        );
-        assert_eq!(fetch_continue[0]["result"], json!({}));
-
-        // F04-5: Memory & Performance domains
-        let perf = sent(
-            &mut state,
-            json!({"id": 8, "sessionId": session, "method": "Performance.getMetrics"}),
-        );
-        assert!(perf[0]["result"]["metrics"].as_array().unwrap().len() >= 5);
-
-        let mem = sent(
-            &mut state,
-            json!({"id": 9, "sessionId": session, "method": "Memory.getDOMCounters"}),
-        );
-        assert_eq!(mem[0]["result"]["documents"], 1);
+        for method in [
+            "Page.enable",
+            "Page.getFrameTree",
+            "Page.navigate",
+            "Page.captureScreenshot",
+            "Fetch.enable",
+            "Fetch.continueRequest",
+        ] {
+            assert!(
+                matches!(
+                    state.handle(json!({"id":1,"sessionId":session,"method":method})),
+                    BrowserCdpAction::Forward { .. }
+                ),
+                "translation must reach the owned page: {method}"
+            );
+        }
+        for method in [
+            "Input.dispatchMouseEvent",
+            "Input.dispatchKeyEvent",
+            "Memory.getDOMCounters",
+            "Performance.enable",
+            "Performance.getMetrics",
+        ] {
+            let responses = sent(
+                &mut state,
+                json!({"id":2,"sessionId":session,"method":method}),
+            );
+            assert_eq!(responses[0]["error"]["code"], -32601);
+        }
     }
 
     #[test]
@@ -1120,11 +997,11 @@ mod tests {
 
         let console_msg = adapter.incoming(json!({
             "method": "Console.messageAdded",
-            "params": {"message": {"text": "hello from app", "level": "warn"}}
+            "params": {"message": {"text": "hello from app", "level": "warning", "timestamp":12.5}}
         }));
         assert_eq!(console_msg.len(), 2);
         assert_eq!(console_msg[1]["method"], "Runtime.consoleAPICalled");
-        assert_eq!(console_msg[1]["params"]["type"], "warn");
+        assert_eq!(console_msg[1]["params"]["type"], "warning");
         assert_eq!(
             console_msg[1]["params"]["args"][0]["value"],
             "hello from app"

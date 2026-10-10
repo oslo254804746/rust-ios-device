@@ -46,6 +46,10 @@ zeroize = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
 subtle = { workspace = true }
+des = { workspace = true }
+png = { workspace = true }
+zip = { workspace = true }
+arboard = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }

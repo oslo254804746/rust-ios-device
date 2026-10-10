@@ -1121,6 +1121,11 @@ where
                                 payload_len,
                             )
                             .await?;
+                            // Tokio may return from write_all while its last blocking write
+                            // is still pending. Complete it before the next network wait so
+                            // cancellation cannot race that writer against staged-file removal
+                            // (notably Windows, which forbids deleting an open file).
+                            staged.0.flush().await?;
                         } else {
                             discard_transfer_payload(self.device_link.stream_mut(), payload_len)
                                 .await?;
@@ -1941,7 +1946,10 @@ mod tests {
                             .file_name()
                             .to_string_lossy()
                             .starts_with(".ios-output-")
-                            && entry.metadata().unwrap().len() == 7
+                            // Windows directory enumeration can retain a zero
+                            // size until the write handle closes. A fresh read
+                            // observes the actual staged bytes while it is open.
+                            && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == b"partial")
                     });
                     if written {
                         break;

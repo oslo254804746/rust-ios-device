@@ -34,7 +34,12 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::runtime::Runtime;
 
+mod device_services;
 mod device_session;
+pub use device_services::{
+    ios_device_handle_from_session, ios_device_service_options_default, ios_device_services_close,
+    ios_device_session_afc_read_file, ios_device_session_service_json, IosDeviceServiceOptions,
+};
 pub use device_session::{
     ios_device_query_options_default, ios_device_session_close, ios_device_session_create,
     ios_device_session_destroy_checked, ios_device_session_query_json, ios_device_session_retain,
@@ -89,6 +94,7 @@ pub struct IosTunnel {
 #[repr(C)]
 pub struct IosDeviceHandle {
     _device: Mutex<Option<Arc<ios_core::ConnectedDevice>>>,
+    services: Option<Arc<ios_core::session::ExistingTrustDevice>>,
 }
 
 const IOS_SUCCESS: c_int = 0;
@@ -177,6 +183,7 @@ fn runtime_from(initialization: &std::io::Result<Runtime>) -> Result<&Runtime, c
 }
 
 fn ffi_status(f: impl FnOnce() -> c_int + std::panic::UnwindSafe) -> c_int {
+    device_services::reset_projection_failure();
     LAST_ERROR_CLASS.with(|state| state.set(None));
     let code = std::panic::catch_unwind(f).unwrap_or(IOS_ERR_PANIC);
     LAST_ERROR_CLASS.with(|state| {
@@ -510,10 +517,25 @@ pub unsafe extern "C" fn ios_device_open(
             Ok(runtime) => runtime,
             Err(code) => return code,
         };
-        match runtime.block_on(ios_core::connect(&udid_str, opts)) {
+        let connected = runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                ios_core::connect(&udid_str, opts),
+            )
+            .await
+            .map_err(|error| {
+                ios_core::CoreError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, error))
+            })?
+        });
+        match connected {
             Ok(device) => {
+                let services = match device_session::checked_services(&device) {
+                    Ok(services) => services,
+                    Err(error) => return error_status(IOS_ERR_CORE, &error),
+                };
                 let handle = Box::new(IosDeviceHandle {
                     _device: Mutex::new(Some(Arc::new(device))),
+                    services: Some(Arc::new(services)),
                 });
                 *out = Box::into_raw(handle);
                 IOS_SUCCESS
@@ -540,10 +562,17 @@ unsafe fn close_device_handle(handle: *mut IosDeviceHandle) -> c_int {
         return IOS_SUCCESS;
     }
     let mut handle = Box::from_raw(handle);
+    let service_status = match handle.services.as_ref() {
+        Some(services) => match device_session::close_services(services, 5_000) {
+            Ok(()) => IOS_SUCCESS,
+            Err(code) => code,
+        },
+        None => IOS_SUCCESS,
+    };
     let status = match handle._device.get_mut() {
         Ok(guard) => {
             guard.take();
-            IOS_SUCCESS
+            service_status
         }
         Err(_) => IOS_ERR_STATE,
     };
@@ -669,53 +698,17 @@ pub unsafe extern "C" fn ios_device_list_apps_json(
             return IOS_ERR_NULL;
         }
         *out = std::ptr::null_mut();
-        let device = match device_from_handle(handle) {
+        let device = match device_services::from_handle(handle) {
             Ok(device) => device,
             Err(code) => return code,
         };
-        let runtime = match runtime() {
-            Ok(runtime) => runtime,
-            Err(code) => return code,
-        };
-        let apps = match runtime.block_on(async {
-            let stream = device
-                .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
-                .await?;
-            let mut proxy = ios_core::apps::InstallationProxy::new(stream);
-            let apps = proxy.list_user_apps().await.map_err(|e| match e {
-                ios_core::apps::installation::IpError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::apps::installation::IpError::Plist(err) => {
-                    ios_core::CoreError::Protocol(err.to_string())
-                }
-                ios_core::apps::installation::IpError::Protocol(msg) => {
-                    ios_core::CoreError::Protocol(msg)
-                }
-                ios_core::apps::installation::IpError::Install(msg) => {
-                    ios_core::CoreError::Other(msg)
-                }
-            })?;
-            Ok::<_, ios_core::CoreError>(apps)
-        }) {
-            Ok(apps) => apps,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        let json_array: Vec<_> = apps
-            .into_iter()
-            .map(|a| {
-                serde_json::json!({
-                    "bundle_id": a.bundle_id,
-                    "display_name": a.display_name,
-                    "version": a.version,
-                    "app_type": a.app_type,
-                    "path": a.path,
-                })
-            })
-            .collect();
-        let json_text = match serde_json::to_string(&json_array) {
-            Ok(text) => text,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        write_owned_c_string(out, json_text)
+        device_services::run_json(
+            device,
+            ios_core::session::DeviceServiceRequest::ListApps,
+            Default::default(),
+            &ios_core::session::OperationCancel::new(),
+            out,
+        )
     })
 }
 
@@ -732,42 +725,27 @@ pub unsafe extern "C" fn ios_device_afc_list_files_json(
     out: *mut *mut c_char,
 ) -> c_int {
     ffi_status(|| {
+        if !out.is_null() {
+            *out = std::ptr::null_mut();
+        }
         if out.is_null() || path.is_null() {
             return IOS_ERR_NULL;
         }
-        *out = std::ptr::null_mut();
-        let path_str = match CStr::from_ptr(path).to_str() {
-            Ok(s) => s.to_string(),
+        let path = match CStr::from_ptr(path).to_str() {
+            Ok(path) => path.to_owned(),
             Err(_) => return IOS_ERR_UTF8,
         };
-        let device = match device_from_handle(handle) {
+        let device = match device_services::from_handle(handle) {
             Ok(device) => device,
             Err(code) => return code,
         };
-        let runtime = match runtime() {
-            Ok(runtime) => runtime,
-            Err(code) => return code,
-        };
-        let files = match runtime.block_on(async {
-            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
-            let mut client = ios_core::afc::AfcClient::new(stream);
-            let files = client.list_dir(&path_str).await.map_err(|e| match e {
-                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
-                ios_core::afc::AfcError::Status(status) => {
-                    ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
-                }
-                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
-            })?;
-            Ok::<_, ios_core::CoreError>(files)
-        }) {
-            Ok(files) => files,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        let json_text = match serde_json::to_string(&files) {
-            Ok(text) => text,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        write_owned_c_string(out, json_text)
+        device_services::run_json(
+            device,
+            ios_core::session::DeviceServiceRequest::ListFiles { path },
+            Default::default(),
+            &ios_core::session::OperationCancel::new(),
+            out,
+        )
     })
 }
 
@@ -787,51 +765,36 @@ pub unsafe extern "C" fn ios_device_afc_read_file(
     len_out: *mut usize,
 ) -> c_int {
     ffi_status(|| {
-        if data_out.is_null() || len_out.is_null() {
+        if !data_out.is_null() {
+            *data_out = std::ptr::null_mut();
+        }
+        if !len_out.is_null() {
+            *len_out = 0;
+        }
+        if data_out.is_null() || len_out.is_null() || path.is_null() {
             return IOS_ERR_NULL;
         }
-        *data_out = std::ptr::null_mut();
-        *len_out = 0;
-        if path.is_null() {
-            return IOS_ERR_NULL;
-        }
-        let path_str = match CStr::from_ptr(path).to_str() {
-            Ok(s) => s.to_string(),
+        let path = match CStr::from_ptr(path).to_str() {
+            Ok(path) => path.to_owned(),
             Err(_) => return IOS_ERR_UTF8,
         };
-        let device = match device_from_handle(handle) {
+        let device = match device_services::from_handle(handle) {
             Ok(device) => device,
             Err(code) => return code,
         };
-        let runtime = match runtime() {
-            Ok(runtime) => runtime,
-            Err(code) => return code,
+        let options = IosDeviceServiceOptions {
+            output_bytes: max_bytes.max(1),
+            ..Default::default()
         };
-        let bytes = match runtime.block_on(async {
-            let stream = device.connect_service(ios_core::afc::AFC_SERVICE).await?;
-            let mut client = ios_core::afc::AfcClient::new(stream);
-            let bytes = client
-                .read_file_with_limit(&path_str, max_bytes)
-                .await
-                .map_err(|e| match e {
-                    ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
-                    ios_core::afc::AfcError::Status(status) => {
-                        ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
-                    }
-                    ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
-                })?;
-            Ok::<_, ios_core::CoreError>(bytes)
-        }) {
-            Ok(bytes) => bytes,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        let mut slice = bytes.to_vec().into_boxed_slice();
-        let ptr = slice.as_mut_ptr();
-        let len = slice.len();
-        std::mem::forget(slice);
-        *data_out = ptr;
-        *len_out = len;
-        IOS_SUCCESS
+        device_services::run_bytes(
+            device,
+            path,
+            max_bytes,
+            options,
+            &ios_core::session::OperationCancel::new(),
+            data_out,
+            len_out,
+        )
     })
 }
 
@@ -874,8 +837,10 @@ pub unsafe extern "C" fn ios_free_bytes_checked(
 
 /// Read log lines from syslog service as newly-allocated JSON array of strings.
 ///
-/// Reads up to `max_messages` or until `timeout_ms` expires.
-/// Free the returned string with `ios_free_string` or `ios_free_string_checked`.
+/// Requests `max_messages` complete messages under a total including setup.
+/// EOF/IO/timeout/cancellation returns nonzero and may own completed partial
+/// messages in `out`. Free the string on every outcome. Zero messages still
+/// requires a live checked owner and successful operation admission.
 ///
 /// # Safety
 /// Caller must pass a valid `IosDeviceHandle` pointer and a non-null `out` pointer.
@@ -891,48 +856,21 @@ pub unsafe extern "C" fn ios_device_syslog_read_json(
             return IOS_ERR_NULL;
         }
         *out = std::ptr::null_mut();
-        if max_messages == 0 {
-            let empty = "[]".to_string();
-            return write_owned_c_string(out, empty);
-        }
-        let device = match device_from_handle(handle) {
+        let device = match device_services::from_handle(handle) {
             Ok(device) => device,
             Err(code) => return code,
         };
-        let runtime = match runtime() {
-            Ok(runtime) => runtime,
-            Err(code) => return code,
+        let options = IosDeviceServiceOptions {
+            total_ms: timeout_ms,
+            ..Default::default()
         };
-        let timeout_duration = std::time::Duration::from_millis(timeout_ms.min(86_400_000));
-        let messages = match runtime.block_on(async {
-            let stream = device
-                .connect_service(ios_core::syslog::SERVICE_NAME)
-                .await?;
-            let mut syslog = ios_core::syslog::SyslogStream::new(stream);
-            let mut collected = Vec::new();
-            let start = tokio::time::Instant::now();
-            while collected.len() < max_messages {
-                let elapsed = start.elapsed();
-                if elapsed >= timeout_duration {
-                    break;
-                }
-                let remaining = timeout_duration - elapsed;
-                match tokio::time::timeout(remaining, syslog.next_message()).await {
-                    Ok(Ok(msg)) => collected.push(msg),
-                    Ok(Err(_io_err)) => break,
-                    Err(_elapsed) => break,
-                }
-            }
-            Ok::<_, ios_core::CoreError>(collected)
-        }) {
-            Ok(msgs) => msgs,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        let json_text = match serde_json::to_string(&messages) {
-            Ok(text) => text,
-            Err(error) => return error_status(IOS_ERR_CORE, &error),
-        };
-        write_owned_c_string(out, json_text)
+        device_services::run_json(
+            device,
+            ios_core::session::DeviceServiceRequest::ReadSyslog { max_messages },
+            options,
+            &ios_core::session::OperationCancel::new(),
+            out,
+        )
     })
 }
 
@@ -1384,6 +1322,7 @@ mod tests {
 
         let handle = IosDeviceHandle {
             _device: Mutex::new(None),
+            services: None,
         };
         assert_eq!(
             unsafe { ios_get_product_version(&handle, &mut output) },

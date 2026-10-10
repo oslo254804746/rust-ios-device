@@ -142,6 +142,7 @@ pub struct RestoreStateMachine {
     protocol_gaps: RestoreProtocolGaps,
     max_chunk_size: usize,
     total_data_bytes_transferred: usize,
+    total_prepared_bytes: usize,
     max_data_transfer_limit: usize,
 }
 
@@ -169,6 +170,7 @@ impl RestoreStateMachine {
             protocol_gaps: RestoreProtocolGaps::default(),
             max_chunk_size: 256 * 1024,
             total_data_bytes_transferred: 0,
+            total_prepared_bytes: 0,
             max_data_transfer_limit: 1024 * 1024 * 1024, // 1 GiB safety limit
         }
     }
@@ -297,7 +299,7 @@ impl RestoreStateMachine {
         requested_chunk_size: usize,
     ) -> Result<Vec<XpcValue>, RestoreError> {
         let new_total = self
-            .total_data_bytes_transferred
+            .total_prepared_bytes
             .checked_add(firmware.len())
             .ok_or_else(|| RestoreError::Protocol("firmware transfer size overflow".into()))?;
         if new_total > self.max_data_transfer_limit {
@@ -306,8 +308,7 @@ impl RestoreStateMachine {
                 self.max_data_transfer_limit
             )));
         }
-        self.total_data_bytes_transferred = new_total;
-
+        self.total_prepared_bytes = new_total;
         let chunk_size = if requested_chunk_size == 0 {
             self.max_chunk_size
         } else {
@@ -411,7 +412,6 @@ impl RestoreStateMachine {
                 let dt = data_type
                     .clone()
                     .unwrap_or_else(|| "UnknownDataRequest".into());
-                self.data_requests_served.push(dt.clone());
                 if matches!(
                     self.state,
                     RestoreState::QueryNonces | RestoreState::TssRequest
@@ -482,11 +482,73 @@ impl RestoreStateMachine {
     }
 }
 
+/// A failed execution retains both its partial report and the original cause.
+pub struct RestoreExecutionError {
+    pub report: RestoreExecutionReport,
+    pub cause: RestoreError,
+}
+impl std::fmt::Debug for RestoreExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreExecutionError")
+            .field("class", &crate::classify_error(&self.cause))
+            .field("events_count", &self.report.events_count)
+            .field("bytes_written", &self.report.total_bytes_transferred)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RestoreExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "restore execution failed ({})",
+            crate::classify_error(&self.cause)
+        )
+    }
+}
+
+impl std::error::Error for RestoreExecutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+fn failed_execution(sm: &RestoreStateMachine, cause: RestoreError) -> RestoreError {
+    let kind = match sm.state() {
+        RestoreState::Failed(RestoreFailure::Cancelled) => std::io::ErrorKind::Other,
+        RestoreState::Failed(RestoreFailure::Timeout { .. }) => std::io::ErrorKind::TimedOut,
+        _ => match &cause {
+            RestoreError::Io(error) => error.kind(),
+            _ => std::io::ErrorKind::InvalidData,
+        },
+    };
+    super::error_mapping::native_error(
+        kind,
+        "restore execution",
+        RestoreExecutionError {
+            report: sm.generate_report(),
+            cause,
+        },
+    )
+}
+
+async fn cancelled(flag: Option<&Arc<AtomicBool>>) {
+    let Some(flag) = flag else {
+        return std::future::pending::<()>().await;
+    };
+    // Compatibility with the existing AtomicBool API. New callers should use
+    // an OperationCancel/notification based owner; this bounded poll also wakes
+    // an idle receive instead of waiting for its entire operation deadline.
+    while !flag.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// Run the experimental restore event loop over a connected client.
 pub async fn run_experimental_restore_loop<S, H>(
     client: &mut super::RestoreServiceClient<S>,
     mut state_machine: RestoreStateMachine,
-    mut data_handler: H,
+    _data_handler: H,
     timeout: Duration,
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> Result<RestoreExecutionReport, RestoreError>
@@ -494,68 +556,231 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     H: FnMut(&str, Option<u64>) -> Result<Vec<u8>, RestoreError>,
 {
-    let deadline = Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| RestoreError::Protocol("restore deadline overflow".into()))?;
 
     while !state_machine.is_terminal() {
         if let Some(ref cancel) = cancel_flag {
             if cancel.load(Ordering::SeqCst) {
                 state_machine.cancel();
-                break;
+                client.invalidate();
+                return Err(failed_execution(
+                    &state_machine,
+                    super::error_mapping::native_error(
+                        std::io::ErrorKind::Other,
+                        "cancel restore loop",
+                        crate::OperationCancelled::new(),
+                    ),
+                ));
             }
         }
 
-        let now = Instant::now();
+        let now = tokio::time::Instant::now();
         if now >= deadline {
             state_machine.check_timeout(timeout, "restore_event_loop");
-            break;
+            client.invalidate();
+            return Err(failed_execution(
+                &state_machine,
+                RestoreError::Protocol("restore deadline expired".into()),
+            ));
         }
 
-        let remaining = deadline - now;
-        let event = match tokio::time::timeout(remaining, client.next_lifecycle_event()).await {
+        let received = tokio::select! {
+            biased;
+            _ = cancelled(cancel_flag.as_ref()) => {
+                state_machine.cancel();
+                client.invalidate(); return Err(failed_execution(&state_machine, super::error_mapping::native_error(std::io::ErrorKind::Other, "cancel restore loop", crate::OperationCancelled::new())));
+            }
+            result = tokio::time::timeout_at(deadline, client.next_lifecycle_event()) => result,
+        };
+        let event = match received {
             Ok(Ok(event)) => event,
             Ok(Err(err)) => {
                 state_machine.state =
                     RestoreState::Failed(RestoreFailure::ProtocolError(err.to_string()));
-                break;
+                client.invalidate();
+                return Err(failed_execution(&state_machine, err));
             }
-            Err(_) => {
-                state_machine.check_timeout(timeout, "restore_event_timeout");
-                break;
+            Err(elapsed) => {
+                state_machine.state = RestoreState::Failed(RestoreFailure::Timeout {
+                    step: "restore_event_timeout".into(),
+                    duration_ms: timeout.as_millis() as u64,
+                });
+                client.invalidate();
+                return Err(failed_execution(
+                    &state_machine,
+                    super::error_mapping::native_error(
+                        std::io::ErrorKind::TimedOut,
+                        "receive restore event",
+                        elapsed,
+                    ),
+                ));
             }
         };
 
         if let RestoreLifecycleEvent::DataRequest {
             data_type: Some(ref dt),
-            data_port,
             ..
         } = event
         {
-            match data_handler(dt, data_port) {
-                Ok(payload) => {
-                    let _ = state_machine.prepare_chunked_firmware(
-                        IndexMap::new(),
-                        &payload,
-                        64 * 1024,
-                    )?;
-                }
-                Err(err) => {
-                    state_machine.state = RestoreState::Failed(RestoreFailure::MissingComponent {
-                        component: format!("{dt}: {err}"),
-                    });
-                    break;
-                }
-            }
+            // This client is the normal-mode RemoteXPC control service, not
+            // restored's length-prefixed plist/data-port transport. Preparing
+            // a codec output cannot stand in for writing it to that transport.
+            let cause = RestoreError::Protocol(format!(
+                "restore data request {dt} requires a restored data transport; RemoteXPC execution is unsupported"));
+            state_machine.state =
+                RestoreState::Failed(RestoreFailure::ProtocolError(cause.to_string()));
+            client.invalidate();
+            return Err(failed_execution(&state_machine, cause));
         }
 
         state_machine.process_event(&event)?;
+        if matches!(state_machine.state(), RestoreState::Completed) {
+            state_machine.state = RestoreState::Failed(RestoreFailure::ProtocolError(
+                "unsolicited completion without StartRestore/transmission evidence".into(),
+            ));
+        }
     }
 
-    Ok(state_machine.generate_report())
+    client.invalidate();
+    Err(failed_execution(
+        &state_machine,
+        RestoreError::Protocol("restore did not execute".into()),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn execution_report(error: &RestoreError) -> &RestoreExecutionReport {
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(cause) = next {
+            if let Some(execution) = cause.downcast_ref::<RestoreExecutionError>() {
+                return &execution.report;
+            }
+            next = cause.source();
+        }
+        panic!("failed execution lost its partial report");
+    }
+
+    #[tokio::test]
+    async fn remote_control_data_request_cannot_report_transfer_or_completion() {
+        use super::super::test_assets::{frame, Stream};
+        use crate::xpc::message::{encode_message, flags, XpcMessage};
+        let mut input = frame(4, &[]);
+        let event = encode_message(&XpcMessage {
+            flags: flags::ALWAYS_SET | flags::DATA | flags::REPLY,
+            msg_id: 1,
+            body: Some(XpcValue::Dictionary(IndexMap::from([
+                ("MsgType".into(), XpcValue::String("DataRequestMsg".into())),
+                (
+                    "DataType".into(),
+                    XpcValue::String("SystemImageData".into()),
+                ),
+                ("DataPort".into(), XpcValue::Uint64(1234)),
+            ]))),
+        })
+        .unwrap();
+        input.extend(frame(0, &event));
+        let mut client =
+            super::super::RestoreServiceClient::connect(Stream::new(input, usize::MAX))
+                .await
+                .unwrap();
+        let error = run_experimental_restore_loop(
+            &mut client,
+            RestoreStateMachine::new(),
+            |_, _| panic!("normal-mode client must not pretend to execute restored data handler"),
+            Duration::from_secs(1),
+            None,
+        )
+        .await
+        .unwrap_err();
+        let report = execution_report(&error);
+        assert!(matches!(report.final_state, RestoreState::Failed(_)));
+        assert_eq!(report.total_bytes_transferred, 0);
+        assert!(report.data_requests_served.is_empty());
+    }
+
+    #[tokio::test]
+    async fn idle_receive_cancellation_returns_original_marker_and_partial_report() {
+        use super::super::test_assets::{frame, Stream};
+        use std::{
+            pin::Pin,
+            task::{Context, Poll},
+        };
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+        struct Silent(Stream);
+        impl AsyncRead for Silent {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                let before = buf.filled().len();
+                match Pin::new(&mut self.0).poll_read(cx, buf) {
+                    Poll::Ready(Ok(())) if before == buf.filled().len() => Poll::Pending,
+                    other => other,
+                }
+            }
+        }
+        impl AsyncWrite for Silent {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                b: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Pin::new(&mut self.0).poll_write(cx, b)
+            }
+            fn poll_flush(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.0).poll_flush(cx)
+            }
+            fn poll_shutdown(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.0).poll_shutdown(cx)
+            }
+        }
+        let mut client = super::super::RestoreServiceClient::connect(Silent(Stream::new(
+            frame(4, &[]),
+            usize::MAX,
+        )))
+        .await
+        .unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let trigger = flag.clone();
+        let sender = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            trigger.store(true, Ordering::Release);
+        });
+        let error = tokio::time::timeout(
+            Duration::from_millis(150),
+            run_experimental_restore_loop(
+                &mut client,
+                RestoreStateMachine::new(),
+                |_, _| Ok(Vec::new()),
+                Duration::from_secs(10),
+                Some(flag),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Cancelled);
+        assert_eq!(
+            execution_report(&error).final_state,
+            RestoreState::Failed(RestoreFailure::Cancelled)
+        );
+        assert!(crate::test_native::has_source::<crate::OperationCancelled>(
+            &error
+        ));
+        sender.await.unwrap();
+    }
 
     #[test]
     fn state_machine_transitions_through_normal_update_flow() {
@@ -612,7 +837,10 @@ mod tests {
         assert_eq!(report.final_state, RestoreState::Completed);
         assert_eq!(report.progress_percent, Some(85));
         assert_eq!(report.late_messages_count, 0);
-        assert_eq!(report.data_requests_served, ["SystemImageData"]);
+        assert!(
+            report.data_requests_served.is_empty(),
+            "observed request is not served data"
+        );
     }
 
     #[test]
@@ -642,7 +870,11 @@ mod tests {
             .unwrap();
         // 1 header + 5 data chunks (4 * 128KB + 1 * 88KB) + 1 done = 7 messages
         assert_eq!(chunks.len(), 7);
-        assert_eq!(sm.total_data_bytes_transferred, 600 * 1024);
+        assert_eq!(sm.total_prepared_bytes, 600 * 1024);
+        assert_eq!(
+            sm.total_data_bytes_transferred, 0,
+            "codec preparation is not a transport write"
+        );
 
         // Test safety transfer limit
         sm.max_data_transfer_limit = 1024 * 1024; // 1 MiB limit

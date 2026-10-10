@@ -265,7 +265,7 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(report["contract"])
         self.assertEqual(report["id"], "traditional-usb")
         evidence = self.session.finish(fixture_provenance(), device=device)
-        self.assertTrue(evidence["real_device_executed"])
+        self.assertFalse(evidence["real_device_executed"])
         data = (self.session.evidence / "report.json").read_bytes()
         self.assertNotIn(udid.encode(), data)
 

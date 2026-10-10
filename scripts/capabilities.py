@@ -19,7 +19,11 @@ def source_inventory():
     body = source.split("enum Commands {", 1)[1].split("\n}", 1)[0]
     for variant, module in re.findall(r"^    (\w+)\(cmd::(\w+)::\w+\),$", body, re.M):
         name = re.sub(r"(?<!^)(?=[A-Z])", "-", variant).lower()
-        commands["cli:" + name] = f"crates/ios-cli/src/cmd/{module}.rs"
+        path = ROOT / f"crates/ios-cli/src/cmd/{module}"
+        entry = path.with_suffix(".rs")
+        if not entry.is_file():
+            entry = path / "mod.rs"
+        commands["cli:" + name] = entry.relative_to(ROOT).as_posix()
     services = {}
     source = (ROOT / "crates/ios-core/src/services/mod.rs").read_text(encoding="utf-8")
     for module in re.findall(r"(?m)^pub mod (\w+);$", source):

@@ -59,6 +59,9 @@ struct Check {
     detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<&'static str>,
+    #[serde(skip)]
+    #[cfg(target_os = "macos")]
+    remoted_running: Option<bool>,
 }
 
 impl Check {
@@ -68,6 +71,8 @@ impl Check {
             status,
             detail: detail.into(),
             hint: None,
+            #[cfg(target_os = "macos")]
+            remoted_running: None,
         }
     }
 
@@ -149,6 +154,9 @@ impl DoctorCmd {
         rsd: Option<&device::rsd::Request>,
     ) -> Result<()> {
         let work = async {
+            #[cfg(target_os = "macos")]
+            let mut host = self.inspect().await;
+            #[cfg(not(target_os = "macos"))]
             let host = self.inspect().await;
             let timeout = Duration::from_secs(self.timeout);
             let device = match rsd {
@@ -157,6 +165,27 @@ impl DoctorCmd {
                 }
                 None => device::inspect(&device::NativeSource, udid, timeout).await,
             };
+            #[cfg(target_os = "macos")]
+            if rsd.is_some() {
+                let after = probe_remoted_coexistence(timeout).await;
+                let selected_rsd_ok = device
+                    .checks
+                    .iter()
+                    .any(|check| check.id == "rsd_services" && check.status == Status::Ok);
+                if let Some(check) = host
+                    .checks
+                    .iter_mut()
+                    .find(|check| check.id == "remoted_coexistence")
+                {
+                    if check.remoted_running == Some(true)
+                        && after.remoted_running == Some(true)
+                        && selected_rsd_ok
+                    {
+                        check.status = Status::Ok;
+                        check.detail = "The selected existing RSD directory was read successfully while launchctl observed the system remoted process running both before and after the query.".into();
+                    }
+                }
+            }
             Ok(TargetReport::new(host, device))
         };
         let mut report = cancellable(work, tokio::signal::ctrl_c()).await?;
@@ -221,19 +250,19 @@ impl DoctorCmd {
                 "platform_usb",
                 deadline,
                 Status::Warning,
-                probe_platform_usb()
+                probe_platform_usb(deadline)
             ),
             bounded(
                 "platform_route",
                 deadline,
                 Status::Warning,
-                probe_platform_route()
+                probe_platform_route(self.rsd_address)
             ),
             bounded(
                 "remoted_coexistence",
                 deadline,
                 Status::Warning,
-                probe_remoted_coexistence()
+                probe_remoted_coexistence(deadline)
             ),
             bounded(
                 "ddi_directory",
@@ -564,7 +593,54 @@ async fn probe_mdns(window: Duration) -> Check {
     }
 }
 
-async fn probe_platform_usb() -> Check {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+async fn bounded_host_command(
+    mut command: tokio::process::Command,
+    budget: Duration,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    use tokio::io::AsyncReadExt;
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("host probe stdout unavailable")?;
+    let work = async {
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = stdout.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            anyhow::ensure!(
+                bytes.len() + read <= 1024 * 1024,
+                "host probe output bound exceeded"
+            );
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+        Ok::<_, anyhow::Error>((child.wait().await?, bytes))
+    };
+    // Reserve a margin inside the caller's public probe deadline so an expired
+    // child can be killed and the original process handle awaited.
+    match tokio::time::timeout(budget.saturating_sub(Duration::from_millis(100)), work).await {
+        Ok(Ok(result)) => Ok(result),
+        outcome => {
+            child.start_kill()?;
+            let _ = child.wait().await?;
+            match outcome {
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(error.into()),
+                Ok(Ok(_)) => unreachable!(),
+            }
+        }
+    }
+}
+
+async fn probe_platform_usb(_budget: Duration) -> Check {
     #[cfg(target_os = "linux")]
     {
         let sys_bus = std::path::Path::new("/sys/bus/usb/devices");
@@ -605,88 +681,111 @@ async fn probe_platform_usb() -> Check {
             .hint("Check that sysfs is mounted and USB controller kernel modules are loaded.")
         }
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let apple_driver = std::path::Path::new(
-            r"C:\Program Files\Common Files\Apple\Mobile Device Support\Drivers\usbaapl64.sys",
-        )
-        .exists()
-            || std::path::Path::new(
-                r"C:\Program Files (x86)\Common Files\Apple\Mobile Device Support\Drivers\usbaapl.sys",
-            )
-            .exists();
-        if apple_driver {
-            Check::new(
-                "platform_usb",
-                Status::Ok,
-                "USB host subsystem operational: Apple Mobile Device USB driver (usbaapl) installed on Windows.",
-            )
+        let command = if cfg!(target_os = "windows") {
+            let mut command = tokio::process::Command::new("powershell.exe");
+            command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference='Stop'; $d=@(Get-CimInstance Win32_PnPEntity -Filter \"Present = TRUE AND PNPDeviceID LIKE 'USB%'\"); @{total=$d.Count;apple=@($d | Where-Object {$_.PNPDeviceID -match 'VID_05AC'}).Count;failed=@($d | Where-Object {$_.ConfigManagerErrorCode -ne 0}).Count} | ConvertTo-Json -Compress"]);
+            command
         } else {
-            Check::new(
+            let mut command = tokio::process::Command::new("/usr/sbin/ioreg");
+            command.args(["-p", "IOUSB", "-l"]);
+            command
+        };
+        match bounded_host_command(command, _budget).await {
+            Ok((status, stdout)) if status.success() => {
+                if cfg!(target_os = "windows") {
+                    match serde_json::from_slice::<serde_json::Value>(&stdout) {
+                        Ok(value)
+                            if value["total"].is_u64()
+                                && value["apple"].is_u64()
+                                && value["failed"].is_u64() =>
+                        {
+                            let failed = value["failed"].as_u64().unwrap();
+                            Check::new("platform_usb", if failed == 0 { Status::Ok } else { Status::Warning },
+                                format!("Enumerated {} present USB PnP entries, {} Apple entries, {} entries with a driver error; enumeration does not establish device trust or service connectivity.", value["total"], value["apple"], failed))
+                        }
+                        _ => Check::new(
+                            "platform_usb",
+                            Status::Unknown,
+                            "USB PnP enumeration returned an unrecognized response.",
+                        ),
+                    }
+                } else {
+                    let text = String::from_utf8_lossy(&stdout);
+                    let total = text.matches("idVendor").count();
+                    let apple = text
+                        .lines()
+                        .filter(|line| line.contains("idVendor") && line.contains("= 1452"))
+                        .count();
+                    Check::new("platform_usb", if total > 0 { Status::Ok } else { Status::Unknown },
+                        format!("Enumerated {total} IOUSB vendor entries, including {apple} Apple entries; enumeration does not establish device trust or service connectivity."))
+                }
+            }
+            _ => Check::new(
                 "platform_usb",
-                Status::Ok,
-                "USB host subsystem operational on Windows; Win32 USB subsystem accessible.",
-            )
+                Status::Unknown,
+                "Platform USB enumeration could not complete or exceeded its output limit.",
+            ),
         }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Check::new(
-            "platform_usb",
-            Status::Ok,
-            "USB host subsystem operational on macOS.",
-        )
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Check::new(
             "platform_usb",
-            Status::Ok,
-            "USB host subsystem operational.",
+            Status::Unknown,
+            "No USB enumeration adapter is available for this platform.",
         )
     }
 }
 
-async fn probe_platform_route() -> Check {
-    match tokio::net::UdpSocket::bind("[::]:0").await {
-        Ok(_) => Check::new(
+async fn probe_platform_route(address: Option<SocketAddrV6>) -> Check {
+    let Some(address) = address else {
+        return Check::new(
             "platform_route",
-            Status::Ok,
-            "Host network stack supports IPv6 route binding required for RSD and CoreDevice tunnels.",
-        ),
-        Err(_) => Check::new(
-            "platform_route",
-            Status::Warning,
-            "Host network stack could not bind an IPv6 socket for routing diagnostics.",
+            Status::Unknown,
+            "No existing target RSD endpoint selected for route observation.",
         )
-        .hint("Enable IPv6 in host network settings to support modern iOS 17+ RSD tunnels."),
+        .hint(
+            "Select --udid and --rsd-address for a bounded read-only route and RSD observation.",
+        );
+    };
+    match tokio::net::TcpStream::connect(address).await {
+        Ok(stream) => match stream.local_addr() {
+            Ok(local) if !local.ip().is_unspecified() => Check::new("platform_route", Status::Ok,
+                "The selected existing IPv6 RSD endpoint accepted TCP over a concrete local route; RSD identity and services are checked separately."),
+            _ => Check::new("platform_route", Status::Unknown, "The selected connection did not expose a concrete local route."),
+        },
+        Err(error) => Check::new("platform_route", Status::Warning,
+            format!("The selected existing RSD endpoint could not be reached ({}).", ios_core::classify_error(&error))),
     }
 }
 
-async fn probe_remoted_coexistence() -> Check {
+async fn probe_remoted_coexistence(_budget: Duration) -> Check {
     #[cfg(target_os = "macos")]
     {
-        let sock = std::path::Path::new("/var/run/com.apple.remoted.sock");
-        if sock.exists() {
-            Check::new(
-                "remoted_coexistence",
-                Status::Ok,
-                "macOS native remoted socket detected at /var/run/com.apple.remoted.sock; coexistence supported without service termination.",
-            )
-        } else {
-            Check::new(
-                "remoted_coexistence",
-                Status::Ok,
-                "macOS native remoted socket is not active; no coexistence contention detected.",
-            )
+        let mut command = tokio::process::Command::new("/bin/launchctl");
+        command.args(["print", "system/com.apple.remoted"]);
+        let output = bounded_host_command(command, _budget).await;
+        match output {
+            Ok((status, stdout)) if status.success() => {
+                let running = String::from_utf8_lossy(&stdout).lines().any(|line| line.trim() == "state = running");
+                let mut check = Check::new("remoted_coexistence", Status::Unknown,
+                    "launchctl observed the system remoted service. Coexistence requires a successful selected existing RSD observation while this service remains running; host enumeration alone does not establish it.");
+                check.remoted_running = Some(running);
+                check
+            },
+            _ => Check::new("remoted_coexistence", Status::Unknown,
+                "The system remoted service state could not be observed; no coexistence conclusion is available."),
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         Check::new(
             "remoted_coexistence",
-            Status::Ok,
-            "The remoted daemon is macOS-specific; no native daemon conflict on this platform.",
+            Status::Unknown,
+            "macOS remoted coexistence is not applicable on this host.",
         )
     }
 }
@@ -706,47 +805,66 @@ async fn probe_ddi_directory() -> Check {
         ));
     }
 
-    for dir in &search_paths {
-        if dir.is_dir() {
-            let mut ddi_files = 0;
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.ends_with(".dmg") || name_str.contains("DeveloperDiskImage") {
-                        ddi_files += 1;
-                    }
-                }
+    inspect_ddi_directories(&search_paths)
+}
+
+fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
+    let mut queue: std::collections::VecDeque<_> =
+        search_paths.iter().cloned().map(|path| (path, 0)).collect();
+    let mut regular_images = 0usize;
+    let mut signed_pairs = 0usize;
+    let mut inspected = 0usize;
+    let mut unavailable = 0usize;
+    while let Some((directory, depth)) = queue.pop_front() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => {
+                unavailable += 1;
+                continue;
             }
-            if ddi_files > 0 {
-                return Check::new(
-                    "ddi_directory",
-                    Status::Ok,
-                    format!(
-                        "Local DDI directory found at '{}' containing {ddi_files} image file(s).",
-                        dir.display()
-                    ),
-                );
-            } else {
-                return Check::new(
-                    "ddi_directory",
-                    Status::Warning,
-                    format!(
-                        "Local DDI directory found at '{}', but contains no DeveloperDiskImage files.",
-                        dir.display()
-                    ),
-                )
-                .hint("Place DeveloperDiskImage.dmg and .signature matching target iOS versions into this directory.");
+        };
+        for entry in entries {
+            inspected += 1;
+            if inspected > 4096 {
+                return Check::new("ddi_directory", Status::Unknown, "DDI directory scan reached its 4096-entry limit; no usability conclusion is available.");
+            }
+            let Ok(entry) = entry else {
+                unavailable += 1;
+                continue;
+            };
+            let Ok(kind) = entry.file_type() else {
+                unavailable += 1;
+                continue;
+            };
+            // Do not follow symlinks/reparse points outside the selected roots.
+            if kind.is_dir() && depth < 2 {
+                queue.push_back((entry.path(), depth + 1));
+                continue;
+            }
+            if !kind.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("dmg")
+            {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                unavailable += 1;
+                continue;
+            };
+            if metadata.len() == 0 {
+                continue;
+            }
+            regular_images += 1;
+            let signature = entry.path().with_extension("dmg.signature");
+            if std::fs::symlink_metadata(&signature)
+                .is_ok_and(|meta| meta.is_file() && meta.len() > 0 && meta.len() <= 1024 * 1024)
+            {
+                signed_pairs += 1;
             }
         }
     }
-
-    Check::new(
-        "ddi_directory",
-        Status::Warning,
-        "No local DeveloperDiskImage repository found at standard locations (~/.ios/ddi).",
-    )
-    .hint("Create ~/.ios/ddi and place DeveloperDiskImage files or configure IOS_DDI_PATH.")
+    Check::new("ddi_directory", if regular_images == 0 { Status::Warning } else { Status::Unknown },
+        format!("Discovered {regular_images} nonempty regular DDI image files and {signed_pairs} nonempty signature companions; {unavailable} directory entries were unavailable. Target version/manifest matching and cryptographic acceptance remain unprobed."))
+        .hint("Select the target and use its image-mounter diagnostics to observe mounted-image usability; directory discovery alone is insufficient.")
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
@@ -928,37 +1046,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn platform_probes_produce_valid_checks() {
-        let usb = probe_platform_usb().await;
-        assert_eq!(usb.id, "platform_usb");
-        assert!(usb.status == Status::Ok || usb.status == Status::Warning);
-
-        let route = probe_platform_route().await;
+    async fn unselected_route_and_remoted_are_not_healthy_observations() {
+        let route = probe_platform_route(None).await;
         assert_eq!(route.id, "platform_route");
-        assert!(route.status == Status::Ok || route.status == Status::Warning);
+        assert_eq!(route.status, Status::Unknown);
 
-        let remoted = probe_remoted_coexistence().await;
+        let remoted = probe_remoted_coexistence(Duration::from_secs(3)).await;
         assert_eq!(remoted.id, "remoted_coexistence");
-        assert_eq!(remoted.status, Status::Ok);
-
-        let ddi = probe_ddi_directory().await;
-        assert_eq!(ddi.id, "ddi_directory");
-        assert!(ddi.status == Status::Ok || ddi.status == Status::Warning);
+        assert_eq!(remoted.status, Status::Unknown);
     }
 
     #[tokio::test]
-    async fn ddi_probe_respects_custom_environment_path() {
+    async fn ddi_discovery_rejects_named_directory_and_continues_later_roots() {
         let temp_dir = std::env::temp_dir().join(format!("test_ddi_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let dmg_path = temp_dir.join("DeveloperDiskImage.dmg");
-        std::fs::write(&dmg_path, b"dummy").unwrap();
-
-        std::env::set_var("IOS_DDI_PATH", &temp_dir);
-        let check = probe_ddi_directory().await;
+        std::fs::create_dir(&dmg_path).unwrap();
+        let check = inspect_ddi_directories(std::slice::from_ref(&temp_dir));
         assert_eq!(check.id, "ddi_directory");
-        assert_eq!(check.status, Status::Ok);
-        assert!(check.detail.contains("image file(s)"));
-        std::env::remove_var("IOS_DDI_PATH");
+        assert_eq!(check.status, Status::Warning);
+        assert!(check.detail.contains("Discovered 0 nonempty regular"));
+        let later = temp_dir.join("later");
+        std::fs::create_dir(&later).unwrap();
+        std::fs::write(later.join("DeveloperDiskImage.dmg"), b"synthetic-image").unwrap();
+        std::fs::write(
+            later.join("DeveloperDiskImage.dmg.signature"),
+            b"synthetic-signature",
+        )
+        .unwrap();
+        let empty = temp_dir.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let check = inspect_ddi_directories(&[empty, later]);
+        assert_eq!(check.status, Status::Unknown);
+        assert!(check.detail.contains("Discovered 1 nonempty regular"));
+        assert!(check.detail.contains("1 nonempty signature companions"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

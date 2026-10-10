@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 mod error_mapping;
 pub mod preflight;
+pub mod restored;
 pub mod state_machine;
 pub mod tss;
 use error_mapping::{native_h2, native_xpc};
@@ -200,6 +201,7 @@ pub struct RestoreServiceClient<S> {
     framer: H2Framer<S>,
     next_msg_id: u64,
     control_messages: crate::xpc::message::XpcMessageBuffer,
+    terminal: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
@@ -213,6 +215,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
             framer,
             next_msg_id: 1,
             control_messages: crate::xpc::message::XpcMessageBuffer::new(),
+            terminal: false,
         })
     }
 
@@ -313,6 +316,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         Ok(RestoreLifecycleEvent::from_xpc_dictionary(&body))
     }
 
+    /// Seal a cancelled/failed borrowed operation. Partial H2 reads or writes
+    /// cannot safely be resumed as an unrelated command on this connection.
+    pub fn invalidate(&mut self) {
+        self.terminal = true;
+    }
+
     async fn validate_command(
         &mut self,
         command: &str,
@@ -335,6 +344,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
         &mut self,
         body: XpcValue,
     ) -> Result<IndexMap<String, XpcValue>, RestoreError> {
+        if self.terminal {
+            return Err(RestoreError::Protocol(
+                "restore control transport is terminal".into(),
+            ));
+        }
         let request = crate::xpc::message::encode_message(&XpcMessage {
             flags: crate::xpc::message::flags::ALWAYS_SET
                 | crate::xpc::message::flags::DATA
@@ -353,6 +367,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RestoreServiceClient<S> {
     }
 
     async fn recv_control_message(&mut self) -> Result<XpcMessage, RestoreError> {
+        if self.terminal {
+            return Err(RestoreError::Protocol(
+                "restore control transport is terminal".into(),
+            ));
+        }
         loop {
             if let Some(message) = self.try_take_pending_control_message()? {
                 if message.flags & crate::xpc::message::flags::FILE_TX_STREAM_REQUEST != 0 {
@@ -606,7 +625,7 @@ pub fn restore_lifecycle_event_to_json(event: &RestoreLifecycleEvent) -> serde_j
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
     use super::*;
 
@@ -934,7 +953,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn experimental_restore_loop_runs_against_simulated_service_and_produces_report() {
+    async fn experimental_remote_control_loop_rejects_unserved_firmware_even_if_peer_sends_success()
+    {
         let (client, mut server) = tokio::io::duplex(32 * 1024);
 
         let server_task = tokio::spawn(async move {
@@ -1026,31 +1046,34 @@ mod tests {
                 ])),
             )
             .await;
+            assert_eq!(
+                server.read(&mut [0]).await.unwrap(),
+                0,
+                "failed control client must be dropped, without pretend firmware replies"
+            );
         });
 
         let mut client = RestoreServiceClient::connect(client).await.unwrap();
         let sm = state_machine::RestoreStateMachine::new();
-        let report = state_machine::run_experimental_restore_loop(
+        let error = state_machine::run_experimental_restore_loop(
             &mut client,
             sm,
-            |_dt, _port| Ok(vec![1, 2, 3, 4]),
+            |_dt, _port| panic!("normal control service has no restored data transport"),
             std::time::Duration::from_secs(5),
             None,
         )
         .await
-        .unwrap();
-
-        assert_eq!(report.final_state, state_machine::RestoreState::Completed);
-        assert_eq!(report.progress_percent, Some(90));
-        assert_eq!(report.checkpoints_reached, ["nor_complete"]);
-        assert_eq!(report.data_requests_served, ["SystemImageData"]);
-        assert!(report
-            .operations_observed
-            .contains(&"Flashing NOR".to_string()));
-        assert!(report
-            .operations_observed
-            .contains(&"Verifying RootFS".to_string()));
-        assert!(!report.protocol_gaps.tss_live_signing.is_empty());
+        .unwrap_err();
+        assert!(crate::test_native::has_source::<
+            state_machine::RestoreExecutionError,
+        >(&error));
+        assert!(client
+            .get_nonces()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("terminal"));
+        drop(client);
 
         server_task.await.unwrap();
     }

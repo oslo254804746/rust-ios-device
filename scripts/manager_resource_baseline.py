@@ -35,14 +35,26 @@ def digest(path):
     return value.hexdigest()
 
 
+def fixture_manifest(source):
+    """Include the ordinary Rust child modules of the benchmark fixture."""
+    source = Path(source)
+    paths = [source]
+    directory = source.with_suffix("")
+    if directory.is_dir():
+        paths.extend(sorted(directory.rglob("*.rs")))
+    return {path.relative_to(source.parent).as_posix(): digest(path) for path in paths}
+
+
 def read_json(path):
     if path.stat().st_size > RECEIPT_LIMIT:
         raise ValueError("receipt exceeds the documented 4 MiB bound")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path, value):
-    text = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+def write_json(path, value, compact=False):
+    text = json.dumps(value, indent=None if compact else 2,
+                      separators=(",", ":") if compact else None,
+                      sort_keys=True, allow_nan=False) + "\n"
     if len(text.encode("utf-8")) > RECEIPT_LIMIT:
         raise ValueError("receipt exceeds the documented 4 MiB bound")
     path.write_text(text, encoding="utf-8")
@@ -86,57 +98,18 @@ def native_executable(path):
 
 
 def bounded_capture(command, environment, destination, timeout):
-    start = time.monotonic()
-    process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    captured = 0
-    failure = None
-    selector = None
-    try:
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
-        with destination.open("wb") as output:
-            while selector.get_map():
-                remaining = timeout - (time.monotonic() - start)
-                if remaining <= 0:
-                    failure = "owned-test-process-timeout"
-                    break
-                events = selector.select(min(remaining, 0.25))
-                for key, _ in events:
-                    chunk = os.read(key.fileobj.fileno(), 8192)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    admitted = min(len(chunk), CAPTURE_LIMIT - captured)
-                    output.write(chunk[:admitted])
-                    captured += admitted
-                    if admitted != len(chunk):
-                        failure = "bounded-output-exceeded"
-                        break
-                if failure:
-                    break
-        if failure:
-            # Only the subprocess created above belongs to this runner. A
-            # killed fixture never receives a successful native cleanup receipt.
-            process.kill()
-        try:
-            returncode = process.wait(timeout=max(1, timeout - (time.monotonic() - start)))
-        except subprocess.TimeoutExpired:
-            failure = "owned-test-process-timeout"
-            process.kill()
-            returncode = process.wait()
-    except BaseException:
-        process.kill()
-        process.wait()
-        raise
-    finally:
-        if selector is not None:
-            selector.close()
-        process.stdout.close()
+    from diagnostics import capture
+    result = capture(command, env=environment, timeout=timeout, max_bytes=CAPTURE_LIMIT)
+    with destination.open("wb") as output:
+        output.write(result.stdout)
+        output.write(result.stderr)
+    failure = ("owned-test-process-timeout" if result.timed_out else
+               "bounded-output-exceeded" if result.overflow else
+               "owned-test-process-incomplete" if result.incomplete or not result.cleanup_complete else None)
     return {
-        "returncode": returncode, "elapsed_seconds": time.monotonic() - start,
-        "captured_bytes": captured, "capture_limit_bytes": CAPTURE_LIMIT,
-        "failure": failure, "owned_process_reaped": True,
+        "returncode": result.returncode, "elapsed_seconds": result.duration_ms / 1000,
+        "captured_bytes": len(result.stdout) + len(result.stderr), "capture_limit_bytes": CAPTURE_LIMIT,
+        "failure": failure, "owned_process_reaped": result.cleanup_complete,
     }
 
 
@@ -245,16 +218,33 @@ def summarize(receipt):
             positive_last_minus_first_requires_attribution=values[-1] > values[0],
         )
     workloads = {}
+    workload_groups = defaultdict(list)
+    for row in receipt.get("workload_samples", []):
+        metrics = row.get("metrics", {})
+        require(metrics.get("status") == "passed" and isinstance(metrics.get("production_path"), str), "workload lacks production-path receipt")
+        if row["workload"] == "throughput":
+            require(metrics.get("integrity_verified") is True, "native throughput payload was not verified")
+        elif row["workload"] == "file_transfer":
+            require(metrics.get("integrity_verified") is True and metrics.get("owned_files_removed") is True and metrics.get("strict_peer_eof") is True, "AFC workload cleanup/integrity incomplete")
+        elif row["workload"] == "service_stream":
+            require(metrics.get("stream_duration_ns", 0) >= metrics.get("requested_duration_ns", 1) and metrics.get("strict_peer_eof") is True and metrics.get("dropped_events") == 0, "service workload duration/cleanup incomplete")
+        else:
+            raise ValueError("unknown production workload")
+        workload_groups[(row["workload"], row["devices"])].append(metrics)
+    for (workload, devices), metrics in sorted(workload_groups.items()):
+        name = workload + ":" + str(devices)
+        numeric = {key: distribution([value[key] for value in metrics])
+                   for key in metrics[0] if all(type(value.get(key)) in (int, float) for value in metrics)}
+        workloads[name] = {"status": "OBSERVED", "production_path": metrics[0]["production_path"], "devices": devices, "samples": len(metrics), "metrics": numeric}
     for key in ("throughput", "file_transfer", "service_stream"):
         val = receipt.get(key)
         if isinstance(val, dict) and val.get("status") == "passed":
-            workloads[key] = val
+            workloads["legacy_generic_" + key] = dict(val, interpretation="generic record; does not satisfy a production workload")
 
     not_run_dict = {}
     for key in ("throughput", "file_transfer", "service_stream", "physical_devices"):
         val = receipt.get(key)
-        if not (isinstance(val, dict) and val.get("status") == "passed"):
-            not_run_dict[key] = val or {"status": "NOT_RUN", "reason": "unspecified"}
+        not_run_dict[key] = val if isinstance(val, dict) and val.get("status") == "NOT_RUN" else {"status": "NOT_RUN", "reason": "physical product workload receipt unavailable"}
 
     return {
         "latency_distributions": latencies, "released_longrun_resources": resources,
@@ -267,7 +257,7 @@ def summarize(receipt):
             "tokio": "Handle::current().metrics().num_alive_tasks() on dedicated 2-worker runtime",
             "rss_fd_socket": "Linux /proc/self/status and /proc/self/fd readlink; own sampling directory included in fd count",
             "active_resource_scope": "whole test process, including owned fixture TCP peers, proxy clients and authenticated HTTP connections",
-            "workloads": "synthetic socket stream and framed packet transfer benchmarks for throughput, file staging, and service streams",
+            "workloads": "manager original UserspaceTunDevice ICMPv6; AfcClient with real disk fixture; SyslogStream framing/vis decoding with actual sustained window; physical TCP/AFC/DTX remain NOT_RUN",
         },
         "not_run": not_run_dict,
     }
@@ -280,24 +270,29 @@ def run_command(args):
             "revision must be the exact forty-character tested source commit")
     require(1 <= args.samples <= 20 and 1 <= args.duration_ms <= 1800000,
             "samples/duration exceed fixture bounds")
+    require(16 <= args.workload_payload_kb <= 16384 and 1 <= args.workload_duration_ms <= 60000,
+            "workload payload/duration exceed fixture bounds")
     require(2 <= args.min_cycles <= args.max_cycles <= 256 and 0 <= args.pause_ms <= 5000,
             "cycle inputs exceed fixture bounds")
     compiler = bounded_text(args.rust_version_file.resolve(strict=True), limit=16384)
     require(compiler and compiler.strip(), "existing compiler version evidence is required")
     fixture_source = args.fixture_source.resolve(strict=True)
     require(fixture_source.is_file(), "exact fixture source evidence is required")
+    auxiliary = fixture_source.parent / "resource_baseline_tests" / "workloads.rs"
+    require(auxiliary.is_file(), "production workload fixture source evidence is required")
     args.output.mkdir(parents=True, exist_ok=False)
     environment = os.environ.copy()
     for name, value in (
             ("SAMPLES", args.samples), ("DURATION_MS", args.duration_ms),
             ("MIN_CYCLES", args.min_cycles), ("MAX_CYCLES", args.max_cycles),
             ("PAUSE_MS", args.pause_ms), ("WORKLOAD", args.workload),
-            ("PAYLOAD_KB", args.workload_payload_kb)):
+            ("PAYLOAD_KB", args.workload_payload_kb), ("WORKLOAD_DURATION_MS", args.workload_duration_ms)):
         environment["IOS_MANAGER_BASELINE_" + name] = str(value)
     command = [str(binary), TEST, "--exact", "--ignored", "--nocapture", "--test-threads=1"]
     metadata = {
         "schema_version": 1, "label": args.label, "production_source_commit": args.revision,
         "fixture_source": str(fixture_source), "fixture_source_sha256": digest(fixture_source),
+        "fixture_auxiliary_sha256": digest(auxiliary),
         "test_overlay": "same test-only source and parent module registration added to each production revision; retain the external freeze/patch evidence",
         "test_binary": str(binary), "test_binary_sha256": digest(binary),
         "driver_sha256": digest(Path(__file__).resolve()),
@@ -308,6 +303,7 @@ def run_command(args):
         "compilation": "NOT_STARTED: existing compiled native test executable only",
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    metadata["fixture_manifest"] = fixture_manifest(args.fixture_source)
     log = args.output / "native-test.log"
     execution = bounded_capture(command, environment, log, args.duration_ms / 1000 + 300)
     metadata["execution"] = execution
@@ -322,11 +318,11 @@ def run_command(args):
     require(len(events) == receipt.get("events_emitted"), "missing bounded measurement event")
     for index, event in enumerate(events):
         require(event.get("event_index") == index, "measurement event order differs")
-    for field in ("latency_samples", "resource_samples", "rounds"):
+    for field in ("latency_samples", "resource_samples", "rounds", "workload_samples"):
         pending = receipt.get(field, [])
         receipt[field] = [row for event in events for row in event.get(field, [])] + pending
     receipt["event_aggregation"] = "external driver joined ordered bounded raw events and final pending evidence"
-    write_json(args.output / "fixture.json", receipt)
+    write_json(args.output / "fixture.json", receipt, compact=True)
     write_json(args.output / "summary.json", summarize(receipt))
     metadata["fixture_json_sha256"] = digest(args.output / "fixture.json")
     metadata["summary_json_sha256"] = digest(args.output / "summary.json")
@@ -353,6 +349,8 @@ def compare_command(args):
     receipt_requirements(after)
     require(before["input"] == after["input"], "comparison requires identical fixture input")
     require(before_run["driver_sha256"] == after_run["driver_sha256"], "comparison driver differs")
+    require(before_run.get("fixture_manifest") == after_run.get("fixture_manifest")
+            and before_run.get("fixture_manifest"), "comparison fixture child modules differ or are absent")
     require(before_run["fixture_source_sha256"] == after_run["fixture_source_sha256"],
             "comparison fixture source differs")
     require(before_run["declared_build_mode"] == after_run["declared_build_mode"], "build modes differ")
@@ -451,12 +449,22 @@ def test_command():
         "physical_devices": {"status": "NOT_RUN", "reason": "authorized physical device and USB/Wi-Fi workflows required"},
     }
     summary = summarize(mock_receipt)
-    require("throughput" in summary["workload_metrics"], "throughput missing")
-    require("file_transfer" in summary["workload_metrics"], "file_transfer missing")
-    require("service_stream" in summary["workload_metrics"], "service_stream missing")
-    require(summary["workload_metrics"]["file_transfer"]["integrity_verified"] is True, "integrity check failed")
+    require("legacy_generic_throughput" in summary["workload_metrics"], "generic throughput missing")
+    require("legacy_generic_file_transfer" in summary["workload_metrics"], "generic file_transfer missing")
+    require("legacy_generic_service_stream" in summary["workload_metrics"], "generic service_stream missing")
     require("physical_devices" in summary["not_run"], "physical_devices not in not_run")
-    require("throughput" not in summary["not_run"], "throughput should not be in not_run when passed")
+    require("throughput" in summary["not_run"], "generic socket receipt may not satisfy native product throughput")
+    mock_receipt["workload_samples"] = [{"workload": "service_stream", "devices": 4, "metrics": {
+        "status": "passed", "production_path": "SyslogStream-next_message", "strict_peer_eof": True,
+        "stream_duration_ns": 500_000_000, "requested_duration_ns": 500_000_000, "dropped_events": 0}}]
+    require("service_stream:4" in summarize(mock_receipt)["workload_metrics"], "production sample missing")
+    mock_receipt["workload_samples"][0]["metrics"]["stream_duration_ns"] = 18_000_000
+    try:
+        summarize(mock_receipt)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("18 ms result may not satisfy a 500 ms production stream")
     print(json.dumps({"status": "passed", "test": "l04-workload-summarize-verified"}))
 
 
@@ -480,6 +488,7 @@ def main():
     run.add_argument("--pause-ms", type=int, default=250)
     run.add_argument("--workload", choices=("all", "throughput", "file_transfer", "service_stream", "idle"), default="all")
     run.add_argument("--workload-payload-kb", type=int, default=256)
+    run.add_argument("--workload-duration-ms", type=int, default=50)
     compare = commands.add_parser("compare", help="compare two completed run directories")
     compare.add_argument("--before", type=Path, required=True)
     compare.add_argument("--after", type=Path, required=True)

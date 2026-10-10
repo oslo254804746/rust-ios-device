@@ -143,6 +143,7 @@ orientation.
 | CoreDevice orientation      | `device-control orientation [left|right]`                                                        | pmd3 CoreDevice `rotate [left|right]`                                     |
 | CoreDevice HID input        | `hid --confirm button ...` (Universal touch/keyboard opens authenticated Display/RTP authorization) | pmd3 CoreDevice HID button/touch/keyboard helpers                          |
 | CoreDevice display media    | `device-control display status|video|audio` (bounded encoded RTP capture; no decoder/VNC) | pmd3 CoreDevice display/screen-stream helpers |
+| Experimental screenshot viewer | `viewer web|vnc|clipboard` (PNG pixels, scoped RFB/HTTP, native HID and text; [limits](docs/viewer.md)) | CoreDevice screencapture/HID/pasteboard workflows; HEVC and image clipboard remain incomplete |
 | Management & supervision    | `profiles`, `wifi`, `provisioning`, `prepare`, `httpproxy`, `mdm`, `power-assert`, `preboard`, `restore`, `erase`, `arbitration`, `companion`, `idam` | go-ios `profile`/`wifi`/`prepare`/`httpproxy`/`mdm`/`erase`; pmd3 `profile`/`provision`/`restore` |
 | Backup, location, screen    | `backup`, `location`, `screenshot`, `notify`                                                    | go-ios/pmd3 `backup`/`location`/`screenshot`                              |
 

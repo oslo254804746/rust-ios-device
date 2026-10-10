@@ -70,7 +70,7 @@ enum RestoreSub {
         /// Explicit DeviceClass override (e.g. d63ap, iphone14,3) if not querying device
         #[arg(long)]
         device_class: Option<String>,
-        /// Timeout in seconds per updater request
+        /// Total deadline in seconds, including connection and all updater requests
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
     },
@@ -88,7 +88,7 @@ enum RestoreSub {
         /// Required confirmation for running restore update
         #[arg(long)]
         force: bool,
-        /// Dry run mode: validates IPSW identity, nonces, and preflight without modifying device
+        /// Read-only inspection: identity, ZIP components and optional saved TSS metadata; no restore execution
         #[arg(long)]
         dry_run: bool,
         /// Overall timeout in seconds
@@ -125,6 +125,7 @@ impl RestoreCmd {
                         "execute experimental restore update",
                         "this operation attempts to modify device firmware",
                     )?;
+                    return Err(ios_core::CoreError::Unsupported("Update execution has no proven device/build path: recovery ramdisk, USB re-enumeration, IMG4 personalization, ASR/FDR and data-port owners are required; no device IO was made".into()).into());
                 }
             }
             _ => {}
@@ -136,15 +137,36 @@ impl RestoreCmd {
             RestoreSub::Reboot { .. } => Some("Reboot request accepted."),
             _ => None,
         };
-        let device = connect(
+        let total = match &self.sub {
+            RestoreSub::Update { timeout_secs, .. }
+            | RestoreSub::PreflightRequests { timeout_secs, .. } => Some(*timeout_secs),
+            _ => None,
+        };
+        let deadline = total
+            .map(|secs| {
+                anyhow::ensure!(secs > 0, "timeout must be positive");
+                tokio::time::Instant::now()
+                    .checked_add(Duration::from_secs(secs))
+                    .ok_or_else(|| anyhow::anyhow!("restore deadline overflow"))
+            })
+            .transpose()?;
+        let connection = connect(
             &udid,
             ConnectOptions {
                 tun_mode: TunMode::Userspace,
                 pair_record_path: None,
                 skip_tunnel: false,
             },
-        )
-        .await?;
+        );
+        let device = if let Some(deadline) = deadline {
+            tokio::select! {
+                biased;
+                _ = tokio::signal::ctrl_c() => return Err(std::io::Error::other(ios_core::OperationCancelled::new()).into()),
+                result = tokio::time::timeout_at(deadline, connection) => result??,
+            }
+        } else {
+            connection.await?
+        };
 
         match self.sub {
             RestoreSub::PreflightRequests {
@@ -156,7 +178,7 @@ impl RestoreCmd {
                 device_class,
                 timeout_secs,
             } => {
-                return handle_preflight_requests(
+                let operation = handle_preflight_requests(
                     &device,
                     ipsw,
                     behavior,
@@ -166,8 +188,12 @@ impl RestoreCmd {
                     device_class,
                     timeout_secs,
                     json,
-                )
-                .await;
+                );
+                return tokio::select! {
+                    biased;
+                    _ = tokio::signal::ctrl_c() => Err(std::io::Error::other(ios_core::OperationCancelled::new()).into()),
+                    result = tokio::time::timeout_at(deadline.expect("preflight deadline"), operation) => result?,
+                };
             }
             RestoreSub::Update {
                 ipsw,
@@ -177,8 +203,13 @@ impl RestoreCmd {
                 dry_run,
                 timeout_secs,
             } => {
-                return handle_update(&device, ipsw, tss, behavior, dry_run, timeout_secs, json)
-                    .await;
+                let operation =
+                    handle_update(&device, ipsw, tss, behavior, dry_run, timeout_secs, json);
+                return tokio::select! {
+                    biased;
+                    _ = tokio::signal::ctrl_c() => Err(std::io::Error::other(ios_core::OperationCancelled::new()).into()),
+                    result = tokio::time::timeout_at(deadline.expect("update inspection deadline"), operation) => result?,
+                };
             }
             _ => {}
         }
@@ -267,12 +298,40 @@ async fn read_lockdown_fallback(
 ) -> Result<plist::Value> {
     match device.lockdown_get_value(Some(primary)).await {
         Ok(val) => Ok(val),
-        Err(_) => device
-            .lockdown_get_value(Some(secondary))
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("failed to read {primary} or {secondary} from device: {e}")
-            }),
+        Err(primary_error) => {
+            device
+                .lockdown_get_value(Some(secondary))
+                .await
+                .map_err(|fallback_error| {
+                    anyhow::Error::new(IdentityQueryFailure {
+                        primary: primary_error,
+                        fallback: fallback_error,
+                    })
+                })
+        }
+    }
+}
+
+struct IdentityQueryFailure {
+    primary: ios_core::CoreError,
+    fallback: ios_core::CoreError,
+}
+impl std::fmt::Display for IdentityQueryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("both device identity queries failed")
+    }
+}
+impl std::fmt::Debug for IdentityQueryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityQueryFailure")
+            .field("primary_class", &self.primary.class())
+            .field("fallback_class", &self.fallback.class())
+            .finish_non_exhaustive()
+    }
+}
+impl std::error::Error for IdentityQueryFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.fallback)
     }
 }
 
@@ -330,7 +389,7 @@ async fn handle_preflight_requests(
         updater.iter().map(|s| s.as_str()).collect()
     };
 
-    let collected = ios_core::restore::preflight::collect_device_side_preflight_requests(
+    let outcome = ios_core::restore::preflight::collect_device_side_preflight_outcomes(
         &mut ipsw_preflight,
         &updaters_list,
         || async {
@@ -343,6 +402,7 @@ async fn handle_preflight_requests(
         Duration::from_secs(timeout_secs),
     )
     .await?;
+    let collected = &outcome.summary;
 
     if json {
         crate::output::outln!("{}", serde_json::to_string_pretty(&collected)?);
@@ -367,6 +427,13 @@ async fn handle_preflight_requests(
             crate::output::outln!("  ApParameters: {}", serde_json::to_string(ap)?);
         }
     }
+    if !outcome.failures.is_empty() {
+        return Err(anyhow::Error::new(outcome));
+    }
+    anyhow::ensure!(
+        collected.device_info_failures.is_empty(),
+        "device reported updater failures; partial results emitted"
+    );
     Ok(())
 }
 
@@ -376,9 +443,10 @@ async fn handle_update(
     tss: Option<std::path::PathBuf>,
     behavior: String,
     dry_run: bool,
-    timeout_secs: u64,
+    _timeout_secs: u64,
     json: bool,
 ) -> Result<()> {
+    anyhow::ensure!(dry_run, "restore execution has no verified Update path");
     let file = std::fs::File::open(&ipsw)
         .map_err(|e| anyhow::anyhow!("failed to open IPSW at {}: {e}", ipsw.display()))?;
 
@@ -400,97 +468,77 @@ async fn handle_update(
         device_class: &device_class,
         restore_behavior: &behavior,
     };
-    let _ipsw_preflight = ios_core::restore::preflight::IpswPreflight::open(file, selector)?;
-
-    let mut sm = ios_core::restore::state_machine::RestoreStateMachine::new();
-    sm.start_mode_transition()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    if dry_run {
-        let stream = device
-            .connect_rsd_service(ios_core::restore::SERVICE_NAME)
-            .await?;
-        let mut client = ios_core::restore::RestoreServiceClient::connect(stream).await?;
-        let nonces = client.get_nonces().await?;
-        let ap_nonce = nonces.get("ApNonce").and_then(|v| match v {
-            ios_core::XpcValue::Data(b) => Some(b.to_vec()),
-            _ => None,
-        });
-        let sep_nonce = nonces.get("SEPNonce").and_then(|v| match v {
-            ios_core::XpcValue::Data(b) => Some(b.to_vec()),
-            _ => None,
-        });
-        sm.transition_to_recovery()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        sm.receive_nonces(ap_nonce, sep_nonce)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(ref tss_path) = tss {
-            let tss_bytes = std::fs::read(tss_path)?;
-            sm.store_tss_ticket("AP", tss_bytes, None)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
-        let report = sm.generate_report();
-        if json {
-            crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            crate::output::outln!("Experimental Restore Update (Dry Run) Validation:");
-            crate::output::outln!(
-                "  Identity: board={:#x}, chip={:#x}, class={}",
-                board_id,
-                chip_id,
-                device_class
-            );
-            crate::output::outln!("  Final state: {:?}", report.final_state);
-            crate::output::outln!("  Protocol Gaps:");
-            crate::output::outln!(
-                "    - TSS Live Signing: {}",
-                report.protocol_gaps.tss_live_signing
-            );
-            crate::output::outln!(
-                "    - Erase FDR Proxy: {}",
-                report.protocol_gaps.erase_fdr_proxy
-            );
-            crate::output::outln!(
-                "    - DFU Bootstrap: {}",
-                report.protocol_gaps.dfu_bootstrap
-            );
-            crate::output::outln!(
-                "    - Wireless Tunnel: {}",
-                report.protocol_gaps.wireless_tunnel_drop
-            );
-            crate::output::outln!(
-                "    - Unknown Chipsets: {}",
-                report.protocol_gaps.unknown_chipset_prefixes
-            );
-        }
-        return Ok(());
-    }
-
+    let mut ipsw_preflight = ios_core::restore::preflight::IpswPreflight::open(file, selector)?;
+    let components = ipsw_preflight.validate_components(32 * 1024 * 1024 * 1024)?;
     let stream = device
         .connect_rsd_service(ios_core::restore::SERVICE_NAME)
         .await?;
     let mut client = ios_core::restore::RestoreServiceClient::connect(stream).await?;
-    sm.transition_to_recovery()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let report = ios_core::restore::state_machine::run_experimental_restore_loop(
-        &mut client,
-        sm,
-        |_dt, _port| Ok(Vec::new()),
-        Duration::from_secs(timeout_secs),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
+    let nonces = client.get_nonces().await?;
+    let ap_nonce = nonces.get("ApNonce").and_then(|v| match v {
+        ios_core::XpcValue::Data(b) => Some(b.to_vec()),
+        _ => None,
+    });
+    let sep_nonce = nonces.get("SEPNonce").and_then(|v| match v {
+        ios_core::XpcValue::Data(b) => Some(b.to_vec()),
+        _ => None,
+    });
+    let ap_nonce = ap_nonce.ok_or_else(|| anyhow::anyhow!("device did not provide AP nonce"))?;
+    let ecid_val = device.lockdown_get_value(Some("UniqueChipID")).await?;
+    let ecid = parse_plist_u64(&ecid_val)
+        .ok_or_else(|| anyhow::anyhow!("device returned non-numeric ECID"))?;
+    let mut tss_correlated = false;
+    if let Some(ref tss_path) = tss {
+        use std::io::Read;
+        let tss_file = std::fs::File::open(tss_path)?;
+        anyhow::ensure!(
+            tss_file.metadata()?.is_file(),
+            "saved TSS must be a regular file"
+        );
+        let mut bytes = Vec::new();
+        tss_file
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= 16 * 1024 * 1024,
+            "saved TSS exceeds byte budget"
+        );
+        let saved: plist::Value = plist::from_bytes(&bytes)?;
+        ios_core::restore::preflight::inspect_saved_tss(
+            &saved,
+            ecid,
+            board_id,
+            chip_id,
+            &ap_nonce,
+            sep_nonce.as_deref(),
+        )?;
+        tss_correlated = true;
+    }
+    let report = serde_json::json!({
+        "operation": "restore_update_inspection", "device_mode_changed": false,
+        "restore_started": false, "firmware_bytes_transferred": 0,
+        "identity": { "board_id": board_id, "chip_id": chip_id, "device_class": device_class, "ecid": ecid },
+        "components": components, "archive_crc_checked": true,
+        "saved_tss_metadata_correlated": tss_correlated,
+        "apple_ticket_signature_verified": false,
+        "execution_supported": false,
+    });
     if json {
         crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
     } else {
+        crate::output::outln!("Restore Update read-only inspection:");
         crate::output::outln!(
-            "Experimental Restore Execution Finished: {:?}",
-            report.final_state
+            "  Identity: board={:#x}, chip={:#x}, class={}",
+            board_id,
+            chip_id,
+            device_class
         );
-        crate::output::outln!("  Checkpoints: {:?}", report.checkpoints_reached);
-        crate::output::outln!("  Served Data Requests: {:?}", report.data_requests_served);
+        crate::output::outln!(
+            "  ZIP components and CRC checked; saved TSS metadata correlated: {tss_correlated}"
+        );
+        crate::output::outln!(
+            "  Apple ticket signature verification and restore execution remain unsupported."
+        );
     }
     Ok(())
 }

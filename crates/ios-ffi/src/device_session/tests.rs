@@ -46,6 +46,48 @@ unsafe fn session(address: &str) -> *mut IosDeviceSession {
 }
 
 #[test]
+fn zero_logs_require_valid_checked_owner_and_never_open_a_socket() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("tcp://{}", listener.local_addr().unwrap());
+    unsafe {
+        let mut session = session(&endpoint);
+        let mut handle = std::ptr::null_mut();
+        assert_eq!(
+            ios_device_handle_from_session(session, &mut handle),
+            IOS_SUCCESS
+        );
+        let mut output = std::ptr::null_mut();
+        assert_eq!(
+            ios_device_syslog_read_json(handle, 0, 1000, &mut output),
+            IOS_SUCCESS
+        );
+        assert_eq!(CStr::from_ptr(output).to_bytes(), b"[]");
+        assert_eq!(ios_free_string_checked(&mut output), IOS_SUCCESS);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(ios_device_services_close(handle, 1000), IOS_SUCCESS);
+        assert_eq!(
+            ios_device_syslog_read_json(handle, 0, 1000, &mut output),
+            IOS_ERR_CORE
+        );
+        assert_eq!(class(), "precondition");
+        assert!(output.is_null());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(ios_device_close_checked(&mut handle), IOS_SUCCESS);
+        assert_eq!(
+            ios_device_session_destroy_checked(&mut session),
+            IOS_SUCCESS
+        );
+    }
+}
+
+#[test]
 fn null_owners_output_clearing_and_repeated_checked_destroy() {
     unsafe {
         let mut session = std::ptr::null_mut();

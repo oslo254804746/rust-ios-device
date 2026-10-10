@@ -11,6 +11,34 @@ const A: &str = "synthetic-device-a";
 const B: &str = "synthetic-device-b";
 const LOCAL_BUDGET: Duration = Duration::from_secs(1);
 
+#[tokio::test]
+async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear() {
+    let source = FakeSource::new();
+    source.script(A, [Behavior::Success, Behavior::Success]);
+    source.script(B, [Behavior::Success, Behavior::Success]);
+    let charged = std::mem::size_of::<ManagedDevice>() + A.len();
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
+    start(state.clone(), A).await.unwrap();
+    assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
+    let error = start(state.clone(), B).await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(state.list_records().await.len(), 1);
+    assert_eq!(
+        source.drops.load(Ordering::SeqCst),
+        1,
+        "rejected original owner must be dropped"
+    );
+    state.clear().await;
+    assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
+    start(state.clone(), B).await.unwrap();
+    state.clear().await;
+    assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
+}
+
 mod backoff_tests;
 mod bookkeeping_tests;
 mod discovery_intent_tests;

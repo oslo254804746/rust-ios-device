@@ -640,21 +640,28 @@ impl MediaStreamSession {
         }
     }
     pub async fn stop(&mut self, timeout: Duration) -> Result<(), DisplayError> {
-        if let Some(task) = self.rtcp_task.take() {
+        if let Some(task) = &self.rtcp_task {
             task.abort();
         }
-        if let Some(task) = self.drain_task.take() {
+        if let Some(task) = &self.drain_task {
             task.abort();
         }
-        let Some(mut service) = self.service.take() else {
-            return Ok(());
+        // Borrow the original handles until each join finishes. Cancelling stop
+        // during a join leaves that owner available to the next stop call.
+        let mut cleanup = join_media_task(&mut self.rtcp_task).await;
+        cleanup = finish_media_stop(cleanup, join_media_task(&mut self.drain_task).await);
+        let primary = if let Some(service) = &mut self.service {
+            tokio::time::timeout(timeout, service.stop_media_stream(self.id))
+                .await
+                .map_err(|error| {
+                    native_error(std::io::ErrorKind::TimedOut, "stop media session", error)
+                })
+                .and_then(|result| result.map(|_| ()))
+        } else {
+            Ok(())
         };
-        tokio::time::timeout(timeout, service.stop_media_stream(self.id))
-            .await
-            .map_err(|error| {
-                native_error(std::io::ErrorKind::TimedOut, "stop media session", error)
-            })??;
-        Ok(())
+        self.service.take();
+        finish_media_stop(primary, cleanup)
     }
     pub fn sender_addr(&self) -> Option<SocketAddr> {
         self.sender
@@ -680,6 +687,47 @@ impl MediaStreamSession {
     /// Pixel decoding/VNC is intentionally not part of this API; callers consume raw units.
     pub fn media_kind(&self) -> MediaKind {
         self.kind
+    }
+}
+
+async fn join_media_task(task: &mut Option<JoinHandle<()>>) -> Result<(), DisplayError> {
+    let Some(handle) = task.as_mut() else {
+        return Ok(());
+    };
+    let result = handle.await;
+    task.take();
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(native_error(
+            std::io::ErrorKind::Other,
+            "join media task",
+            error,
+        )),
+    }
+}
+
+#[derive(thiserror::Error)]
+#[error("media stream stop and task cleanup failed")]
+struct MediaStopFailure {
+    #[source]
+    primary: DisplayError,
+    #[allow(dead_code)] // Retains the original cleanup object alongside the primary source.
+    cleanup: DisplayError,
+}
+crate::redaction::error_debug!(MediaStopFailure);
+
+fn finish_media_stop(
+    primary: Result<(), DisplayError>,
+    cleanup: Result<(), DisplayError>,
+) -> Result<(), DisplayError> {
+    match (primary, cleanup) {
+        (Ok(()), result) | (result, Ok(())) => result,
+        (Err(primary), Err(cleanup)) => Err(native_error(
+            std::io::ErrorKind::Other,
+            "stop media stream and cleanup",
+            MediaStopFailure { primary, cleanup },
+        )),
     }
 }
 
@@ -1375,6 +1423,58 @@ fn build_media_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn media_task_stop_joins_original_aborted_task_before_returning() {
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let released = Arc::new(AtomicBool::new(false));
+        let task_released = released.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut task = Some(tokio::spawn(async move {
+            let _owned = OnDrop(task_released);
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        }));
+        ready.await.unwrap();
+        task.as_ref().unwrap().abort();
+        join_media_task(&mut task).await.unwrap();
+        assert!(task.is_none());
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn media_task_panic_is_retained_alongside_stop_failure() {
+        let mut task = Some(tokio::spawn(async {
+            panic!("synthetic media child failure");
+        }));
+        let cleanup = join_media_task(&mut task).await;
+        assert!(task.is_none());
+        let failure = finish_media_stop(
+            Err(DisplayError::Protocol("synthetic stop failure".into())),
+            cleanup,
+        )
+        .unwrap_err();
+        // Access the owned secondary object directly instead of accepting a stringified join error.
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&failure);
+        let mut found = false;
+        while let Some(error) = current {
+            if let Some(owned) = error.downcast_ref::<MediaStopFailure>() {
+                assert!(matches!(&owned.primary, DisplayError::Protocol(_)));
+                assert!(crate::test_native::has_source::<tokio::task::JoinError>(
+                    &owned.cleanup
+                ));
+                found = true;
+                break;
+            }
+            current = error.source();
+        }
+        assert!(found);
+    }
 
     #[tokio::test]
     async fn native_media_address_errors_are_input_without_consuming_request() {

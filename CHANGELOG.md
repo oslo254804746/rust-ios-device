@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add checked Python/C app, AFC and log operations on the common session owner,
+  native cancellation/close receipts and retained log prefixes; fix public
+  Python `Device.aclose`. Add a Windows-capable actual C ABI service fixture.
+- Repair Viewer device/port authorization and RFC 6143 DES authentication; add
+  shared PNG pixels, acknowledged HID/text pasteboard operations and original
+  native retirement owners. Full HEVC/image/orientation workflows remain incomplete.
+- Replace fabricated CDP domain results with finite WebInspector Page/PNG/Fetch
+  translations and explicit unsupported Input/Memory/Performance errors.
+- Add a distinct restored plist transport that actually sends StartRestore and
+  firmware responses; reject incomplete CLI Update execution before device IO.
+  Inspection records ZIP component checks and saved TSS metadata correlation,
+  explicitly without Apple ticket-signature verification.
+- Repair workflow package identity/cleanup, bounded log task joins, actual
+  Doctor observations, matrix fixture/hash/cleanup adapters, production load
+  measurement and Windows native-error/staged-file fixtures. Current scope and
+  remaining work: [repair record](docs/validation/review-fixes-2026-10-10.md).
+
 - Retain successful manager routes with their original grant revision/expiry,
   recover through fresh Source metadata and keep DELETE stopped across scans.
   Late intent publication restores exact original rows and fixed discovery slots

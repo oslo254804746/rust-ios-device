@@ -9,10 +9,12 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+use std::{future::Future, pin::Pin};
 
 use ios_core::session::{
-    DeviceInfoFields, DeviceQuery, DeviceQueryLimits, DeviceQueryObservation, ExistingTrustDevice,
-    OperationCancel, OperationOptions, SessionOwner, SharedAdmission, UsbmuxEndpoint,
+    DeviceInfoFields, DeviceQuery, DeviceQueryLimits, DeviceQueryObservation, DeviceServiceLimits,
+    DeviceServiceObservation, DeviceServiceRequest, ExistingTrustDevice, OperationCancel,
+    OperationOptions, SessionOwner, SharedAdmission, UsbmuxEndpoint,
 };
 use ios_core::{CoreError, ErrorClass, PairRecord};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -130,7 +132,7 @@ impl DeviceAdmission {
 }
 
 #[pyclass(module = "ios_rs", name = "DeviceCancel")]
-struct DeviceCancel {
+pub(super) struct DeviceCancel {
     inner: OperationCancel,
 }
 
@@ -218,7 +220,21 @@ fn deadline(seconds: f64) -> Result<Instant, Failure> {
         ))
 }
 
-type Outcome = Arc<Result<DeviceQueryObservation, Failure>>;
+enum Observation {
+    Query(DeviceQueryObservation),
+    Service(DeviceServiceObservation),
+}
+impl std::fmt::Debug for Observation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Query(_) => "Observation::Query",
+            Self::Service(_) => "Observation::Service",
+        })
+    }
+}
+type Outcome = Arc<Result<Observation, Failure>>;
+type ObservationFuture =
+    Pin<Box<dyn Future<Output = Result<Observation, CoreError>> + Send + 'static>>;
 
 struct Job {
     admission: Arc<Admission>,
@@ -237,7 +253,7 @@ impl Job {
     fn done(&self) -> bool {
         self.result_lock().is_some()
     }
-    fn publish(&self, outcome: Result<DeviceQueryObservation, Failure>) {
+    fn publish(&self, outcome: Result<Observation, Failure>) {
         *self.result_lock() = Some(Arc::new(outcome));
         self.changed.notify_all();
     }
@@ -273,7 +289,7 @@ impl Job {
 // The registry also sees this reservation, so a concurrent close cancels it.
 struct PendingJob {
     job: Arc<Job>,
-    prepared: Option<ios_core::session::PreparedDeviceQuery>,
+    prepared: Option<ObservationFuture>,
     permit: Option<JobPermit>,
     runtime: &'static tokio::runtime::Runtime,
 }
@@ -344,6 +360,14 @@ impl Drop for DeviceQueryReceipt {
 #[pymethods]
 impl DeviceQueryReceipt {
     #[getter]
+    fn operation_phase(&self) -> &'static str {
+        if self.job.field == "service" {
+            "device service"
+        } else {
+            QUERY_PHASE
+        }
+    }
+    #[getter]
     fn done(&self) -> bool {
         self.job.done()
     }
@@ -413,7 +437,7 @@ impl CloseReceipt {
 }
 
 #[pyclass(module = "ios_rs", name = "DeviceSession")]
-struct DeviceSession {
+pub(super) struct DeviceSession {
     device: ExistingTrustDevice,
     admission: Arc<Admission>,
     jobs: Mutex<Vec<Arc<Job>>>,
@@ -474,7 +498,9 @@ impl DeviceSession {
         jobs.push(Arc::clone(&job));
         Ok(PendingJob {
             job,
-            prepared: Some(prepared),
+            prepared: Some(Box::pin(
+                async move { prepared.await.map(Observation::Query) },
+            )),
             permit: Some(permit),
             runtime,
         })
@@ -487,6 +513,160 @@ impl DeviceSession {
             job.cancel.cancel();
         }
         CloseReceipt { jobs: jobs.clone() }
+    }
+
+    pub(super) fn local(udid: &str) -> Result<Self, CoreError> {
+        if udid.is_empty()
+            || udid.len() > 4096
+            || udid.as_bytes().contains(&0)
+            || udid.contains(['/', '\\'])
+        {
+            return Err(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid local device identifier",
+            )));
+        }
+        let admission = DEFAULT_ADMISSION.as_ref().map(Arc::clone).map_err(|_| {
+            ios_core::CoreError::Unsupported("default SDK admission unavailable".into())
+        })?;
+        let pair = PairRecord::load(udid).map_err(|e| CoreError::Io(std::io::Error::other(e)))?;
+        let owner = SessionOwner::new(admission.native.clone(), 4)?;
+        let device = ExistingTrustDevice::new(
+            udid.into(),
+            Arc::new(pair),
+            owner,
+            UsbmuxEndpoint::system()?,
+        )?;
+        Ok(Self {
+            device,
+            admission,
+            jobs: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub(super) fn from_connected(device: &ios_core::ConnectedDevice) -> Result<Self, CoreError> {
+        let admission = DEFAULT_ADMISSION
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|_| CoreError::Unsupported("default SDK admission unavailable".into()))?;
+        let owner = SessionOwner::new(admission.native.clone(), 4)?;
+        let device = device.existing_trust_device(owner, UsbmuxEndpoint::system()?)?;
+        Ok(Self {
+            device,
+            admission,
+            jobs: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn prepare_service(
+        &self,
+        request: DeviceServiceRequest,
+        timeout: f64,
+        limits: DeviceServiceLimits,
+        cancel: OperationCancel,
+    ) -> Result<PendingJob, Failure> {
+        let total = duration(timeout)?;
+        let runtime = super::RUNTIME.as_ref().map_err(Failure::Runtime)?;
+        let mut jobs = self.jobs();
+        jobs.retain(|job| !job.done());
+        if self.device.is_closed() {
+            return Err(Failure::Local(
+                ErrorClass::Precondition,
+                "device session is closed",
+            ));
+        }
+        if jobs.len() == MAX_REGISTRY {
+            return Err(Failure::Local(
+                ErrorClass::Conflict,
+                "device receipt registry is full",
+            ));
+        }
+        let permit = self.admission.try_job().ok_or(Failure::Local(
+            ErrorClass::ResourceLimit,
+            "shared native-task admission is full",
+        ))?;
+        let prepared = self
+            .device
+            .prepare_service(
+                request,
+                limits,
+                OperationOptions::new(total),
+                cancel.clone(),
+            )
+            .map_err(Failure::Core)?;
+        let job = Arc::new(Job {
+            admission: Arc::clone(&self.admission),
+            field: "service",
+            cancel,
+            result: Mutex::new(None),
+            changed: Condvar::new(),
+        });
+        jobs.push(Arc::clone(&job));
+        Ok(PendingJob {
+            job,
+            prepared: Some(Box::pin(
+                async move { prepared.await.map(Observation::Service) },
+            )),
+            permit: Some(permit),
+            runtime,
+        })
+    }
+
+    pub(super) fn run_service(
+        &self,
+        py: Python<'_>,
+        request: DeviceServiceRequest,
+        timeout: f64,
+        limits: DeviceServiceLimits,
+    ) -> PyResult<PyObject> {
+        let pending = py
+            .allow_threads(|| {
+                self.prepare_service(request, timeout, limits, OperationCancel::new())
+            })
+            .map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        let job = py.allow_threads(|| pending.launch());
+        let outcome = py
+            .allow_threads(|| job.wait(None))
+            .map_err(|e| failure(py, &e, "device service", "unknown"))?;
+        observation(py, "service", outcome.as_ref())
+    }
+
+    pub(super) fn async_service(
+        &self,
+        py: Python<'_>,
+        request: DeviceServiceRequest,
+        timeout: f64,
+        limits: DeviceServiceLimits,
+    ) -> PyResult<PyObject> {
+        self.launch_service_async(py, request, timeout, limits, OperationCancel::new(), 5.0)
+    }
+    fn launch_service_async(
+        &self,
+        py: Python<'_>,
+        request: DeviceServiceRequest,
+        timeout: f64,
+        limits: DeviceServiceLimits,
+        cancel: OperationCancel,
+        cleanup_timeout: f64,
+    ) -> PyResult<PyObject> {
+        deadline(cleanup_timeout).map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        let helper = helpers(py)?;
+        helper.getattr("require_loop")?.call0()?;
+        let observer = observer_guard(py, &self.admission)?;
+        let pending = py
+            .allow_threads(|| self.prepare_service(request, timeout, limits, cancel))
+            .map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        let receipt = Py::new(
+            py,
+            DeviceQueryReceipt {
+                job: Arc::clone(&pending.job),
+            },
+        )?;
+        let future = helper
+            .getattr("start_query")?
+            .call1((receipt, cleanup_timeout, observer))?;
+        py.allow_threads(|| pending.launch());
+        Ok(future.into())
     }
 }
 
@@ -566,7 +746,7 @@ impl DeviceSession {
     }
 
     #[getter]
-    fn closed(&self) -> bool {
+    pub(super) fn closed(&self) -> bool {
         self.device.is_closed()
     }
     #[getter]
@@ -580,7 +760,7 @@ impl DeviceSession {
 
     #[pyo3(signature = (field, *, timeout = 15.0, max_reply_wire_bytes = 1048576,
         max_output_utf8_bytes = 4096, cancel = None))]
-    fn query(
+    pub(super) fn query(
         &self,
         py: Python<'_>,
         field: &str,
@@ -612,7 +792,7 @@ impl DeviceSession {
     #[pyo3(signature = (field, *, timeout = 15.0, max_reply_wire_bytes = 1048576,
         max_output_utf8_bytes = 4096, cancel = None, cleanup_timeout = 5.0))]
     #[allow(clippy::too_many_arguments)]
-    fn query_async(
+    pub(super) fn query_async(
         &self,
         py: Python<'_>,
         field: &str,
@@ -653,8 +833,79 @@ impl DeviceSession {
         Ok(future.into())
     }
 
+    /// Read-only apps/files/file/log operations with the same owner as query.
+    #[pyo3(signature = (operation, *, path="/", max_bytes=1048576, max_messages=100, timeout=15.0,
+        reply_wire_bytes=16777216, output_bytes=1048576, max_entries=10000, max_frame_bytes=1048576, cancel=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn service(
+        &self,
+        py: Python<'_>,
+        operation: &str,
+        path: &str,
+        max_bytes: usize,
+        max_messages: usize,
+        timeout: f64,
+        reply_wire_bytes: usize,
+        output_bytes: usize,
+        max_entries: usize,
+        max_frame_bytes: usize,
+        cancel: Option<PyRef<'_, DeviceCancel>>,
+    ) -> PyResult<PyObject> {
+        let request = service_selector(operation, path, max_bytes, max_messages)
+            .map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        let limits = DeviceServiceLimits {
+            reply_wire_bytes,
+            output_bytes,
+            max_entries,
+            max_frame_bytes,
+        };
+        let cancel = cancel.map(|token| token.inner.clone()).unwrap_or_default();
+        let pending = py
+            .allow_threads(|| self.prepare_service(request, timeout, limits, cancel))
+            .map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        let job = py.allow_threads(|| pending.launch());
+        let outcome = py
+            .allow_threads(|| job.wait(None))
+            .map_err(|e| failure(py, &e, "device service", "unknown"))?;
+        observation(py, "service", outcome.as_ref())
+    }
+    #[pyo3(signature = (operation, *, path="/", max_bytes=1048576, max_messages=100, timeout=15.0,
+        reply_wire_bytes=16777216, output_bytes=1048576, max_entries=10000, max_frame_bytes=1048576, cancel=None, cleanup_timeout=5.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn service_async(
+        &self,
+        py: Python<'_>,
+        operation: &str,
+        path: &str,
+        max_bytes: usize,
+        max_messages: usize,
+        timeout: f64,
+        reply_wire_bytes: usize,
+        output_bytes: usize,
+        max_entries: usize,
+        max_frame_bytes: usize,
+        cancel: Option<PyRef<'_, DeviceCancel>>,
+        cleanup_timeout: f64,
+    ) -> PyResult<PyObject> {
+        let request = service_selector(operation, path, max_bytes, max_messages)
+            .map_err(|e| failure(py, &e, "device service", "not_started"))?;
+        self.launch_service_async(
+            py,
+            request,
+            timeout,
+            DeviceServiceLimits {
+                reply_wire_bytes,
+                output_bytes,
+                max_entries,
+                max_frame_bytes,
+            },
+            cancel.map(|token| token.inner.clone()).unwrap_or_default(),
+            cleanup_timeout,
+        )
+    }
+
     #[pyo3(signature = (cleanup_timeout = 5.0))]
-    fn close(&self, py: Python<'_>, cleanup_timeout: f64) -> PyResult<()> {
+    pub(super) fn close(&self, py: Python<'_>, cleanup_timeout: f64) -> PyResult<()> {
         let until = deadline(cleanup_timeout)
             .map_err(|e| failure(py, &e, "device close", "not_started"))?;
         let receipt = py.allow_threads(|| self.seal());
@@ -663,7 +914,7 @@ impl DeviceSession {
     }
 
     #[pyo3(signature = (cleanup_timeout = 5.0))]
-    fn aclose(&self, py: Python<'_>, cleanup_timeout: f64) -> PyResult<PyObject> {
+    pub(super) fn aclose(&self, py: Python<'_>, cleanup_timeout: f64) -> PyResult<PyObject> {
         deadline(cleanup_timeout).map_err(|e| failure(py, &e, "device close", "not_started"))?;
         let helper = helpers(py)?;
         helper.getattr("require_loop")?.call0()?;
@@ -755,6 +1006,27 @@ fn selector(field: &str) -> Result<(DeviceQuery, &'static str), Failure> {
     }
 }
 
+fn service_selector(
+    operation: &str,
+    path: &str,
+    max_bytes: usize,
+    max_messages: usize,
+) -> Result<DeviceServiceRequest, Failure> {
+    match operation {
+        "apps" => Ok(DeviceServiceRequest::ListApps),
+        "files" => Ok(DeviceServiceRequest::ListFiles { path: path.into() }),
+        "read_file" => Ok(DeviceServiceRequest::ReadFile {
+            path: path.into(),
+            max_bytes,
+        }),
+        "logs" => Ok(DeviceServiceRequest::ReadSyslog { max_messages }),
+        _ => Err(Failure::Local(
+            ErrorClass::InvalidInput,
+            "unsupported SDK service operation",
+        )),
+    }
+}
+
 fn observer_permit(py: Python<'_>, admission: &Arc<Admission>) -> PyResult<JobPermit> {
     admission.try_observer().ok_or_else(|| {
         failure(
@@ -805,11 +1077,44 @@ fn endpoint_parse(endpoint: &str) -> Result<UsbmuxEndpoint, Failure> {
 fn observation(
     py: Python<'_>,
     field: &str,
-    outcome: &Result<DeviceQueryObservation, Failure>,
+    outcome: &Result<Observation, Failure>,
 ) -> PyResult<PyObject> {
-    let output = outcome
-        .as_ref()
-        .map_err(|e| failure(py, e, QUERY_PHASE, "unknown"))?;
+    let output = match outcome.as_ref() {
+        Ok(Observation::Query(output)) => output,
+        Ok(Observation::Service(output)) => return service_observation(py, output),
+        Err(error) => {
+            let exception = failure(
+                py,
+                error,
+                if field == "service" {
+                    "device service"
+                } else {
+                    QUERY_PHASE
+                },
+                "unknown",
+            );
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+            while let Some(error) = source {
+                if let Some(partial) =
+                    error.downcast_ref::<ios_core::session::ServiceStreamFailure>()
+                {
+                    let list = pyo3::types::PyList::new_bound(py, partial.messages());
+                    exception
+                        .value_bound(py)
+                        .setattr("ios_partial_result", list)?;
+                    break;
+                }
+                source = match error.downcast_ref::<std::io::Error>() {
+                    Some(error) => error
+                        .get_ref()
+                        .map(|error| error as &(dyn std::error::Error + 'static))
+                        .or_else(|| std::error::Error::source(error)),
+                    None => error.source(),
+                };
+            }
+            return Err(exception);
+        }
+    };
     let dict = PyDict::new_bound(py);
     let metadata = PyDict::new_bound(py);
     metadata.set_item("device_id", output.metadata().device_id())?;
@@ -837,6 +1142,16 @@ fn observation(
     dict.set_item("value_present", output.value_present())?;
     dict.set_item("enable_session_ssl", output.enable_session_ssl())?;
     Ok(dict.into())
+}
+
+fn service_observation(py: Python<'_>, output: &DeviceServiceObservation) -> PyResult<PyObject> {
+    match output {
+        DeviceServiceObservation::Apps(apps) => super::apps_to_pylist(py, apps),
+        DeviceServiceObservation::Files(files) | DeviceServiceObservation::Logs(files) => {
+            super::files_to_pylist(py, files)
+        }
+        DeviceServiceObservation::Bytes(bytes) => Ok(PyBytes::new_bound(py, bytes).into()),
+    }
 }
 
 fn helpers(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
@@ -900,9 +1215,11 @@ class NativeFuture(asyncio.Future):
         return True
 
     def _annotate_cancel(self, error):
-        phase = "device query" if self.state["query"] else "device close"
+        phase = self.state["phase"]
         metadata(error, "cancelled", phase, self.receipt.done, self.receipt)
         error.__cause__ = self.state.get("native_cancel_cause")
+        if error.__cause__ is not None and hasattr(error.__cause__, "ios_partial_result"):
+            error.ios_partial_result = error.__cause__.ios_partial_result
         return error
 
     def result(self):
@@ -953,8 +1270,8 @@ async def observe(target, receipt, state, observer_guard):
                     future.set_result(False if state["exit"] else output)
                 return
             if state["until"] is not None and loop.time() >= state["until"]:
-                phase = ("device query cancellation cleanup" if state["cancel_requested"]
-                         else "device query receipt") if state["query"] else "device close"
+                phase = (state["phase"] + " cancellation cleanup" if state["cancel_requested"]
+                         else state["phase"] + " receipt") if state["query"] else "device close"
                 error = metadata(TimeoutError(phase + " timed out"),
                     "timeout", phase, False, receipt)
                 preserve_context(error, state)
@@ -980,6 +1297,7 @@ def start(receipt, cleanup_timeout, query, exit_context=False, original_error=No
           bounded_wait=False, observer_guard=None):
     loop = asyncio.get_running_loop()
     state = {"query": query, "exit": exit_context, "cleanup": cleanup_timeout,
+        "phase": getattr(receipt, "operation_phase", "device query") if query else "device close",
         "original_error": original_error,
         "cancel_requested": False, "cancel_message": None,
         "until": None if query and not bounded_wait else loop.time() + cleanup_timeout}

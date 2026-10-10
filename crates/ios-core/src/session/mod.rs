@@ -20,6 +20,13 @@
 mod device;
 mod operation;
 mod owner;
+#[cfg(all(feature = "apps", feature = "afc", feature = "syslog"))]
+mod services;
+#[cfg(all(feature = "apps", feature = "afc", feature = "syslog"))]
+pub use services::{
+    DeviceServiceLimits, DeviceServiceObservation, DeviceServiceRequest, PreparedDeviceService,
+    ServiceStreamFailure,
+};
 pub(crate) mod reply_budget;
 
 pub(crate) use device::QueryStrings;

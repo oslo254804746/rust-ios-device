@@ -134,7 +134,7 @@ screen_capture = ["screencapture"]
 prepare = ["afc", "mcinstall", "supervised-pair"]
 restore = ["dep:reqwest", "dep:zip"]
 dproxy = ["dtx"]
-webinspector = []
+webinspector = ["dep:png"]
 full = [
     "classic",
     "developer",
@@ -212,6 +212,7 @@ time         = { workspace = true }
 lz4_flex     = { workspace = true, optional = true }
 reqwest      = { workspace = true, optional = true }
 zip          = { workspace = true, optional = true }
+png          = { workspace = true, optional = true }
 crc32fast    = { workspace = true, optional = true }
 rusqlite     = { workspace = true, optional = true }
 tar          = { workspace = true, optional = true }

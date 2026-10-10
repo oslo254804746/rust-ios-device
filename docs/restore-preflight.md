@@ -17,10 +17,24 @@ through a single-use service connection. Open a fresh restore service connection
 for each updater; affected devices abort after a second preflight request.
 
 This API only asks the normal-mode service to generate preflight information.
-It does not start recovery, flashing, or firmware transfer. There is no
-`preflight-requests` CLI yet: the supported iOS version boundary and the exact
-normal-mode queries for board ID, chip ID, and hardware model are not established
-by a device trace. A future CLI needs a redacted capture of those fields on a
-supported device, a version rejection fixture, and a fake-service test that
-verifies the selected identity and each updater request before it is exposed.
-The existing `ios restore preflight-info` metadata query remains available.
+It does not start recovery or flashing. `ios --udid UDID restore preflight-requests
+--ipsw PACKAGE` queries board/chip/model, selects the identity and opens a fresh
+normal-mode service per updater. Connect and request share each updater's clock;
+the CLI also applies a total deadline covering its connection and whole collection.
+Partial results are emitted, and a failed updater causes nonzero exit. A supported
+version/device trace and a version-rejection fixture remain missing; the entrypoint
+is experimental and does not certify an iOS version range.
+
+`restore update --dry-run` is a read-only *device* inspection, including nonce
+queries, not an offline simulation. It reads all selected Manifest component paths
+to EOF with ZIP CRC/size/path/aggregate checks and SHA256 inventory. Saved TSS input
+must include original Request/Response metadata matching ECID, board/chip and AP/SEP
+nonces; raw ticket bytes cannot establish that association. It does not verify
+Apple ticket signatures or IMG4 personalization, and says so in its output.
+
+Actual `restore update --force` currently rejects before connecting, because no
+complete proven Update path is implemented. A distinct `restore::restored::RestoredClient`
+now implements bounded already-connected restored plist negotiation/ECID checks,
+StartRestore and real synchronous firmware responses; its peer fixtures do not
+substitute for recovery USB/ramdisk, ASR, FDR, ticket personalization or re-enumeration.
+See [repair scope and verification](validation/review-fixes-2026-10-10.md).
