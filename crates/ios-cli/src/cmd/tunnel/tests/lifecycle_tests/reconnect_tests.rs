@@ -75,6 +75,7 @@ impl tracing::Subscriber for ReconnectSubscriber {
 }
 
 fn subscriber() -> (tracing::Dispatch, Arc<StdMutex<CapturedEvents>>) {
+    tracing::callsite::rebuild_interest_cache();
     let captured = Arc::new(StdMutex::new(CapturedEvents::default()));
     (
         tracing::Dispatch::new(ReconnectSubscriber(captured.clone())),

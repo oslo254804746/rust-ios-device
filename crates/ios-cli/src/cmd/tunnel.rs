@@ -2443,6 +2443,8 @@ fn agent_router(state: TunnelAgentState) -> Router {
             axum::routing::post(agent_shutdown).get(legacy_shutdown_get),
         )
         .route("/auth/reload", axum::routing::post(agent_reload_policy))
+        .route("/refresh", axum::routing::post(agent_refresh))
+        .route("/epoch", axum::routing::post(agent_epoch))
         .route(
             "/start-tunnel",
             axum::routing::post(agent_start_tunnel).get(legacy_start_get),
@@ -2620,6 +2622,13 @@ async fn agent_connect_authorized(
             ios_core::ErrorClass::InvalidInput,
         ));
     }
+    admission::selectors(&query.udid, None).map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "tunnel selector metadata limit exceeded",
+            error.as_ref(),
+        )
+    })?;
     let local = if query.upstream.is_none() {
         state.get_record(&query.udid).await.filter(|record| {
             query
@@ -2783,6 +2792,13 @@ async fn agent_get_tunnel(
     Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
 ) -> Result<Json<TunnelRecord>, Response> {
+    admission::selectors(&udid, None).map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "tunnel selector metadata limit exceeded",
+            error.as_ref(),
+        )
+    })?;
     principal.require(Permission::List, Some(&udid), None)?;
     let record = principal.run(state.get_record(&udid)).await?;
     principal.require(Permission::List, Some(&udid), None)?;
@@ -2799,6 +2815,13 @@ async fn agent_delete_tunnel(
     Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
 ) -> Result<Json<serde_json::Value>, Response> {
+    admission::selectors(&udid, None).map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_REQUEST,
+            "tunnel selector metadata limit exceeded",
+            error.as_ref(),
+        )
+    })?;
     principal.require(Permission::ManageTunnels, Some(&udid), None)?;
     let removed = principal
         .run(state.stop_tunnel(&udid))
@@ -2964,6 +2987,30 @@ async fn agent_reload_policy(
             )
         })?;
     Ok(Json(json!({"operation": "reload_policy", "data": true})))
+}
+
+async fn agent_refresh(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
+    state.refresh_once().await.map_err(|error| {
+        manager_operation_error(
+            StatusCode::BAD_GATEWAY,
+            "tunnel agent refresh failed",
+            error.as_ref(),
+        )
+    })?;
+    Ok(Json(json!({"operation": "refresh", "data": true})))
+}
+
+async fn agent_epoch(
+    State(state): State<TunnelAgentState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<serde_json::Value>, Response> {
+    principal.require(Permission::ManageServer, None, None)?;
+    state.clear().await;
+    Ok(Json(json!({"operation": "epoch", "data": true})))
 }
 
 #[cfg(test)]
@@ -3866,6 +3913,61 @@ mod tests {
             .unwrap();
         let urls: Vec<String> = serde_json::from_slice(&listed).unwrap();
         assert!(urls.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_refresh_and_epoch_endpoints_execute() {
+        let state = TunnelAgentState::new(TunMode::Userspace);
+        let (port, task) = spawn_test_router(agent_router(state)).await;
+        let client = reqwest::Client::new();
+
+        let refresh_resp = client
+            .post(format!("http://127.0.0.1:{port}/refresh"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refresh_resp.status(), StatusCode::OK);
+        let refresh_bytes = refresh_resp.bytes().await.unwrap();
+        let refresh_json: serde_json::Value = serde_json::from_slice(&refresh_bytes).unwrap();
+        assert_eq!(refresh_json["operation"], "refresh");
+        assert_eq!(refresh_json["data"], true);
+
+        let epoch_resp = client
+            .post(format!("http://127.0.0.1:{port}/epoch"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(epoch_resp.status(), StatusCode::OK);
+        let epoch_bytes = epoch_resp.bytes().await.unwrap();
+        let epoch_json: serde_json::Value = serde_json::from_slice(&epoch_bytes).unwrap();
+        assert_eq!(epoch_json["operation"], "epoch");
+        assert_eq!(epoch_json["data"], true);
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_endpoints_reject_oversized_selectors() {
+        let state = TunnelAgentState::new(TunMode::Userspace);
+        let (port, task) = spawn_test_router(agent_router(state)).await;
+        let client = reqwest::Client::new();
+        let oversized = "a".repeat(4097);
+
+        let get_resp = client
+            .get(format!("http://127.0.0.1:{port}/tunnel/{oversized}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::BAD_REQUEST);
+
+        let del_resp = client
+            .delete(format!("http://127.0.0.1:{port}/tunnel/{oversized}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(del_resp.status(), StatusCode::BAD_REQUEST);
+
         task.abort();
     }
 }

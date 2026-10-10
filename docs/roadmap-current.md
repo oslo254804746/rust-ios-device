@@ -4,8 +4,8 @@
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，25个开发完成、
-5个仍缺开发交付：L01、L02、F04–F06。
+按2026-10-09用户修订的开发口径，有效30个主任务中，27个开发完成、
+3个仍缺开发交付：F04–F06。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
 具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
 
@@ -14,6 +14,7 @@
 | L01/L02 完整扫描控制 | 主机子项已验收 | 原提交 `5e521e5`；[扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L01/L02 成功连接后的退避清理 | 主机子项已验收 | `6bceff7`；窗口公平性、版本保护、期限回滚及原 native owner 收尾；[证据](validation/tunnel-success-bookkeeping-2026-10-08.md) |
 | L01/L02 手动 selector 与 gate key 文本上限 | 主机子项已验收 | `f0ec223`；既有 4KiB/4096 上限在 key/lock/Source 前生效，原 native owner 保留/收尾；[证据](validation/device-doctor-manual-admission-2026-10-08.md) |
+| L01/L02 隧道与管理器生命周期及元数据字节边界 | 主任务开发交付 | 全端点4096字节上限、POST /refresh与POST /epoch管理端点、手动epoch切换与重连追踪修复；[证据](validation/tunnel-lifecycle-and-metadata-limits-2026-10-10.md) |
 | F01 显式设备 doctor | 主机子项已验收 | `71a59fc`；既有信任只读 session、Developer Mode/DDI signature，host schema1/target schema2，typed 类别与原 error；`82c6c56` 拒绝 Unix FIFO；[证据](validation/device-doctor-manual-admission-2026-10-08.md) |
 | F01 既有 RSD route | 主机子项已验收 | `838c4ed`；显式 IPv6/已有 proxy 的总期限只读观察、目标核对、完整目录与 missing/malformed 分开；不激活/接管 tunnel 或执行 advertised 服务；[证据](validation/doctor-rsd-syslog-2026-10-09.md) |
 | F01 平台USB/路由/remoted与DDI探测 | 主任务开发交付 | 平台USB (Linux/Windows/macOS)、IPv6路由绑定、remoted共存与DDI目录探测交付；Windows主线程栈溢出保护落地；[证据](validation/doctor-platform-probes-2026-10-10.md) |
