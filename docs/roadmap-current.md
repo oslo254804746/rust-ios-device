@@ -4,8 +4,8 @@
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，24个开发完成、
-6个仍缺开发交付：L01、L02、L04、F04–F06。
+按2026-10-09用户修订的开发口径，有效30个主任务中，25个开发完成、
+5个仍缺开发交付：L01、L02、F04–F06。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
 具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
 
@@ -24,7 +24,7 @@
 | L03 Darwin剪贴板watch重连 | 主任务开发交付 | `3d90d12`；Darwin watch 错误类型分类解包、重连 episode 取消时机、事件断线抑制与恢复完整交付 |
 | F03 实际 CDP 客户端框架 | 主任务已完成 | `3e697fd`；生产 protected bridge 的默认 context ID、Puppeteer Runtime 完整有限流程、Playwright 真实下载初始化拒绝、子进程/原 peer 回收；[证据](validation/cdp-client-workflow-2026-10-09.md)。符合原 F03 可复现结果/缺初始化语义时的协议依据与方案要求；F04 各域及真机验收继续 |
 | A03 有限 Rust device query | 主机子项已验收 | `6f582c9`；fresh socket/DeviceID、单一总期限、wire/metadata/owned output 预算、TCP/Unix/TLS 与原 owner 退役；[证据](validation/sdk-device-query-2026-10-09.md) |
-| L04 manager/native 资源基线 | 主机子项已验收 | 同 fixture 修改前后 1/4/16、30s/104轮测量和独立60s分配器/RSS归因；[证据](validation/manager-resource-baseline-2026-10-09.md)。吞吐/文件/服务流/其他平台与真机继续 |
+| L04 manager/native 资源与负载基线 | 主任务开发交付 | 同 fixture 修改前后测量、分配器归因，及吞吐、文件传输、服务流工作负载驱动与汇总完整交付；[证据](validation/manager-workload-measurements-2026-10-10.md) |
 | A03 Python/C 常用 SDK | 主任务开发交付 | 设备/应用/文件/日志句柄，Python context/async/Tunnel扩展，C checked释放、状态分类与双语言示例集中交付 |
 | Q02 真机回归矩阵执行适配器 | 主任务开发交付 | 真实设备发现、前置条件与范围校验、矩阵用例命令适配与HMAC脱敏交付；[证据](validation/real-device-regression-adapters-2026-10-10.md) |
 | F02 完整自动化测试工作流 | 主任务开发交付 | 组合工作流、预检与按需安装、syslog流捕获、结果/诊断JUnit原子落盘、用例重跑及清理完整交付；[证据](validation/test-workflow-automation-2026-10-10.md) |
