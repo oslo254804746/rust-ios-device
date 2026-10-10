@@ -57,6 +57,7 @@ pub mod screenshot;
 pub mod springboard;
 pub mod symbols;
 pub mod syslog;
+pub mod test_workflow;
 pub mod tunnel;
 pub mod wda;
 pub mod webinspector;
