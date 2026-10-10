@@ -262,7 +262,7 @@ async fn lifecycle_webdriver_delete_mutex_time_reduces_forwarding_cleanup_budget
             {
                 tokio::task::yield_now().await;
             }
-            tokio::time::sleep(Duration::from_millis(85)).await;
+            tokio::time::sleep(Duration::from_millis(75)).await;
             drop(guard);
         })
     })

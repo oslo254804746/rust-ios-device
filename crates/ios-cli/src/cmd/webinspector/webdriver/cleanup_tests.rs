@@ -142,7 +142,7 @@ async fn lifecycle_webdriver_cleanup_context_and_socket_share_stored_total() {
     let (result, trace) = stopped(
         FlushFault::TeardownDelay,
         PeerPolicy {
-            stop_delay: Duration::from_millis(80),
+            stop_delay: Duration::from_millis(65),
             ..Default::default()
         },
     )

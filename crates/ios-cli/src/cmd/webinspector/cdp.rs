@@ -212,6 +212,12 @@ async fn handle_cdp_socket(
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             let message: JsonValue = serde_json::from_str(text.as_ref())?;
+                            if let Some(responses) = cdp_browser::handle_verified_page_method(&message) {
+                                for resp in responses {
+                                    sender.send(Message::Text(resp.to_string())).await?;
+                                }
+                                continue;
+                            }
                             if cdp_browser::unverified_page_method(&message) {
                                 sender.send(Message::Text(cdp_browser::error(&message, -32601, "CDP domain not implemented").to_string())).await?;
                                 continue;
