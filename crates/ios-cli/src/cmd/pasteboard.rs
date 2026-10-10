@@ -181,29 +181,56 @@ impl PasteboardCmd {
         self.sub.validate_experimental()?;
         let udid = udid.ok_or_else(|| anyhow!("--udid required for pasteboard"))?;
         if let PasteboardSub::Watch {
-            pasteboard, policy, show_data, autonotify, recovery, ..
-        } = &self.sub {
+            pasteboard,
+            policy,
+            show_data,
+            autonotify,
+            recovery,
+            ..
+        } = &self.sub
+        {
             recovery.validate(!*autonotify)?;
             if !*autonotify {
                 let policy = parse_policy(policy)?;
                 reconnect::selectors(&udid, pasteboard, policy)?;
-                return reconnect::run(&reconnect::DeviceSource, &udid, pasteboard, policy,
-                    recovery, tokio::signal::ctrl_c(), |event| match event {
+                return reconnect::run(
+                    &reconnect::DeviceSource,
+                    &udid,
+                    pasteboard,
+                    policy,
+                    recovery,
+                    tokio::signal::ctrl_c(),
+                    |event| match event {
                         reconnect::WatchEvent::Snapshot(snapshot) => render_event(
-                            &PasteboardEvent::Push(pasteboard::PasteboardPush { snapshot: snapshot.clone() }),
-                            *show_data, json_output),
+                            &PasteboardEvent::Push(pasteboard::PasteboardPush {
+                                snapshot: snapshot.clone(),
+                            }),
+                            *show_data,
+                            json_output,
+                        ),
                         reconnect::WatchEvent::State(state) if recovery.reconnect => {
-                            let record = if json_output { serde_json::to_string(&state)? } else {
-                                format!("Pasteboard watch: {} (attempt {}, reclaimed={}, class={}){}",
-                                    state.state, state.attempt, state.native_reclaimed,
+                            let record = if json_output {
+                                serde_json::to_string(&state)?
+                            } else {
+                                format!(
+                                    "Pasteboard watch: {} (attempt {}, reclaimed={}, class={}){}",
+                                    state.state,
+                                    state.attempt,
+                                    state.native_reclaimed,
                                     state.error_class.map_or("none", |class| class.as_str()),
-                                    state.gap.map_or("", |_| "; changes during disconnect are not replayed"))
+                                    state.gap.map_or("", |_| {
+                                        "; changes during disconnect are not replayed"
+                                    })
+                                )
                             };
                             crate::output::write_error_line(format_args!("{record}"))?;
                             Ok(())
                         }
                         reconnect::WatchEvent::State(_) => Ok(()),
-                    }).await.map(|_| ());
+                    },
+                )
+                .await
+                .map(|_| ());
             }
         }
         let device = connect(
