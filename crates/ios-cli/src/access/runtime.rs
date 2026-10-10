@@ -176,7 +176,7 @@ impl AccessControl {
         Ok(())
     }
 
-    fn authenticate(&self, headers: &HeaderMap) -> Option<Principal> {
+    pub(crate) fn authenticate(&self, headers: &HeaderMap) -> Option<Principal> {
         let Some(configured) = &self.0 else {
             return Some(Principal(None));
         };
