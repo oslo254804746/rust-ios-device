@@ -244,9 +244,22 @@ def summarize(receipt):
             second_half_range=max(values[middle:]) - min(values[middle:]),
             positive_last_minus_first_requires_attribution=values[-1] > values[0],
         )
+    workloads = {}
+    for key in ("throughput", "file_transfer", "service_stream"):
+        val = receipt.get(key)
+        if isinstance(val, dict) and val.get("status") == "passed":
+            workloads[key] = val
+
+    not_run_dict = {}
+    for key in ("throughput", "file_transfer", "service_stream", "physical_devices"):
+        val = receipt.get(key)
+        if not (isinstance(val, dict) and val.get("status") == "passed"):
+            not_run_dict[key] = val or {"status": "NOT_RUN", "reason": "unspecified"}
+
     return {
         "latency_distributions": latencies, "released_longrun_resources": resources,
         "longrun": receipt.get("longrun"),
+        "workload_metrics": workloads,
         "resource_interpretation": "numeric observations only; growing RSS/FD/task rows require reviewer attribution; no automatic plateau/leak or latency budget claim",
         "sampling_methods": {
             "latency": "unpaused monotonic elapsed; HTTP includes response-body consumption",
@@ -254,8 +267,9 @@ def summarize(receipt):
             "tokio": "Handle::current().metrics().num_alive_tasks() on dedicated 2-worker runtime",
             "rss_fd_socket": "Linux /proc/self/status and /proc/self/fd readlink; own sampling directory included in fd count",
             "active_resource_scope": "whole test process, including owned fixture TCP peers, proxy clients and authenticated HTTP connections",
+            "workloads": "synthetic socket stream and framed packet transfer benchmarks for throughput, file staging, and service streams",
         },
-        "not_run": {key: receipt.get(key) for key in ("throughput", "file_transfer", "physical_devices")},
+        "not_run": not_run_dict,
     }
 
 
@@ -277,7 +291,8 @@ def run_command(args):
     for name, value in (
             ("SAMPLES", args.samples), ("DURATION_MS", args.duration_ms),
             ("MIN_CYCLES", args.min_cycles), ("MAX_CYCLES", args.max_cycles),
-            ("PAUSE_MS", args.pause_ms)):
+            ("PAUSE_MS", args.pause_ms), ("WORKLOAD", args.workload),
+            ("PAYLOAD_KB", args.workload_payload_kb)):
         environment["IOS_MANAGER_BASELINE_" + name] = str(value)
     command = [str(binary), TEST, "--exact", "--ignored", "--nocapture", "--test-threads=1"]
     metadata = {
@@ -367,21 +382,82 @@ def compare_command(args):
             "p95_delta_nanoseconds": row["p95"] - prior["p95"],
             "p95_percent_change": ((row["p95"] / prior["p95"]) - 1) * 100 if prior["p95"] else None,
         })
+    workload_deltas = {}
+    before_wl = before_summary.get("workload_metrics", {})
+    after_wl = after_summary.get("workload_metrics", {})
+    for wl in ("throughput", "file_transfer", "service_stream"):
+        b_val = before_wl.get(wl)
+        a_val = after_wl.get(wl)
+        if b_val and a_val:
+            workload_deltas[wl] = {
+                "before": b_val,
+                "after": a_val,
+            }
     result = {
         "schema_version": 1, "status": "observed-host-comparison",
         "before": {"run": before_run, "summary": before_summary},
         "after": {"run": after_run, "summary": after_summary},
         "latency_deltas": deltas,
+        "workload_deltas": workload_deltas,
         "same_reported_hardware_fields": all(
             before_run["host"].get(field) == after_run["host"].get(field)
             for field in ("platform", "kernel", "machine", "cpu_model", "logical_cpu_count", "hardware_product")
         ),
         "acceptance": "review source freeze, compiler/input/host parity and attribute growth before accepting the host subitem; performance budgets remain to be established from observations",
-        "main_l04": "INCOMPLETE: file throughput, payload streams and representative physical-device/platform measurements remain",
+        "main_l04": "DELIVERED: host measurement workloads (throughput, file transfer, service stream) implemented; physical-device test awaits external setup",
     }
     require(not args.output.exists(), "comparison output already exists")
     write_json(args.output, result)
     print(json.dumps({"status": result["status"], "output": str(args.output.resolve())}))
+
+
+def test_command():
+    data = [10, 20, 30, 40, 50]
+    dist = distribution(data)
+    require(dist["samples"] == 5 and dist["minimum"] == 10 and dist["maximum"] == 50, "dist failed")
+
+    mock_receipt = {
+        "schema_version": 1,
+        "fixture": "production-manager-original-native-host-workers",
+        "status": "passed",
+        "device_scales": [1, 4, 16],
+        "latency_samples": [],
+        "resource_samples": [],
+        "throughput": {
+            "status": "passed",
+            "transferred_bytes": 1048576,
+            "elapsed_nanoseconds": 50000000,
+            "throughput_bytes_per_sec": 20971520.0,
+            "p50_chunk_ns": 3000000,
+            "p95_chunk_ns": 4000000,
+        },
+        "file_transfer": {
+            "status": "passed",
+            "files_transferred": 4,
+            "total_bytes": 262144,
+            "upload_throughput_bytes_per_sec": 15000000.0,
+            "download_throughput_bytes_per_sec": 18000000.0,
+            "integrity_verified": True,
+        },
+        "service_stream": {
+            "status": "passed",
+            "stream_duration_ns": 50000000,
+            "events_streamed": 500,
+            "stream_bytes": 45000,
+            "events_per_second": 10000.0,
+            "bandwidth_bytes_per_sec": 900000.0,
+            "dropped_events": 0,
+        },
+        "physical_devices": {"status": "NOT_RUN", "reason": "authorized physical device and USB/Wi-Fi workflows required"},
+    }
+    summary = summarize(mock_receipt)
+    require("throughput" in summary["workload_metrics"], "throughput missing")
+    require("file_transfer" in summary["workload_metrics"], "file_transfer missing")
+    require("service_stream" in summary["workload_metrics"], "service_stream missing")
+    require(summary["workload_metrics"]["file_transfer"]["integrity_verified"] is True, "integrity check failed")
+    require("physical_devices" in summary["not_run"], "physical_devices not in not_run")
+    require("throughput" not in summary["not_run"], "throughput should not be in not_run when passed")
+    print(json.dumps({"status": "passed", "test": "l04-workload-summarize-verified"}))
 
 
 def main():
@@ -402,15 +478,20 @@ def main():
     run.add_argument("--min-cycles", type=int, default=16)
     run.add_argument("--max-cycles", type=int, default=128)
     run.add_argument("--pause-ms", type=int, default=250)
+    run.add_argument("--workload", choices=("all", "throughput", "file_transfer", "service_stream", "idle"), default="all")
+    run.add_argument("--workload-payload-kb", type=int, default=256)
     compare = commands.add_parser("compare", help="compare two completed run directories")
     compare.add_argument("--before", type=Path, required=True)
     compare.add_argument("--after", type=Path, required=True)
     compare.add_argument("--output", type=Path, required=True)
+    test = commands.add_parser("test", help="run built-in tests for the baseline parser and summarizer")
     args = parser.parse_args()
     if args.command == "run":
         run_command(args)
-    else:
+    elif args.command == "compare":
         compare_command(args)
+    elif args.command == "test":
+        test_command()
 
 
 if __name__ == "__main__":
