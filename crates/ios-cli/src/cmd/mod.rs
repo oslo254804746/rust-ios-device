@@ -59,6 +59,7 @@ pub mod symbols;
 pub mod syslog;
 pub mod test_workflow;
 pub mod tunnel;
+pub mod viewer;
 pub mod wda;
 pub mod webinspector;
 pub mod wifi;

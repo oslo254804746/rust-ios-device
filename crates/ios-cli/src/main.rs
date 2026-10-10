@@ -170,6 +170,8 @@ enum Commands {
     Wifi(cmd::wifi::WifiCmd),
     /// List and download device symbols
     Symbols(cmd::symbols::SymbolsCmd),
+    /// Decoded Web viewer, VNC server, and bidirectional clipboard
+    Viewer(cmd::viewer::ViewerCmd),
 }
 
 type CommandFuture = Pin<Box<dyn Future<Output = Result<()>>>>;
@@ -246,6 +248,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Webinspector(c) => box_command(move || c.run(udid, !no_json)),
         Commands::Wifi(c) => box_command(move || c.run(udid, !no_json)),
         Commands::Symbols(c) => box_command(move || c.run(udid, !no_json)),
+        Commands::Viewer(c) => box_command(move || c.run(udid)),
     }
 }
 

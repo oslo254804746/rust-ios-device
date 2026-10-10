@@ -234,6 +234,7 @@ pub use services::testmanager::workflow::{
 #[cfg(feature = "webinspector")]
 pub use services::webinspector;
 pub use services::{backup2, device_link, simlocation};
+pub use flate2;
 #[cfg(feature = "tunnel")]
 pub use tunnel::forward::ForwardReaderCleanup;
 #[cfg(feature = "tunnel-userspace")]

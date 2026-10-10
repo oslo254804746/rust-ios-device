@@ -4,13 +4,14 @@
 [原工程路线图](engineering-roadmap-2026-09-30.md) 为准；本页用于承接当前工作，
 不替代或缩减原任务。Q04 及全部子项已排除，其他原验收条件继续有效。
 
-按2026-10-09用户修订的开发口径，有效30个主任务中，28个开发完成、
-2个仍缺开发交付：F05–F06。
+按2026-10-09用户修订的开发口径，有效30个主任务中，29个开发完成、
+1个仍缺开发交付：F06。
 只等待验证测试或外部运行条件的已交付实现计为完成；实际NOT_RUN仍保留。
 具体尚缺的代码/工具交付见[待开发清单](development-backlog.md)。
 
 | 工作项 | 当前状态 | 交付边界和证据 |
 | --- | --- | --- |
+| F05 查看器、VNC 与双向剪贴板 | 主任务开发交付 | HTML5 Web 查看器、RFB 3.8 VNC 服务端、触控/指针/键盘映射、双向剪贴板与回环抑制；[证据](validation/viewer-vnc-clipboard-2026-10-10.md) |
 | F04 CDP 多领域协议拓展与适配 | 主任务开发交付 | Runtime/Page/Input/Fetch/Memory/Performance 协议域、JsContextCdpAdapter 扩展与 unverified/side-effect 严格拦截；[证据](validation/cdp-domain-protocols-2026-10-10.md) |
 | L01/L02 完整扫描控制 | 主机子项已验收 | 原提交 `5e521e5`；[扫描控制](validation/tunnel-scan-control-2026-10-08.md) |
 | L01/L02 成功连接后的退避清理 | 主机子项已验收 | `6bceff7`；窗口公平性、版本保护、期限回滚及原 native owner 收尾；[证据](validation/tunnel-success-bookkeeping-2026-10-08.md) |
