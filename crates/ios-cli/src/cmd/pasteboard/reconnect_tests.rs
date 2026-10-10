@@ -1214,8 +1214,7 @@ async fn pasteboard_reconnect_constructed_cli_invalid_selectors_and_push_options
         let error = cmd
             .run(Some(udid), false)
             .await
-            .err()
-            .expect("invalid selector reached device IO");
+            .expect_err("invalid selector reached device IO");
         assert_eq!(
             crate::output::operation_error_class(error.as_ref()),
             if oversized {
@@ -1238,8 +1237,7 @@ async fn pasteboard_reconnect_constructed_cli_invalid_selectors_and_push_options
     let error = cmd
         .run(Some(UDID.into()), false)
         .await
-        .err()
-        .expect("push recovery reached device IO");
+        .expect_err("push recovery reached device IO");
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
         ErrorClass::InvalidInput

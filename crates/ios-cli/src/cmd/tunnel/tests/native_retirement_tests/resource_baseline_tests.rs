@@ -37,9 +37,10 @@ impl Input {
             );
             Ok(value)
         }
-        let workload = std::env::var("IOS_MANAGER_BASELINE_WORKLOAD")
-            .unwrap_or_else(|_| "all".to_string());
-        let workload_payload_kb = number("IOS_MANAGER_BASELINE_PAYLOAD_KB", 256, 16, 16384)? as usize;
+        let workload =
+            std::env::var("IOS_MANAGER_BASELINE_WORKLOAD").unwrap_or_else(|_| "all".to_string());
+        let workload_payload_kb =
+            number("IOS_MANAGER_BASELINE_PAYLOAD_KB", 256, 16, 16384)? as usize;
         let input = Self {
             samples_per_scale: number("IOS_MANAGER_BASELINE_SAMPLES", 5, 1, 20)? as usize,
             longrun_duration_ms: number("IOS_MANAGER_BASELINE_DURATION_MS", 30_000, 1, 1_800_000)?,
@@ -774,15 +775,14 @@ async fn measure_throughput_workload(payload_bytes: usize) -> Result<serde_json:
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
-    let (mut client, accepted) =
-        tokio::try_join!(TcpStream::connect(address), listener.accept())?;
+    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
     let (mut server, _) = accepted;
     drop(listener);
     client.set_nodelay(true)?;
     server.set_nodelay(true)?;
 
     let chunk_size = 64 * 1024;
-    let total_chunks = ((payload_bytes + chunk_size - 1) / chunk_size).max(1);
+    let total_chunks = payload_bytes.div_ceil(chunk_size).max(1);
     let actual_total_bytes = total_chunks * chunk_size;
     let chunk_data = vec![0x5au8; chunk_size];
 
@@ -841,8 +841,7 @@ async fn measure_file_transfer_workload(
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
-    let (mut client, accepted) =
-        tokio::try_join!(TcpStream::connect(address), listener.accept())?;
+    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
     let (mut server, _) = accepted;
     drop(listener);
     client.set_nodelay(true)?;
@@ -915,8 +914,7 @@ async fn measure_service_stream_workload(
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = listener.local_addr()?;
-    let (mut client, accepted) =
-        tokio::try_join!(TcpStream::connect(address), listener.accept())?;
+    let (mut client, accepted) = tokio::try_join!(TcpStream::connect(address), listener.accept())?;
     let (mut server, _) = accepted;
     drop(listener);
     client.set_nodelay(true)?;
@@ -1141,20 +1139,48 @@ async fn manager_native_resource_baseline() {
 #[tokio::test]
 async fn test_throughput_workload_measurement() {
     let result = measure_throughput_workload(64 * 1024).await.unwrap();
-    assert_eq!(result.get("status").and_then(serde_json::Value::as_str), Some("passed"));
-    assert!(result.get("throughput_bytes_per_sec").unwrap().as_f64().unwrap() > 0.0);
+    assert_eq!(
+        result.get("status").and_then(serde_json::Value::as_str),
+        Some("passed")
+    );
+    assert!(
+        result
+            .get("throughput_bytes_per_sec")
+            .unwrap()
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
 }
 
 #[tokio::test]
 async fn test_file_transfer_workload_measurement() {
     let result = measure_file_transfer_workload(2, 16 * 1024).await.unwrap();
-    assert_eq!(result.get("status").and_then(serde_json::Value::as_str), Some("passed"));
-    assert_eq!(result.get("integrity_verified").and_then(serde_json::Value::as_bool), Some(true));
+    assert_eq!(
+        result.get("status").and_then(serde_json::Value::as_str),
+        Some("passed")
+    );
+    assert_eq!(
+        result
+            .get("integrity_verified")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
 }
 
 #[tokio::test]
 async fn test_service_stream_workload_measurement() {
-    let result = measure_service_stream_workload(Duration::from_millis(20), 100).await.unwrap();
-    assert_eq!(result.get("status").and_then(serde_json::Value::as_str), Some("passed"));
-    assert_eq!(result.get("dropped_events").and_then(serde_json::Value::as_u64), Some(0));
+    let result = measure_service_stream_workload(Duration::from_millis(20), 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.get("status").and_then(serde_json::Value::as_str),
+        Some("passed")
+    );
+    assert_eq!(
+        result
+            .get("dropped_events")
+            .and_then(serde_json::Value::as_u64),
+        Some(0)
+    );
 }

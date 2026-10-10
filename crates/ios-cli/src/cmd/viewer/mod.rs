@@ -72,9 +72,7 @@ impl ViewerCmd {
                 let port = self.port.unwrap_or(5900);
                 run_vnc_server(&udid, ip, port, access, self.password).await
             }
-            ViewerSub::Clipboard => {
-                run_clipboard_sync(&udid, access).await
-            }
+            ViewerSub::Clipboard => run_clipboard_sync(&udid, access).await,
         }
     }
 }
@@ -89,15 +87,13 @@ async fn run_web_server(
     let ip = loopback_address(host)?;
     let listener = TcpListener::bind((ip, port)).await?;
     let bound = listener.local_addr()?;
-    crate::output::write_error_line(format_args!(
-        "Web viewer listening on http://{bound}/"
-    ))?;
+    crate::output::write_error_line(format_args!("Web viewer listening on http://{bound}/"))?;
 
     let state = WebViewerState::new(access);
-    let router = boundary
-        .validate()?
-        .for_listener(bound)
-        .protect(create_viewer_router(state.clone()), crate::http_diagnostics::ErrorShape::Manager);
+    let router = boundary.validate()?.for_listener(bound).protect(
+        create_viewer_router(state.clone()),
+        crate::http_diagnostics::ErrorShape::Manager,
+    );
 
     let stop_notify = state.stop_notify.clone();
     let server_task = tokio::spawn(async move {
@@ -116,17 +112,29 @@ async fn run_web_server(
         while !state_capture.is_stopped() {
             interval.tick().await;
             if let Ok(device) = connect_userspace_tunnel(&udid_capture).await {
-                if let Ok((xpc, meta)) = device.connect_xpc_service_with_metadata(ios_core::screencapture::SERVICE_NAME).await {
-                    let mut client = ios_core::screencapture::ScreenCaptureServiceClient::new_with_features(xpc, meta.features);
+                if let Ok((xpc, meta)) = device
+                    .connect_xpc_service_with_metadata(ios_core::screencapture::SERVICE_NAME)
+                    .await
+                {
+                    let mut client =
+                        ios_core::screencapture::ScreenCaptureServiceClient::new_with_features(
+                            xpc,
+                            meta.features,
+                        );
                     if let Ok(img) = client.capture_screenshot(None, "png").await {
                         let (w, h) = img.pixel_size.unwrap_or((1170, 2532));
-                        state_capture.push_frame(
-                            "image/png",
-                            img.data.to_vec(),
-                            w as u32,
-                            h as u32,
-                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
-                        ).await;
+                        state_capture
+                            .push_frame(
+                                "image/png",
+                                img.data.to_vec(),
+                                w as u32,
+                                h as u32,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64,
+                            )
+                            .await;
                     }
                 }
             }
@@ -148,9 +156,7 @@ async fn run_vnc_server(
 ) -> Result<()> {
     let listener = TcpListener::bind((ip, port)).await?;
     let bound = listener.local_addr()?;
-    crate::output::write_error_line(format_args!(
-        "VNC server listening on vnc://{bound}"
-    ))?;
+    crate::output::write_error_line(format_args!("VNC server listening on vnc://{bound}"))?;
 
     let state = VncServerState::new(1170, 2532, password);
 
@@ -180,14 +186,11 @@ async fn run_vnc_server(
     Ok(())
 }
 
-async fn run_clipboard_sync(
-    _udid: &str,
-    _access: AccessControl,
-) -> Result<()> {
-        crate::output::write_error_line(format_args!(
-            "Starting bidirectional clipboard synchronizer..."
-        ))?;
-        // Sync loop running until interrupted
-        tokio::signal::ctrl_c().await?;
-        Ok(())
+async fn run_clipboard_sync(_udid: &str, _access: AccessControl) -> Result<()> {
+    crate::output::write_error_line(format_args!(
+        "Starting bidirectional clipboard synchronizer..."
+    ))?;
+    // Sync loop running until interrupted
+    tokio::signal::ctrl_c().await?;
+    Ok(())
 }

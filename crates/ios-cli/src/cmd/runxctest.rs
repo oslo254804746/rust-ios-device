@@ -222,17 +222,18 @@ impl RunXcTestCmd {
         let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
         let configuration_name = launch_plan.xctest_bundle_name.clone();
 
-        let mut session = match start_test_plan_session_until(&udid, launch_plan.clone(), deadline).await {
-            Ok(session) => session,
-            Err(error) => {
-                write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
-                if let Some(guard) = log_guard {
-                    guard.stop().await;
+        let mut session =
+            match start_test_plan_session_until(&udid, launch_plan.clone(), deadline).await {
+                Ok(session) => session,
+                Err(error) => {
+                    write_junit_diagnostic(junit_output, &incomplete_summary(false), &error)?;
+                    if let Some(guard) = log_guard {
+                        guard.stop().await;
+                    }
+                    app_tracker.cleanup(&udid).await;
+                    return Err(error);
                 }
-                app_tracker.cleanup(&udid).await;
-                return Err(error);
-            }
-        };
+            };
         let startup = session.startup_result().clone();
 
         if self.wait {

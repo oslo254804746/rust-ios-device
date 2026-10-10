@@ -1,15 +1,15 @@
 //! Bidirectional clipboard synchronization, format validation, and loop suppression (F05-3).
 #![allow(dead_code)]
 
-use std::io::{Read, Write};
 use anyhow::{ensure, Context, Result};
 use ios_core::flate2::read::ZlibDecoder;
 use ios_core::flate2::write::ZlibEncoder;
 use ios_core::flate2::Compression;
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 
-pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;       // 4 MiB
-pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;     // 16 MiB
+pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 // Extended Clipboard pseudo-encoding (0xC0A1E5CE as int32)
 pub const ENC_EXTENDED_CLIPBOARD: i32 = -1063131698;
@@ -181,7 +181,14 @@ pub fn decode_classic_cut_text(bytes: &[u8]) -> Result<String> {
 
 /// Extended Clipboard caps advertisement.
 pub fn encode_extended_caps() -> Vec<u8> {
-    let flags = ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE | FORMAT_TEXT | FORMAT_IMAGE_PNG | FORMAT_IMAGE_JPEG;
+    let flags = ACTION_CAPS
+        | ACTION_REQUEST
+        | ACTION_PEEK
+        | ACTION_NOTIFY
+        | ACTION_PROVIDE
+        | FORMAT_TEXT
+        | FORMAT_IMAGE_PNG
+        | FORMAT_IMAGE_JPEG;
     let mut body = flags.to_be_bytes().to_vec();
     body.extend_from_slice(&0u32.to_be_bytes()); // Unsolicited size 0
     let len_field = -(body.len() as i32);
@@ -217,7 +224,10 @@ pub fn encode_extended_notify(has_text: bool, has_png: bool) -> Vec<u8> {
 /// Extended Clipboard provide text (UTF-8 compressed).
 pub fn encode_extended_provide_text(text: &str) -> Result<Vec<u8>> {
     ensure!(text.len() <= MAX_TEXT_BYTES, "extended text exceeds budget");
-    let mut raw_data = text.replace("\r\n", "\n").replace('\n', "\r\n").into_bytes();
+    let mut raw_data = text
+        .replace("\r\n", "\n")
+        .replace('\n', "\r\n")
+        .into_bytes();
     raw_data.push(0); // NUL terminated
 
     let mut uncompressed = Vec::with_capacity(4 + raw_data.len());
@@ -225,7 +235,9 @@ pub fn encode_extended_provide_text(text: &str) -> Result<Vec<u8>> {
     uncompressed.extend_from_slice(&raw_data);
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&uncompressed).context("zlib compression failed")?;
+    encoder
+        .write_all(&uncompressed)
+        .context("zlib compression failed")?;
     let compressed = encoder.finish().context("zlib finish failed")?;
 
     let flags = ACTION_PROVIDE | FORMAT_TEXT;
@@ -283,7 +295,10 @@ pub fn parse_extended_cut_text(body: &[u8]) -> Result<ExtendedCutTextMessage> {
         ensure!(decompressed.len() >= 4, "decompressed payload too short");
         let reported_len = u32::from_be_bytes(decompressed[..4].try_into().unwrap()) as usize;
         let payload_bytes = &decompressed[4..];
-        ensure!(payload_bytes.len() >= reported_len, "decompressed payload truncated");
+        ensure!(
+            payload_bytes.len() >= reported_len,
+            "decompressed payload truncated"
+        );
 
         if flags & FORMAT_TEXT != 0 {
             let text_bytes = &payload_bytes[..reported_len];

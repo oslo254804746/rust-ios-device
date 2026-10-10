@@ -217,10 +217,30 @@ impl DoctorCmd {
                 probe_manager(self.tunnel_port, &self.access)
             ),
             bounded("kernel_tun", deadline, Status::Warning, probe_kernel_tun()),
-            bounded("platform_usb", deadline, Status::Warning, probe_platform_usb()),
-            bounded("platform_route", deadline, Status::Warning, probe_platform_route()),
-            bounded("remoted_coexistence", deadline, Status::Warning, probe_remoted_coexistence()),
-            bounded("ddi_directory", deadline, Status::Warning, probe_ddi_directory()),
+            bounded(
+                "platform_usb",
+                deadline,
+                Status::Warning,
+                probe_platform_usb()
+            ),
+            bounded(
+                "platform_route",
+                deadline,
+                Status::Warning,
+                probe_platform_route()
+            ),
+            bounded(
+                "remoted_coexistence",
+                deadline,
+                Status::Warning,
+                probe_remoted_coexistence()
+            ),
+            bounded(
+                "ddi_directory",
+                deadline,
+                Status::Warning,
+                probe_ddi_directory()
+            ),
         );
         let mut checks = vec![
             mux,
@@ -943,4 +963,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-
