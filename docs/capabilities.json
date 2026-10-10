@@ -1,8 +1,23 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-10",
+  "updated": "2026-10-11",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
+    {
+      "id": "windows-review-viewer-88d8f70",
+      "level": "host-unit/protocol",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": ["actual owned localhost RFB/HTTP", "original UserspaceTunDevice TCP workers", "generated PNG"],
+      "required_state": ["Private fixture policy and exact synthetic UDID/port; primary-agent serial frozen-source validation"],
+      "tested_commit": "88d8f707f6f23bc72b9c0aa80230ad0739752f03",
+      "date": "2026-10-11",
+      "location": "docs/validation/review-fixes-2026-10-10.md",
+      "result": "PASS",
+      "scope": "12 Viewer tests, scoped/credential rejection, independent DES vector, actual RFB handshake/cleanup, PNG pixels and limits, device acknowledgement and text results; one original-native scope close/strict TCP EOF/join test.",
+      "limitations": "No physical screenshot/HID/pasteboard, actual standard VNC client, desktop clipboard, HEVC, image clipboard, orientation or whole-process 64MiB acceptance. Full F05 is incomplete."
+    },
     {
       "id": "linux-manager-intent-8947fc1",
       "level": "simulated-flow",
@@ -8398,8 +8413,8 @@
       "observations": [
         {
           "level": "host-unit/protocol",
-          "result": "NOT_RUN",
-          "reason": "The repair source and new regression tests await the main agent serial build/test; static capability validation is not a viewer protocol workflow."
+          "result": "PASS",
+          "evidence": "windows-review-viewer-88d8f70"
         },
         {
           "level": "real-device",

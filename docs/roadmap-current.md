@@ -1,18 +1,19 @@
 # 当前工程调度
 
-更新：2026-10-10。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
+更新：2026-10-11。原定义见[工程路线图](engineering-roadmap-2026-09-30.md)，
 开发计数与真实验收分开，Q04及全部子项继续排除。
 
 当前批次修复独立review确认的R01–R15。起点af20f6a，修复分支
 codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留。
-审查否定了Antigravity的30/30声明：承接原19项、L03新增1项，9项仍缺开发、L02待核查。
+审查否定了Antigravity的30/30声明：承接原19项和L03，本轮A03开发交付后为
+21项可承接、8项仍缺开发、L02待完整核查。
 见[待开发清单](development-backlog.md)和[本轮修复/验收](validation/review-fixes-2026-10-10.md)。
 
 | 范围 | 本轮工作与验收出口 |
 | --- | --- |
 | Viewer/S01/S02/F05 | Principal设备/端口范围与撤销、DES认证；真实PNG/Web/VNC共享源、设备输入/文本剪贴板、统一owner预算与退出。原HEVC/方向/图像子项独立登记。 |
 | CDP/F04 | 清除生产常量和空成功，真实WebInspector请求/响应/event关联；实际pinned客户端验证每域，未知字段/无法保证语义明确拒绝。 |
-| SDK/A03/L01 | apps/AFC/logs接共同checked trust owner，Python/C总期限/取消/并发/close/join，公开aclose、installed wheel和C实际ABI peer gate。 |
+| SDK/A03/L01 | A03开发交付：apps/AFC/logs共同checked trust owner、Python/C预算/取消/并发/close/join、公开aclose，installed wheel与C实际ABI gate分别30场景通过；L01其它profiles继续。 |
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
 | Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。 |
 | F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
