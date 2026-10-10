@@ -28,6 +28,11 @@ pub use super::house_arrest;
 
 pub mod protocol; // kept for re-export compatibility
 
+/// Standard service name for Apple File Conduit.
+pub const SERVICE_NAME: &str = "com.apple.afc";
+/// Alias for SERVICE_NAME.
+pub const AFC_SERVICE: &str = SERVICE_NAME;
+
 // ── error ─────────────────────────────────────────────────────────────────────
 
 #[derive(thiserror::Error)]

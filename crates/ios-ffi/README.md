@@ -7,10 +7,11 @@ workspace. Builds a `cdylib` and a `staticlib` plus a public C header
 
 ## Highlights
 
-- C-callable surface for device listing, lockdown queries, CoreDevice tunnel lifecycle and RSD metadata. Individual service clients
-  are currently available through Rust and the CLI.
+- C-callable surface for device listing, lockdown queries, CoreDevice tunnel lifecycle, RSD metadata, installed application listing, AFC directory listing and bounded file reads, and syslog streaming.
 - RSD service ports and advertised capability identifiers available as compact
   JSON through `ios_tunnel_rsd_services_json`.
+- Extended device operations: `ios_device_list_apps_json`, `ios_device_afc_list_files_json`, `ios_device_afc_read_file` (with `ios_free_bytes` / `ios_free_bytes_checked`), and `ios_device_syslog_read_json`.
+- Standalone example [device_services.c](examples/device_services.c) demonstrates applications, AFC file queries, and syslog streaming.
 - Both shared (`libios_ffi.so` / `.dylib` / `ios_ffi.dll`) and static
   (`libios_ffi.a` / `ios_ffi.lib`) artifacts.
 - Built with `ios-core` features `mdns` and `tunnel-userspace`, so userspace

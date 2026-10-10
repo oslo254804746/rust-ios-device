@@ -22,10 +22,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyList, PyModule};
 use tokio::runtime::Runtime;
 
 mod device_session;
@@ -115,10 +116,29 @@ def restore_tunnel_open_connection(asyncio_module, token):
         delattr(asyncio_module, "_ios_rs_tunnel_proxy_stack")
 "#;
 
+const ASYNC_DEVICE_HELPERS: &str = r#"
+import asyncio
+
+async def device_aenter(dev):
+    return dev
+
+async def device_aexit(dev, exc_type, exc_val, exc_tb):
+    dev.close()
+
+async def tunnel_aclose(tunnel):
+    tunnel.close()
+
+def run_async(func, *args):
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(None, func, *args)
+"#;
+
 #[pymodule]
 fn ios_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(open_device, m)?)?;
     m.add_function(wrap_pyfunction!(start_tunnel, m)?)?;
+    m.add_class::<Device>()?;
     m.add_class::<Tunnel>()?;
     m.add_class::<AsyncioProxyPatch>()?;
     device_session::register(m)?;
@@ -212,7 +232,7 @@ fn start_tunnel(py: Python<'_>, udid: &str, mode: &str) -> PyResult<Tunnel> {
         service_ports,
         service_features,
         _state: Arc::new(Mutex::new(TunnelState {
-            device: Some(device),
+            device: Some(Arc::new(device)),
             retained_patches: 0,
             close_requested: false,
         })),
@@ -278,6 +298,438 @@ fn parse_tunnel_mode(mode: &str) -> PyResult<ios_core::TunMode> {
     }
 }
 
+fn execute_product_version(
+    device: &ios_core::ConnectedDevice,
+) -> Result<Result<String, ios_core::CoreError>, &'static std::io::Error> {
+    with_runtime(&RUNTIME, |rt| {
+        rt.block_on(async {
+            let v = device.product_version().await?;
+            Ok::<_, ios_core::CoreError>(v.to_string())
+        })
+    })
+}
+
+fn execute_list_apps(
+    device: &ios_core::ConnectedDevice,
+) -> Result<Result<Vec<ios_core::apps::AppInfo>, ios_core::CoreError>, &'static std::io::Error> {
+    with_runtime(&RUNTIME, |rt| {
+        rt.block_on(async {
+            let stream = device
+                .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+                .await?;
+            let mut client = ios_core::apps::InstallationProxy::new(stream);
+            let apps = client.list_user_apps().await.map_err(|e| match e {
+                ios_core::apps::installation::IpError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::apps::installation::IpError::Plist(err) => {
+                    ios_core::CoreError::Protocol(err.to_string())
+                }
+                ios_core::apps::installation::IpError::Protocol(msg) => {
+                    ios_core::CoreError::Protocol(msg)
+                }
+                ios_core::apps::installation::IpError::Install(msg) => {
+                    ios_core::CoreError::Protocol(msg)
+                }
+            })?;
+            Ok::<_, ios_core::CoreError>(apps)
+        })
+    })
+}
+
+fn apps_to_pylist(py: Python<'_>, apps: &[ios_core::apps::AppInfo]) -> PyResult<PyObject> {
+    let list = PyList::empty_bound(py);
+    for app in apps {
+        let dict = PyDict::new_bound(py);
+        dict.set_item("bundle_id", &app.bundle_id)?;
+        dict.set_item("display_name", &app.display_name)?;
+        dict.set_item("version", &app.version)?;
+        dict.set_item("app_type", &app.app_type)?;
+        dict.set_item("path", &app.path)?;
+        list.append(dict)?;
+    }
+    Ok(list.into())
+}
+
+fn execute_list_files(
+    device: &ios_core::ConnectedDevice,
+    path: &str,
+) -> Result<Result<Vec<String>, ios_core::CoreError>, &'static std::io::Error> {
+    with_runtime(&RUNTIME, |rt| {
+        rt.block_on(async {
+            let stream = device
+                .connect_service(ios_core::afc::AFC_SERVICE)
+                .await?;
+            let mut client = ios_core::afc::AfcClient::new(stream);
+            let files = client.list_dir(path).await.map_err(|e| match e {
+                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::afc::AfcError::Status(status) => {
+                    ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
+                }
+                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+            })?;
+            Ok::<_, ios_core::CoreError>(files)
+        })
+    })
+}
+
+fn files_to_pylist(py: Python<'_>, files: &[String]) -> PyResult<PyObject> {
+    let list = PyList::empty_bound(py);
+    for f in files {
+        list.append(f)?;
+    }
+    Ok(list.into())
+}
+
+fn execute_read_file(
+    device: &ios_core::ConnectedDevice,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Result<Vec<u8>, ios_core::CoreError>, &'static std::io::Error> {
+    with_runtime(&RUNTIME, |rt| {
+        rt.block_on(async {
+            let stream = device
+                .connect_service(ios_core::afc::AFC_SERVICE)
+                .await?;
+            let mut client = ios_core::afc::AfcClient::new(stream);
+            let bytes = client.read_file_with_limit(path, max_bytes).await.map_err(|e| match e {
+                ios_core::afc::AfcError::Io(err) => ios_core::CoreError::Io(err),
+                ios_core::afc::AfcError::Status(status) => {
+                    ios_core::CoreError::Protocol(format!("AFC status: {status:?}"))
+                }
+                ios_core::afc::AfcError::Protocol(msg) => ios_core::CoreError::Protocol(msg),
+            })?;
+            Ok::<_, ios_core::CoreError>(bytes.to_vec())
+        })
+    })
+}
+
+fn execute_read_syslog(
+    device: &ios_core::ConnectedDevice,
+    max_messages: usize,
+    timeout: Duration,
+) -> Result<Result<Vec<String>, ios_core::CoreError>, &'static std::io::Error> {
+    if max_messages == 0 {
+        return Ok(Ok(Vec::new()));
+    }
+    with_runtime(&RUNTIME, |rt| {
+        rt.block_on(async {
+            let stream = device
+                .connect_service(ios_core::syslog::SERVICE_NAME)
+                .await?;
+            let mut syslog = ios_core::syslog::SyslogStream::new(stream);
+            let mut collected = Vec::new();
+            let start = tokio::time::Instant::now();
+            while collected.len() < max_messages {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout {
+                    break;
+                }
+                let remaining = timeout - elapsed;
+                match tokio::time::timeout(remaining, syslog.next_message()).await {
+                    Ok(Ok(msg)) => collected.push(msg),
+                    Ok(Err(_io_err)) => break,
+                    Err(_elapsed) => break,
+                }
+            }
+            Ok::<_, ios_core::CoreError>(collected)
+        })
+    })
+}
+
+/// Open a connected iOS device by UDID for app, AFC, and syslog operations.
+#[pyfunction]
+fn open_device(udid: &str, py: Python<'_>) -> PyResult<Device> {
+    if udid.trim().is_empty() {
+        return Err(exception_with_metadata(
+            py,
+            PyValueError::new_err("device UDID cannot be empty"),
+            ios_core::ErrorClass::InvalidInput,
+            "open device",
+            "not_started",
+        ));
+    }
+    let udid_owned = udid.to_string();
+    let device = py
+        .allow_threads(|| {
+            with_runtime(&RUNTIME, |runtime| {
+                let opts = ios_core::device::ConnectOptions {
+                    tun_mode: ios_core::TunMode::Userspace,
+                    pair_record_path: None,
+                    skip_tunnel: true,
+                };
+                runtime.block_on(ios_core::connect(&udid_owned, opts))
+            })
+        })
+        .map_err(|error| operation_error(py, "initialize runtime", error))?
+        .map_err(|e| operation_error(py, "open device", &e))?;
+
+    Ok(Device {
+        udid: udid_owned,
+        device: Arc::new(Mutex::new(Some(Arc::new(device)))),
+    })
+}
+
+/// A handle to a connected iOS device for services (apps, AFC files, syslog).
+#[derive(Clone)]
+#[pyclass]
+pub struct Device {
+    #[pyo3(get)]
+    pub udid: String,
+    device: Arc<Mutex<Option<Arc<ios_core::ConnectedDevice>>>>,
+}
+
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("udid", &self.udid)
+            .field("closed", &self.closed())
+            .finish()
+    }
+}
+
+impl Device {
+    fn get_connected_device(&self, py: Python<'_>) -> PyResult<Arc<ios_core::ConnectedDevice>> {
+        let guard = self.device.lock().map_err(|_| {
+            exception_with_metadata(
+                py,
+                pyo3::exceptions::PyRuntimeError::new_err("device lock poisoned"),
+                ios_core::ErrorClass::Conflict,
+                "device access",
+                "not_started",
+            )
+        })?;
+        guard.as_ref().cloned().ok_or_else(|| {
+            exception_with_metadata(
+                py,
+                pyo3::exceptions::PyRuntimeError::new_err("device is closed"),
+                ios_core::ErrorClass::Precondition,
+                "device access",
+                "not_started",
+            )
+        })
+    }
+}
+
+#[pymethods]
+impl Device {
+    fn __repr__(&self) -> String {
+        let is_closed = self.device.lock().map(|g| g.is_none()).unwrap_or(true);
+        format!(
+            "Device(udid='{}', closed={})",
+            ios_core::redaction::diagnostic_id(&self.udid),
+            is_closed
+        )
+    }
+
+    #[getter]
+    fn closed(&self) -> bool {
+        self.device.lock().map(|g| g.is_none()).unwrap_or(true)
+    }
+
+    /// Close the device handle and release the underlying device session.
+    fn close(&self) {
+        if let Ok(mut guard) = self.device.lock() {
+            guard.take();
+        }
+    }
+
+    /// Async close adapter.
+    fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        helpers.getattr("device_aclose")?.call1((self.clone(),))
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    fn __exit__(
+        &self,
+        _py: Python<'_>,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc: Option<&Bound<'_, PyAny>>,
+        _tb: Option<&Bound<'_, PyAny>>,
+    ) {
+        self.close();
+    }
+
+    fn __aenter__<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        helpers.getattr("device_aenter")?.call1((slf,))
+    }
+
+    #[pyo3(signature = (exc_type=None, exc=None, tb=None))]
+    fn __aexit__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+        exc_type: Option<&Bound<'_, PyAny>>,
+        exc: Option<&Bound<'_, PyAny>>,
+        tb: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        helpers.getattr("device_aexit")?.call1((slf, exc_type, exc, tb))
+    }
+
+    /// Query product version from the device.
+    fn product_version(&self, py: Python<'_>) -> PyResult<String> {
+        let device = self.get_connected_device(py)?;
+        py.allow_threads(|| execute_product_version(&device))
+            .map_err(|error| operation_error(py, "initialize runtime", error))?
+            .map_err(|e| operation_error(py, "get product version", &e))
+    }
+
+    /// List user-installed applications as a list of dicts.
+    fn list_apps(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let device = self.get_connected_device(py)?;
+        let apps = py
+            .allow_threads(|| execute_list_apps(&device))
+            .map_err(|error| operation_error(py, "initialize runtime", error))?
+            .map_err(|e| operation_error(py, "list apps", &e))?;
+        apps_to_pylist(py, &apps)
+    }
+
+    /// List directory contents via AFC as a list of filenames.
+    #[pyo3(signature = (path = "/"))]
+    fn list_files(&self, path: &str, py: Python<'_>) -> PyResult<PyObject> {
+        let device = self.get_connected_device(py)?;
+        let files = py
+            .allow_threads(|| execute_list_files(&device, path))
+            .map_err(|error| operation_error(py, "initialize runtime", error))?
+            .map_err(|e| operation_error(py, "list files", &e))?;
+        files_to_pylist(py, &files)
+    }
+
+    /// Read file content via AFC up to `max_bytes` as bytes.
+    #[pyo3(signature = (path, max_bytes = 1024 * 1024))]
+    fn read_file(&self, path: &str, max_bytes: usize, py: Python<'_>) -> PyResult<PyObject> {
+        let device = self.get_connected_device(py)?;
+        let bytes = py
+            .allow_threads(|| execute_read_file(&device, path, max_bytes))
+            .map_err(|error| operation_error(py, "initialize runtime", error))?
+            .map_err(|e| operation_error(py, "read file", &e))?;
+        Ok(PyBytes::new_bound(py, &bytes).into())
+    }
+
+    /// Read syslog messages up to `max_messages` or until `timeout_ms` expires.
+    #[pyo3(signature = (max_messages = 100, timeout_ms = 5000))]
+    fn read_syslog(
+        &self,
+        max_messages: usize,
+        timeout_ms: u64,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        let device = self.get_connected_device(py)?;
+        let timeout = Duration::from_millis(timeout_ms.min(86_400_000));
+        let messages = py
+            .allow_threads(|| execute_read_syslog(&device, max_messages, timeout))
+            .map_err(|error| operation_error(py, "initialize runtime", error))?
+            .map_err(|e| operation_error(py, "read syslog", &e))?;
+        let list = PyList::empty_bound(py);
+        for m in messages {
+            list.append(m)?;
+        }
+        Ok(list.into())
+    }
+
+    /// Async adapter for product_version.
+    fn async_product_version<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("product_version")?;
+        helpers.getattr("run_async")?.call1((method,))
+    }
+
+    /// Async adapter for list_apps.
+    fn async_list_apps<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("list_apps")?;
+        helpers.getattr("run_async")?.call1((method,))
+    }
+
+    /// Async adapter for list_files.
+    #[pyo3(signature = (path = "/"))]
+    fn async_list_files<'py>(
+        slf: &Bound<'py, Self>,
+        path: &str,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("list_files")?;
+        helpers.getattr("run_async")?.call1((method, path))
+    }
+
+    /// Async adapter for read_file.
+    #[pyo3(signature = (path, max_bytes = 1024 * 1024))]
+    fn async_read_file<'py>(
+        slf: &Bound<'py, Self>,
+        path: &str,
+        max_bytes: usize,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("read_file")?;
+        helpers.getattr("run_async")?.call1((method, path, max_bytes))
+    }
+
+    /// Async adapter for read_syslog.
+    #[pyo3(signature = (max_messages = 100, timeout_ms = 5000))]
+    fn async_read_syslog<'py>(
+        slf: &Bound<'py, Self>,
+        max_messages: usize,
+        timeout_ms: u64,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("read_syslog")?;
+        helpers.getattr("run_async")?.call1((method, max_messages, timeout_ms))
+    }
+}
+
 /// A live iOS CDTunnel.
 ///
 /// Keep this object alive for the duration of your session.
@@ -309,7 +761,7 @@ pub struct Tunnel {
 }
 
 struct TunnelState {
-    device: Option<ios_core::ConnectedDevice>,
+    device: Option<Arc<ios_core::ConnectedDevice>>,
     retained_patches: usize,
     close_requested: bool,
 }
@@ -412,6 +864,139 @@ impl Tunnel {
             state: Arc::clone(&self._state),
             keepalive: None,
         })
+    }
+
+    /// Return a Device handle sharing this tunnel's connection.
+    fn get_device(&self, py: Python<'_>) -> PyResult<Device> {
+        let guard = self._state.lock().map_err(|_| {
+            exception_with_metadata(
+                py,
+                pyo3::exceptions::PyRuntimeError::new_err("tunnel lock poisoned"),
+                ios_core::ErrorClass::Conflict,
+                "tunnel get_device",
+                "not_started",
+            )
+        })?;
+        let device_arc = guard.device.clone().ok_or_else(|| {
+            exception_with_metadata(
+                py,
+                pyo3::exceptions::PyRuntimeError::new_err("tunnel device is closed"),
+                ios_core::ErrorClass::Precondition,
+                "tunnel get_device",
+                "not_started",
+            )
+        })?;
+        Ok(Device {
+            udid: self.server_address.clone(),
+            device: Arc::new(Mutex::new(Some(device_arc))),
+        })
+    }
+
+    /// List user-installed applications through the tunnel's underlying device connection.
+    fn list_apps(&self, py: Python<'_>) -> PyResult<PyObject> {
+        self.get_device(py)?.list_apps(py)
+    }
+
+    /// List directory contents via AFC through the tunnel's underlying device connection.
+    #[pyo3(signature = (path = "/"))]
+    fn list_files(&self, path: &str, py: Python<'_>) -> PyResult<PyObject> {
+        self.get_device(py)?.list_files(path, py)
+    }
+
+    /// Read file content via AFC through the tunnel's underlying device connection.
+    #[pyo3(signature = (path, max_bytes = 1024 * 1024))]
+    fn read_file(&self, path: &str, max_bytes: usize, py: Python<'_>) -> PyResult<PyObject> {
+        self.get_device(py)?.read_file(path, max_bytes, py)
+    }
+
+    /// Read syslog messages through the tunnel's underlying device connection.
+    #[pyo3(signature = (max_messages = 100, timeout_ms = 5000))]
+    fn read_syslog(
+        &self,
+        max_messages: usize,
+        timeout_ms: u64,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        self.get_device(py)?.read_syslog(max_messages, timeout_ms, py)
+    }
+
+    /// Async adapter for close.
+    fn aclose<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        helpers.getattr("tunnel_aclose")?.call1((slf,))
+    }
+
+    /// Async adapter for list_apps.
+    fn async_list_apps<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("list_apps")?;
+        helpers.getattr("run_async")?.call1((method,))
+    }
+
+    /// Async adapter for list_files.
+    #[pyo3(signature = (path = "/"))]
+    fn async_list_files<'py>(
+        slf: &Bound<'py, Self>,
+        path: &str,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("list_files")?;
+        helpers.getattr("run_async")?.call1((method, path))
+    }
+
+    /// Async adapter for read_file.
+    #[pyo3(signature = (path, max_bytes = 1024 * 1024))]
+    fn async_read_file<'py>(
+        slf: &Bound<'py, Self>,
+        path: &str,
+        max_bytes: usize,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("read_file")?;
+        helpers.getattr("run_async")?.call1((method, path, max_bytes))
+    }
+
+    /// Async adapter for read_syslog.
+    #[pyo3(signature = (max_messages = 100, timeout_ms = 5000))]
+    fn async_read_syslog<'py>(
+        slf: &Bound<'py, Self>,
+        max_messages: usize,
+        timeout_ms: u64,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let helpers = PyModule::from_code_bound(
+            py,
+            ASYNC_DEVICE_HELPERS,
+            "ios_rs_async_device.py",
+            "ios_rs_async_device",
+        )?;
+        let method = slf.getattr("read_syslog")?;
+        helpers.getattr("run_async")?.call1((method, max_messages, timeout_ms))
     }
 }
 
@@ -1036,6 +1621,136 @@ mod tests {
                 0,
                 "once the final install is restored the tunnel retain should be released"
             );
+        });
+    }
+
+    #[test]
+    fn open_device_rejects_empty_udid() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let err = open_device("", py).expect_err("empty udid should fail");
+            let (version, class, phase, effects) = metadata(py, &err);
+            assert_eq!(version, 1);
+            assert_eq!(class, "invalid_input");
+            assert_eq!(phase, "open device");
+            assert_eq!(effects, "not_started");
+
+            let err_spaces = open_device("   ", py).expect_err("whitespace udid should fail");
+            let (_, class_spaces, _, _) = metadata(py, &err_spaces);
+            assert_eq!(class_spaces, "invalid_input");
+        });
+    }
+
+    #[test]
+    fn closed_device_rejects_operations_with_precondition() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let device = Device {
+                udid: "00008030-001234567890".into(),
+                device: Arc::new(Mutex::new(None)),
+            };
+            assert!(device.closed());
+            assert_eq!(
+                device.__repr__(),
+                format!(
+                    "Device(udid='{}', closed=true)",
+                    ios_core::redaction::diagnostic_id(&device.udid)
+                )
+            );
+
+            let err = device.list_apps(py).expect_err("closed device should fail");
+            let (v, c, phase, effects) = metadata(py, &err);
+            assert_eq!(v, 1);
+            assert_eq!(c, "precondition");
+            assert_eq!(phase, "device access");
+            assert_eq!(effects, "not_started");
+
+            let err = device.list_files("/", py).expect_err("closed device should fail");
+            let (_, c, _, _) = metadata(py, &err);
+            assert_eq!(c, "precondition");
+
+            let err = device.read_file("/test", 100, py).expect_err("closed device should fail");
+            let (_, c, _, _) = metadata(py, &err);
+            assert_eq!(c, "precondition");
+
+            let err = device.read_syslog(10, 1000, py).expect_err("closed device should fail");
+            let (_, c, _, _) = metadata(py, &err);
+            assert_eq!(c, "precondition");
+
+            let err = device.product_version(py).expect_err("closed device should fail");
+            let (_, c, _, _) = metadata(py, &err);
+            assert_eq!(c, "precondition");
+        });
+    }
+
+    #[test]
+    fn device_sync_and_async_context_manager_close() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            // Sync context manager
+            let device = Device {
+                udid: "00008030-001234567891".into(),
+                device: Arc::new(Mutex::new(None)),
+            };
+            {
+                let py_dev = Bound::new(py, device).expect("create Py");
+                let _ = py_dev.call_method0("__enter__").expect("call __enter__");
+                let _ = py_dev
+                    .call_method1("__exit__", (py.None(), py.None(), py.None()))
+                    .expect("call __exit__");
+                assert!(py_dev.borrow().closed());
+            }
+
+            // Async context manager via python script
+            let device2 = Device {
+                udid: "00008030-001234567892".into(),
+                device: Arc::new(Mutex::new(None)),
+            };
+            let py_dev2 = Bound::new(py, device2).expect("create Py");
+            let locals = PyDict::new_bound(py);
+            locals.set_item("dev", &py_dev2).unwrap();
+            let code = r#"
+import asyncio
+
+async def test_acm(d):
+    async with d as ctx:
+        assert ctx is d
+        assert ctx.closed
+
+asyncio.run(test_acm(dev))
+"#;
+            py.run_bound(code, None, Some(&locals)).expect("run async context manager");
+            assert!(py_dev2.borrow().closed());
+        });
+    }
+
+    #[test]
+    fn apps_to_pylist_and_files_to_pylist_format() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let app_info = ios_core::apps::AppInfo {
+                bundle_id: "com.example.test".into(),
+                display_name: "TestApp".into(),
+                version: "1.0.0".into(),
+                app_type: "User".into(),
+                path: "/private/var/containers/Bundle/Application/uuid/TestApp.app".into(),
+                extra: std::collections::HashMap::new(),
+            };
+            let py_list = apps_to_pylist(py, &[app_info]).expect("apps to pylist");
+            let list_bound = py_list.bind(py).downcast::<PyList>().expect("is list");
+            assert_eq!(list_bound.len(), 1);
+            let item = list_bound.get_item(0).unwrap().downcast::<PyDict>().unwrap().clone();
+            assert_eq!(item.get_item("bundle_id").unwrap().unwrap().extract::<String>().unwrap(), "com.example.test");
+            assert_eq!(item.get_item("display_name").unwrap().unwrap().extract::<String>().unwrap(), "TestApp");
+            assert_eq!(item.get_item("version").unwrap().unwrap().extract::<String>().unwrap(), "1.0.0");
+            assert_eq!(item.get_item("app_type").unwrap().unwrap().extract::<String>().unwrap(), "User");
+
+            let files = vec!["Photos".to_string(), "DCIM".to_string()];
+            let py_files = files_to_pylist(py, &files).expect("files to pylist");
+            let files_bound = py_files.bind(py).downcast::<PyList>().expect("is list");
+            assert_eq!(files_bound.len(), 2);
+            assert_eq!(files_bound.get_item(0).unwrap().extract::<String>().unwrap(), "Photos");
+            assert_eq!(files_bound.get_item(1).unwrap().extract::<String>().unwrap(), "DCIM");
         });
     }
 }

@@ -182,6 +182,47 @@ int ios_get_product_version(const IosDeviceHandle *handle, char **version_out);
 int ios_get_lockdown_value_json(const IosDeviceHandle *handle, const char *key, char **json_out);
 
 /**
+ * List installed user applications as newly-allocated JSON array string.
+ *
+ * Array of objects: [{"bundle_id": "...", "display_name": "...", "version": "...", "app_type": "...", "path": "..."}].
+ * Free the returned string with ios_free_string() or ios_free_string_checked().
+ */
+int ios_device_list_apps_json(const IosDeviceHandle *handle, char **json_out);
+
+/**
+ * List directory contents via AFC as newly-allocated JSON array of file names.
+ *
+ * Free the returned string with ios_free_string() or ios_free_string_checked().
+ */
+int ios_device_afc_list_files_json(const IosDeviceHandle *handle, const char *path, char **json_out);
+
+/**
+ * Read a file via AFC with an upper byte limit.
+ *
+ * On success, *data_out points to newly-allocated buffer of *len_out bytes.
+ * Free the buffer with ios_free_bytes() or ios_free_bytes_checked().
+ */
+int ios_device_afc_read_file(const IosDeviceHandle *handle, const char *path, size_t max_bytes, uint8_t **data_out, size_t *len_out);
+
+/**
+ * Free a byte buffer returned by an ios-rs byte-output function.
+ */
+void ios_free_bytes(uint8_t *data, size_t len);
+
+/**
+ * Consume/free a byte buffer and reset caller pointers.
+ */
+int ios_free_bytes_checked(uint8_t **data_in_out, size_t *len_in_out);
+
+/**
+ * Read log messages from syslog service as newly-allocated JSON array of strings.
+ *
+ * Reads up to max_messages or until timeout_ms expires.
+ * Free the returned string with ios_free_string() or ios_free_string_checked().
+ */
+int ios_device_syslog_read_json(const IosDeviceHandle *handle, size_t max_messages, uint64_t timeout_ms, char **json_out);
+
+/**
  * Free a UTF-8 string returned by an ios-rs string-output function.
  */
 void ios_free_string(char *s);
