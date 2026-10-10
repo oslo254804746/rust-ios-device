@@ -127,7 +127,7 @@ pub use lockdown::{
 };
 #[cfg(feature = "supervised-pair")]
 pub use lockdown::{pair_supervised, save_pair_record, FullPairRecord};
-pub use mux::MuxClient;
+pub use mux::{MuxClient, MuxError};
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub use pairing_transport::{pair_new_device, PairedCredentials, PairingTransportError};
 pub use proto::nskeyedarchiver_encode::{
@@ -250,6 +250,15 @@ pub use xpc::message::{
 };
 pub use xpc::rsd::{RsdFeatureEvidence, RsdHandshake, ServiceDescriptor, RSD_PORT};
 pub use xpc::XpcError;
+
+#[doc(hidden)]
+pub mod test_support {
+    #[cfg(feature = "tunnel")]
+    pub use crate::xpc::h2_raw::{H2Framer, H2_PREFACE};
+    pub use crate::xpc::message::{decode_message, encode_message, flags, XpcMessage};
+    #[cfg(feature = "tunnel")]
+    pub use crate::xpc::rsd::{handshake_on_framer, initialize_xpc_connection_on_framer};
+}
 
 /// List all currently connected iOS devices (via usbmuxd).
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, CoreError> {
