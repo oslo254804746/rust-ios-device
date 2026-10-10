@@ -116,6 +116,10 @@ pub(crate) fn resource_decision(phase: &'static str) -> anyhow::Error {
     ResourceLimitDecision(phase).into()
 }
 
+pub(crate) fn resource_limit_error(phase: &'static str) -> std::io::Error {
+    std::io::Error::other(ResourceLimitDecision(phase))
+}
+
 /// Opt-in machine errors leave the existing result stream and human default
 /// unchanged. The command parser owns selection and input validation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -169,6 +173,20 @@ fn cli_decisions(
                 class = Some(ios_core::ErrorClass::Precondition);
             } else if source.is::<ResourceLimitDecision>() {
                 class = Some(ios_core::ErrorClass::ResourceLimit);
+            }
+        }
+        if let Some(io) = source.downcast_ref::<std::io::Error>() {
+            if let Some(payload) = io.get_ref() {
+                if payload.is::<ForceRequired>() {
+                    return (true, Some(ios_core::ErrorClass::Precondition));
+                }
+                if class.is_none() {
+                    if payload.is::<OperationPrecondition>() {
+                        class = Some(ios_core::ErrorClass::Precondition);
+                    } else if payload.is::<ResourceLimitDecision>() {
+                        class = Some(ios_core::ErrorClass::ResourceLimit);
+                    }
+                }
             }
         }
         current = source.source();
