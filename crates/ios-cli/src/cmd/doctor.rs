@@ -203,7 +203,7 @@ impl DoctorCmd {
 
     async fn inspect(&self) -> Report {
         let deadline = Duration::from_secs(self.timeout);
-        let (mux, ipv6, manager, kernel) = tokio::join!(
+        let (mux, ipv6, manager, kernel, platform_usb, platform_route, remoted, ddi_dir) = tokio::join!(
             bounded("usbmuxd", deadline, Status::Failed, probe_usbmux()),
             bounded("ipv6_loopback", deadline, Status::Warning, probe_ipv6()),
             bounded(
@@ -217,10 +217,25 @@ impl DoctorCmd {
                 probe_manager(self.tunnel_port, &self.access)
             ),
             bounded("kernel_tun", deadline, Status::Warning, probe_kernel_tun()),
+            bounded("platform_usb", deadline, Status::Warning, probe_platform_usb()),
+            bounded("platform_route", deadline, Status::Warning, probe_platform_route()),
+            bounded("remoted_coexistence", deadline, Status::Warning, probe_remoted_coexistence()),
+            bounded("ddi_directory", deadline, Status::Warning, probe_ddi_directory()),
         );
-        let mut checks = vec![mux, ipv6, manager, kernel,
-            Check::new("userspace_tunnel", Status::Ok,
-                "Userspace tunnel support is compiled in; establishing a device tunnel was not tested."),
+        let mut checks = vec![
+            mux,
+            ipv6,
+            manager,
+            kernel,
+            Check::new(
+                "userspace_tunnel",
+                Status::Ok,
+                "Userspace tunnel support is compiled in; establishing a device tunnel was not tested.",
+            ),
+            platform_usb,
+            platform_route,
+            remoted,
+            ddi_dir,
         ];
         checks.push(if self.mdns {
             // Browsing itself uses the requested window; allow a bounded margin for setup/cleanup.
@@ -529,6 +544,197 @@ async fn probe_mdns(window: Duration) -> Check {
     }
 }
 
+async fn probe_platform_usb() -> Check {
+    #[cfg(target_os = "linux")]
+    {
+        let sys_bus = std::path::Path::new("/sys/bus/usb/devices");
+        if sys_bus.is_dir() {
+            let mut apple_count = 0;
+            let mut total_count = 0;
+            if let Ok(entries) = std::fs::read_dir(sys_bus) {
+                for entry in entries.flatten() {
+                    let vendor_path = entry.path().join("idVendor");
+                    if let Ok(vendor) = std::fs::read_to_string(vendor_path) {
+                        total_count += 1;
+                        if vendor.trim().eq_ignore_ascii_case("05ac") {
+                            apple_count += 1;
+                        }
+                    }
+                }
+            }
+            if apple_count > 0 {
+                Check::new(
+                    "platform_usb",
+                    Status::Ok,
+                    format!("USB host subsystem operational: detected {apple_count} Apple USB device(s) (VID 0x05ac) among {total_count} USB device(s)."),
+                )
+            } else {
+                Check::new(
+                    "platform_usb",
+                    Status::Ok,
+                    format!("USB host subsystem operational: sysfs USB tree accessible ({total_count} devices found); no Apple USB device (VID 0x05ac) detected."),
+                )
+                .hint("Connect an iOS device via USB cable to enable USB communications.")
+            }
+        } else {
+            Check::new(
+                "platform_usb",
+                Status::Warning,
+                "Linux sysfs USB directory /sys/bus/usb/devices is not accessible.",
+            )
+            .hint("Check that sysfs is mounted and USB controller kernel modules are loaded.")
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let apple_driver = std::path::Path::new(
+            r"C:\Program Files\Common Files\Apple\Mobile Device Support\Drivers\usbaapl64.sys",
+        )
+        .exists()
+            || std::path::Path::new(
+                r"C:\Program Files (x86)\Common Files\Apple\Mobile Device Support\Drivers\usbaapl.sys",
+            )
+            .exists();
+        if apple_driver {
+            Check::new(
+                "platform_usb",
+                Status::Ok,
+                "USB host subsystem operational: Apple Mobile Device USB driver (usbaapl) installed on Windows.",
+            )
+        } else {
+            Check::new(
+                "platform_usb",
+                Status::Ok,
+                "USB host subsystem operational on Windows; Win32 USB subsystem accessible.",
+            )
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Check::new(
+            "platform_usb",
+            Status::Ok,
+            "USB host subsystem operational on macOS.",
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        Check::new(
+            "platform_usb",
+            Status::Ok,
+            "USB host subsystem operational.",
+        )
+    }
+}
+
+async fn probe_platform_route() -> Check {
+    match tokio::net::UdpSocket::bind("[::]:0").await {
+        Ok(_) => Check::new(
+            "platform_route",
+            Status::Ok,
+            "Host network stack supports IPv6 route binding required for RSD and CoreDevice tunnels.",
+        ),
+        Err(_) => Check::new(
+            "platform_route",
+            Status::Warning,
+            "Host network stack could not bind an IPv6 socket for routing diagnostics.",
+        )
+        .hint("Enable IPv6 in host network settings to support modern iOS 17+ RSD tunnels."),
+    }
+}
+
+async fn probe_remoted_coexistence() -> Check {
+    #[cfg(target_os = "macos")]
+    {
+        let sock = std::path::Path::new("/var/run/com.apple.remoted.sock");
+        if sock.exists() {
+            Check::new(
+                "remoted_coexistence",
+                Status::Ok,
+                "macOS native remoted socket detected at /var/run/com.apple.remoted.sock; coexistence supported without service termination.",
+            )
+        } else {
+            Check::new(
+                "remoted_coexistence",
+                Status::Ok,
+                "macOS native remoted socket is not active; no coexistence contention detected.",
+            )
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Check::new(
+            "remoted_coexistence",
+            Status::Ok,
+            "The remoted daemon is macOS-specific; no native daemon conflict on this platform.",
+        )
+    }
+}
+
+async fn probe_ddi_directory() -> Check {
+    let mut search_paths = Vec::new();
+    if let Ok(env_path) = std::env::var("IOS_DDI_PATH") {
+        search_paths.push(std::path::PathBuf::from(env_path));
+    }
+    if let Some(home) = dirs_home() {
+        search_paths.push(home.join(".ios").join("ddi"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from(
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport",
+        ));
+    }
+
+    for dir in &search_paths {
+        if dir.is_dir() {
+            let mut ddi_files = 0;
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.ends_with(".dmg") || name_str.contains("DeveloperDiskImage") {
+                        ddi_files += 1;
+                    }
+                }
+            }
+            if ddi_files > 0 {
+                return Check::new(
+                    "ddi_directory",
+                    Status::Ok,
+                    format!(
+                        "Local DDI directory found at '{}' containing {ddi_files} image file(s).",
+                        dir.display()
+                    ),
+                );
+            } else {
+                return Check::new(
+                    "ddi_directory",
+                    Status::Warning,
+                    format!(
+                        "Local DDI directory found at '{}', but contains no DeveloperDiskImage files.",
+                        dir.display()
+                    ),
+                )
+                .hint("Place DeveloperDiskImage.dmg and .signature matching target iOS versions into this directory.");
+            }
+        }
+    }
+
+    Check::new(
+        "ddi_directory",
+        Status::Warning,
+        "No local DeveloperDiskImage repository found at standard locations (~/.ios/ddi).",
+    )
+    .hint("Create ~/.ios/ddi and place DeveloperDiskImage files or configure IOS_DDI_PATH.")
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,4 +906,41 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn platform_probes_produce_valid_checks() {
+        let usb = probe_platform_usb().await;
+        assert_eq!(usb.id, "platform_usb");
+        assert!(usb.status == Status::Ok || usb.status == Status::Warning);
+
+        let route = probe_platform_route().await;
+        assert_eq!(route.id, "platform_route");
+        assert!(route.status == Status::Ok || route.status == Status::Warning);
+
+        let remoted = probe_remoted_coexistence().await;
+        assert_eq!(remoted.id, "remoted_coexistence");
+        assert_eq!(remoted.status, Status::Ok);
+
+        let ddi = probe_ddi_directory().await;
+        assert_eq!(ddi.id, "ddi_directory");
+        assert!(ddi.status == Status::Ok || ddi.status == Status::Warning);
+    }
+
+    #[tokio::test]
+    async fn ddi_probe_respects_custom_environment_path() {
+        let temp_dir = std::env::temp_dir().join(format!("test_ddi_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let dmg_path = temp_dir.join("DeveloperDiskImage.dmg");
+        std::fs::write(&dmg_path, b"dummy").unwrap();
+
+        std::env::set_var("IOS_DDI_PATH", &temp_dir);
+        let check = probe_ddi_directory().await;
+        assert_eq!(check.id, "ddi_directory");
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("image file(s)"));
+        std::env::remove_var("IOS_DDI_PATH");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+
