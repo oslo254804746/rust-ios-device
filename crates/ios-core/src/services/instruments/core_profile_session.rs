@@ -119,7 +119,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CoreProfileSessionClient<S> {
 
     async fn recv_next_event(&mut self) -> Result<CoreProfileEvent, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = crate::services::dtx::codec::checked_reply(self.conn.recv().await?)?;
             if msg.expects_reply {
                 self.conn.send_ack(&msg).await?;
             }
@@ -407,6 +407,9 @@ fn build_keyed_archive(root_uid: Value, objects: Vec<Value>) -> Value {
 
 fn decode_core_profile_payload(payload: DtxPayload) -> Result<Option<CoreProfileEvent>, DtxError> {
     match payload {
+        DtxPayload::Error(_) => Err(DtxError::Protocol(
+            "unexpected peer error in profile payload parser".into(),
+        )),
         DtxPayload::Empty => Ok(None),
         DtxPayload::Response(NSObject::Null) => Ok(None),
         DtxPayload::Response(object) => decode_core_profile_object(object),

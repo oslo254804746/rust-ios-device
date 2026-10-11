@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::{ErrorClass, TunnelError, TunnelHandle, TunnelShutdownFailure};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
 use tokio::time::{error::Elapsed, Instant};
 
 pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
@@ -82,6 +82,9 @@ struct Entry {
     stamp: OwnershipStamp,
     phase: Phase,
     handle: Option<Arc<TunnelHandle>>,
+    // An admitted device's known metadata charge remains with the original
+    // runtime until its joins are certified, even after its table row drops.
+    metadata: Option<Arc<OwnedSemaphorePermit>>,
     failure_observed: bool,
 }
 
@@ -218,6 +221,7 @@ impl Registry {
             stamp,
             phase: Phase::Reserved,
             handle: None,
+            metadata: None,
             failure_observed: false,
         });
         Ok(Reservation {
@@ -684,6 +688,18 @@ pub(super) struct NativeLease {
 }
 
 impl NativeLease {
+    pub(super) fn retain_metadata(&self, metadata: Arc<OwnedSemaphorePermit>) -> Result<()> {
+        let mut state = self.registry.lock();
+        let entry =
+            Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
+        anyhow::ensure!(
+            entry.metadata.is_none(),
+            crate::output::input_decision("native metadata charge already retained")
+        );
+        entry.metadata = Some(metadata);
+        Ok(())
+    }
+
     pub(super) fn matches_runtime(&self, handle: &Arc<TunnelHandle>) -> bool {
         let mut state = self.registry.lock();
         Registry::entry_mut(&mut state, &self.key).is_some_and(|entry| {

@@ -316,6 +316,19 @@ async fn within<T>(future: impl Future<Output = T>) -> T {
         .expect("owned doctor fixture did not finish")
 }
 
+async fn cancel_probe<T>(
+    work: impl Future<Output = Result<T>>,
+    signal: impl Future<Output = io::Result<()>>,
+) -> Result<T> {
+    let cancel = super::super::ProbeCancel::new();
+    super::super::cancellable(
+        super::super::until_cancelled(work, &cancel),
+        signal,
+        &cancel,
+    )
+    .await
+}
+
 fn has_elapsed(error: &anyhow::Error) -> bool {
     let mut current = Some(error.as_ref() as &(dyn Error + 'static));
     for _ in 0..32 {
@@ -338,20 +351,26 @@ fn has_elapsed(error: &anyhow::Error) -> bool {
 }
 
 #[tokio::test]
-async fn explicit_device_assessment_uses_three_fresh_readonly_sessions_and_no_tunnel_route() {
+async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tunnel_route() {
     let (trust, trust_peer) = tokio::io::duplex(65_536);
     let (developer, developer_peer) = tokio::io::duplex(65_536);
     let (image_developer, mut image_developer_peer) = tokio::io::duplex(65_536);
     let (ddi, ddi_peer) = tokio::io::duplex(65_536);
     let (image_ddi, mut image_ddi_peer) = tokio::io::duplex(65_536);
+    let (mounted, mounted_peer) = tokio::io::duplex(65_536);
+    let (image_mounted, mut image_mounted_peer) = tokio::io::duplex(65_536);
+    let (usable, usable_peer) = tokio::io::duplex(65_536);
     let source = FakeSource::new(vec![
         (LOCKDOWN_PORT, trust),
         (LOCKDOWN_PORT, developer),
         (IMAGE_PORT, image_developer),
         (LOCKDOWN_PORT, ddi),
         (IMAGE_PORT, image_ddi),
+        (LOCKDOWN_PORT, mounted),
+        (IMAGE_PORT, image_mounted),
+        (LOCKDOWN_PORT, usable),
     ]);
-    let (assessment, (), (), (), (), ()) = within(async {
+    let (assessment, (), (), (), (), (), (), (), ()) = within(async {
         tokio::join!(
             inspect(&source, UDID, Duration::from_secs(2)),
             serve_value(
@@ -370,19 +389,42 @@ async fn explicit_device_assessment_uses_three_fresh_readonly_sessions_and_no_tu
                     Some(plist::Value::Array(vec![])),
                     Some(plist::Value::Array(vec![]))
                 ]
-            )
+            ),
+            serve_service(mounted_peer, service_reply()),
+            async {
+                image_request(&mut image_mounted_peer, "CopyDevices", None).await;
+                send_lockdown(
+                    &mut image_mounted_peer,
+                    &dictionary([("EntryList", plist::Value::Array(vec![]))]),
+                )
+                .await
+                .unwrap();
+                eof(&mut image_mounted_peer).await;
+            },
+            async {
+                let mut tls = tls_session(usable_peer).await;
+                let query = request(&mut tls, "GetValue", &["Label", "Request", "Key"]).await;
+                assert_eq!(query["Key"].as_string(), Some("ProductVersion"));
+                send_lockdown(&mut tls, &dictionary([("Value", "17.0".into())]))
+                    .await
+                    .unwrap();
+                eof(&mut tls).await;
+            }
         )
     })
     .await;
     assert!(!assessment.failed());
-    assert_eq!(assessment.checks.len(), 5);
+    assert_eq!(assessment.checks.len(), 7);
     assert_eq!(assessment.checks[0].value, Some(true));
     assert_eq!(assessment.checks[1].value, Some(false));
     assert_eq!(assessment.checks[1].state, State::Available);
     assert_eq!(assessment.checks[2].value, Some(false));
     assert_eq!(assessment.checks[2].state, State::Available);
     assert!(assessment.checks[2].detail.contains("may still be mounted"));
-    assert!(assessment.checks[3..]
+    assert_eq!(assessment.checks[5].value, Some(false));
+    assert_eq!(assessment.checks[6].status, Status::Unknown);
+    assert_eq!(assessment.checks[6].state, State::Unsupported);
+    assert!(assessment.checks[3..5]
         .iter()
         .all(|check| check.state == State::NotProbed));
     for check in &assessment.checks {
@@ -404,10 +446,123 @@ async fn explicit_device_assessment_uses_three_fresh_readonly_sessions_and_no_tu
             Call::Devices,
             Call::PairRecord,
             Call::Port(7, LOCKDOWN_PORT),
-            Call::Port(7, IMAGE_PORT)
+            Call::Port(7, IMAGE_PORT),
+            Call::Devices,
+            Call::PairRecord,
+            Call::Port(7, LOCKDOWN_PORT),
+            Call::Port(7, IMAGE_PORT),
+            Call::Devices,
+            Call::PairRecord,
+            Call::Port(7, LOCKDOWN_PORT)
         ]
     );
     assert!(source.ports.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mounted_image_observation_preserves_missing_empty_personalized_and_malformed_replies() {
+    let replies = [
+        (plist::Dictionary::new(), None, false),
+        (
+            dictionary([("EntryList", plist::Value::Array(vec![]))]),
+            Some(false),
+            false,
+        ),
+        (
+            dictionary([(
+                "EntryList",
+                plist::Value::Array(vec![plist::Value::Dictionary(dictionary([(
+                    "DiskImageType",
+                    "Personalized".into(),
+                )]))]),
+            )]),
+            Some(true),
+            false,
+        ),
+        (
+            dictionary([(
+                "EntryList",
+                plist::Value::Array(vec![plist::Value::Dictionary(plist::Dictionary::new())]),
+            )]),
+            None,
+            false,
+        ),
+        (
+            dictionary([("EntryList", "private-malformed-data".into())]),
+            None,
+            true,
+        ),
+    ];
+    for (reply, expected, failed) in replies {
+        let (lockdown, lockdown_peer) = tokio::io::duplex(65_536);
+        let (image, mut image_peer) = tokio::io::duplex(65_536);
+        let source = FakeSource::new(vec![(LOCKDOWN_PORT, lockdown), (IMAGE_PORT, image)]);
+        let (check, (), ()) = within(async {
+            tokio::join!(
+                probe_once(&source, UDID, Probe::DdiMounted, Duration::from_secs(2)),
+                serve_service(lockdown_peer, service_reply()),
+                async {
+                    image_request(&mut image_peer, "CopyDevices", None).await;
+                    send_lockdown(&mut image_peer, &reply).await.unwrap();
+                    eof(&mut image_peer).await;
+                }
+            )
+        })
+        .await;
+        assert_eq!(check.value, expected);
+        assert_eq!(check.status == Status::Failed, failed);
+        safe(&check);
+        assert!(source.ports.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn target_ddi_usability_requires_checked_readonly_dtx_reply_over_existing_service_tls() {
+    use ios_core::services::dtx::{encode_dtx, read_dtx_frame, DtxPayload};
+    use tokio::io::AsyncWriteExt;
+    for malformed in [false, true] {
+        let (lockdown, lockdown_peer) = tokio::io::duplex(65_536);
+        let (instruments, instruments_peer) = tokio::io::duplex(65_536);
+        let source = FakeSource::new(vec![(LOCKDOWN_PORT, lockdown), (IMAGE_PORT, instruments)]);
+        let (check, (), ()) = within(async { tokio::join!(
+            probe_once(&source, UDID, Probe::DdiUsable, Duration::from_secs(2)),
+            async {
+                let mut tls = tls_session(lockdown_peer).await;
+                let query = request(&mut tls, "GetValue", &["Label", "Request", "Key"]).await;
+                assert_eq!(query["Key"].as_string(), Some("ProductVersion"));
+                send_lockdown(&mut tls, &dictionary([("Value", "16.7.1".into())])).await.unwrap();
+                let service = request(&mut tls, "StartService", &["Label", "Request", "Service"]).await;
+                assert_eq!(service["Service"].as_string(), Some(ios_core::instruments::SERVICE_IOS14));
+                send_lockdown(&mut tls, &dictionary([
+                    ("Port", plist::Value::Integer(IMAGE_PORT.into())),
+                    ("EnableServiceSSL", plist::Value::Boolean(true)),
+                ])).await.unwrap();
+                eof(&mut tls).await;
+            },
+            async {
+                let mut tls = acceptor().accept(instruments_peer).await.unwrap();
+                let channel = read_dtx_frame(&mut tls).await.unwrap();
+                assert!(matches!(channel.payload, DtxPayload::MethodInvocation { ref selector, .. } if selector == "_requestChannelWithCode:identifier:"));
+                tls.write_all(&encode_dtx(channel.identifier, 1, channel.channel_code, false, 3, &ios_core::archive_null(), &[])).await.unwrap();
+                let operation = read_dtx_frame(&mut tls).await.unwrap();
+                assert!(matches!(operation.payload, DtxPayload::MethodInvocation { ref selector, ref args } if selector == "runningProcesses" && args.is_empty()));
+                let payload = if malformed { ios_core::archive_string("private-invalid-response") } else { ios_core::archive_array(vec![]) };
+                tls.write_all(&encode_dtx(operation.identifier, 1, operation.channel_code, false, 3, &payload, &[])).await.unwrap();
+                eof(&mut tls).await;
+            }
+        ) }).await;
+        assert_eq!(
+            check.status,
+            if malformed {
+                Status::Failed
+            } else {
+                Status::Ok
+            }
+        );
+        assert_eq!(check.value, if malformed { None } else { Some(true) });
+        safe(&check);
+        assert!(source.ports.lock().unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -925,9 +1080,7 @@ async fn pinned_cancellation_closes_inflight_protocol_and_preclosed_signal_skips
     let source = FakeSource::new(vec![]);
     let work =
         async { Ok(probe_once(&source, UDID, Probe::Session, Duration::from_secs(2)).await) };
-    let error = super::super::cancellable(work, async { Ok(()) })
-        .await
-        .unwrap_err();
+    let error = cancel_probe(work, async { Ok(()) }).await.unwrap_err();
     assert_eq!(
         ios_core::classify_error(error.as_ref()),
         ErrorClass::Cancelled
@@ -940,7 +1093,7 @@ async fn pinned_cancellation_closes_inflight_protocol_and_preclosed_signal_skips
     let work =
         async { Ok(probe_once(&source, UDID, Probe::Session, Duration::from_secs(30)).await) };
     let (error, ()) = within(async {
-        tokio::join!(super::super::cancellable(work, signal), async {
+        tokio::join!(cancel_probe(work, signal), async {
             request(&mut peer, "QueryType", &["Label", "Request"]).await;
             cancel.send(()).unwrap();
             eof(&mut peer).await;
@@ -974,7 +1127,7 @@ async fn pinned_cancellation_drops_an_active_image_query_and_stops_the_assessmen
     };
     let (result, (), ()) = within(async {
         tokio::join!(
-            super::super::cancellable(work, signal),
+            cancel_probe(work, signal),
             serve_service(lockdown_peer, service_reply()),
             async {
                 image_request(&mut image_peer, "QueryDeveloperModeStatus", None).await;
@@ -1010,7 +1163,7 @@ async fn signal_registration_error_keeps_native_io_without_polling_device_work()
             "owned-private-signal-source",
         ))
     };
-    let error = super::super::cancellable(work, signal).await.unwrap_err();
+    let error = cancel_probe(work, signal).await.unwrap_err();
     assert_eq!(
         ios_core::classify_error(error.as_ref()),
         ErrorClass::PermissionDenied

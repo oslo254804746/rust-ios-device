@@ -103,7 +103,10 @@ impl RunTestCmd {
             crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
 
         let mut workflow_sessions = Vec::new();
-        let work = async {
+        let mut startup_scopes = Vec::<TestStartupCleanup>::new();
+        let mut attempts = crate::cmd::test_workflow::AttemptHistory::default();
+        let mut latest_summary = None;
+        let work = Box::pin(async {
             if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
                 &udid,
                 self.workflow.install_app.as_deref(),
@@ -150,7 +153,7 @@ impl RunTestCmd {
 
             crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
 
-            let device = match connect_testmanager_device(&udid).await {
+            let device = match Box::pin(connect_testmanager_device(&udid)).await {
                 Ok(device) => device,
                 Err(error) => {
                     let report_result = write_junit_diagnostic(
@@ -216,9 +219,17 @@ impl RunTestCmd {
             };
 
             if self.wait {
+                attempts.start(plan.tests_to_run.clone());
+                startup_scopes.push(TestStartupCleanup::default());
                 let startup = tokio::time::timeout(
                     std::time::Duration::from_secs(self.startup_timeout_secs),
-                    start_test_plan_session(&udid, plan.clone()),
+                    Box::pin(start_test_plan_session_inner(
+                        &udid,
+                        plan.clone(),
+                        Some(deadline),
+                        false,
+                        startup_scopes.last_mut().expect("startup owner admitted"),
+                    )),
                 )
                 .await;
                 let session = match startup {
@@ -304,7 +315,12 @@ impl RunTestCmd {
                     Ok(Ok(summary)) => summary,
                 };
                 session.terminate().await;
+                if let Some(error) = session.take_termination_error() {
+                    return Err(error);
+                }
 
+                attempts.complete(&summary)?;
+                latest_summary = Some(summary.clone());
                 // Rerun failed tests if requested
                 if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
                     for rerun_idx in 0..self.workflow.rerun_failed {
@@ -319,17 +335,35 @@ impl RunTestCmd {
                             "test workflow: rerunning failed test selectors"
                         );
                         let mut rerun_plan = plan.clone();
+                        attempts.start(failed_selectors.clone());
                         rerun_plan.tests_to_run = failed_selectors;
                         rerun_plan.tests_to_skip.clear();
 
                         let rerun_session = match tokio::time::timeout(
                             std::time::Duration::from_secs(self.startup_timeout_secs),
-                            start_test_plan_session(&udid, rerun_plan),
+                            {
+                                startup_scopes.push(TestStartupCleanup::default());
+                                Box::pin(start_test_plan_session_inner(
+                                    &udid,
+                                    rerun_plan,
+                                    Some(deadline),
+                                    false,
+                                    startup_scopes
+                                        .last_mut()
+                                        .expect("rerun startup owner admitted"),
+                                ))
+                            },
                         )
                         .await
                         {
                             Ok(Ok(s)) => s,
-                            _ => break,
+                            Ok(Err(error)) => return Err(error),
+                            Err(elapsed) => {
+                                return Err(xctest_wait_timeout(
+                                    elapsed,
+                                    "timed out restarting XCTest runner",
+                                ))
+                            }
                         };
 
                         workflow_sessions.push(rerun_session);
@@ -342,16 +376,22 @@ impl RunTestCmd {
                         )
                         .await;
                         rerun_session.terminate().await;
-                        if let Ok(Ok(rerun_summary)) = rerun_res {
+                        let rerun_summary = rerun_res.map_err(|elapsed| {
+                            xctest_wait_timeout(elapsed, "timed out waiting for rerun results")
+                        })??;
+                        if let Some(error) = rerun_session.take_termination_error() {
+                            return Err(error);
+                        }
+                        attempts.complete(&rerun_summary)?;
+                        {
                             crate::cmd::test_workflow::merge_rerun_summary(
                                 &mut summary,
                                 rerun_summary,
-                            );
+                            )?;
+                            latest_summary = Some(summary.clone());
                             if summary.failed_tests == 0 {
                                 break;
                             }
-                        } else {
-                            break;
                         }
                     }
                 }
@@ -370,6 +410,7 @@ impl RunTestCmd {
                         "protocol_version": result.protocol_version,
                         "minimum_version": result.minimum_version,
                         "summary": summary,
+                        "attempts": attempts,
                         "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
                     }))?
                 );
@@ -407,22 +448,88 @@ impl RunTestCmd {
             );
 
             Ok(())
-        };
-        let outcome = tokio::select! {
+        });
+        let mut outcome = tokio::select! {
             result = tokio::time::timeout_at(deadline, work) => result
                 .map_err(|error| anyhow::Error::new(error).context("XCTest workflow deadline expired")).and_then(|result| result),
             signal = tokio::signal::ctrl_c() => {
                 match signal {
-                    Ok(()) => Err(anyhow::Error::new(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted, "XCTest workflow cancelled"))),
+                    Ok(()) => Err(ios_core::OperationCancelled::new().into()),
                     Err(error) => Err(anyhow::Error::new(error).context("waiting for XCTest cancellation")),
                 }
             }
         };
+        if let Err(error) = &outcome {
+            let partial = if attempts.attempt_count() == workflow_sessions.len() {
+                workflow_sessions
+                    .last()
+                    .map(|session| session.partial_summary())
+            } else {
+                None
+            };
+            let recorded = attempts.fail(error, partial.as_ref());
+            let diagnostic = latest_summary
+                .as_ref()
+                .or(partial.as_ref())
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            latest_summary = Some(diagnostic.clone());
+            let reported = write_junit_diagnostic(self.junit_output.as_deref(), &diagnostic, error);
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                recorded,
+                "workflow attempt history failed",
+            );
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                reported,
+                "workflow diagnostic report failed",
+            );
+        }
+        for startup in &mut startup_scopes {
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                startup.close().await,
+                "XCTest interrupted startup cleanup failed",
+            );
+        }
         for session in &mut workflow_sessions {
             session.terminate().await;
+            if let Some(error) = session.take_termination_error() {
+                outcome = crate::cmd::test_workflow::combine_results(
+                    outcome,
+                    Err(error),
+                    "workflow runner cleanup failed",
+                );
+            }
         }
-        crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome).await
+        let outcome =
+            crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome)
+                .await;
+        let recorded = if let Err(error) = &outcome {
+            let record = attempts.fail(error, None);
+            let diagnostic = latest_summary
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            crate::cmd::test_workflow::combine_results(
+                record,
+                write_junit_diagnostic(self.junit_output.as_deref(), &diagnostic, error),
+                "workflow final diagnostic failed",
+            )
+        } else {
+            Ok(())
+        };
+        let outcome = crate::cmd::test_workflow::combine_results(
+            outcome,
+            recorded,
+            "workflow terminal history failed",
+        );
+        crate::cmd::test_workflow::combine_results(
+            outcome,
+            attempts.write(self.junit_output.as_deref()).await,
+            "workflow attempt artifact failed",
+        )
     }
 }
 
@@ -476,11 +583,52 @@ pub struct ActiveTestPlan {
     _testmanager: TestmanagerClient<ServiceStream>,
     _instruments_device: Option<ConnectedDevice>,
     _runner_controller: RunnerController,
+    result_recorder: TestRunRecorder,
+    termination_attempted: bool,
+    termination_error: Option<anyhow::Error>,
 }
 
 enum RunnerController {
     Instruments(Box<ProcessControl<ServiceStream>>),
     CoreDevice(Box<AppServiceClient>),
+}
+
+#[derive(Default)]
+pub(crate) struct TestStartupCleanup {
+    testmanager: Option<TestmanagerClient<ServiceStream>>,
+    controller: Option<RunnerController>,
+    pid: Option<u64>,
+}
+impl TestStartupCleanup {
+    pub(crate) async fn close(&mut self) -> Result<()> {
+        let mut result = Ok(());
+        if let (Some(controller), Some(pid)) = (&mut self.controller, self.pid.take()) {
+            result = terminate_process(controller, pid).await;
+        }
+        if let Some(client) = &mut self.testmanager {
+            result = crate::cmd::test_workflow::combine_results(
+                result,
+                client
+                    .close(Duration::from_secs(2))
+                    .await
+                    .map_err(anyhow::Error::new),
+                "XCTest startup testmanager close failed",
+            );
+        }
+        if let Some(RunnerController::Instruments(controller)) = &mut self.controller {
+            result = crate::cmd::test_workflow::combine_results(
+                result,
+                controller
+                    .close(Duration::from_secs(2))
+                    .await
+                    .map_err(anyhow::Error::new),
+                "XCTest startup process-control close failed",
+            );
+        }
+        self.testmanager.take();
+        self.controller.take();
+        result
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -538,7 +686,6 @@ impl ActiveTestPlan {
     }
 
     pub async fn wait_for_results(&mut self) -> Result<TestRunSummary> {
-        let mut recorder = TestRunRecorder::default();
         loop {
             let event = self
                 ._testmanager
@@ -546,17 +693,48 @@ impl ActiveTestPlan {
                 .await
                 .map_err(|err| anyhow::Error::new(err).context("XCTest result stream error"))?;
             let finished = event.is_finished_plan();
-            recorder.apply(event);
+            self.result_recorder.apply(event);
             if finished {
-                return Ok(recorder.summary());
+                return Ok(self.result_recorder.summary());
             }
         }
+    }
+
+    pub(crate) fn partial_summary(&self) -> TestRunSummary {
+        self.result_recorder.summary()
     }
 
     /// Best-effort bounded cleanup used when a direct-runner deadline or
     /// cancellation interrupts result collection.
     pub async fn terminate(&mut self) {
-        terminate_process(&mut self._runner_controller, self.startup_result.pid).await;
+        if !self.termination_attempted {
+            let mut result =
+                terminate_process(&mut self._runner_controller, self.startup_result.pid).await;
+            self.termination_attempted = true;
+            result = crate::cmd::test_workflow::combine_results(
+                result,
+                self._testmanager
+                    .close(Duration::from_secs(2))
+                    .await
+                    .map_err(anyhow::Error::new),
+                "XCTest testmanager close failed",
+            );
+            if let RunnerController::Instruments(controller) = &mut self._runner_controller {
+                result = crate::cmd::test_workflow::combine_results(
+                    result,
+                    controller
+                        .close(Duration::from_secs(2))
+                        .await
+                        .map_err(anyhow::Error::new),
+                    "XCTest process-control close failed",
+                );
+            }
+            self.termination_error = result.err();
+        }
+    }
+
+    pub(crate) fn take_termination_error(&mut self) -> Option<anyhow::Error> {
+        self.termination_error.take()
     }
 }
 
@@ -568,17 +746,39 @@ pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestSta
 }
 
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
-    start_test_plan_session_inner(udid, plan, None, false).await
+    let mut cleanup = TestStartupCleanup::default();
+    let result = start_test_plan_session_inner(udid, plan, None, false, &mut cleanup).await;
+    complete_startup(result, &mut cleanup).await
 }
 
-/// Start a test plan with one absolute deadline covering discovery, both
-/// testmanager connections, runner launch, and the startup handshake.
-pub async fn start_test_plan_session_until(
+/// The caller retains the startup cleanup owner outside its cancellable work.
+pub(crate) async fn start_test_plan_session_owned_until(
     udid: &str,
     plan: TestLaunchPlan,
     deadline: Instant,
+    cleanup: &mut TestStartupCleanup,
 ) -> Result<ActiveTestPlan> {
-    start_test_plan_session_inner(udid, plan, Some(deadline), true).await
+    start_test_plan_session_inner(udid, plan, Some(deadline), true, cleanup).await
+}
+
+async fn complete_startup(
+    result: Result<ActiveTestPlan>,
+    cleanup: &mut TestStartupCleanup,
+) -> Result<ActiveTestPlan> {
+    match result {
+        Ok(session) => Ok(session),
+        Err(error) => {
+            let cleanup_result = cleanup.close().await;
+            match crate::cmd::test_workflow::combine_results(
+                Err(error),
+                cleanup_result,
+                "XCTest startup cleanup failed",
+            ) {
+                Err(error) => Err(error),
+                Ok(()) => unreachable!(),
+            }
+        }
+    }
 }
 
 async fn start_test_plan_session_inner(
@@ -586,11 +786,12 @@ async fn start_test_plan_session_inner(
     plan: TestLaunchPlan,
     deadline: Option<Instant>,
     prefer_coredevice_runner: bool,
+    cleanup: &mut TestStartupCleanup,
 ) -> Result<ActiveTestPlan> {
     let device = run_stage(
         deadline,
         "connecting to testmanagerd device",
-        connect_testmanager_device(udid),
+        Box::pin(connect_testmanager_device(udid)),
     )
     .await?;
     let product_version = run_stage(deadline, "reading the device product version", async {
@@ -629,8 +830,17 @@ async fn start_test_plan_session_inner(
         },
     )
     .await?;
-    let mut testmanager = run_stage(deadline, "requesting testmanager DTX channels", async {
-        TestmanagerClient::connect(session_stream, control_stream)
+    cleanup.testmanager = Some(TestmanagerClient::from_streams(
+        session_stream,
+        control_stream,
+    ));
+    let testmanager = cleanup
+        .testmanager
+        .as_mut()
+        .expect("original streams retained");
+    run_stage(deadline, "requesting testmanager DTX channels", async {
+        testmanager
+            .initialize_channels()
             .await
             .map_err(|err| anyhow::Error::new(err).context("DTX error"))
     })
@@ -684,17 +894,22 @@ async fn start_test_plan_session_inner(
     .await?;
 
     let launch_env = plan.launch_environment(product_version.major, session_id);
-    let (instruments_device, mut runner_controller, pid) = if modern_direct {
-        let (appservice, pid) = run_stage(
+    let (instruments_device, pid) = if modern_direct {
+        let pid = run_stage(
             deadline,
             "launching the XCTest runner through CoreDevice appservice",
             async {
-                let (xpc, metadata) = device
-                    .connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE)
-                    .await
-                    .map_err(anyhow::Error::from)?;
-                let mut appservice =
-                    AppServiceClient::new_with_features(xpc, udid.to_string(), metadata.features);
+                let (xpc, metadata) = Box::pin(
+                    device.connect_xpc_service_with_metadata(ios_core::apps::APPSERVICE_SERVICE),
+                )
+                .await
+                .map_err(anyhow::Error::from)?;
+                cleanup.controller = Some(RunnerController::CoreDevice(Box::new(
+                    AppServiceClient::new_with_features(xpc, udid.to_string(), metadata.features),
+                )));
+                let Some(RunnerController::CoreDevice(appservice)) = &mut cleanup.controller else {
+                    unreachable!()
+                };
                 let options = LaunchApplicationOptions {
                     arguments: plan.args.clone(),
                     environment_variables: launch_env.clone().into_iter().collect(),
@@ -710,27 +925,31 @@ async fn start_test_plan_session_inner(
                     .ok_or_else(|| {
                         anyhow::anyhow!("CoreDevice launch returned no PID for XCTest runner")
                     })?;
-                Ok::<_, anyhow::Error>((appservice, pid))
+                cleanup.pid = Some(pid);
+                Ok::<_, anyhow::Error>(pid)
             },
         )
         .await?;
-        (
-            None,
-            RunnerController::CoreDevice(Box::new(appservice)),
-            pid,
-        )
+        (None, pid)
     } else {
         let (instruments_device, instruments_stream) = run_stage(
             deadline,
             "connecting the runner launch service",
-            crate::cmd::instruments::connect_instruments(udid),
+            Box::pin(crate::cmd::instruments::connect_instruments(udid)),
         )
         .await?;
-        let mut process_control = run_stage(
+        cleanup.controller = Some(RunnerController::Instruments(Box::new(
+            ProcessControl::from_stream(instruments_stream),
+        )));
+        let Some(RunnerController::Instruments(process_control)) = &mut cleanup.controller else {
+            unreachable!()
+        };
+        run_stage(
             deadline,
             "requesting the runner process-control channel",
             async {
-                ProcessControl::connect(instruments_stream)
+                process_control
+                    .initialize_channel()
                     .await
                     .map_err(|err| anyhow::Error::new(err).context("process control error"))
             },
@@ -740,7 +959,7 @@ async fn start_test_plan_session_inner(
         let launch_arg_refs: Vec<&str> = launch_args.iter().map(String::as_str).collect();
         let launch_options = plan.launch_options(product_version.major);
         let pid = match run_stage(deadline, "launching the XCTest runner", async {
-            process_control
+            let pid = process_control
                 .launch_with_options(
                     &plan.runner.bundle_id,
                     &launch_arg_refs,
@@ -748,7 +967,9 @@ async fn start_test_plan_session_inner(
                     &launch_options,
                 )
                 .await
-                .map_err(|err| anyhow::Error::new(err).context("launch error"))
+                .map_err(|err| anyhow::Error::new(err).context("launch error"))?;
+            cleanup.pid = Some(pid);
+            Ok::<_, anyhow::Error>(pid)
         })
         .await
         {
@@ -760,11 +981,7 @@ async fn start_test_plan_session_inner(
                 return Err(error);
             }
         };
-        (
-            Some(instruments_device),
-            RunnerController::Instruments(Box::new(process_control)),
-            pid,
-        )
+        (Some(instruments_device), pid)
     };
 
     if modern_direct {
@@ -787,13 +1004,9 @@ async fn start_test_plan_session_inner(
             },
         )
         .await;
-        if let Err(error) = control_result {
-            // The CoreDevice launch has already returned a PID at this point;
-            // do not leave a runner orphaned when the second testmanager
-            // handshake fails or reaches the shared deadline.
-            terminate_process(&mut runner_controller, pid).await;
-            return Err(error);
-        }
+        // The separately retained startup owner handles the confirmed PID even
+        // when this control handshake fails or the caller cancels the future.
+        control_result?;
     }
 
     let summary = match run_stage(deadline, "completing the XCTest startup handshake", async {
@@ -806,7 +1019,6 @@ async fn start_test_plan_session_inner(
     {
         Ok(summary) => summary,
         Err(error) => {
-            terminate_process(&mut runner_controller, pid).await;
             return Err(error);
         }
     };
@@ -820,48 +1032,69 @@ async fn start_test_plan_session_inner(
             minimum_version: summary.minimum_version,
         },
         testmanager_device: device,
-        _testmanager: testmanager,
+        _testmanager: cleanup
+            .testmanager
+            .take()
+            .expect("startup retains testmanager"),
         _instruments_device: instruments_device,
-        _runner_controller: runner_controller,
+        _runner_controller: cleanup
+            .controller
+            .take()
+            .expect("startup retains runner control"),
+        result_recorder: TestRunRecorder::default(),
+        termination_attempted: false,
+        termination_error: None,
     })
 }
 
-async fn terminate_process(controller: &mut RunnerController, pid: u64) {
+async fn terminate_process(controller: &mut RunnerController, pid: u64) -> Result<()> {
     match controller {
         RunnerController::Instruments(process_control) => {
-            let _ = tokio::time::timeout(Duration::from_secs(2), process_control.kill(pid)).await;
+            tokio::time::timeout(Duration::from_secs(2), process_control.kill(pid))
+                .await
+                .context("XCTest runner kill deadline expired")?
+                .map_err(anyhow::Error::new)
         }
         RunnerController::CoreDevice(appservice) => {
-            let _ =
-                tokio::time::timeout(Duration::from_secs(2), appservice.kill_process(pid)).await;
+            tokio::time::timeout(Duration::from_secs(2), appservice.kill_process(pid))
+                .await
+                .context("XCTest runner kill deadline expired")?
+                .map_err(anyhow::Error::new)
         }
     }
 }
 
-async fn run_stage<T, F>(deadline: Option<Instant>, operation: &str, future: F) -> Result<T>
+fn run_stage<'a, T: 'a, F>(
+    deadline: Option<Instant>,
+    operation: &'a str,
+    future: F,
+) -> impl Future<Output = Result<T>> + 'a
 where
-    F: Future<Output = Result<T>>,
+    F: Future<Output = Result<T>> + 'a,
 {
-    let result = match deadline {
-        Some(deadline) => tokio::time::timeout_at(deadline, future)
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(error)
-                    .context(format!("XCTest deadline expired while {operation}"))
-            })?,
-        None => future.await,
-    };
-    result.with_context(|| format!("XCTest {operation} failed"))
+    let future = Box::pin(future);
+    async move {
+        let result = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, future)
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(error)
+                        .context(format!("XCTest deadline expired while {operation}"))
+                })?,
+            None => future.await,
+        };
+        result.with_context(|| format!("XCTest {operation} failed"))
+    }
 }
 
 pub async fn connect_testmanager_device(udid: &str) -> Result<ConnectedDevice> {
-    let product_version = crate::cmd::connect::probe_product_version(udid).await?;
+    let product_version = Box::pin(crate::cmd::connect::probe_product_version(udid)).await?;
     let connect_plan = testmanager_connect_plan(product_version.major);
 
     let device = if connect_plan.requires_tunnel {
-        connect_userspace_tunnel(udid).await
+        Box::pin(connect_userspace_tunnel(udid)).await
     } else {
-        connect_lockdown_only(udid).await
+        Box::pin(connect_lockdown_only(udid)).await
     };
 
     device.with_context(|| {
@@ -879,10 +1112,10 @@ async fn connect_testmanager_stream(
 ) -> Result<ServiceStream> {
     match connect_plan.transport {
         TestmanagerTransport::RemoteServiceDiscovery => {
-            device.connect_rsd_service(connect_plan.service_name).await
+            Box::pin(device.connect_rsd_service(connect_plan.service_name)).await
         }
         TestmanagerTransport::LockdownSecure | TestmanagerTransport::LockdownLegacy => {
-            device.connect_service(connect_plan.service_name).await
+            Box::pin(device.connect_service(connect_plan.service_name)).await
         }
     }
     .map_err(anyhow::Error::from)
@@ -892,8 +1125,7 @@ pub async fn lookup_installed_app(
     device: &ConnectedDevice,
     bundle_id: &str,
 ) -> Result<InstalledAppInfo> {
-    let stream = device
-        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+    let stream = Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
         .await
         .context("failed to connect installation_proxy")?;
     let mut proxy = InstallationProxy::new(stream);
@@ -918,8 +1150,7 @@ async fn upload_legacy_xctest_configuration(
     session_identifier: Uuid,
     configuration: &ios_core::XcTestConfiguration,
 ) -> Result<()> {
-    let stream = device
-        .connect_service(ios_core::afc::house_arrest::SERVICE_NAME)
+    let stream = Box::pin(device.connect_service(ios_core::afc::house_arrest::SERVICE_NAME))
         .await
         .context("failed to connect legacy House Arrest for XCTest configuration")?;
     let house_arrest = HouseArrestClient::new(stream);
@@ -1026,8 +1257,7 @@ pub(crate) fn plist_string(values: &HashMap<String, plist::Value>, key: &str) ->
 async fn list_installed_apps_for_target_inference(
     device: &ConnectedDevice,
 ) -> Result<Vec<AppInfo>> {
-    let stream = device
-        .connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE)
+    let stream = Box::pin(device.connect_service(ios_core::apps::INSTALLATION_PROXY_SERVICE))
         .await
         .context("failed to connect installation_proxy for target app inference")?;
     let mut proxy = InstallationProxy::new(stream);

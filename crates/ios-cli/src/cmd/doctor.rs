@@ -5,6 +5,24 @@ use serde::Serialize;
 
 const MAX_MANAGER_RESPONSE: usize = 1024 * 1024;
 
+#[derive(Clone)]
+struct ProbeCancel(tokio::sync::watch::Sender<bool>);
+
+impl ProbeCancel {
+    fn new() -> Self {
+        Self(tokio::sync::watch::channel(false).0)
+    }
+
+    async fn cancelled(&self) {
+        let mut receiver = self.0.subscribe();
+        while !*receiver.borrow_and_update() {
+            if receiver.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
 mod device;
 
 /// Safe typed context for this command's probe interpretation. Keeping it in
@@ -59,9 +77,15 @@ struct Check {
     detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<&'static str>,
-    #[serde(skip)]
-    #[cfg(target_os = "macos")]
-    remoted_running: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    remoted_observations: Vec<RemotedObservation>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemotedObservation {
+    running: bool,
+    pid: Option<u32>,
+    observed_at: String,
 }
 
 impl Check {
@@ -71,8 +95,7 @@ impl Check {
             status,
             detail: detail.into(),
             hint: None,
-            #[cfg(target_os = "macos")]
-            remoted_running: None,
+            remoted_observations: Vec::new(),
         }
     }
 
@@ -109,7 +132,13 @@ impl DoctorCmd {
             device::validate_target(&udid)?;
             return self.run_target(&udid, json, rsd.as_ref()).await;
         }
-        let report = self.inspect().await;
+        let cancel = ProbeCancel::new();
+        let report = cancellable(
+            async { Ok(self.inspect(&cancel).await) },
+            tokio::signal::ctrl_c(),
+            &cancel,
+        )
+        .await?;
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -153,21 +182,26 @@ impl DoctorCmd {
         json: bool,
         rsd: Option<&device::rsd::Request>,
     ) -> Result<()> {
+        let cancel = ProbeCancel::new();
         let work = async {
             #[cfg(target_os = "macos")]
-            let mut host = self.inspect().await;
+            let mut host = self.inspect(&cancel).await;
             #[cfg(not(target_os = "macos"))]
-            let host = self.inspect().await;
+            let host = self.inspect(&cancel).await;
             let timeout = Duration::from_secs(self.timeout);
-            let device = match rsd {
-                Some(request) => {
-                    device::inspect_with_rsd(&device::NativeSource, udid, timeout, request).await
+            let device_work = async {
+                match rsd {
+                    Some(request) => {
+                        device::inspect_with_rsd(&device::NativeSource, udid, timeout, request)
+                            .await
+                    }
+                    None => device::inspect(&device::NativeSource, udid, timeout).await,
                 }
-                None => device::inspect(&device::NativeSource, udid, timeout).await,
             };
+            let device = until_cancelled(async { Ok(device_work.await) }, &cancel).await?;
             #[cfg(target_os = "macos")]
             if rsd.is_some() {
-                let after = probe_remoted_coexistence(timeout).await;
+                let after = probe_remoted_coexistence(timeout, &cancel).await;
                 let selected_rsd_ok = device
                     .checks
                     .iter()
@@ -177,18 +211,12 @@ impl DoctorCmd {
                     .iter_mut()
                     .find(|check| check.id == "remoted_coexistence")
                 {
-                    if check.remoted_running == Some(true)
-                        && after.remoted_running == Some(true)
-                        && selected_rsd_ok
-                    {
-                        check.status = Status::Ok;
-                        check.detail = "The selected existing RSD directory was read successfully while launchctl observed the system remoted process running both before and after the query.".into();
-                    }
+                    reconcile_remoted(check, after, selected_rsd_ok);
                 }
             }
             Ok(TargetReport::new(host, device))
         };
-        let mut report = cancellable(work, tokio::signal::ctrl_c()).await?;
+        let mut report = cancellable(work, tokio::signal::ctrl_c(), &cancel).await?;
         if json {
             crate::output::outln!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -230,12 +258,18 @@ impl DoctorCmd {
         Ok(())
     }
 
-    async fn inspect(&self) -> Report {
+    async fn inspect(&self, cancel: &ProbeCancel) -> Report {
         let deadline = Duration::from_secs(self.timeout);
         let (mux, ipv6, manager, kernel, platform_usb, platform_route, remoted, ddi_dir) = tokio::join!(
-            bounded("usbmuxd", deadline, Status::Failed, probe_usbmux()),
-            bounded("ipv6_loopback", deadline, Status::Warning, probe_ipv6()),
-            bounded(
+            bounded_cancel("usbmuxd", deadline, Status::Failed, probe_usbmux(), cancel),
+            bounded_cancel(
+                "ipv6_loopback",
+                deadline,
+                Status::Warning,
+                probe_ipv6(),
+                cancel
+            ),
+            bounded_cancel(
                 "tunnel_manager",
                 deadline,
                 if self.access.has_token() {
@@ -243,32 +277,31 @@ impl DoctorCmd {
                 } else {
                     Status::Warning
                 },
-                probe_manager(self.tunnel_port, &self.access)
+                probe_manager(self.tunnel_port, &self.access),
+                cancel
             ),
-            bounded("kernel_tun", deadline, Status::Warning, probe_kernel_tun()),
-            bounded(
-                "platform_usb",
+            bounded_cancel(
+                "kernel_tun",
                 deadline,
                 Status::Warning,
-                probe_platform_usb(deadline)
+                probe_kernel_tun(),
+                cancel
             ),
-            bounded(
+            probe_platform_usb(deadline, cancel),
+            bounded_cancel(
                 "platform_route",
                 deadline,
                 Status::Warning,
-                probe_platform_route(self.rsd_address)
+                probe_platform_route(self.rsd_address),
+                cancel
             ),
-            bounded(
-                "remoted_coexistence",
-                deadline,
-                Status::Warning,
-                probe_remoted_coexistence(deadline)
-            ),
-            bounded(
+            probe_remoted_coexistence(deadline, cancel),
+            bounded_cancel(
                 "ddi_directory",
                 deadline,
                 Status::Warning,
-                probe_ddi_directory()
+                probe_ddi_directory(),
+                cancel
             ),
         );
         let mut checks = vec![
@@ -288,11 +321,12 @@ impl DoctorCmd {
         ];
         checks.push(if self.mdns {
             // Browsing itself uses the requested window; allow a bounded margin for setup/cleanup.
-            bounded(
+            bounded_cancel(
                 "bonjour",
                 deadline + Duration::from_secs(1),
                 Status::Warning,
                 probe_mdns(deadline),
+                cancel,
             )
             .await
         } else {
@@ -362,14 +396,46 @@ fn status_label(status: Status) -> &'static str {
 async fn cancellable<T>(
     work: impl Future<Output = Result<T>>,
     signal: impl Future<Output = std::io::Result<()>>,
+    cancel: &ProbeCancel,
 ) -> Result<T> {
     tokio::pin!(signal);
+    tokio::pin!(work);
     tokio::select! {
         biased;
         signal = &mut signal => {
+            cancel.0.send_replace(true);
+            // Host process probes observe this request, kill their child and
+            // await the original handle. Keep polling the owner until cleanup
+            // completes instead of dropping it at the Ctrl-C boundary.
+            let _ = work.await;
             signal.context("waiting for doctor Ctrl-C")?;
             Err(ios_core::OperationCancelled::new().into())
         }
+        result = &mut work => result,
+    }
+}
+
+async fn bounded_cancel(
+    id: &'static str,
+    deadline: Duration,
+    timeout_status: Status,
+    probe: impl Future<Output = Check>,
+    cancel: &ProbeCancel,
+) -> Check {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Check::new(id, Status::Unknown, "The probe was cancelled."),
+        check = bounded(id, deadline, timeout_status, probe) => check,
+    }
+}
+
+async fn until_cancelled<T>(
+    work: impl Future<Output = Result<T>>,
+    cancel: &ProbeCancel,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ios_core::OperationCancelled::new().into()),
         result = work => result,
     }
 }
@@ -593,26 +659,33 @@ async fn probe_mdns(window: Duration) -> Check {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 async fn bounded_host_command(
     mut command: tokio::process::Command,
     budget: Duration,
+    cancel: &ProbeCancel,
 ) -> Result<(std::process::ExitStatus, Vec<u8>)> {
     use tokio::io::AsyncReadExt;
+    let deadline = tokio::time::Instant::now() + budget;
+    anyhow::ensure!(!*cancel.0.borrow(), "host probe cancelled before startup");
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let mut child = command.spawn()?;
     let mut stdout = child
         .stdout
         .take()
         .context("host probe stdout unavailable")?;
     let work = async {
+        host_command_clock(deadline).await?;
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 8192];
         loop {
             let read = stdout.read(&mut chunk).await?;
+            host_command_clock(deadline).await?;
             if read == 0 {
                 break;
             }
@@ -622,25 +695,61 @@ async fn bounded_host_command(
             );
             bytes.extend_from_slice(&chunk[..read]);
         }
-        Ok::<_, anyhow::Error>((child.wait().await?, bytes))
+        let status = child.wait().await?;
+        host_command_clock(deadline).await?;
+        Ok::<_, anyhow::Error>((status, bytes))
     };
     // Reserve a margin inside the caller's public probe deadline so an expired
     // child can be killed and the original process handle awaited.
-    match tokio::time::timeout(budget.saturating_sub(Duration::from_millis(100)), work).await {
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(Err(ios_core::OperationCancelled::new().into())),
+        outcome = tokio::time::timeout_at(deadline, work) => outcome,
+    };
+    match outcome {
         Ok(Ok(result)) => Ok(result),
         outcome => {
-            child.start_kill()?;
-            let _ = child.wait().await?;
-            match outcome {
+            let primary = match outcome {
                 Ok(Err(error)) => Err(error),
                 Err(error) => Err(error.into()),
                 Ok(Ok(_)) => unreachable!(),
-            }
+            };
+            // Never replace the read/limit/timeout cause with a secondary kill
+            // error. Both kill and wait are bounded; an unconfirmed reap stays
+            // a reported failure instead of a successful diagnostic.
+            let kill = match child.try_wait() {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => child.start_kill().map_err(anyhow::Error::new),
+                Err(error) => Err(error.into()),
+            };
+            let waited = tokio::time::timeout(Duration::from_secs(2), child.wait())
+                .await
+                .context("host probe child reap deadline expired")
+                .and_then(|result| result.map(|_| ()).map_err(anyhow::Error::new));
+            let cleanup = crate::cmd::test_workflow::combine_results(
+                kill,
+                waited,
+                "host probe child wait failed",
+            );
+            crate::cmd::test_workflow::combine_results(
+                primary,
+                cleanup,
+                "host probe process cleanup failed",
+            )?;
+            unreachable!()
         }
     }
 }
 
-async fn probe_platform_usb(_budget: Duration) -> Check {
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+async fn host_command_clock(deadline: tokio::time::Instant) -> Result<()> {
+    if tokio::time::Instant::now() >= deadline {
+        tokio::time::timeout_at(deadline, std::future::pending::<()>()).await?;
+    }
+    Ok(())
+}
+
+async fn probe_platform_usb(_budget: Duration, _cancel: &ProbeCancel) -> Check {
     #[cfg(target_os = "linux")]
     {
         let sys_bus = std::path::Path::new("/sys/bus/usb/devices");
@@ -693,7 +802,7 @@ async fn probe_platform_usb(_budget: Duration) -> Check {
             command.args(["-p", "IOUSB", "-l"]);
             command
         };
-        match bounded_host_command(command, _budget).await {
+        match bounded_host_command(command, _budget, _cancel).await {
             Ok((status, stdout)) if status.success() => {
                 if cfg!(target_os = "windows") {
                     match serde_json::from_slice::<serde_json::Value>(&stdout) {
@@ -762,19 +871,15 @@ async fn probe_platform_route(address: Option<SocketAddrV6>) -> Check {
     }
 }
 
-async fn probe_remoted_coexistence(_budget: Duration) -> Check {
+async fn probe_remoted_coexistence(_budget: Duration, _cancel: &ProbeCancel) -> Check {
     #[cfg(target_os = "macos")]
     {
         let mut command = tokio::process::Command::new("/bin/launchctl");
         command.args(["print", "system/com.apple.remoted"]);
-        let output = bounded_host_command(command, _budget).await;
+        let output = bounded_host_command(command, _budget, _cancel).await;
         match output {
             Ok((status, stdout)) if status.success() => {
-                let running = String::from_utf8_lossy(&stdout).lines().any(|line| line.trim() == "state = running");
-                let mut check = Check::new("remoted_coexistence", Status::Unknown,
-                    "launchctl observed the system remoted service. Coexistence requires a successful selected existing RSD observation while this service remains running; host enumeration alone does not establish it.");
-                check.remoted_running = Some(running);
-                check
+                remoted_output_check(&stdout)
             },
             _ => Check::new("remoted_coexistence", Status::Unknown,
                 "The system remoted service state could not be observed; no coexistence conclusion is available."),
@@ -787,6 +892,46 @@ async fn probe_remoted_coexistence(_budget: Duration) -> Check {
             Status::Unknown,
             "macOS remoted coexistence is not applicable on this host.",
         )
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn remoted_output_check(stdout: &[u8]) -> Check {
+    let text = String::from_utf8_lossy(stdout);
+    let running = text.lines().any(|line| line.trim() == "state = running");
+    let pid = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("pid = ")?.parse::<u32>().ok())
+        .filter(|pid| *pid > 0);
+    let mut check = Check::new("remoted_coexistence", Status::Unknown,
+        "launchctl observed the system remoted service. Coexistence requires a successful selected existing RSD observation while this service remains running; host enumeration alone does not establish it.");
+    check.remoted_observations.push(RemotedObservation {
+        running: running && pid.is_some(),
+        pid,
+        observed_at: chrono::Utc::now().to_rfc3339(),
+    });
+    check
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn reconcile_remoted(before: &mut Check, mut after: Check, selected_rsd_ok: bool) {
+    let observed = before
+        .remoted_observations
+        .first()
+        .is_some_and(|state| state.running)
+        && after
+            .remoted_observations
+            .first()
+            .is_some_and(|state| state.running);
+    before
+        .remoted_observations
+        .append(&mut after.remoted_observations);
+    if observed && selected_rsd_ok {
+        before.status = Status::Ok;
+        before.detail = "The selected existing RSD directory was read successfully while launchctl observed the system remoted process running both before and after the query. This bounded observation does not prove uninterrupted liveness between samples.".into();
+    } else {
+        before.status = Status::Unknown;
+        before.detail = "Coexistence was not established: it requires both running remoted process observations and a successful RSD directory observation identifying the selected target.".into();
     }
 }
 
@@ -877,6 +1022,125 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    #[ignore = "owned child-process fixture, invoked by host command owner tests"]
+    fn host_process_fixture_child() {
+        use std::io::Write;
+        let Ok(port) = std::env::var("IOS_DOCTOR_PROCESS_FIXTURE_PORT") else {
+            return;
+        };
+        let mut socket = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        socket.write_all(b"ready").unwrap();
+        if std::env::var("IOS_DOCTOR_PROCESS_FIXTURE_MODE").as_deref() == Ok("limit") {
+            let mut output = std::io::stdout().lock();
+            for _ in 0..160 {
+                output.write_all(&[b'x'; 8192]).unwrap();
+            }
+            output.flush().unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(30));
+        drop(socket);
+    }
+
+    #[tokio::test]
+    async fn owned_host_command_limit_timeout_and_cancel_kill_and_reap_the_original_process() {
+        use tokio::io::AsyncReadExt;
+        for mode in ["limit", "timeout", "cancel"] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "cmd::doctor::tests::host_process_fixture_child",
+                    "--nocapture",
+                ])
+                .env(
+                    "IOS_DOCTOR_PROCESS_FIXTURE_PORT",
+                    listener.local_addr().unwrap().port().to_string(),
+                )
+                .env("IOS_DOCTOR_PROCESS_FIXTURE_MODE", mode);
+            let cancel = ProbeCancel::new();
+            let (result, peer_close) = tokio::time::timeout(Duration::from_secs(8), async {
+                tokio::join!(
+                    bounded_host_command(command, Duration::from_secs(3), &cancel),
+                    async {
+                        let (mut peer, _) = listener.accept().await.unwrap();
+                        let mut ready = [0; 5];
+                        peer.read_exact(&mut ready).await.unwrap();
+                        assert_eq!(&ready, b"ready");
+                        if mode == "cancel" {
+                            cancel.0.send_replace(true);
+                        }
+                        peer.read(&mut [0]).await
+                    }
+                )
+            })
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            match mode {
+                "limit" => assert!(format!("{error:#}").contains("output bound exceeded")),
+                "timeout" => assert!(error.is::<tokio::time::error::Elapsed>()),
+                "cancel" => assert!(error.is::<ios_core::OperationCancelled>()),
+                _ => unreachable!(),
+            }
+            assert!(
+                error
+                    .downcast_ref::<crate::cmd::test_workflow::WorkflowSecondaryFailure>()
+                    .is_none(),
+                "normal kill/wait must succeed"
+            );
+            // Forced process termination on Windows can abort Winsock with
+            // ConnectionReset. Record that original result separately; never
+            // manufacture an EOF or use it as native tunnel join evidence.
+            let observed = match peer_close {
+                Ok(0) => "eof",
+                #[cfg(windows)]
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                    "connection_reset"
+                }
+                other => panic!("owned child socket did not close: {other:?}"),
+            };
+            println!(
+                "IOS_DOCTOR_OWNED_CHILD_V1 {}",
+                serde_json::json!({
+                    "mode": mode, "original_process_reaped": true,
+                    "peer_close": observed, "strict_peer_eof": observed == "eof",
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn remoted_coexistence_requires_both_running_process_samples_and_selected_rsd_identity() {
+        for (before_running, after_running, selected_rsd_ok) in [
+            (true, true, true),
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let output = |running| {
+                if running {
+                    b"state = running\npid = 42\n".as_slice()
+                } else {
+                    b"state = waiting\n".as_slice()
+                }
+            };
+            let mut before = remoted_output_check(output(before_running));
+            let after = remoted_output_check(output(after_running));
+            reconcile_remoted(&mut before, after, selected_rsd_ok);
+            assert_eq!(
+                before.status == Status::Ok,
+                before_running && after_running && selected_rsd_ok
+            );
+            assert_eq!(before.remoted_observations.len(), 2);
+        }
+        assert!(!remoted_output_check(b"state = running\n").remoted_observations[0].running);
+    }
 
     fn access_options(path: Option<&std::path::Path>) -> crate::access::ClientAccessArgs {
         let mut args = vec![std::ffi::OsString::from("ios"), "doctor".into()];
@@ -1051,7 +1315,7 @@ mod tests {
         assert_eq!(route.id, "platform_route");
         assert_eq!(route.status, Status::Unknown);
 
-        let remoted = probe_remoted_coexistence(Duration::from_secs(3)).await;
+        let remoted = probe_remoted_coexistence(Duration::from_secs(3), &ProbeCancel::new()).await;
         assert_eq!(remoted.id, "remoted_coexistence");
         assert_eq!(remoted.status, Status::Unknown);
     }

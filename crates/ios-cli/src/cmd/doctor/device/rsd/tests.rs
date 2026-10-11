@@ -553,15 +553,23 @@ async fn blocked_h2_bootstrap_respects_total_budget_and_does_not_dial_a_late_fal
 
 #[tokio::test]
 async fn cancellation_drops_only_current_owned_socket_and_keeps_proxy_listener_usable() {
+    let cancel = super::super::super::ProbeCancel::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let request = request(&listener, None);
     let (signal, wait) = tokio::sync::oneshot::channel();
     let (result, ()) = tokio::time::timeout(FIXTURE_BOUND, async {
         tokio::join!(
-            cancellable(async { Ok(inspect(&request, UDID, BUDGET).await) }, async {
-                wait.await
-                    .map_err(|_| io::Error::other("owned cancellation sender dropped"))
-            }),
+            cancellable(
+                super::super::super::until_cancelled(
+                    async { Ok(inspect(&request, UDID, BUDGET).await) },
+                    &cancel
+                ),
+                async {
+                    wait.await
+                        .map_err(|_| io::Error::other("owned cancellation sender dropped"))
+                },
+                &cancel
+            ),
             async {
                 let mut peer = bootstrap(&listener).await;
                 signal.send(()).unwrap();
@@ -679,13 +687,15 @@ async fn integrated_rsd_checks_run_after_existing_trust_failures_and_keep_origin
             "developer_mode",
             "ddi_signatures",
             "rsd_services",
-            "device_route"
+            "device_route",
+            "ddi_mounted",
+            "ddi_usable"
         ]
     );
     assert!(assessment.checks[..3]
         .iter()
         .all(|check| check.error_class == Some(ErrorClass::DeviceNotFound)));
-    assert!(assessment.checks[3..]
+    assert!(assessment.checks[3..5]
         .iter()
         .all(|check| check.value == Some(true)));
     // Failure ownership/order is unchanged: successful RSD evidence does not
@@ -828,7 +838,7 @@ fn selector_byte_limit_and_ipv6_numeric_scope_are_validated_without_io() {
 }
 
 #[tokio::test]
-async fn no_selectors_preserve_schema_and_all_five_existing_checks() {
+async fn no_selectors_preserve_schema_and_existing_checks_with_separate_ddi_probes() {
     let command = arguments(&[]);
     assert!(command.rsd_request(None).unwrap().is_none());
     assert!(command.rsd_request(Some(UDID)).unwrap().is_none());
@@ -841,7 +851,9 @@ async fn no_selectors_preserve_schema_and_all_five_existing_checks() {
             "developer_mode",
             "ddi_signatures",
             "rsd_services",
-            "device_route"
+            "device_route",
+            "ddi_mounted",
+            "ddi_usable"
         ]
     );
     assert_eq!(device.checks[3].state, State::NotProbed);

@@ -870,6 +870,10 @@ fn summarize_dtx(message: &crate::services::dtx::DtxMessage) -> String {
             "{}.{} c{} response {:?}",
             message.identifier, message.conversation_idx, message.channel_code, value
         ),
+        crate::services::dtx::DtxPayload::Error(_) => format!(
+            "{}.{} c{} peer error",
+            message.identifier, message.conversation_idx, message.channel_code
+        ),
         crate::services::dtx::DtxPayload::Notification { name, .. } => format!(
             "{}.{} c{} notify {}",
             message.identifier, message.conversation_idx, message.channel_code, name
@@ -921,6 +925,9 @@ fn dtx_message_to_json(message: &crate::services::dtx::DtxMessage) -> serde_json
             "type": "response",
             "value": nsobject_to_json(value),
         }),
+        crate::services::dtx::DtxPayload::Error(value) => {
+            serde_json::json!({"type": "error", "value": nsobject_to_json(value)})
+        }
         crate::services::dtx::DtxPayload::Notification { name, object } => serde_json::json!({
             "type": "notification",
             "name": name,

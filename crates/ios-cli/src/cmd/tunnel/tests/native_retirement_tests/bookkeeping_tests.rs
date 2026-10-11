@@ -156,7 +156,12 @@ async fn drive_until(
     .unwrap_or(false)
 }
 
-async fn recover(state: &TunnelAgentState, source: &FailureSource, expected: usize) {
+async fn recover(
+    state: &TunnelAgentState,
+    source: &FailureSource,
+    expected: usize,
+    held_errors: usize,
+) {
     let handles = source.base.handles.lock().unwrap().clone();
     let recovery = finish(state, &source.base, expected).await;
     // Always recover original joins, actual duplex EOF and task count before
@@ -169,7 +174,7 @@ async fn recover(state: &TunnelAgentState, source: &FailureSource, expected: usi
     );
     assert_eq!(
         state.inner.failure_slots.available_permits(),
-        MAX_FAILURE_RECORDS
+        MAX_FAILURE_RECORDS - held_errors
     );
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
@@ -205,7 +210,7 @@ async fn native_bookkeeping_failed_writers_do_not_occupy_later_candidate_window(
         .is_some_and(|native| !native.is_alive());
     drop(failed);
     let ready = state.is_ready().await;
-    recover(&state, &source, expected).await;
+    recover(&state, &source, expected, 0).await;
     assert!(
         first && later,
         "failure writers prevented the fifth native candidate from entering"
@@ -220,7 +225,7 @@ async fn native_bookkeeping_failed_writers_do_not_occupy_later_candidate_window(
     assert_eq!((after_drop.retired, after_drop.native_handles), (5, 5));
 }
 
-async fn blocked_flush(paired: PairedReply) -> Result<()> {
+async fn blocked_flush(paired: PairedReply) -> (Result<()>, TunnelAgentState) {
     let expected = baseline();
     let source = fixture(1, false, paired).await;
     let state = manager(source.clone());
@@ -234,28 +239,58 @@ async fn blocked_flush(paired: PairedReply) -> Result<()> {
     drop(failed);
     let not_ready = !state.is_ready().await;
     let native = state.inner.native.snapshot();
-    recover(&state, &source, expected).await;
+    let result = result.expect("failure bookkeeping exceeded its independent product total");
+    let error = result.as_ref().unwrap_err();
+    let context = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .or_else(|| {
+            error
+                .downcast_ref::<bookkeeping::FailureContext>()
+                .and_then(|context| {
+                    context
+                        .secondary()
+                        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+                })
+        })
+        .unwrap();
+    assert_eq!(context.receipts().len(), 1);
+    assert_eq!(
+        context.receipts()[0]
+            .primary()
+            .downcast_ref::<io::Error>()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    // The returned original-error receipt remains a real owner after manager
+    // shutdown; its permit cannot be released while this caller holds it.
+    recover(&state, &source, expected, 1).await;
     assert!(entered && unchanged && not_ready);
     assert_eq!(source.eof.load(Ordering::SeqCst), 1);
     assert_eq!((native.retired, native.native_handles), (1, 1));
-    result.expect("failure bookkeeping exceeded its independent product total")
+    (result, state)
 }
 
 #[tokio::test]
 async fn native_bookkeeping_held_failure_table_has_finite_wait_and_releases_slots() {
-    let error = blocked_flush(PairedReply::Complete).await.unwrap_err();
+    let (result, state) = blocked_flush(PairedReply::Complete).await;
+    let error = result.unwrap_err();
     assert!(error.is::<tokio::time::error::Elapsed>());
     assert_eq!(
         ios_core::classify_error(error.as_ref()),
         ios_core::ErrorClass::Timeout
     );
+    drop(error);
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS
+    );
 }
 
 #[tokio::test]
 async fn native_bookkeeping_flush_elapsed_keeps_acquired_paired_io_primary() {
-    let error = blocked_flush(PairedReply::Io(eof_stream().await))
-        .await
-        .unwrap_err();
+    let (result, state) = blocked_flush(PairedReply::Io(eof_stream().await)).await;
+    let error = result.unwrap_err();
     assert_eq!(
         error.downcast_ref::<io::Error>().unwrap().kind(),
         io::ErrorKind::UnexpectedEof
@@ -271,11 +306,17 @@ async fn native_bookkeeping_flush_elapsed_keeps_acquired_paired_io_primary() {
         ios_core::ErrorClass::Timeout
     );
     assert!(!format!("{context:?} {context}").contains("synthetic"));
+    drop(error);
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS
+    );
 }
 
 #[tokio::test]
 async fn native_bookkeeping_flush_elapsed_keeps_paired_resource_primary() {
-    let error = blocked_flush(PairedReply::Oversized).await.unwrap_err();
+    let (result, state) = blocked_flush(PairedReply::Oversized).await;
+    let error = result.unwrap_err();
     let rendered = crate::output::operation_failure_message(
         crate::output::ErrorFormat::Json,
         "tunnel-scan",
@@ -286,4 +327,9 @@ async fn native_bookkeeping_flush_elapsed_keeps_paired_resource_primary() {
     assert_eq!(decision["error"]["class"], "resource_limit");
     let context = error.downcast_ref::<bookkeeping::FailureContext>().unwrap();
     assert!(context.secondary().is::<tokio::time::error::Elapsed>());
+    drop(error);
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS
+    );
 }

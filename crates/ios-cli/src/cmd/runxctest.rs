@@ -13,8 +13,8 @@ use ios_core::testmanager::workflow::{RunXcTestPlan, TestLaunchPlan};
 use tokio::time::Instant;
 
 use crate::cmd::runtest::{
-    incomplete_summary, lookup_installed_app, start_test_plan_session_until,
-    write_junit_diagnostic, write_junit_summary,
+    incomplete_summary, lookup_installed_app, start_test_plan_session_owned_until,
+    write_junit_diagnostic, write_junit_summary, TestStartupCleanup,
 };
 
 #[derive(clap::Args)]
@@ -154,7 +154,10 @@ impl RunXcTestCmd {
         };
 
         let mut workflow_sessions = Vec::new();
-        let work = async {
+        let mut startup_scopes = Vec::<TestStartupCleanup>::new();
+        let mut attempts = crate::cmd::test_workflow::AttemptHistory::default();
+        let mut latest_summary = None;
+        let work = Box::pin(async {
             if let Err(error) = tokio::time::timeout_at(
                 deadline,
                 crate::cmd::test_workflow::install_package_if_present(
@@ -204,7 +207,7 @@ impl RunXcTestCmd {
             let device = match until(
                 deadline,
                 "connecting to testmanagerd",
-                crate::cmd::runtest::connect_testmanager_device(&udid),
+                Box::pin(crate::cmd::runtest::connect_testmanager_device(&udid)),
             )
             .await
             {
@@ -225,7 +228,10 @@ impl RunXcTestCmd {
             let runner = match until(
                 deadline,
                 "looking up the XCTest runner",
-                lookup_installed_app(&device, &direct_plan.test_runner_bundle_id),
+                Box::pin(lookup_installed_app(
+                    &device,
+                    &direct_plan.test_runner_bundle_id,
+                )),
             )
             .await
             {
@@ -247,7 +253,7 @@ impl RunXcTestCmd {
                 Some(bundle_id) => match until(
                     deadline,
                     "looking up the application under test",
-                    lookup_installed_app(&device, bundle_id),
+                    Box::pin(lookup_installed_app(&device, bundle_id)),
                 )
                 .await
                 {
@@ -273,8 +279,15 @@ impl RunXcTestCmd {
             let launch_plan: TestLaunchPlan = direct_plan.into_test_launch_plan(runner, target);
             let configuration_name = launch_plan.xctest_bundle_name.clone();
 
-            let session = match start_test_plan_session_until(&udid, launch_plan.clone(), deadline)
-                .await
+            attempts.start(launch_plan.tests_to_run.clone());
+            startup_scopes.push(TestStartupCleanup::default());
+            let session = match Box::pin(start_test_plan_session_owned_until(
+                &udid,
+                launch_plan.clone(),
+                deadline,
+                startup_scopes.last_mut().expect("startup owner admitted"),
+            ))
+            .await
             {
                 Ok(session) => session,
                 Err(error) => {
@@ -328,7 +341,12 @@ impl RunXcTestCmd {
                 // runner into the next invocation; a race with normal process
                 // exit is harmless and intentionally ignored by terminate().
                 session.terminate().await;
+                if let Some(error) = session.take_termination_error() {
+                    return Err(error);
+                }
 
+                attempts.complete(&summary)?;
+                latest_summary = Some(summary.clone());
                 // Rerun failed tests if requested
                 if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
                     for rerun_idx in 0..self.workflow.rerun_failed {
@@ -343,22 +361,27 @@ impl RunXcTestCmd {
                             "test workflow: rerunning failed test selectors"
                         );
                         let mut rerun_plan = launch_plan.clone();
+                        attempts.start(failed_selectors.clone());
                         rerun_plan.tests_to_run = failed_selectors;
                         rerun_plan.tests_to_skip.clear();
 
-                        let rerun_session = match until(
-                            deadline,
-                            "restarting test runner for failed selectors",
-                            start_test_plan_session_until(&udid, rerun_plan, deadline),
-                        )
-                        .await
-                        {
-                            Ok(s) => s,
-                            Err(e) => {
-                                tracing::warn!(error = %e, "test workflow: rerun startup failed");
-                                break;
-                            }
-                        };
+                        let rerun_session =
+                            match until(deadline, "restarting test runner for failed selectors", {
+                                startup_scopes.push(TestStartupCleanup::default());
+                                Box::pin(start_test_plan_session_owned_until(
+                                    &udid,
+                                    rerun_plan,
+                                    deadline,
+                                    startup_scopes
+                                        .last_mut()
+                                        .expect("rerun startup owner admitted"),
+                                ))
+                            })
+                            .await
+                            {
+                                Ok(s) => s,
+                                Err(error) => return Err(error),
+                            };
 
                         workflow_sessions.push(rerun_session);
                         let rerun_session = workflow_sessions
@@ -371,16 +394,20 @@ impl RunXcTestCmd {
                         )
                         .await;
                         rerun_session.terminate().await;
-                        if let Ok(rerun_summary) = rerun_res {
+                        let rerun_summary = rerun_res?;
+                        if let Some(error) = rerun_session.take_termination_error() {
+                            return Err(error);
+                        }
+                        attempts.complete(&rerun_summary)?;
+                        {
                             crate::cmd::test_workflow::merge_rerun_summary(
                                 &mut summary,
                                 rerun_summary,
-                            );
+                            )?;
+                            latest_summary = Some(summary.clone());
                             if summary.failed_tests == 0 {
                                 break;
                             }
-                        } else {
-                            break;
                         }
                     }
                 }
@@ -398,6 +425,7 @@ impl RunXcTestCmd {
                         "protocol_version": startup.protocol_version,
                         "minimum_version": startup.minimum_version,
                         "summary": summary,
+                        "attempts": attempts,
                     }),
                 )?;
 
@@ -424,22 +452,88 @@ impl RunXcTestCmd {
             }
 
             Ok(())
-        };
-        let outcome = tokio::select! {
+        });
+        let mut outcome = tokio::select! {
             result = tokio::time::timeout_at(deadline, work) => result
                 .map_err(|error| anyhow::Error::new(error).context("XCTest workflow deadline expired")).and_then(|result| result),
             signal = tokio::signal::ctrl_c() => {
                 match signal {
-                    Ok(()) => Err(anyhow::Error::new(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted, "XCTest workflow cancelled"))),
+                    Ok(()) => Err(ios_core::OperationCancelled::new().into()),
                     Err(error) => Err(anyhow::Error::new(error).context("waiting for XCTest cancellation")),
                 }
             }
         };
+        if let Err(error) = &outcome {
+            let partial = if attempts.attempt_count() == workflow_sessions.len() {
+                workflow_sessions
+                    .last()
+                    .map(|session| session.partial_summary())
+            } else {
+                None
+            };
+            let recorded = attempts.fail(error, partial.as_ref());
+            let diagnostic = latest_summary
+                .as_ref()
+                .or(partial.as_ref())
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            latest_summary = Some(diagnostic.clone());
+            let reported = write_junit_diagnostic(junit_output, &diagnostic, error);
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                recorded,
+                "workflow attempt history failed",
+            );
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                reported,
+                "workflow diagnostic report failed",
+            );
+        }
+        for startup in &mut startup_scopes {
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                startup.close().await,
+                "XCTest interrupted startup cleanup failed",
+            );
+        }
         for session in &mut workflow_sessions {
             session.terminate().await;
+            if let Some(error) = session.take_termination_error() {
+                outcome = crate::cmd::test_workflow::combine_results(
+                    outcome,
+                    Err(error),
+                    "workflow runner cleanup failed",
+                );
+            }
         }
-        crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome).await
+        let outcome =
+            crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome)
+                .await;
+        let recorded = if let Err(error) = &outcome {
+            let record = attempts.fail(error, None);
+            let diagnostic = latest_summary
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            crate::cmd::test_workflow::combine_results(
+                record,
+                write_junit_diagnostic(junit_output, &diagnostic, error),
+                "workflow final diagnostic failed",
+            )
+        } else {
+            Ok(())
+        };
+        let outcome = crate::cmd::test_workflow::combine_results(
+            outcome,
+            recorded,
+            "workflow terminal history failed",
+        );
+        crate::cmd::test_workflow::combine_results(
+            outcome,
+            attempts.write(junit_output).await,
+            "workflow attempt artifact failed",
+        )
     }
 }
 
@@ -457,20 +551,47 @@ fn print_result(json_output: bool, value: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-async fn until<T, F>(deadline: Instant, operation: &str, future: F) -> Result<T>
+fn until<'a, T: 'a, F>(
+    deadline: Instant,
+    operation: &'a str,
+    future: F,
+) -> impl Future<Output = Result<T>> + 'a
 where
-    F: Future<Output = Result<T>>,
+    F: Future<Output = Result<T>> + 'a,
 {
-    tokio::time::timeout_at(deadline, future)
-        .await
-        .map_err(|error| {
-            anyhow::Error::new(error).context(format!("XCTest deadline expired while {operation}"))
-        })?
-        .with_context(|| format!("XCTest {operation} failed"))
+    let future = Box::pin(future);
+    async move {
+        tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(format!("XCTest deadline expired while {operation}"))
+            })?
+            .with_context(|| format!("XCTest {operation} failed"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workflow_future_retains_only_bounded_outer_state_before_first_poll() {
+        let command = TestCli::parse_from([
+            "runxctest",
+            "--xctest",
+            "--test-runner-bundle-id",
+            "com.example.Runner",
+            "--xctest-config",
+            "DemoTests.xctest",
+            "--wait",
+        ])
+        .command;
+        let future = command.run(Some("owned-size-fixture".into()), true);
+        assert!(
+            std::mem::size_of_val(&future) <= 256 * 1024,
+            "the public future embeds large startup/service futures"
+        );
+    }
+
     #[tokio::test]
     async fn owner_guards_xctest_invalid_timeout_precedes_connection() {
         for timeout in ["0", "18446744073709551615"] {

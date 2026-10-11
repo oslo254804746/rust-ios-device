@@ -47,6 +47,8 @@ def send_plist(stream, value):
 
 
 class CliAfcPeer:
+    services = {"com.apple.afc": 62080}
+
     def __init__(self, private_directory):
         root = Path(private_directory)
         trust = root / "Apple" / "Lockdown"
@@ -126,10 +128,8 @@ class CliAfcPeer:
                     port = socket.ntohs(request["PortNumber"])
                     if port == 62078:
                         self.lockdown(stream)
-                    elif port == 62080:
-                        self.afc(stream)
                     else:
-                        raise ValueError("fixture-unexpected-device-port")
+                        self.device_service(port, stream)
                     return
         except Eof:
             with self.lock:
@@ -152,9 +152,9 @@ class CliAfcPeer:
                 values = {"ProductVersion": "16.0", "UniqueDeviceID": UDID, "ProductType": "synthetic-matrix-device"}
                 reply = {"Value": values.get(request["Key"], "") if "Key" in request else values}
             elif operation == "StartService":
-                if request.get("Service") != "com.apple.afc":
+                if request.get("Service") not in self.services:
                     raise ValueError("fixture-service-scope")
-                reply = {"Port": 62080, "EnableServiceSSL": False}
+                reply = {"Port": self.services[request["Service"]], "EnableServiceSSL": False}
             elif operation == "StopSession":
                 reply = {}
             else:
@@ -163,6 +163,12 @@ class CliAfcPeer:
             if operation == "StartSession":
                 stream = self.tls.wrap_socket(stream, server_side=True)
                 self.connections.append(stream)
+
+    def device_service(self, port, stream):
+        if port == 62080:
+            self.afc(stream)
+        else:
+            raise ValueError("fixture-unexpected-device-port")
 
     def afc(self, stream):
         offset, opened = 0, False

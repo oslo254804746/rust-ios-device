@@ -1576,6 +1576,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "webpki-roots 1.0.6",
+ "windows-sys 0.60.2",
  "zeroize",
  "zip",
 ]

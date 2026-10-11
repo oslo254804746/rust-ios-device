@@ -16,6 +16,7 @@ mod deadline_tests;
 mod discovery_intent_tests;
 mod intent_tests;
 mod manual_admission_tests;
+mod metadata_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
 mod reconnect_tests;

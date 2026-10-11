@@ -88,6 +88,7 @@ pub(super) enum State {
     ServiceUnavailable,
     MetadataMissing,
     Failed,
+    Unsupported,
 }
 
 #[derive(Serialize)]
@@ -143,6 +144,11 @@ impl Check {
                 (Probe::DdiSignatures, Some(true)) => "LookupImage returned a nonempty Developer or Personalized signature. Mounted state and usability were not established.",
                 (Probe::DdiSignatures, Some(false)) => "Both LookupImage replies explicitly contained no nonempty signature. A personalized image may still be mounted; usability was not established.",
                 (Probe::DdiSignatures, None) => "At least one LookupImage reply omitted ImageSignature; signature presence is unknown.",
+                (Probe::DdiMounted, Some(true)) => "CopyDevices explicitly listed a Developer or Personalized DiskImageType. This establishes reported mounted state; target service usability and Apple signature verification remain unproven.",
+                (Probe::DdiMounted, Some(false)) => "CopyDevices returned a complete EntryList without Developer or Personalized DiskImageType; no developer image was reported mounted.",
+                (Probe::DdiMounted, None) => "CopyDevices omitted EntryList or an entry omitted DiskImageType. Mounted state is unknown; signatures and local files do not replace this observation.",
+                (Probe::DdiUsable, Some(true)) => "The selected existing-trust developer service completed DeviceInfo runningProcesses with a valid DTX reply. This proves that specific read-only operation worked; it does not establish Apple signature validity or every developer service.",
+                (Probe::DdiUsable, _) => "The target developer service did not provide a validated read-only operation result; DDI usability remains unknown.",
                 (Probe::Session, _) => "The read-only session did not provide ProductType metadata.",
             },
             hint: None,
@@ -163,12 +169,13 @@ impl Check {
                 | ErrorClass::Io => State::Unreachable,
                 ErrorClass::PermissionDenied => State::PermissionDenied,
                 ErrorClass::ServiceMissing => State::ServiceUnavailable,
+                ErrorClass::Unsupported => State::Unsupported,
                 _ => State::Failed,
             }
         };
         Self {
             id: probe.id(),
-            status: if state == State::MetadataMissing { Status::Unknown } else { Status::Failed },
+            status: if matches!(state, State::MetadataMissing | State::Unsupported) { Status::Unknown } else { Status::Failed },
             state,
             value: None,
             error_class: Some(class),
@@ -177,6 +184,7 @@ impl Check {
                 State::PermissionDenied => "The host or an explicit lockdown response denied access to the selected device probe.",
                 State::ServiceUnavailable => "Lockdown explicitly reported that the requested service is unavailable.",
                 State::MetadataMissing => "Required local trust or response metadata was absent; no negative capability value was inferred.",
+                State::Unsupported => "The selected target requires an RSD developer-operation adapter that Doctor does not implement. Its DDI usability is unknown; no tunnel, mount or pairing was attempted.",
                 _ => "The selected device probe failed; its typed error category is reported without private response data.",
             },
             hint: match state {
@@ -259,6 +267,8 @@ pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) 
     checks.push(Check::not_probed("device_route",
         "USB/network enumeration and lockdown probes do not establish an RSD route or remoted coexistence.",
         "Provide platform and existing tunnel/RSD route evidence before claiming route readiness."));
+    checks.push(probe_once(source, udid, Probe::DdiMounted, timeout).await);
+    checks.push(probe_once(source, udid, Probe::DdiUsable, timeout).await);
     Assessment {
         target: ios_core::redaction::diagnostic_id(udid).to_string(),
         transport: "usbmux_existing_trust",
@@ -286,6 +296,8 @@ enum Probe {
     Session,
     DeveloperMode,
     DdiSignatures,
+    DdiMounted,
+    DdiUsable,
 }
 
 impl Probe {
@@ -294,6 +306,8 @@ impl Probe {
             Self::Session => "trust_session",
             Self::DeveloperMode => "developer_mode",
             Self::DdiSignatures => "ddi_signatures",
+            Self::DdiMounted => "ddi_mounted",
+            Self::DdiUsable => "ddi_usable",
         }
     }
 }
@@ -599,14 +613,49 @@ async fn probe_value(
             .into()),
         };
     }
+    let service_name = if matches!(probe, Probe::DdiUsable) {
+        clock.check()?;
+        send_lockdown(
+            &mut stream,
+            &GetValueRequest {
+                label: "ios-rs",
+                request: "GetValue",
+                domain: None,
+                key: Some("ProductVersion"),
+            },
+        )
+        .await?;
+        clock.check()?;
+        let response: plist::Dictionary = recv_lockdown(&mut stream).await?;
+        check_response(&response, "GetValue")?;
+        let version = response
+            .get("Value")
+            .ok_or(MetadataMissing)?
+            .as_string()
+            .ok_or_else(|| {
+                LockdownError::Protocol("doctor ProductVersion was not a string".into())
+            })?;
+        let major = version
+            .split('.')
+            .next()
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| {
+                LockdownError::Protocol("doctor ProductVersion major was invalid".into())
+            })?;
+        match major {
+            0 => return Err(LockdownError::Protocol("doctor ProductVersion major was zero".into()).into()),
+            1..=13 => ios_core::instruments::SERVICE_LEGACY,
+            14..=16 => ios_core::instruments::SERVICE_IOS14,
+            _ => return Err(ios_core::CoreError::Unsupported("doctor requires an explicit checked RSD developer-operation adapter for this target".into()).into()),
+        }
+    } else {
+        ios_core::imagemounter::protocol::SERVICE_NAME
+    };
     clock.check()?;
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let (port, use_ssl) = start_service_preserving_errors(
-        &mut reader,
-        &mut writer,
-        ios_core::imagemounter::protocol::SERVICE_NAME,
-    )
-    .await?;
+    let (port, use_ssl) =
+        start_service_preserving_errors(&mut reader, &mut writer, service_name).await?;
     drop((reader, writer));
     if port == 0 {
         return Err(
@@ -623,6 +672,32 @@ async fn probe_value(
     } else {
         stream
     };
+    if matches!(probe, Probe::DdiUsable) {
+        let mut device_info =
+            Box::pin(ios_core::instruments::DeviceInfoClient::connect(stream)).await?;
+        clock.check()?;
+        // RunningProcesses has a checked array/dictionary decoder. The older
+        // attribute helpers default unrelated replies to an empty success.
+        let _processes = device_info.running_processes().await?;
+        return Ok(Some(true));
+    }
+    let mut stream = stream;
+    if matches!(probe, Probe::DdiMounted) {
+        // The legacy copy_devices helper defaults absent EntryList to empty;
+        // preserve Unknown in Doctor's read-only protocol observation.
+        send_lockdown(
+            &mut stream,
+            &plist::Dictionary::from_iter([(
+                "Command",
+                plist::Value::String("CopyDevices".into()),
+            )]),
+        )
+        .await?;
+        clock.check()?;
+        let response: plist::Dictionary = recv_lockdown(&mut stream).await?;
+        check_response(&response, "CopyDevices")?;
+        return mounted_value(&response);
+    }
     let mut client = ios_core::imagemounter::ImageMounterClient::new(stream);
     clock.check()?;
     match probe {
@@ -646,8 +721,45 @@ async fn probe_value(
                 Ok(None)
             }
         }
-        Probe::Session => Err(anyhow!("unreachable doctor probe selection")),
+        Probe::Session | Probe::DdiMounted | Probe::DdiUsable => {
+            Err(anyhow!("unreachable doctor probe selection"))
+        }
     }
+}
+
+fn mounted_value(response: &plist::Dictionary) -> Result<Option<bool>> {
+    let Some(entries) = response.get("EntryList") else {
+        return Ok(None);
+    };
+    let entries = entries.as_array().ok_or_else(|| {
+        LockdownError::Protocol("doctor CopyDevices EntryList was not an array".into())
+    })?;
+    let mut missing = false;
+    let mut mounted = false;
+    for entry in entries {
+        let dictionary = entry.as_dictionary().ok_or_else(|| {
+            LockdownError::Protocol("doctor CopyDevices entry was not a dictionary".into())
+        })?;
+        match dictionary.get("DiskImageType") {
+            Some(plist::Value::String(image_type)) => {
+                mounted |= matches!(image_type.as_str(), "Developer" | "Personalized")
+            }
+            None => missing = true,
+            Some(_) => {
+                return Err(LockdownError::Protocol(
+                    "doctor CopyDevices DiskImageType was not a string".into(),
+                )
+                .into())
+            }
+        }
+    }
+    Ok(if mounted {
+        Some(true)
+    } else if missing {
+        None
+    } else {
+        Some(false)
+    })
 }
 
 #[cfg(test)]

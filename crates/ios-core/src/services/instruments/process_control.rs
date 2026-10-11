@@ -37,12 +37,39 @@ pub struct ProcessControl<S> {
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> ProcessControl<S> {
     /// Connect to the process control service.
     pub async fn connect(stream: S) -> Result<Self, DtxError> {
-        let mut conn = DtxConnection::new(stream);
-        let ch = conn.request_channel(super::PROCESS_CTRL_SVC).await?;
-        Ok(Self {
-            conn,
-            channel_code: ch,
-        })
+        let mut client = Self::from_stream(stream);
+        client.initialize_channel().await?;
+        Ok(client)
+    }
+
+    pub fn from_stream(stream: S) -> Self {
+        Self {
+            conn: DtxConnection::new(stream),
+            channel_code: 0,
+        }
+    }
+
+    pub async fn initialize_channel(&mut self) -> Result<(), DtxError> {
+        if self.channel_code != 0 {
+            return Err(DtxError::Protocol(
+                "process control channel already initialized".into(),
+            ));
+        }
+        self.channel_code = self.conn.request_channel(super::PROCESS_CTRL_SVC).await?;
+        Ok(())
+    }
+
+    pub async fn close(&mut self, budget: std::time::Duration) -> Result<(), DtxError> {
+        self.conn.close(budget).await
+    }
+
+    fn require_channel(&self) -> Result<(), DtxError> {
+        if self.channel_code == 0 {
+            return Err(DtxError::Protocol(
+                "process control channel is not initialized".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Launch an app by bundle ID; returns its PID.
@@ -104,6 +131,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ProcessControl<S> {
         options: &[(String, plist::Value)],
     ) -> Result<u64, DtxError> {
         // go-ios: path, bundleID, env, args, opts
+        self.require_channel()?;
         let path_enc = archived_object(nskeyedarchiver_encode::archive_string("/private/"));
         let bid_enc = archived_object(nskeyedarchiver_encode::archive_string(bundle_id));
 
@@ -145,6 +173,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ProcessControl<S> {
 
     /// Send SIGKILL to a process.
     pub async fn kill(&mut self, pid: u64) -> Result<(), DtxError> {
+        self.require_channel()?;
         let pid_enc = archived_object(nskeyedarchiver_encode::archive_int(pid as i64));
         self.conn
             .method_call_async(self.channel_code, "killPid:", &[pid_enc])
@@ -153,6 +182,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ProcessControl<S> {
 
     /// Disable the jetsam memory limit for a process.
     pub async fn disable_memory_limit(&mut self, pid: u64) -> Result<bool, DtxError> {
+        self.require_channel()?;
         let msg = self
             .conn
             .method_call(
