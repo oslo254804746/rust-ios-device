@@ -69,6 +69,85 @@ pub enum DtxError {
     Protocol(String),
 }
 
+/// The original decoded peer rejection remains inspectable without exposing
+/// its object contents in automatic diagnostics.
+pub struct DtxRemoteFailure {
+    message: DtxMessage,
+}
+impl DtxRemoteFailure {
+    pub fn message(&self) -> &DtxMessage {
+        &self.message
+    }
+}
+impl std::fmt::Display for DtxRemoteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DTX peer rejected the request")
+    }
+}
+impl std::fmt::Debug for DtxRemoteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::error::Error for DtxRemoteFailure {}
+
+pub fn checked_reply(message: DtxMessage) -> Result<DtxMessage, DtxError> {
+    if matches!(message.payload, DtxPayload::Error(_)) {
+        return Err(DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            DtxRemoteFailure { message },
+        )));
+    }
+    Ok(message)
+}
+
+pub struct DtxCloseFailure {
+    primary: DtxError,
+    secondary: DtxError,
+}
+impl DtxCloseFailure {
+    pub fn primary(&self) -> &DtxError {
+        &self.primary
+    }
+    pub fn secondary(&self) -> &DtxError {
+        &self.secondary
+    }
+}
+impl std::fmt::Display for DtxCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("both DTX transports failed to close")
+    }
+}
+impl std::fmt::Debug for DtxCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::error::Error for DtxCloseFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.primary)
+    }
+}
+pub(crate) fn combine_close_results(
+    first: Result<(), DtxError>,
+    second: Result<(), DtxError>,
+) -> Result<(), DtxError> {
+    match (first, second) {
+        (Err(primary), Err(secondary)) => {
+            let kind = match &primary {
+                DtxError::Io(error) => error.kind(),
+                _ => std::io::ErrorKind::InvalidData,
+            };
+            Err(DtxError::Io(std::io::Error::new(
+                kind,
+                DtxCloseFailure { primary, secondary },
+            )))
+        }
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(()),
+    }
+}
+
 /// Bytes retained by a connection's receive-side state.
 ///
 /// This deliberately accounts dynamic payload/selector/object bytes rather
@@ -187,7 +266,7 @@ fn dtx_message_memory_size(message: &DtxMessage) -> Result<usize, DtxError> {
                 checked_size_add(&mut size, ns_object_memory_size(arg)?, "method argument")?;
             }
         }
-        DtxPayload::Response(value) => {
+        DtxPayload::Response(value) | DtxPayload::Error(value) => {
             checked_size_add(&mut size, ns_object_memory_size(value)?, "response")?;
         }
         DtxPayload::Notification { name, object } => {
@@ -577,12 +656,16 @@ fn decode_payload(msg_type: u32, payload: Bytes, aux: Option<Bytes>) -> DtxPaylo
             DtxPayload::MethodInvocation { selector, args }
         }
         MSG_RESPONSE | MSG_ERROR => {
-            if payload.is_empty() {
-                DtxPayload::Response(NSObject::Null)
+            let obj = if payload.is_empty() {
+                NSObject::Null
             } else {
-                let obj = crate::proto::nskeyedarchiver::unarchive(&payload)
+                crate::proto::nskeyedarchiver::unarchive(&payload)
                     .map(archive_to_ns)
-                    .unwrap_or(NSObject::Data(payload));
+                    .unwrap_or(NSObject::Data(payload))
+            };
+            if msg_type == MSG_ERROR {
+                DtxPayload::Error(obj)
+            } else {
                 DtxPayload::Response(obj)
             }
         }
@@ -801,6 +884,44 @@ async fn operation_with_timeout<T>(
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
+    /// Terminal write shutdown and bounded raw drain. This also works after a
+    /// partial/error reply; no buffered reply is offered to another request.
+    pub async fn close(&mut self, budget: Duration) -> Result<(), DtxError> {
+        self.usable = false;
+        self.clear_receive_state();
+        if budget.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "DTX close has zero remaining budget",
+            )
+            .into());
+        }
+        let operation = async {
+            self.stream.shutdown().await?;
+            let mut bytes = [0u8; 4096];
+            let mut drained = 0usize;
+            loop {
+                let read = self.stream.read(&mut bytes).await?;
+                if read == 0 {
+                    return Ok(());
+                }
+                drained = drained
+                    .checked_add(read)
+                    .filter(|count| *count <= 1024 * 1024)
+                    .ok_or_else(|| DtxError::Protocol("DTX close drain byte limit".into()))?;
+            }
+        };
+        tokio::time::timeout(budget, operation)
+            .await
+            .map_err(|source| {
+                DtxError::Io(crate::error::context::retained_io(
+                    std::io::ErrorKind::TimedOut,
+                    "DTX transport close deadline",
+                    source,
+                ))
+            })?
+    }
+
     pub fn new(stream: S) -> Self {
         Self::with_memory_limit(stream, DEFAULT_DTX_MEMORY_BUDGET)
     }
@@ -1372,7 +1493,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DtxConnection<S> {
         if result.is_err() {
             self.outstanding_reply_ids.remove(&id);
         }
-        let msg = result?;
+        let msg = checked_reply(result?)?;
         tracing::debug!(
             "request_channel recv: id={} conv_idx={} ch={} expects_reply={}",
             msg.identifier,
@@ -2116,15 +2237,115 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_reply_decodes_like_response_object() {
+    async fn test_error_reply_preserves_wire_type_and_original_object() {
         let payload = nskeyedarchiver_encode::archive_string("selector failed");
         let frame = encode_dtx(24, 1, 4, false, MSG_ERROR, &payload, &[]);
         let mut cur = std::io::Cursor::new(frame);
         let msg = read_dtx_frame(&mut cur).await.unwrap();
         assert!(matches!(
             msg.payload,
-            DtxPayload::Response(NSObject::String(ref value)) if value == "selector failed"
+            DtxPayload::Error(NSObject::String(ref value)) if value == "selector failed"
         ));
+        let error = checked_reply(msg).unwrap_err();
+        let DtxError::Io(error) = error else {
+            panic!("retained peer error")
+        };
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<DtxRemoteFailure>()
+            .unwrap();
+        assert!(
+            matches!(&original.message().payload, DtxPayload::Error(NSObject::String(value)) if value == "selector failed")
+        );
+        assert!(!format!("{original:?}").contains("selector failed"));
+    }
+
+    #[tokio::test]
+    async fn native_close_after_partial_reply_drains_original_socket_to_strict_eof() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (stream, accepted) = tokio::try_join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        )
+        .unwrap();
+        let mut peer = accepted.0;
+        let (ready, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let original = tokio::spawn(async move {
+            let request = read_dtx_frame(&mut peer).await.unwrap();
+            let payload = nskeyedarchiver_encode::archive_string("owned reply");
+            let reply = encode_dtx(
+                request.identifier,
+                1,
+                request.channel_code,
+                false,
+                MSG_RESPONSE,
+                &payload,
+                &[],
+            );
+            peer.write_all(&reply[..16]).await.unwrap();
+            ready.send(()).unwrap();
+            released.await.unwrap();
+            peer.write_all(&reply[16..]).await.unwrap();
+            assert_eq!(
+                peer.read(&mut [0]).await.unwrap(),
+                0,
+                "original peer did not receive EOF"
+            );
+            peer.shutdown().await.unwrap();
+        });
+        let mut client = DtxConnection::new(stream);
+        let operation =
+            client.method_call_with_timeout(1, "owned selector", &[], Duration::from_millis(50));
+        let (result, ()) = tokio::join!(operation, async {
+            observed.await.unwrap();
+        });
+        let error = result.unwrap_err();
+        let unusable_after_partial_read = !client.is_usable();
+        release.send(()).unwrap();
+        client.close(Duration::from_secs(2)).await.unwrap();
+        original.await.unwrap();
+        // std::io::Error::source skips a directly boxed Elapsed; get_ref retains
+        // the actual issuer object. Judge it after original join/strict EOF.
+        let DtxError::Io(error) = error else {
+            panic!("original deadline IO")
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.get_ref().unwrap().is::<tokio::time::error::Elapsed>());
+        assert!(unusable_after_partial_read);
+        assert!(!client.is_usable());
+    }
+
+    #[test]
+    fn close_dual_failure_keeps_both_original_io_objects() {
+        let primary = DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "private-primary",
+        ));
+        let secondary = DtxError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "private-secondary",
+        ));
+        let error = combine_close_results(Err(primary), Err(secondary)).unwrap_err();
+        let DtxError::Io(error) = error else {
+            unreachable!()
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<DtxCloseFailure>()
+            .unwrap();
+        assert!(
+            matches!(original.primary(), DtxError::Io(error) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(
+            matches!(original.secondary(), DtxError::Io(error) if error.kind() == std::io::ErrorKind::ConnectionReset)
+        );
+        assert!(!format!("{original:?}").contains("private-"));
     }
 
     fn encode_fragment(

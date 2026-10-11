@@ -42,7 +42,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> TapClient<S> {
 
     pub async fn next_message(&mut self) -> Result<TapMessage, DtxError> {
         loop {
-            let msg = self.conn.recv().await?;
+            let msg = crate::services::dtx::codec::checked_reply(self.conn.recv().await?)?;
             if msg.expects_reply {
                 self.conn.send_ack(&msg).await?;
             }
@@ -89,7 +89,7 @@ fn payload_to_tap_message(payload: DtxPayload) -> Option<TapMessage> {
             NSObject::Array(args)
         })),
         DtxPayload::Notification { object, .. } => Some(TapMessage::Plist(object)),
-        DtxPayload::Empty => None,
+        DtxPayload::Empty | DtxPayload::Error(_) => None,
     }
 }
 

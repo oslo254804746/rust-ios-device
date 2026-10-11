@@ -425,8 +425,12 @@ struct ManagedTunnel {
     native: Option<retirement::NativeLease>,
     // Actual selector established by Source, not the next caller's request.
     route_intent: intent::RouteIntent,
+    // Exact observed Source route, separate from a retained rediscovery filter.
+    observed_route: Route,
     _ticket: Ticket,
-    _metadata: OwnedSemaphorePermit,
+    // Table metadata and the original native retirement owner share one charge.
+    // Only removal of both owners releases it; either may outlive the other.
+    _metadata: Arc<OwnedSemaphorePermit>,
 }
 
 impl Drop for ManagedTunnel {
@@ -441,6 +445,40 @@ enum ManagedDevice {
     Native(Box<ConnectedDevice>),
     #[cfg(test)]
     Fake(Box<dyn source::FakeDevice>),
+}
+
+fn managed_metadata_bytes(
+    device: &ManagedDevice,
+    udid: &str,
+    desired: &intent::RouteIntent,
+    observed: &Route,
+) -> Result<usize> {
+    let overflow = || crate::output::resource_decision("tunnel retained metadata size overflow");
+    let device_bytes = match device {
+        ManagedDevice::Native(device) => device.retained_metadata_bytes().ok_or_else(overflow)?,
+        #[cfg(test)]
+        ManagedDevice::Fake(_) => std::mem::size_of::<ManagedDevice>(),
+    };
+    let desired_bytes = match desired {
+        intent::RouteIntent::Usbmux => 0,
+        intent::RouteIntent::Usb(host)
+        | intent::RouteIntent::Wifi(host)
+        | intent::RouteIntent::Mobdev2(host) => host.as_ref().map_or(0, String::capacity),
+    };
+    let observed_bytes = match observed {
+        Route::Usbmux => 0,
+        Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::capacity),
+        Route::Mobdev2(host) => host.capacity(),
+    };
+    // Include the table key, row and both distinct retained route strings.
+    // Hash table backing, allocator overhead, runtime buffers and dyn Error
+    // allocations remain separate; this is a known-capacity admission charge.
+    device_bytes
+        .checked_add(std::mem::size_of::<ManagedTunnel>())
+        .and_then(|bytes| bytes.checked_add(udid.len()))
+        .and_then(|bytes| bytes.checked_add(desired_bytes))
+        .and_then(|bytes| bytes.checked_add(observed_bytes))
+        .ok_or_else(overflow)
 }
 
 #[derive(Debug, Clone)]
@@ -759,6 +797,7 @@ impl TunnelAgentState {
         }
         drop(old);
         self.inner.failed_attempts.write().await.clear();
+        self.inner.retry.clear_retired_causes();
     }
 
     async fn list_records(&self) -> Vec<TunnelRecord> {
@@ -1131,6 +1170,7 @@ impl TunnelAgentState {
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
+            let observed_route = route.clone();
             let mut source =
                 self.inner
                     .source
@@ -1146,19 +1186,16 @@ impl TunnelAgentState {
                 }
                 result
             })
-            .await?;
+            .await
+            .map_err(|error| match &attempt {
+                Some(attempt) => attempt.source_failed(error),
+                None => error,
+            })?;
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
-            let metadata_size = match &device {
-                ManagedDevice::Native(device) => {
-                    device.retained_metadata_bytes().ok_or_else(|| {
-                        crate::output::resource_decision("tunnel retained metadata size overflow")
-                    })?
-                }
-                #[cfg(test)]
-                ManagedDevice::Fake(_) => std::mem::size_of::<ManagedDevice>() + udid.len(),
-            };
+            let metadata_size =
+                managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
             let metadata = self
                 .inner
                 .metadata_bytes
@@ -1187,6 +1224,10 @@ impl TunnelAgentState {
                     }
                 }
             };
+            let metadata = Arc::new(metadata);
+            if let Some(native) = &native {
+                native.retain_metadata(Arc::clone(&metadata))?;
+            }
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
@@ -1261,6 +1302,7 @@ impl TunnelAgentState {
                         usbmux,
                         native,
                         route_intent: route_intent.clone(),
+                        observed_route,
                         _ticket: ticket.clone(),
                         _metadata: metadata,
                     },
@@ -1574,7 +1616,14 @@ impl TunnelAgentState {
                     "tunnel agent: failed to establish tunnel"
                 );
                 if let Some(slot) = failure_slot {
-                    return ScanAttemptOutcome::Failure(DeferredFailure { identity, slot });
+                    let receipt = error
+                        .downcast_ref::<reconnect::SourceFailure>()
+                        .map(reconnect::SourceFailure::receipt);
+                    return ScanAttemptOutcome::Failure(DeferredFailure {
+                        identity,
+                        slot,
+                        receipt,
+                    });
                 }
             }
         }
@@ -1937,6 +1986,24 @@ impl TunnelAgentState {
             }
             complete => complete,
         };
+        if let Some(admission::PairedCandidates::Complete { targets, .. }) = &paired {
+            let observed = targets
+                .iter()
+                .map(|target| (target.udid.as_str(), target.host.as_str()))
+                .collect::<std::collections::HashSet<_>>();
+            let mut tunnels = self.inner.tunnels.write().await;
+            epoch.retain(whole, &mut tunnels, |udid, tunnel| {
+                // An older browse cannot retire a concurrent publication. A
+                // failed/incomplete browse never reaches this complete view.
+                !initial
+                    .get(udid)
+                    .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                    || match &tunnel.observed_route {
+                        Route::Mobdev2(host) => observed.contains(&(udid, host.as_str())),
+                        _ => true,
+                    }
+            })?;
+        }
         self.reconcile_failures(
             &candidates,
             matches!(&paired, Some(admission::PairedCandidates::Complete { .. })),

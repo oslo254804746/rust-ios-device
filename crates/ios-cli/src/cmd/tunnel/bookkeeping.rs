@@ -10,6 +10,7 @@ use tokio::time::Instant;
 pub(super) struct DeferredFailure {
     pub(super) identity: AttemptIdentity,
     pub(super) slot: Arc<OwnedSemaphorePermit>,
+    pub(super) receipt: Option<Arc<super::reconnect::FailureReceipt>>,
 }
 
 pub(super) struct FailureIntent {
@@ -39,6 +40,63 @@ pub(super) struct SuccessIntent {
 pub(super) enum ScanIntent {
     Failure(FailureIntent),
     Success(SuccessIntent),
+}
+
+// The primary bookkeeping error stays the original anyhow object. The context
+// exposes independent Source originals without allocating diagnostic strings.
+pub(super) struct SourceFailuresContext {
+    receipts: Vec<Arc<super::reconnect::FailureReceipt>>,
+}
+impl SourceFailuresContext {
+    pub(super) fn receipts(&self) -> &[Arc<super::reconnect::FailureReceipt>] {
+        &self.receipts
+    }
+}
+impl std::fmt::Display for SourceFailuresContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("automatic connection originals retained; failure bookkeeping also failed")
+    }
+}
+impl std::fmt::Debug for SourceFailuresContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelSourceFailureCompletion")
+            .field("receipts", &self.receipts().len())
+            .finish()
+    }
+}
+
+struct FailureWriteOwner {
+    receipts: Vec<Arc<super::reconnect::FailureReceipt>>,
+    finished: bool,
+}
+impl FailureWriteOwner {
+    fn finish(mut self, result: Result<()>) -> Result<()> {
+        self.finished = true;
+        let completion = match &result {
+            Ok(()) => super::reconnect::Completion::Abandoned,
+            Err(error) => super::reconnect::Completion::Failed(
+                crate::output::operation_error_class(error.as_ref()),
+            ),
+        };
+        for receipt in &self.receipts {
+            receipt.complete(completion);
+        }
+        match result {
+            Err(error) if !self.receipts.is_empty() => Err(error.context(SourceFailuresContext {
+                receipts: std::mem::take(&mut self.receipts),
+            })),
+            result => result,
+        }
+    }
+}
+impl Drop for FailureWriteOwner {
+    fn drop(&mut self) {
+        if !self.finished {
+            for receipt in &self.receipts {
+                receipt.complete(super::reconnect::Completion::Abandoned);
+            }
+        }
+    }
 }
 
 // Context leaves the original primary anyhow object in its downcast/source
@@ -150,11 +208,23 @@ impl TunnelAgentState {
         if intents.is_empty() {
             return Ok(());
         }
-        let deadline = super::lifecycle::ConnectionDeadline::for_scan_bookkeeping(
+        let owner = FailureWriteOwner {
+            receipts: intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    ScanIntent::Failure(intent) => intent.failed.receipt.clone(),
+                    ScanIntent::Success(_) => None,
+                })
+                .collect(),
+            finished: false,
+        };
+        let deadline = match super::lifecycle::ConnectionDeadline::for_scan_bookkeeping(
             self.inner.failure_write_timeout,
-        )?
-        .within_scan(whole);
-        deadline
+        ) {
+            Ok(deadline) => deadline.within_scan(whole),
+            Err(error) => return owner.finish(Err(error)),
+        };
+        let result = deadline
             .run(async {
                 // Keep displaced rows outside the guards until their original
                 // permit/metadata owners can be released without either fence.
@@ -235,6 +305,9 @@ impl TunnelAgentState {
                                     if let Some(old) = old {
                                         displaced.push(old);
                                     }
+                                    if let Some(receipt) = &intent.failed.receipt {
+                                        receipt.complete(super::reconnect::Completion::Recorded);
+                                    }
                                     Ok(())
                                 })
                             }
@@ -251,6 +324,7 @@ impl TunnelAgentState {
                 drop(displaced);
                 result
             })
-            .await
+            .await;
+        owner.finish(result)
     }
 }

@@ -10,6 +10,9 @@ const EVENT_PREFIX: &str = "IOS_MANAGER_RESOURCE_BASELINE_EVENT_V1 ";
 const CLEANUP: Duration = Duration::from_secs(5);
 const MAX_DEVICES: usize = 16;
 
+#[cfg(windows)]
+mod windows_resources;
+
 #[derive(Clone, Serialize)]
 struct Input {
     samples_per_scale: usize,
@@ -326,11 +329,15 @@ fn proc_sample() -> serde_json::Value {
             "fd_sampler_directory_included": true,
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        windows_resources::sample()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         json!({
             "method": "not-run",
-            "reason": "this fixture implements process sampling only on Linux",
+            "reason": "this fixture implements process sampling on Linux and Windows",
             "rss_bytes": null, "peak_rss_bytes": null, "fd_count": null,
             "socket_fd_count": null, "process_threads": null,
         })
@@ -623,25 +630,28 @@ async fn measure_round(
                 .resource(state, "workload-before", workload, devices, round)
                 .await;
             let started = MeasureInstant::now();
-            let result = match workload {
-                "throughput" => {
-                    measure_throughput_workload(
-                        &mut original.peer,
-                        input.workload_payload_kb * 1024,
-                    )
-                    .await?
-                }
-                "file_transfer" => {
-                    measure_file_transfer_workload(4, input.workload_payload_kb * 1024 / 4).await?
-                }
-                _ => {
-                    measure_service_stream_workload(
-                        Duration::from_millis(input.workload_duration_ms),
-                        state,
-                    )
-                    .await?
+            let operation = async {
+                match workload {
+                    "throughput" => {
+                        measure_throughput_workload(
+                            &mut original.peer,
+                            input.workload_payload_kb * 1024,
+                        )
+                        .await
+                    }
+                    "file_transfer" => {
+                        measure_file_transfer_workload(4, input.workload_payload_kb * 1024 / 4)
+                            .await
+                    }
+                    _ => {
+                        measure_service_stream_workload(Duration::from_millis(
+                            input.workload_duration_ms,
+                        ))
+                        .await
+                    }
                 }
             };
+            let result = sampled_workload(operation, state).await?;
             evidence.latency("workload-total", workload, devices, round, started);
             evidence.workloads.push(json!({"workload": workload, "scenario": scenario, "devices": devices, "round": round, "metrics": result}));
             evidence
@@ -832,6 +842,7 @@ async fn measurement(
 mod workloads;
 use workloads::{
     measure_file_transfer_workload, measure_service_stream_workload, measure_throughput_workload,
+    sampled_workload,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -994,11 +1005,52 @@ async fn production_syslog_workload_honors_real_window() {
         source,
         CLEANUP,
     );
-    let result = measure_service_stream_workload(Duration::from_millis(500), &state)
-        .await
-        .unwrap();
+    let result = sampled_workload(
+        measure_service_stream_workload(Duration::from_millis(500)),
+        &state,
+    )
+    .await
+    .unwrap();
     assert!(result["stream_duration_ns"].as_u64().unwrap() >= 500_000_000);
     assert_eq!(result["strict_peer_eof"], true);
     assert_eq!(result["dropped_events"], 0);
-    assert!(result["resource_samples"].as_array().unwrap().len() >= 2);
+    assert!(result["resources"]["samples"].as_u64().unwrap() >= 2);
+}
+
+#[tokio::test]
+async fn resource_ticks_preserve_fragmented_production_syslog_read() {
+    let source = MeasurementSource::new();
+    let state = TunnelAgentState::with_source(
+        TunMode::Userspace,
+        AccessControl::trusted_test_local(),
+        Upstreams::default(),
+        source,
+        CLEANUP,
+    );
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (client, accepted) = tokio::try_join!(
+        TcpStream::connect(listener.local_addr().unwrap()),
+        listener.accept()
+    )
+    .unwrap();
+    let mut peer = accepted.0;
+    let producer = async {
+        peer.write_all(b"fragmented\\M-").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(45)).await;
+        peer.write_all(b"C\\M-)\0").await.unwrap();
+        peer.shutdown().await.unwrap();
+        strict_peer_eof(&mut peer).await.unwrap();
+    };
+    let operation = async {
+        let mut stream = ios_core::syslog::SyslogStream::new(client);
+        assert_eq!(stream.next_message().await.unwrap(), "fragmentedé");
+        assert_eq!(
+            stream.next_message().await.unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        drop(stream);
+        Ok(json!({"status": "passed"}))
+    };
+    let (metrics, ()) = tokio::join!(sampled_workload(operation, &state), producer);
+    assert!(metrics.unwrap()["resources"]["samples"].as_u64().unwrap() >= 3);
 }

@@ -846,6 +846,29 @@ mod tests {
     }
 
     #[test]
+    fn application_command_state_fits_windows_stack_budget() {
+        let cli = Cli::try_parse_from(["ios", "apps", "list", "--app-type", "all"]).unwrap();
+        let Commands::Apps(command) = cli.command else {
+            unreachable!()
+        };
+        let operation = command.run(Some("host-fixture".into()), true);
+        println!(
+            "application state {} connected state {}",
+            size_of_val(&operation),
+            cmd::apps::AppsCmd::connected_async_state_bytes()
+        );
+        assert!(
+            size_of_val(&operation) <= 128 * 1024,
+            "application command async state is {} bytes before boxing",
+            size_of_val(&operation)
+        );
+        assert!(
+            cmd::apps::AppsCmd::connected_async_state_bytes() <= 128 * 1024,
+            "connected application command embeds oversized service state"
+        );
+    }
+
+    #[test]
     fn default_udid_uses_first_listed_device() {
         let devices = vec![
             ios_core::DeviceInfo {

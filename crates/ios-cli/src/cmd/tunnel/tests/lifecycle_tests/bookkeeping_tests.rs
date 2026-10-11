@@ -24,6 +24,7 @@ async fn intent(state: &TunnelAgentState, udid: &str) -> FailureIntent {
                 native_id: Some(1),
             },
             slot,
+            receipt: None,
         },
     }
 }
@@ -49,7 +50,24 @@ async fn refused(budget: Duration) -> anyhow::Error {
     assert!(unchanged && not_ready);
     assert_eq!(source.count(A), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
-    assert_eq!(slots, MAX_FAILURE_RECORDS);
+    assert_eq!(slots, MAX_FAILURE_RECORDS - 1);
+    let originals = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .unwrap();
+    assert_eq!(originals.receipts().len(), 1);
+    assert_eq!(
+        originals.receipts()[0]
+            .primary()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        state.inner.failure_slots.available_permits(),
+        MAX_FAILURE_RECORDS - 1,
+        "returned dual-cause receipt must retain its original admission owner"
+    );
     error
 }
 

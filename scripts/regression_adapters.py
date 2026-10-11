@@ -5,6 +5,7 @@ constructed here from the product CLI. A missing protocol observer is NOT_RUN,
 never replaced with an unrelated successful query.
 """
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -21,11 +22,13 @@ from diagnostics import assess, capture
 
 MANIFEST_LIMIT = 65536
 FILE_LIMIT = 16 * 1024 * 1024
+DDI_IMAGE_LIMIT = 2 * 1024 * 1024 * 1024
+CRYPTEX_ID = "com.apple.MobileAsset.DDI"
+CRYPTEX_PAYLOADS = ("Cryptex1,GenericDmg", "Cryptex1,GenericTrustCache",
+                    "Cryptex1,CryptexInfoPlist", "Cryptex1,GenericVolume")
 UNSUPPORTED = {
     "private-mac-altirk": "private-mac-and-altirk-wire-correlation-observer-unavailable",
-    "cryptex-install": "cryptex-exact-install-ownership-and-uninstall-observer-unavailable",
     "display-hid-stop": "display-hid-restored-state-and-original-service-join-observer-unavailable",
-    "rich-clipboard-watch": "rich-clipboard-watch-trigger-deduplication-and-restoration-observer-unavailable",
     "installcoordination-wire": "same-client-zero-budget-and-signed-wire-observer-unavailable-in-cli",
     "modern-rsd-wifi": "queued-direct-legacy-passive-mode-selection-observer-unavailable-in-cli",
 }
@@ -76,6 +79,89 @@ def package_id(path):
         return value
 
 
+def checked_cryptex_fixture(root, item):
+    if set(item) != {"path", "files", "identifier", "version", "build_id"} or item["identifier"] != CRYPTEX_ID:
+        raise ValueError("ddi-fixture-schema")
+    if not isinstance(item["path"], str) or not item["path"] or "\\" in item["path"] or ":" in item["path"] or ".." in item["path"].split("/"):
+        raise ValueError("ddi-directory-path")
+    directory = root / item["path"]
+    resolved = directory.resolve(strict=True)
+    if root not in resolved.parents or not resolved.is_dir():
+        raise ValueError("ddi-outside-root")
+    current = directory
+    while current != root:
+        if current.is_symlink():
+            raise ValueError("ddi-symlink")
+        current = current.parent
+    if any(not isinstance(item[key], str) or not 1 <= len(item[key]) <= 256 for key in ("version", "build_id")):
+        raise ValueError("ddi-identity-shape")
+    files = item["files"]
+    if not isinstance(files, list) or len(files) != 5:
+        raise ValueError("ddi-file-count")
+    admitted = {}
+    for record in files:
+        if not isinstance(record, dict) or set(record) != {"path", "size", "sha256"}:
+            raise ValueError("ddi-file-schema")
+        path = fixture_path(resolved, record["path"])
+        if record["path"] in admitted or type(record["size"]) is not int or not 0 < record["size"] <= DDI_IMAGE_LIMIT:
+            raise ValueError("ddi-file-size")
+        if not isinstance(record["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) or path.stat().st_size != record["size"] or digest(path) != record["sha256"]:
+            raise ValueError("ddi-file-integrity")
+        admitted[record["path"]] = path
+    manifest_path = admitted.get("BuildManifest.plist")
+    if manifest_path is None or manifest_path.stat().st_size > FILE_LIMIT:
+        raise ValueError("ddi-build-manifest")
+    manifest = plistlib.loads(manifest_path.read_bytes())
+    identities = [identity for identity in manifest.get("BuildIdentities", []) if isinstance(identity, dict)
+                  and isinstance(identity.get("Info"), dict)
+                  and isinstance(identity["Info"].get("Variant"), str)
+                  and identity["Info"]["Variant"].endswith("Developer Disk Image Cryptex")]
+    if len(identities) != 1 or manifest.get("ProductBuildVersion") != item["build_id"] or identities[0].get("Cryptex1,Version") != item["version"]:
+        raise ValueError("ddi-manifest-identity")
+    required = {"BuildManifest.plist"}
+    for index, key in enumerate(CRYPTEX_PAYLOADS):
+        name = identities[0].get("Manifest", {}).get(key, {}).get("Info", {}).get("Path")
+        if not isinstance(name, str) or name not in admitted or "\\" in name or ":" in name or ".." in name.split("/"):
+            raise ValueError("ddi-manifest-path")
+        if index and admitted[name].stat().st_size > FILE_LIMIT:
+            raise ValueError("ddi-metadata-size")
+        required.add(name)
+    if set(admitted) != required or len(required) != 5:
+        raise ValueError("ddi-manifest-files")
+    return dict(item, path=resolved, files=[dict(record) for record in files])
+
+
+def checked_clipboard_fixture(root, item):
+    if set(item) != {"pasteboard", "baseline", "contents"} or item["pasteboard"] != "com.apple.UIKit.pboard.general":
+        raise ValueError("clipboard-fixture-schema")
+    admitted = {}
+    for name in ("baseline", "contents"):
+        entries = item[name]
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 2:
+            # The CLI has no empty/multi-item restore operation. Reject those
+            # baselines before any mutation instead of normalizing their shape.
+            raise ValueError("clipboard-single-item-baseline-required")
+        values = []
+        types = set()
+        for record in entries:
+            if not isinstance(record, dict) or set(record) != {"uti", "path", "size", "sha256"} or record["uti"] not in ("public.utf8-plain-text", "public.png") or record["uti"] in types:
+                raise ValueError("clipboard-representation")
+            path = fixture_path(root, record["path"])
+            if type(record["size"]) is not int or not 0 < record["size"] <= 8192 or not isinstance(record["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) or path.stat().st_size != record["size"] or digest(path) != record["sha256"]:
+                raise ValueError("clipboard-fixture-integrity")
+            data = path.read_bytes()
+            if record["uti"] == "public.utf8-plain-text":
+                data.decode("utf-8")
+            elif not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("clipboard-png-signature")
+            values.append(dict(record, path=path))
+            types.add(record["uti"])
+        if name == "contents" and types != {"public.utf8-plain-text", "public.png"}:
+            raise ValueError("clipboard-text-and-png-required")
+        admitted[name] = values
+    return dict(item, **admitted)
+
+
 def load_fixture_manifest(directory, context):
     root = Path(directory).resolve(strict=True)
     if not root.is_dir():
@@ -91,7 +177,7 @@ def load_fixture_manifest(directory, context):
     fixtures = value["fixtures"]
     if not isinstance(fixtures, dict) or len(fixtures) > 16:
         raise ValueError("fixture-count")
-    allowed = {"afc-fixture", "test-application", "test-runner", "test-bundle", "authorized-unc-share", "existing-rsd-route"}
+    allowed = {"afc-fixture", "test-application", "test-runner", "test-bundle", "authorized-unc-share", "existing-rsd-route", "approved-ddi", "synthetic-clipboard"}
     if not set(fixtures) <= allowed:
         raise ValueError("fixture-name")
     admitted = {}
@@ -105,6 +191,10 @@ def load_fixture_manifest(directory, context):
                 raise ValueError("afc-remote-path")
             if type(item["size"]) is not int or not 0 <= item["size"] <= FILE_LIMIT or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
                 raise ValueError("afc-fixture-integrity")
+        elif name == "synthetic-clipboard":
+            item = checked_clipboard_fixture(root, item)
+        elif name == "approved-ddi":
+            item = checked_cryptex_fixture(root, item)
         elif name in ("test-application", "test-runner"):
             if set(item) != {"path", "sha256", "bundle_id"}:
                 raise ValueError("package-fixture-schema")
@@ -210,6 +300,9 @@ class OperationRun:
         if remaining <= 0:
             raise ValueError("operation-deadline")
         result = capture(argv, env=self.context.environment, timeout=min(remaining, 70), max_bytes=MANIFEST_LIMIT)
+        return self.observation(argv, result, contract, expected_code, cleanup)
+
+    def observation(self, argv, result, contract, expected_code=0, cleanup=False):
         try:
             matched = bool(contract(result))
         except Exception:
@@ -396,9 +489,11 @@ def xctest_workflow(run):
     fixture = run.context.fixtures["test-bundle"]
     owned = OwnedFiles(run.session.private.parent)
     error = None
+    output = logs = attempts = None
     try:
         output = owned.destination("results.xml")
         logs = owned.destination("syslog.txt")
+        attempts = owned.destination("results.xml.attempts.json")
         arguments = ["runxctest", "--test-runner-bundle-id", fixture["runner_bundle_id"],
                      "--xctest-config", fixture["xctest_config"], "--xctest", "--wait",
                      "--timeout", fixture["timeout_secs"], "--junit-output", output, "--log-output", logs]
@@ -407,18 +502,170 @@ def xctest_workflow(run):
         def valid_result(result):
             owned.admit(output)
             owned.admit(logs)
+            owned.admit(attempts)
             tree = ElementTree.parse(output)
             cases = tree.findall(".//testcase")
             selectors = {row.get("classname", "") + "/" + row.get("name", "") for row in cases}
-            return set(fixture["tests"]) <= selectors and not tree.findall(".//failure") and not tree.findall(".//error") and logs.stat().st_size <= FILE_LIMIT and b"log capture finished" in logs.read_bytes()[-256:]
+            if attempts.stat().st_size > MANIFEST_LIMIT:
+                return False
+            history = json.loads(attempts.read_bytes())
+            return (set(fixture["tests"]) <= selectors and not tree.findall(".//failure") and not tree.findall(".//error")
+                    and logs.stat().st_size <= FILE_LIMIT and b"log capture finished" in logs.read_bytes()[-256:]
+                    and history.get("terminal_error_class") is None and len(history.get("attempts", [])) == 1
+                    and history["attempts"][0].get("state") == "completed")
         run.step(command(run.context, *arguments), valid_result)
     except Exception as caught:
         error = caught
     finally:
-        for path in (output, logs):
-            if path.exists() and not path.is_symlink():
+        for path in (output, logs, attempts):
+            if path is not None and path.exists() and not path.is_symlink():
                 owned.admit(path)
         run.cleanup_complete = owned.clean() and run.cleanup_complete
+    return run.finish(error)
+
+
+def cryptex_records(result):
+    records = checked_json(result)
+    if not isinstance(records, list) or len(records) > 128:
+        raise ValueError("cryptex-list-shape")
+    values = set()
+    for item in records:
+        if not isinstance(item, dict) or set(item) != {"identifier", "version"} or any(not isinstance(item[key], str) or not 1 <= len(item[key]) <= 1024 for key in item):
+            raise ValueError("cryptex-record-shape")
+        identity = (item["identifier"], item["version"])
+        if identity in values:
+            raise ValueError("cryptex-record-duplicate")
+        values.add(identity)
+    return values
+
+
+def cryptex_workflow(run):
+    fixture = run.context.fixtures["approved-ddi"]
+    expected = (fixture["identifier"], fixture["version"])
+    # Hash all five manifest-selected inputs again immediately before starting;
+    # admission alone cannot detect a fixture changed by another local process.
+    try:
+        for record in fixture["files"]:
+            path = fixture_path(fixture["path"], record["path"])
+            if path.stat().st_size != record["size"] or digest(path) != record["sha256"]:
+                raise ValueError("ddi-changed-after-admission")
+    except Exception as caught:
+        return run.finish(caught)
+    before, submitted, error = None, False, None
+    try:
+        before = cryptex_records(run.step(command(run.context, "ddi", "cryptex", "list"), lambda result: isinstance(cryptex_records(result), set)))
+        if any(identity[0] == CRYPTEX_ID for identity in before):
+            raise ValueError("cryptex-already-exists-no-owned-install")
+        submitted = True
+        run.step(command(run.context, "ddi", "cryptex", "auto-install", "--restore-dir", fixture["path"]),
+                 lambda result: checked_json(result) == {"identifier": expected[0], "version": expected[1]})
+        run.step(command(run.context, "ddi", "cryptex", "list"), lambda result: cryptex_records(result) == before | {expected})
+    except Exception as caught:
+        error = caught
+    finally:
+        if submitted:
+            observed = None
+            try:
+                observed = cryptex_records(run.step(command(run.context, "ddi", "cryptex", "list"), lambda result: isinstance(cryptex_records(result), set), cleanup=True))
+                # Only remove the exact version absent from the pre-install
+                # snapshot. A different version is preserved and fails cleanup.
+                if any(identity[0] == CRYPTEX_ID and identity != expected for identity in observed):
+                    raise ValueError("cryptex-unowned-version-preserved")
+                if expected in observed:
+                    run.step(command(run.context, "ddi", "cryptex", "uninstall", expected[0], "--version", expected[1]),
+                             lambda result: checked_json(result) == {"uninstalled": expected[0]}, cleanup=True)
+                run.step(command(run.context, "ddi", "cryptex", "list"), lambda result: cryptex_records(result) == before, cleanup=True)
+            except Exception as caught:
+                run.cleanup_complete = False
+                error = error or caught
+    return run.finish(error)
+
+
+def clipboard_descriptor(snapshot):
+    if not isinstance(snapshot, dict) or snapshot.get("metadata") is not None or snapshot.get("source_metadata") is not None or len(snapshot.get("items", [])) != 1:
+        raise ValueError("clipboard-baseline-shape-unrestorable")
+    item = snapshot["items"][0]
+    data = item.get("data", [])
+    if item.get("index") != 0 or item.get("types") != [entry.get("uti") for entry in data] or not 1 <= len(data) <= 2:
+        raise ValueError("clipboard-item-shape")
+    result = []
+    for entry in data:
+        payload = entry.get("payload", {})
+        if entry.get("uti") not in ("public.utf8-plain-text", "public.png") or payload.get("state") != "inline" or type(payload.get("size")) is not int or not 0 < payload["size"] <= 8192:
+            raise ValueError("clipboard-inline-approved-representations-required")
+        result.append((entry["uti"], payload["size"], payload.get("sha256")))
+    return result
+
+
+def clipboard_workflow(run):
+    from regression_watch_capture import OwnedWatch
+    fixture = run.context.fixtures["synthetic-clipboard"]
+    name = fixture["pasteboard"]
+    baseline = [(item["uti"], item["size"], item["sha256"]) for item in fixture["baseline"]]
+    wanted = [(item["uti"], item["size"], item["sha256"]) for item in fixture["contents"]]
+    text = [entry for entry in wanted if entry[0] == "public.utf8-plain-text"]
+    representations = {}
+    try:
+        for item in [*fixture["baseline"], *fixture["contents"]]:
+            path = item["path"]
+            if path.is_symlink() or not path.is_file() or path.stat().st_size != item["size"] or digest(path) != item["sha256"]:
+                raise ValueError("clipboard-changed-after-admission")
+            representations[(item["uti"], item["sha256"])] = base64.b64encode(path.read_bytes()).decode("ascii")
+    except Exception as caught:
+        return run.finish(caught)
+    changed, watcher, error = False, None, None
+    def set_arguments(entries):
+        args = ["pasteboard", "set", "--pasteboard", name, "--raw"]
+        for uti, _, sha256 in entries:
+            args += ["--data", uti + "=" + representations[(uti, sha256)]]
+        return command(run.context, *args)
+    def same(result, entries):
+        return clipboard_descriptor(checked_json(result)) == entries
+    def pull(entries, cleanup=False):
+        return run.step(command(run.context, "pasteboard", "get", "--pasteboard", name, "--policy", "resolved", "--show-data"),
+                        lambda result: same(result, entries), cleanup=cleanup)
+    def set_content(entries, cleanup=False):
+        return run.step(set_arguments(entries), lambda result: checked_json(result).get("operation") == "set"
+                        and checked_json(result).get("representations") == len(entries)
+                        and checked_json(result).get("bytes") == sum(item[1] for item in entries), cleanup=cleanup)
+    watch_argv = command(run.context, "pasteboard", "watch", "--pasteboard", name, "--policy", "resolved", "--show-data", "--reconnect",
+                         "--reconnect-attempts", "0", "--connect-timeout", "10", "--cleanup-timeout", "5", "--timeout", "45")
+    try:
+        pull(baseline)  # Content remains in RAM; verify the approved hashes and restorable metadata shape.
+        watcher = OwnedWatch(watch_argv, run.context.environment, timeout=50)
+        watcher.wait(lambda records: any(isinstance(item, dict) and item.get("state") == "connected" for item in records[1]), 12)
+        changed = True  # Restore after a partial set failure too.
+        set_content(text)
+        watcher.wait(lambda records: any(clipboard_descriptor(item) == text for item in records[0]), 5)
+        set_content(wanted)
+        watcher.wait(lambda records: any(clipboard_descriptor(item) == wanted for item in records[0]), 5)
+        pull(wanted)
+        # Post twice without changing the native counter; a bounded unchanged
+        # window is an output observation, not a delivery or transport ACK.
+        for _ in range(2):
+            run.step(command(run.context, "notify", "post", "com.apple.pasteboard.notify.changed"),
+                     lambda result: result.returncode == 0)
+        watcher.quiet(0.5)
+        pull(wanted)
+    except Exception as caught:
+        error = caught
+    finally:
+        if watcher is not None:
+            try:
+                result, receipt, snapshots = watcher.finish()
+                run.observation(watch_argv, result, lambda _: receipt and [clipboard_descriptor(item) for item in snapshots] == [text, wanted], cleanup=True)
+                run.steps[-1]["native_cleanup_receipt"] = receipt
+                run.steps[-1]["duplicate_observation_ms"] = 500
+            except Exception as caught:
+                run.cleanup_complete = False
+                error = error or caught
+        if changed:
+            try:
+                set_content(baseline, cleanup=True)
+                pull(baseline, cleanup=True)
+            except Exception as caught:
+                run.cleanup_complete = False
+                error = error or caught
     return run.finish(error)
 
 
@@ -426,6 +673,8 @@ def execute(session, case, context):
     case_id = case["id"]
     if case_id in UNSUPPORTED:
         return session.record_not_run(case_id, UNSUPPORTED[case_id], ["production-protocol-observer"])
+    if case_id == "rich-clipboard-watch" and os.name != "posix":
+        return session.record_not_run(case_id, "posix-owned-graceful-watch-signal-required", ["posix-graceful-watch"])
     if case_id == "remoted-coexistence" and "existing-rsd-route" not in context.fixtures:
         return session.record_not_run(case_id, "existing-selected-rsd-route-required", ["existing-rsd-route"])
     run = OperationRun(session, case_id, context)
@@ -435,6 +684,10 @@ def execute(session, case, context):
         return application_workflow(run)
     if case_id == "xctest-workflow":
         return xctest_workflow(run)
+    if case_id == "cryptex-install":
+        return cryptex_workflow(run)
+    if case_id == "rich-clipboard-watch":
+        return clipboard_workflow(run)
     try:
         argv, contract = query_command(case_id, context)
         run.step(argv, contract)

@@ -1,5 +1,17 @@
 > 本页保留 af20f6a 交付时的历史声明。2026-10-10 独立审查已否定其完整开发/验收结论；不能据本文将占位流程或 NOT_RUN 记为通过。当前代码与实际结果以 [修复记录](review-fixes-2026-10-10.md) 为准。
 
+## 2026-10-11 续修实现
+
+主代理实际 Doctor 47 项通过、1 项子进程fixture单独由owner测试调用；完整CLI 1296项通过。Windows强制终止child的原socket可能报告ConnectionReset，实际receipt保持strict_peer_eof=false，不将其改成EOF。[本轮受测范围与日志](continuation-2026-10-11.md)优先于下方历史和编辑时NOT_RUN文字。
+
+- macOS 以有界 `launchctl print system/com.apple.remoted` 读取真实 state/pid；保存观察时间。只有前后两次都观察到运行进程，且 existing RSD 目录确认 selected UDID，才报告本次有限共存观察 OK。两点采样不证明期间持续存活。未选择 RSD、缺 PID/状态、目录失败/错目标均保持 Unknown；不停止系统 remoted。
+- Host subprocess 使用一个从 startup 前计时的绝对期限、1 MiB stdout 上限和独立 2 秒 kill/wait 收尾预算。Ctrl-C 请求传到进程 owner 后继续等待该 owner 收尾；原输出/IO/timeout/cancel 原因和次级 kill/wait 错误均保留。Windows child 使用 CREATE_NO_WINDOW。OS 的同步 spawn 系统调用本身不能物理中止；回来后立即检查原期限，不能用延迟成功越过时钟。
+- 显式 selected UDID 下新增 fresh existing-trust `CopyDevices` 探针，严格区分缺 EntryList、空列表、Developer/Personalized DiskImageType 与 malformed。签名探针、挂载观察与本地镜像目录仍为各自证据，不互相推断。
+- `ddi_usable` 在 legacy Instruments/secure Instruments 路径上实际执行只读 DeviceInfo `runningProcesses`，复用原 DTX 的 checked array/dictionary decoder；全流程共用原探针绝对期限、StartService 的实际 SSL 状态与现有 pair TLS。仅报告该具体 developer operation 可用，不声明 Apple 签名验证，也不扩大为所有 developer services。ProductVersion 只选择已实现 transport；它不能使探针自动通过。
+- iOS 17+ 的 checked existing-RSD developer-operation adapter 仍缺实现，此项显式 Unknown/unsupported，不隐式建 tunnel/配对/下载/挂载 DDI。所有 physical 和 macOS launchctl 实测本机仍 NOT_RUN。
+
+新增原 child executable 的 output-limit/timeout/cancel 与 socket EOF/reap fixtures，及原 TLS lockdown/image/DTX 请求与 EOF fixtures。它们未由此子代理执行 Rust 编译或测试；是否通过及最终受测提交由主代理集中记录。上述遗留历史验收结论不能用于本次计数。
+
 # F01 Doctor 平台 USB/路由/remoted 诊断与 DDI 目录探测交付记录
 
 **日期**：2026-10-10  

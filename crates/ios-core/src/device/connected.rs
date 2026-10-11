@@ -103,6 +103,15 @@ impl ConnectedDevice {
         };
         add(self.info.udid.capacity())?;
         add(self.info.connection_type.capacity())?;
+        if let super::LockdownTransport::Tcp { host } = &self.lockdown_transport {
+            add(host.capacity())?;
+        }
+        if let Some(tunnel) = &self.tunnel {
+            add(std::mem::size_of::<crate::tunnel::manager::TunnelHandle>())?;
+            add(tunnel.udid.capacity())?;
+            add(tunnel.info.server_address.capacity())?;
+            add(tunnel.info.client_address.capacity())?;
+        }
         if let Some(rsd) = &self.rsd {
             add(rsd.udid.capacity())?;
             add(rsd.services.capacity().checked_mul(

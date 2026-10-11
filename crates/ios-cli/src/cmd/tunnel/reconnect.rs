@@ -17,6 +17,9 @@ use tokio::time::Instant;
 
 use super::{AttemptIdentity, Ticket, MAX_FAILURE_RECORDS};
 
+mod causes;
+pub(super) use causes::{Completion, FailureReceipt, SourceFailure};
+
 const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const MAX_DELAY: Duration = Duration::from_secs(300);
 
@@ -173,6 +176,10 @@ struct Episode {
 struct State {
     sealed: bool,
     rows: HashMap<String, Episode>,
+    // Uses the very same admission permits as rows/failure-table records.
+    // Original Source errors survive a default schedule's deferred writer.
+    causes: HashMap<String, Arc<FailureReceipt>>,
+    retired_causes: Vec<(String, Arc<FailureReceipt>)>,
 }
 
 pub(super) struct Ledger {
@@ -194,6 +201,8 @@ impl Ledger {
             state: Mutex::new(State {
                 sealed: false,
                 rows: HashMap::new(),
+                causes: HashMap::new(),
+                retired_causes: Vec::new(),
             }),
         })
     }
@@ -264,7 +273,12 @@ impl Ledger {
     /// Reuse the same bounded failure permit even when the failure writer never
     /// committed. It cannot be freed/reacquired to evade an episode's budget.
     pub(super) fn slot(&self, udid: &str) -> Option<Arc<OwnedSemaphorePermit>> {
-        self.lock().rows.get(udid).map(|row| Arc::clone(&row.slot))
+        let state = self.lock();
+        state
+            .rows
+            .get(udid)
+            .map(|row| Arc::clone(&row.slot))
+            .or_else(|| state.causes.get(udid).map(|receipt| receipt.slot()))
     }
 
     /// Event formatting/subscribers run after every lifecycle watch guard is
@@ -301,17 +315,26 @@ impl Ledger {
     }
 
     pub(super) fn version(&self, udid: &str, ticket: &Ticket) -> Option<Arc<()>> {
-        self.lock()
+        let state = self.lock();
+        state
             .rows
             .get(udid)
             .filter(|row| row.ticket.same_incarnation(ticket))
             .map(|row| Arc::clone(&row.version))
+            .or_else(|| {
+                state
+                    .causes
+                    .get(udid)
+                    .filter(|receipt| receipt.same_ticket(ticket))
+                    .map(|receipt| receipt.version())
+            })
     }
 
     /// An explicitly requested successful connection also ends the prior
     /// automatic failure episode, but cannot clear an independently newer row.
     pub(super) fn recovered(&self, udid: &str, ticket: &Ticket, version: &Arc<()>) {
         let mut removed = None;
+        let mut cause = None;
         let _ = ticket.commit(|| {
             let mut state = self.lock();
             if state.rows.get(udid).is_some_and(|row| {
@@ -319,11 +342,18 @@ impl Ledger {
             }) {
                 removed = state.rows.remove(udid);
             }
+            if state.causes.get(udid).is_some_and(|receipt| {
+                receipt.same_ticket(ticket)
+                    && (Arc::ptr_eq(&receipt.version(), version) || removed.is_some())
+            }) {
+                cause = state.causes.remove(udid);
+            }
             Ok(())
         });
         if let Some(row) = removed {
             emit(udid, row.snapshot, Reason::Recovered);
         }
+        drop(cause);
     }
 
     /// Admission is synchronous immediately before the Source future is polled.
@@ -400,12 +430,16 @@ impl Ledger {
         row.snapshot.sequence = row.snapshot.sequence.saturating_add(1);
         let snapshot = row.snapshot;
         let version = Arc::clone(&row.version);
+        let identity = row.identity.clone();
+        let slot = Arc::clone(&row.slot);
         drop(state);
         Ok(Attempt {
             ledger: Arc::clone(self),
             udid: udid.to_owned(),
             ticket: ticket.clone(),
             version,
+            identity,
+            slot,
             started: snapshot,
             displaced,
             complete: false,
@@ -427,6 +461,7 @@ impl Ledger {
         // The caller may be a future Drop; retain no watch guard while emitting
         // events or releasing old coordinator/permit ownership.
         let mut removed = None;
+        let mut removed_cause = None;
         let mut event = None;
         let committed = attempt.ticket.commit(|| {
             let mut state = self.lock();
@@ -439,6 +474,11 @@ impl Ledger {
             };
             if success {
                 removed = state.rows.remove(&attempt.udid);
+                if state.causes.get(&attempt.udid).is_some_and(|receipt| {
+                    receipt.same_identity(&attempt.identity, &attempt.ticket)
+                }) {
+                    removed_cause = state.causes.remove(&attempt.udid);
+                }
                 return Ok(());
             }
             let now = Instant::now();
@@ -511,6 +551,7 @@ impl Ledger {
         if let Some((snapshot, reason)) = event {
             emit(&attempt.udid, snapshot, reason);
         }
+        drop(removed_cause);
     }
 
     /// Return displaced rows so their permits/gates drop outside epoch borrows.
@@ -525,9 +566,42 @@ impl Ledger {
             .filter(|(udid, row)| predicate(udid, &row.identity, &row.ticket))
             .map(|(udid, _)| udid.clone())
             .collect::<Vec<_>>();
-        keys.into_iter()
-            .filter_map(|udid| state.rows.remove(&udid).map(|row| Removed { udid, row }))
-            .collect()
+        let mut removed = keys
+            .into_iter()
+            .filter_map(|udid| {
+                state.rows.remove(&udid).map(|row| Removed {
+                    udid,
+                    row: Some(row),
+                    cause: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        let causes = state
+            .causes
+            .iter()
+            .filter(|(udid, receipt)| receipt.selected(udid, &predicate))
+            .map(|(udid, _)| udid.clone())
+            .collect::<Vec<_>>();
+        for udid in causes {
+            removed.push(Removed {
+                cause: state.causes.remove(&udid),
+                udid,
+                row: None,
+            });
+        }
+        let mut retired = std::mem::take(&mut state.retired_causes);
+        for (udid, receipt) in retired.drain(..) {
+            if receipt.selected(&udid, &predicate) {
+                removed.push(Removed {
+                    udid,
+                    row: None,
+                    cause: Some(receipt),
+                });
+            } else {
+                state.retired_causes.push((udid, receipt));
+            }
+        }
+        removed
     }
 
     /// Reconciliation shares the whole scan clock. Restore exact unobserved
@@ -545,13 +619,37 @@ impl Ledger {
             .map(|(udid, _)| udid.clone())
             .collect::<Vec<_>>();
         clock.check()?;
-        let removed = keys
+        let mut removed = keys
             .into_iter()
-            .filter_map(|udid| state.rows.remove(&udid).map(|row| Removed { udid, row }))
+            .filter_map(|udid| {
+                state.rows.remove(&udid).map(|row| Removed {
+                    udid,
+                    row: Some(row),
+                    cause: None,
+                })
+            })
             .collect::<Vec<_>>();
+        let causes = state
+            .causes
+            .iter()
+            .filter(|(udid, receipt)| receipt.selected(udid, &predicate))
+            .map(|(udid, _)| udid.clone())
+            .collect::<Vec<_>>();
+        for udid in causes {
+            removed.push(Removed {
+                cause: state.causes.remove(&udid),
+                udid,
+                row: None,
+            });
+        }
         if let Err(error) = clock.check() {
             for removed in removed {
-                state.rows.insert(removed.udid, removed.row);
+                if let Some(row) = removed.row {
+                    state.rows.insert(removed.udid.clone(), row);
+                }
+                if let Some(receipt) = removed.cause {
+                    state.causes.insert(removed.udid, receipt);
+                }
             }
             return Err(error);
         }
@@ -560,19 +658,27 @@ impl Ledger {
 
     pub(super) fn cancelled(rows: Vec<Removed>, reason: Reason) {
         for removed in rows {
-            emit(&removed.udid, removed.row.snapshot, reason);
+            if let Some(row) = removed.row {
+                emit(&removed.udid, row.snapshot, reason);
+            }
         }
     }
 
     pub(super) fn close(&self) {
-        let rows = {
+        let (rows, causes, retired) = {
             let mut state = self.lock();
             state.sealed = true;
-            std::mem::take(&mut state.rows)
+            (
+                std::mem::take(&mut state.rows),
+                std::mem::take(&mut state.causes),
+                std::mem::take(&mut state.retired_causes),
+            )
         };
         for (udid, row) in rows {
             emit(&udid, row.snapshot, Reason::Shutdown);
         }
+        drop(causes);
+        drop(retired);
     }
 
     #[cfg(test)]
@@ -583,7 +689,8 @@ impl Ledger {
 
 pub(super) struct Removed {
     udid: String,
-    row: Episode,
+    row: Option<Episode>,
+    cause: Option<Arc<FailureReceipt>>,
 }
 
 pub(super) struct Attempt {
@@ -591,12 +698,17 @@ pub(super) struct Attempt {
     udid: String,
     ticket: Ticket,
     version: Arc<()>,
+    identity: AttemptIdentity,
+    slot: Arc<OwnedSemaphorePermit>,
     started: Snapshot,
     displaced: Option<Episode>,
     complete: bool,
 }
 
 impl Attempt {
+    pub(super) fn source_failed(&self, original: anyhow::Error) -> anyhow::Error {
+        self.ledger.capture_source(self, original)
+    }
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.started.deadline
     }

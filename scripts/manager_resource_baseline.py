@@ -193,6 +193,11 @@ def summarize(receipt):
         "peak_rss_bytes": ("process", "peak_rss_bytes"),
         "fd_count": ("process", "fd_count"),
         "socket_fd_count": ("process", "socket_fd_count"),
+        "process_handle_count": ("process", "process_handle_count"),
+        "tcp_endpoint_count": ("process", "tcp_endpoint_count"),
+        "private_commit_bytes": ("process", "private_commit_bytes"),
+        "private_working_set_bytes": ("process", "private_working_set_bytes"),
+        "non_private_working_set_bytes": ("process", "non_private_working_set_bytes"),
         "tokio_alive_tasks": ("tokio_alive_tasks",),
         "device_coordinators": ("device_coordinators",),
         "registry_occupied": ("native_registry", "occupied"),
@@ -215,7 +220,8 @@ def summarize(receipt):
             first_half_maximum=max(values[:max(1, middle)]),
             second_half_maximum=max(values[middle:]),
             second_half_range=max(values[middle:]) - min(values[middle:]),
-            positive_last_minus_first_requires_attribution=values[-1] > values[0],
+            counter_semantics="lifetime-high-water" if name == "peak_rss_bytes" else "current-observation",
+            positive_last_minus_first_requires_attribution=name != "peak_rss_bytes" and values[-1] > values[0],
         )
     workloads = {}
     workload_groups = defaultdict(list)
@@ -235,7 +241,27 @@ def summarize(receipt):
         name = workload + ":" + str(devices)
         numeric = {key: distribution([value[key] for value in metrics])
                    for key in metrics[0] if all(type(value.get(key)) in (int, float) for value in metrics)}
-        workloads[name] = {"status": "OBSERVED", "production_path": metrics[0]["production_path"], "devices": devices, "samples": len(metrics), "metrics": numeric}
+        monitored = [value.get("resources") for value in metrics]
+        peaks = defaultdict(list)
+        changes = defaultdict(list)
+        for monitor in monitored:
+            if not isinstance(monitor, dict):
+                continue
+            require(monitor.get("samples", 0) >= 2 and monitor.get("period_ns", 0) > 0,
+                    "workload resource monitor lacks start/end or cadence")
+            for counter, observation in monitor.get("counters", {}).items():
+                require(observation["minimum"] <= observation["first"] <= observation["maximum"]
+                        and observation["minimum"] <= observation["last"] <= observation["maximum"]
+                        and observation["samples"] > 0, "invalid workload resource extrema")
+                peaks[counter].append(observation["maximum"])
+                changes[counter].append(observation["last"] - observation["first"])
+        monitoring = ({"status": "OBSERVED", "monitored_workloads": len(monitored),
+                       "peak_distributions": {key: distribution(values) for key, values in peaks.items()},
+                       "final_minus_initial_distributions": {key: distribution(values) for key, values in changes.items()},
+                       "scope": "sampled whole-process extrema, including fixture peers; lifetime peak RSS is not a per-workload peak"}
+                      if all(isinstance(value, dict) for value in monitored) else
+                      {"status": "NOT_RUN", "reason": "one or more workload intervals lack continuous resource observations"})
+        workloads[name] = {"status": "OBSERVED", "production_path": metrics[0]["production_path"], "devices": devices, "samples": len(metrics), "metrics": numeric, "resources": monitoring}
     for key in ("throughput", "file_transfer", "service_stream"):
         val = receipt.get(key)
         if isinstance(val, dict) and val.get("status") == "passed":
@@ -255,7 +281,7 @@ def summarize(receipt):
             "latency": "unpaused monotonic elapsed; HTTP includes response-body consumption",
             "cleanup": "original native joins, strict original peer EOF and registry/permit checks",
             "tokio": "Handle::current().metrics().num_alive_tasks() on dedicated 2-worker runtime",
-            "rss_fd_socket": "Linux /proc/self/status and /proc/self/fd readlink; own sampling directory included in fd count",
+            "rss_fd_socket": "receipt process.method: Linux proc/status+fd/readlink; Windows working set/private commit/own handle count/IPv4+IPv6 TCP owner-PID endpoints; handles are not Unix FDs and TCP endpoint rows are not socket handle counts",
             "active_resource_scope": "whole test process, including owned fixture TCP peers, proxy clients and authenticated HTTP connections",
             "workloads": "manager original UserspaceTunDevice ICMPv6; AfcClient with real disk fixture; SyslogStream framing/vis decoding with actual sustained window; physical TCP/AFC/DTX remain NOT_RUN",
         },
@@ -383,26 +409,43 @@ def compare_command(args):
     workload_deltas = {}
     before_wl = before_summary.get("workload_metrics", {})
     after_wl = after_summary.get("workload_metrics", {})
-    for wl in ("throughput", "file_transfer", "service_stream"):
+    budgets = {}
+    for wl, a_val in after_wl.items():
+        if wl.startswith("legacy_generic_"):
+            continue
         b_val = before_wl.get(wl)
-        a_val = after_wl.get(wl)
-        if b_val and a_val:
-            workload_deltas[wl] = {
-                "before": b_val,
-                "after": a_val,
-            }
+        require(b_val is not None and b_val["production_path"] == a_val["production_path"],
+                "comparison lacks matching production workload scope")
+        metric_deltas = {}
+        observed_limits = {}
+        for metric, prior in b_val["metrics"].items():
+            current = a_val["metrics"].get(metric)
+            require(current is not None, "workload numeric measurement differs")
+            metric_deltas[metric] = {"p50_delta": current["p50"] - prior["p50"],
+                                    "p95_delta": current["p95"] - prior["p95"]}
+            if metric.endswith("_ns") or metric == "elapsed_nanoseconds":
+                observed_limits[metric] = {"baseline_p95": prior["p95"],
+                                           "baseline_maximum": prior["maximum"],
+                                           "after_p95_exceeds_baseline_maximum": current["p95"] > prior["maximum"]}
+            elif metric.endswith("_per_sec"):
+                observed_limits[metric] = {"baseline_minimum": prior["minimum"],
+                                           "after_p50_below_baseline_minimum": current["p50"] < prior["minimum"]}
+        workload_deltas[wl] = {"before": b_val, "after": a_val, "metric_deltas": metric_deltas}
+        budgets[wl] = observed_limits
     result = {
         "schema_version": 1, "status": "observed-host-comparison",
         "before": {"run": before_run, "summary": before_summary},
         "after": {"run": after_run, "summary": after_summary},
         "latency_deltas": deltas,
         "workload_deltas": workload_deltas,
+        "host_regression_reference_limits": budgets,
+        "budget_scope": "observed baseline maxima for time and minima for rate; review threshold breaches with noise/resource attribution; no device throughput promise or invented tolerance",
         "same_reported_hardware_fields": all(
             before_run["host"].get(field) == after_run["host"].get(field)
             for field in ("platform", "kernel", "machine", "cpu_model", "logical_cpu_count", "hardware_product")
         ),
         "acceptance": "review source freeze, compiler/input/host parity and attribute growth before accepting the host subitem; performance budgets remain to be established from observations",
-        "main_l04": "DELIVERED: host measurement workloads (throughput, file transfer, service stream) implemented; physical-device test awaits external setup",
+        "main_l04": "UNDER_REVIEW: inspect workload resource coverage, growth attribution and host reference limits; physical/platform observations remain separate",
     }
     require(not args.output.exists(), "comparison output already exists")
     write_json(args.output, result)
@@ -458,6 +501,22 @@ def test_command():
         "status": "passed", "production_path": "SyslogStream-next_message", "strict_peer_eof": True,
         "stream_duration_ns": 500_000_000, "requested_duration_ns": 500_000_000, "dropped_events": 0}}]
     require("service_stream:4" in summarize(mock_receipt)["workload_metrics"], "production sample missing")
+    mock_receipt["workload_samples"][0]["metrics"]["resources"] = {
+        "samples": 5, "period_ns": 10_000_000,
+        "counters": {"rss_bytes": {"minimum": 10, "maximum": 30, "first": 10, "last": 20, "samples": 5},
+                     "process_handle_count": {"minimum": 8, "maximum": 12, "first": 8, "last": 8, "samples": 5}}}
+    monitor = summarize(mock_receipt)["workload_metrics"]["service_stream:4"]["resources"]
+    require(monitor["peak_distributions"]["rss_bytes"]["maximum"] == 30
+            and monitor["final_minus_initial_distributions"]["process_handle_count"]["maximum"] == 0,
+            "sampled resource peaks and recovery were conflated")
+    mock_receipt["workload_samples"][0]["metrics"]["resources"]["counters"]["rss_bytes"]["maximum"] = 9
+    try:
+        summarize(mock_receipt)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("invalid resource extrema were accepted")
+    mock_receipt["workload_samples"][0]["metrics"]["resources"]["counters"]["rss_bytes"]["maximum"] = 30
     mock_receipt["workload_samples"][0]["metrics"]["stream_duration_ns"] = 18_000_000
     try:
         summarize(mock_receipt)

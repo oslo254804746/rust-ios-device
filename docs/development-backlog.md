@@ -12,12 +12,12 @@ Q04及全部子项排除，有效任务分母保持30。
 
 | ID | 原范围中的剩余交付（修复后逐项复核） |
 | --- | --- |
-| Q02 | 已交付正确CLI、manifest、hash/失败/本轮清理；6个wire/restoration observer（私有MAC/altIRK、Cryptex、Display/HID、富clipboard、InstallCoordination、RSD模式关联）仍缺，应用/XCTest完整流程peer继续。 |
+| Q02 | 已交付正确CLI、manifest、hash/失败/本轮清理；Cryptex与POSIX富clipboard observer已接线。私有MAC/altIRK、Display/HID、InstallCoordination、RSD模式关联4个精确生产receipt仍缺；应用/XCTest生产peer与阶段故障已执行，本轮最终制品复验继续。 |
 | L01 | 剩余协议/服务和startup/upgrade/blocking/长流总期限、取消失效、原主/清理错误、native回收；局部SDK/restore/workflow修复不关闭全部profiles。 |
 | L02 | 全局元数据/原error payload字节归因、freshness/刷新/复用/重启/manual epoch全规则；发布预算和epoch修复为子项，完整范围待核查。 |
 | L04 | 已有生产native ICMP/AFC/Syslog、时窗/hash/前后分布和恢复证据；各负载全过程资源峰值/增长归因、其余范围与性能预算仍需补齐。真实TCP/DTX/平台工作负载不得由局部样本推导。 |
 | F01 | USB枚举、选定TCP route和普通DDI目录检查已交付；remoted共存及目标DDI签名/manifest/设备接受仍缺，不能由Unknown推导Ok。 |
-| F02 | 全阶段finally、包ID/本轮追踪和log join已交付；完整安装/配置/报告/取消阶段peer、部分产物/重跑失败历史和可组合工作流原验收仍缺。 |
+| F02 | 已交付独立启动清理owner、原DTX错误、部分产物/重跑历史及生产CLI阶段故障peer；受限crash收集、完整现代native/platform工作流与原验收继续，不能仅据legacy peer关闭。 |
 | F04 | Runtime context销毁接线、Page/iframe、可信Input/截图、Fetch/下载、Memory/Performance真实映射和pinned实际客户端。 |
 | F05 | PNG/Web/VNC共享源、输入/文本剪贴板owner和保护；原HEVC媒体解码、方向、有证据图像双向剪贴板、预算/退出及adapter流程。 |
 | F06 | 有机型/固件/版本证据的预检和完整Update：recovery ramdisk、USB重举、nonce/TSS/IMG4、ASR/FDR/data-port传输/失败/清理；restored传输子项和拒绝不算完整执行器。 |

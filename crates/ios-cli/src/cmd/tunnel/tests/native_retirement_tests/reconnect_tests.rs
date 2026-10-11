@@ -230,10 +230,22 @@ async fn reconnect_native_ready_poll_crossing_total_cannot_publish_or_replace_or
             Fate::LateSuccess => assert!(error.is::<tokio::time::error::Elapsed>()),
             Fate::LateFailure => {
                 assert_eq!(
-                    error.downcast_ref::<io::Error>().unwrap().kind(),
+                    error
+                        .chain()
+                        .find_map(|cause| cause.downcast_ref::<io::Error>())
+                        .unwrap()
+                        .kind(),
                     io::ErrorKind::BrokenPipe
                 );
                 assert_eq!(budget.last_class, Some(ios_core::ErrorClass::Disconnected));
+                let receipt = error
+                    .downcast_ref::<reconnect::SourceFailure>()
+                    .unwrap()
+                    .receipt();
+                assert_eq!(
+                    receipt.latest().downcast_ref::<io::Error>().unwrap().kind(),
+                    io::ErrorKind::BrokenPipe
+                );
             }
             _ => unreachable!(),
         }

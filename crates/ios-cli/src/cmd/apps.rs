@@ -164,25 +164,48 @@ enum AppsSub {
 }
 
 impl AppsCmd {
+    #[cfg(test)]
+    pub(crate) fn connected_async_state_bytes() -> usize {
+        fn measure<F>(
+            _: impl FnOnce(AppsSub, ios_core::ConnectedDevice, Option<u64>, String, bool) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+        measure(Self::run_connected)
+    }
+
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for apps commands"))?;
 
         let (device, ios_major) = if apps_subcommand_requires_version_probe(&self.sub) {
-            let (device, version) = connect_by_ios_major(&udid, |major| {
+            let (device, version) = Box::pin(connect_by_ios_major(&udid, |major| {
                 apps_subcommand_prefers_tunnel(&self.sub, major)
-            })
+            }))
             .await
             .context("failed to connect device for apps command")?;
             (device, Some(version.major))
         } else {
             (
-                ios_core::connect(&udid, userspace_options(true)).await?,
+                Box::pin(ios_core::connect(&udid, userspace_options(true))).await?,
                 None,
             )
         };
+        // Keep connection negotiation and the command's many service variants
+        // in separate heap-backed async states. Constructing the combined
+        // state exceeded the Windows main-thread stack in debug builds.
+        Box::pin(Self::run_connected(self.sub, device, ios_major, udid, json)).await
+    }
+
+    async fn run_connected(
+        sub: AppsSub,
+        device: ios_core::ConnectedDevice,
+        ios_major: Option<u64>,
+        udid: String,
+        json: bool,
+    ) -> Result<()> {
         let skip_tunnel = device.tunnel_handle().is_none();
 
-        match self.sub {
+        match sub {
             AppsSub::List {
                 app_type,
                 coredevice,

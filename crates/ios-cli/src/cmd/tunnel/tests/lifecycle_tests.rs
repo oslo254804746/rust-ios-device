@@ -16,7 +16,8 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     let source = FakeSource::new();
     source.script(A, [Behavior::Success, Behavior::Success]);
     source.script(B, [Behavior::Success, Behavior::Success]);
-    let charged = std::mem::size_of::<ManagedDevice>() + A.len();
+    let charged =
+        std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + A.len();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
     start(state.clone(), A).await.unwrap();
@@ -43,7 +44,9 @@ mod backoff_tests;
 mod bookkeeping_tests;
 mod discovery_intent_tests;
 mod discovery_tests;
+mod failure_cause_tests;
 mod failure_commit_tests;
+mod freshness_tests;
 mod identity_tests;
 mod intent_tests;
 mod liveness_tests;

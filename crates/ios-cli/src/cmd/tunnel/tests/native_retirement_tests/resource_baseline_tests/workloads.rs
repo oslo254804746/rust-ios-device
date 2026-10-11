@@ -3,6 +3,69 @@ use super::*;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Poll the same pinned operation throughout sampling. In particular, a timer
+/// never drops/recreates a partly read SyslogStream message or native frame.
+pub(super) async fn sampled_workload(
+    operation: impl std::future::Future<Output = Result<serde_json::Value>>,
+    state: &TunnelAgentState,
+) -> Result<serde_json::Value> {
+    const PERIOD: Duration = Duration::from_millis(10);
+    let start = MeasureInstant::now();
+    let observe = || {
+        let mut sample = proc_sample();
+        sample["tokio_alive_tasks"] = json!(baseline());
+        sample["native_occupied"] = json!(state.inner.native.snapshot().occupied());
+        sample
+    };
+    let initial = observe();
+    let mut counters = std::collections::BTreeMap::<String, (u64, u64, u64, u64, usize)>::new();
+    let mut count = 0usize;
+    let mut prior = start.elapsed().as_nanos();
+    let mut maximum_gap = 0;
+    let mut record = |sample: &serde_json::Value, now: u128| {
+        count += 1;
+        maximum_gap = maximum_gap.max(now.saturating_sub(prior));
+        prior = now;
+        if let Some(values) = sample.as_object() {
+            for (name, value) in values {
+                if let Some(value) = value.as_u64() {
+                    let entry = counters
+                        .entry(name.clone())
+                        .or_insert((value, value, value, value, 0));
+                    entry.0 = entry.0.min(value);
+                    entry.1 = entry.1.max(value);
+                    entry.3 = value;
+                    entry.4 += 1;
+                }
+            }
+        }
+    };
+    record(&initial, start.elapsed().as_nanos());
+    let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + PERIOD, PERIOD);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(operation);
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            _ = timer.tick() => record(&observe(), start.elapsed().as_nanos()),
+        }
+    };
+    let final_sample = observe();
+    record(&final_sample, start.elapsed().as_nanos());
+    let counters: serde_json::Map<_, _> = counters.into_iter().map(|(name, (minimum, maximum, first, last, samples))| {
+        (name, json!({"minimum": minimum, "maximum": maximum, "first": first, "last": last, "samples": samples}))
+    }).collect();
+    let mut metrics = result?;
+    metrics["resources"] = json!({
+        "method": "one-owned-pinned-workload-future-concurrent-monotonic-sampler-no-detached-task",
+        "period_ns": PERIOD.as_nanos(), "maximum_observed_gap_ns": maximum_gap,
+        "elapsed_ns": start.elapsed().as_nanos(), "samples": count,
+        "process_method": initial["method"], "counter_scope": initial["counter_scope"], "counters": counters,
+        "peak_scope": "sampled process counters; OS peak_rss_bytes is lifetime high water; fixture and manager share the process",
+    });
+    Ok(metrics)
+}
+
 fn checksum(parts: &[&[u8]]) -> u16 {
     let mut sum = 0u32;
     for part in parts {
@@ -301,7 +364,6 @@ pub(super) async fn measure_file_transfer_workload(
 
 pub(super) async fn measure_service_stream_workload(
     duration: Duration,
-    state: &TunnelAgentState,
 ) -> Result<serde_json::Value> {
     let (client, mut peer) = tcp_pair().await?;
     let start = MeasureInstant::now();
@@ -325,25 +387,23 @@ pub(super) async fn measure_service_stream_workload(
     let consumer = async {
         let mut stream = ios_core::syslog::SyslogStream::new(client);
         let mut events = 0;
-        let mut resources = Vec::new();
-        let mut sampler = tokio::time::interval(Duration::from_millis(25));
         loop {
-            tokio::select! {
-                _ = sampler.tick() => resources.push(json!({"elapsed_nanoseconds": start.elapsed().as_nanos(), "process": proc_sample(), "tokio_alive_tasks": baseline(), "native_occupied": state.inner.native.snapshot().occupied()})),
-                result = stream.next_message() => match result {
-                    Ok(message) => {
-                        anyhow::ensure!(message == format!("l04-syslog-{events:010}é"), "production syslog decoding/sequence differs");
-                        events += 1;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-                    Err(error) => return Err(error.into()),
+            match stream.next_message().await {
+                Ok(message) => {
+                    anyhow::ensure!(
+                        message == format!("l04-syslog-{events:010}é"),
+                        "production syslog decoding/sequence differs"
+                    );
+                    events += 1;
                 }
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(error.into()),
             }
         }
         drop(stream);
-        Ok::<_, anyhow::Error>((events, resources))
+        Ok::<_, anyhow::Error>(events)
     };
-    let (sent, (received, resources)) = tokio::time::timeout(duration + CLEANUP, async {
+    let (sent, received) = tokio::time::timeout(duration + CLEANUP, async {
         tokio::try_join!(producer, consumer)
     })
     .await??;
@@ -356,6 +416,6 @@ pub(super) async fn measure_service_stream_workload(
         json!({"status": "passed", "production_path": "SyslogStream-next_message-NUL-framing-BSD-vis-decode",
         "requested_duration_ns": duration.as_nanos(), "stream_duration_ns": elapsed.as_nanos(), "events_streamed": received,
         "events_per_second": received as f64 / elapsed.as_secs_f64(), "dropped_events": 0,
-        "strict_peer_eof": true, "resource_samples": resources}),
+        "strict_peer_eof": true}),
     )
 }
