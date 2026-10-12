@@ -25,7 +25,7 @@ struct Cli {
         long,
         env = "IOS_UDID",
         hide_env_values = true,
-        help = "Device UDID; defaults to the first connected device when omitted"
+        help = "Device UDID; finite test workflows and exact observers require an explicit selection"
     )]
     udid: Option<String>,
     #[arg(long, help = "Disable JSON output, use table format")]
@@ -212,7 +212,7 @@ fn dispatch_command(command: Commands, udid: Option<String>, no_json: bool) -> C
         Commands::Debugserver(c) => box_command(move || c.run(udid)),
         Commands::Devicestate(c) => box_command(move || c.run(udid)),
         Commands::Diagnostics(c) => box_command(move || c.run(udid, !no_json)),
-        Commands::Discover(c) => box_command(move || c.run(!no_json)),
+        Commands::Discover(c) => box_command(move || c.run_with_target(udid, !no_json)),
         Commands::Doctor(c) => box_command(move || c.run(udid, !no_json)),
         Commands::Diskspace(c) => box_command(move || c.run(udid, !no_json)),
         Commands::Erase(c) => box_command(move || c.run(udid, !no_json)),
@@ -259,12 +259,16 @@ fn command_needs_default_udid(command: &Commands) -> bool {
         }
         // Discovery participates in these commands' setup budget and signal.
         Commands::Notify(_) | Commands::Companion(_) => false,
+        Commands::Runtest(_) | Commands::Runxctest(_) | Commands::Runwda(_) => false,
         Commands::Pair(command) => command.needs_default_udid(),
         Commands::Prepare(command) => command.needs_default_udid(),
         Commands::Wda(command) => command.needs_default_udid(),
         Commands::Tunnel(command) => command.needs_default_udid(),
         Commands::Backup(command) => command.needs_default_udid(),
         Commands::Webinspector(command) => command.needs_default_udid(),
+        Commands::Rsd(command) => command.needs_default_udid(),
+        Commands::Apps(command) => command.needs_default_udid(),
+        Commands::Hid(command) => command.needs_default_udid(),
         _ => true,
     }
 }
@@ -913,6 +917,50 @@ mod tests {
         let cli = Cli::try_parse_from(["ios", "info"]).expect("info command should parse");
 
         assert!(command_needs_default_udid(&cli.command));
+    }
+
+    #[tokio::test]
+    async fn exact_observers_do_not_implicitly_discover_a_default_device() {
+        for arguments in [
+            vec![
+                "ios",
+                "apps",
+                "install-record",
+                "com.example.App",
+                "--observe-zero-budget-recovery",
+                "--rsd-address",
+                "[::1]:12345",
+            ],
+            vec![
+                "ios",
+                "hid",
+                "--confirm",
+                "observe-stop",
+                "--expected-status-sha256",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "--confirm-stop-all",
+            ],
+            vec!["ios", "runtest", "fixture.xctestrun"],
+            vec![
+                "ios",
+                "runxctest",
+                "--test-runner-bundle-id",
+                "com.example.Runner",
+                "--xctest-config",
+                "Fixture.xctest",
+                "--xctest",
+            ],
+            vec!["ios", "runwda", "com.example.Runner"],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            assert!(!command_needs_default_udid(&cli.command));
+            assert!(resolve_cli_udid(None, &cli.command)
+                .await
+                .unwrap()
+                .is_none());
+        }
+        let legacy = Cli::try_parse_from(["ios", "apps", "list"]).unwrap();
+        assert!(command_needs_default_udid(&legacy.command));
     }
 
     #[test]

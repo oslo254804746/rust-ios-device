@@ -12,7 +12,7 @@ independent PyCryptodome vector (`password`, challenge bytes 0..15 ->
 token plus the legacy RFB password; HTTP checks exact UDID/listener-port scope.
 Principal revision/expiry is retained through streams and device requests.
 The production entry points start a shared bounded PNG decoder/producer and
-an acknowledged HID/text pasteboard worker, own all task joins, and preserve
+a HID/text pasteboard worker that reports original operation completion, own all task joins, and preserve
 primary/cleanup errors. Display's original drain/RTCP tasks are aborted and
 joined by `MediaStreamSession::stop` before it returns.
 

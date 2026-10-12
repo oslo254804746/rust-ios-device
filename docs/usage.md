@@ -203,6 +203,7 @@ ios -u <UDID> runtest ./Build/Products/Example.xctestrun --configuration UITests
 ios -u <UDID> runtest ./Build/Products/Example.xctestrun --wait --junit-output ./test-results.xml
 ios -u <UDID> runxctest --test-runner-bundle-id com.example.Runner --xctest-config ExampleTests.xctest --bundle-id com.example.App --test LoginTests/testHappyPath --wait --junit-output ./test-results.xml
 ios -u <UDID> runwda --help
+ios -u <UDID> runwda com.facebook.WebDriverAgentRunner.xctrunner --host-port 18100 --once
 ios wda status --base-url http://127.0.0.1:8100
 ios -u <UDID> wda --device-port 8100 status
 ios -u <UDID> wda --device-port 8100 session --bundle-id com.example.Aut
@@ -242,6 +243,14 @@ Service Discovery, iOS 14-16 uses the secure lockdown testmanager service, and
 older versions use the legacy lockdown service. `wda --device-port` talks to a
 WDA listener directly through usbmux, so it does not require a local `forward`
 process when the runner is already listening on the device.
+
+`runwda` shares one startup deadline across metadata, runner startup and the
+device port probe. Readiness establishes that the device TCP port accepts a
+connection. `--once` stops after one forwarded connection ends, submits cleanup
+for the original runner PID, closes its services and waits for owned tasks.
+Without `--once`, forwarding continues until Ctrl-C. Physical WDA operation
+remains unverified; localhost acceptance is recorded in the
+[WDA repair evidence](validation/wda-continuation-2026-10-12.md).
 
 `--junit-output` requires `--wait` and writes the complete result event summary
 as standard JUnit XML using an atomic same-directory temporary file and rename.

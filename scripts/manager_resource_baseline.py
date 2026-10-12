@@ -363,7 +363,8 @@ def run_command(args):
     elif args.build_mode == "release":
         require(receipt["rust_debug_assertions"] is False, "declared release mode conflicts with executable")
     print(json.dumps({"status": "passed-host-subitem", "output": str(args.output.resolve()),
-                      "physical_devices": "NOT_RUN", "throughput": "NOT_RUN"}))
+                      "physical_devices": "NOT_RUN", "workload_selection": receipt["workload_selection"],
+                      "recorded_workloads": len(receipt["workload_samples"])}))
 
 
 def compare_command(args):

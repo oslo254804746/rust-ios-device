@@ -119,12 +119,14 @@ class CliAfcPeer:
                 elif message == "Connect":
                     if request.get("DeviceID") != 1:
                         raise ValueError("fixture-connect-target")
-                    reply = {"MessageType": "Result", "Number": 0}
+                    reply = {"MessageType": "Result", "Number": self.connect_result(socket.ntohs(request["PortNumber"]))}
                 else:
                     raise ValueError("fixture-unexpected-mux-message")
                 data = plistlib.dumps(reply)
                 stream.sendall(struct.pack("<IIII", len(data) + 16, 1, 8, tag) + data)
                 if message == "Connect":
+                    if reply["Number"] != 0:
+                        continue
                     port = socket.ntohs(request["PortNumber"])
                     if port == 62078:
                         self.lockdown(stream)
@@ -140,6 +142,9 @@ class CliAfcPeer:
         finally:
             stream.close()
 
+    def connect_result(self, port):
+        return 0
+
     def lockdown(self, stream):
         while True:
             request = recv_plist(stream)
@@ -152,9 +157,7 @@ class CliAfcPeer:
                 values = {"ProductVersion": "16.0", "UniqueDeviceID": UDID, "ProductType": "synthetic-matrix-device"}
                 reply = {"Value": values.get(request["Key"], "") if "Key" in request else values}
             elif operation == "StartService":
-                if request.get("Service") not in self.services:
-                    raise ValueError("fixture-service-scope")
-                reply = {"Port": self.services[request["Service"]], "EnableServiceSSL": False}
+                reply = self.start_service_reply(request.get("Service"))
             elif operation == "StopSession":
                 reply = {}
             else:
@@ -163,6 +166,11 @@ class CliAfcPeer:
             if operation == "StartSession":
                 stream = self.tls.wrap_socket(stream, server_side=True)
                 self.connections.append(stream)
+
+    def start_service_reply(self, service):
+        if service not in self.services:
+            raise ValueError("fixture-service-scope")
+        return {"Port": self.services[service], "EnableServiceSSL": False}
 
     def device_service(self, port, stream):
         if port == 62080:

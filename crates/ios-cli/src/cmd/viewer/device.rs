@@ -175,7 +175,8 @@ impl DeviceInput {
                     (false, false) => return Ok(()),
                 };
                 self.universal().await?;
-                // Retain a potentially sent down/move until its release is acknowledged.
+                // Retain a potentially sent down/move until the release report
+                // is flushed. This one-way HID protocol has no device ACK.
                 if *contact {
                     self.contact = Some(coordinate);
                 }

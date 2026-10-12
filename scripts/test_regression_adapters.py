@@ -78,7 +78,7 @@ class FixtureAdmissionTests(unittest.TestCase):
         self.assertEqual(unknown.read_bytes(), b"preserve")
 
     def test_complex_cases_have_no_unrelated_query_fallback(self):
-        for case_id in adapters.UNSUPPORTED:
+        for case_id in ("private-mac-altirk", "modern-rsd-wifi", "display-hid-stop", "installcoordination-wire", "rich-clipboard-watch", "cryptex-install"):
             with self.assertRaisesRegex(ValueError, "operation-sequence"):
                 adapters.query_command(case_id, self.context)
 

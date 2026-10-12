@@ -5,6 +5,7 @@ decodes the transmitted IPA and DTX arguments, rather than returning CLI-shaped
 JSON. It supplies no hardware acceptance or Apple signature evidence.
 """
 import binascii
+import json
 import plistlib
 import struct
 
@@ -116,10 +117,14 @@ class CliWorkflowPeer(CliAfcPeer):
         "com.apple.instruments.remoteserver.DVTSecureSocketProxy": 62083,
         "com.apple.testmanagerd.lockdown.secure": 62084,
         "com.apple.syslog_relay": 62085,
+        "com.apple.crashreportmover": 62086,
+        "com.apple.crashreportcopymobile": 62087,
     })
 
     def __init__(self, directory, *, preexisting=False, install_error=False, test_error=False,
-                 fault=None, runner_preexisting=True, first_test_fails=False):
+                 fault=None, runner_preexisting=True, first_test_fails=False, crash_fault=None):
+        self.crash_fault, self.crash_copies, self.crash_movers = crash_fault, 0, 0
+        self.crash_events = []
         self.apps = {RUNNER_ID: self.app_record(RUNNER_ID)} if runner_preexisting else {}
         if preexisting:
             self.apps[APP_ID] = self.app_record(APP_ID)
@@ -157,7 +162,96 @@ class CliWorkflowPeer(CliAfcPeer):
             stream.sendall(b"Oct 11 12:00:00 synthetic Synthetic[1] <Notice>: matrix-log\0")
             exact(stream, 1)  # Original owner must close; no locally manufactured EOF.
             raise ValueError("fixture-unexpected-syslog-write")
+        if port == 62086:
+            self.crash_movers += 1
+            self.crash_events.append(("mover", self.crash_movers))
+            stream.sendall(b"pong" if self.crash_fault == "mover-before" and self.crash_movers == 1 else b"ping")
+            exact(stream, 1)
+            raise ValueError("fixture-unexpected-crash-mover-write")
+        if port == 62087:
+            self.crash_copies += 1
+            return self.crash_afc(stream, self.crash_copies)
         return super().device_service(port, stream)
+
+    @staticmethod
+    def crash_report(bundle_id, *, padding=0):
+        body = {"procName": "SyntheticRunner", "pid": PID, "bundleInfo": {}, "threads": [], "usedImages": []}
+        if bundle_id is not None:
+            body["bundleInfo"]["CFBundleIdentifier"] = bundle_id
+        if padding:
+            body["diagnosticPadding"] = "p" * padding
+        return (json.dumps({"bug_type": "309"}) + "\n" + json.dumps(body)).encode()
+
+    def crash_afc(self, stream, phase):
+        reports = {"existing.ips": self.crash_report(RUNNER_ID)}
+        if phase > 1:
+            reports.update({"matched.ips": self.crash_report(APP_ID),
+                            "unrelated.ips": self.crash_report("com.synthetic.Other"),
+                            "unknown.ips": self.crash_report(None)})
+            # Same path recreated with another report is not a new path.
+            reports["existing.ips"] = self.crash_report(APP_ID)
+            if self.crash_fault == "count":
+                reports.update({f"candidate-{index}.ips": self.crash_report(APP_ID) for index in range(65)})
+            if self.crash_fault == "partial-read":
+                reports["matched.ips"] = self.crash_report(APP_ID, padding=80000)
+            if self.crash_fault in ("growth", "growth-close"):
+                reports["matched.ips"] = self.crash_report(APP_ID, padding=4 * 1024 * 1024)
+        opened, offset, handle = None, 0, 17
+        while True:
+            magic, entire, this, packet, opcode = struct.unpack("<QQQQQ", exact(stream, 40))
+            if magic != 0x4141504C36414643 or not 40 <= this <= entire <= 131072:
+                raise ValueError("fixture-crash-afc-framing")
+            body = exact(stream, entire - 40)
+            hp = body[:this - 40]
+            rh, rd, ro = b"", b"", 2
+            self.crash_events.append(("afc", phase, opcode))
+            if opcode == 3:
+                if hp != b".\0":
+                    raise ValueError("fixture-crash-directory-scope")
+                if self.crash_fault == ("list-before" if phase == 1 else "list-after"):
+                    rh, ro = struct.pack("<Q", 5), 1
+                else:
+                    names = list(reports)
+                    if phase > 1 and self.crash_fault == "unsafe":
+                        names.append("../escape.ips")
+                    rd = ("\0".join([".", ".."] + names) + "\0").encode()
+            elif opcode == 10:
+                path = hp.removesuffix(b"\0").decode()
+                if path not in reports:
+                    raise ValueError("fixture-crash-stat-scope")
+                size = len(reports[path])
+                if phase > 1 and path == "matched.ips":
+                    if self.crash_fault == "oversize":
+                        size = 4 * 1024 * 1024 + 1
+                    if self.crash_fault in ("growth", "growth-close"):
+                        size = 1
+                rd = b"st_ifmt\0S_IFREG\0st_size\0" + str(size).encode() + b"\0st_mtime\0" + b"1\0"
+            elif opcode == 13:
+                mode = struct.unpack("<Q", hp[:8])[0]
+                path = hp[8:].removesuffix(b"\0").decode()
+                if mode != 1 or path not in reports or opened is not None or path == "existing.ips":
+                    raise ValueError("fixture-crash-open-scope")
+                opened, offset = path, 0
+                self.crash_events.append(("open", phase, path))
+                rh, ro = struct.pack("<Q", handle), 14
+            elif opcode == 15:
+                fd, amount = struct.unpack("<QQ", hp)
+                if fd != handle or opened is None or not 1 <= amount <= 65536:
+                    raise ValueError("fixture-crash-read-scope")
+                if opened == "matched.ips" and (self.crash_fault == "read" or self.crash_fault == "partial-read" and offset > 0):
+                    rh, ro = struct.pack("<Q", 5), 1
+                else:
+                    rd = reports[opened][offset:offset + amount]
+                    offset += len(rd)
+            elif opcode == 20:
+                if hp != struct.pack("<Q", handle) or opened is None:
+                    raise ValueError("fixture-crash-close-scope")
+                self.crash_events.append(("close", phase, opened))
+                opened = None
+                rh, ro = struct.pack("<Q", 5 if self.crash_fault in ("close", "growth-close") else 0), 1
+            else:
+                raise ValueError("fixture-crash-readonly-operation")
+            stream.sendall(struct.pack("<QQQQQ", magic, 40 + len(rh) + len(rd), 40 + len(rh), packet, ro) + rh + rd)
 
     def installation(self, stream):
         while True:

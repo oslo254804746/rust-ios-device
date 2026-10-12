@@ -28,6 +28,60 @@ const ENDPOINT: &str = "[fd00::da7a]:58783";
 const BUDGET: Duration = Duration::from_secs(3);
 const FIXTURE_BOUND: Duration = Duration::from_secs(5);
 
+#[tokio::test]
+async fn selected_existing_route_developer_probe_uses_actual_canonical_or_shim_dtx_and_original_socket_eof(
+) {
+    use ios_core::dtx::{encode_dtx, read_dtx_frame, DtxPayload};
+    for (shim, malformed) in [(false, false), (true, false), (false, true)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request = request(&listener, None);
+        let (check, ()) = tokio::time::timeout(FIXTURE_BOUND, async { tokio::join!(
+            developer_probe(&request, UDID, BUDGET),
+            async {
+                let mut discovery = bootstrap(&listener).await;
+                let mut catalog = dictionary();
+                services(&mut catalog).clear();
+                services(&mut catalog).insert(format!("{}{}", ios_core::instruments::SERVICE_IOS17, if shim { ".shim.remote" } else { "" }), service(Some(23456), Some(vec![])));
+                reply(&mut discovery, catalog).await;
+                eof(&mut discovery).await;
+                let (mut peer, _) = listener.accept().await.unwrap();
+                let mut prelude = [0; 20];
+                peer.read_exact(&mut prelude).await.unwrap();
+                let endpoint: SocketAddrV6 = ENDPOINT.parse().unwrap();
+                assert_eq!(&prelude[..16], &endpoint.ip().octets());
+                assert_eq!(u32::from_le_bytes(prelude[16..].try_into().unwrap()), 23456);
+                if shim {
+                    let checkin: plist::Dictionary = ios_core::recv_lockdown(&mut peer).await.unwrap();
+                    assert_eq!(checkin["Request"].as_string(), Some("RSDCheckin"));
+                    for operation in ["RSDCheckin", "StartService"] {
+                        ios_core::send_lockdown(&mut peer, &plist::Dictionary::from_iter([("Request".to_string(), plist::Value::String(operation.into()))])).await.unwrap();
+                    }
+                }
+                let channel = read_dtx_frame(&mut peer).await.unwrap();
+                assert!(matches!(channel.payload, DtxPayload::MethodInvocation { ref selector, .. } if selector == "_requestChannelWithCode:identifier:"));
+                peer.write_all(&encode_dtx(channel.identifier, 1, channel.channel_code, false, 3, &ios_core::archive_null(), &[])).await.unwrap();
+                let query = read_dtx_frame(&mut peer).await.unwrap();
+                assert!(matches!(query.payload, DtxPayload::MethodInvocation { ref selector, ref args } if selector == "runningProcesses" && args.is_empty()));
+                let payload = if malformed { ios_core::archive_string("owned-private-malformed-result") } else { ios_core::archive_array(vec![]) };
+                peer.write_all(&encode_dtx(query.identifier, 1, query.channel_code, false, 3, &payload, &[])).await.unwrap();
+                assert_eq!(peer.read(&mut [0]).await.unwrap(), 0, "the original service socket was not shut down");
+            }
+        ) }).await.unwrap();
+        assert_eq!(
+            check.status,
+            if malformed {
+                Status::Failed
+            } else {
+                Status::Ok
+            }
+        );
+        assert_eq!(check.value, if malformed { None } else { Some(true) });
+        assert!(!serde_json::to_string(&check)
+            .unwrap()
+            .contains("owned-private"));
+    }
+}
+
 #[derive(Parser)]
 struct Arguments {
     #[command(flatten)]

@@ -46,7 +46,7 @@ pub struct ViewerCmd {
 }
 #[derive(Clone, Copy, Subcommand)]
 pub enum ViewerSub {
-    /// Serve PNG screenshots and acknowledged HID/text clipboard requests.
+    /// Serve PNG screenshots, flushed HID reports and text clipboard requests.
     Web,
     /// Serve the same decoded screenshots through RFB 3.8.
     Vnc,

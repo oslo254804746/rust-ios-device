@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-10-11",
+  "updated": "2026-10-12",
   "policy": "Implementation and evidence are independent. Aggregate host tests do not certify a capability workflow. Stable requires representative real-device PASS plus explicit compatibility scope.",
   "evidence": [
     {
@@ -9,13 +9,19 @@
       "host_os": "Windows x86_64/MSVC",
       "device": null,
       "ios": null,
-      "transport": ["actual owned localhost RFB/HTTP", "original UserspaceTunDevice TCP workers", "generated PNG"],
-      "required_state": ["Private fixture policy and exact synthetic UDID/port; primary-agent serial frozen-source validation"],
+      "transport": [
+        "actual owned localhost RFB/HTTP",
+        "original UserspaceTunDevice TCP workers",
+        "generated PNG"
+      ],
+      "required_state": [
+        "Private fixture policy and exact synthetic UDID/port; primary-agent serial frozen-source validation"
+      ],
       "tested_commit": "88d8f707f6f23bc72b9c0aa80230ad0739752f03",
       "date": "2026-10-11",
       "location": "docs/validation/review-fixes-2026-10-10.md",
       "result": "PASS",
-      "scope": "12 Viewer tests, scoped/credential rejection, independent DES vector, actual RFB handshake/cleanup, PNG pixels and limits, device acknowledgement and text results; one original-native scope close/strict TCP EOF/join test.",
+      "scope": "12 Viewer tests, scoped/credential rejection, independent DES vector, actual RFB handshake/cleanup, PNG pixels and limits, original worker completion and text results; one original-native scope close/strict TCP EOF/join test. Production HID uses one-way report flush; these tests do not prove a device ACK.",
       "limitations": "No physical screenshot/HID/pasteboard, actual standard VNC client, desktop clipboard, HEVC, image clipboard, orientation or whole-process 64MiB acceptance. Full F05 is incomplete."
     },
     {
@@ -3313,17 +3319,20 @@
       "protocol_paths": {
         "service_families": [],
         "declared_selectors": [],
-        "client_imports": [],
+        "client_imports": [
+          "ios_core::device::ExistingRsdSession"
+        ],
         "unresolved": [
           "Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."
         ]
       },
-      "implementation": "public-surface-present",
+      "implementation": "Opt-in current-directory/bootstrap observer implemented; hardware/platform compatibility remains partial.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "rsd observe requires explicit selected UDID and caller-selected existing route. It records the actual successful direct/queued/legacy/passive bootstrap and current directory, not kernel/userspace TunMode."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -3334,20 +3343,18 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "No pairing or new tunnel is created. Cleanup applies only to observer-owned sockets and cannot certify retirement of the external tunnel.",
+        "Missing identity/directory/service-port metadata remains unknown; a requested mode or old cached directory cannot supply a successful-selection receipt.",
+        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "cli:apps",
@@ -3355,9 +3362,12 @@
       "source": "crates/ios-cli/src/cmd/apps.rs",
       "protocol_paths": {
         "service_families": [
-          "apps"
+          "apps",
+          "installcoordination"
         ],
-        "declared_selectors": [],
+        "declared_selectors": [
+          "com.apple.remote.installcoordination_proxy"
+        ],
         "client_imports": [
           "ios_core::error::CoreError",
           "crate::cmd::connect",
@@ -3373,18 +3383,21 @@
           "ios_core::installcoordination::SERVICE_NAME",
           "ios_core::installcoordination::InstallCoordinationProxy",
           "ios_core::instruments::DeviceInfoClient",
-          "ios_core::apps::RunningAppProcess"
+          "ios_core::apps::RunningAppProcess",
+          "ios_core::device::ExistingRsdSession",
+          "ios_core::installcoordination::ObservedInstallRecord"
         ],
         "unresolved": [
           "Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."
         ]
       },
-      "implementation": "public-surface-present",
+      "implementation": "Opt-in install-record observer implemented; public application surface remains partial.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "install-record --observe-zero-budget-recovery requires an explicit selected UDID and existing RSD address; canonical current directory, same-client zero-to-finite query and original socket cleanup are observed."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -3395,20 +3408,18 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Wire Int64/Uint64 receipt is additive; legacy InstallRecord fields and ordinary install-record output are unchanged.",
+        "Read-only Query only; the existing external tunnel is not owned or stopped. Service record fingerprints and actual socket EOF are separate from device trust or remote cleanup.",
+        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "cli:backup",
@@ -3913,19 +3924,21 @@
         "declared_selectors": [],
         "client_imports": [
           "ios_core::discover_mdns",
-          "ios_core::browse_mobdev",
-          "ios_core::browse_remotepairing"
+          "ios_core::browse_mobdev2",
+          "ios_core::browse_remotepairing",
+          "ios_core::device::observe_paired_identity"
         ],
         "unresolved": [
           "Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."
         ]
       },
-      "implementation": "public-surface-present",
+      "implementation": "Existing-trust paired-identity observer implemented; discovery and device acceptance remain partial.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "discover paired-identity requires explicit selected UDID, bounded discovery and existing local records. Private-MAC accepted Lockdown identity and saved-altIRK advertisement authentication remain distinct mechanisms."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -3938,7 +3951,8 @@
         {
           "level": "simulated-flow",
           "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
+          "reason": "Complete paired-identity CLI/mDNS/existing-record workflow has not run. Core real TLS identity and saved-key matcher subset checks passed; see the uncommitted handoff for exact scope.",
+          "scope": "discover paired-identity requires explicit selected UDID, bounded discovery and existing local records. Private-MAC accepted Lockdown identity and saved-altIRK advertisement authentication remain distinct mechanisms."
         },
         {
           "level": "real-device",
@@ -3947,9 +3961,11 @@
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "No pairing is created and no raw MAC, altIRK, HostID or credential bytes are exported by the safe receipt.",
+        "Saved record validation/advertisement authentication does not imply an online RemotePairing pair-verify ACK; missing mechanisms stay unobserved."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "cli:doctor",
@@ -4369,7 +4385,8 @@
       "source": "crates/ios-cli/src/cmd/hid.rs",
       "protocol_paths": {
         "service_families": [
-          "hid"
+          "hid",
+          "display"
         ],
         "declared_selectors": [],
         "client_imports": [
@@ -4379,18 +4396,20 @@
           "ios_core::hid::HidError",
           "ios_core::hid::KeyboardModifier",
           "ios_core::display::SERVICE_NAME",
-          "ios_core::hid::UNIVERSAL_SERVICE_NAME"
+          "ios_core::hid::UNIVERSAL_SERVICE_NAME",
+          "crate::cmd::tunnel::NativeScope"
         ],
         "unresolved": [
           "Exact service/transport routes require operation-specific evidence; a module or CLI name is not a protocol observation."
         ]
       },
-      "implementation": "public-surface-present",
+      "implementation": "Opt-in bounded Display/HID observer implemented; remote HID acknowledgement remains unavailable.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "observe-stop requires explicit UDID, --confirm, approved current media-status SHA-256 and separate --confirm-stop-all; retains original kernel/media/HID owners through cleanup."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -4403,7 +4422,8 @@
         {
           "level": "simulated-flow",
           "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
+          "reason": "New whole kernel/UDP/physical Display-HID observer is NOT_RUN; strict-stop Core peer gates and contract-unit tests do not certify a real device workflow.",
+          "scope": "observe-stop requires explicit UDID, --confirm, approved current media-status SHA-256 and separate --confirm-stop-all; retains original kernel/media/HID owners through cleanup."
         },
         {
           "level": "real-device",
@@ -4412,9 +4432,11 @@
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Universal HID/Indigo are one-way writes. reports_flushed and local_contact_closed are local receipts, not device ACK or externally confirmed contact restoration.",
+        "Strict media stop requires an actual reply; before/after media-status equality and original task/native joins are separate facts. The legacy permissive EOF stop API is not used as strict proof."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "cli:httpproxy",
@@ -7583,12 +7605,13 @@
         ],
         "unresolved": []
       },
-      "implementation": "public-surface-present",
+      "implementation": "One-way HID reports plus additive local contact ownership accessors implemented; remote state unobserved.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "Canonical advertised HID service and media authorization; is_closed/has_active_contact describe only the local TouchSession owner."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -7601,7 +7624,8 @@
         {
           "level": "simulated-flow",
           "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
+          "reason": "New complete Display/HID observer is NOT_RUN on the current physical/kernel path; old build evidence does not cover remote input or restoration.",
+          "scope": "Canonical advertised HID service and media authorization; is_closed/has_active_contact describe only the local TouchSession owner."
         },
         {
           "level": "real-device",
@@ -7610,9 +7634,11 @@
         }
       ],
       "limitations": [
-        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence."
+        "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
+        "Successful send/flush is not a device ACK. Closing a local touch session cannot certify externally observed contact restoration.",
+        "The strict observer retains potential contact/media startup intent before a possible write, preserves failure and cleanup causes and uses original native retirement."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "service:display",
@@ -7632,12 +7658,13 @@
         ],
         "unresolved": []
       },
-      "implementation": "public-surface-present",
+      "implementation": "Encoded RTP plus additive strict stop/ownership observation implemented; decoded viewing remains partial.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "Strict stop requires an actual CoreDevice reply and original RTP/RTCP task joins. Callers must supply observed device stream tokens or explicitly authorize stopAll."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -7648,20 +7675,18 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
         }
       ],
       "limitations": [
-        "Bounded encoded RTP/access units and stop routines; decoded viewer/VNC workflow is pending."
+        "Bounded encoded RTP/access units and stop routines; decoded viewer/VNC workflow is pending.",
+        "EOF/reset/broken pipe cannot supply strict stop ACK. Legacy permissive stop remains a separate compatibility API.",
+        "Media-status equality is an observed media predicate, not remote HID contact state. Encoded RTP and host task joins do not prove HEVC decoding or physical viewer acceptance.",
+        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "service:installcoordination",
@@ -7679,12 +7704,13 @@
         ],
         "unresolved": []
       },
-      "implementation": "public-surface-present",
+      "implementation": "Read-only Query plus additive local-budget/actual-wire observation implemented; mutations unavailable.",
       "maturity": "experimental",
       "required_state": [
         "Host platform and installed service dependencies must be checked for the chosen operation.",
         "Device trust, Developer Mode, DDI, supervision and lock state are operation-specific; unknown unless probed.",
-        "No device pairing, installation or destructive operation is authorized by this catalog."
+        "No device pairing, installation or destructive operation is authorized by this catalog.",
+        "Canonical RemoteXPC service; query_with_budget/query_observed_with_budget preserve the same instance and default timeout and retain original error/connection invalidation semantics."
       ],
       "compatibility_scope": [],
       "observations": [
@@ -7695,20 +7721,18 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
         }
       ],
       "limitations": [
-        "Read-only installation-record queries; install/uninstall/stash mutations are not exposed."
+        "Read-only installation-record queries; install/uninstall/stash mutations are not exposed.",
+        "ObservedInstallRecord preserves Int64/Uint64 before u64 projection without changing InstallRecord struct literals. Negative signed values fail.",
+        "Zero-budget no-business-I/O is a typed path/peer observation, not an elapsed-time inference. Install/uninstall/stash mutations remain unimplemented.",
+        "Current uncommitted host checks are recorded in docs/validation/repair-handoff-2026-10-12.md. Evidence registration awaits a tested commit; no physical acceptance or maturity upgrade is implied."
       ],
-      "topic": "docs/usage.md"
+      "topic": "docs/validation/protocol-observers-2026-10-12.md"
     },
     {
       "id": "service:prepare",
@@ -8403,7 +8427,7 @@
         "RFB 3.8 DES authentication"
       ],
       "source": "crates/ios-cli/src/cmd/viewer/mod.rs",
-      "implementation": "Partial: shared bounded PNG decoding/HTTP/RFB producer, acknowledged HID/text pasteboard owner, scoped Principal and joined shutdown; full F05 is incomplete.",
+      "implementation": "Partial: shared bounded PNG decoding/HTTP/RFB producer, HID writer completion/text pasteboard response owner; one-way HID reports have no device ACK, scoped Principal and joined shutdown; full F05 is incomplete.",
       "maturity": "experimental",
       "required_state": [
         "Explicit UDID, existing trust/tunnel, available CoreDevice screenshot/HID/pasteboard services",

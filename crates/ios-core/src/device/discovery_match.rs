@@ -9,6 +9,10 @@ use crate::lockdown::session::start_lockdown_session;
 use crate::lockdown::LOCKDOWN_PORT;
 use std::{sync::Arc, time::Duration};
 use tokio::net::TcpStream;
+#[cfg(feature = "tunnel")]
+mod observation;
+#[cfg(feature = "tunnel")]
+pub use observation::{observe_paired_identity, PairedIdentityReceipt};
 
 const MOBDEV2_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -159,15 +163,31 @@ async fn resolve_private_mobdev2_targets_using<F, Fut>(
     services: &[BonjourService],
     records: &[LockdownDiscoveryRecord],
     targets: &mut Vec<PairedMobdev2Device>,
-    mut probe: F,
+    probe: F,
 ) where
     F: FnMut(String, LockdownDiscoveryRecord) -> Fut,
     Fut: std::future::Future<Output = Result<bool, CoreError>>,
 {
+    resolve_private_mobdev2_targets_observed(services, records, targets, probe, |_, _, _, _| {})
+        .await;
+}
+
+#[cfg(feature = "mdns")]
+async fn resolve_private_mobdev2_targets_observed<F, Fut, M>(
+    services: &[BonjourService],
+    records: &[LockdownDiscoveryRecord],
+    targets: &mut Vec<PairedMobdev2Device>,
+    mut probe: F,
+    mut matched: M,
+) where
+    F: FnMut(String, LockdownDiscoveryRecord) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, CoreError>>,
+    M: FnMut(usize, &BonjourService, &LockdownDiscoveryRecord, &str),
+{
     let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
     let mut attempts = 0;
     let mut probed = std::collections::HashSet::new();
-    for service in services.iter().take(64) {
+    for (advertisement_index, service) in services.iter().take(64).enumerate() {
         let candidates = mobdev2_pair_record_candidates(service, records);
         if candidates.is_empty() {
             continue;
@@ -201,6 +221,7 @@ async fn resolve_private_mobdev2_targets_using<F, Fut>(
                     .await,
                     Ok(Ok(true))
                 ) {
+                    matched(advertisement_index, service, candidate, host);
                     if !targets.iter().any(|target| target.udid == candidate.udid) {
                         targets.push(PairedMobdev2Device {
                             udid: candidate.udid.clone(),
@@ -223,8 +244,16 @@ async fn probe_lockdown_pair_record(
     host: &str,
     candidate: &LockdownDiscoveryRecord,
 ) -> Result<bool, CoreError> {
+    probe_lockdown_pair_record_at(host, LOCKDOWN_PORT, candidate).await
+}
+
+async fn probe_lockdown_pair_record_at(
+    host: &str,
+    port: u16,
+    candidate: &LockdownDiscoveryRecord,
+) -> Result<bool, CoreError> {
     use crate::lockdown::protocol::{GetValueRequest, GetValueResponse, StopSessionRequest};
-    let stream = TcpStream::connect((host, LOCKDOWN_PORT)).await?;
+    let stream = TcpStream::connect((host, port)).await?;
     let (session_id, mut reader, mut writer) =
         start_lockdown_session(stream, &candidate.record).await?;
     send_lockdown(

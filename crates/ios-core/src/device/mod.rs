@@ -116,8 +116,11 @@ mod connection;
 pub(crate) mod existing_rsd;
 #[cfg(feature = "tunnel")]
 pub use existing_rsd::{
-    observe_existing_rsd, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
-    ExistingRsdService, ExistingRsdServiceEvidence,
+    observe_existing_rsd, observe_existing_rsd_with_selection, ExistingRsdCleanupFailure,
+    ExistingRsdCleanupReceipt, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
+    ExistingRsdService, ExistingRsdServiceConnection, ExistingRsdServiceEvidence,
+    ExistingRsdServiceKind, ExistingRsdServiceOwner, ExistingRsdSession, RsdHandshakeMode,
+    RsdSelectionReceipt,
 };
 #[cfg(any(feature = "mdns", feature = "tunnel"))]
 pub(crate) mod error_context;
@@ -141,6 +144,8 @@ pub use connection::{
 mod discovery_match;
 #[cfg(feature = "mdns")]
 pub use discovery_match::discover_paired_mobdev2_devices;
+#[cfg(all(feature = "mdns", feature = "tunnel"))]
+pub use discovery_match::{observe_paired_identity, PairedIdentityReceipt};
 
 #[cfg(feature = "tunnel")]
 mod rsd_connect;

@@ -12,6 +12,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 
+pub(crate) mod crash;
+
 /// CLI options for the composable test workflow.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct TestWorkflowArgs {
@@ -27,6 +29,10 @@ pub struct TestWorkflowArgs {
     #[arg(long = "log-output", value_name = "LOG_PATH")]
     pub log_output: Option<PathBuf>,
 
+    /// Collect only new crash reports for the selected runner/target into an existing directory
+    #[arg(long = "crash-output", value_name = "DIRECTORY")]
+    pub crash_output: Option<PathBuf>,
+
     /// Uninstall installed application/runner packages after test completion
     #[arg(long = "uninstall-on-finish")]
     pub uninstall_on_finish: bool,
@@ -39,6 +45,9 @@ pub struct TestWorkflowArgs {
 impl TestWorkflowArgs {
     /// Preflight check for workflow arguments before touching device or starting runners.
     pub fn preflight(&self) -> Result<()> {
+        if let Some(path) = &self.crash_output {
+            crash::validate_destination(path)?;
+        }
         anyhow::ensure!(
             self.rerun_failed <= 10,
             "test workflow permits at most 10 reruns per invocation"
@@ -871,6 +880,7 @@ mod tests {
             install_app: Some(PathBuf::from("non_existent_app_xyz.ipa")),
             install_runner: None,
             log_output: None,
+            crash_output: None,
             uninstall_on_finish: false,
             rerun_failed: 0,
         };

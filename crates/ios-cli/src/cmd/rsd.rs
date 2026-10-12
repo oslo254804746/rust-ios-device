@@ -3,6 +3,7 @@ use ios_core::TunMode;
 use ios_core::{connect, ConnectOptions};
 
 const COREDEVICE_PREFIX: &str = "com.apple.coredevice.";
+mod observer;
 
 #[derive(clap::Args)]
 pub struct RsdCmd {
@@ -12,6 +13,15 @@ pub struct RsdCmd {
 
 #[derive(clap::Subcommand)]
 enum RsdSub {
+    /// Observe the current directory and actual bootstrap on an existing route
+    Observe {
+        #[arg(long)]
+        address: std::net::SocketAddrV6,
+        #[arg(long)]
+        proxy_port: Option<u16>,
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+    },
     /// List services exposed by the current RSD directory
     Services {
         #[arg(
@@ -34,8 +44,19 @@ enum RsdSub {
 }
 
 impl RsdCmd {
+    pub(crate) fn needs_default_udid(&self) -> bool {
+        !matches!(self.sub, RsdSub::Observe { .. })
+    }
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
-        let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for rsd"))?;
+        let udid = udid.ok_or_else(|| crate::output::input_decision("--udid required for rsd"))?;
+        if let RsdSub::Observe {
+            address,
+            proxy_port,
+            timeout,
+        } = self.sub
+        {
+            return observer::run(&udid, address, proxy_port, timeout, json).await;
+        }
 
         let opts = ConnectOptions {
             tun_mode: TunMode::Userspace,
@@ -48,6 +69,7 @@ impl RsdCmd {
             .ok_or_else(|| anyhow::anyhow!("RSD not available on this device/session"))?;
 
         match self.sub {
+            RsdSub::Observe { .. } => unreachable!("observer dispatched before tunnel creation"),
             RsdSub::Services {
                 all,
                 prefix,

@@ -184,7 +184,7 @@ impl Check {
                 State::PermissionDenied => "The host or an explicit lockdown response denied access to the selected device probe.",
                 State::ServiceUnavailable => "Lockdown explicitly reported that the requested service is unavailable.",
                 State::MetadataMissing => "Required local trust or response metadata was absent; no negative capability value was inferred.",
-                State::Unsupported => "The selected target requires an RSD developer-operation adapter that Doctor does not implement. Its DDI usability is unknown; no tunnel, mount or pairing was attempted.",
+                State::Unsupported => "The selected developer operation or negotiated transport has no verified adapter. Its DDI usability is unknown; no tunnel, mount or pairing was attempted.",
                 _ => "The selected device probe failed; its typed error category is reported without private response data.",
             },
             hint: match state {
@@ -257,6 +257,15 @@ pub(super) fn validate_target(udid: &str) -> Result<()> {
 }
 
 pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) -> Assessment {
+    inspect_base(source, udid, timeout, false).await
+}
+
+async fn inspect_base(
+    source: &dyn Source,
+    udid: &str,
+    timeout: Duration,
+    existing_rsd: bool,
+) -> Assessment {
     let mut checks = Vec::with_capacity(5);
     for probe in [Probe::Session, Probe::DeveloperMode, Probe::DdiSignatures] {
         checks.push(probe_once(source, udid, probe, timeout).await);
@@ -268,7 +277,15 @@ pub(super) async fn inspect(source: &dyn Source, udid: &str, timeout: Duration) 
         "USB/network enumeration and lockdown probes do not establish an RSD route or remoted coexistence.",
         "Provide platform and existing tunnel/RSD route evidence before claiming route readiness."));
     checks.push(probe_once(source, udid, Probe::DdiMounted, timeout).await);
-    checks.push(probe_once(source, udid, Probe::DdiUsable, timeout).await);
+    checks.push(if existing_rsd {
+        Check::not_probed(
+            "ddi_usable",
+            "The explicit existing RSD developer operation is assessed separately.",
+            "No new tunnel or pairing is started.",
+        )
+    } else {
+        probe_once(source, udid, Probe::DdiUsable, timeout).await
+    });
     Assessment {
         target: ios_core::redaction::diagnostic_id(udid).to_string(),
         transport: "usbmux_existing_trust",
@@ -284,10 +301,11 @@ pub(super) async fn inspect_with_rsd(
 ) -> Assessment {
     // Preserve the three existing-trust checks and their order. A failure in
     // that transport does not skip the independently selected existing route.
-    let mut assessment = inspect(source, udid, timeout).await;
+    let mut assessment = inspect_base(source, udid, timeout, true).await;
     let [services, route] = rsd::inspect(request, udid, timeout).await;
     assessment.checks[3] = services;
     assessment.checks[4] = route;
+    assessment.checks[6] = rsd::developer_probe(request, udid, timeout).await;
     assessment
 }
 
@@ -668,7 +686,17 @@ async fn probe_value(
     let stream = clock.guard(stream);
     let stream = if use_ssl {
         clock.check()?;
-        Box::new(wrap_service_tls(stream, &pair_record).await?) as ServiceStream
+        let tls = wrap_service_tls(stream, &pair_record).await?;
+        if service_name == ios_core::instruments::SERVICE_LEGACY {
+            if tls.get_ref().1.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_2) {
+                return Err(ios_core::CoreError::Unsupported(
+                    "legacy handshake-only developer probe supports negotiated TLS 1.2; the TLS 1.3 raw transition is unverified".into(),
+                ).into());
+            }
+            Box::new(ios_core::strip_service_tls(tls)?) as ServiceStream
+        } else {
+            Box::new(tls) as ServiceStream
+        }
     } else {
         stream
     };

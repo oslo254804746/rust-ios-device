@@ -1,8 +1,12 @@
+use crate::cmd::tunnel::{NativeConnection, NativeScope};
 use anyhow::{Context, Result};
 use ios_core::device::ServiceStream;
 use ios_core::MuxClient;
-use tokio::io::{self, AsyncWriteExt};
+use std::{sync::Arc, time::Duration};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+
+mod lifecycle;
 
 #[derive(clap::Args)]
 pub struct ForwardCmd {
@@ -41,10 +45,16 @@ struct TunnelProxyTarget {
     proxy_port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ForwardConnector {
     device_id: u32,
     tunnel_proxy: Option<TunnelProxyTarget>,
+    _native: Option<Arc<NativeConnection>>,
+    setup_failure: Option<Arc<anyhow::Error>>,
+    #[cfg(test)]
+    direct_test_target: Option<std::net::SocketAddr>,
+    #[cfg(test)]
+    fallback_test_target: Option<std::net::SocketAddr>,
 }
 
 pub async fn run_port_forward(
@@ -54,90 +64,142 @@ pub async fn run_port_forward(
     host: String,
     once: bool,
 ) -> Result<()> {
+    let scope = NativeScope::new();
+    let primary = Box::pin(run_port_forward_scoped(
+        udid,
+        host_port,
+        device_port,
+        &host,
+        once,
+        &scope,
+    ))
+    .await;
+    let cleanup = scope.close(Duration::from_secs(10)).await;
+    crate::cmd::test_workflow::combine_results(
+        primary,
+        cleanup,
+        "forward original native cleanup failed",
+    )
+}
+
+/// Borrows the caller's original native registry. Only this forward's clients
+/// and connector lease are retired; the caller still owns its WDA/test sessions.
+pub(crate) async fn run_port_forward_scoped(
+    udid: &str,
+    host_port: u16,
+    device_port: u16,
+    host: &str,
+    once: bool,
+    scope: &NativeScope,
+) -> Result<()> {
     validate_forward_ports(host_port, device_port)?;
-    let address = crate::access::loopback_address(&host)?;
-    let connector = resolve_forward_connector(udid).await?;
-    let listener = TcpListener::bind((address, host_port)).await?;
-    crate::output::write_error_line(format_args!(
-        "{}",
-        connector.describe(&host, host_port, device_port)
-    ))?;
-    if once {
-        crate::output::write_error_line(format_args!("Waiting for one connection..."))?;
-    } else {
-        crate::output::write_error_line(format_args!("Press Ctrl+C to stop."))?;
-    }
-
-    loop {
-        let (client, peer) = listener.accept().await?;
-        tracing::debug!(peer = %ios_core::redaction::diagnostic_id(&peer.to_string()), "forward: connection accepted");
-
-        let connector = connector.clone();
-        let forward_task = tokio::spawn(async move {
-            match forward_client_connection(connector, device_port, client).await {
-                Ok(()) => Ok::<(), anyhow::Error>(()),
-                Err(err) => {
-                    tracing::warn!(peer = %ios_core::redaction::diagnostic_id(&peer.to_string()), error = %crate::output::error_message(&err), "forward: connection failed");
-                    Err(err)
-                }
+    let address = crate::access::loopback_address(host)?;
+    let mut cancellation = Box::pin(tokio::signal::ctrl_c());
+    let setup = Box::pin(async {
+        let connector = Box::pin(resolve_forward_connector_scoped(udid, scope)).await?;
+        let listener = TcpListener::bind((address, host_port)).await?;
+        crate::output::write_error_line(format_args!(
+            "{}",
+            connector.describe(host, host_port, device_port)
+        ))?;
+        crate::output::write_error_line(format_args!(
+            "{}",
+            if once {
+                "Waiting for one connection..."
+            } else {
+                "Press Ctrl+C to stop."
             }
-        });
-
-        if once {
-            forward_task.await??;
-            break;
+        ))?;
+        Ok::<_, anyhow::Error>((connector, listener))
+    });
+    let ready = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(30), setup) => result.context("forward setup total deadline expired").and_then(|result| result),
+        signal = &mut cancellation => match signal {
+            Ok(()) => Err(anyhow::Error::new(ios_core::OperationCancelled::new())),
+            Err(error) => Err(anyhow::Error::new(error).context("waiting for forward setup cancellation")),
         }
-    }
-
-    Ok(())
+    };
+    let primary = match ready {
+        Ok((connector, listener)) => {
+            lifecycle::serve(listener, connector, device_port, once, &mut cancellation).await
+        }
+        Err(error) => Err(error),
+    };
+    let cleanup = scope.collect(Duration::from_secs(10)).await;
+    crate::cmd::test_workflow::combine_results(
+        primary,
+        cleanup,
+        "forward original retired native joins failed",
+    )
 }
 
 pub(crate) fn validate_forward_ports(host_port: u16, device_port: u16) -> Result<()> {
     if host_port == 0 {
-        anyhow::bail!("invalid host port: port must be at least 1");
+        return Err(crate::output::input_decision(
+            "invalid host port: port must be at least 1",
+        ));
     }
     if device_port == 0 {
-        anyhow::bail!("invalid device port: port must be at least 1");
+        return Err(crate::output::input_decision(
+            "invalid device port: port must be at least 1",
+        ));
     }
     Ok(())
 }
 
-async fn forward_client_connection(
-    connector: ForwardConnector,
-    device_port: u16,
-    client: TcpStream,
-) -> Result<()> {
-    let mut remote = connector
-        .connect(device_port)
-        .await
-        .with_context(|| format!("failed to connect device port {device_port}"))?;
-    let mut client = client;
-    io::copy_bidirectional(&mut client, &mut remote).await?;
-    Ok(())
+struct ForwardFallbackFailure {
+    primary: Arc<anyhow::Error>,
+    fallback: anyhow::Error,
+}
+impl std::fmt::Display for ForwardFallbackFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("forward preferred route and fallback both failed")
+    }
+}
+impl std::fmt::Debug for ForwardFallbackFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForwardFallbackFailure")
+            .field(
+                "primary_class",
+                &ios_core::classify_error(self.primary.as_ref().as_ref()),
+            )
+            .field(
+                "fallback_class",
+                &ios_core::classify_error(self.fallback.as_ref()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+impl std::error::Error for ForwardFallbackFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.fallback.as_ref())
+    }
 }
 
-async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
-    let device_id = lookup_device_id(udid).await?;
-    let opts = ios_core::device::ConnectOptions {
-        tun_mode: ios_core::TunMode::Userspace,
-        pair_record_path: None,
-        skip_tunnel: false,
-    };
-
-    let tunnel_proxy = match ios_core::connect(udid, opts).await {
-        Ok(device) => match tunnel_proxy_target(device.server_address(), device.userspace_port()) {
-            Some(target) => Some(target),
-            None => {
+async fn resolve_forward_connector_scoped(
+    udid: &str,
+    scope: &NativeScope,
+) -> Result<ForwardConnector> {
+    let mut device_id = lookup_device_id(udid).await?;
+    let mut native = None;
+    let mut setup_failure = None;
+    let tunnel_proxy = match Box::pin(scope.connect(udid, ios_core::TunMode::Userspace)).await {
+        Ok(device) => {
+            device_id = device.info.device_id;
+            let target = tunnel_proxy_target(device.server_address(), device.userspace_port());
+            if target.is_none() {
                 tracing::info!(
                     device = %ios_core::redaction::diagnostic_id(udid),
                     "forward: userspace tunnel metadata unavailable, falling back to usbmux"
                 );
-                None
             }
-        },
+            native = Some(Arc::new(device));
+            target
+        }
         Err(err) => {
-            tracing::info!(device = %ios_core::redaction::diagnostic_id(udid), error = %ios_core::redaction::diagnostic_error(&err),
+            tracing::info!(device = %ios_core::redaction::diagnostic_id(udid), error = %crate::output::error_message(&err),
                 "forward: tunnel unavailable; falling back to usbmux");
+            setup_failure = Some(Arc::new(err));
             None
         }
     };
@@ -145,6 +207,12 @@ async fn resolve_forward_connector(udid: &str) -> Result<ForwardConnector> {
     Ok(ForwardConnector {
         device_id,
         tunnel_proxy,
+        _native: native,
+        setup_failure,
+        #[cfg(test)]
+        direct_test_target: None,
+        #[cfg(test)]
+        fallback_test_target: None,
     })
 }
 
@@ -155,7 +223,7 @@ async fn lookup_device_id(udid: &str) -> Result<u32> {
         .into_iter()
         .find(|device| device.serial_number == udid)
         .map(|device| device.device_id)
-        .ok_or_else(|| anyhow::anyhow!("device not found: {udid}"))
+        .ok_or_else(|| anyhow::Error::new(ios_core::CoreError::DeviceNotFound(udid.into())))
 }
 
 fn tunnel_proxy_target(
@@ -185,6 +253,11 @@ impl ForwardConnector {
     }
 
     async fn connect(&self, device_port: u16) -> Result<ServiceStream> {
+        #[cfg(test)]
+        if let Some(address) = self.direct_test_target {
+            return Ok(Box::new(TcpStream::connect(address).await?));
+        }
+        let mut primary = self.setup_failure.clone();
         if let Some(target) = &self.tunnel_proxy {
             match connect_via_tunnel_proxy(target, device_port).await {
                 Ok(stream) => return Ok(stream),
@@ -195,11 +268,32 @@ impl ForwardConnector {
                         error = %crate::output::error_message(&err),
                         "forward: tunnel proxy connect failed; falling back to usbmux"
                     );
+                    primary = Some(Arc::new(err));
                 }
             }
         }
 
-        connect_via_usbmux(self.device_id, device_port).await
+        #[cfg(test)]
+        let fallback = if let Some(address) = self.fallback_test_target {
+            TcpStream::connect(address)
+                .await
+                .map(|stream| Box::new(stream) as ServiceStream)
+                .map_err(anyhow::Error::new)
+        } else {
+            connect_via_usbmux(self.device_id, device_port).await
+        };
+        #[cfg(not(test))]
+        let fallback = connect_via_usbmux(self.device_id, device_port).await;
+        match fallback {
+            Ok(stream) => Ok(stream),
+            Err(fallback) => match primary {
+                Some(primary) => Err(anyhow::Error::new(ForwardFallbackFailure {
+                    primary,
+                    fallback,
+                })),
+                None => Err(fallback),
+            },
+        }
     }
 }
 
@@ -212,6 +306,7 @@ async fn connect_via_tunnel_proxy(
     let addr_bytes = parse_ipv6_bytes(&target.server_addr)?;
     proxy.write_all(&addr_bytes).await?;
     proxy.write_all(&(device_port as u32).to_le_bytes()).await?;
+    proxy.flush().await?;
     Ok(Box::new(proxy))
 }
 

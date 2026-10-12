@@ -397,9 +397,20 @@ impl Evidence {
         round: usize,
     ) {
         let native = state.inner.native.snapshot();
+        let process = proc_sample();
+        #[cfg(windows)]
+        let process = {
+            let mut process = process;
+            if phase == "released"
+                && std::env::var("IOS_MANAGER_BASELINE_HEAP_DIAGNOSTIC").as_deref() == Ok("1")
+            {
+                process["default_heap"] = windows_resources::default_heap_sample();
+            }
+            process
+        };
         self.resources.push(json!({
             "phase": phase, "scenario": scenario, "devices": devices, "round": round,
-            "process": proc_sample(),
+            "process": process,
             "tokio_alive_tasks": baseline(),
             "manager_records": state.inner.tunnels.read().await.len(),
             "device_coordinators": state.inner.lifecycle.coordinator_count().await,

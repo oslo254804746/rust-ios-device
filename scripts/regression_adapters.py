@@ -26,12 +26,7 @@ DDI_IMAGE_LIMIT = 2 * 1024 * 1024 * 1024
 CRYPTEX_ID = "com.apple.MobileAsset.DDI"
 CRYPTEX_PAYLOADS = ("Cryptex1,GenericDmg", "Cryptex1,GenericTrustCache",
                     "Cryptex1,CryptexInfoPlist", "Cryptex1,GenericVolume")
-UNSUPPORTED = {
-    "private-mac-altirk": "private-mac-and-altirk-wire-correlation-observer-unavailable",
-    "display-hid-stop": "display-hid-restored-state-and-original-service-join-observer-unavailable",
-    "installcoordination-wire": "same-client-zero-budget-and-signed-wire-observer-unavailable-in-cli",
-    "modern-rsd-wifi": "queued-direct-legacy-passive-mode-selection-observer-unavailable-in-cli",
-}
+UNSUPPORTED = {}
 
 
 def checked_json(result):
@@ -177,7 +172,7 @@ def load_fixture_manifest(directory, context):
     fixtures = value["fixtures"]
     if not isinstance(fixtures, dict) or len(fixtures) > 16:
         raise ValueError("fixture-count")
-    allowed = {"afc-fixture", "test-application", "test-runner", "test-bundle", "authorized-unc-share", "existing-rsd-route", "approved-ddi", "synthetic-clipboard"}
+    allowed = {"afc-fixture", "test-application", "test-runner", "test-bundle", "authorized-unc-share", "existing-rsd-route", "approved-ddi", "synthetic-clipboard", "install-record-observation", "display-hid-baseline"}
     if not set(fixtures) <= allowed:
         raise ValueError("fixture-name")
     admitted = {}
@@ -191,6 +186,27 @@ def load_fixture_manifest(directory, context):
                 raise ValueError("afc-remote-path")
             if type(item["size"]) is not int or not 0 <= item["size"] <= FILE_LIMIT or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
                 raise ValueError("afc-fixture-integrity")
+        elif name in ("install-record-observation", "display-hid-baseline"):
+            if set(item) != {"path", "sha256"}:
+                raise ValueError("observer-fixture-schema")
+            path = fixture_path(root, item["path"])
+            if path.stat().st_size > MANIFEST_LIMIT or not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) or digest(path) != item["sha256"]:
+                raise ValueError("observer-fixture-integrity")
+            observed = json.loads(path.read_bytes())
+            if name == "install-record-observation":
+                fields = {"version", "bundle_id", "db_sequence", "db_uuid_sha256", "persistent_identifier_size", "persistent_identifier_sha256", "wire_type"}
+                if not isinstance(observed, dict) or set(observed) != fields or observed["version"] != 1 or not isinstance(observed["bundle_id"], str) or not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", observed["bundle_id"]):
+                    raise ValueError("install-observation-schema")
+                if type(observed["db_sequence"]) is not int or not 0 <= observed["db_sequence"] <= 2 ** 63 - 1 or type(observed["persistent_identifier_size"]) is not int or not 0 <= observed["persistent_identifier_size"] <= 4096 or observed["wire_type"] != "int64":
+                    raise ValueError("install-signed-observation-required")
+                hashes = (observed["db_uuid_sha256"], observed["persistent_identifier_sha256"])
+            else:
+                if not isinstance(observed, dict) or set(observed) != {"version", "status_sha256", "scenario"} or observed["version"] != 1 or observed["scenario"] != "center-contact-cancel":
+                    raise ValueError("display-hid-observation-schema")
+                hashes = (observed["status_sha256"],)
+            if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes):
+                raise ValueError("observer-expected-hash")
+            item = dict(observed, fixture_path=path, fixture_sha256=item["sha256"])
         elif name == "synthetic-clipboard":
             item = checked_clipboard_fixture(root, item)
         elif name == "approved-ddi":
@@ -669,6 +685,141 @@ def clipboard_workflow(run):
     return run.finish(error)
 
 
+def install_observer_workflow(run):
+    expected = run.context.fixtures["install-record-observation"]
+    route = run.context.fixtures["existing-rsd-route"]
+    if digest(expected["fixture_path"]) != expected["fixture_sha256"]:
+        return run.finish(ValueError("install-observation-changed-after-admission"))
+    arguments = ["apps", "install-record", expected["bundle_id"], "--observe-zero-budget-recovery",
+                 "--rsd-address", route["address"], "--timeout-secs", "10"]
+    if "proxy_port" in route:
+        arguments += ["--rsd-proxy-port", route["proxy_port"]]
+    def observed(result):
+        value = checked_json(result)
+        record = value.get("record", {})
+        zero = value.get("zero_budget", {})
+        cleanup = value.get("cleanup_receipt", {})
+        return (value.get("schema_version") == 1 and value.get("scope") == "existing-rsd-sockets"
+                and value.get("selected_udid_matched") is True and value.get("canonical_service_observed") is True
+                and zero.get("error_class") == "timeout" and zero.get("no_business_io") is True and zero.get("client_usable") is True
+                and type(zero.get("elapsed_us")) is int and 0 <= zero["elapsed_us"] < 1000000
+                and value.get("same_service_connection") is True and value.get("default_budget_unchanged") is True
+                and value.get("client_usable_after_finite_query") is True and value.get("db_sequence_wire_type") == expected["wire_type"]
+                and type(value.get("finite_query_elapsed_us")) is int and 0 <= value["finite_query_elapsed_us"] <= 10000000
+                and all(record.get(key) == expected[key] for key in ("db_sequence", "db_uuid_sha256", "persistent_identifier_size", "persistent_identifier_sha256"))
+                and value.get("cleanup_complete") is True and value.get("cleanup_scope") == "original-sockets-shutdown-and-peer-eof"
+                and cleanup.get("opened_sockets") == 1 and cleanup.get("closed_sockets") == 1 and cleanup.get("strict_eof") is True
+                and type(cleanup.get("drained_bytes")) is int and 0 <= cleanup["drained_bytes"] <= 1024 * 1024)
+    try:
+        result = run.step(command(run.context, *arguments), observed)
+        run.steps[-1]["observed_wire_type"] = checked_json(result)["db_sequence_wire_type"]
+        run.steps[-1]["same_service_connection"] = True
+        return run.finish()
+    except Exception as error:
+        return run.finish(error)
+
+
+def display_hid_observer_workflow(run):
+    expected = run.context.fixtures["display-hid-baseline"]
+    if digest(expected["fixture_path"]) != expected["fixture_sha256"]:
+        return run.finish(ValueError("display-hid-baseline-changed-after-admission"))
+    def observed(result):
+        value = checked_json(result)
+        return (value.get("schema_version") == 1 and value.get("operation") == "display_hid_stop_observation"
+                and value.get("selected_udid_matched") is True and value.get("hid_reports_flushed") == 2
+                and value.get("local_contact_closed") is True and value.get("hid_device_ack") == "unavailable-in-protocol"
+                and value.get("media_stop_reply_received") is True and value.get("original_media_tasks_joined") is True
+                and value.get("status_before_sha256") == expected["status_sha256"] == value.get("status_after_sha256")
+                and value.get("media_status_restored") is True and value.get("stop_scope") == "explicit-stop-all"
+                and value.get("original_native_joins_complete") is True and value.get("cleanup_complete") is True)
+    try:
+        run.step(command(run.context, "hid", "--confirm", "--timeout", "30", "observe-stop",
+                         "--expected-status-sha256", expected["status_sha256"], "--confirm-stop-all"), observed)
+        return run.finish()
+    except Exception as error:
+        return run.finish(error)
+
+
+def rsd_observer_contract(result, context):
+    value = checked_json(result)
+    mode = value.get("handshake_mode")
+    order = ["direct", "queued", "legacy", "passive"]
+    if mode not in order or mode not in context.observed_modes:
+        return False
+    services = value.get("services")
+    if not isinstance(services, list) or len(services) > 4096:
+        return False
+    names = []
+    for service in services:
+        if not isinstance(service, dict) or not set(service) <= {"name", "port", "features"}:
+            return False
+        if not isinstance(service.get("name"), str) or not 1 <= len(service["name"]) <= 4096 or type(service.get("port")) is not int or not 1 <= service["port"] <= 65535:
+            return False
+        features = service.get("features")
+        if features is not None and (not isinstance(features, list) or len(features) > 16384 or any(not isinstance(item, str) or not 1 <= len(item) <= 4096 for item in features)):
+            return False
+        names.append(service["name"])
+    return (value.get("schema_version") == 1 and value.get("selected_udid") == context.device.udid == value.get("observed_udid")
+            and value.get("attempted_modes") == order[:order.index(mode) + 1] and names == sorted(set(names))
+            and value.get("transport_scope") == "existing-rsd-socket" and value.get("directory_socket_released") is True
+            and value.get("directory_release_evidence") == "local-raii" and value.get("cleanup_complete") is True)
+
+
+def rsd_observer_workflow(run):
+    route = run.context.fixtures["existing-rsd-route"]
+    args = ["rsd", "observe", "--address", route["address"], "--timeout", "10"]
+    if "proxy_port" in route:
+        args += ["--proxy-port", route["proxy_port"]]
+    try:
+        result = run.step(command(run.context, *args), lambda result: rsd_observer_contract(result, run.context))
+        run.steps[-1]["observed_mode"] = checked_json(result)["handshake_mode"]
+        run.steps[-1]["directory_release_evidence"] = "local-raii"
+        return run.finish()
+    except Exception as error:
+        return run.finish(error)
+
+
+def paired_identity_contract(result, context):
+    value = checked_json(result)
+    observations = value.get("observations")
+    if (value.get("schema_version") != 1 or value.get("selected_udid") != context.device.udid
+            or value.get("transport_scope") != "existing-trust-identity-observation"
+            or not isinstance(observations, list) or not 1 <= len(observations) <= 128):
+        return False
+    found = set()
+    common = {"mechanism", "advertisement_type", "advertisement_index", "selected_udid_match"}
+    for record in observations:
+        if not isinstance(record, dict) or type(record.get("advertisement_index")) is not int or not 0 <= record["advertisement_index"] <= 4095 or record.get("selected_udid_match") is not True:
+            return False
+        mechanism = record.get("mechanism")
+        if mechanism == "private-mac-lockdown":
+            if (set(record) != common | {"saved_mac_matches", "record_accepted", "unique_device_id_verified"}
+                    or record.get("advertisement_type") != "mobdev2" or record.get("saved_mac_matches") is not False
+                    or record.get("record_accepted") is not True or record.get("unique_device_id_verified") is not True):
+                return False
+        elif mechanism == "remote-pairing-altirk":
+            if (set(record) != common | {"credential_record_validated", "advertisement_auth_matched", "credential_validation_scope"}
+                    or record.get("advertisement_type") != "remotepairing" or record.get("credential_record_validated") is not True
+                    or record.get("advertisement_auth_matched") is not True
+                    or record.get("credential_validation_scope") != "structure-and-key-material"):
+                return False
+        else:
+            return False
+        found.add(mechanism)
+    return found == {"private-mac-lockdown", "remote-pairing-altirk"}
+
+
+def paired_identity_workflow(run):
+    try:
+        run.step(command(run.context, "discover", "paired-identity", "--timeout", "15"),
+                 lambda result: paired_identity_contract(result, run.context))
+        run.steps[-1]["observed_mechanisms"] = ["private-mac-lockdown", "remote-pairing-altirk"]
+        run.steps[-1]["credential_validation_scope"] = "structure-and-key-material"
+        return run.finish()
+    except Exception as error:
+        return run.finish(error)
+
+
 def execute(session, case, context):
     case_id = case["id"]
     if case_id in UNSUPPORTED:
@@ -677,6 +828,16 @@ def execute(session, case, context):
         return session.record_not_run(case_id, "posix-owned-graceful-watch-signal-required", ["posix-graceful-watch"])
     if case_id == "remoted-coexistence" and "existing-rsd-route" not in context.fixtures:
         return session.record_not_run(case_id, "existing-selected-rsd-route-required", ["existing-rsd-route"])
+    if case_id == "installcoordination-wire":
+        missing = [key for key in ("existing-rsd-route", "install-record-observation") if key not in context.fixtures]
+        if missing:
+            return session.record_not_run(case_id, "exact-install-record-observer-fixtures-required", missing)
+    if case_id == "modern-rsd-wifi" and "existing-rsd-route" not in context.fixtures:
+        return session.record_not_run(case_id, "existing-current-rsd-route-required", ["existing-rsd-route"])
+    if case_id == "display-hid-stop":
+        missing = ([] if "display-hid-baseline" in context.fixtures else ["display-hid-baseline"]) + ([] if "stop-all-media-scope" in context.scopes else ["stop-all-media-scope"])
+        if missing:
+            return session.record_not_run(case_id, "exact-display-baseline-and-stop-all-scope-required", missing)
     run = OperationRun(session, case_id, context)
     if case_id == "file-workflow" or case_id.startswith("windows-afc-"):
         return file_workflow(run, case_id)
@@ -688,6 +849,14 @@ def execute(session, case, context):
         return cryptex_workflow(run)
     if case_id == "rich-clipboard-watch":
         return clipboard_workflow(run)
+    if case_id == "installcoordination-wire":
+        return install_observer_workflow(run)
+    if case_id == "display-hid-stop":
+        return display_hid_observer_workflow(run)
+    if case_id == "modern-rsd-wifi":
+        return rsd_observer_workflow(run)
+    if case_id == "private-mac-altirk":
+        return paired_identity_workflow(run)
     try:
         argv, contract = query_command(case_id, context)
         run.step(argv, contract)

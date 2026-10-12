@@ -116,6 +116,72 @@ pub(super) async fn inspect(request: &Request, udid: &str, timeout: Duration) ->
     }
 }
 
+/// Perform one concrete read-only developer operation through the caller's
+/// existing route. Directory/identity/port admission and the actual protocol
+/// operation share the production ExistingRsdSession's absolute clock.
+pub(super) async fn developer_probe(request: &Request, udid: &str, timeout: Duration) -> Check {
+    let result = async {
+        super::validate_target(udid)?;
+        let session = ios_core::device::ExistingRsdSession::observe(request.route, timeout).await?;
+        let operation = async {
+            let connection = session
+                .open_service(
+                    udid,
+                    ios_core::instruments::SERVICE_IOS17,
+                    ios_core::device::ExistingRsdServiceKind::RawDtx,
+                    8 * 1024 * 1024,
+                )
+                .await?;
+            session
+                .run(async move {
+                    let mut device_info =
+                        ios_core::instruments::DeviceInfoClient::connect(connection.stream)
+                            .await
+                            .map_err(|error| {
+                                ios_core::CoreError::Io(std::io::Error::other(error))
+                            })?;
+                    let _processes = device_info
+                        .running_processes()
+                        .await
+                        .map_err(|error| ios_core::CoreError::Io(std::io::Error::other(error)))?;
+                    Ok(())
+                })
+                .await
+        }
+        .await;
+        let cleanup = session
+            .close(Duration::from_secs(2))
+            .await
+            .map_err(anyhow::Error::new)
+            .and_then(|receipt| {
+                if receipt.opened_sockets == receipt.closed_sockets && receipt.strict_eof {
+                    Ok(())
+                } else {
+                    Err(ios_core::CoreError::Protocol(
+                        "doctor developer service cleanup did not establish original socket EOF"
+                            .into(),
+                    )
+                    .into())
+                }
+            });
+        crate::cmd::test_workflow::combine_results(
+            operation.map_err(anyhow::Error::new),
+            cleanup,
+            "doctor developer original socket cleanup failed",
+        )
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            let mut check = Check::observed(super::Probe::DdiUsable, Some(true));
+            check.detail = "The selected existing RSD route confirmed the exact target and advertised developer service port, then completed checked DeviceInfo runningProcesses. This establishes that specific read-only operation, not Apple signature validity or every developer capability.";
+            check.rsd = Some(Metadata::selected(request));
+            check
+        }
+        Err(error) => Check::failure(super::Probe::DdiUsable, error),
+    }
+}
+
 fn check(id: &'static str, metadata: Metadata) -> Check {
     Check {
         id,
