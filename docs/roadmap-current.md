@@ -17,7 +17,7 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
 | Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA和依赖已本地提交94574d6；Windows watch原console/Job/reader工具9项通过，见[本轮证据](validation/windows-watch-2026-10-12.md)。Q02已按原FUP/矩阵交付物核查完成开发收口；现代全流程与真实验收仍待条件。 |
 | F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
-| L02 | 元数据发布准入、持久意图epoch；完整全局归因/刷新规则继续。 |
+| L02 | 元数据发布准入、持久意图epoch；原error payload跨owner采样/已知capacity去重已接线，[未计量边界](validation/manager-error-payload-2026-10-12.md)明确；统一全局字节准入与完整刷新规则继续。 |
 | L04已交付 | 同fixture前后1/4/16与16轮启停/断连、生产native/AFC/Syslog连续资源采样、默认堆归因与基线派生性能参考范围。见[证据](validation/manager-resource-baseline-2026-10-11.md)；物理设备和其他平台NOT_RUN，超出参考范围保持观察标志。 |
 | 原门禁维护 | 能力登记含目录mod.rs、Windows五项core失败诊断；保持原错误source、严格EOF、native join/worker恢复断言。 |
 

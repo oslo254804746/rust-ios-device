@@ -329,6 +329,40 @@ impl Registry {
         }
     }
 
+    pub(super) fn payload_outcomes(&self) -> (usize, Vec<Arc<TunnelError>>) {
+        let (mut errors, handles) = {
+            let state = self.lock();
+            let errors = state
+                .first_failure
+                .iter()
+                .chain(state.first_expiry.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            let handles = state
+                .slots
+                .iter()
+                .flatten()
+                .filter_map(|entry| entry.handle.clone())
+                .collect::<Vec<_>>();
+            (errors, handles)
+        };
+        let mut unjoined = 0;
+        for handle in handles {
+            if let Err(error) = handle.shutdown_status() {
+                let report = shutdown_report(&error);
+                if report.map_or(true, |report| !report.joins_complete()) {
+                    // A completed JoinHandle can still own an unobserved Err or
+                    // panic payload until its original join is acquired.
+                    unjoined += 1;
+                }
+                if report.is_some_and(TunnelShutdownFailure::has_retained_outcomes) {
+                    errors.push(Arc::new(error));
+                }
+            }
+        }
+        (unjoined, errors)
+    }
+
     fn selection_and_stop(&self) -> Vec<Key> {
         let (keys, handles) = {
             let state = self.lock();

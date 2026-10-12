@@ -8352,3 +8352,12 @@ all-features/debug输入，1/4/16和30s/104轮测量已比较，原owner收尾�
 主机runner5 PASS/22 NOT_RUN。所有生产observer/adapter均已有接线，按用户开发
 口径Q02计完成；真实运行条件不升级PASS，旧来源限制保留。账本23交付/6缺开发/
 L02待完整收口，有效30，Q04全部排除。完整边界见[核查](validation/q02-development-closeout-2026-10-12.md)。
+
+## 2026-10-12：L02 原error payload采样归因子项
+
+跨retry receipt/abandoned scan/native registry的原错误联合采样已接线，已知String
+capacity按原buffer去重；未知payload/未join native owner/active scan/截断都显式记录。
+不格式化任意原错误，不改变原对象/source/receipt，不据槽位数宣称字节上限。
+新8项、受影响tunnel359项与实际readonly-policy CLI门禁结果和剩余全局字节准入
+实现见[证据](validation/manager-error-payload-2026-10-12.md)。L02保持未关闭，账本23/
+6/L02待收口，有效30；设备和其它平台运行条件继续，Q04全部排除。

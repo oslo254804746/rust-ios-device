@@ -125,6 +125,16 @@ impl Error for SourceFailure {
 }
 
 impl Ledger {
+    pub(in super::super) fn payload_receipts(&self) -> Vec<Arc<FailureReceipt>> {
+        let state = self.lock();
+        state
+            .causes
+            .values()
+            .chain(state.retired_causes.iter().map(|(_, receipt)| receipt))
+            .cloned()
+            .collect()
+    }
+
     pub(in super::super) fn clear_retired_causes(&self) {
         let retired = std::mem::take(&mut self.lock().retired_causes);
         drop(retired);

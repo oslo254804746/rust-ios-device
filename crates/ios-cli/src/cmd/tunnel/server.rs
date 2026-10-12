@@ -57,6 +57,19 @@ pub(super) async fn serve(
             if let Err(error) = monitor_state.refresh_once().await {
                 tracing::warn!(error = %crate::output::error_message(&error), "tunnel agent refresh failed");
             }
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let payload = monitor_state.retained_error_payloads();
+                tracing::debug!(
+                    known_payload_capacity_bytes = payload.known_payload_capacity_bytes,
+                    opaque_nodes = payload.opaque_nodes,
+                    visited_nodes = payload.visited_nodes,
+                    active_scans = payload.active_scans,
+                    unjoined_native_owners = payload.unjoined_native_owners,
+                    truncated = payload.truncated,
+                    fully_measured_payloads = payload.fully_measured_payloads(),
+                    "sampled manager retained error payloads; not total heap or admission budget"
+                );
+            }
         }
     });
     tokio::pin!(signal);
