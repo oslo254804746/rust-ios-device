@@ -1,5 +1,15 @@
 use super::*;
 
+fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
+    let (udid, route, ticket, native_id) = data;
+    let bank = Arc::new(Semaphore::new(64 * 1024));
+    Candidate {
+        input: super::super::candidate_input::Input::owned(udid, route, &bank).unwrap(),
+        ticket,
+        native_id,
+    }
+}
+
 #[tokio::test]
 async fn candidate_index_bytes_borrows_original_route_buffer_and_preserves_native_identity() {
     let lifecycle = super::super::Lifecycle::new();
@@ -7,12 +17,17 @@ async fn candidate_index_bytes_borrows_original_route_buffer_and_preserves_nativ
     let mut host = String::with_capacity(8192);
     host.push_str("synthetic-index-host");
     let buffer = host.as_ptr();
-    let candidates = vec![("a".into(), Route::Mobdev2(host), ticket, Some(7))];
+    let candidates = vec![admitted((
+        "a".into(),
+        Route::Mobdev2(host),
+        ticket,
+        Some(7),
+    ))];
     let bytes = std::mem::size_of::<usize>();
     let bank = Arc::new(Semaphore::new(bytes));
     let index = Index::new(&candidates, &bank).unwrap();
     let (route, native_id) = index.get("a").unwrap();
-    assert!(std::ptr::eq(route, &candidates[0].1));
+    assert!(std::ptr::eq(route, &candidates[0].input.route));
     let Route::Mobdev2(host) = route else {
         panic!("route family changed")
     };
@@ -23,7 +38,7 @@ async fn candidate_index_bytes_borrows_original_route_buffer_and_preserves_nativ
     assert!(index.get("unknown").is_none());
     drop(index);
     assert_eq!(bank.available_permits(), bytes);
-    assert_eq!(candidates[0].0, "a");
+    assert_eq!(candidates[0].input.udid, "a");
 }
 
 #[tokio::test]
@@ -41,13 +56,16 @@ async fn candidate_index_bytes_keeps_last_duplicate_and_empty_nul_unicode_keys()
             Some(3),
         ),
         ("\0".into(), Route::Wifi(Some("nul".into())), ticket, None),
-    ];
+    ]
+    .into_iter()
+    .map(admitted)
+    .collect::<Vec<_>>();
     let bank = Arc::new(Semaphore::new(4096));
     let index = Index::new(&candidates, &bank).unwrap();
     for (key, position) in [("z", 3), ("", 1), ("é", 2), ("\0", 4)] {
         let (route, native_id) = index.get(key).unwrap();
-        assert!(std::ptr::eq(route, &candidates[position].1));
-        assert_eq!(native_id, candidates[position].3);
+        assert!(std::ptr::eq(route, &candidates[position].input.route));
+        assert_eq!(native_id, candidates[position].native_id);
     }
     assert!(index.get("zz").is_none());
     assert_eq!(
@@ -62,7 +80,12 @@ async fn candidate_index_bytes_keeps_last_duplicate_and_empty_nul_unicode_keys()
 async fn candidate_index_bytes_one_byte_refusal_preserves_original_input_and_refunds() {
     let lifecycle = super::super::Lifecycle::new();
     let ticket = lifecycle.ticket("synthetic-index").await.unwrap();
-    let candidates = vec![("a".into(), Route::Wifi(Some("first".into())), ticket, None)];
+    let candidates = vec![admitted((
+        "a".into(),
+        Route::Wifi(Some("first".into())),
+        ticket,
+        None,
+    ))];
     let bytes = std::mem::size_of::<usize>() - 1;
     let bank = Arc::new(Semaphore::new(bytes));
     let error = Index::new(&candidates, &bank)
@@ -73,9 +96,9 @@ async fn candidate_index_bytes_one_byte_refusal_preserves_original_input_and_ref
         ios_core::ErrorClass::ResourceLimit
     );
     assert_eq!(bank.available_permits(), bytes);
-    assert_eq!(candidates[0].0, "a");
-    assert!(matches!(&candidates[0].1, Route::Wifi(Some(host)) if host == "first"));
-    assert!(candidates[0].2.is_current());
+    assert_eq!(candidates[0].input.udid, "a");
+    assert!(matches!(&candidates[0].input.route, Route::Wifi(Some(host)) if host == "first"));
+    assert!(candidates[0].ticket.is_current());
 }
 
 #[test]

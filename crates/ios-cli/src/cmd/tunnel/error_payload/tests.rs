@@ -248,7 +248,7 @@ async fn payload_census_manager_first_latest_share_original_and_release_on_obser
     let original = first.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError;
     assert_eq!(
         state.retained_error_payloads().known_payload_capacity_bytes,
-        4096
+        4096 + "payload-fixture".len()
     );
     state
         .inner
@@ -270,7 +270,7 @@ async fn payload_census_manager_first_latest_share_original_and_release_on_obser
     );
     assert_eq!(
         state.retained_error_payloads().known_payload_capacity_bytes,
-        4096 + 8192
+        4096 + 8192 + 2 * "payload-fixture".len()
     );
     assert_eq!(source.calls.load(Ordering::SeqCst), 2);
     drop(first);

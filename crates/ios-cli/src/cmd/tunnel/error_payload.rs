@@ -63,6 +63,18 @@ impl<'a> Census<'a> {
         if let Some(value) = error.downcast_ref::<String>() {
             self.string(value);
         }
+        if let Some(context) = error.downcast_ref::<super::candidate_input::SourceInputContext>() {
+            self.string(&context.input.udid);
+            match &context.input.route {
+                super::source::Route::Usbmux => {}
+                super::source::Route::Usb(host) | super::source::Route::Wifi(host) => {
+                    if let Some(host) = host {
+                        self.string(host);
+                    }
+                }
+                super::source::Route::Mobdev2(host) => self.string(host),
+            }
+        }
         // Anyhow contexts can have independent causes not exposed by source().
         if let Some(context) = error.downcast_ref::<super::bookkeeping::FailureContext>() {
             self.anyhow(context.secondary(), depth + 1);

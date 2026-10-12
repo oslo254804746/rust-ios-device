@@ -86,6 +86,7 @@ struct Entry {
     // runtime until its joins are certified, even after its table row drops.
     metadata: Option<Arc<OwnedSemaphorePermit>>,
     global_metadata: Option<Arc<OwnedSemaphorePermit>>,
+    _input: Option<Arc<super::candidate_input::Input>>,
     failure_observed: bool,
 }
 
@@ -205,6 +206,14 @@ impl Registry {
     }
 
     pub(super) fn reserve(self: &Arc<Self>, stamp: OwnershipStamp) -> Result<Reservation> {
+        self.reserve_with_input(stamp, None)
+    }
+
+    pub(super) fn reserve_with_input(
+        self: &Arc<Self>,
+        stamp: OwnershipStamp,
+        input: Option<Arc<super::candidate_input::Input>>,
+    ) -> Result<Reservation> {
         let mut state = self.lock();
         if state.sealed {
             return Err(super::lifecycle::cancelled());
@@ -224,6 +233,7 @@ impl Registry {
             handle: None,
             metadata: None,
             global_metadata: None,
+            _input: input,
             failure_observed: false,
         });
         Ok(Reservation {

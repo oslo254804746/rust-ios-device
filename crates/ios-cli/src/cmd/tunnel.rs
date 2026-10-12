@@ -33,9 +33,11 @@ use crate::access::{
 mod admission;
 mod bookkeeping;
 mod candidate_index;
+mod candidate_input;
 mod error_payload;
 mod intent;
 mod lifecycle;
+mod metadata_vec;
 mod ownership;
 mod reconnect;
 mod retirement;
@@ -59,8 +61,8 @@ const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_FAILURE_RECORDS: usize = 4096;
 const MAX_PUBLISHED_METADATA_BYTES: usize = 64 * 1024 * 1024;
-// Preserve the publication sublimit while leaving room for both bounded raw
-// snapshots to refresh even when publication is at its own ceiling.
+// All admitted owner families compete in this bank. Their separate maxima are
+// private ceilings, not a promise that all maxima can be held simultaneously.
 const MAX_GLOBAL_KNOWN_METADATA_BYTES: usize = 128 * 1024 * 1024;
 const FAILURE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_LIST_BYTES: usize = 1024 * 1024;
@@ -422,6 +424,7 @@ struct ConnectionContext<'a> {
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
     retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
     manual: Option<&'a intent::ManualRequest>,
+    input: Option<Arc<candidate_input::Input>>,
 }
 
 struct ManagedTunnel {
@@ -438,6 +441,7 @@ struct ManagedTunnel {
     // Only removal of both owners releases it; either may outlive the other.
     _metadata: Arc<OwnedSemaphorePermit>,
     _global_metadata: Arc<OwnedSemaphorePermit>,
+    _input: Option<Arc<candidate_input::Input>>,
 }
 
 impl Drop for ManagedTunnel {
@@ -1040,6 +1044,7 @@ impl TunnelAgentState {
                             deadline: Some(&deadline),
                             retry: None,
                             manual: manual.as_ref(),
+                            input: None,
                         },
                     )
                     .await
@@ -1074,6 +1079,7 @@ impl TunnelAgentState {
                                 deadline: Some(&deadline),
                                 retry: None,
                                 manual: manual.as_ref(),
+                                input: None,
                             },
                         )
                         .await
@@ -1096,6 +1102,7 @@ impl TunnelAgentState {
             .await
     }
 
+    #[cfg(test)]
     async fn connect_and_store_with_retry(
         &self,
         udid: &str,
@@ -1114,6 +1121,7 @@ impl TunnelAgentState {
                 deadline,
                 retry,
                 manual: None,
+                input: None,
             },
         )
         .await
@@ -1131,6 +1139,7 @@ impl TunnelAgentState {
             deadline,
             retry,
             manual,
+            input,
         } = context;
         if let Some(deadline) = deadline {
             deadline.check()?;
@@ -1161,7 +1170,11 @@ impl TunnelAgentState {
         } else {
             None
         };
-        let ownership = ownership::Ownership::admitted(Arc::clone(&self.inner.native), ticket)?;
+        let ownership = ownership::Ownership::admitted_with_input(
+            Arc::clone(&self.inner.native),
+            ticket,
+            input.clone(),
+        )?;
         let manual_version = if retry.is_none() {
             ticket.commit(|| Ok(self.inner.retry.version(udid, ticket)))?
         } else {
@@ -1207,9 +1220,17 @@ impl TunnelAgentState {
                 result
             })
             .await
-            .map_err(|error| match &attempt {
-                Some(attempt) => attempt.source_failed(error),
-                None => error,
+            .map_err(|error| {
+                let error = match &input {
+                    Some(input) => error.context(candidate_input::SourceInputContext {
+                        input: Arc::clone(input),
+                    }),
+                    None => error,
+                };
+                match &attempt {
+                    Some(attempt) => attempt.source_failed(error),
+                    None => error,
+                }
             })?;
             if let Some(deadline) = deadline {
                 deadline.check()?;
@@ -1333,6 +1354,7 @@ impl TunnelAgentState {
                         _ticket: ticket.clone(),
                         _metadata: metadata,
                         _global_metadata: global_metadata,
+                        _input: input.clone(),
                     },
                 );
                 #[cfg(test)]
@@ -1483,6 +1505,7 @@ impl TunnelAgentState {
         }
     }
 
+    #[cfg(test)]
     async fn refresh_connect_with_total(
         &self,
         udid: &str,
@@ -1490,6 +1513,19 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
         whole: Option<&scan::Deadline>,
+    ) -> ScanAttemptOutcome {
+        self.refresh_connect_with_input(udid, route, ticket, expected_id, whole, None)
+            .await
+    }
+
+    async fn refresh_connect_with_input(
+        &self,
+        udid: &str,
+        route: Route,
+        ticket: &Ticket,
+        expected_id: Option<u32>,
+        whole: Option<&scan::Deadline>,
+        input: Option<Arc<candidate_input::Input>>,
     ) -> ScanAttemptOutcome {
         let identity = AttemptIdentity {
             route: route.clone(),
@@ -1573,13 +1609,17 @@ impl TunnelAgentState {
                     failure_slot = Some(Arc::clone(&slot));
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
                     deadline.check()?;
-                    self.connect_and_store_with_retry(
+                    self.connect_and_store_with_context(
                         udid,
                         route,
                         ticket,
-                        expected_id,
-                        Some(&deadline),
-                        Some((identity.clone(), slot)),
+                        ConnectionContext {
+                            expected_id,
+                            deadline: Some(&deadline),
+                            retry: Some((identity.clone(), slot)),
+                            manual: None,
+                            input: input.clone(),
+                        },
                     )
                     .await?;
                     // Publication completed within the candidate budget.
@@ -1799,7 +1839,7 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        let _usb_snapshot_charge = match admission {
+        let mut _usb_snapshot_charge = match admission {
             Ok(charge) => Some(charge),
             Err(error) => {
                 if manual.is_empty() {
@@ -1833,7 +1873,10 @@ impl TunnelAgentState {
 
         // Capture every device generation before waiting for the first connection.
         // A stop while an earlier device stalls invalidates the queued ticket too.
-        let mut candidates = Vec::new();
+        let mut candidates = metadata_vec::KnownVec::new(
+            Arc::clone(&self.inner.global_metadata_bytes),
+            MAX_FAILURE_RECORDS,
+        );
         let mut seen = std::collections::HashSet::new();
         let mut candidate_budget = admission::CandidateBudget::default();
         let (selected, _usb_selection_charge) =
@@ -1874,7 +1917,16 @@ impl TunnelAgentState {
             };
             candidate_budget.admit(udid.len(), bytes)?;
             seen.insert(udid.clone());
-            candidates.push((udid.clone(), route, ticket.clone(), expected_id));
+            let input = candidate_input::Input::owned(
+                udid.clone(),
+                route,
+                &self.inner.global_metadata_bytes,
+            )?;
+            candidates.push(candidate_index::Candidate {
+                input,
+                ticket: ticket.clone(),
+                native_id: expected_id,
+            })?;
         }
         drop(attached_ids);
         for device in selected {
@@ -1900,7 +1952,18 @@ impl TunnelAgentState {
                     }
                     Err(error) => return Err(error),
                 };
-                candidates.push((udid, Route::Usbmux, ticket, Some(device.device_id)));
+                let input = candidate_input::Input::usb(
+                    udid,
+                    _usb_snapshot_charge
+                        .as_mut()
+                        .expect("complete USB snapshot has charge"),
+                    &self.inner.global_metadata_bytes,
+                )?;
+                candidates.push(candidate_index::Candidate {
+                    input,
+                    ticket,
+                    native_id: Some(device.device_id),
+                })?;
             }
         }
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
@@ -1941,13 +2004,13 @@ impl TunnelAgentState {
         // Admit complete paired metadata before a saved Mobdev2 selector uses
         // it. A failed/partial browse preserves that selector and episode.
         let mut _paired_snapshot_charge = None;
-        let paired = paired.map(|targets| {
+        let mut paired = paired.map(|targets| {
             let charge = match admission::retain_paired_snapshot(
                 &self.inner.global_metadata_bytes,
                 &targets,
             ) {
                 Ok(charge) => charge,
-                Err(error) => return admission::PairedCandidates::Incomplete(error),
+                Err(error) => return (admission::PairedCandidates::Incomplete(error), Vec::new()),
             };
             let mut planned = Vec::new();
             for (udid, ticket, host) in pending_mobdev2 {
@@ -1957,7 +2020,7 @@ impl TunnelAgentState {
                     if let Err(error) =
                         candidate_budget.admit(udid.len(), targets[index].host.len())
                     {
-                        return admission::PairedCandidates::Incomplete(error);
+                        return (admission::PairedCandidates::Incomplete(error), Vec::new());
                     }
                     planned.push((udid, ticket, index));
                 }
@@ -1972,50 +2035,94 @@ impl TunnelAgentState {
                 },
                 &self.inner.global_metadata_bytes,
             );
-            if let admission::PairedCandidates::Complete { targets, .. } = &reply {
+            if matches!(&reply, admission::PairedCandidates::Complete { .. }) {
                 _paired_snapshot_charge = Some(charge);
+            }
+            (reply, planned)
+        });
+        // Build and byte-admit the entire paired input batch before acquiring
+        // any automatic paired ticket or mutating the existing USB window.
+        if let Some((
+            admission::PairedCandidates::Complete {
+                targets, indices, ..
+            },
+            planned,
+        )) = &paired
+        {
+            let prepare = (|| -> Result<_> {
+                let mut inputs = metadata_vec::KnownVec::new(
+                    Arc::clone(&self.inner.global_metadata_bytes),
+                    MAX_FAILURE_RECORDS,
+                );
+                inputs.reserve(planned.len() + indices.len())?;
                 for (udid, ticket, index) in planned {
-                    if seen.insert(udid.clone()) {
-                        candidates.push((
-                            udid,
-                            Route::Mobdev2(targets[index].host.clone()),
-                            ticket,
-                            None,
-                        ));
+                    if !seen.contains(udid) {
+                        let input = candidate_input::Input::owned(
+                            udid.clone(),
+                            Route::Mobdev2(targets[*index].host.clone()),
+                            &self.inner.global_metadata_bytes,
+                        )?;
+                        inputs.push((input, Some(ticket.clone())))?;
                     }
                 }
-            }
-            reply
-        });
-        if let Some(admission::PairedCandidates::Complete {
-            targets, indices, ..
-        }) = &paired
-        {
-            for &index in indices {
-                let target = &targets[index];
-                if self.inner.access.permits_device(&target.udid)
-                    && !manual.contains_key(&target.udid)
-                    && !suppressed.contains(&target.udid)
-                    && seen.insert(target.udid.clone())
-                {
-                    whole.check()?;
-                    let ticket = match self.inner.lifecycle.ticket(&target.udid).await {
-                        Ok(ticket) => ticket.fenced(),
-                        Err(error)
-                            if crate::output::operation_error_class(error.as_ref())
-                                == ios_core::ErrorClass::ResourceLimit =>
-                        {
-                            session.retain(scan::Source::Coordinator, error);
+                for &index in indices {
+                    let target = &targets[index];
+                    if self.inner.access.permits_device(&target.udid)
+                        && !manual.contains_key(&target.udid)
+                        && !suppressed.contains(&target.udid)
+                        && !seen.contains(&target.udid)
+                    {
+                        let input = candidate_input::Input::owned(
+                            target.udid.clone(),
+                            Route::Mobdev2(target.host.clone()),
+                            &self.inner.global_metadata_bytes,
+                        )?;
+                        inputs.push((input, None))?;
+                    }
+                }
+                candidates.reserve(inputs.len())?;
+                Ok(inputs)
+            })();
+            match prepare {
+                Err(error) => {
+                    _paired_snapshot_charge = None;
+                    paired = Some((admission::PairedCandidates::Incomplete(error), Vec::new()));
+                }
+                Ok(inputs) => {
+                    for (input, manual_ticket) in inputs {
+                        if !self.inner.access.permits_device(&input.udid) {
                             continue;
                         }
-                        Err(error) => return Err(error),
-                    };
-                    candidates.push((
-                        target.udid.clone(),
-                        Route::Mobdev2(target.host.clone()),
-                        ticket,
-                        None,
-                    ));
+                        if !seen.insert(input.udid.clone()) {
+                            continue;
+                        }
+                        whole.check()?;
+                        let ticket = match manual_ticket {
+                            Some(ticket) => ticket,
+                            None => match self.inner.lifecycle.ticket(&input.udid).await {
+                                Ok(ticket) => ticket.fenced(),
+                                Err(error)
+                                    if crate::output::operation_error_class(error.as_ref())
+                                        == ios_core::ErrorClass::ResourceLimit =>
+                                {
+                                    session.retain(scan::Source::Coordinator, error);
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            },
+                        };
+                        // Admission may have waited behind another coordinator
+                        // while authorization was revoked. Rechecks can remove
+                        // prepared inputs, never add an unplanned target.
+                        if !self.inner.access.permits_device(&input.udid) {
+                            continue;
+                        }
+                        candidates.push(candidate_index::Candidate {
+                            input,
+                            ticket,
+                            native_id: None,
+                        })?;
+                    }
                 }
             }
         }
@@ -2027,11 +2134,11 @@ impl TunnelAgentState {
         // Retain rejected current metadata before any candidate waits. A caller
         // drop must keep its original cause in the same bounded history slot.
         let paired = match paired {
-            Some(admission::PairedCandidates::Incomplete(error)) => {
+            Some((admission::PairedCandidates::Incomplete(error), _)) => {
                 session.retain(scan::Source::Paired, error);
                 None
             }
-            complete => complete,
+            complete => complete.map(|(reply, _)| reply),
         };
         if let Some(admission::PairedCandidates::Complete { targets, .. }) = &paired {
             let observed = targets
@@ -2052,7 +2159,7 @@ impl TunnelAgentState {
             })?;
         }
         self.reconcile_failures(
-            &candidates,
+            candidates.as_slice(),
             matches!(&paired, Some(admission::PairedCandidates::Complete { .. })),
             usb_complete,
             &manual,
@@ -2074,38 +2181,56 @@ impl TunnelAgentState {
 
     async fn refresh_candidates(
         &self,
-        candidates: Vec<candidate_index::Candidate>,
+        candidates: metadata_vec::KnownVec<candidate_index::Candidate>,
         whole: &scan::Deadline,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
         let mut connections = futures_util::stream::iter(candidates)
-            .map(|(udid, route, ticket, expected_id)| async move {
+            .map(|candidate| async move {
+                let candidate_index::Candidate {
+                    input,
+                    ticket,
+                    native_id,
+                } = candidate;
+                let route = match input.source_route() {
+                    Ok(route) => route,
+                    Err(error) => return Err(error),
+                };
                 match self
-                    .refresh_connect_with_total(&udid, route, &ticket, expected_id, Some(whole))
+                    .refresh_connect_with_input(
+                        &input.udid,
+                        route,
+                        &ticket,
+                        native_id,
+                        Some(whole),
+                        Some(Arc::clone(&input)),
+                    )
                     .await
                 {
                     ScanAttemptOutcome::Failure(failed) => {
-                        Some(ScanIntent::Failure(FailureIntent {
-                            udid,
+                        Ok(Some(ScanIntent::Failure(FailureIntent {
+                            udid: input.udid.clone(),
                             ticket,
                             failed,
-                        }))
+                            _input: Some(Arc::clone(&input)),
+                        })))
                     }
                     ScanAttemptOutcome::Success(success) => {
-                        Some(ScanIntent::Success(SuccessIntent {
-                            udid,
+                        Ok(Some(ScanIntent::Success(SuccessIntent {
+                            udid: input.udid.clone(),
                             ticket,
                             success,
-                        }))
+                            _input: Some(Arc::clone(&input)),
+                        })))
                     }
-                    ScanAttemptOutcome::NoChange => None,
+                    ScanAttemptOutcome::NoChange => Ok(None),
                 }
             })
             .buffer_unordered(lifecycle::MAX_CONNECTS);
         let mut intents = Vec::new();
         while let Some(outcome) = connections.next().await {
-            if let Some(intent) = outcome {
+            if let Some(intent) = outcome? {
                 intents.push(intent);
             }
         }
@@ -2136,6 +2261,7 @@ impl TunnelAgentState {
                     udid,
                     ticket,
                     success,
+                    _input: None,
                 }));
             }
         }

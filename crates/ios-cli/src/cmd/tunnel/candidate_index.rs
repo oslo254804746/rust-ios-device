@@ -7,7 +7,19 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{Route, Ticket};
 
-pub(super) type Candidate = (String, Route, Ticket, Option<u32>);
+pub(super) struct Candidate {
+    pub(super) input: Arc<super::candidate_input::Input>,
+    pub(super) ticket: Ticket,
+    pub(super) native_id: Option<u32>,
+}
+
+#[cfg(test)]
+impl Candidate {
+    pub(super) fn first_usb_bytes(udid: &str) -> usize {
+        2 * std::mem::size_of::<Self>() + super::candidate_input::Input::bytes(udid, &Route::Usbmux)
+            - udid.len()
+    }
+}
 
 pub(super) struct Index<'a> {
     candidates: &'a [Candidate],
@@ -23,7 +35,13 @@ impl<'a> Index<'a> {
         })?;
         let storage = super::admission::known_vec_backing(bank, &positions)?;
         positions.extend(0..candidates.len());
-        positions.sort_unstable_by(|a, b| candidates[*a].0.cmp(&candidates[*b].0).then(a.cmp(b)));
+        positions.sort_unstable_by(|a, b| {
+            candidates[*a]
+                .input
+                .udid
+                .cmp(&candidates[*b].input.udid)
+                .then(a.cmp(b))
+        });
         Ok(Self {
             candidates,
             positions,
@@ -36,10 +54,10 @@ impl<'a> Index<'a> {
         // input; production's seen set normally makes all these keys unique.
         let end = self
             .positions
-            .partition_point(|index| self.candidates[*index].0.as_str() <= udid);
+            .partition_point(|index| self.candidates[*index].input.udid.as_str() <= udid);
         let index = *self.positions.get(end.checked_sub(1)?)?;
-        let (key, route, _, native_id) = &self.candidates[index];
-        (key == udid).then_some((route, *native_id))
+        let candidate = &self.candidates[index];
+        (candidate.input.udid == udid).then_some((&candidate.input.route, candidate.native_id))
     }
 }
 

@@ -336,6 +336,7 @@ async fn intent_contested_manual_cleanup_never_removes_later_real_source_failure
         .unwrap();
     state
         .flush_failure_intents(vec![FailureIntent {
+            _input: None,
             udid: A.into(),
             ticket: ticket.clone(),
             failed,
