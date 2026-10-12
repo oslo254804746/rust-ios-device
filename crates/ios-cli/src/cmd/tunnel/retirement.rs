@@ -85,6 +85,7 @@ struct Entry {
     // An admitted device's known metadata charge remains with the original
     // runtime until its joins are certified, even after its table row drops.
     metadata: Option<Arc<OwnedSemaphorePermit>>,
+    global_metadata: Option<Arc<OwnedSemaphorePermit>>,
     failure_observed: bool,
 }
 
@@ -222,6 +223,7 @@ impl Registry {
             phase: Phase::Reserved,
             handle: None,
             metadata: None,
+            global_metadata: None,
             failure_observed: false,
         });
         Ok(Reservation {
@@ -722,6 +724,18 @@ pub(super) struct NativeLease {
 }
 
 impl NativeLease {
+    pub(super) fn retain_global_metadata(&self, metadata: Arc<OwnedSemaphorePermit>) -> Result<()> {
+        let mut state = self.registry.lock();
+        let entry =
+            Registry::entry_mut(&mut state, &self.key).ok_or_else(super::lifecycle::cancelled)?;
+        anyhow::ensure!(
+            entry.global_metadata.is_none(),
+            crate::output::input_decision("native global metadata charge already retained")
+        );
+        entry.global_metadata = Some(metadata);
+        Ok(())
+    }
+
     pub(super) fn retain_metadata(&self, metadata: Arc<OwnedSemaphorePermit>) -> Result<()> {
         let mut state = self.registry.lock();
         let entry =
