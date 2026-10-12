@@ -33,19 +33,20 @@ listeners require explicit UDID selection without first-device discovery. See
 [HTTP boundaries](http-boundary.md) and
 [management access](management-access.md) before migrating existing clients.
 
-The following CDP domains remain **unimplemented** as compatible domains:
+The following domains have limited adapters or still lack implementation:
 
 | Domain | Missing evidence and next validation |
 | --- | --- |
-| JSContext Runtime | Actual Puppeteer selects the synthetic context through the Rust bridge, evaluates and rejects an unknown context ID. Console events and context destruction, full Playwright initialization and representative physical JSContext workflows remain pending. |
-| iframe / Page | Capture WebInspector frame-tree, navigation, and execution-context events from a page with a same-origin and cross-origin iframe. Run an actual client frame selection and navigation sequence through an injectable fake WebInspector service, then compare IDs and event order. |
-| Input / screenshot | Capture WebInspector touch/key and screenshot requests plus image metadata. Run a client click, type, and screenshot sequence against a synthetic page, checking coordinates, modifiers, image encoding, and failures. |
-| Fetch | Capture interception enable, paused request, continue/fulfill/fail, and cancellation events. Test request interception and response delivery with a real client against a fake service. |
+| JSContext Runtime | Actual Puppeteer selects the synthetic context through the Rust bridge, evaluates and rejects an unknown context ID. Context destruction now follows native page/application closure. Console workflows, full Playwright initialization and representative physical JSContext workflows remain pending. |
+| iframe / Page | The adapter uses native `Page.getResourceTree` and frame events, preserving children. Navigation waits for matching native frame/URL commit; it does not infer completion from evaluate returning. Actual pinned-client page/frame workflows remain pending. |
+| Input / screenshot | PNG viewport/scale-1 clip screenshots use native `Page.snapshotRect` and validate decoded image data. Trusted input remains unsupported; DOM-synthesized events cannot establish native input semantics. Actual pinned-client screenshot workflows remain pending. |
+| Fetch | One wildcard request/response stage uses native Network interception, with correlated pause/continue/fulfill/fail acknowledgements. Authentication/resource filters, complete rollback, target cancellation and downloads remain missing. Actual client interception workflows remain pending. |
 | Memory / Performance | Capture supported WebInspector methods and result fields, then run client metric and memory requests against fixtures. Reject commands lacking a verified translation. |
 
-The bridge returns CDP `-32601` for Page, Input, Fetch, Memory, and Performance
-methods instead of forwarding overlapping WebKit names and possibly returning a
-false success. `Runtime.evaluate` with `throwOnSideEffect=true` also returns an
+The bridge returns CDP `-32601` for unsupported methods, including trusted Input,
+Memory and Performance, rather than forwarding overlapping WebKit names.
+Page/Fetch support is limited to the explicit translations above.
+`Runtime.evaluate` with `throwOnSideEffect=true` also returns an
 error because WebKit does not provide the required no-side-effect guarantee.
 The JSContext adapter rejects unknown context IDs before stripping its own
 synthetic context selector.

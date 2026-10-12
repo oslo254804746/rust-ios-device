@@ -118,7 +118,10 @@ impl RunXcTestCmd {
 
         self.workflow.preflight()?;
         anyhow::ensure!(
-            self.wait || (!self.workflow.uninstall_on_finish && self.workflow.rerun_failed == 0),
+            self.wait
+                || (!self.workflow.uninstall_on_finish
+                    && self.workflow.rerun_failed == 0
+                    && self.workflow.crash_output.is_none()),
             "workflow cleanup and reruns require --wait"
         );
         if let Some(path) = &self.workflow.install_runner {
@@ -153,11 +156,23 @@ impl RunXcTestCmd {
             None
         };
 
+        let native = crate::cmd::tunnel::NativeScope::new();
+        let mut crashes = self.workflow.crash_output.as_deref().map(|root| {
+            crate::cmd::test_workflow::crash::CrashCapture::new(
+                root,
+                std::iter::once(direct_plan.test_runner_bundle_id.clone())
+                    .chain(direct_plan.bundle_id.clone()),
+            )
+        });
         let mut workflow_sessions = Vec::new();
         let mut startup_scopes = Vec::<TestStartupCleanup>::new();
         let mut attempts = crate::cmd::test_workflow::AttemptHistory::default();
         let mut latest_summary = None;
+        let mut pending_startup = None;
         let work = Box::pin(async {
+            if let Some(crashes) = &mut crashes {
+                crashes.baseline(&udid, deadline, &native).await?;
+            }
             if let Err(error) = tokio::time::timeout_at(
                 deadline,
                 crate::cmd::test_workflow::install_package_if_present(
@@ -207,7 +222,9 @@ impl RunXcTestCmd {
             let device = match until(
                 deadline,
                 "connecting to testmanagerd",
-                Box::pin(crate::cmd::runtest::connect_testmanager_device(&udid)),
+                Box::pin(crate::cmd::runtest::connect_testmanager_device_scoped(
+                    &udid, &native,
+                )),
             )
             .await
             {
@@ -286,6 +303,7 @@ impl RunXcTestCmd {
                 launch_plan.clone(),
                 deadline,
                 startup_scopes.last_mut().expect("startup owner admitted"),
+                &native,
             ))
             .await
             {
@@ -375,6 +393,7 @@ impl RunXcTestCmd {
                                     startup_scopes
                                         .last_mut()
                                         .expect("rerun startup owner admitted"),
+                                    &native,
                                 ))
                             })
                             .await
@@ -436,19 +455,17 @@ impl RunXcTestCmd {
                     ));
                 }
             } else {
-                print_result(
-                    json_output,
-                    serde_json::json!({
-                        "status": "started",
-                        "configuration": configuration_name,
-                        "runner_bundle_id": startup.runner_bundle_id,
-                        "target_bundle_id": startup.target_bundle_id,
-                        "pid": startup.pid,
-                        "protocol_version": startup.protocol_version,
-                        "minimum_version": startup.minimum_version,
-                        "note": "The runner was started; use --wait to collect XCTest result events.",
-                    }),
-                )?;
+                pending_startup = Some(serde_json::json!({
+                    "status": "started",
+                    "configuration": configuration_name,
+                    "runner_bundle_id": startup.runner_bundle_id,
+                    "target_bundle_id": startup.target_bundle_id,
+                    "pid": startup.pid,
+                    "protocol_version": startup.protocol_version,
+                    "minimum_version": startup.minimum_version,
+                    "post_disconnect_lifetime": "unknown",
+                    "note": "Startup was acknowledged. Service connections are closed before this receipt; continued runner or test execution after disconnect was not observed. Use --wait to collect result events in this invocation.",
+                }));
             }
 
             Ok(())
@@ -498,7 +515,11 @@ impl RunXcTestCmd {
             );
         }
         for session in &mut workflow_sessions {
-            session.terminate().await;
+            if self.wait || outcome.is_err() {
+                session.terminate().await;
+            } else {
+                session.detach().await;
+            }
             if let Some(error) = session.take_termination_error() {
                 outcome = crate::cmd::test_workflow::combine_results(
                     outcome,
@@ -507,9 +528,21 @@ impl RunXcTestCmd {
                 );
             }
         }
-        let outcome =
+        let mut outcome =
             crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome)
                 .await;
+        if let Some(crashes) = &mut crashes {
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                crashes.finish(&udid, &native).await,
+                "workflow crash collection failed",
+            );
+        }
+        outcome = crate::cmd::test_workflow::combine_results(
+            outcome,
+            native.close(Duration::from_secs(5)).await,
+            "workflow original native shutdown failed",
+        );
         let recorded = if let Err(error) = &outcome {
             let record = attempts.fail(error, None);
             let diagnostic = latest_summary
@@ -529,11 +562,30 @@ impl RunXcTestCmd {
             recorded,
             "workflow terminal history failed",
         );
-        crate::cmd::test_workflow::combine_results(
+        let outcome = crate::cmd::test_workflow::combine_results(
             outcome,
             attempts.write(junit_output).await,
             "workflow attempt artifact failed",
-        )
+        );
+        if let Some(mut receipt) = pending_startup {
+            receipt["service_cleanup"] = serde_json::json!(if outcome.is_ok() {
+                "complete"
+            } else {
+                "failed"
+            });
+            receipt["cleanup_error_class"] = serde_json::to_value(
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|error| ios_core::classify_error(error.as_ref())),
+            )?;
+            return crate::cmd::test_workflow::combine_results(
+                outcome,
+                print_result(json_output, receipt),
+                "XCTest startup receipt output failed",
+            );
+        }
+        outcome
     }
 }
 

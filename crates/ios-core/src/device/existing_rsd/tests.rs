@@ -10,8 +10,8 @@ use std::sync::{
 };
 use tokio::io::AsyncReadExt;
 
-const UDID: &str = "synthetic-private-existing-rsd-identity";
-const SERVICE: &str = "synthetic.private.service";
+pub(super) const UDID: &str = "synthetic-private-existing-rsd-identity";
+pub(super) const SERVICE: &str = "synthetic.private.service";
 const OBSERVE: Duration = Duration::from_secs(3);
 
 fn route() -> ExistingRsdRoute {
@@ -56,7 +56,7 @@ impl Source for OwnedSource {
     }
 }
 
-fn directory() -> IndexMap<String, XpcValue> {
+pub(super) fn directory() -> IndexMap<String, XpcValue> {
     IndexMap::from([
         (
             String::from("MessageType"),
@@ -88,7 +88,7 @@ fn directory() -> IndexMap<String, XpcValue> {
     ])
 }
 
-fn wire(dictionary: IndexMap<String, XpcValue>) -> Bytes {
+pub(super) fn wire(dictionary: IndexMap<String, XpcValue>) -> Bytes {
     encode_message(&XpcMessage {
         flags: flags::ALWAYS_SET | flags::DATA,
         msg_id: 0,
@@ -97,7 +97,7 @@ fn wire(dictionary: IndexMap<String, XpcValue>) -> Bytes {
     .unwrap()
 }
 
-fn frame(kind: u8, flag: u8, stream: u32, body: &[u8]) -> Vec<u8> {
+pub(super) fn frame(kind: u8, flag: u8, stream: u32, body: &[u8]) -> Vec<u8> {
     assert!(body.len() <= 0xff_ffff);
     let n = body.len() as u32;
     let mut bytes = Vec::with_capacity(9 + body.len());
@@ -123,7 +123,7 @@ async fn read_frame<S: AsyncRead + Unpin>(peer: &mut S) -> (u8, u8, u32, Vec<u8>
     )
 }
 
-async fn active_bootstrap<S: AsyncRead + AsyncWrite + Unpin>(peer: &mut S) {
+pub(super) async fn active_bootstrap<S: AsyncRead + AsyncWrite + Unpin>(peer: &mut S) {
     let mut preface = [0; 24];
     peer.read_exact(&mut preface).await.unwrap();
     assert_eq!(&preface, crate::xpc::h2_raw::H2_PREFACE);
@@ -162,7 +162,7 @@ async fn reply<S: AsyncWrite + Unpin>(peer: &mut S, messages: Vec<Bytes>) {
     }
 }
 
-fn assert_control_tail(mut remaining: &[u8]) {
+pub(super) fn assert_control_tail(mut remaining: &[u8]) {
     // H2 flow-control credit may be returned while a large directory is read.
     // No later XPC DATA, service stream HEADERS or mutation is permitted.
     while !remaining.is_empty() {

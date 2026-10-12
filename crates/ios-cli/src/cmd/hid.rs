@@ -13,6 +13,7 @@ use ios_core::{connect, ConnectOptions, TunMode};
 
 const DEFAULT_VENDOR_ID: i64 = 0x05ac;
 const DEFAULT_PRODUCT_ID: i64 = 0x0250;
+mod observer;
 
 #[derive(clap::Args)]
 pub struct HidCmd {
@@ -29,6 +30,19 @@ pub struct HidCmd {
 
 #[derive(clap::Subcommand)]
 enum HidSub {
+    /// Observe an approved synthetic contact/media stop and original native cleanup
+    ObserveStop {
+        #[arg(
+            long,
+            help = "SHA-256 of the approved baseline encoded XPC media-status value"
+        )]
+        expected_status_sha256: String,
+        #[arg(
+            long,
+            help = "Explicitly authorize the protocol's stopAll media operation"
+        )]
+        confirm_stop_all: bool,
+    },
     /// Send one Indigo hardware-button event.
     Button {
         #[arg(long, default_value_t = 0x0c)]
@@ -94,6 +108,10 @@ enum HidSub {
 }
 
 impl HidCmd {
+    pub fn needs_default_udid(&self) -> bool {
+        !matches!(self.sub, HidSub::ObserveStop { .. })
+    }
+
     pub async fn run(self, udid: Option<String>, json_output: bool) -> Result<()> {
         if !self.confirm {
             anyhow::bail!(
@@ -108,11 +126,28 @@ impl HidCmd {
         } else {
             Duration::from_secs(self.timeout)
         };
+        if let HidSub::ObserveStop {
+            expected_status_sha256,
+            confirm_stop_all,
+        } = &self.sub
+        {
+            return Box::pin(observer::run(
+                &udid,
+                expected_status_sha256,
+                *confirm_stop_all,
+                timeout,
+                json_output,
+            ))
+            .await;
+        }
         run_with_deadline(timeout, self.run_operation(udid, json_output)).await
     }
 
     async fn run_operation(self, udid: String, json_output: bool) -> Result<()> {
         match self.sub {
+            HidSub::ObserveStop { .. } => {
+                anyhow::bail!("HID observer requires its original owner entry point")
+            }
             HidSub::Button {
                 usage_page,
                 usage_code,

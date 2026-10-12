@@ -182,6 +182,34 @@ pub struct InstallRecord {
     pub extra: IndexMap<String, XpcValue>,
 }
 
+/// The integer encoding observed before DBSequence is projected to u64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DbSequenceWireType {
+    Int64,
+    Uint64,
+}
+
+/// Additive wire evidence without changing the existing InstallRecord fields.
+pub struct ObservedInstallRecord {
+    pub record: InstallRecord,
+    pub db_sequence_wire_type: DbSequenceWireType,
+}
+
+impl std::fmt::Debug for ObservedInstallRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObservedInstallRecord")
+            .field("db_sequence_wire_type", &self.db_sequence_wire_type)
+            .field("db_sequence", &self.record.db_sequence)
+            .field(
+                "persistent_identifier_bytes",
+                &self.record.persistent_identifier.len(),
+            )
+            .field("extra_fields", &self.record.extra.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Encode a CoreFoundation NSURL exactly as the reference client does.
 pub fn encode_url(url: &str) -> XpcValue {
     XpcValue::Dictionary(IndexMap::from([
@@ -239,6 +267,11 @@ impl InstallCoordinationProxyClient {
         self.timeout
     }
 
+    /// Local framing/operation state only; not a remote cleanup acknowledgement.
+    pub fn is_usable(&self) -> bool {
+        self.usable && self.client.is_usable()
+    }
+
     /// Connect through the canonical RSD entry selected for this request.
     ///
     /// `ConnectedDevice` rejects `.shim.remote` entries for XPC services, and
@@ -289,6 +322,29 @@ impl InstallCoordinationProxyClient {
         &mut self,
         bundle_identifier: &str,
     ) -> Result<InstallRecord, InstallCoordinationError> {
+        self.query_with_budget(bundle_identifier, self.timeout)
+            .await
+    }
+
+    /// Use a local send/receive budget without changing this client's default.
+    /// Zero rejects before business I/O and permits a later query on the same
+    /// instance. Any progressed failure retains the existing unusable fence.
+    pub async fn query_with_budget(
+        &mut self,
+        bundle_identifier: &str,
+        budget: Duration,
+    ) -> Result<InstallRecord, InstallCoordinationError> {
+        self.query_observed_with_budget(bundle_identifier, budget)
+            .await
+            .map(|observed| observed.record)
+    }
+
+    /// Query with the same native path and retain DBSequence's actual wire type.
+    pub async fn query_observed_with_budget(
+        &mut self,
+        bundle_identifier: &str,
+        budget: Duration,
+    ) -> Result<ObservedInstallRecord, InstallCoordinationError> {
         if !self.usable {
             return Err(InstallCoordinationError::Protocol(
                 "install coordination connection is unusable after a previous failed query; \
@@ -303,11 +359,11 @@ impl InstallCoordinationProxyClient {
         // message id.  pymobiledevice3 similarly sends this request without
         // WANTING_REPLY and consumes the next response directly.
         let deadline = tokio::time::Instant::now()
-            .checked_add(self.timeout)
+            .checked_add(budget)
             .ok_or_else(|| {
                 InstallCoordinationError::Protocol(format!(
                     "query timeout {:#?} exceeds the representable instant range",
-                    self.timeout
+                    budget
                 ))
             })?;
         // A zero timeout (or a deadline the timer has already passed) must
@@ -315,8 +371,8 @@ impl InstallCoordinationProxyClient {
         // granularity alone cannot guarantee that, so check it explicitly.
         // Nothing was sent, so the connection stays in sync and remains
         // usable for a later query.
-        if self.timeout.is_zero() || tokio::time::Instant::now() >= deadline {
-            return Err(InstallCoordinationError::Timeout(self.timeout));
+        if budget.is_zero() || tokio::time::Instant::now() >= deadline {
+            return Err(InstallCoordinationError::Timeout(budget));
         }
         // The wire protocol has no request/response correlation. Once all
         // pre-I/O checks have passed, a caller may cancel this future at any
@@ -332,14 +388,14 @@ impl InstallCoordinationProxyClient {
             }
             Err(_elapsed) => {
                 self.usable = false;
-                return Err(InstallCoordinationError::Timeout(self.timeout));
+                return Err(InstallCoordinationError::Timeout(budget));
             }
         }
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 self.usable = false;
-                return Err(InstallCoordinationError::Timeout(self.timeout));
+                return Err(InstallCoordinationError::Timeout(budget));
             }
             let response = match tokio::time::timeout(remaining, self.client.recv_any()).await {
                 Ok(Ok(message)) => message,
@@ -349,7 +405,7 @@ impl InstallCoordinationProxyClient {
                 }
                 Err(_elapsed) => {
                     self.usable = false;
-                    return Err(InstallCoordinationError::Timeout(self.timeout));
+                    return Err(InstallCoordinationError::Timeout(budget));
                 }
             };
             // RemoteXPC peers may emit zero-length wrappers or empty
@@ -362,7 +418,7 @@ impl InstallCoordinationProxyClient {
             // connection stays in sync, so it does not poison the client; a
             // later query simply consumes the next response.
             self.usable = true;
-            return parse_query_response(response, bundle_identifier);
+            return parse_observed_query_response(response, bundle_identifier);
         }
     }
 }
@@ -417,10 +473,18 @@ fn build_query_request(bundle_identifier: &str) -> XpcValue {
     ]))
 }
 
+#[cfg(test)]
 fn parse_query_response(
     response: XpcMessage,
     bundle_identifier: &str,
 ) -> Result<InstallRecord, InstallCoordinationError> {
+    parse_observed_query_response(response, bundle_identifier).map(|observed| observed.record)
+}
+
+fn parse_observed_query_response(
+    response: XpcMessage,
+    bundle_identifier: &str,
+) -> Result<ObservedInstallRecord, InstallCoordinationError> {
     let body = response.body.ok_or_else(|| {
         InstallCoordinationError::Protocol("query response is missing a body".into())
     })?;
@@ -452,6 +516,11 @@ fn parse_query_response(
         .ok_or_else(|| {
             InstallCoordinationError::Protocol("query response DBSequence is not an integer".into())
         })?;
+    let db_sequence_wire_type = match body.get("DBSequence") {
+        Some(XpcValue::Int64(_)) => DbSequenceWireType::Int64,
+        Some(XpcValue::Uint64(_)) => DbSequenceWireType::Uint64,
+        _ => unreachable!("validated DBSequence wire integer"),
+    };
     let install_path = match body.get("InstallPath") {
         None | Some(XpcValue::Null) => None,
         Some(value) => {
@@ -501,12 +570,15 @@ fn parse_query_response(
         }
     }
 
-    Ok(InstallRecord {
-        db_uuid,
-        db_sequence,
-        install_path,
-        persistent_identifier,
-        extra,
+    Ok(ObservedInstallRecord {
+        record: InstallRecord {
+            db_uuid,
+            db_sequence,
+            install_path,
+            persistent_identifier,
+            extra,
+        },
+        db_sequence_wire_type,
     })
 }
 
@@ -1487,6 +1559,116 @@ mod tests {
 
     /// X-08: canceling a query after its request was sent must poison the
     /// connection, because the uncorrelated response may arrive later.
+    #[tokio::test]
+    async fn observed_local_zero_budget_preserves_default_and_same_native_connection_wire_type() {
+        for (sequence, expected) in [
+            (XpcValue::Int64(276), DbSequenceWireType::Int64),
+            (XpcValue::Uint64(276), DbSequenceWireType::Uint64),
+        ] {
+            let default_budget = Duration::from_secs(17);
+            let (mut proxy, mut peer) = connect_with_timeout(default_budget).await;
+            let zero = proxy
+                .query_with_budget("com.synthetic.Observer", Duration::ZERO)
+                .await;
+            assert!(
+                matches!(zero, Err(InstallCoordinationError::Timeout(value)) if value.is_zero())
+            );
+            assert!(proxy.is_usable());
+            assert_eq!(proxy.timeout(), default_budget);
+            // No DATA business frame after bootstrap, before the finite query.
+            let mut unexpected = [0u8; 1];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), peer.read(&mut unexpected))
+                    .await
+                    .is_err()
+            );
+            let responder = tokio::spawn(async move {
+                let request = read_request(&mut peer).await;
+                assert_eq!(
+                    request.flags,
+                    crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::DATA
+                );
+                assert_eq!(
+                    request
+                        .body
+                        .as_ref()
+                        .and_then(XpcValue::as_dict)
+                        .and_then(|body| body.get("BundleID"))
+                        .and_then(XpcValue::as_str),
+                    Some("com.synthetic.Observer")
+                );
+                send_on_stream(
+                    &mut peer,
+                    STREAM_CLIENT_SERVER,
+                    &encode_xpc(
+                        crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::DATA,
+                        71,
+                        Some(XpcValue::Dictionary(IndexMap::from([
+                            ("Success".into(), XpcValue::Bool(true)),
+                            (
+                                "DBUUID".into(),
+                                XpcValue::String("owned-private-db-uuid".into()),
+                            ),
+                            ("DBSequence".into(), sequence),
+                            (
+                                "PersistentIdentifier".into(),
+                                XpcValue::Data(Bytes::from_static(b"owned-private-identifier")),
+                            ),
+                        ]))),
+                    ),
+                )
+                .await;
+                peer
+            });
+            let observed = proxy
+                .query_observed_with_budget("com.synthetic.Observer", Duration::from_secs(2))
+                .await
+                .unwrap();
+            assert_eq!(observed.db_sequence_wire_type, expected);
+            assert_eq!(observed.record.db_sequence, 276);
+            assert_eq!(proxy.timeout(), default_budget);
+            assert!(proxy.is_usable());
+            assert!(!format!("{observed:?}").contains("owned-private"));
+            drop(proxy);
+            let mut peer = responder.await.unwrap();
+            let mut remainder = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remainder))
+                .await
+                .unwrap()
+                .unwrap();
+            // Native HTTP/2 control acknowledgements are allowed, a second
+            // business request or partial frame is not.
+            let mut offset = 0;
+            while offset < remainder.len() {
+                assert!(remainder.len() - offset >= 9);
+                let header = &remainder[offset..offset + 9];
+                let size =
+                    ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+                assert_ne!(
+                    header[3], FRAME_DATA,
+                    "same socket received an unexpected second business frame"
+                );
+                offset += 9 + size;
+                assert!(offset <= remainder.len());
+            }
+        }
+    }
+
+    #[test]
+    fn observed_wire_type_rejects_negative_signed_sequences() {
+        let response = XpcMessage {
+            flags: crate::xpc::message::flags::ALWAYS_SET | crate::xpc::message::flags::DATA,
+            msg_id: 1,
+            body: Some(XpcValue::Dictionary(IndexMap::from([
+                ("Success".into(), XpcValue::Bool(true)),
+                ("DBUUID".into(), XpcValue::String("synthetic".into())),
+                ("DBSequence".into(), XpcValue::Int64(-1)),
+                ("PersistentIdentifier".into(), XpcValue::Data(Bytes::new())),
+            ]))),
+        };
+        assert!(parse_observed_query_response(response, "com.synthetic.Observer").is_err());
+    }
+
     #[tokio::test]
     async fn x08_external_cancel_after_send_rejects_reuse_without_a_new_request() {
         let (mut proxy, mut peer) = connect_with_timeout(Duration::from_secs(30)).await;

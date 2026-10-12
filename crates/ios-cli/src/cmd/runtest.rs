@@ -20,7 +20,7 @@ use ios_core::XctCapabilities;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::cmd::connect::{connect_lockdown_only, connect_userspace_tunnel};
+use crate::cmd::connect::connect_lockdown_only;
 
 #[derive(clap::Args)]
 pub struct RunTestCmd {
@@ -62,7 +62,10 @@ impl RunTestCmd {
         }
         self.workflow.preflight()?;
         anyhow::ensure!(
-            self.wait || (!self.workflow.uninstall_on_finish && self.workflow.rerun_failed == 0),
+            self.wait
+                || (!self.workflow.uninstall_on_finish
+                    && self.workflow.rerun_failed == 0
+                    && self.workflow.crash_output.is_none()),
             "workflow cleanup and reruns require --wait"
         );
         let validated_configs = parse_xctestrun_file(&self.xctestrun)
@@ -102,11 +105,23 @@ impl RunTestCmd {
         let mut app_tracker =
             crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
 
+        let native = crate::cmd::tunnel::NativeScope::new();
+        let mut crashes = self.workflow.crash_output.as_deref().map(|root| {
+            crate::cmd::test_workflow::crash::CrashCapture::new(
+                root,
+                std::iter::once(scheme.test_host_bundle_identifier.clone())
+                    .chain(infer_target_bundle_id(scheme, None)),
+            )
+        });
         let mut workflow_sessions = Vec::new();
         let mut startup_scopes = Vec::<TestStartupCleanup>::new();
         let mut attempts = crate::cmd::test_workflow::AttemptHistory::default();
         let mut latest_summary = None;
+        let mut pending_startup = None;
         let work = Box::pin(async {
+            if let Some(crashes) = &mut crashes {
+                crashes.baseline(&udid, deadline, &native).await?;
+            }
             if let Err(error) = crate::cmd::test_workflow::install_package_if_present(
                 &udid,
                 self.workflow.install_app.as_deref(),
@@ -153,7 +168,7 @@ impl RunTestCmd {
 
             crate::output::write_error_line(format_args!("UNTESTED: XCTest execution workflow has automated coverage, but no real-device validation in this workspace yet."))?;
 
-            let device = match Box::pin(connect_testmanager_device(&udid)).await {
+            let device = match Box::pin(connect_testmanager_device_scoped(&udid, &native)).await {
                 Ok(device) => device,
                 Err(error) => {
                     let report_result = write_junit_diagnostic(
@@ -229,6 +244,7 @@ impl RunTestCmd {
                         Some(deadline),
                         false,
                         startup_scopes.last_mut().expect("startup owner admitted"),
+                        &native,
                     )),
                 )
                 .await;
@@ -351,6 +367,7 @@ impl RunTestCmd {
                                     startup_scopes
                                         .last_mut()
                                         .expect("rerun startup owner admitted"),
+                                    &native,
                                 ))
                             },
                         )
@@ -423,29 +440,37 @@ impl RunTestCmd {
                 return Ok(());
             }
 
-            let result = tokio::time::timeout(
+            startup_scopes.push(TestStartupCleanup::default());
+            let session = tokio::time::timeout(
                 std::time::Duration::from_secs(self.startup_timeout_secs),
-                start_test_plan(&udid, plan),
+                Box::pin(start_test_plan_session_inner(
+                    &udid,
+                    plan,
+                    Some(deadline),
+                    false,
+                    startup_scopes.last_mut().expect("startup owner admitted"),
+                    &native,
+                )),
             )
             .await
             .map_err(|error| {
                 anyhow::Error::new(error).context("timed out waiting for XCTest startup")
             })??;
 
-            crate::output::outln!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "status": "started",
-                    "untested": true,
-                    "configuration": configuration_name,
-                    "runner_bundle_id": result.runner_bundle_id,
-                    "target_bundle_id": result.target_bundle_id,
-                    "pid": result.pid,
-                    "protocol_version": result.protocol_version,
-                    "minimum_version": result.minimum_version,
-                    "note": "Current Rust workflow stops after _IDE_startExecutingTestPlanWithProtocolVersion and does not yet stream XCTest result events.",
-                }))?
-            );
+            let result = session.startup_result().clone();
+            workflow_sessions.push(session);
+            pending_startup = Some(serde_json::json!({
+                "status": "started",
+                "untested": true,
+                "configuration": configuration_name,
+                "runner_bundle_id": result.runner_bundle_id,
+                "target_bundle_id": result.target_bundle_id,
+                "pid": result.pid,
+                "protocol_version": result.protocol_version,
+                "minimum_version": result.minimum_version,
+                "post_disconnect_lifetime": "unknown",
+                "note": "Startup was acknowledged. Service connections are closed before this receipt; continued runner or test execution after disconnect was not observed. Use --wait to collect result events in this invocation.",
+            }));
 
             Ok(())
         });
@@ -494,7 +519,11 @@ impl RunTestCmd {
             );
         }
         for session in &mut workflow_sessions {
-            session.terminate().await;
+            if self.wait || outcome.is_err() {
+                session.terminate().await;
+            } else {
+                session.detach().await;
+            }
             if let Some(error) = session.take_termination_error() {
                 outcome = crate::cmd::test_workflow::combine_results(
                     outcome,
@@ -503,9 +532,21 @@ impl RunTestCmd {
                 );
             }
         }
-        let outcome =
+        let mut outcome =
             crate::cmd::test_workflow::finish_workflow(&udid, &app_tracker, log_guard, outcome)
                 .await;
+        if let Some(crashes) = &mut crashes {
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                crashes.finish(&udid, &native).await,
+                "workflow crash collection failed",
+            );
+        }
+        outcome = crate::cmd::test_workflow::combine_results(
+            outcome,
+            native.close(Duration::from_secs(5)).await,
+            "workflow original native shutdown failed",
+        );
         let recorded = if let Err(error) = &outcome {
             let record = attempts.fail(error, None);
             let diagnostic = latest_summary
@@ -525,11 +566,26 @@ impl RunTestCmd {
             recorded,
             "workflow terminal history failed",
         );
-        crate::cmd::test_workflow::combine_results(
+        let outcome = crate::cmd::test_workflow::combine_results(
             outcome,
             attempts.write(self.junit_output.as_deref()).await,
             "workflow attempt artifact failed",
-        )
+        );
+        if let Some(mut receipt) = pending_startup {
+            receipt["service_cleanup"] = serde_json::json!(if outcome.is_ok() {
+                "complete"
+            } else {
+                "failed"
+            });
+            receipt["cleanup_error_class"] = serde_json::to_value(
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|error| ios_core::classify_error(error.as_ref())),
+            )?;
+            crate::output::outln!("{}", serde_json::to_string_pretty(&receipt)?);
+        }
+        outcome
     }
 }
 
@@ -579,13 +635,29 @@ pub struct TestStartupResult {
 
 pub struct ActiveTestPlan {
     startup_result: TestStartupResult,
-    testmanager_device: ConnectedDevice,
+    testmanager_device: Option<OwnedTestDevice>,
     _testmanager: TestmanagerClient<ServiceStream>,
-    _instruments_device: Option<ConnectedDevice>,
+    _instruments_device: Option<OwnedTestDevice>,
     _runner_controller: RunnerController,
     result_recorder: TestRunRecorder,
     termination_attempted: bool,
+    kill_attempted: bool,
     termination_error: Option<anyhow::Error>,
+    native: crate::cmd::tunnel::NativeScope,
+}
+
+pub(crate) enum OwnedTestDevice {
+    Plain(Box<ConnectedDevice>),
+    Scoped(Box<crate::cmd::tunnel::NativeConnection>),
+}
+impl std::ops::Deref for OwnedTestDevice {
+    type Target = ConnectedDevice;
+    fn deref(&self) -> &ConnectedDevice {
+        match self {
+            Self::Plain(device) => device,
+            Self::Scoped(device) => device,
+        }
+    }
 }
 
 enum RunnerController {
@@ -598,6 +670,8 @@ pub(crate) struct TestStartupCleanup {
     testmanager: Option<TestmanagerClient<ServiceStream>>,
     controller: Option<RunnerController>,
     pid: Option<u64>,
+    device: Option<OwnedTestDevice>,
+    instruments_device: Option<OwnedTestDevice>,
 }
 impl TestStartupCleanup {
     pub(crate) async fn close(&mut self) -> Result<()> {
@@ -627,6 +701,8 @@ impl TestStartupCleanup {
         }
         self.testmanager.take();
         self.controller.take();
+        self.instruments_device.take();
+        self.device.take();
         result
     }
 }
@@ -673,7 +749,12 @@ impl ActiveTestPlan {
     }
 
     pub async fn wait_for_device_port_ready(&self, device_port: u16) -> Result<()> {
-        let device_id = self.testmanager_device.info.device_id;
+        let device_id = self
+            .testmanager_device
+            .as_ref()
+            .context("XCTest session service connections are closed")?
+            .info
+            .device_id;
         wait_for_ready(|| async move {
             let stream = MuxClient::connect()
                 .await?
@@ -708,9 +789,13 @@ impl ActiveTestPlan {
     /// cancellation interrupts result collection.
     pub async fn terminate(&mut self) {
         if !self.termination_attempted {
-            let mut result =
-                terminate_process(&mut self._runner_controller, self.startup_result.pid).await;
-            self.termination_attempted = true;
+            if !self.kill_attempted {
+                let killed =
+                    terminate_process(&mut self._runner_controller, self.startup_result.pid).await;
+                self.kill_attempted = true;
+                self.termination_error = killed.err();
+            }
+            let mut result = self.termination_error.take().map_or(Ok(()), Err);
             result = crate::cmd::test_workflow::combine_results(
                 result,
                 self._testmanager
@@ -729,8 +814,21 @@ impl ActiveTestPlan {
                     "XCTest process-control close failed",
                 );
             }
+            self._instruments_device.take();
+            self.testmanager_device.take();
+            result = crate::cmd::test_workflow::combine_results(
+                result,
+                self.native.collect(Duration::from_secs(5)).await,
+                "XCTest original native retirement failed",
+            );
+            self.termination_attempted = true;
             self.termination_error = result.err();
         }
+    }
+
+    pub(crate) async fn detach(&mut self) {
+        self.kill_attempted = true;
+        self.terminate().await;
     }
 
     pub(crate) fn take_termination_error(&mut self) -> Option<anyhow::Error> {
@@ -738,17 +836,41 @@ impl ActiveTestPlan {
     }
 }
 
+// Retained composable helper; CLI paths use the caller-retained owned variant.
+#[allow(dead_code)]
 pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestStartupResult> {
-    Ok(start_test_plan_session(udid, plan)
-        .await?
-        .startup_result()
-        .clone())
+    let mut session = start_test_plan_session(udid, plan).await?;
+    let receipt = session.startup_result().clone();
+    let native = session.native.clone();
+    session.detach().await;
+    let result = session.take_termination_error().map_or(Ok(()), Err);
+    drop(session);
+    crate::cmd::test_workflow::combine_results(
+        result,
+        native.close(Duration::from_secs(5)).await,
+        "XCTest startup receipt native cleanup failed",
+    )?;
+    // This receipt records startup ACK only. Continued remote execution after
+    // the original service connections close has not been observed here.
+    Ok(receipt)
 }
 
+#[allow(dead_code)] // Used by the retained local-owner helper above.
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
+    let native = crate::cmd::tunnel::NativeScope::new();
     let mut cleanup = TestStartupCleanup::default();
-    let result = start_test_plan_session_inner(udid, plan, None, false, &mut cleanup).await;
-    complete_startup(result, &mut cleanup).await
+    let result =
+        start_test_plan_session_inner(udid, plan, None, false, &mut cleanup, &native).await;
+    let result = complete_startup(result, &mut cleanup).await;
+    match result {
+        Ok(session) => Ok(session),
+        Err(error) => Err(crate::cmd::test_workflow::combine_results(
+            Err(error),
+            native.close(Duration::from_secs(5)).await,
+            "XCTest original native cleanup failed",
+        )
+        .expect_err("startup failed")),
+    }
 }
 
 /// The caller retains the startup cleanup owner outside its cancellable work.
@@ -757,10 +879,24 @@ pub(crate) async fn start_test_plan_session_owned_until(
     plan: TestLaunchPlan,
     deadline: Instant,
     cleanup: &mut TestStartupCleanup,
+    native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<ActiveTestPlan> {
-    start_test_plan_session_inner(udid, plan, Some(deadline), true, cleanup).await
+    start_test_plan_session_inner(udid, plan, Some(deadline), true, cleanup, native).await
 }
 
+/// WDA preserves its original Instruments launch flow, while sharing the
+/// caller's absolute startup clock and owners outside cancellable work.
+pub(crate) async fn start_wda_session_owned_until(
+    udid: &str,
+    plan: TestLaunchPlan,
+    deadline: Instant,
+    cleanup: &mut TestStartupCleanup,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<ActiveTestPlan> {
+    start_test_plan_session_inner(udid, plan, Some(deadline), false, cleanup, native).await
+}
+
+#[allow(dead_code)] // Cleanup for the retained local-owner helper above.
 async fn complete_startup(
     result: Result<ActiveTestPlan>,
     cleanup: &mut TestStartupCleanup,
@@ -787,13 +923,20 @@ async fn start_test_plan_session_inner(
     deadline: Option<Instant>,
     prefer_coredevice_runner: bool,
     cleanup: &mut TestStartupCleanup,
+    native: &crate::cmd::tunnel::NativeScope,
 ) -> Result<ActiveTestPlan> {
-    let device = run_stage(
-        deadline,
-        "connecting to testmanagerd device",
-        Box::pin(connect_testmanager_device(udid)),
-    )
-    .await?;
+    cleanup.device = Some(
+        run_stage(
+            deadline,
+            "connecting to testmanagerd device",
+            Box::pin(connect_testmanager_device_scoped(udid, native)),
+        )
+        .await?,
+    );
+    let device = cleanup
+        .device
+        .as_ref()
+        .expect("startup retains device native owner");
     let product_version = run_stage(deadline, "reading the device product version", async {
         device.product_version().await.map_err(anyhow::Error::from)
     })
@@ -804,7 +947,7 @@ async fn start_test_plan_session_inner(
         deadline,
         "connecting the testmanager session stream",
         async {
-            connect_testmanager_stream(&device, connect_plan)
+            connect_testmanager_stream(device, connect_plan)
                 .await
                 .with_context(|| {
                     format!(
@@ -819,7 +962,7 @@ async fn start_test_plan_session_inner(
         deadline,
         "connecting the testmanager control stream",
         async {
-            connect_testmanager_stream(&device, connect_plan)
+            connect_testmanager_stream(device, connect_plan)
                 .await
                 .with_context(|| {
                     format!(
@@ -862,7 +1005,7 @@ async fn start_test_plan_session_inner(
             deadline,
             "uploading the legacy XCTest configuration",
             upload_legacy_xctest_configuration(
-                &device,
+                device,
                 &plan.runner.bundle_id,
                 session_id,
                 &configuration_for_device,
@@ -894,7 +1037,7 @@ async fn start_test_plan_session_inner(
     .await?;
 
     let launch_env = plan.launch_environment(product_version.major, session_id);
-    let (instruments_device, pid) = if modern_direct {
+    let pid = if modern_direct {
         let pid = run_stage(
             deadline,
             "launching the XCTest runner through CoreDevice appservice",
@@ -930,14 +1073,15 @@ async fn start_test_plan_session_inner(
             },
         )
         .await?;
-        (None, pid)
+        pid
     } else {
         let (instruments_device, instruments_stream) = run_stage(
             deadline,
             "connecting the runner launch service",
-            Box::pin(crate::cmd::instruments::connect_instruments(udid)),
+            Box::pin(connect_instruments_scoped(udid, native)),
         )
         .await?;
+        cleanup.instruments_device = Some(instruments_device);
         cleanup.controller = Some(RunnerController::Instruments(Box::new(
             ProcessControl::from_stream(instruments_stream),
         )));
@@ -981,7 +1125,7 @@ async fn start_test_plan_session_inner(
                 return Err(error);
             }
         };
-        (Some(instruments_device), pid)
+        pid
     };
 
     if modern_direct {
@@ -1031,19 +1175,21 @@ async fn start_test_plan_session_inner(
             protocol_version: summary.protocol_version,
             minimum_version: summary.minimum_version,
         },
-        testmanager_device: device,
+        testmanager_device: cleanup.device.take(),
         _testmanager: cleanup
             .testmanager
             .take()
             .expect("startup retains testmanager"),
-        _instruments_device: instruments_device,
+        _instruments_device: cleanup.instruments_device.take(),
         _runner_controller: cleanup
             .controller
             .take()
             .expect("startup retains runner control"),
         result_recorder: TestRunRecorder::default(),
         termination_attempted: false,
+        kill_attempted: false,
         termination_error: None,
+        native: native.clone(),
     })
 }
 
@@ -1087,23 +1233,42 @@ where
     }
 }
 
-pub async fn connect_testmanager_device(udid: &str) -> Result<ConnectedDevice> {
-    let product_version = Box::pin(crate::cmd::connect::probe_product_version(udid)).await?;
-    let connect_plan = testmanager_connect_plan(product_version.major);
-
-    let device = if connect_plan.requires_tunnel {
-        Box::pin(connect_userspace_tunnel(udid)).await
+pub(crate) async fn connect_testmanager_device_scoped(
+    udid: &str,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<OwnedTestDevice> {
+    let version = Box::pin(crate::cmd::connect::probe_product_version(udid)).await?;
+    if version.major >= 17 {
+        Ok(OwnedTestDevice::Scoped(Box::new(
+            Box::pin(native.connect(udid, ios_core::TunMode::Userspace)).await?,
+        )))
     } else {
-        Box::pin(connect_lockdown_only(udid)).await
-    };
+        Ok(OwnedTestDevice::Plain(Box::new(
+            Box::pin(connect_lockdown_only(udid)).await?,
+        )))
+    }
+}
 
-    device.with_context(|| {
-        if connect_plan.requires_tunnel {
-            "failed to establish device tunnel for testmanager".to_string()
-        } else {
-            "failed to connect device for lockdown testmanager".to_string()
-        }
-    })
+async fn connect_instruments_scoped(
+    udid: &str,
+    native: &crate::cmd::tunnel::NativeScope,
+) -> Result<(OwnedTestDevice, ServiceStream)> {
+    let device = Box::pin(connect_testmanager_device_scoped(udid, native)).await?;
+    let version = device.product_version().await?;
+    let stream = if version.major >= 17 {
+        device
+            .connect_rsd_service(ios_core::instruments::SERVICE_IOS17)
+            .await?
+    } else {
+        device
+            .connect_service(if version.major >= 14 {
+                ios_core::instruments::SERVICE_IOS14
+            } else {
+                ios_core::instruments::SERVICE_LEGACY
+            })
+            .await?
+    };
+    Ok((device, stream))
 }
 
 async fn connect_testmanager_stream(

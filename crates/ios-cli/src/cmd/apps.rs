@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::cmd::connect::{connect_by_ios_major, userspace_options};
 
+mod install_observer;
 mod mutation_output;
 mod streaming_install;
 use mutation_output::Mutation;
@@ -14,6 +15,18 @@ use mutation_output::Mutation;
 pub struct AppsCmd {
     #[command(subcommand)]
     sub: AppsSub,
+}
+
+impl AppsCmd {
+    pub fn needs_default_udid(&self) -> bool {
+        !matches!(
+            self.sub,
+            AppsSub::InstallRecord {
+                observe_zero_budget_recovery: true,
+                ..
+            }
+        )
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -71,6 +84,20 @@ enum AppsSub {
         bundle_id: String,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        #[arg(
+            long,
+            requires = "rsd_address",
+            help = "Observe original integer wire type and recovery after a zero-budget query on the same client"
+        )]
+        observe_zero_budget_recovery: bool,
+        #[arg(
+            long,
+            requires = "observe_zero_budget_recovery",
+            help = "Explicit already established RSD endpoint for the read-only observer"
+        )]
+        rsd_address: Option<std::net::SocketAddrV6>,
+        #[arg(long, requires = "rsd_address")]
+        rsd_proxy_port: Option<u16>,
     },
     /// List running app processes (iOS 17+ appservice)
     Processes {
@@ -176,6 +203,25 @@ impl AppsCmd {
 
     pub async fn run(self, udid: Option<String>, json: bool) -> Result<()> {
         let udid = udid.ok_or_else(|| anyhow::anyhow!("--udid required for apps commands"))?;
+
+        if let AppsSub::InstallRecord {
+            bundle_id,
+            timeout_secs,
+            observe_zero_budget_recovery: true,
+            rsd_address: Some(address),
+            rsd_proxy_port,
+        } = &self.sub
+        {
+            return Box::pin(install_observer::run(
+                &udid,
+                bundle_id,
+                *address,
+                *rsd_proxy_port,
+                *timeout_secs,
+                json,
+            ))
+            .await;
+        }
 
         let (device, ios_major) = if apps_subcommand_requires_version_probe(&self.sub) {
             let (device, version) = Box::pin(connect_by_ios_major(&udid, |major| {
@@ -569,6 +615,7 @@ impl AppsCmd {
             AppsSub::InstallRecord {
                 bundle_id,
                 timeout_secs,
+                ..
             } => {
                 let timeout = Duration::from_secs(timeout_secs);
                 let result = tokio::time::timeout(timeout, async {
@@ -1517,6 +1564,7 @@ mod tests {
             AppsSub::InstallRecord {
                 bundle_id,
                 timeout_secs,
+                ..
             } => {
                 assert_eq!(bundle_id, "com.apple.Preferences");
                 assert_eq!(timeout_secs, 7);

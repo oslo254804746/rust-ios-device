@@ -300,18 +300,26 @@ where
 /// missing fields are observations; malformed fields are original protocol
 /// errors, never a reason to replace them with another dial or timeout.
 #[cfg(feature = "tunnel")]
-pub(crate) async fn checked_handshake_with_connector<F, Fut, S>(
+pub(crate) async fn checked_handshake_with_connector_observed<F, Fut, S>(
     mut connector: F,
     identity: uuid::Uuid,
     deadline: tokio::time::Instant,
-) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError>
+) -> Result<
+    (
+        crate::device::existing_rsd::ExistingRsdObservation,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+    ),
+    XpcError,
+>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    use crate::device::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
     use std::time::Duration;
     let mut last_error = None;
+    let mut attempted_modes = Vec::with_capacity(4);
     for mode in [
         HandshakeMode::Active,
         HandshakeMode::Queued,
@@ -324,7 +332,13 @@ where
                 None => tokio::time::timeout_at(
                     deadline,
                     std::future::pending::<
-                        Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError>,
+                        Result<
+                            (
+                                crate::device::existing_rsd::ExistingRsdObservation,
+                                RsdSelectionReceipt,
+                            ),
+                            XpcError,
+                        >,
                     >(),
                 )
                 .await
@@ -337,6 +351,13 @@ where
                 })?,
             };
         }
+        let observed_mode = match mode {
+            HandshakeMode::Active => RsdHandshakeMode::Direct,
+            HandshakeMode::Queued => RsdHandshakeMode::Queued,
+            HandshakeMode::Legacy => RsdHandshakeMode::Legacy,
+            HandshakeMode::Passive => RsdHandshakeMode::Passive,
+        };
+        attempted_modes.push(observed_mode);
         let stream = connector().await?;
         let bootstrap = rsd_timeout(
             Duration::from_secs(3),
@@ -360,7 +381,15 @@ where
             HandshakeMode::Passive => Duration::from_secs(2),
         };
         match tokio::time::timeout(response_budget, read_checked_handshake(&mut framer)).await {
-            Ok(Ok(observation)) => return Ok(observation),
+            Ok(Ok(observation)) => {
+                return Ok((
+                    observation,
+                    RsdSelectionReceipt {
+                        handshake_mode: observed_mode,
+                        attempted_modes,
+                    },
+                ))
+            }
             Ok(Err(CheckedReadError::Final(error))) => return Err(error),
             Ok(Err(CheckedReadError::Retry(error))) => {
                 if tokio::time::Instant::now() >= deadline {
@@ -2719,6 +2748,99 @@ mod tests {
         .unwrap();
         assert!(streams.is_empty());
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rsd_selection_receipt_reports_each_actual_successful_bootstrap_and_fresh_fallback() {
+        use crate::device::RsdHandshakeMode;
+        let modes = [
+            RsdHandshakeMode::Direct,
+            RsdHandshakeMode::Queued,
+            RsdHandshakeMode::Legacy,
+            RsdHandshakeMode::Passive,
+        ];
+        for (index, expected) in modes.into_iter().enumerate() {
+            let mut streams = VecDeque::new();
+            for _ in 0..index {
+                let (client, peer) = tokio::io::duplex(4096);
+                drop(peer);
+                streams.push_back(client);
+            }
+            let (client, mut peer) = tokio::io::duplex(16_384);
+            streams.push_back(client);
+            let server = async {
+                read_test_preface(&mut peer).await;
+                if index == 0 {
+                    read_test_bootstrap(&mut peer).await;
+                }
+                peer.write_all(&settings_frame()).await.unwrap();
+                let ack = read_test_frame(&mut peer).await;
+                assert_eq!((ack.0, ack.1), (FRAME_SETTINGS, FLAG_SETTINGS_ACK));
+                if index == 0 {
+                    let (_, _, stream, payload) = read_test_frame(&mut peer).await;
+                    assert_eq!(stream, 1);
+                    assert_eq!(
+                        decode_message(Bytes::from(payload)).unwrap().body,
+                        device_handshake_message(uuid::Uuid::from_bytes([0x4a; 16])).body
+                    );
+                } else if index == 1 {
+                    read_test_bootstrap(&mut peer).await;
+                } else if index == 2 {
+                    let empty = encode_message(&XpcMessage {
+                        flags: flags::ALWAYS_SET,
+                        msg_id: 0,
+                        body: None,
+                    })
+                    .unwrap();
+                    for stream in [1, 1, 3] {
+                        if stream == 1 {
+                            let header = read_test_frame(&mut peer).await;
+                            assert_eq!(header.0, FRAME_HEADERS);
+                        }
+                        let data = read_test_frame(&mut peer).await;
+                        assert_eq!((data.0, data.2), (FRAME_DATA, stream));
+                        peer.write_all(&data_frame(stream, &empty)).await.unwrap();
+                    }
+                }
+                peer.write_all(&data_frame(1, &sample_handshake_message()))
+                    .await
+                    .unwrap();
+                let mut tail = Vec::new();
+                peer.read_to_end(&mut tail).await.unwrap();
+                // Only transport flow-control frames may follow the observation.
+                let mut bytes = tail.as_slice();
+                while !bytes.is_empty() {
+                    assert!(bytes.len() >= 9);
+                    let n = ((bytes[0] as usize) << 16)
+                        | ((bytes[1] as usize) << 8)
+                        | bytes[2] as usize;
+                    assert_eq!(bytes[3], 8);
+                    assert_eq!(n, 4);
+                    assert!(bytes.len() >= 9 + n);
+                    bytes = &bytes[9 + n..];
+                }
+            };
+            let (result, ()) = timeout(Duration::from_secs(3), async {
+                tokio::join!(
+                    checked_handshake_with_connector_observed(
+                        || std::future::ready(Ok(streams
+                            .pop_front()
+                            .expect("unexpected bootstrap retry"))),
+                        uuid::Uuid::from_bytes([0x4a; 16]),
+                        tokio::time::Instant::now() + Duration::from_secs(3),
+                    ),
+                    server
+                )
+            })
+            .await
+            .unwrap();
+            let (directory, receipt) = result.unwrap();
+            assert_eq!(receipt.handshake_mode, expected);
+            assert_eq!(receipt.attempted_modes, modes[..=index]);
+            assert!(directory.complete_service_directory());
+            assert_eq!(directory.udid(), Some("00008150-00013DD00104401C"));
+            assert!(streams.is_empty());
+        }
     }
 
     #[tokio::test]

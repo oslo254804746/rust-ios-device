@@ -42,3 +42,20 @@ alone cannot establish device support. Device and platform conditions can remain
 unknown independently, and missing services must be recorded as missing, not
 silently filtered out. Update each feature's limitation when implementation or
 evidence changes; do not delete pending workflow entries to make a check pass.
+
+The opt-in observer additions from 2026-10-12 stay in their existing CLI/service
+records and keep experimental maturity. `apps install-record
+--observe-zero-budget-recovery` uses an explicit existing RSD route and records
+actual integer wire type, same-client zero-budget recovery and owned socket
+cleanup. `hid observe-stop` separately records one-way report flush, local
+contact ownership, strict media reply, before/after media status and original
+native joins. A report flush or worker completion is not a device ACK.
+
+`rsd observe` records the actual RSD bootstrap selection and current selected
+identity/directory; userspace/kernel mode does not substitute for that receipt.
+`discover paired-identity` keeps accepted private-MAC Lockdown identity separate
+from saved-altIRK advertisement authentication. An offline credential match does
+not prove an online pair-verify acknowledgement. Their new command/peer gates
+remain NOT_RUN until the combined frozen-source validation is recorded; old
+build or Viewer PASS is not borrowed for them. See the
+[observer scope and test boundaries](validation/protocol-observers-2026-10-12.md).

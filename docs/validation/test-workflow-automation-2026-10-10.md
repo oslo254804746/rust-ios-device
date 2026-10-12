@@ -1,5 +1,7 @@
 > 本页保留 af20f6a 交付时的历史声明。2026-10-10 独立审查已否定其完整开发/验收结论；不能据本文将占位流程或 NOT_RUN 记为通过。当前代码与实际结果以 [修复记录](review-fixes-2026-10-10.md) 为准。
 
+2026-10-12 接力已补WDA owner期限竞态修复与实际localhost CLI gate：启动、TCP ready、单次转发及失败收尾5项通过；共享fixture回归35通过/1 POSIX跳过。见[精确边界与失败历史](wda-continuation-2026-10-12.md)。下方编辑时“WDA端到端待运行”只描述当时状态，现代全流程、物理设备和其他平台仍未补验。
+
 ## 2026-10-11 续修实现
 
 主代理已执行最终实际CLI/TLS-usbmux/ZIP/DTX/syslog的12项应用/XCTest测试及各故障子例，全部通过；完整adapter suite为29执行通过、1个POSIX skip。启动owner移出可取消work、DTX原错误及有界shutdown/drain已验证。[本轮证据与未完成范围](continuation-2026-10-11.md)优先于下方编辑时NOT_RUN声明；crash收集及完整现代native/platform范围继续。
@@ -13,6 +15,18 @@ ActiveTestPlan 的 result recorder 属于原 session owner；等待失败或取�
 调用处和 stage 包装把大 service/startup futures 放入 Box，缩小 Windows debug first-poll 状态。未来规模 gate 是局部门禁，真实 CLI + TLSmux/ZIP conduit/DTX/syslog peer 的完整路径与故障阶段由 regression fixture 独立验证；没有把 helper 单测当完整工作流验收。
 
 本次新增结构化重跑历史与替换产物、严格 merge 拒绝、真实 InstallationProxy reverse-owned cleanup、原 Syslog NUL parser/EOF/partial/footer fixtures。此子代理禁止 Rust 构建，未声称它们 PASS。完整代表性设备合成 runner 仍 NOT_RUN；平台取消和各 startup 阶段覆盖依主代理最终实际结果登记。
+
+## 2026-10-12 后续补充（当前工作树，等待新门禁）
+
+新增 `--crash-output EXISTING_DIRECTORY`（仅 `--wait`）：在安装/启动前取得有限快照，统一 finally 后只读取快照中不存在的新 `.ips`/`.crash` 路径。复用实际 mover ping 准备、AFC frame admission/有限读取与 EOF、原报告 parser，不调用无上限的 CrashReportClient list/read。遍历最多 4096 条、256 个目录、深度 16、1 MiB 逻辑元数据；拒绝链接、穿越和未知文件类型。最多 64 个新候选，每个至多 4 MiB，累计完成读取至多 16 MiB；EOF 探测可多接收一个字节以拒绝增长文件，不截断成成功。只有内容里的精确 runner/target bundle ID 才授权本地复制，缺失/不匹配与冲突分别记录或拒绝，文件名不参与归属。
+
+每次调用创建独立私有产物目录，使用路径 SHA256 安全文件名和 payload 大小/hash；summary.json 保留已提交产物、未匹配类别和 incomplete/error class。before 与主流程共用绝对时钟，finally 用一个独立 15 秒时钟覆盖网络阶段；AFC 原 close 主/次错误保留。已开始的原子 filesystem writer 由原 owner 等待，随后检查超期，不 detach commit。物理 filesystem 取消仍属于 L01 边界，不能声明可强制中止。计数命名 completed_read_bytes，仅表示已完成原有限读取，不伪报失败读取中的未知部分。
+
+现代 startup、Instruments 与 rerun 共用可取消 work 之外的原 NativeScope；设备 lease 在原 PID/DTX 收尾后释放，重跑前 collect 原 native handles，最后 close 同一 scope。正常无 `--wait` 保留实际 startup ACK，再关闭服务并等待原 native joins；disconnect 后 runner/test lifetime 保持 unknown。Started receipt 在收尾后输出 complete/failed 和精确错误类别。失败或取消仍尝试收回已知本轮 PID，未获得 PID 的设备进程状态未知。
+
+有限 `runtest`/`runxctest`/`runwda` 现在要求显式 root `--udid` 或 `IOS_UDID`，主 dispatch 不在期限外枚举并选择首个设备。WDA 元数据、lookup、原 Instruments startup 与 device-port readiness 共用一个绝对 startup 时钟；零/溢出预算在 IO 前拒绝，原 Elapsed 保留。原 NativeScope/TestStartupCleanup/ActiveTestPlan 存于可取消 work 外，Active owner 先存入外部 Option 再等待 readiness；startup 失败/取消以及转发结束后同一 finally 收回已知 PID、关闭原 DTX、等待原 native joins。scoped forward 的原 client owner 修复由协作代理负责，WDA 直接等待其 cooperative stop/join，不再以外 select 丢弃长期转发 future。新 WDA 生产路径与端到端 peer 门禁仍待主代理运行；直接丢弃公有 local helper 整体 future 的 async-Drop 边界仍归 L01，不冒充已验证。
+
+独立 `scripts/test_regression_crash.py` 复用真实 CLI/TLSmux/ZIP/DTX peer，补 mover/AFC、before/finally、精确 bundle、增长输入/close 双错误及报告失败覆盖。Python 语法检查通过；新 Rust/CLI gates 待主代理串行执行。上段 c98c819 的旧门禁不代表这些新代码通过。
 
 # F02 完整测试与自动化工作流交付记录
 

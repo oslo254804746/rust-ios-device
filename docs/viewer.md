@@ -24,7 +24,8 @@ supports Raw, DesktopSize and text Extended Clipboard with the advertised
 little-endian 32-bit true-color pixel format; other formats are rejected.
 
 Input uses the existing Universal HID and Indigo clients and waits for the
-device operation to complete. Universal HID requires the kernel tunnel/display
+original writer to finish. Their one-way reports have no device acknowledgement;
+a successful write does not prove a contact changed on the device. Universal HID requires the kernel tunnel/display
 authorization side channel. HTTP reports an unavailable backend or failed
 operation as an error. Direction injection has no verified service mapping and
 returns 501. There is no synthetic orientation success.

@@ -123,10 +123,27 @@ fn match_remote_pairing_targets(
     requested_identifier: &str,
     host_filter: Option<&str>,
 ) -> Result<Vec<(String, String, u16)>, CoreError> {
+    match_remote_pairing_targets_observed(services, keys, requested_identifier, host_filter).map(
+        |targets| {
+            targets
+                .into_iter()
+                .map(|(_, identifier, host, port)| (identifier, host, port))
+                .collect()
+        },
+    )
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+fn match_remote_pairing_targets_observed(
+    services: &[BonjourService],
+    keys: &[(String, zeroize::Zeroizing<[u8; 16]>)],
+    requested_identifier: &str,
+    host_filter: Option<&str>,
+) -> Result<Vec<(usize, String, String, u16)>, CoreError> {
     let mut targets = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut matched_identifiers = std::collections::HashSet::new();
-    for service in services {
+    for (advertisement_index, service) in services.iter().enumerate() {
         // Match against every record before applying the requested identifier:
         // narrowing first would conceal duplicate discovery keys.
         let mut matched = keys.iter().filter(|(_, key)| {
@@ -159,11 +176,33 @@ fn match_remote_pairing_targets(
             }
             let key = (identifier.clone(), host.to_string(), service.port);
             if targets.len() < 16 && seen.insert(key.clone()) {
-                targets.push(key);
+                targets.push((advertisement_index, key.0, key.1, key.2));
             }
         }
     }
     Ok(targets)
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(super) async fn observe_alt_irk_matches(
+    udid: &str,
+    budget: Duration,
+) -> Result<Vec<usize>, CoreError> {
+    // Reuse the validated existing credential loader and exact production
+    // matcher; no online pair-verify acceptance is inferred from this tag.
+    let keys = credentials::load_remote_discovery_keys()?;
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let services = browse_remotepairing(budget.min(REMOTE_PAIRING_DISCOVERY_TIMEOUT)).await?;
+    let targets = match_remote_pairing_targets_observed(&services, &keys, udid, None)?;
+    let mut indices = targets
+        .into_iter()
+        .map(|(index, _, _, _)| index)
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    Ok(indices)
 }
 
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
@@ -475,6 +514,22 @@ mod tests {
                 ("authTag".into(), "kXjlTr2l".into()),
             ]),
         };
+        let observed = match_remote_pairing_targets_observed(
+            std::slice::from_ref(&service),
+            &keys,
+            "own",
+            None,
+        )
+        .unwrap();
+        assert_eq!(observed, vec![(0, "own".into(), "192.0.2.1".into(), 49152)]);
+        assert!(match_remote_pairing_targets_observed(
+            std::slice::from_ref(&service),
+            &keys,
+            "compatible",
+            None
+        )
+        .unwrap()
+        .is_empty());
         let matches = match_remote_pairing_targets(&[service], &keys, "", None).unwrap();
         assert_eq!(matches, vec![("own".into(), "192.0.2.1".into(), 49152)]);
         std::fs::remove_dir_all(base_dir).unwrap();
@@ -511,6 +566,19 @@ mod discovery_tests {
             match_remote_pairing_targets(std::slice::from_ref(&service), &keys, "", None).unwrap();
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].0, "device");
+        let mut unrelated = service.clone();
+        unrelated.properties.clear();
+        let observed = match_remote_pairing_targets_observed(
+            &[unrelated, service.clone()],
+            &keys,
+            "device",
+            None,
+        )
+        .unwrap();
+        assert_eq!(observed.len(), 2);
+        assert!(observed
+            .iter()
+            .all(|target| target.0 == 1 && target.1 == "device"));
         assert!(
             match_remote_pairing_targets(std::slice::from_ref(&service), &keys, "other", None)
                 .unwrap()

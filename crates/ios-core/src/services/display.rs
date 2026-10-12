@@ -351,19 +351,7 @@ impl DisplayServiceClient {
         stop_all: bool,
         identifiers: &[u32],
     ) -> Result<XpcValue, DisplayError> {
-        self.ensure(STOP_MEDIA_FEATURE)?;
-        if !stop_all && identifiers.is_empty() {
-            return Err(DisplayError::Protocol(
-                "select stream identifiers or stop_all".into(),
-            ));
-        }
-        let result = self
-            .invoke(
-                STOP_MEDIA_FEATURE,
-                STOP_MEDIA_ACTION,
-                build_stop_input(stop_all, identifiers),
-            )
-            .await;
+        let result = self.stop_media_streams_strict(stop_all, identifiers).await;
         match result {
             Ok(value) => Ok(value),
             Err(DisplayError::Xpc(XpcError::Io(error)))
@@ -378,6 +366,28 @@ impl DisplayServiceClient {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// An observed CoreDevice reply is required. EOF/reset/write failure stays
+    /// an error and cannot supply a device stop acknowledgement. Stream tokens
+    /// are the device-issued UInt32 identifiers, not the client session UUID.
+    pub async fn stop_media_streams_strict(
+        &mut self,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
+        self.ensure(STOP_MEDIA_FEATURE)?;
+        if !stop_all && identifiers.is_empty() {
+            return Err(DisplayError::Protocol(
+                "select stream identifiers or stop_all".into(),
+            ));
+        }
+        self.invoke(
+            STOP_MEDIA_FEATURE,
+            STOP_MEDIA_ACTION,
+            build_stop_input(stop_all, identifiers),
+        )
+        .await
     }
     async fn invoke(
         &mut self,
@@ -662,6 +672,57 @@ impl MediaStreamSession {
         };
         self.service.take();
         finish_media_stop(primary, cleanup)
+    }
+
+    /// Join this session's original media tasks and require an actual stop
+    /// reply. The caller must authorize stop_all or supply observed owned
+    /// tokens; this API does not infer ownership from the client session UUID.
+    /// A failed/cancelled operation retains its service owner for later cleanup.
+    pub async fn stop_strict(
+        &mut self,
+        timeout: Duration,
+        stop_all: bool,
+        identifiers: &[u32],
+    ) -> Result<XpcValue, DisplayError> {
+        if let Some(task) = &self.rtcp_task {
+            task.abort();
+        }
+        if let Some(task) = &self.drain_task {
+            task.abort();
+        }
+        let mut cleanup = join_media_task(&mut self.rtcp_task).await;
+        cleanup = finish_media_stop(cleanup, join_media_task(&mut self.drain_task).await);
+        let primary = if let Some(service) = &mut self.service {
+            tokio::time::timeout(
+                timeout,
+                service.stop_media_streams_strict(stop_all, identifiers),
+            )
+            .await
+            .map_err(|error| {
+                native_error(
+                    std::io::ErrorKind::TimedOut,
+                    "strict stop media session",
+                    error,
+                )
+            })
+            .and_then(|result| result)
+        } else {
+            Err(DisplayError::Protocol(
+                "no owned media service remains for a strict stop observation".into(),
+            ))
+        };
+        match (primary, cleanup) {
+            (Ok(response), Ok(())) => {
+                self.service.take();
+                Ok(response)
+            }
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(primary), Err(cleanup)) => Err(native_error(
+                std::io::ErrorKind::Other,
+                "strict media stop and original task joins failed",
+                MediaStopFailure { primary, cleanup },
+            )),
+        }
     }
     pub fn sender_addr(&self) -> Option<SocketAddr> {
         self.sender
@@ -1423,6 +1484,201 @@ fn build_media_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn next_control_request(peer: &mut tokio::io::DuplexStream) -> crate::XpcMessage {
+        loop {
+            let mut header = [0u8; 9];
+            peer.read_exact(&mut header).await.unwrap();
+            let size = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
+            assert!(size <= 64 * 1024);
+            let mut payload = vec![0; size];
+            peer.read_exact(&mut payload).await.unwrap();
+            if header[3] == 0 {
+                return crate::decode_xpc_message(payload.into()).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_stop_rejects_native_eof_instead_of_manufacturing_device_ack() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            assert_eq!(
+                body.get("CoreDevice.featureIdentifier")
+                    .and_then(XpcValue::as_str),
+                Some(STOP_MEDIA_FEATURE)
+            );
+            peer.shutdown().await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.stop_media_streams_strict(false, &[7]),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        let DisplayError::Xpc(XpcError::Io(outer)) = &error else {
+            panic!("strict stop must retain its original XPC/native IO boundary");
+        };
+        assert_eq!(outer.kind(), std::io::ErrorKind::UnexpectedEof);
+        // UnexpectedEof deliberately remains generic IO in the shared
+        // classifier: it can also be a truncated host file. Verify the actual
+        // original H2 read cause instead of guessing a disconnect category.
+        assert_eq!(crate::classify_error(&error), crate::ErrorClass::Io);
+        let mut current: Option<&(dyn std::error::Error + 'static)> = outer
+            .get_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static));
+        let mut original_eof = false;
+        for _ in 0..16 {
+            let Some(cause) = current else { break };
+            if let Some(crate::xpc::h2_raw::H2Error::Io(native)) =
+                cause.downcast_ref::<crate::xpc::h2_raw::H2Error>()
+            {
+                assert_eq!(native.kind(), std::io::ErrorKind::UnexpectedEof);
+                assert_eq!(native.raw_os_error(), None);
+                original_eof = true;
+                break;
+            }
+            current = cause.source();
+        }
+        assert!(original_eof, "the original native H2 EOF object was lost");
+        drop(service);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_stop_uses_device_tokens_and_observed_reply_then_original_eof() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let body = request.body.as_ref().unwrap().as_dict().unwrap();
+            let input = body.get("CoreDevice.input").unwrap().as_dict().unwrap();
+            assert_eq!(input.get("stopAll"), Some(&XpcValue::Bool(false)));
+            assert_eq!(
+                input.get("identifiers"),
+                Some(&XpcValue::Array(vec![XpcValue::Uint64(7)]))
+            );
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.output",
+                    dict([("observed", XpcValue::Bool(true))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let mut service = DisplayServiceClient::new(client);
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.stop_media_streams_strict(false, &[7]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response, dict([("observed", XpcValue::Bool(true))]));
+        drop(service);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_media_session_stop_joins_original_udp_drain_before_reply_receipt() {
+        let (client, mut peer, _open) = crate::test_native::connected_xpc_pair().await;
+        let peer_task = tokio::spawn(async move {
+            let request = next_control_request(&mut peer).await;
+            let input = request
+                .body
+                .as_ref()
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get("CoreDevice.input")
+                .unwrap()
+                .as_dict()
+                .unwrap();
+            assert_eq!(input.get("stopAll"), Some(&XpcValue::Bool(true)));
+            let response = crate::encode_xpc_message(&crate::XpcMessage {
+                flags: crate::xpc_message_flags::ALWAYS_SET
+                    | crate::xpc_message_flags::DATA
+                    | crate::xpc_message_flags::REPLY,
+                msg_id: request.msg_id,
+                body: Some(dict([(
+                    "CoreDevice.output",
+                    dict([("observed", XpcValue::Bool(true))]),
+                )])),
+            })
+            .unwrap();
+            let mut header = [0u8; 9];
+            header[..3].copy_from_slice(&(response.len() as u32).to_be_bytes()[1..]);
+            header[8] = 3;
+            peer.write_all(&header).await.unwrap();
+            peer.write_all(&response).await.unwrap();
+            peer
+        });
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let mut session = MediaStreamSession {
+            service: Some(DisplayServiceClient::new(client)),
+            socket: socket.clone(),
+            kind: MediaKind::Video,
+            id: uuid::Uuid::new_v4(),
+            assembler: RtpAssembler::new(MediaKind::Video, 1024, 10),
+            sender: None,
+            local_ssrc: None,
+            remote_ssrc: None,
+            highest_sequence: Arc::new(AtomicU32::new(0)),
+            highest_sequence_seen: Arc::new(AtomicBool::new(false)),
+            rtcp_task: None,
+            drain_task: None,
+        };
+        session.spawn_drain();
+        assert!(session.drain_task.is_some());
+        let response = session
+            .stop_strict(Duration::from_secs(2), true, &[])
+            .await
+            .unwrap();
+        assert_eq!(response, dict([("observed", XpcValue::Bool(true))]));
+        assert!(
+            session.drain_task.is_none()
+                && session.rtcp_task.is_none()
+                && session.service.is_none()
+        );
+        assert_eq!(
+            Arc::strong_count(&socket),
+            2,
+            "only the fixture and original session may still own the UDP socket"
+        );
+        drop(session);
+        assert_eq!(Arc::strong_count(&socket), 1);
+        let mut peer = peer_task.await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut remaining))
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn media_task_stop_joins_original_aborted_task_before_returning() {

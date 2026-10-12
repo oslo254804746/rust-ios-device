@@ -12,6 +12,10 @@
 
 新增原 child executable 的 output-limit/timeout/cancel 与 socket EOF/reap fixtures，及原 TLS lockdown/image/DTX 请求与 EOF fixtures。它们未由此子代理执行 Rust 编译或测试；是否通过及最终受测提交由主代理集中记录。上述遗留历史验收结论不能用于本次计数。
 
+## 2026-10-12 后续补充（当前工作树，等待新门禁）
+
+已补显式现有 RSD 开发操作 adapter：复用 Core ExistingRsdSession 的 fresh checked directory、原绝对时钟、精确 selected UDID、canonical 优先的实际公告 port 与 scoped IPv6/现有 userspace proxy。canonical dtservicehub 直接使用原 DTX；只有实际 resolved `.shim.remote` 才执行既有 RSDCheckin/StartService plist 握手。随后真实执行 DeviceInfo runningProcesses，并在原业务时钟之外调用同一 session 的有界 close，检查所有 opened sockets 都关闭及 strict EOF；主/cleanup 原因分列保留。不建新 tunnel、不停止现有 proxy、不把公告目录当作操作成功。新增 canonical/shim/错误 DTX 回复和原 socket EOF fixture，等待新集中门禁。legacy remoteserver 同原 Core 合同只做 TLS handshake 后还原原 raw DTX stream，secure Instruments 保持 service TLS。上段 c98c819 旧测试不能证明新增代码通过；其 iOS 17+ adapter 缺失段落已被本实现取代。Apple 签名验证及物理平台 NOT_RUN 边界不变。
+
 # F01 Doctor 平台 USB/路由/remoted 诊断与 DDI 目录探测交付记录
 
 **日期**：2026-10-10  

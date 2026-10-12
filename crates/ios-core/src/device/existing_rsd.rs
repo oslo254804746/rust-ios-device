@@ -170,6 +170,30 @@ pub struct ExistingRsdObservation {
     services: Option<HashMap<String, ExistingRsdService>>,
 }
 
+/// Bootstrap branch that actually decoded the current RSD directory.
+/// This is independent of the tunnel's userspace/kernel transport mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RsdHandshakeMode {
+    Direct,
+    Queued,
+    Legacy,
+    Passive,
+}
+
+/// Safe protocol selection facts from one successful checked RSD operation.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RsdSelectionReceipt {
+    pub handshake_mode: RsdHandshakeMode,
+    pub attempted_modes: Vec<RsdHandshakeMode>,
+}
+
+mod service;
+pub use service::{
+    ExistingRsdCleanupFailure, ExistingRsdCleanupReceipt, ExistingRsdServiceConnection,
+    ExistingRsdServiceKind, ExistingRsdServiceOwner, ExistingRsdSession,
+};
+
 impl ExistingRsdObservation {
     pub(crate) fn new(
         udid: Option<String>,
@@ -252,6 +276,15 @@ pub async fn observe_existing_rsd(
     observe_from_source(&NativeSource, route, total_budget).await
 }
 
+/// Observe the same existing route and retain its actual successful bootstrap.
+pub async fn observe_existing_rsd_with_selection(
+    route: ExistingRsdRoute,
+    total_budget: Duration,
+) -> Result<(ExistingRsdObservation, RsdSelectionReceipt), CoreError> {
+    let clock = Clock::new(total_budget)?;
+    observe_selected_from_source(&NativeSource, route, &clock).await
+}
+
 trait Source: Send + Sync {
     fn identity(&self) -> BoxFuture<'_, Result<uuid::Uuid, XpcError>>;
     fn dial(&self, route: ExistingRsdRoute) -> BoxFuture<'_, Result<ServiceStream, CoreError>>;
@@ -289,11 +322,21 @@ async fn observe_from_source(
     total_budget: Duration,
 ) -> Result<ExistingRsdObservation, CoreError> {
     let clock = Clock::new(total_budget)?;
+    observe_selected_from_source(source, route, &clock)
+        .await
+        .map(|(observation, _)| observation)
+}
+
+async fn observe_selected_from_source(
+    source: &dyn Source,
+    route: ExistingRsdRoute,
+    clock: &Clock,
+) -> Result<(ExistingRsdObservation, RsdSelectionReceipt), CoreError> {
     clock
         .run(async {
             let identity = source.identity().await?;
             clock.check()?;
-            let observation = crate::xpc::rsd::checked_handshake_with_connector(
+            let observation = crate::xpc::rsd::checked_handshake_with_connector_observed(
                 || async {
                     clock.check().map_err(connection_error)?;
                     let stream = source.dial(route).await.map_err(connection_error)?;

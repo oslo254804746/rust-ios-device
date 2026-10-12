@@ -880,6 +880,17 @@ pub struct TouchSession<'a> {
 }
 
 impl TouchSession<'_> {
+    /// This is local report ownership, not a device contact-state observation.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// A successful one-way report write establishes local release ownership;
+    /// the protocol supplies no separate acknowledgement from the device.
+    pub fn has_active_contact(&self) -> bool {
+        self.active_contact.is_some()
+    }
+
     pub async fn touch(
         &mut self,
         contact_id: u32,

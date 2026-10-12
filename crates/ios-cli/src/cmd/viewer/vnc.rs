@@ -160,7 +160,7 @@ impl VncServerState {
             ))
             .await
             .map_err(|_| anyhow::anyhow!("viewer VNC authorization revoked"))?
-            .context("viewer VNC device acknowledgement deadline")?
+            .context("viewer VNC device worker completion deadline")?
             .context("viewer device owner stopped")?
     }
 

@@ -119,6 +119,12 @@ fn record() -> PairRecord {
 }
 
 fn acceptor() -> tokio_rustls::TlsAcceptor {
+    acceptor_with_versions(rustls::DEFAULT_VERSIONS)
+}
+
+fn acceptor_with_versions(
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> tokio_rustls::TlsAcceptor {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut certificate = std::io::Cursor::new(test_assets::TEST_CERT_PEM);
     let chain = rustls_pemfile::certs(&mut certificate)
@@ -128,10 +134,13 @@ fn acceptor() -> tokio_rustls::TlsAcceptor {
         rustls_pemfile::private_key(&mut std::io::Cursor::new(test_assets::TEST_KEY_PEM))
             .unwrap()
             .unwrap();
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder_with_protocol_versions(versions)
         .with_no_client_auth()
         .with_single_cert(chain, key)
         .unwrap();
+    // The synthetic service switches to raw DTX after the handshake. It must
+    // not emit encrypted post-handshake session tickets into that raw phase.
+    config.send_tls13_tickets = 0;
     tokio_rustls::TlsAcceptor::from(Arc::new(config))
 }
 
@@ -520,7 +529,12 @@ async fn mounted_image_observation_preserves_missing_empty_personalized_and_malf
 async fn target_ddi_usability_requires_checked_readonly_dtx_reply_over_existing_service_tls() {
     use ios_core::services::dtx::{encode_dtx, read_dtx_frame, DtxPayload};
     use tokio::io::AsyncWriteExt;
-    for malformed in [false, true] {
+    for (version, malformed, legacy_tls13) in [
+        ("16.7.1", false, false),
+        ("16.7.1", true, false),
+        ("13.7", false, false),
+        ("13.7", false, true),
+    ] {
         let (lockdown, lockdown_peer) = tokio::io::duplex(65_536);
         let (instruments, instruments_peer) = tokio::io::duplex(65_536);
         let source = FakeSource::new(vec![(LOCKDOWN_PORT, lockdown), (IMAGE_PORT, instruments)]);
@@ -530,9 +544,9 @@ async fn target_ddi_usability_requires_checked_readonly_dtx_reply_over_existing_
                 let mut tls = tls_session(lockdown_peer).await;
                 let query = request(&mut tls, "GetValue", &["Label", "Request", "Key"]).await;
                 assert_eq!(query["Key"].as_string(), Some("ProductVersion"));
-                send_lockdown(&mut tls, &dictionary([("Value", "16.7.1".into())])).await.unwrap();
+                send_lockdown(&mut tls, &dictionary([("Value", version.into())])).await.unwrap();
                 let service = request(&mut tls, "StartService", &["Label", "Request", "Service"]).await;
-                assert_eq!(service["Service"].as_string(), Some(ios_core::instruments::SERVICE_IOS14));
+                assert_eq!(service["Service"].as_string(), Some(if version.starts_with("13.") { ios_core::instruments::SERVICE_LEGACY } else { ios_core::instruments::SERVICE_IOS14 }));
                 send_lockdown(&mut tls, &dictionary([
                     ("Port", plist::Value::Integer(IMAGE_PORT.into())),
                     ("EnableServiceSSL", plist::Value::Boolean(true)),
@@ -540,7 +554,29 @@ async fn target_ddi_usability_requires_checked_readonly_dtx_reply_over_existing_
                 eof(&mut tls).await;
             },
             async {
-                let mut tls = acceptor().accept(instruments_peer).await.unwrap();
+                // Cover the handshake-only legacy transport explicitly at
+                // TLS 1.2. TLS 1.3's post-handshake/raw transition is not proven
+                // by this fixture; its earlier native failure remains logged.
+                let acceptor = if version.starts_with("13.") && !legacy_tls13 {
+                    acceptor_with_versions(&[&rustls::version::TLS12])
+                } else {
+                    acceptor()
+                };
+                let tls = acceptor.accept(instruments_peer).await.unwrap_or_else(|error| {
+                    panic!("service TLS accept failed for version={version}, malformed={malformed}: {error:?}")
+                });
+                if legacy_tls13 {
+                    assert_eq!(tls.get_ref().1.protocol_version(), Some(rustls::ProtocolVersion::TLSv1_3));
+                    let mut original = tls.into_inner().0;
+                    let mut remaining = Vec::new();
+                    original.read_to_end(&mut remaining).await.unwrap();
+                    assert!(remaining.is_empty(), "unsupported TLS transition must send no raw DTX");
+                    return;
+                }
+                if version.starts_with("13.") {
+                    assert_eq!(tls.get_ref().1.protocol_version(), Some(rustls::ProtocolVersion::TLSv1_2));
+                }
+                let mut tls: ServiceStream = if version.starts_with("13.") { Box::new(tls.into_inner().0) } else { Box::new(tls) };
                 let channel = read_dtx_frame(&mut tls).await.unwrap();
                 assert!(matches!(channel.payload, DtxPayload::MethodInvocation { ref selector, .. } if selector == "_requestChannelWithCode:identifier:"));
                 tls.write_all(&encode_dtx(channel.identifier, 1, channel.channel_code, false, 3, &ios_core::archive_null(), &[])).await.unwrap();
@@ -553,13 +589,25 @@ async fn target_ddi_usability_requires_checked_readonly_dtx_reply_over_existing_
         ) }).await;
         assert_eq!(
             check.status,
-            if malformed {
+            if legacy_tls13 {
+                Status::Unknown
+            } else if malformed {
                 Status::Failed
             } else {
                 Status::Ok
             }
         );
-        assert_eq!(check.value, if malformed { None } else { Some(true) });
+        assert_eq!(
+            check.value,
+            if malformed || legacy_tls13 {
+                None
+            } else {
+                Some(true)
+            }
+        );
+        if legacy_tls13 {
+            assert_eq!(check.error_class, Some(ErrorClass::Unsupported));
+        }
         safe(&check);
         assert!(source.ports.lock().unwrap().is_empty());
     }

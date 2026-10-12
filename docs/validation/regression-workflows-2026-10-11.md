@@ -9,8 +9,10 @@ The admission/parser gates currently pass on Windows CPython 3.13. The first
 actual application and XCTest gate encountered Windows exit `0xC00000FD`
 (stack overflow) before its localhost peer observed a service operation.
 That failure is retained as a product failure; argv/help parsing is not used
-to replace the native workflow result. The parent repair task is rebuilding
-the bounded futures before repeating those gates.
+to replace the native workflow result. The parent repair task subsequently
+reduced the future stack, preserved startup owners and DTX error replies,
+and recorded the actual application/XCTest gates as passing at `c98c819153`.
+The original stack-overflow observation is not erased by the later pass.
 
 ## Added observers
 
@@ -69,23 +71,33 @@ runner installation, lookup, channel/session/authorization/start/result faults,
 stalled startup/result deadlines, log EOF, JUnit directory refusal, failure then
 successful rerun, rerun startup/result failure and preexisting-runner ownership.
 The history gate reads the production `.attempts.json` sidecar and verifies
-that the initial failure survives a later passing attempt. These native gates
-remain pending the rebuilt executable; they are not counted as passing here.
+that the initial failure survives a later passing attempt. The parent task
+recorded all 12 actual application/XCTest methods passing after its repairs,
+and 29 adapter tests executed PASS with one POSIX platform skip. The history
+checks use the original `failure` field and actual first-failure text. An idle
+peer observation window covers the unchanged CLI total deadline and cleanup;
+the original EOF/RST and worker-join assertions remain strict.
 
-## Remaining observer code
+## Observer continuation and remaining tool boundary
 
-Four matrix rows still explicitly report missing observer code:
+The two discovery observers now retain their production branch and safe
+correlation receipts, with matching matrix adapters. Their implementation and
+original runtime boundary are recorded in [the identity continuation](rsd-identity-receipts-2026-10-12.md);
+InstallCoordination and Display/HID are recorded in
+[the protocol continuation](protocol-observers-2026-10-12.md). The previous
+“being implemented” statement described the earlier editing stage.
 
-| Row | Existing implementation | Missing observable boundary |
+| Row | Current observable implementation | Remaining runtime boundary |
 | --- | --- | --- |
-| `private-mac-altirk` | Existing-trust private MAC resolver and saved altIRK advertisement matching | The result drops the matching mechanism and safe correlation receipt; raw Bonjour listing does not prove correlation. |
-| `modern-rsd-wifi` | Separate real connection paths and manager routes | The CLI `mode` means userspace/kernel, and does not retain queued/direct/legacy/passive protocol selection. |
-| `display-hid-stop` | Native media status, stop, touch-session close and HID CLI | Before/after restored-state and original service/owner cleanup receipt in the workflow result. |
-| `installcoordination-wire` | Native bounded Query and typed integer parser | Signed/unsigned wire tag survives parsing; same client can be queried after an explicit zero budget without rebuilding it. |
+| `private-mac-altirk` | `discover paired-identity` retains both exact mechanisms and advertisement type/index | Complete actual CLI/mDNS/current saved-record workflow and physical identity observations |
+| `modern-rsd-wifi` | `rsd observe` retains direct/queued/legacy/passive bootstrap receipt | Actual queued/legacy/passive CLI and physical route workflows; direct CLI and Core wire paths have prior gates |
 
 The first three existing host paths and all physical-device rows remain separate
 from mock/scripted responses and localhost protocol evidence. Q02 remains
-incomplete; these changes do not support a blanket completion claim.
+incomplete: Windows rich clipboard watch still lacks owned console-signal
+supervision and graceful observer cleanup, a tool implementation gap distinct
+from a platform test awaiting execution. The WDA localhost CLI continuation is
+recorded in [the WDA repair evidence](wda-continuation-2026-10-12.md).
 
 ## Commands executed so far
 

@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `runwda --once` to stop after one forwarded connection. Retain the
+  original startup owner when a successful poll crosses its deadline; verify
+  WDA startup, TCP readiness, forwarding and cleanup with localhost CLI peers.
 - Add checked Python/C app, AFC and log operations on the common session owner,
   native cancellation/close receipts and retained log prefixes; fix public
   Python `Device.aclose`. Add a Windows-capable actual C ABI service fixture.
 - Repair Viewer device/port authorization and RFC 6143 DES authentication; add
-  shared PNG pixels, acknowledged HID/text pasteboard operations and original
+  shared PNG pixels, locally flushed HID and text pasteboard operations and original
   native retirement owners. Full HEVC/image/orientation workflows remain incomplete.
 - Replace fabricated CDP domain results with finite WebInspector Page/PNG/Fetch
   translations and explicit unsupported Input/Memory/Performance errors.
