@@ -1,6 +1,54 @@
 use super::*;
 
 #[tokio::test]
+async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_usb() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let host = "h".repeat(2048);
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: B.into(),
+        host: host.clone(),
+    });
+    let raw_usb = std::mem::size_of::<source::UsbDevice>() + A.len();
+    let selection = std::mem::size_of::<source::UsbDevice>();
+    let raw_paired = std::mem::size_of::<PairedMobdev2Device>() + B.len() + host.len();
+    let bytes = raw_usb
+        + selection
+        + Lifecycle::initial_metadata_bytes(A)
+        + raw_paired
+        + std::mem::size_of::<usize>()
+        - 1;
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    state.set_global_metadata_limit(bytes);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.count(A), 1);
+    assert_eq!(
+        source.count(B),
+        0,
+        "rejected paired plan must not create a connection"
+    );
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
+    assert_eq!(state.list_records().await.len(), 1);
+    assert!(!state.is_ready().await);
+    state.clear().await;
+    assert_eq!(
+        bank.available_permits(),
+        bytes - Lifecycle::initial_metadata_bytes(A)
+    );
+    assert_eq!(source.active.load(Ordering::SeqCst), 0);
+    assert_eq!(source.drops.load(Ordering::SeqCst), 1);
+    state.notify_shutdown();
+    drop(state);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[tokio::test]
 async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_releases_it() {
     let source = FakeSource::new();
     *source.usb_details.lock().unwrap() = Some(vec![source::UsbDevice {

@@ -8397,3 +8397,12 @@ Vec capacity与原raw reservation同池准入，首USB/最后网络/首次identi
 和原String buffer保持。新增5项及受影响tunnel378项通过，2原ignored保留；
 其它门禁与准确剩余见[证据](validation/tunnel-selection-bytes-2026-10-12.md)。
 L02及账本23/6/待完整收口不变，有效30，Q04及全部子项排除。
+
+## 2026-10-12：L02 paired plan backing准入子项
+
+paired候选完整规划的借用HashSet改为同池准入的实际capacity索引Vec；首host、
+原调度顺序、USB/权限过滤和原count/text限制保持。索引拒绝为Incomplete，
+释放拒绝批次，不影响合法USB候选或认证未知paired detach。新增5项及受影响
+tunnel383项通过，2原ignored保留；生产fixture证实一字节不足仍发布USB且不建
+paired ticket/连接。其余门禁与剩余边界见[证据](validation/tunnel-paired-plan-bytes-2026-10-12.md)。
+L02及账本23/6/待完整收口不变，有效30，Q04及全部子项排除。
