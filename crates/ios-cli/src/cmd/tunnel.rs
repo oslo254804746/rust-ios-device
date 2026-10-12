@@ -32,6 +32,7 @@ use crate::access::{
 
 mod admission;
 mod bookkeeping;
+mod candidate_index;
 mod error_payload;
 mod intent;
 mod lifecycle;
@@ -687,7 +688,7 @@ impl TunnelAgentState {
             tun_mode,
             access,
             upstream_access,
-            Arc::new(NativeSource),
+            Arc::new(source::NoDevices),
             TUNNEL_CONNECT_TIMEOUT,
         )
     }
@@ -2073,7 +2074,7 @@ impl TunnelAgentState {
 
     async fn refresh_candidates(
         &self,
-        candidates: Vec<(String, Route, Ticket, Option<u32>)>,
+        candidates: Vec<candidate_index::Candidate>,
         whole: &scan::Deadline,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
@@ -2150,30 +2151,21 @@ impl TunnelAgentState {
 
     async fn reconcile_failures(
         &self,
-        candidates: &[(String, Route, Ticket, Option<u32>)],
+        candidates: &[candidate_index::Candidate],
         paired_complete: bool,
         usb_complete: bool,
         manual: &HashMap<String, (Ticket, intent::RouteIntent)>,
         whole: &scan::Deadline,
         epoch: &scan::Epoch,
     ) -> Result<()> {
-        let known = candidates
-            .iter()
-            .map(|(udid, route, _, native_id)| {
-                (
-                    udid.as_str(),
-                    AttemptIdentity {
-                        route: route.clone(),
-                        native_id: *native_id,
-                    },
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let known = candidate_index::Index::new(candidates, &self.inner.global_metadata_bytes)?;
         let mut failed = self.inner.failed_attempts.write().await;
         epoch.retain(whole, &mut failed, |udid, failed| {
             self.inner.access.permits_device(udid)
                 && match known.get(udid) {
-                    Some(identity) => failed.identity == *identity,
+                    Some((route, native_id)) => {
+                        failed.identity.route == *route && failed.identity.native_id == native_id
+                    }
                     None => {
                         (!paired_complete && matches!(failed.identity.route, Route::Mobdev2(_)))
                             || (!usb_complete
@@ -2189,7 +2181,9 @@ impl TunnelAgentState {
             self.inner.retry.reconcile(whole, |udid, identity, _| {
                 !self.inner.access.permits_device(udid)
                     || match known.get(udid) {
-                        Some(current) => identity != current,
+                        Some((route, native_id)) => {
+                            identity.route != *route || identity.native_id != native_id
+                        }
                         None => {
                             !((!paired_complete && matches!(identity.route, Route::Mobdev2(_)))
                                 || (!usb_complete

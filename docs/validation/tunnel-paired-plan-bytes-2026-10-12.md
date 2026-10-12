@@ -1,5 +1,10 @@
 # L02 paired candidate plan backing准入 · 2026-10-12
 
+补记：[默认fixture隔离更正](tunnel-fixture-isolation-2026-10-12.md)发现本项初次全组
+Rust门禁包含通用HTTP refresh的NativeSource路径。下列PASS保留实际方法结果，
+不能认证全部Rust测试没有真实发现；最新隔离复验另行登记。原CLI readonly权限/
+trap证据仍独立有效，原日志与源码hash保留。
+
 承接 `8ff84040f381b7b2e4e161e668d805b82c641815`，生产paired候选规划的临时
 borrowed-key HashSet改为有准入charge的索引Vec。按实际capacity收取同一128MiB
 共享额度，在任何paired String克隆或ticket前完成完整逻辑plan验证。
