@@ -6,6 +6,19 @@ struct SizedSource {
     base: Arc<LocalSource>,
     oversized_usb: bool,
     oversized_paired: bool,
+    capacity_overflow: bool,
+}
+
+impl SizedSource {
+    fn oversized_text(&self) -> String {
+        if self.capacity_overflow {
+            let mut value = String::with_capacity(16 * 1024 * 1024 + 1);
+            value.push_str("synthetic");
+            value
+        } else {
+            "x".repeat(4097)
+        }
+    }
 }
 
 impl Source for SizedSource {
@@ -25,7 +38,7 @@ impl Source for SizedSource {
                     // Matching native row is first; the later tail must still
                     // be validated before matching or publication succeeds.
                     devices.push(source::UsbDevice {
-                        udid: "x".repeat(4097),
+                        udid: self.oversized_text(),
                         device_id: 7,
                         usb: true,
                     });
@@ -39,7 +52,7 @@ impl Source for SizedSource {
         Box::pin(async move {
             Ok(if self.oversized_paired {
                 vec![ios_core::device::PairedMobdev2Device {
-                    udid: "x".repeat(4097),
+                    udid: self.oversized_text(),
                     host: "192.0.2.8".into(),
                 }]
             } else {
@@ -51,12 +64,22 @@ impl Source for SizedSource {
 
 #[tokio::test]
 async fn admission_native_usb_publication_checks_oversized_tail_and_keeps_old_arc() {
+    check_usb_publication(false).await;
+}
+
+#[tokio::test]
+async fn snapshot_capacity_native_usb_rejection_keeps_old_arc_and_joins_rejected_owner() {
+    check_usb_publication(true).await;
+}
+
+async fn check_usb_publication(capacity_overflow: bool) {
     let expected = baseline();
     let base = LocalSource::new();
     let source = Arc::new(SizedSource {
         base: base.clone(),
         oversized_usb: true,
         oversized_paired: false,
+        capacity_overflow,
     });
     let state = TunnelAgentState::with_source(
         TunMode::Userspace,
@@ -96,12 +119,22 @@ async fn admission_native_usb_publication_checks_oversized_tail_and_keeps_old_ar
 
 #[tokio::test]
 async fn admission_stale_source_success_with_invalid_paired_metadata_stays_quiet() {
+    check_stale_paired(false).await;
+}
+
+#[tokio::test]
+async fn snapshot_capacity_stale_paired_source_preserves_epoch_silence_and_original_joins() {
+    check_stale_paired(true).await;
+}
+
+async fn check_stale_paired(capacity_overflow: bool) {
     let expected = baseline();
     let base = LocalSource::new();
     let source = Arc::new(SizedSource {
         base: base.clone(),
         oversized_usb: false,
         oversized_paired: true,
+        capacity_overflow,
     });
     let state = TunnelAgentState::with_source(
         TunMode::Userspace,

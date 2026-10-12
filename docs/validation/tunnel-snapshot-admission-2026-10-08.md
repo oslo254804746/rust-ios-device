@@ -1,5 +1,10 @@
 # Managed discovery snapshot and candidate admission
 
+2026-10-12 follow-up: original acceptance below remains historical. Raw retained
+String/Vec capacities now receive separate checked storage admission; see
+[capacity evidence](tunnel-snapshot-capacity-2026-10-12.md). Candidate logical
+length limits and original epoch/error/native contracts remain in place.
+
 Implementation `327b0ef38e43576f2313c51c597b5c16cb7abc01`, parent `061bf296653f8f1fcd8ab97bf4e29f33b6c44c65`; accepted 2026-10-08 UTC on
 Linux x86_64,Rust1.97.1/MSRV1.80.1,project Python3.12.13.
 6 source files 743+/5-;14 additive regressions,all preceding tests/assertions remain.
