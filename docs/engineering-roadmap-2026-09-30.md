@@ -8361,3 +8361,12 @@ capacity按原buffer去重；未知payload/未join native owner/active scan/截�
 新8项、受影响tunnel359项与实际readonly-policy CLI门禁结果和剩余全局字节准入
 实现见[证据](validation/manager-error-payload-2026-10-12.md)。L02保持未关闭，账本23/
 6/L02待收口，有效30；设备和其它平台运行条件继续，Q04全部排除。
+
+## 2026-10-12：L02 Source snapshot capacity准入子项
+
+短String的大reserve和空Vec容量不能再绕过快照准入：原16MiB文本额度按capacity
+计费，checked合并Vec存储并限32MiB。原字段/candidate长度合同保持，四个生产
+消费点共同应用。受影响snapshot34项通过（新6项），原native owner/epoch/错误
+与严格CLI Clippy已验；来源分配峰值及统一全局字节准入仍缺，L02不关闭。
+详情与实际CLI/源码提交证据见[容量交付](validation/tunnel-snapshot-capacity-2026-10-12.md)。
+账本23交付/6缺开发/L02待收口，有效30，Q04及全部子项排除。

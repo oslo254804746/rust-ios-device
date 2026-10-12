@@ -1,5 +1,5 @@
-//! Logical admission of manager selectors, Source snapshots and scan candidates.
-//! Source allocation, vector capacity and allocator/RSS are separate boundaries.
+//! Admission of manager selectors, retained Source snapshots and scan candidates.
+//! Source allocation before return and allocator/RSS are separate boundaries.
 use std::collections::HashSet;
 
 use anyhow::Result;
@@ -10,6 +10,7 @@ use super::source::UsbDevice;
 const MAX_RAW_ROWS: usize = 16_384;
 const MAX_FIELD_BYTES: usize = 4096;
 const MAX_RAW_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RAW_STORAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CANDIDATES: usize = 4096;
 const MAX_CANDIDATE_TEXT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -26,16 +27,27 @@ fn snapshot_limit() -> anyhow::Error {
     crate::output::resource_decision("tunnel discovery snapshot metadata limit")
 }
 
-fn charge_field(total: &mut usize, field: &str) -> Result<()> {
+fn charge_field(total: &mut usize, field: &String) -> Result<()> {
     anyhow::ensure!(field.len() <= MAX_FIELD_BYTES, snapshot_limit());
     *total = total
-        .checked_add(field.len())
+        .checked_add(field.capacity())
         .filter(|bytes| *bytes <= MAX_RAW_TEXT_BYTES)
         .ok_or_else(snapshot_limit)?;
     Ok(())
 }
 
-pub(super) fn usb_snapshot(devices: &[UsbDevice]) -> Result<()> {
+fn snapshot_storage(capacity: usize, element_size: usize, text: usize) -> Result<()> {
+    anyhow::ensure!(
+        capacity
+            .checked_mul(element_size)
+            .and_then(|bytes| bytes.checked_add(text))
+            .is_some_and(|bytes| bytes <= MAX_RAW_STORAGE_BYTES),
+        snapshot_limit()
+    );
+    Ok(())
+}
+
+pub(super) fn usb_snapshot(devices: &Vec<UsbDevice>) -> Result<()> {
     anyhow::ensure!(devices.len() <= MAX_RAW_ROWS, snapshot_limit());
     let mut bytes = 0;
     let mut unique = HashSet::new();
@@ -47,18 +59,25 @@ pub(super) fn usb_snapshot(devices: &[UsbDevice]) -> Result<()> {
             unique.insert(device.udid.as_str());
         }
     }
-    Ok(())
+    snapshot_storage(devices.capacity(), std::mem::size_of::<UsbDevice>(), bytes)
 }
 
-pub(super) fn paired_snapshot(devices: &[PairedMobdev2Device]) -> Result<()> {
+pub(super) fn paired_snapshot(devices: &Vec<PairedMobdev2Device>) -> Result<()> {
     anyhow::ensure!(devices.len() <= MAX_RAW_ROWS, snapshot_limit());
     let mut bytes = 0;
     for device in devices {
         charge_field(&mut bytes, &device.udid)?;
         charge_field(&mut bytes, &device.host)?;
     }
-    Ok(())
+    snapshot_storage(
+        devices.capacity(),
+        std::mem::size_of::<PairedMobdev2Device>(),
+        bytes,
+    )
 }
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct CandidateBudget {
