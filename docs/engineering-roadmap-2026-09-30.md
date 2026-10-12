@@ -8406,3 +8406,17 @@ paired候选完整规划的借用HashSet改为同池准入的实际capacity索�
 tunnel383项通过，2原ignored保留；生产fixture证实一字节不足仍发布USB且不建
 paired ticket/连接。其余门禁与剩余边界见[证据](validation/tunnel-paired-plan-bytes-2026-10-12.md)。
 L02及账本23/6/待完整收口不变，有效30，Q04及全部子项排除。
+
+## 2026-10-12：L02 candidate reconciliation索引准入子项
+
+failure/retry reconciliation改为借用原candidate Route/native ID的已准入Vec索引，
+不再clone host或保留临时HashMap。重复key最后记录语义、原identity规则保持。
+新增5项和受影响tunnel388项通过，2原ignored保留；生产索引拒绝保持原backoff
+version/slot/identity并使Source建连零调用。其余门禁与完整剩余见[证据](validation/tunnel-candidate-index-bytes-2026-10-12.md)。
+L02仍未完整收口，账本23/6/待收口、有效30与Q04全部排除不变。
+
+本项复核发现先前通用HTTP refresh unit默认NativeSource可进入主机设备发现；
+373/378/383与首次388的PASS不能用于认证全部Rust测试隔离。默认unit Source已
+改为NoDevices，生产NativeSource与专用localhost native原joins/strict EOF保持；
+修正后388通过/2原ignored。原日志保留，先前具体设备状态NOT_OBSERVED，见
+[隔离更正](validation/tunnel-fixture-isolation-2026-10-12.md)。

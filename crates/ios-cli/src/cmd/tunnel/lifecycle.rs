@@ -374,6 +374,11 @@ impl Lifecycle {
     }
 
     #[cfg(test)]
+    pub(super) fn additional_metadata_bytes(udid: &str) -> usize {
+        std::mem::size_of::<DeviceGate>() + udid.len()
+    }
+
+    #[cfg(test)]
     pub(super) fn on_next_scan_capture(&self, callback: impl FnOnce(&Lifecycle) + Send + 'static) {
         let mut pending = self.scan_after_open.lock().unwrap();
         assert!(pending.is_none(), "scan capture hook already installed");

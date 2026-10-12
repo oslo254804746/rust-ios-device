@@ -115,6 +115,32 @@ pub(super) trait Source: Send + Sync {
 
 pub(super) struct NativeSource;
 
+// Generic HTTP/auth/epoch unit fixtures have no authority to enumerate the
+// host's usbmux or mDNS devices. Protocol/native fixtures inject their own
+// explicit localhost Source instead; production uses NativeSource directly.
+#[cfg(test)]
+pub(super) struct NoDevices;
+
+#[cfg(test)]
+impl Source for NoDevices {
+    fn connect<'a>(
+        &'a self,
+        udid: &'a str,
+        _route: Route,
+        _mode: TunMode,
+    ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
+        Box::pin(async move { Err(ios_core::CoreError::DeviceNotFound(udid.to_owned()).into()) })
+    }
+
+    fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
+        Box::pin(async { UsbSnapshot::Devices(Vec::new()) })
+    }
+
+    fn paired_devices(&self) -> BoxFuture<'_, anyhow::Result<Vec<PairedMobdev2Device>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 impl Source for NativeSource {
     fn connect_owned<'a>(
         &'a self,

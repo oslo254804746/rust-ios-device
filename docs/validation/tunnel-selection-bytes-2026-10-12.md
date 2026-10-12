@@ -1,5 +1,10 @@
 # L02 USB selection backing准入 · 2026-10-12
 
+补记：[默认fixture隔离更正](tunnel-fixture-isolation-2026-10-12.md)发现本项初次全组
+Rust门禁包含通用HTTP refresh的NativeSource路径。下列PASS保留实际方法结果，
+不能认证全部Rust测试没有真实发现；最新隔离复验另行登记。原CLI readonly权限/
+trap证据仍独立有效，原日志与源码hash保留。
+
 承接 `0ddd8c1a67f1c44ad9e445697edb3a9020cf7494` 的coordinator字节归属，本项
 将生产扫描的USB selection临时HashMap和key克隆改为已准入的索引Vec。
 

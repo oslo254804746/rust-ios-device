@@ -1,5 +1,10 @@
 # L02 coordinator key/gate/backing 字节归属 · 2026-10-12
 
+补记：[默认fixture隔离更正](tunnel-fixture-isolation-2026-10-12.md)发现本项初次全组
+Rust门禁包含通用HTTP refresh的NativeSource路径。下列PASS是当时实际方法结果，
+不能据此认证全部Rust测试没有真实发现；修正后的最新隔离复验另行登记。原CLI
+readonly权限/trap证据仍独立有效，原日志和源码hash保留。
+
 从交接 HEAD `cba082f6e1441253a14f5fbd6ac859e013716a8b` 继续，保留当前
 `codex/review-fixes-20261010` checkout。初始工作树干净，交接列出的源码 hash 与
 `target/debug/ios.exe` 的 SHA256 均匹配。完整532文件二进制来源清单复核时已开始

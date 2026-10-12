@@ -1,6 +1,67 @@
 use super::*;
 
 #[tokio::test]
+async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_contact() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
+    let slot = state.reserve_failure_slot(B).await.unwrap();
+    state
+        .record_failed_attempt(
+            B,
+            AttemptIdentity {
+                route: Route::Mobdev2("original-host".into()),
+                native_id: None,
+            },
+            slot,
+            &ticket,
+        )
+        .await;
+    let original = state.inner.failed_attempts.read().await[B].clone();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
+    let selection = std::mem::size_of::<source::UsbDevice>();
+    let remaining =
+        raw + selection + Lifecycle::additional_metadata_bytes(A) + std::mem::size_of::<usize>()
+            - 1;
+    let occupied = bank
+        .clone()
+        .try_acquire_many_owned(u32::try_from(bank.available_permits() - remaining).unwrap())
+        .unwrap();
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    let failed = state.inner.failed_attempts.read().await;
+    let current = &failed[B];
+    assert!(Arc::ptr_eq(&current.version, &original.version));
+    assert_eq!(current.last_attempt, original.last_attempt);
+    assert_eq!(current.fail_count, original.fail_count);
+    assert_eq!(current.identity, original.identity);
+    assert!(Arc::ptr_eq(
+        current.slot.as_ref().unwrap(),
+        original.slot.as_ref().unwrap()
+    ));
+    drop(failed);
+    assert!(source.calls.lock().unwrap().is_empty());
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert!(!state.is_ready().await);
+    assert_eq!(
+        bank.available_permits(),
+        remaining - Lifecycle::additional_metadata_bytes(A)
+    );
+    state.notify_shutdown();
+    state.clear().await;
+    drop(ticket);
+    drop(original);
+    drop(state);
+    drop(occupied);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
 async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_usb() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
