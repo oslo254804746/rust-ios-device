@@ -8389,3 +8389,11 @@ clear/stop不提前退款，最后gate owner释放才归还。原4096 namespace/
 生产CLI/其它门禁与精确边界见[证据](validation/tunnel-coordinator-bytes-2026-10-12.md)。
 原error/history/candidate/manual route与其它backing仍缺完整准入，L02保持未关闭；
 账本23交付/6缺开发/L02待收口，有效30，Q04及全部子项排除。
+
+## 2026-10-12：L02 USB selection backing准入子项
+
+生产USB selection改为借用索引Vec，移除临时HashMap/key clone；实际索引/输出
+Vec capacity与原raw reservation同池准入，首USB/最后网络/首次identity调度顺序
+和原String buffer保持。新增5项及受影响tunnel378项通过，2原ignored保留；
+其它门禁与准确剩余见[证据](validation/tunnel-selection-bytes-2026-10-12.md)。
+L02及账本23/6/待完整收口不变，有效30，Q04及全部子项排除。

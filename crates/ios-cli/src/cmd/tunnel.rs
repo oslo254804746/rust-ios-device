@@ -1835,7 +1835,8 @@ impl TunnelAgentState {
         let mut candidates = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut candidate_budget = admission::CandidateBudget::default();
-        let selected = source::selected_devices(devices);
+        let (selected, _usb_selection_charge) =
+            source::selected_devices(devices, &self.inner.global_metadata_bytes)?;
         let attached_ids = selected
             .iter()
             .map(|device| (device.udid.as_str(), device.device_id))

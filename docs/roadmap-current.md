@@ -17,7 +17,7 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
 | Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA和依赖已本地提交94574d6；Windows watch原console/Job/reader工具9项通过，见[本轮证据](validation/windows-watch-2026-10-12.md)。Q02已按原FUP/矩阵交付物核查完成开发收口；现代全流程与真实验收仍待条件。 |
 | F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
-| L02 | 发布/epoch、原error采样与capacity准入已接线；[raw snapshot/publication共享额度](validation/tunnel-global-known-metadata-2026-10-12.md)保留64MiB发布子限和原owner最后释放。[Coordinator key/gate/Vec backing](validation/tunnel-coordinator-bytes-2026-10-12.md)同池准入及原ticket最后释放已接线。error/history/candidate、manual route和其余backing完整全局归属与刷新规则继续，[未计量边界](validation/manager-error-payload-2026-10-12.md)明确，主项仍未关闭。 |
+| L02 | 发布/epoch、原error采样与capacity准入已接线；[raw snapshot/publication共享额度](validation/tunnel-global-known-metadata-2026-10-12.md)保留64MiB发布子限和原owner最后释放。[Coordinator key/gate/Vec backing](validation/tunnel-coordinator-bytes-2026-10-12.md)及[USB selection backing](validation/tunnel-selection-bytes-2026-10-12.md)同池准入已接线。error/history/candidate、manual route和其余backing完整全局归属与刷新规则继续，[未计量边界](validation/manager-error-payload-2026-10-12.md)明确，主项仍未关闭。 |
 | L04已交付 | 同fixture前后1/4/16与16轮启停/断连、生产native/AFC/Syslog连续资源采样、默认堆归因与基线派生性能参考范围。见[证据](validation/manager-resource-baseline-2026-10-11.md)；物理设备和其他平台NOT_RUN，超出参考范围保持观察标志。 |
 | 原门禁维护 | 能力登记含目录mod.rs、Windows五项core失败诊断；保持原错误source、严格EOF、native join/worker恢复断言。 |
 

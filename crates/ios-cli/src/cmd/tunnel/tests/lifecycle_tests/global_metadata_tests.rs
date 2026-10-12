@@ -11,7 +11,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     *source.paired_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let charge = std::mem::size_of::<source::UsbDevice>() + A.len();
-    state.set_global_metadata_limit(charge + Lifecycle::initial_metadata_bytes(A));
+    let selection = std::mem::size_of::<source::UsbDevice>();
+    state.set_global_metadata_limit(charge + selection + Lifecycle::initial_metadata_bytes(A));
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
@@ -20,7 +21,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     drop(scan);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charge
+        charge + selection
     );
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);

@@ -59,6 +59,19 @@ pub(super) fn known_metadata_charge(
     })
 }
 
+pub(super) fn known_vec_backing<T>(
+    bank: &Arc<Semaphore>,
+    values: &Vec<T>,
+) -> Result<OwnedSemaphorePermit> {
+    let bytes = values
+        .capacity()
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            crate::output::resource_decision("tunnel known vector backing size overflow")
+        })?;
+    known_metadata_charge(bank, bytes)
+}
+
 pub(super) fn retain_usb_snapshot(
     bank: &Arc<Semaphore>,
     devices: &Vec<UsbDevice>,
