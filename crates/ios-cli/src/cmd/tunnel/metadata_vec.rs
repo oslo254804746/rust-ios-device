@@ -63,6 +63,11 @@ impl<T> KnownVec<T> {
     pub(super) fn len(&self) -> usize {
         self.values.len()
     }
+
+    pub(super) fn take(&mut self) -> Self {
+        let empty = Self::new(Arc::clone(&self.bank), self.ceiling);
+        std::mem::replace(self, empty)
+    }
 }
 
 pub(super) struct IntoIter<T> {

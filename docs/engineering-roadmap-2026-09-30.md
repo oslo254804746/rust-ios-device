@@ -8432,3 +8432,13 @@ native registry、Source原错误context及延期intent共用Input直到最后ow
 [证据](validation/tunnel-candidate-owners-2026-10-12.md)。原error/history创建端、outcome
 collectors/manual副本/其它backing及完整刷新规则仍缺；账本23/6/L02待收口、有效30
 及Q04全部排除不变，未改为主项完成。
+
+## 2026-10-13：L02 outcome/receipt/displaced批次准入与原错误收尾
+
+Source window前按候选数准入三份实际Vec backing，manual批次/完成版本列表亦准入。
+原scan Session持共享receipt owner穿过内部marker→实际timer/epoch结果、manual收尾、
+writer、发现错误合并和readiness；原Source对象与phase完成状态保留，返回报告持有
+已准入Vec至caller最后释放。新增7项/受影响tunnel404通过、2原ignored，原joins/严格
+EOF/对象/权限等断言不放宽。完整门禁、初始fixture失败与精确剩余见[证据](validation/tunnel-write-batches-2026-10-13.md)。
+原error payload创建端/其它history backing、manual副本/其它集合与完整刷新规则继续；
+L02仍待完整收口，账本23/6/待收口、有效30与Q04全部排除不变。

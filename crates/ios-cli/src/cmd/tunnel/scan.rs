@@ -48,6 +48,7 @@ impl Outcomes {
             outcomes: Arc::clone(self),
             index,
             acquired: StdMutex::new(Acquired::default()),
+            writes: StdMutex::new(None),
             _lock: lock,
         })
     }
@@ -92,6 +93,7 @@ pub(super) struct Session<'a> {
     outcomes: Arc<Outcomes>,
     index: usize,
     acquired: StdMutex<Acquired>,
+    writes: StdMutex<Option<Arc<super::bookkeeping::FailureWriteOwner>>>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
 }
@@ -197,6 +199,19 @@ impl std::fmt::Debug for SourceContext {
 }
 
 impl Session<'_> {
+    pub(super) fn retain_writes(
+        &self,
+        owner: Arc<super::bookkeeping::FailureWriteOwner>,
+    ) -> Result<()> {
+        let mut slot = self.writes.lock().unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(
+            slot.is_none(),
+            crate::output::resource_decision("tunnel scan write owner already registered")
+        );
+        owner.in_scan();
+        *slot = Some(owner);
+        Ok(())
+    }
     pub(super) fn has_primary(&self) -> bool {
         !self
             .acquired
@@ -226,9 +241,14 @@ impl Session<'_> {
             Ok(None) if !acquired.is_empty() => Some(super::lifecycle::cancelled()),
             Ok(_) => None,
         };
-        match acquired.finish(completion) {
+        let result = match acquired.finish(completion) {
             Some(error) => Err(error),
             None => Ok(()),
+        };
+        let owner = self.writes.lock().unwrap_or_else(|p| p.into_inner()).take();
+        match owner {
+            Some(owner) => owner.finish_scan(result),
+            None => result,
         }
     }
 }
@@ -236,6 +256,11 @@ impl Session<'_> {
 impl Drop for Session<'_> {
     fn drop(&mut self) {
         let primary = self.take();
+        let owner = self.writes.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let primary = match owner {
+            Some(owner) => owner.abandon(primary),
+            None => primary,
+        };
         let mut slots = self.outcomes.0.lock().unwrap_or_else(|p| p.into_inner());
         slots.entries[self.index] = match primary {
             Some(primary) => Slot::Abandoned(Arc::new(AbandonedScan(primary))),

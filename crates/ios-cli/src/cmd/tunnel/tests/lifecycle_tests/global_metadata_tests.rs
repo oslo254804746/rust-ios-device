@@ -1,6 +1,39 @@
 use super::*;
 
 #[tokio::test]
+async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
+    let selection = std::mem::size_of::<source::UsbDevice>();
+    let rows = candidate_index::Candidate::first_usb_bytes(A);
+    let bytes = raw
+        + selection
+        + rows
+        + Lifecycle::initial_metadata_bytes(A)
+        + bookkeeping::WriteBatch::backing_bytes(1)
+        - 1;
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    state.set_global_metadata_limit(bytes);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert!(source.calls.lock().unwrap().is_empty());
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert_eq!(state.inner.retry.receipt_count(), 0);
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert!(!state.is_ready().await);
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[tokio::test]
 async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_contact() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());

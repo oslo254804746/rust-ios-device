@@ -2167,7 +2167,7 @@ impl TunnelAgentState {
             epoch,
         )
         .await?;
-        self.refresh_candidates(candidates, whole).await?;
+        self.refresh_candidates(candidates, whole, session).await?;
         if session.has_primary() {
             return Ok(());
         }
@@ -2183,9 +2183,13 @@ impl TunnelAgentState {
         &self,
         candidates: metadata_vec::KnownVec<candidate_index::Candidate>,
         whole: &scan::Deadline,
+        session: &scan::Session<'_>,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
+        let mut batch =
+            bookkeeping::WriteBatch::new(&self.inner.global_metadata_bytes, candidates.len())?;
+        session.retain_writes(batch.owner())?;
         let mut connections = futures_util::stream::iter(candidates)
             .map(|candidate| async move {
                 let candidate_index::Candidate {
@@ -2228,10 +2232,15 @@ impl TunnelAgentState {
                 }
             })
             .buffer_unordered(lifecycle::MAX_CONNECTS);
-        let mut intents = Vec::new();
         while let Some(outcome) = connections.next().await {
-            if let Some(intent) = outcome? {
-                intents.push(intent);
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(error) => return batch.finish(Err(error)),
+            };
+            if let Some(intent) = outcome {
+                if let Err(error) = batch.record(intent) {
+                    return batch.finish(Err(error));
+                }
             }
         }
         drop(connections);
@@ -2239,36 +2248,41 @@ impl TunnelAgentState {
         // writer for these outcomes enters Tokio's queue while later candidates
         // still need their backoff reads or connection slots. Uncontended success
         // cleanup already returned its old reservation through try_write.
-        whole.check()?;
-        self.flush_manual_successes(whole).await?;
-        self.flush_scan_intents_with_total(intents, Some(whole))
-            .await
+        if let Err(error) = whole.check() {
+            return batch.finish(Err(error));
+        }
+        if let Err(error) = self.flush_manual_successes(whole).await {
+            return batch.finish(Err(error));
+        }
+        self.flush_write_batch(batch, Some(whole)).await
     }
 
     async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
         whole.check()?;
         let rows = self.inner.lifecycle.desired().await;
-        let mut intents = Vec::new();
-        let mut completed = Vec::new();
+        let mut batch =
+            bookkeeping::WriteBatch::new(&self.inner.global_metadata_bytes, rows.len())?;
+        let mut completed =
+            metadata_vec::KnownVec::new(Arc::clone(&self.inner.global_metadata_bytes), rows.len());
+        completed.reserve(rows.len())?;
         for (udid, ticket, snapshot) in rows {
             if !matches!(&snapshot.desired, intent::Desired::Manual { authority, .. } if authority.current())
             {
                 continue;
             }
             if let Some((desired, success)) = ticket.pending_success() {
-                completed.push((ticket.clone(), desired, success.version.clone()));
-                intents.push(ScanIntent::Success(SuccessIntent {
+                completed.push((ticket.clone(), desired, success.version.clone()))?;
+                batch.record(ScanIntent::Success(SuccessIntent {
                     udid,
                     ticket,
                     success,
                     _input: None,
-                }));
+                }))?;
             }
         }
         // A separate bounded batch keeps both collections <=4096 and queues
         // no writer until every candidate in the Source window has finished.
-        self.flush_scan_intents_with_total(intents, Some(whole))
-            .await?;
+        self.flush_write_batch(batch, Some(whole)).await?;
         for (ticket, desired, failure) in completed {
             ticket.clear_success(&desired, &failure);
         }
