@@ -1267,3 +1267,17 @@ erase newer outcomes. Fixed discovery cause slots preserve acquired originals
 through caller Drop. [Contract](manager-route-intent.md) and
 [host acceptance](validation/manager-route-intent-2026-10-09.md). Darwin watch,
 physical workflows and all other original lifecycle requirements remain.
+
+## Shared coordinator storage admission
+
+The manager's existing shared known-metadata bank now also admits the canonical
+coordinator key capacity, inline gate and actual Vec backing capacity. Growth
+charges the old and replacement backing together before moving any row; a
+rejection preserves the original table and ticket identities. Repeated tickets
+share the same gate charge. Clear/stop invalidates epochs without freeing stored
+metadata; table backing and the final original gate owner release their charges
+independently. The 4096-key namespace and original idle/persistent pruning remain.
+This scope excludes dynamic manual route/snapshot copies, watch/Arc internals,
+other collections and original error payloads. See the
+[byte ownership evidence](validation/tunnel-coordinator-bytes-2026-10-12.md);
+L02's remaining global admission and freshness rules stay open.

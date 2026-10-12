@@ -718,6 +718,7 @@ impl TunnelAgentState {
         connect_timeout: Duration,
         retry: reconnect::RetryPolicy,
     ) -> Self {
+        let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
         Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
@@ -729,9 +730,9 @@ impl TunnelAgentState {
                 retry: reconnect::Ledger::new(retry),
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
                 metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
-                global_metadata_bytes: Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES)),
+                global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                 ready: RwLock::new(false),
-                lifecycle: Lifecycle::new(),
+                lifecycle: Lifecycle::with_metadata(global_metadata_bytes),
                 scan_lock: Mutex::new(()),
                 scan_outcomes: scan::Outcomes::new(),
                 scan_timeout: TUNNEL_SCAN_TIMEOUT,
@@ -756,6 +757,14 @@ impl TunnelAgentState {
 
     async fn is_ready(&self) -> bool {
         *self.inner.ready.read().await
+    }
+
+    #[cfg(test)]
+    fn set_global_metadata_limit(&mut self, bytes: usize) {
+        let inner = Arc::get_mut(&mut self.inner).expect("configure before sharing state");
+        let bank = Arc::new(Semaphore::new(bytes));
+        inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        inner.global_metadata_bytes = bank;
     }
 
     fn notify_shutdown(&self) {

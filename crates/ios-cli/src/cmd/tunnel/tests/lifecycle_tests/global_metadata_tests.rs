@@ -11,9 +11,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     *source.paired_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let charge = std::mem::size_of::<source::UsbDevice>() + A.len();
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .global_metadata_bytes = Arc::new(Semaphore::new(charge));
+    state.set_global_metadata_limit(charge + Lifecycle::initial_metadata_bytes(A));
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
@@ -37,9 +35,7 @@ async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extr
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let charge =
         std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + A.len();
-    Arc::get_mut(&mut state.inner)
-        .unwrap()
-        .global_metadata_bytes = Arc::new(Semaphore::new(charge));
+    state.set_global_metadata_limit(charge + Lifecycle::initial_metadata_bytes(A));
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Wifi))
         .await

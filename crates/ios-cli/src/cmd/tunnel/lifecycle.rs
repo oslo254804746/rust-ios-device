@@ -1,12 +1,11 @@
 //! Private manager coordination. No network future runs under the device table lock.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::{watch, Mutex, Semaphore};
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_CONNECTS: usize = 4;
@@ -19,7 +18,8 @@ pub(super) struct Lifecycle {
     // One namespace/ceiling for automatic gates, manual intent and stop state.
     // Idle Automatic entries are pruned exactly as expired Weak entries were;
     // published owners/tickets and persistent desired states retain their gate.
-    devices: Mutex<HashMap<String, Arc<DeviceGate>>>,
+    devices: Mutex<DeviceTable>,
+    metadata_bytes: Arc<Semaphore>,
     pub(super) connects: Semaphore,
     // Some is a reusable clear epoch; None is terminal server shutdown.
     shutdown: watch::Sender<Option<Arc<()>>>,
@@ -34,6 +34,58 @@ struct DeviceGate {
     serial: Mutex<()>,
     generation: watch::Sender<Arc<()>>,
     intent: super::intent::Cell,
+    // The table key and this gate share one admission lifetime. A ticket may
+    // retain the gate after the table disappears; that last owner pays until
+    // it releases the original gate, rather than refunding at row removal.
+    _metadata: OwnedSemaphorePermit,
+}
+
+type DeviceRow = (String, Arc<DeviceGate>);
+
+#[derive(Default)]
+struct DeviceTable {
+    // Vec exposes its actual backing capacity. HashMap capacity alone does not
+    // expose bucket/control allocation bytes, so it cannot certify that charge.
+    rows: Vec<DeviceRow>,
+    storage: Option<OwnedSemaphorePermit>,
+}
+
+impl DeviceTable {
+    fn get(&self, udid: &str) -> Option<&Arc<DeviceGate>> {
+        self.rows
+            .iter()
+            .find(|(key, _)| key == udid)
+            .map(|(_, gate)| gate)
+    }
+
+    fn reserve_row(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
+        if self.rows.len() < self.rows.capacity() {
+            return Ok(());
+        }
+        let capacity = self
+            .rows
+            .capacity()
+            .max(1)
+            .saturating_mul(2)
+            .min(MAX_DEVICE_GATES);
+        let mut replacement = Vec::new();
+        replacement.try_reserve_exact(capacity).map_err(|_| {
+            crate::output::resource_decision("tunnel coordinator backing allocation failed")
+        })?;
+        let bytes = replacement
+            .capacity()
+            .checked_mul(std::mem::size_of::<DeviceRow>())
+            .ok_or_else(|| {
+                crate::output::resource_decision("tunnel coordinator backing size overflow")
+            })?;
+        // The old backing remains charged while admitting its replacement.
+        // No key, gate, epoch or original table changes on rejection.
+        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        replacement.append(&mut self.rows);
+        self.rows = replacement;
+        self.storage = Some(storage);
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -179,9 +231,17 @@ impl ConnectionDeadline {
 }
 
 impl Lifecycle {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
+        Self::with_metadata(Arc::new(Semaphore::new(
+            super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
+        )))
+    }
+
+    pub(super) fn with_metadata(metadata_bytes: Arc<Semaphore>) -> Self {
         Self {
-            devices: Mutex::new(HashMap::new()),
+            devices: Mutex::new(DeviceTable::default()),
+            metadata_bytes,
             connects: Semaphore::new(MAX_CONNECTS),
             shutdown: watch::channel(Some(Arc::new(()))).0,
             scan: watch::channel(Arc::new(())).0,
@@ -194,9 +254,8 @@ impl Lifecycle {
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
         // Guard every caller before retaining a key or waiting on the map.
-        // The existing 4096-entry ceiling therefore bounds accepted key text
-        // to 16 MiB, including idle entries awaiting normal pruning. Each
-        // retained host filter is also at most 4 KiB, hence at most 16 MiB.
+        // Accepted key capacity and gate storage also enter the shared byte
+        // bank before insertion. The selector check remains a separate bound.
         super::admission::selectors(udid, None)?;
         let mut shutdown = self.shutdown.subscribe();
         let shutdown_generation = shutdown.borrow().clone().ok_or_else(cancelled)?;
@@ -217,7 +276,7 @@ impl Lifecycle {
         // Clear never waits on this map. Renew old desired states on the next
         // admission, retaining the canonical gate while old tickets still own
         // it. Removing/replacing those Arcs would evade the live 4096 ceiling.
-        for gate in devices.values() {
+        for (_, gate) in &devices.rows {
             if !gate.intent.is_epoch(&shutdown_generation) {
                 gate.intent.reset(shutdown_generation.clone());
                 gate.generation.send_replace(Arc::new(()));
@@ -226,20 +285,34 @@ impl Lifecycle {
         let gate = match devices.get(udid).cloned() {
             Some(gate) => gate,
             None => {
-                if devices.len() >= MAX_DEVICE_GATES {
-                    devices
-                        .retain(|_, gate| Arc::strong_count(gate) > 1 || gate.intent.persistent());
+                if devices.rows.len() >= MAX_DEVICE_GATES {
+                    devices.rows.retain(|(_, gate)| {
+                        Arc::strong_count(gate) > 1 || gate.intent.persistent()
+                    });
                     anyhow::ensure!(
-                        devices.len() < MAX_DEVICE_GATES,
+                        devices.rows.len() < MAX_DEVICE_GATES,
                         crate::output::resource_decision("tunnel device coordinator limit")
                     );
                 }
+                let key = udid.to_owned();
+                let bytes = key
+                    .capacity()
+                    .checked_add(std::mem::size_of::<DeviceGate>())
+                    .ok_or_else(|| {
+                        crate::output::resource_decision(
+                            "tunnel coordinator metadata size overflow",
+                        )
+                    })?;
+                let metadata =
+                    super::admission::known_metadata_charge(&self.metadata_bytes, bytes)?;
+                devices.reserve_row(&self.metadata_bytes)?;
                 let gate = Arc::new(DeviceGate {
                     serial: Mutex::new(()),
                     generation: watch::channel(Arc::new(())).0,
                     intent: super::intent::Cell::new(shutdown_generation.clone()),
+                    _metadata: metadata,
                 });
-                devices.insert(udid.to_owned(), gate.clone());
+                devices.rows.push((key, gate.clone()));
                 gate
             }
         };
@@ -260,6 +333,7 @@ impl Lifecycle {
         };
         let devices = self.devices.lock().await;
         devices
+            .rows
             .iter()
             .filter_map(|(udid, gate)| {
                 let snapshot = gate.intent.snapshot();
@@ -291,7 +365,12 @@ impl Lifecycle {
 
     #[cfg(test)]
     pub(super) async fn coordinator_count(&self) -> usize {
-        self.devices.lock().await.len()
+        self.devices.lock().await.rows.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn initial_metadata_bytes(udid: &str) -> usize {
+        2 * std::mem::size_of::<DeviceRow>() + std::mem::size_of::<DeviceGate>() + udid.len()
     }
 
     #[cfg(test)]
@@ -647,6 +726,125 @@ pub(super) fn cancelled() -> anyhow::Error {
 mod tests {
     use super::*;
 
+    fn resource(error: &anyhow::Error) {
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_metadata_exact_capacity_shared_tickets_and_last_owner_release() {
+        let key = "synthetic-byte-owner";
+        let bytes = Lifecycle::initial_metadata_bytes(key);
+        let bank = Arc::new(Semaphore::new(bytes));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let original = lifecycle.ticket(key).await.unwrap();
+        assert_eq!(bank.available_permits(), 0);
+        let repeated = lifecycle.ticket(key).await.unwrap();
+        assert!(original.same_incarnation(&repeated));
+        assert_eq!(
+            bank.available_permits(),
+            0,
+            "same gate must not double charge"
+        );
+        resource(&lifecycle.ticket("another").await.err().unwrap());
+        assert_eq!(lifecycle.coordinator_count().await, 1);
+        assert!(original.is_current());
+        lifecycle.clear();
+        assert!(!original.is_current());
+        assert_eq!(
+            bank.available_permits(),
+            0,
+            "epoch invalidation does not free storage"
+        );
+        let clone = original.clone();
+        drop(lifecycle);
+        let backing = 2 * std::mem::size_of::<DeviceRow>();
+        assert_eq!(
+            bank.available_permits(),
+            backing,
+            "table backing freed, original gate still owned"
+        );
+        drop(original);
+        drop(repeated);
+        assert_eq!(bank.available_permits(), backing);
+        drop(clone);
+        assert_eq!(bank.available_permits(), bytes);
+    }
+
+    #[tokio::test]
+    async fn coordinator_metadata_failed_backing_admission_rolls_back_original_storage() {
+        let key = "synthetic-backing";
+        let bytes = Lifecycle::initial_metadata_bytes(key) - 1;
+        let bank = Arc::new(Semaphore::new(bytes));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        resource(&lifecycle.ticket(key).await.err().unwrap());
+        let devices = lifecycle.devices.lock().await;
+        assert!(devices.rows.is_empty());
+        assert_eq!(devices.rows.capacity(), 0);
+        assert!(devices.storage.is_none());
+        drop(devices);
+        assert_eq!(
+            bank.available_permits(),
+            bytes,
+            "failed key and backing charges returned"
+        );
+        drop(lifecycle);
+        assert_eq!(bank.available_permits(), bytes);
+    }
+
+    #[tokio::test]
+    async fn coordinator_metadata_rejected_growth_preserves_original_gates_and_capacity() {
+        let key_bytes = std::mem::size_of::<DeviceGate>() + 1;
+        let backing = 2 * std::mem::size_of::<DeviceRow>();
+        // Two original rows plus a third gate fit, but old+new backing do not.
+        let bytes = 3 * key_bytes + backing;
+        let bank = Arc::new(Semaphore::new(bytes));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let first = lifecycle.ticket("a").await.unwrap();
+        let second = lifecycle.ticket("b").await.unwrap();
+        assert_eq!(bank.available_permits(), key_bytes);
+        resource(&lifecycle.ticket("c").await.err().unwrap());
+        assert_eq!(bank.available_permits(), key_bytes);
+        assert_eq!(lifecycle.coordinator_count().await, 2);
+        assert_eq!(lifecycle.devices.lock().await.rows.capacity(), 2);
+        let same = lifecycle.ticket("a").await.unwrap();
+        assert!(same.same_incarnation(&first));
+        assert!(second.is_current());
+        drop(lifecycle);
+        assert_eq!(bank.available_permits(), key_bytes + backing);
+        drop(first);
+        drop(second);
+        drop(same);
+        assert_eq!(bank.available_permits(), bytes);
+    }
+
+    #[tokio::test]
+    async fn coordinator_metadata_growth_charges_actual_vec_capacity_and_releases_old_backing() {
+        let bank = Arc::new(Semaphore::new(64 * 1024));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let mut tickets = Vec::new();
+        for key in ["a", "b", "c", "d", "e"] {
+            tickets.push(lifecycle.ticket(key).await.unwrap());
+            let devices = lifecycle.devices.lock().await;
+            let actual = devices.rows.capacity() * std::mem::size_of::<DeviceRow>()
+                + devices
+                    .rows
+                    .iter()
+                    .map(|(key, _)| key.capacity() + std::mem::size_of::<DeviceGate>())
+                    .sum::<usize>();
+            assert_eq!(bank.available_permits(), 64 * 1024 - actual);
+        }
+        drop(lifecycle);
+        assert_eq!(
+            bank.available_permits(),
+            64 * 1024 - 5 * (std::mem::size_of::<DeviceGate>() + 1)
+        );
+        drop(tickets);
+        assert_eq!(bank.available_permits(), 64 * 1024);
+    }
+
     #[tokio::test]
     async fn global_clear_resets_desired_intent_and_invalidates_old_ticket() {
         let lifecycle = Lifecycle::new();
@@ -691,7 +889,7 @@ mod tests {
             }
             let outcome = tokio::time::timeout(Duration::from_secs(1), queued).await;
             assert!(
-                held.is_empty(),
+                held.rows.is_empty(),
                 "cancelled admission created coordinator state"
             );
             drop(held);
@@ -731,7 +929,7 @@ mod tests {
                 Err(error) => assert!(error.is::<ios_core::OperationCancelled>()),
                 Ok(_) => panic!("queued admission acquired a replacement epoch"),
             }
-            assert!(lifecycle.devices.lock().await.is_empty());
+            assert!(lifecycle.devices.lock().await.rows.is_empty());
             if !terminal {
                 assert!(lifecycle.ticket("synthetic-queued-device").await.is_ok());
             }
