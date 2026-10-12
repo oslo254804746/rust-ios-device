@@ -28,7 +28,7 @@ PUBLIC_ARGUMENTS = frozenset(("--version", "-vvvv", "forward", "62078", "-c", "/
 HOST_IDS = frozenset(("host-argv", "host-cli-version", "host-cli-rejection",
                      "host-agent", "host-artifacts"))
 PROVENANCE_FIELDS = frozenset(("commit", "working_tree_dirty", "binary_sha256", "binary_version",
-                              "matrix_sha256", "runner_sha256", "capture_sha256", "python_version",
+                              "matrix_sha256", "runner_sha256", "capture_sha256", "windows_owner_sha256", "python_version",
                               "platform", "architecture", "date"))
 ARCHITECTURES = frozenset(("x86_64", "aarch64", "arm64", "i686", "AMD64", "unrecorded"))
 
@@ -94,7 +94,7 @@ def check_provenance(value):
     if set(value) != PROVENANCE_FIELDS or type(value["working_tree_dirty"]) is not bool:
         raise ValueError("provenance-schema")
     for field, length in (("commit", 40), ("binary_sha256", 64), ("matrix_sha256", 64),
-                          ("runner_sha256", 64), ("capture_sha256", 64)):
+                          ("runner_sha256", 64), ("capture_sha256", 64), ("windows_owner_sha256", 64)):
         if not re.fullmatch(r"[0-9a-f]{" + str(length) + "}", value[field]):
             raise ValueError("provenance-hash")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", value["binary_version"]):
@@ -299,7 +299,7 @@ class Session:
 
     def agent(self, command, *, timeout=10):
         self.ensure_open()
-        if os.name != "posix" or not sys.platform.startswith("linux"):
+        if os.name != "nt" and not sys.platform.startswith("linux"):
             raise ValueError("process-tree-platform-unverified")
         if not 0 < timeout <= 10:
             raise ValueError("agent-budget")
@@ -336,6 +336,7 @@ class Session:
                     matrix_sha256=sha256_file(MATRIX),
                     runner_sha256=sha256_file(Path(__file__)),
                     capture_sha256=sha256_file(ROOT / "scripts/diagnostics.py"),
+                    windows_owner_sha256=sha256_file(ROOT / "scripts/regression_windows_process.py"),
                     python_version=".".join(map(str, sys.version_info[:3])),
                     platform=sys.platform, architecture=architecture if architecture in ARCHITECTURES else "unrecorded",
                     date=datetime.now(timezone.utc).isoformat())
@@ -350,7 +351,7 @@ class Session:
                 if not result.cleanup_complete or result.incomplete:
                     agent_failures += 1
                 if "host-agent" not in self.results:
-                    self.record("host-agent", owned[0], result, -15, False)
+                    self.record("host-agent", owned[0], result, 1 if os.name == "nt" else -15, False)
             except Exception:
                 agent_failures += 1
         unknown = 0
@@ -618,7 +619,7 @@ def run_host_cases(session: Session, binary: Path, provenance: dict):
                 env=env, expected_code=2,
                 contract=lambda r: b"ValueValidation" in r.stderr and b"argument parsing failed" in r.stderr
                 and b"usbmux" not in r.stderr)
-    if sys.platform.startswith("linux"):
+    if os.name == "nt" or sys.platform.startswith("linux"):
         ready = session.private_file("agent-ready", b"pending-agent-ready")
         command = [sys.executable, "-c",
                    "import pathlib,sys,time;print('fixture-ready',flush=True);"
@@ -628,9 +629,10 @@ def run_host_cases(session: Session, binary: Path, provenance: dict):
         while ready.read_bytes() != b"ready" and not owned[3].done() and time.monotonic() < deadline:
             time.sleep(0.01)
         result = session.stop_agent(owned)
-        session.record("host-agent", command, result, -15,
+        session.record("host-agent", command, result, 1 if os.name == "nt" else -15,
                        ready.read_bytes() == b"ready" and b"fixture-ready" in result.stdout and result.stop_requested
-                       and group_alive(result.pid) is False)
+                       and result.cleanup_complete
+                       and (result.cleanup_scope == "windows-job" if os.name == "nt" else group_alive(result.pid) is False))
 
 
 def host_run(binary, parent=None, device=None, context=None, case_filter=None):

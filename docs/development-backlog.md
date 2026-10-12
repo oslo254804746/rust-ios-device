@@ -24,8 +24,9 @@ L04原测量/资源归因/预算工具范围本轮交付，开发口径计入完
 
 当前修复及实际验证见[修复记录](validation/review-fixes-2026-10-10.md)。
 本轮最小WDA交付与L01/L02/Q02/F01范围复核见[接力记录](validation/wda-continuation-2026-10-12.md)。
-Windows watch工具已本地提交ff70516；Q02完整收尾复核仍确认通用Windows capture/agent
-只收回leader，尚缺原process tree owner接线，见[原范围核查](validation/q02-scope-audit-2026-10-12.md)。
+Windows watch工具已本地提交ff70516；随后通用Windows capture/agent原Job/handle/reader
+接线也已交付，见[验证](validation/windows-capture-2026-10-12.md)。Q02按
+[原范围核查](validation/q02-scope-audit-2026-10-12.md)继续FUP剩余条款，不由工具子项关闭。
 L04原范围交付与实测边界见[资源基线](validation/manager-resource-baseline-2026-10-11.md)：
 同fixture前后比较、连续资源采样、独立默认堆归因与基线派生预算均已交付；
 物理设备/其他平台/发布构建NOT_RUN，超出参考范围的性能值保持观察标志。
