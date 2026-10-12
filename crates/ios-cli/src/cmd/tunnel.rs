@@ -1961,11 +1961,16 @@ impl TunnelAgentState {
                     planned.push((udid, ticket, index));
                 }
             }
-            let reply = candidate_budget.paired_candidates(targets, &seen, |udid| {
-                self.inner.access.permits_device(udid)
-                    && !suppressed.contains(udid)
-                    && !manual.contains_key(udid)
-            });
+            let reply = candidate_budget.paired_candidates(
+                targets,
+                &seen,
+                |udid| {
+                    self.inner.access.permits_device(udid)
+                        && !suppressed.contains(udid)
+                        && !manual.contains_key(udid)
+                },
+                &self.inner.global_metadata_bytes,
+            );
             if let admission::PairedCandidates::Complete { targets, .. } = &reply {
                 _paired_snapshot_charge = Some(charge);
                 for (udid, ticket, index) in planned {
@@ -1981,7 +1986,10 @@ impl TunnelAgentState {
             }
             reply
         });
-        if let Some(admission::PairedCandidates::Complete { targets, indices }) = &paired {
+        if let Some(admission::PairedCandidates::Complete {
+            targets, indices, ..
+        }) = &paired
+        {
             for &index in indices {
                 let target = &targets[index];
                 if self.inner.access.permits_device(&target.udid)

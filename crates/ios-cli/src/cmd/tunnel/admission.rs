@@ -130,6 +130,8 @@ pub(super) fn paired_snapshot(devices: &Vec<PairedMobdev2Device>) -> Result<()> 
 }
 
 #[cfg(test)]
+mod paired_plan_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy, Default)]
@@ -142,6 +144,7 @@ pub(super) enum PairedCandidates {
     Complete {
         targets: Vec<PairedMobdev2Device>,
         indices: Vec<usize>,
+        _storage: OwnedSemaphorePermit,
     },
     Incomplete(anyhow::Error),
 }
@@ -152,10 +155,16 @@ impl CandidateBudget {
         targets: Vec<PairedMobdev2Device>,
         usb_seen: &HashSet<String>,
         permits: impl Fn(&str) -> bool,
+        bank: &Arc<Semaphore>,
     ) -> PairedCandidates {
-        match paired_snapshot(&targets).and_then(|()| self.paired_plan(&targets, usb_seen, permits))
+        match paired_snapshot(&targets)
+            .and_then(|()| self.paired_plan(&targets, usb_seen, permits, bank))
         {
-            Ok(indices) => PairedCandidates::Complete { targets, indices },
+            Ok((indices, storage)) => PairedCandidates::Complete {
+                targets,
+                indices,
+                _storage: storage,
+            },
             // Reject without retaining the input across USB candidate waits.
             Err(error) => PairedCandidates::Incomplete(error),
         }
@@ -179,27 +188,42 @@ impl CandidateBudget {
         Ok(())
     }
 
-    pub(super) fn paired_plan(
+    fn paired_plan(
         &self,
         targets: &[PairedMobdev2Device],
         usb_seen: &HashSet<String>,
         permits: impl Fn(&str) -> bool,
-    ) -> Result<Vec<usize>> {
+        bank: &Arc<Semaphore>,
+    ) -> Result<(Vec<usize>, OwnedSemaphorePermit)> {
         let mut budget = *self;
-        let mut planned = HashSet::new();
         let mut indices = Vec::new();
+        indices.try_reserve_exact(targets.len()).map_err(|_| {
+            crate::output::resource_decision("tunnel paired plan allocation failed")
+        })?;
+        let storage = known_vec_backing(bank, &indices)?;
         for (index, target) in targets.iter().enumerate() {
-            if permits(&target.udid)
-                && !usb_seen.contains(&target.udid)
-                && !planned.contains(target.udid.as_str())
-            {
-                // Admit the entire borrowed plan before any paired String clone
-                // or ticket. Permission rechecks may only remove planned rows.
-                budget.admit(target.udid.len(), target.host.len())?;
-                planned.insert(target.udid.as_str());
+            if permits(&target.udid) && !usb_seen.contains(&target.udid) {
                 indices.push(index);
             }
         }
-        Ok(indices)
+        indices.sort_unstable_by(|a, b| targets[*a].udid.cmp(&targets[*b].udid).then(a.cmp(b)));
+        let mut read = 0;
+        let mut write = 0;
+        while read < indices.len() {
+            let first = indices[read];
+            let mut end = read + 1;
+            while end < indices.len() && targets[indices[end]].udid == targets[first].udid {
+                end += 1;
+            }
+            // Admit the full unique borrowed plan before any String clone or
+            // ticket. The first matching raw row and original order are kept.
+            budget.admit(targets[first].udid.len(), targets[first].host.len())?;
+            indices[write] = first;
+            write += 1;
+            read = end;
+        }
+        indices.truncate(write);
+        indices.sort_unstable();
+        Ok((indices, storage))
     }
 }
