@@ -1,8 +1,11 @@
 """Raw leaks cannot pass by masking a copy; capture budgets fail closed."""
 import os
+from contextlib import ExitStack
 import re
 import sys
+import threading
 import unittest
+from unittest.mock import patch
 
 import diagnostics
 
@@ -52,6 +55,44 @@ class DiagnosticCaptureTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertFalse(result.incomplete)
         self.assertFalse(diagnostics.assess(result, {b"absent-secret"}, result.returncode)["passed"])
+
+    def test_late_complete_output_cannot_bypass_initial_capture_deadline(self):
+        original_start = threading.Thread.start
+        owners = []
+        if os.name == "nt":
+            import regression_windows_process as process_module
+            factory_name = "CapturedProcess"
+        else:
+            process_module = diagnostics.subprocess
+            factory_name = "Popen"
+        original_factory = getattr(process_module, factory_name)
+
+        def original_owner(*args, **kwargs):
+            owner = original_factory(*args, **kwargs)
+            owners.append(owner)
+            return owner
+
+        def collected_before_controller_check(worker):
+            original_start(worker)
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            owners[0].wait(timeout=2)
+
+        # Model the caller being scheduled after both original readers complete.
+        # The real child/Job and reader threads still run and must be reclaimed.
+        with ExitStack() as fixture:
+            fixture.enter_context(patch.object(process_module, factory_name, side_effect=original_owner))
+            fixture.enter_context(patch.object(threading.Thread, "start", autospec=True,
+                                              side_effect=collected_before_controller_check))
+            result = diagnostics.capture([sys.executable, "-c",
+                "import os;os.write(1,b'safe');os.write(2,b'late-safe')"], timeout=0.001)
+        self.assertEqual(result.stdout, b"safe")
+        self.assertEqual(result.stderr, b"late-safe")
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.cleanup_complete)
+        self.assertFalse(result.incomplete)
+        self.assertTrue(result.timed_out)
+        self.assertFalse(diagnostics.assess(result, {b"absent-secret"}, 0)["passed"])
 
     @unittest.skipUnless(os.name == "posix", "Unix owned-session cleanup")
     def test_exited_parent_does_not_leave_inherited_pipe_writers_running(self):

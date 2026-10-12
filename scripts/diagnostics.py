@@ -149,7 +149,13 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=
         for worker in workers:
             worker.start()
             launched.append(worker)
-        while not (process.poll() is not None and all(done.is_set() for done in completed)):
+        while True:
+            if process.poll() is not None and all(done.is_set() for done in completed):
+                # Completion first observed after the absolute capture deadline
+                # cannot bypass its check, even if startup/readers finished
+                # before the controller was scheduled. Keep native exit/bytes.
+                timed_out = time.monotonic() >= deadline
+                break
             if (stop is not None and stop.is_set() and not stop_requested
                     and (windows or process.poll() is None)):
                 # Terminate only this capture's owned CLI after its service
