@@ -48,8 +48,11 @@ output observation, not an invented notification delivery acknowledgement.
 in-memory records. It starts mutations only after the actual watch reports
 `connected`, then sends SIGINT and requires `stopped` with
 `native_reclaimed: true`, original reader joins and process-group absence.
-Forced termination cannot substitute for this native receipt. Windows is
-explicitly NOT_RUN because this runner lacks owned console-signal supervision.
+Forced termination cannot substitute for this native receipt. Windows was
+initially NOT_RUN because the runner lacked owned console-signal supervision.
+The [2026-10-12 tool continuation](windows-watch-2026-10-12.md) implements that
+owner and verifies actual CLI startup cancellation. A complete Windows device
+clipboard workflow has not been run.
 Empty/multiple-item/promised/metadata-rich baselines are refused before mutation
 because the current single-item CLI cannot restore them faithfully. Sensitive
 raw output remains in RAM and is not printed or persisted in the report.
@@ -94,9 +97,9 @@ InstallCoordination and Display/HID are recorded in
 
 The first three existing host paths and all physical-device rows remain separate
 from mock/scripted responses and localhost protocol evidence. Q02 remains
-incomplete: Windows rich clipboard watch still lacks owned console-signal
-supervision and graceful observer cleanup, a tool implementation gap distinct
-from a platform test awaiting execution. The WDA localhost CLI continuation is
+under full original-scope review: Windows owned console-signal supervision and
+graceful observer cleanup are now implemented and separately verified; original
+FUP deliverables and complete device watch evidence remain distinct. The WDA localhost CLI continuation is
 recorded in [the WDA repair evidence](wda-continuation-2026-10-12.md).
 
 ## Commands executed so far

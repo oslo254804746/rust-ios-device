@@ -824,8 +824,8 @@ def execute(session, case, context):
     case_id = case["id"]
     if case_id in UNSUPPORTED:
         return session.record_not_run(case_id, UNSUPPORTED[case_id], ["production-protocol-observer"])
-    if case_id == "rich-clipboard-watch" and os.name != "posix":
-        return session.record_not_run(case_id, "posix-owned-graceful-watch-signal-required", ["posix-graceful-watch"])
+    if case_id == "rich-clipboard-watch" and os.name not in ("posix", "nt"):
+        return session.record_not_run(case_id, "owned-graceful-watch-platform-required", ["owned-graceful-watch"])
     if case_id == "remoted-coexistence" and "existing-rsd-route" not in context.fixtures:
         return session.record_not_run(case_id, "existing-selected-rsd-route-required", ["existing-rsd-route"])
     if case_id == "installcoordination-wire":

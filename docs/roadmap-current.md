@@ -15,7 +15,7 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 | CDP/F04 | 清除生产常量和空成功，真实WebInspector请求/响应/event关联；实际pinned客户端验证每域，未知字段/无法保证语义明确拒绝。 |
 | SDK/A03/L01 | A03开发交付：apps/AFC/logs共同checked trust owner、Python/C预算/取消/并发/close/join、公开aclose，installed wheel与C实际ABI gate分别30场景通过；L01其它profiles继续。 |
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
-| Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA迟到成功owner与实际localhost CLI ready/单次转发/失败收尾已补验，见[本轮证据](validation/wda-continuation-2026-10-12.md)。Windows watch console signal工具及现代全流程继续。 |
+| Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA和依赖已本地提交94574d6；Windows watch原console/Job/reader工具9项通过，见[本轮证据](validation/windows-watch-2026-10-12.md)。原FUP交付及现代全流程继续复核。 |
 | F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
 | L02 | 元数据发布准入、持久意图epoch；完整全局归因/刷新规则继续。 |
 | L04已交付 | 同fixture前后1/4/16与16轮启停/断连、生产native/AFC/Syslog连续资源采样、默认堆归因与基线派生性能参考范围。见[证据](validation/manager-resource-baseline-2026-10-11.md)；物理设备和其他平台NOT_RUN，超出参考范围保持观察标志。 |

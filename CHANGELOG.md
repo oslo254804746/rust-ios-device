@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add Windows owned watch supervision using a hidden private console and atomic
+  Job Object admission. Verify original Ctrl-C, process trees, reader joins and
+  actual CLI TLS-start cancellation without treating forced cleanup as native success.
 - Add `runwda --once` to stop after one forwarded connection. Retain the
   original startup owner when a successful poll crosses its deadline; verify
   WDA startup, TCP readiness, forwarding and cleanup with localhost CLI peers.

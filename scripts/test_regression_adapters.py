@@ -193,7 +193,7 @@ class FixtureAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single-item-baseline"):
             adapters.load_fixture_manifest(self.root, self.context)
 
-    def test_clipboard_windows_graceful_signal_unavailable_is_not_run_before_mutation(self):
+    def test_clipboard_windows_uses_adapter_and_baseline_failure_prevents_mutation(self):
         if os.name != "nt":
             self.skipTest("Windows specific signal boundary")
         self.manifest({"synthetic-clipboard": self.clipboard_fixture()})
@@ -203,10 +203,14 @@ class FixtureAdmissionTests(unittest.TestCase):
         session = regression.Session(self.root)
         try:
             case = next(row for row in session.matrix["cases"] if row["id"] == "rich-clipboard-watch")
-            with patch.object(adapters, "capture", side_effect=AssertionError("must not mutate")):
+            # Windows now enters the real workflow. A failed read-only baseline
+            # must still prevent the watcher and every clipboard mutation.
+            with patch.object(adapters, "capture", return_value=Capture(b"", b"", 1, False, False, False)) as observed:
                 report = regression.execute_device_case(session, case, self.context)
-            self.assertEqual(report["status"], "NOT_RUN")
-            self.assertEqual(report["reason"], "posix-owned-graceful-watch-signal-required")
+            self.assertEqual(report["status"], "FAIL")
+            observed.assert_called_once()
+            self.assertEqual(observed.call_args.args[0][5:7], ["pasteboard", "get"])
+            self.assertEqual(report["reason"], "operation-or-cleanup-failed")
         finally:
             session.cleanup()
 
