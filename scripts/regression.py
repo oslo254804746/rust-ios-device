@@ -427,7 +427,8 @@ class Session:
         report = dict(version=1, provenance=provenance, cases=rows, cleanup=cleanup,
                       adapter_source_sha256=sha256_file(ROOT / "scripts/regression_adapters.py"),
                       adapter_support_source_sha256={name: sha256_file(ROOT / "scripts" / name) for name in
-                                                     ("regression_watch_capture.py", "regression_cli_fixture.py", "regression_dtx_fixture.py", "regression_rsd_fixture.py")},
+                                                     ("regression_watch_capture.py", "regression_watch_windows.py", "regression_windows_process.py",
+                                                      "regression_cli_fixture.py", "regression_dtx_fixture.py", "regression_rsd_fixture.py")},
                       fixture_manifest_sha256=context.fixture_manifest_sha256 if context else None,
                       host_passed=host_passed,
                       real_device_executed=real_device_executed)
@@ -551,6 +552,9 @@ def check_preconditions(case: dict, context: ExecutionContext):
                 missing.append(req)
         elif req == "owned-process-group":
             if not sys.platform.startswith("linux"):
+                missing.append(req)
+        elif req == "owned-process-tree":
+            if os.name != "nt" and not sys.platform.startswith("linux"):
                 missing.append(req)
         else:
             missing.append(req)

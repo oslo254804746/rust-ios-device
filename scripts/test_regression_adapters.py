@@ -32,6 +32,29 @@ class FixtureAdmissionTests(unittest.TestCase):
         value = dict(version=1, target_udid=target, fixtures=fixtures or {}, observations={}, evidence={})
         (self.root / "manifest.json").write_text(json.dumps(value))
 
+    def test_ordinary_and_cleanup_capture_budgets_and_original_owner_evidence(self):
+        session = regression.Session(self.root)
+        self.addCleanup(session.cleanup)
+        run = adapters.OperationRun(session, "file-workflow", self.context)
+        captured = Capture(b"safe", b"", 0, False, False, False, pid=73,
+                           cleanup_complete=True, cleanup_scope="windows-job")
+        with patch.object(adapters, "capture", return_value=captured) as mocked:
+            run.step(["owned-fixture"], lambda result: True)
+            self.assertLessEqual(mocked.call_args.kwargs["timeout"], 60)
+            self.assertGreater(mocked.call_args.kwargs["timeout"], 59)
+            run.step(["owned-cleanup"], lambda result: True, cleanup=True)
+            self.assertEqual(mocked.call_args.kwargs["timeout"], 10)
+        self.assertEqual(run.steps[0]["pid"], 73)
+        self.assertEqual(run.steps[0]["cleanup_scope"], "windows-job")
+        self.assertFalse(run.steps[0]["stop_requested"])
+        with patch.object(adapters, "capture", side_effect=OSError("synthetic-private-capture-fault")):
+            with self.assertRaises(OSError):
+                run.step(["owned-fixture"], lambda result: True)
+        report = run.finish(OSError("synthetic-private-capture-fault"))
+        self.assertFalse(report["cleanup_complete"])
+        self.assertEqual(report["status"], "FAIL")
+        self.assertNotIn("synthetic-private-capture-fault", json.dumps(report))
+
     def test_device_metadata_is_unknown_until_observed(self):
         device = self.context.device
         self.assertEqual(device.transport, "unobserved")
@@ -307,6 +330,18 @@ class ActualCliAfcTests(unittest.TestCase):
                         self.assertEqual(report["status"], "PASS", report)
                         self.assertEqual(report["evidence_origin"], "localhost-protocol-fixture")
                         self.assertTrue(report["cleanup_complete"])
+                        self.assertTrue(report["artifacts"])
+                        for artifact in report["artifacts"]:
+                            self.assertEqual(artifact["size"], artifact["expected_size"])
+                            self.assertEqual(artifact["sha256"], artifact["expected_sha256"])
+                            self.assertTrue(artifact["no_unexpected_output"])
+                            if artifact["kind"] == "downloaded-file":
+                                self.assertEqual(artifact["sha256"], hashlib.sha256(PAYLOAD).hexdigest())
+                            if case_id == "windows-afc-long":
+                                self.assertGreater(artifact["target_utf16_units"], 260)
+                        for step in report["steps"]:
+                            self.assertGreater(step["pid"], 0)
+                            self.assertEqual(step["cleanup_scope"], "windows-job")
                     self.assertFalse(list(root.glob("ios-matrix-owned-*")))
                 finally:
                     session.cleanup()
