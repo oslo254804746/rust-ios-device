@@ -27,8 +27,9 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 用户于2026-10-12明确要求：每完成一个可验收工作项，验证后立即本地提交，
 写明改动、验证和剩余边界，再继续下一项；不把提交等同于原主项全部关闭。
 已依次提交94574d6（协议/WDA组合）、ff70516（Windows watch owner）。
-下一项按[Q02原范围核查](validation/q02-scope-audit-2026-10-12.md)推进通用Windows
-capture/agent process tree接线；watch专用Job不能替代所有捕获路径。
+随后[通用Windows capture/agent接线](validation/windows-capture-2026-10-12.md)已完成；
+继续按[Q02原范围核查](validation/q02-scope-audit-2026-10-12.md)收尾原FUP条款，
+再推进L02全局原error payload归因，工具子项不直接增加主项完成数。
 
 用户后续统一安排真机。没有指定设备操作范围，本轮不执行恢复、擦除、配对、
 安装等设备变更；真实设备流程仍NOT_RUN。POSIX pthread、Linux/glibc资源探针、

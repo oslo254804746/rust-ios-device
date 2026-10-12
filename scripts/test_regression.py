@@ -16,7 +16,7 @@ import regression
 def fixture_provenance():
     return dict(commit="0" * 40, working_tree_dirty=True, binary_sha256="0" * 64,
                 binary_version="0.0.0", matrix_sha256="0" * 64, runner_sha256="0" * 64,
-                capture_sha256="0" * 64, python_version="3.12.0", platform="linux",
+                capture_sha256="0" * 64, windows_owner_sha256="0" * 64, python_version="3.12.0", platform="linux",
                 architecture="x86_64", date="2026-10-01T00:00:00+00:00")
 
 

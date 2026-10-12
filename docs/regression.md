@@ -23,12 +23,14 @@ separate private directory. stdout contains only status counts and the generated
 evidence directory basename; combine that basename with the chosen parent to
 find the report. Raw output, command/environment values, private paths and
 exception text never enter terminal transcripts or artifacts. Files use exclusive
-creation (0600 on Unix); directories are 0700 on Unix. Windows ACLs and process
-trees remain unverified, so the owned-agent row is NOT_RUN and the gate fails
-there instead of silently claiming a complete host workflow.
+creation (0600 on Unix); directories are 0700 on Unix. Windows directory ACLs
+remain a separate storage boundary: use an owner-controlled output parent.
+The synthetic owned-agent row runs on Linux and Windows 10+; other platforms
+remain NOT_RUN. Its host result does not certify device or third-party agents.
 
 Reports contain UTC date, host platform/architecture and Python version, code
-HEAD, dirty flag, selected binary SHA-256, matrix/runner/capture SHA-256, case
+HEAD, dirty flag, selected binary SHA-256, matrix/runner/capture/shared Windows
+owner SHA-256, case
 level, transport, scope, preconditions, duration, exit/expected code, raw and
 independently masked-copy secret hit counts, contract result, timeout/overflow/
 incomplete flags, owned PID/group and cleanup result. A dirty flag means HEAD
@@ -38,7 +40,8 @@ commit certification. Archive only audited metadata in an owner-controlled
 evidence location; do not add generated reports, credentials or device artifacts
 to Git. The runner preserves the report for the user to review.
 
-Arguments go directly through `subprocess` with no shell. Public command/flag
+Arguments go directly through `subprocess` (Windows uses `CreateProcessW` with
+the same argv quoting) with no shell. Public command/flag
 tokens and `/`/`.` are visible; other values have only their index, UTF-8 byte/
 UTF-16 unit length and a per-run keyed correlation tag. The key is deleted during
 cleanup and is absent from the evidence. This is useful for identifying whether
@@ -68,16 +71,26 @@ closed their pipes. `/proc` observation distinguishes terminated zombies from
 running members. No process-name kill is used. A process deliberately creating
 another session is outside this group guarantee and is not a supported agent
 adapter. Unix systems without that observation fail conservatively when group
-absence cannot be established; Windows has only the existing CLI-leader capture
-boundary, not a certified general process-tree supervisor.
+absence cannot be established.
+
+Windows 10+ ordinary capture and agents use a direct hidden child, atomically
+assigned to a private Job with `JOB_LIST`, explicit output handles and NUL stdin.
+There is no controller metadata in the separate raw stdout/stderr byte streams.
+Stop, timeout, overflow and reader failure terminate only the retained Job;
+leader success also triggers cleanup of surviving descendants, even with closed
+pipes. Original exit codes are preserved (forced Windows termination uses 1).
+An empty Job, original process completion and both original reader joins are
+required for host cleanup. This is not a graceful native or device ACK.
+[Capture verification](validation/windows-capture-2026-10-12.md) covers the
+generic Session agent, byte/secret contracts and original handle closure.
 
 `regression_watch_capture.OwnedWatch` now has a separate Windows 10+ watch
 owner: a hidden new console, atomic `JOB_LIST` child admission and explicit
 stdout/stderr handle inheritance. Its Ctrl-C stays within the verified private
 console; Job termination is failure cleanup. Successful native cleanup also
 requires the product's stopped receipt, original process completion, an empty
-job and joined output readers. The generic command/agent capture boundary above
-is unchanged. [Implementation and actual CLI evidence](validation/windows-watch-2026-10-12.md)
+job and joined output readers. It shares Job/launch primitives with direct
+capture. [Implementation and actual CLI evidence](validation/windows-watch-2026-10-12.md)
 distinguish supervisor fixtures from a pending TLS service-start cancellation;
 the complete device clipboard watch remains NOT_RUN.
 

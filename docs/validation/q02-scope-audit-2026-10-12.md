@@ -1,5 +1,9 @@
 # Q02原FUP交付范围收尾核查 · 2026-10-12
 
+后续更新：本页以下保留 db5487f 时的范围核查。现通用 Windows capture/agent 的
+原 Job/process/reader 接线已实现并验证，见[通用捕获交付](windows-capture-2026-10-12.md)。
+不能再把“仅回收 leader”作为当前缺口；其它历史来源/存储/设备边界继续逐条核查。
+
 此项承接原路线图Q02对FUP-01–FUP-04的要求；不是新增主任务，不改变有效分母30。
 94574d6提交协议/WDA依赖组合，ff70516提交Windows watch工具，随后继续本核查。
 完整日志和精确blob/二进制/工具hash位于外部repair/watch制品目录；clean commit

@@ -7,6 +7,7 @@ import hashlib
 import http.client
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -93,15 +94,20 @@ def group_alive(group):
 def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=None):
     """Bound RAM and time; terminate only this owned fixture process/group.
 
-    Unix uses a new session to clean up inherited pipe writers. On Windows the
-    host cases launch only ios (which does not launch child processes); general
-    Windows process-tree supervision belongs to the later workflow harness.
+    Unix uses a new session; Windows atomically admits the child to its private
+    Job. Both clean descendants even after leader exit or output pipe closure.
+    cleanup_complete describes host ownership only, never a native/device ACK.
     """
-    if timeout <= 0 or max_bytes <= 0:
+    if not math.isfinite(timeout) or timeout <= 0 or type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("capture budgets must be positive")
     started = time.monotonic()
-    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=os.name == "posix")
+    windows = os.name == "nt"
+    if windows:
+        from regression_windows_process import CapturedProcess
+        process = CapturedProcess(command, cwd=ROOT, env=env)
+    else:
+        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=os.name == "posix")
     buffers = [bytearray(), bytearray()]
     lock = threading.Lock()
     overflow = threading.Event()
@@ -124,70 +130,100 @@ def capture(command, *, env=None, timeout=10, max_bytes=MAX_CAPTURE_BYTES, stop=
         except (OSError, ValueError):
             read_failed.set()
         finally:
-            pipe.close()
-            completed[index].set()
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                read_failed.set()
+            finally:
+                completed[index].set()
 
-    workers = [threading.Thread(target=reader, args=(pipe, index), daemon=True)
+    workers = [threading.Thread(target=reader, args=(pipe, index), daemon=True,
+                                name="owned-diagnostic-capture-reader")
                for index, pipe in enumerate((process.stdout, process.stderr))]
-    for worker in workers:
-        worker.start()
-    deadline = time.monotonic() + timeout
+    launched = []
+    deadline = started + timeout
     timed_out = False
     stop_requested = False
     cleanup_complete = False
     try:
+        for worker in workers:
+            worker.start()
+            launched.append(worker)
         while not (process.poll() is not None and all(done.is_set() for done in completed)):
-            if stop is not None and stop.is_set() and process.poll() is None and not stop_requested:
+            if (stop is not None and stop.is_set() and not stop_requested
+                    and (windows or process.poll() is None)):
                 # Terminate only this capture's owned CLI after its service
                 # contract checks. This is not a timeout or graceful-device ACK.
                 process.terminate()
                 stop_requested = True
-            if overflow.wait(0.02):
+            if overflow.wait(0.02) or read_failed.is_set():
                 break
             if time.monotonic() >= deadline:
                 timed_out = True
                 break
     finally:
-        # Even a successful leader may leave descendants which closed their
-        # output pipes. Always inspect and stop this capture's owned group.
-        group_remaining = os.name == "posix" and group_alive(process.pid) is not False
-        if group_remaining or process.poll() is None or not all(done.is_set() for done in completed):
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            elif process.poll() is None:
-                process.terminate()
+        if windows:
             try:
-                process.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                pass
-            # The leader can exit while an owned descendant still holds pipes.
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            elif process.poll() is None:
-                process.kill()
-        process.wait(timeout=2)
-        for worker in workers:
-            worker.join(timeout=1)
-        if os.name == "posix":
-            cleanup_deadline = time.monotonic() + 0.5
-            while group_alive(process.pid) is True and time.monotonic() < cleanup_deadline:
-                time.sleep(0.01)
-            cleanup_complete = group_alive(process.pid) is False
+                # Include closed-pipe descendants; leader exit alone proves nothing
+                # about the retained Job. There is no PID/name rediscovery here.
+                if process.job.active():
+                    process.terminate()
+                process.wait(timeout=2)
+                empty = process.job.empty(2)
+                for worker in launched:
+                    worker.join(timeout=1)
+                cleanup_complete = empty and all(not worker.is_alive() for worker in launched)
+            finally:
+                process.close()
+                for index, pipe in enumerate((process.stdout, process.stderr)):
+                    if workers[index] not in launched:
+                        pipe.close()
         else:
-            cleanup_complete = process.poll() is not None
+            cleanup_complete = _finish_capture_posix(process, launched, completed)
     with lock:
         return Capture(bytes(buffers[0]), bytes(buffers[1]), process.returncode,
                        timed_out, overflow.is_set(), read_failed.is_set()
                        or any(worker.is_alive() for worker in workers),
                        round((time.monotonic() - started) * 1000), process.pid,
-                       cleanup_complete, "process-group" if os.name == "posix" else "leader",
+                       cleanup_complete, "windows-job" if windows else "process-group" if os.name == "posix" else "leader",
                        stop_requested)
+
+
+def _finish_capture_posix(process, workers, completed):
+    # Even a successful leader may leave descendants which closed their
+    # output pipes. Always inspect and stop this capture's owned group.
+    group_remaining = os.name == "posix" and group_alive(process.pid) is not False
+    if group_remaining or process.poll() is None or not all(done.is_set() for done in completed):
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        # The leader can exit while an owned descendant still holds pipes.
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.kill()
+    process.wait(timeout=2)
+    for worker in workers:
+        worker.join(timeout=1)
+    if os.name == "posix":
+        cleanup_deadline = time.monotonic() + 0.5
+        while group_alive(process.pid) is True and time.monotonic() < cleanup_deadline:
+            time.sleep(0.01)
+        cleanup_complete = group_alive(process.pid) is False
+    else:
+        cleanup_complete = process.poll() is not None
+    return cleanup_complete and all(not worker.is_alive() for worker in workers)
 
 
 def assess(result, variants, expected_code):
