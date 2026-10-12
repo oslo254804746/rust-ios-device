@@ -14,7 +14,7 @@ Q02工具/adapter原范围收口后，23项可承接，6项仍缺开发，L02仍
 | ID | 原范围中的剩余交付（修复后逐项复核） |
 | --- | --- |
 | L01 | 剩余协议/服务和startup/upgrade/blocking/长流总期限、取消失效、原主/清理错误、native回收；局部SDK/restore/workflow修复不关闭全部profiles。 |
-| L02 | 全局元数据/原error payload字节归因、freshness/刷新/复用/重启/manual epoch全规则；发布预算和epoch修复为子项，完整范围待核查。 |
+| L02 | 原error payload跨retry/scan/native采样、已知capacity去重与opaque/未join边界已接线；统一全局元数据/原payload字节准入及freshness/刷新/复用/重启/manual epoch全规则继续。发布预算、epoch和采样均为子项，完整范围待核查，见[计量](validation/manager-error-payload-2026-10-12.md)。 |
 | F01 | USB/route/目录、remoted前后状态、挂载/签名观察与legacy/明确existing-RSD开发操作已接线，Doctor48项通过。legacy握手后raw DTX仅接受协商TLS1.2，TLS1.3明确Unsupported且无DTX；完整目标DDI manifest/签名证据和原平台/设备范围仍须核查，不由Unknown推导Ok。 |
 | F02 | 限量crash收集、现代startup NativeScope、noWait事实receipt、WDA startup/ready owner与scoped forward已接线；修正WDA迟到成功丢owner的竞态，localhost实际CLI启动→TCP ready→单次转发→原PID/peer收尾5项通过。原DTX错误/部分产物/重跑/安装owner及实际legacy CLI故障peer已验。现代全流程和原平台/设备范围仍须核查，不据legacy子项关闭。 |
 | F04 | Runtime context销毁接线、Page/iframe、可信Input/截图、Fetch/下载、Memory/Performance真实映射和pinned实际客户端。 |

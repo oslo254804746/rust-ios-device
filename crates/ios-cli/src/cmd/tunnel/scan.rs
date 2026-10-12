@@ -68,6 +68,24 @@ impl Outcomes {
             })
             .collect()
     }
+
+    pub(super) fn payload_history(&self) -> (usize, Vec<Arc<AbandonedScan>>) {
+        let slots = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let active = slots
+            .entries
+            .iter()
+            .filter(|slot| matches!(slot, Slot::Active))
+            .count();
+        let history = slots
+            .entries
+            .iter()
+            .filter_map(|slot| match slot {
+                Slot::Abandoned(error) => Some(Arc::clone(error)),
+                _ => None,
+            })
+            .collect();
+        (active, history)
+    }
 }
 
 pub(super) struct Session<'a> {
@@ -142,7 +160,6 @@ pub(super) struct SourceContext {
     completion: Option<anyhow::Error>,
 }
 
-#[cfg(test)]
 impl SourceContext {
     pub(super) fn secondary(&self, source: Source) -> Option<&anyhow::Error> {
         match source {

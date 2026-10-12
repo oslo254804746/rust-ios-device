@@ -110,7 +110,6 @@ impl FailureContext {
         Self { secondary }
     }
 
-    #[cfg(test)]
     pub(super) fn secondary(&self) -> &anyhow::Error {
         &self.secondary
     }
