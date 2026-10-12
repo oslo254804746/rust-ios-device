@@ -306,6 +306,7 @@ class OperationRun:
     def __init__(self, session, case_id, context):
         self.session, self.case_id, self.context = session, case_id, context
         self.steps = []
+        self.artifacts = []
         self.deadline = time.monotonic() + 90
         self.cleanup_complete = True
 
@@ -315,7 +316,11 @@ class OperationRun:
         remaining = 10 if cleanup else self.deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError("operation-deadline")
-        result = capture(argv, env=self.context.environment, timeout=min(remaining, 70), max_bytes=MANIFEST_LIMIT)
+        try:
+            result = capture(argv, env=self.context.environment, timeout=min(remaining, 60), max_bytes=MANIFEST_LIMIT)
+        except BaseException:
+            self.cleanup_complete = False  # No receipt can certify an incomplete capture.
+            raise
         return self.observation(argv, result, contract, expected_code, cleanup)
 
     def observation(self, argv, result, contract, expected_code=0, cleanup=False):
@@ -326,7 +331,9 @@ class OperationRun:
         checked = assess(result, self.session.variants, expected_code)
         passed = checked.pop("passed") and matched
         self.steps.append(dict(checked, contract=matched, passed=passed, expected_code=expected_code,
-                               duration_ms=result.duration_ms, argv=self.session.arguments(argv), phase="cleanup" if cleanup else "operation"))
+                               duration_ms=result.duration_ms, pid=result.pid, cleanup_scope=result.cleanup_scope,
+                               stop_requested=result.stop_requested, argv=self.session.arguments(argv),
+                               phase="cleanup" if cleanup else "operation"))
         self.cleanup_complete = self.cleanup_complete and result.cleanup_complete
         if not passed:
             raise ValueError("operation-contract-failed")
@@ -336,7 +343,7 @@ class OperationRun:
         report = dict(id=self.case_id, status="PASS" if error is None and self.cleanup_complete else "FAIL",
                       evidence_origin="localhost-protocol-fixture" if self.context.fixture_peer else "selected-device-cli",
                       contract=error is None, cleanup_complete=self.cleanup_complete,
-                      steps=self.steps, reason=None if error is None else "operation-or-cleanup-failed")
+                      steps=self.steps, artifacts=self.artifacts, reason=None if error is None else "operation-or-cleanup-failed")
         self.session.results[self.case_id] = report
         return report
 
@@ -418,12 +425,24 @@ def file_workflow(run, case_id):
 
         def valid_output(_):
             owned.admit(path)
-            return path.stat().st_size == fixture["size"] and digest(path) == fixture["sha256"] and set(path.parent.iterdir()) == {path}
+            size, sha256 = path.stat().st_size, digest(path)
+            no_residue = set(path.parent.iterdir()) == {path}
+            run.artifacts.append(dict(kind="downloaded-file", size=size, sha256=sha256,
+                                      expected_size=fixture["size"], expected_sha256=fixture["sha256"],
+                                      target_utf16_units=len(argv_path.encode("utf-16-le")) // 2,
+                                      no_unexpected_output=no_residue))
+            return size == fixture["size"] and sha256 == fixture["sha256"] and no_residue
 
         def retained_output(result):
             error = json.loads(result.stderr.decode("utf-8").splitlines()[-1]).get("error", {})
             expected = "permission_denied" if case_id == "windows-afc-readonly" else "precondition"
-            return path.read_bytes() == before and set(path.parent.iterdir()) == {path} and error.get("phase") == "file" and error.get("class") == expected
+            actual = path.read_bytes()
+            no_residue = set(path.parent.iterdir()) == {path}
+            run.artifacts.append(dict(kind="preserved-file", size=len(actual), sha256=hashlib.sha256(actual).hexdigest(),
+                                      expected_size=len(before), expected_sha256=hashlib.sha256(before).hexdigest(),
+                                      target_utf16_units=len(argv_path.encode("utf-16-le")) // 2,
+                                      no_unexpected_output=no_residue))
+            return actual == before and no_residue and error.get("phase") == "file" and error.get("class") == expected
 
         force = case_id in ("windows-afc-force", "windows-afc-readonly")
         argv = command(run.context, "file", "pull", fixture["remote_path"], argv_path, *( ["--force"] if force else []))
@@ -443,7 +462,12 @@ def file_workflow(run, case_id):
                 # The current file replacement guard reports a local non-file
                 # refusal as unknown; native read-only-file denial is separately
                 # required to retain permission_denied above.
-                return marker.read_bytes() == before and set(directory.iterdir()) == {marker} and error.get("phase") == "file" and error.get("class") == "unknown" and b"Downloading " in result.stderr and set(owned.root.iterdir()) == {path, directory}
+                actual = marker.read_bytes()
+                no_residue = set(directory.iterdir()) == {marker} and set(owned.root.iterdir()) == {path, directory}
+                run.artifacts.append(dict(kind="preserved-directory-marker", size=len(actual), sha256=hashlib.sha256(actual).hexdigest(),
+                                          expected_size=len(before), expected_sha256=hashlib.sha256(before).hexdigest(),
+                                          no_unexpected_output=no_residue))
+                return actual == before and no_residue and error.get("phase") == "file" and error.get("class") == "unknown" and b"Downloading " in result.stderr
             run.step(command(run.context, "file", "pull", fixture["remote_path"], directory, "--force"), retained_directory, expected_code=1)
         run.steps[-1]["integrity"] = "original-preserved" if case_id in ("windows-afc-existing", "windows-afc-readonly") else "full-size-and-sha256"
     except Exception as caught:

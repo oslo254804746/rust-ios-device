@@ -27,6 +27,18 @@ class RegressionTests(unittest.TestCase):
         self.session = regression.Session(self.directory.name)
         self.addCleanup(self.session.cleanup)
 
+    def test_agent_failure_is_required_for_host_success_on_current_platform(self):
+        for case_id in regression.HOST_IDS:
+            self.session.results[case_id] = dict(id=case_id, status="PASS")
+        self.session.results["host-agent"]["status"] = "FAIL"
+        evidence = self.session.finish(fixture_provenance())
+        self.assertFalse(evidence["host_passed"])
+
+    def test_process_tree_matrix_requirement_matches_supported_agent_platforms(self):
+        case = next(row for row in self.session.matrix["cases"] if row["id"] == "host-agent")
+        passed, _, _ = regression.check_preconditions(case, regression.ExecutionContext(binary=None))
+        self.assertEqual(passed, os.name == "nt" or sys.platform.startswith("linux"))
+
     def test_child_arguments_are_observed_and_private_values_never_archived(self):
         secret = b"synthetic-test-credential-12345"
         self.session.private_file("identity", secret)
