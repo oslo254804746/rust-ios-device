@@ -1,5 +1,8 @@
 # Windows watch交接 · 2026-10-12
 
+本项已提交ff70516，clean commit合并门禁54通过/4平台跳过。随后原FUP范围核查已完成，
+具体剩余开发与下一步见[Q02核查](q02-scope-audit-2026-10-12.md)。
+
 分支`codex/review-fixes-20261010`，上一组72文件依赖组合已提交`94574d6`。
 本轮完成Windows watch原console/Job/reader工具；依“完成一项→验证→本地提交→继续”
 执行，最新commit与精确源hash由外部summary记录。不推送、不操作真实设备。
