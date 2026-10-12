@@ -8379,3 +8379,13 @@ global/sub-limit两份permit由table和original native owner共享，直到两�
 原metadata/native/epoch/deadline/source门禁集中369通过/2原ignored（含新4项），
 详情与其余error/history/candidate/global缺口见[证据](validation/tunnel-global-known-metadata-2026-10-12.md)。
 L02未关闭，账本23交付/6缺开发/L02待收口，有效30，Q04全部排除；无设备操作或推送。
+
+## 2026-10-12：L02 coordinator key/gate/backing同池归属子项
+
+原canonical gate的key容量、inline gate和实际Vec backing接入同一128MiB bank；
+新旧扩容backing同时准入，拒绝不改变原gate/ticket/table。重复ticket共享原charge，
+clear/stop不提前退款，最后gate owner释放才归还。原4096 namespace/pruning、串行
+与epoch规则保留。新增4项及受影响tunnel373项通过，2原ignored保留。
+生产CLI/其它门禁与精确边界见[证据](validation/tunnel-coordinator-bytes-2026-10-12.md)。
+原error/history/candidate/manual route与其它backing仍缺完整准入，L02保持未关闭；
+账本23交付/6缺开发/L02待收口，有效30，Q04及全部子项排除。
