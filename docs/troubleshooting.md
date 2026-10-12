@@ -132,6 +132,14 @@ which by itself proves nothing about device policy or about the Rust AFC
 encoding; the shell conversion happens before client-specific AFC handling,
 so compare the actual received argument and protocol encoding separately.
 
+Source boundary (2026-10-12 review): the 2026-08-30 device statements in this
+section and the RSD section below are retained from the
+[original follow-up task summary](real-device-followup-tasks-2026-08-30.md).
+The two indexed local reports and the original Windows evidence root are
+unavailable in this checkout. This review did not re-execute those device
+cases or independently certify their raw arguments; no historical observation
+was rewritten as a new PASS.
+
 Verified workaround (2026-08-30, three-way comparison on a real device) —
 disable MSYS path conversion for the command:
 
