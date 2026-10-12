@@ -8370,3 +8370,12 @@ capacity按原buffer去重；未知payload/未join native owner/active scan/截�
 与严格CLI Clippy已验；来源分配峰值及统一全局字节准入仍缺，L02不关闭。
 详情与实际CLI/源码提交证据见[容量交付](validation/tunnel-snapshot-capacity-2026-10-12.md)。
 账本23交付/6缺开发/L02待收口，有效30，Q04及全部子项排除。
+
+## 2026-10-12：L02 raw snapshot/publication共享额度子项
+
+四个Source消费点的raw snapshot与published metadata接入128MiB共享已知charge池，
+原64MiBpublication子限保留。snapshot caller Drop与拒绝释放原charge；publication
+global/sub-limit两份permit由table和original native owner共享，直到两者最后释放。
+原metadata/native/epoch/deadline/source门禁集中369通过/2原ignored（含新4项），
+详情与其余error/history/candidate/global缺口见[证据](validation/tunnel-global-known-metadata-2026-10-12.md)。
+L02未关闭，账本23交付/6缺开发/L02待收口，有效30，Q04全部排除；无设备操作或推送。

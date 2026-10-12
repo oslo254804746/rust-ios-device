@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn global_metadata_usb_paired_and_publication_use_one_atomic_known_byte_pool() {
+    let devices = vec![usb(short_reserved(1024))];
+    let targets = vec![PairedMobdev2Device {
+        udid: short_reserved(2048),
+        host: short_reserved(4096),
+    }];
+    let usb_bytes =
+        devices.capacity() * std::mem::size_of::<UsbDevice>() + devices[0].udid.capacity();
+    let paired_bytes = targets.capacity() * std::mem::size_of::<PairedMobdev2Device>()
+        + targets[0].udid.capacity()
+        + targets[0].host.capacity();
+    let bank = Arc::new(Semaphore::new(usb_bytes + paired_bytes));
+    let usb_charge = retain_usb_snapshot(&bank, &devices).unwrap();
+    let publication = known_metadata_charge(&bank, 1).unwrap();
+    let error = retain_paired_snapshot(&bank, &targets).unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), paired_bytes - 1);
+    drop(publication);
+    let paired_charge = retain_paired_snapshot(&bank, &targets).unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    drop(usb_charge);
+    assert_eq!(bank.available_permits(), usb_bytes);
+    drop(paired_charge);
+    assert_eq!(bank.available_permits(), usb_bytes + paired_bytes);
+}
+
 fn short_reserved(capacity: usize) -> String {
     let mut value = String::with_capacity(capacity);
     value.push_str("synthetic");

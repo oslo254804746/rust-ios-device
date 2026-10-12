@@ -58,6 +58,9 @@ const MAX_FEDERATION_HOPS: u8 = 3;
 const MAX_UPSTREAMS: usize = 32;
 const MAX_FAILURE_RECORDS: usize = 4096;
 const MAX_PUBLISHED_METADATA_BYTES: usize = 64 * 1024 * 1024;
+// Preserve the publication sublimit while leaving room for both bounded raw
+// snapshots to refresh even when publication is at its own ceiling.
+const MAX_GLOBAL_KNOWN_METADATA_BYTES: usize = 128 * 1024 * 1024;
 const FAILURE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_LIST_BYTES: usize = 1024 * 1024;
 const BRIDGE_BUFFER_SIZE: usize = 16 * 1024;
@@ -390,6 +393,7 @@ struct TunnelAgentInner {
     retry: Arc<reconnect::Ledger>,
     failure_slots: Arc<Semaphore>,
     metadata_bytes: Arc<Semaphore>,
+    global_metadata_bytes: Arc<Semaphore>,
     ready: RwLock<bool>,
     lifecycle: Lifecycle,
     scan_lock: Mutex<()>,
@@ -432,6 +436,7 @@ struct ManagedTunnel {
     // Table metadata and the original native retirement owner share one charge.
     // Only removal of both owners releases it; either may outlive the other.
     _metadata: Arc<OwnedSemaphorePermit>,
+    _global_metadata: Arc<OwnedSemaphorePermit>,
 }
 
 impl Drop for ManagedTunnel {
@@ -724,6 +729,7 @@ impl TunnelAgentState {
                 retry: reconnect::Ledger::new(retry),
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
                 metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
+                global_metadata_bytes: Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES)),
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::new(),
                 scan_lock: Mutex::new(()),
@@ -1040,7 +1046,10 @@ impl TunnelAgentState {
                             .paired_devices()
                             .await
                             .context("failed to browse paired mobdev2 devices")?;
-                        admission::paired_snapshot(&targets)?;
+                        let _snapshot_charge = admission::retain_paired_snapshot(
+                            &self.inner.global_metadata_bytes,
+                            &targets,
+                        )?;
                         let Some(target) = targets.into_iter().find(|target| {
                             target.udid == udid && ip_filter.map_or(true, |ip| ip == target.host)
                         }) else {
@@ -1197,6 +1206,8 @@ impl TunnelAgentState {
             }
             let metadata_size =
                 managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
+            let global_metadata =
+                admission::known_metadata_charge(&self.inner.global_metadata_bytes, metadata_size)?;
             let metadata = self
                 .inner
                 .metadata_bytes
@@ -1226,8 +1237,10 @@ impl TunnelAgentState {
                 }
             };
             let metadata = Arc::new(metadata);
+            let global_metadata = Arc::new(global_metadata);
             if let Some(native) = &native {
                 native.retain_metadata(Arc::clone(&metadata))?;
+                native.retain_global_metadata(Arc::clone(&global_metadata))?;
             }
             if let Some(deadline) = deadline {
                 deadline.check()?;
@@ -1256,7 +1269,10 @@ impl TunnelAgentState {
                 // checked, within the caller's existing permit/deadline/cancellation.
                 match self.inner.source.usb_devices().await {
                     UsbSnapshot::Devices(devices) => {
-                        admission::usb_snapshot(&devices)?;
+                        let _snapshot_charge = admission::retain_usb_snapshot(
+                            &self.inner.global_metadata_bytes,
+                            &devices,
+                        )?;
                         if !devices.iter().any(|attached| {
                             attached.udid == udid && attached.device_id == device.device_id()
                         }) {
@@ -1306,6 +1322,7 @@ impl TunnelAgentState {
                         observed_route,
                         _ticket: ticket.clone(),
                         _metadata: metadata,
+                        _global_metadata: global_metadata,
                     },
                 );
                 #[cfg(test)]
@@ -1768,17 +1785,21 @@ impl TunnelAgentState {
                 Vec::new()
             }
         };
-        let admission = admission::usb_snapshot(&devices);
+        let admission = admission::retain_usb_snapshot(&self.inner.global_metadata_bytes, &devices);
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
-        if let Err(error) = admission {
-            if manual.is_empty() {
-                return Err(error);
+        let _usb_snapshot_charge = match admission {
+            Ok(charge) => Some(charge),
+            Err(error) => {
+                if manual.is_empty() {
+                    return Err(error);
+                }
+                usb_complete = false;
+                session.retain(scan::Source::Usb, error);
+                None
             }
-            usb_complete = false;
-            session.retain(scan::Source::Usb, error);
-        }
+        };
         let devices = if usb_complete { devices } else { Vec::new() };
         let attached = devices
             .iter()
@@ -1908,10 +1929,15 @@ impl TunnelAgentState {
         // admission. Rejected snapshots are dropped before USB connection waits.
         // Admit complete paired metadata before a saved Mobdev2 selector uses
         // it. A failed/partial browse preserves that selector and episode.
+        let mut _paired_snapshot_charge = None;
         let paired = paired.map(|targets| {
-            if let Err(error) = admission::paired_snapshot(&targets) {
-                return admission::PairedCandidates::Incomplete(error);
-            }
+            let charge = match admission::retain_paired_snapshot(
+                &self.inner.global_metadata_bytes,
+                &targets,
+            ) {
+                Ok(charge) => charge,
+                Err(error) => return admission::PairedCandidates::Incomplete(error),
+            };
             let mut planned = Vec::new();
             for (udid, ticket, host) in pending_mobdev2 {
                 if let Some(index) = targets.iter().position(|target| {
@@ -1931,6 +1957,7 @@ impl TunnelAgentState {
                     && !manual.contains_key(udid)
             });
             if let admission::PairedCandidates::Complete { targets, .. } = &reply {
+                _paired_snapshot_charge = Some(charge);
                 for (udid, ticket, index) in planned {
                     if seen.insert(udid.clone()) {
                         candidates.push((

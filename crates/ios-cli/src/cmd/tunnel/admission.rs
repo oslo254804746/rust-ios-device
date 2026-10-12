@@ -1,11 +1,13 @@
 //! Admission of manager selectors, retained Source snapshots and scan candidates.
 //! Source allocation before return and allocator/RSS are separate boundaries.
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use ios_core::device::PairedMobdev2Device;
 
 use super::source::UsbDevice;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_RAW_ROWS: usize = 16_384;
 const MAX_FIELD_BYTES: usize = 4096;
@@ -45,6 +47,44 @@ fn snapshot_storage(capacity: usize, element_size: usize, text: usize) -> Result
         snapshot_limit()
     );
     Ok(())
+}
+
+pub(super) fn known_metadata_charge(
+    bank: &Arc<Semaphore>,
+    bytes: usize,
+) -> Result<OwnedSemaphorePermit> {
+    let count = u32::try_from(bytes).map_err(|_| snapshot_limit())?;
+    bank.clone().try_acquire_many_owned(count).map_err(|_| {
+        crate::output::resource_decision("tunnel global known metadata byte limit exceeded")
+    })
+}
+
+pub(super) fn retain_usb_snapshot(
+    bank: &Arc<Semaphore>,
+    devices: &Vec<UsbDevice>,
+) -> Result<OwnedSemaphorePermit> {
+    usb_snapshot(devices)?;
+    let text = devices
+        .iter()
+        .map(|device| device.udid.capacity())
+        .sum::<usize>();
+    // The per-snapshot validator already checked these same capacities; the
+    // borrowed input cannot change before this synchronous global admission.
+    let bytes = devices.capacity() * std::mem::size_of::<UsbDevice>() + text;
+    known_metadata_charge(bank, bytes)
+}
+
+pub(super) fn retain_paired_snapshot(
+    bank: &Arc<Semaphore>,
+    devices: &Vec<PairedMobdev2Device>,
+) -> Result<OwnedSemaphorePermit> {
+    paired_snapshot(devices)?;
+    let text = devices
+        .iter()
+        .map(|device| device.udid.capacity() + device.host.capacity())
+        .sum::<usize>();
+    let bytes = devices.capacity() * std::mem::size_of::<PairedMobdev2Device>() + text;
+    known_metadata_charge(bank, bytes)
 }
 
 pub(super) fn usb_snapshot(devices: &Vec<UsbDevice>) -> Result<()> {
