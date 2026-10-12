@@ -59,6 +59,10 @@ case-specific contract, exact expected exit code, no raw archive. A leak fails
 even when the masked copy has zero hits. Timeout, overflow, incomplete capture or
 unconfirmed process cleanup cannot pass. CLI invalid-input cases must fail at
 the expected parser stage, before device access; exit code alone is insufficient.
+Completion first observed after the absolute capture deadline is rejected even
+when the original leader and readers already finished before the first control
+check. [Deadline evidence](validation/capture-deadline-2026-10-12.md) preserves
+the original bytes, exit and host cleanup facts separately from the timeout flag.
 Tests inject synthetic secrets into stdout, stderr, contract exceptions and agent
 SIGTERM cleanup, and exercise timeout/overflow and failed artifact audit paths.
 This detects registered secret representations; it is not a proof that arbitrary
