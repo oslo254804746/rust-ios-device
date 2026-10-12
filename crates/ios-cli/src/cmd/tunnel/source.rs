@@ -4,6 +4,7 @@ use futures_util::future::BoxFuture;
 use ios_core::device::PairedMobdev2Device;
 use ios_core::{ConnectOptions, MuxClient, TunMode, TunnelHandle, TunnelOwner};
 use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{ManagedDevice, TunnelRecord};
 
@@ -30,21 +31,58 @@ pub(super) struct UsbDevice {
 
 // Match the existing Core connect selection: first USB, otherwise last match.
 // Keep each UDID's first discovery position so candidate scheduling is stable.
-pub(super) fn selected_devices(devices: Vec<UsbDevice>) -> Vec<UsbDevice> {
-    let mut positions: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut selected: Vec<UsbDevice> = Vec::new();
-    for device in devices {
-        if let Some(&position) = positions.get(&device.udid) {
-            if !selected[position].usb {
-                selected[position] = device;
+pub(super) fn selected_devices(
+    mut devices: Vec<UsbDevice>,
+    bank: &Arc<Semaphore>,
+) -> anyhow::Result<(Vec<UsbDevice>, OwnedSemaphorePermit)> {
+    // Borrow identities via indices rather than cloning keys into an opaque
+    // hash table. Sort by identity, then original position within that identity.
+    let mut positions = Vec::new();
+    positions.try_reserve_exact(devices.len()).map_err(|_| {
+        crate::output::resource_decision("tunnel selection index allocation failed")
+    })?;
+    let _index_storage = super::admission::known_vec_backing(bank, &positions)?;
+    positions.extend((0..devices.len()).map(|index| (index, index)));
+    positions
+        .sort_unstable_by(|(_, a), (_, b)| devices[*a].udid.cmp(&devices[*b].udid).then(a.cmp(b)));
+    let mut read = 0;
+    let mut write = 0;
+    while read < positions.len() {
+        let first = positions[read].0;
+        let mut chosen = first;
+        let mut end = read + 1;
+        while end < positions.len() && devices[positions[end].0].udid == devices[first].udid {
+            if !devices[chosen].usb {
+                chosen = positions[end].0;
             }
-        } else {
-            positions.insert(device.udid.clone(), selected.len());
-            selected.push(device);
+            end += 1;
         }
+        positions[write] = (first, chosen);
+        write += 1;
+        read = end;
     }
-    selected
+    positions.truncate(write);
+    positions.sort_unstable_by_key(|(first, _)| *first);
+    let mut selected = Vec::new();
+    selected.try_reserve_exact(write).map_err(|_| {
+        crate::output::resource_decision("tunnel selection output allocation failed")
+    })?;
+    let storage = super::admission::known_vec_backing(bank, &selected)?;
+    for (_, index) in positions {
+        let device = &mut devices[index];
+        // Move the original String buffer. The caller's raw snapshot reservation
+        // continues to cover these capacities through candidate ownership.
+        selected.push(UsbDevice {
+            udid: std::mem::take(&mut device.udid),
+            device_id: device.device_id,
+            usb: device.usb,
+        });
+    }
+    Ok((selected, storage))
 }
+
+#[cfg(test)]
+mod selection_tests;
 
 pub(super) trait Source: Send + Sync {
     fn connect<'a>(
