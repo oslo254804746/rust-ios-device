@@ -22,9 +22,12 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
-    let remaining =
-        raw + selection + Lifecycle::additional_metadata_bytes(A) + std::mem::size_of::<usize>()
-            - 1;
+    let remaining = raw
+        + selection
+        + Lifecycle::additional_metadata_bytes(A)
+        + candidate_index::Candidate::first_usb_bytes(A)
+        + std::mem::size_of::<usize>()
+        - 1;
     let occupied = bank
         .clone()
         .try_acquire_many_owned(u32::try_from(bank.available_permits() - remaining).unwrap())
@@ -76,6 +79,7 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     let bytes = raw_usb
         + selection
         + Lifecycle::initial_metadata_bytes(A)
+        + candidate_index::Candidate::first_usb_bytes(A)
         + raw_paired
         + std::mem::size_of::<usize>()
         - 1;
@@ -121,7 +125,10 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let charge = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
-    state.set_global_metadata_limit(charge + selection + Lifecycle::initial_metadata_bytes(A));
+    let candidate = candidate_index::Candidate::first_usb_bytes(A);
+    state.set_global_metadata_limit(
+        charge + selection + candidate + Lifecycle::initial_metadata_bytes(A),
+    );
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
@@ -130,7 +137,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     drop(scan);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charge + selection
+        charge + selection + candidate
     );
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);

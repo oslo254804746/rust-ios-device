@@ -17,6 +17,7 @@ pub(super) struct FailureIntent {
     pub(super) udid: String,
     pub(super) ticket: Ticket,
     pub(super) failed: DeferredFailure,
+    pub(super) _input: Option<Arc<super::candidate_input::Input>>,
 }
 
 pub(super) struct DeferredSuccess {
@@ -35,6 +36,7 @@ pub(super) struct SuccessIntent {
     pub(super) udid: String,
     pub(super) ticket: Ticket,
     pub(super) success: DeferredSuccess,
+    pub(super) _input: Option<Arc<super::candidate_input::Input>>,
 }
 
 pub(super) enum ScanIntent {

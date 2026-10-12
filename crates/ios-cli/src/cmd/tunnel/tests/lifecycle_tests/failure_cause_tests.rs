@@ -123,6 +123,34 @@ fn original(error: &anyhow::Error) -> usize {
 }
 
 #[tokio::test]
+async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_and_drop() {
+    let source = RefusedSource::new().await;
+    let state = manager(source.clone());
+    state.refresh_once().await.unwrap();
+    let receipt = state.inner.retry.receipt(A).unwrap();
+    let original_io = original(receipt.primary());
+    assert_eq!(original_io, source.originals.lock().unwrap()[0]);
+    let input = Arc::downgrade(
+        &receipt
+            .primary()
+            .downcast_ref::<candidate_input::SourceInputContext>()
+            .unwrap()
+            .input,
+    );
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    assert!(!format!("{receipt:?} {receipt}").contains(PRIVATE_CONTEXT));
+    state.clear().await;
+    state.notify_shutdown();
+    drop(state);
+    assert!(input.upgrade().is_some());
+    assert_eq!(original(receipt.primary()), original_io);
+    assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    drop(receipt);
+    assert!(input.upgrade().is_none());
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
 async fn failure_cause_real_refusal_keeps_first_latest_and_reconciles_changed_identity_and_detach()
 {
     let source = RefusedSource::new().await;

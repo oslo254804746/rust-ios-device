@@ -14,18 +14,30 @@ pub(super) struct Ownership<'a> {
     stamp: OwnershipStamp,
     initial: StdMutex<Option<Reservation>>,
     completed: StdMutex<Option<NativeLease>>,
+    input: Option<Arc<super::candidate_input::Input>>,
 }
 
 impl<'a> Ownership<'a> {
+    #[cfg(test)]
     pub(super) fn admitted(registry: Arc<Registry>, ticket: &'a Ticket) -> Result<Self> {
+        Self::admitted_with_input(registry, ticket, None)
+    }
+
+    pub(super) fn admitted_with_input(
+        registry: Arc<Registry>,
+        ticket: &'a Ticket,
+        input: Option<Arc<super::candidate_input::Input>>,
+    ) -> Result<Self> {
         let stamp = ticket.ownership_stamp();
-        let reservation = ticket.commit(|| registry.reserve(stamp.clone()))?;
+        let reservation =
+            ticket.commit(|| registry.reserve_with_input(stamp.clone(), input.clone()))?;
         Ok(Self {
             registry,
             ticket: Some(ticket),
             stamp,
             initial: StdMutex::new(Some(reservation)),
             completed: StdMutex::new(None),
+            input,
         })
     }
 
@@ -38,6 +50,7 @@ impl<'a> Ownership<'a> {
             stamp,
             initial: StdMutex::new(Some(reservation)),
             completed: StdMutex::new(None),
+            input: None,
         })
     }
 
@@ -77,7 +90,9 @@ impl TunnelOwner for Ownership<'_> {
                 .take();
             match initial {
                 Some(initial) => Ok(initial),
-                None => self.registry.reserve(self.stamp.clone()),
+                None => self
+                    .registry
+                    .reserve_with_input(self.stamp.clone(), self.input.clone()),
             }
         };
         // Every additional RemotePairing target is fenced independently. A

@@ -241,6 +241,7 @@ async fn deferred_success(state: &TunnelAgentState, udid: &str) -> Option<Succes
     drop(reader);
     match outcome {
         Ok(ScanAttemptOutcome::Success(success)) => Some(SuccessIntent {
+            _input: None,
             udid: udid.into(),
             ticket,
             success,
@@ -583,6 +584,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
     let published = state.get_record(A).await.is_some();
     let pending = match outcome {
         ScanAttemptOutcome::Success(success) => Some(SuccessIntent {
+            _input: None,
             udid: A.into(),
             ticket,
             success,

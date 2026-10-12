@@ -16,6 +16,7 @@ async fn intent(state: &TunnelAgentState, udid: &str) -> FailureIntent {
     let ticket = state.inner.lifecycle.ticket(udid).await.unwrap();
     let slot = state.reserve_failure_slot(udid).await.unwrap();
     FailureIntent {
+        _input: None,
         udid: udid.into(),
         ticket,
         failed: DeferredFailure {

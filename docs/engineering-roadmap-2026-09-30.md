@@ -8420,3 +8420,15 @@ L02仍未完整收口，账本23/6/待收口、有效30与Q04全部排除不变�
 改为NoDevices，生产NativeSource与专用localhost native原joins/strict EOF保持；
 修正后388通过/2原ignored。原日志保留，先前具体设备状态NOT_OBSERVED，见
 [隔离更正](validation/tunnel-fixture-isolation-2026-10-12.md)。
+
+## 2026-10-13：L02 candidate输入/backing共享owner子项
+
+原candidate输入按String capacity及inline Input同池准入，USB原buffer charge拆分
+转移，不双重计费；Source route和延期intent key副本预留。candidate Vec增长/iterator
+backing准确归属；paired输入整批准入后才创建新tickets/合入USB window。table、原
+native registry、Source原错误context及延期intent共用Input直到最后owner释放。
+原Io/downcast、原native joins/严格EOF、取消/epoch/权限重载断言保持；首次396/1失败
+修复每行权限重查后397通过/2原ignored，新增9项均通过。严格Clippy与其它出口见
+[证据](validation/tunnel-candidate-owners-2026-10-12.md)。原error/history创建端、outcome
+collectors/manual副本/其它backing及完整刷新规则仍缺；账本23/6/L02待收口、有效30
+及Q04全部排除不变，未改为主项完成。
