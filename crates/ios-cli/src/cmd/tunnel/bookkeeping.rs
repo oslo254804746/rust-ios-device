@@ -3,8 +3,11 @@ use super::{AttemptIdentity, FailedTunnelAttempt, Ticket, TunnelAgentState};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::metadata_vec::KnownVec;
 use anyhow::Result;
+use std::sync::Mutex;
 use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 pub(super) struct DeferredFailure {
@@ -47,11 +50,11 @@ pub(super) enum ScanIntent {
 // The primary bookkeeping error stays the original anyhow object. The context
 // exposes independent Source originals without allocating diagnostic strings.
 pub(super) struct SourceFailuresContext {
-    receipts: Vec<Arc<super::reconnect::FailureReceipt>>,
+    receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
 }
 impl SourceFailuresContext {
     pub(super) fn receipts(&self) -> &[Arc<super::reconnect::FailureReceipt>] {
-        &self.receipts
+        self.receipts.as_slice()
     }
 }
 impl std::fmt::Display for SourceFailuresContext {
@@ -67,37 +70,181 @@ impl std::fmt::Debug for SourceFailuresContext {
     }
 }
 
-struct FailureWriteOwner {
-    receipts: Vec<Arc<super::reconnect::FailureReceipt>>,
+struct WriteState {
+    receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
     finished: bool,
+    in_scan: bool,
 }
+
+pub(super) struct FailureWriteOwner(Mutex<WriteState>);
+
 impl FailureWriteOwner {
-    fn finish(mut self, result: Result<()>) -> Result<()> {
-        self.finished = true;
+    pub(super) fn in_scan(&self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).in_scan = true;
+    }
+
+    fn finish(&self, result: Result<()>) -> Result<()> {
+        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.in_scan {
+            let marker = result.as_ref().err().is_some_and(|error| {
+                error.is::<super::scan::DeadlineReached>()
+                    || error.is::<ios_core::OperationCancelled>()
+            });
+            if !marker {
+                let completion = match &result {
+                    Ok(()) => super::reconnect::Completion::Abandoned,
+                    Err(error) => super::reconnect::Completion::Failed(
+                        crate::output::operation_error_class(error.as_ref()),
+                    ),
+                };
+                for receipt in state.receipts.as_slice() {
+                    receipt.complete(completion);
+                }
+            }
+            // Keep every root and its admitted backing until Session sees the
+            // actual overall result, including discovery/ready failures after
+            // an otherwise successful writer and converted whole timers.
+            return result;
+        }
+        drop(state);
+        self.finish_scan(result)
+    }
+
+    pub(super) fn finish_scan(&self, result: Result<()>) -> Result<()> {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.finished {
+            return result;
+        }
+        state.finished = true;
         let completion = match &result {
             Ok(()) => super::reconnect::Completion::Abandoned,
             Err(error) => super::reconnect::Completion::Failed(
                 crate::output::operation_error_class(error.as_ref()),
             ),
         };
-        for receipt in &self.receipts {
+        for receipt in state.receipts.as_slice() {
             receipt.complete(completion);
         }
         match result {
-            Err(error) if !self.receipts.is_empty() => Err(error.context(SourceFailuresContext {
-                receipts: std::mem::take(&mut self.receipts),
+            Err(error) if state.receipts.len() != 0 => Err(error.context(SourceFailuresContext {
+                receipts: state.receipts.take(),
             })),
             result => result,
+        }
+    }
+
+    pub(super) fn abandon(&self, primary: Option<anyhow::Error>) -> Option<anyhow::Error> {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.finished {
+            return primary;
+        }
+        state.finished = true;
+        for receipt in state.receipts.as_slice() {
+            receipt.complete(super::reconnect::Completion::Abandoned);
+        }
+        match primary {
+            Some(error) if state.receipts.len() != 0 => {
+                Some(error.context(SourceFailuresContext {
+                    receipts: state.receipts.take(),
+                }))
+            }
+            other => other,
         }
     }
 }
 impl Drop for FailureWriteOwner {
     fn drop(&mut self) {
-        if !self.finished {
-            for receipt in &self.receipts {
+        let state = self.0.get_mut().unwrap_or_else(|p| p.into_inner());
+        if !state.finished {
+            for receipt in state.receipts.as_slice() {
                 receipt.complete(super::reconnect::Completion::Abandoned);
             }
         }
+    }
+}
+
+// All three destination allocations are admitted before any Source request.
+// There is at most one outcome/receipt/displaced row per candidate. No later
+// byte admission can discard an acquired original after its Ready(Err) poll.
+pub(super) struct WriteBatch {
+    owner: Arc<FailureWriteOwner>,
+    intents: KnownVec<ScanIntent>,
+    displaced: KnownVec<FailedTunnelAttempt>,
+}
+
+impl WriteBatch {
+    pub(super) fn new(bank: &Arc<Semaphore>, capacity: usize) -> Result<Self> {
+        anyhow::ensure!(
+            capacity <= super::MAX_FAILURE_RECORDS,
+            crate::output::resource_decision("tunnel scan write batch limit")
+        );
+        let mut intents = KnownVec::new(Arc::clone(bank), capacity);
+        intents.reserve(capacity)?;
+        let mut receipts = KnownVec::new(Arc::clone(bank), capacity);
+        receipts.reserve(capacity)?;
+        let mut displaced = KnownVec::new(Arc::clone(bank), capacity);
+        displaced.reserve(capacity)?;
+        Ok(Self {
+            owner: Arc::new(FailureWriteOwner(Mutex::new(WriteState {
+                receipts,
+                finished: false,
+                in_scan: false,
+            }))),
+            intents,
+            displaced,
+        })
+    }
+
+    pub(super) fn record(&mut self, intent: ScanIntent) -> Result<()> {
+        if let ScanIntent::Failure(failure) = &intent {
+            if let Some(receipt) = &failure.failed.receipt {
+                self.owner
+                    .0
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .receipts
+                    .push(Arc::clone(receipt))?;
+            }
+        }
+        self.intents.push(intent)
+    }
+
+    pub(super) fn finish(self, result: Result<()>) -> Result<()> {
+        self.owner.finish(result)
+    }
+
+    pub(super) fn owner(&self) -> Arc<FailureWriteOwner> {
+        Arc::clone(&self.owner)
+    }
+
+    #[cfg(test)]
+    pub(super) fn backing_bytes(capacity: usize) -> usize {
+        capacity
+            * (std::mem::size_of::<ScanIntent>()
+                + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>()
+                + std::mem::size_of::<FailedTunnelAttempt>())
+    }
+}
+
+// Test adapters receive already-owned external argument vectors, rather than
+// a production Source window. If admission refuses, return those exact roots
+// in a safe context without allocating a replacement diagnostic/error list.
+#[cfg(test)]
+struct ExternalIntentsContext(Vec<ScanIntent>);
+
+#[cfg(test)]
+impl std::fmt::Display for ExternalIntentsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("test-supplied original scan intents returned after admission refusal")
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for ExternalIntentsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalScanIntents")
+            .field("intents", &self.0.len())
+            .finish()
     }
 }
 
@@ -201,24 +348,35 @@ impl TunnelAgentState {
         })
     }
 
+    #[cfg(test)]
     pub(super) async fn flush_scan_intents_with_total(
         &self,
         intents: Vec<ScanIntent>,
         whole: Option<&super::scan::Deadline>,
     ) -> Result<()> {
-        if intents.is_empty() {
-            return Ok(());
-        }
-        let owner = FailureWriteOwner {
-            receipts: intents
-                .iter()
-                .filter_map(|intent| match intent {
-                    ScanIntent::Failure(intent) => intent.failed.receipt.clone(),
-                    ScanIntent::Success(_) => None,
-                })
-                .collect(),
-            finished: false,
+        let mut batch = match WriteBatch::new(&self.inner.global_metadata_bytes, intents.len()) {
+            Ok(batch) => batch,
+            Err(error) => return Err(error.context(ExternalIntentsContext(intents))),
         };
+        for intent in intents {
+            batch.record(intent)?;
+        }
+        self.flush_write_batch(batch, whole).await
+    }
+
+    pub(super) async fn flush_write_batch(
+        &self,
+        batch: WriteBatch,
+        whole: Option<&super::scan::Deadline>,
+    ) -> Result<()> {
+        let WriteBatch {
+            owner,
+            intents,
+            mut displaced,
+        } = batch;
+        if intents.len() == 0 {
+            return owner.finish(Ok(()));
+        }
         let deadline = match super::lifecycle::ConnectionDeadline::for_scan_bookkeeping(
             self.inner.failure_write_timeout,
         ) {
@@ -229,7 +387,6 @@ impl TunnelAgentState {
             .run(async {
                 // Keep displaced rows outside the guards until their original
                 // permit/metadata owners can be released without either fence.
-                let mut displaced = Vec::new();
                 let mut failed = self.inner.failed_attempts.write().await;
                 let result = (|| {
                     for intent in intents {
@@ -247,7 +404,9 @@ impl TunnelAgentState {
                                 )
                                 .map(|old| {
                                     if let Some(old) = old {
-                                        displaced.push(old);
+                                        displaced
+                                            .push(old)
+                                            .expect("admitted displaced slot per intent");
                                     }
                                 })
                             }
@@ -295,7 +454,9 @@ impl TunnelAgentState {
                                         // This row is unobserved under both table and
                                         // ticket guards. Restore the exact old value.
                                         if let Some(late) = failed.remove(&intent.udid) {
-                                            displaced.push(late);
+                                            displaced
+                                                .push(late)
+                                                .expect("admitted displaced slot per intent");
                                         }
                                         if let Some(old) = old {
                                             failed.insert(intent.udid, old);
@@ -304,7 +465,9 @@ impl TunnelAgentState {
                                         return Err(error);
                                     }
                                     if let Some(old) = old {
-                                        displaced.push(old);
+                                        displaced
+                                            .push(old)
+                                            .expect("admitted displaced slot per intent");
                                     }
                                     if let Some(receipt) = &intent.failed.receipt {
                                         receipt.complete(super::reconnect::Completion::Recorded);
@@ -329,3 +492,6 @@ impl TunnelAgentState {
         owner.finish(result)
     }
 }
+
+#[cfg(test)]
+mod tests;

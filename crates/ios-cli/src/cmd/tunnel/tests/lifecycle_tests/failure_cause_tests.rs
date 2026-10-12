@@ -122,6 +122,182 @@ fn original(error: &anyhow::Error) -> usize {
     io as *const std::io::Error as usize
 }
 
+async fn pending_manual_cleanup(state: &TunnelAgentState) {
+    let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
+    let slot = state.reserve_failure_slot(B).await.unwrap();
+    state
+        .record_failed_attempt(
+            B,
+            AttemptIdentity {
+                route: Route::Wifi(None),
+                native_id: None,
+            },
+            slot,
+            &ticket,
+        )
+        .await;
+    let version = state.inner.failed_attempts.read().await[B].version.clone();
+    let authority = state
+        .inner
+        .access
+        .authenticate(&axum::http::HeaderMap::new())
+        .unwrap()
+        .device_authority(Permission::ManageTunnels, B)
+        .ok()
+        .expect("local authority refused");
+    ticket
+        .commit(|| {
+            ticket.establish_manual(
+                intent::RouteIntent::Wifi(None),
+                authority.clone(),
+                Some(version.clone()),
+                None,
+            )
+        })
+        .unwrap();
+    ticket.fenced().remember_failure(Some(version));
+    assert!(ticket.pending_success().is_some());
+}
+
+#[tokio::test]
+async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_last_report_owner()
+{
+    let source = RefusedSource::new().await;
+    let gate = Arc::new(Semaphore::new(0));
+    *source.return_gate.lock().unwrap() = Some(gate.clone());
+    let mut state = manager(source.clone());
+    Arc::get_mut(&mut state.inner)
+        .unwrap()
+        .failure_write_timeout = Duration::from_millis(40);
+    pending_manual_cleanup(&state).await;
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let mut scan = Box::pin(state.refresh_once());
+    source.until_error(&mut scan).await;
+    let writer = state.inner.failed_attempts.write().await;
+    gate.add_permits(1);
+    let error = tokio::time::timeout(REFUSAL_BUDGET, scan.as_mut())
+        .await
+        .unwrap()
+        .unwrap_err();
+    drop(scan);
+    drop(writer);
+    assert!(error.is::<tokio::time::error::Elapsed>());
+    let report = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .expect("manual cleanup lost Source roots");
+    assert_eq!(report.receipts().len(), 1);
+    assert_eq!(
+        original(report.receipts()[0].primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    assert_eq!(
+        report.receipts()[0].completion(),
+        reconnect::Completion::Failed(ios_core::ErrorClass::Timeout)
+    );
+    assert_eq!(source.count(A), 1);
+    assert_eq!(source.count(B), 0);
+    assert!(!state.is_ready().await);
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    drop(error);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
+async fn write_batch_bytes_whole_deadline_keeps_original_source_after_manual_marker_conversion() {
+    let source = RefusedSource::new().await;
+    let mut state = manager(source.clone());
+    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_secs(3);
+    pending_manual_cleanup(&state).await;
+    *state.inner.success_before_remove.lock().unwrap() =
+        Some(Box::new(|| std::thread::sleep(Duration::from_millis(3500))));
+    let error = state.refresh_once().await.unwrap_err();
+    assert!(
+        !source.originals.lock().unwrap().is_empty(),
+        "fixture never acquired the actual Source IO before total expiry"
+    );
+    assert!(
+        error.is::<tokio::time::error::Elapsed>(),
+        "original whole timer replaced"
+    );
+    let report = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .expect("whole marker conversion lost Source roots");
+    assert_eq!(report.receipts().len(), 1);
+    assert_eq!(
+        original(report.receipts()[0].primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    assert_eq!(
+        report.receipts()[0].completion(),
+        reconnect::Completion::Failed(ios_core::ErrorClass::Timeout)
+    );
+    assert!(state.inner.failed_attempts.read().await.contains_key(B));
+    assert_eq!(source.count(A), 1);
+    assert_eq!(source.count(B), 0);
+    state.notify_shutdown();
+    state.clear().await;
+}
+
+#[tokio::test]
+async fn write_batch_bytes_ready_timeout_keeps_recorded_source_after_successful_writer() {
+    let source = RefusedSource::new().await;
+    let mut state = manager(source.clone());
+    Arc::get_mut(&mut state.inner).unwrap().scan_timeout = Duration::from_secs(3);
+    let ready = state.inner.ready.write().await;
+    let error = state.refresh_once().await.unwrap_err();
+    assert!(error.is::<tokio::time::error::Elapsed>());
+    let report = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .expect("readiness timeout lost recorded Source roots");
+    assert_eq!(report.receipts().len(), 1);
+    assert_eq!(
+        original(report.receipts()[0].primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    assert_eq!(
+        report.receipts()[0].completion(),
+        reconnect::Completion::Recorded
+    );
+    assert!(state.inner.failed_attempts.read().await.contains_key(A));
+    drop(ready);
+    assert!(!state.is_ready().await);
+    state.notify_shutdown();
+    state.clear().await;
+}
+
+#[tokio::test]
+async fn write_batch_bytes_caller_drop_during_manual_cleanup_marks_actual_source_abandoned() {
+    let source = RefusedSource::new().await;
+    let gate = Arc::new(Semaphore::new(0));
+    *source.return_gate.lock().unwrap() = Some(gate.clone());
+    let state = manager(source.clone());
+    pending_manual_cleanup(&state).await;
+    let mut scan = Box::pin(state.refresh_once());
+    source.until_error(&mut scan).await;
+    let writer = state.inner.failed_attempts.write().await;
+    gate.add_permits(1);
+    assert!(futures_util::poll!(scan.as_mut()).is_pending());
+    let receipt = state.inner.retry.receipt(A).unwrap();
+    assert_eq!(receipt.completion(), reconnect::Completion::Pending);
+    assert_eq!(
+        original(receipt.primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    drop(scan);
+    assert_eq!(receipt.completion(), reconnect::Completion::Abandoned);
+    assert_eq!(
+        original(receipt.primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    drop(writer);
+    drop(receipt);
+    state.notify_shutdown();
+    state.clear().await;
+}
+
 #[tokio::test]
 async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_and_drop() {
     let source = RefusedSource::new().await;
