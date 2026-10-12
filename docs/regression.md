@@ -71,6 +71,16 @@ adapter. Unix systems without that observation fail conservatively when group
 absence cannot be established; Windows has only the existing CLI-leader capture
 boundary, not a certified general process-tree supervisor.
 
+`regression_watch_capture.OwnedWatch` now has a separate Windows 10+ watch
+owner: a hidden new console, atomic `JOB_LIST` child admission and explicit
+stdout/stderr handle inheritance. Its Ctrl-C stays within the verified private
+console; Job termination is failure cleanup. Successful native cleanup also
+requires the product's stopped receipt, original process completion, an empty
+job and joined output readers. The generic command/agent capture boundary above
+is unchanged. [Implementation and actual CLI evidence](validation/windows-watch-2026-10-12.md)
+distinguish supervisor fixtures from a pending TLS service-start cancellation;
+the complete device clipboard watch remains NOT_RUN.
+
 File cleanup uses filesystem APIs, not an uncaptured shell: only registered
 regular files under the unchanged absolute private root are unlinked. Symlinks,
 changed root/file identities, directories and unknown files are preserved and make cleanup

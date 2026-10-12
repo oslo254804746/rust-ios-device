@@ -1,5 +1,7 @@
 # WDA 接力交接 · 2026-10-12
 
+本文保留验收时的未提交状态；依赖组合随后已本地提交94574d6，最新接力见[Windows watch交接](repair-handoff-watch-2026-10-12.md)。
+
 工作区/分支/HEAD不变：`rust-ios-device-bak` / `codex/review-fixes-20261010` /
 `c98c819153e5fe3f12f4c31845f6026f089a7492`。本轮未提交、未推送，未操作真实设备。
 原66项改动完整保留；本轮追加WDA owner期限修复、`--once`、实际CLI fixture/gates

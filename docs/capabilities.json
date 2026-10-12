@@ -2570,6 +2570,47 @@
       "location": "docs/validation/build-release-2026-09-30.md",
       "result": "PASS",
       "scope": "Aggregate Rust 1546 passing/1 ignored; no per-capability workflow assertion."
+    },
+    {
+      "id": "windows-wda-localhost-94574d6",
+      "level": "simulated-flow",
+      "host_os": "Windows x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "actual compiled CLI",
+        "localhost TLS Lockdown/DTX/TCP"
+      ],
+      "required_state": [
+        "Isolated synthetic existing trust; tested binary and 572 committed source blobs verified"
+      ],
+      "tested_commit": "94574d650f47cb0f2df4d9fb1b04c93a48f6da0e",
+      "date": "2026-10-12",
+      "location": "docs/validation/wda-continuation-2026-10-12.md",
+      "result": "PASS",
+      "scope": "Five actual WDA CLI methods: startup, TCP port readiness, one forwarded HTTP exchange, original PID kill submission and independent strict peer EOF/worker joins; failures and separate same-poll owner fixture retained.",
+      "limitations": "Local synthetic services only. No physical WDA, Windows WDA Ctrl-C after readiness, complete modern workflow or other-platform certification. Segmented validation, not a final full rerun."
+    },
+    {
+      "id": "windows-watch-startup-control-94574d6",
+      "level": "host-unit/protocol",
+      "host_os": "Windows 11 x86_64/MSVC",
+      "device": null,
+      "ios": null,
+      "transport": [
+        "actual compiled CLI",
+        "private console/Job Object",
+        "localhost TLS Lockdown"
+      ],
+      "required_state": [
+        "New watch controller source/log hashes recorded separately; CLI committed-source blob and binary hashes verified; isolated synthetic existing trust"
+      ],
+      "tested_commit": "94574d650f47cb0f2df4d9fb1b04c93a48f6da0e",
+      "date": "2026-10-12",
+      "location": "docs/validation/windows-watch-2026-10-12.md",
+      "result": "PASS",
+      "scope": "Actual pasteboard watch receives private-console Ctrl-C during CoreDeviceProxy StartService waiting, emits original stopped/native_reclaimed and exits 0; original reader joins and independent strict TLS peer EOF/worker joins. Seven separate supervisor fixtures plus one budget test.",
+      "limitations": "Startup cancellation only, no activated TUN or complete clipboard notification/text/image/dedup/restore device workflow. Controller fixtures do not certify native device ACK. Tool commit/hash linkage is separate from this exact CLI commit."
     }
   ],
   "capabilities": [
@@ -4794,6 +4835,12 @@
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
+        },
+        {
+          "level": "host-unit/protocol",
+          "result": "PASS",
+          "evidence": "windows-watch-startup-control-94574d6",
+          "scope": "Actual pasteboard watch receives private-console Ctrl-C during CoreDeviceProxy StartService waiting, emits original stopped/native_reclaimed and exits 0; original reader joins and independent strict TLS peer EOF/worker joins. Seven separate supervisor fixtures plus one budget test."
         }
       ],
       "limitations": [
@@ -5570,11 +5617,6 @@
           "scope": "Compilation of the public surface only."
         },
         {
-          "level": "simulated-flow",
-          "result": "NOT_RUN",
-          "reason": "Per-capability workflow evidence is not yet indexed; aggregate unit-test success is separate."
-        },
-        {
           "level": "real-device",
           "result": "NOT_RUN",
           "reason": "No selected device, iOS, USB/Wi-Fi/state and authorized fixture workflow supplied for this run."
@@ -5584,6 +5626,12 @@
           "result": "PASS",
           "evidence": "linux-raw-listeners-e6ddf5c",
           "scope": "Actual CLI/run rejects nonloopback before device/service operation; selected-device protocol workflow remains unverified."
+        },
+        {
+          "level": "simulated-flow",
+          "result": "PASS",
+          "evidence": "windows-wda-localhost-94574d6",
+          "scope": "Five actual WDA CLI methods: startup, TCP port readiness, one forwarded HTTP exchange, original PID kill submission and independent strict peer EOF/worker joins; failures and separate same-poll owner fixture retained."
         }
       ],
       "limitations": [

@@ -13,7 +13,7 @@ L04原测量/资源归因/预算工具范围本轮交付，开发口径计入完
 
 | ID | 原范围中的剩余交付（修复后逐项复核） |
 | --- | --- |
-| Q02 | 四个精确生产observer已接线：私有MAC/altIRK、Display/HID、InstallCoordination和RSD bootstrap模式。Core真实TLS/crypto/模式/清理、实际InstallCoordination及direct RSD CLI已验；WDA实际localhost CLI启动/ready/转发/收尾已补验。Windows rich clipboard watch仍缺原console signal收尾工具，不能只视为运行待验；完整paired-identity CLI/mDNS、kernel Display/HID、其它模式的实际CLI及原物理/平台验收继续。 |
+| Q02 | 四个精确生产observer已接线：私有MAC/altIRK、Display/HID、InstallCoordination和RSD bootstrap模式。Windows watch隐藏private console/原Job/reader收尾工具已交付，9项通过（含实际CLI TLS startup取消）；原FUP-01–FUP-04交付边界继续逐项复核。完整Windows设备watch、paired-identity CLI/mDNS、kernel Display/HID、其它模式实际CLI及原物理/平台验收继续。 |
 | L01 | 剩余协议/服务和startup/upgrade/blocking/长流总期限、取消失效、原主/清理错误、native回收；局部SDK/restore/workflow修复不关闭全部profiles。 |
 | L02 | 全局元数据/原error payload字节归因、freshness/刷新/复用/重启/manual epoch全规则；发布预算和epoch修复为子项，完整范围待核查。 |
 | F01 | USB/route/目录、remoted前后状态、挂载/签名观察与legacy/明确existing-RSD开发操作已接线，Doctor48项通过。legacy握手后raw DTX仅接受协商TLS1.2，TLS1.3明确Unsupported且无DTX；完整目标DDI manifest/签名证据和原平台/设备范围仍须核查，不由Unknown推导Ok。 |

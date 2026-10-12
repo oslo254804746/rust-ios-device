@@ -1,9 +1,10 @@
-"""Owned POSIX CLI watch with bounded in-memory observations and graceful SIGINT.
+"""Owned CLI watch, bounded in-memory output and original graceful stop owners.
 
-Windows console-signal supervision is deliberately unavailable. A killed
-process can prove host reclamation, but cannot supply a native cleanup receipt.
+POSIX uses its original process group. Windows uses a hidden private console
+and Job Object. A killed process cannot supply a native cleanup receipt.
 """
 import json
+import math
 import os
 import signal
 import subprocess
@@ -15,13 +16,22 @@ from diagnostics import Capture, ROOT, group_alive
 
 class OwnedWatch:
     def __init__(self, argv, environment, *, timeout=30, max_bytes=65536):
-        if os.name != "posix":
-            raise ValueError("posix-graceful-watch-required")
+        if os.name not in ("posix", "nt"):
+            raise ValueError("owned-graceful-watch-platform-required")
+        if not math.isfinite(timeout) or not 0 < timeout <= 86400 or type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
+            raise ValueError("finite-watch-budgets-required")
         self.started = time.monotonic()
         self.deadline = self.started + timeout
         self.maximum = max_bytes
-        self.process = subprocess.Popen(argv, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, start_new_session=True)
+        self.windows = None
+        if os.name == "nt":
+            from regression_watch_windows import WindowsOwner
+            self.windows = WindowsOwner(argv, environment, timeout, ROOT)
+            self.process = self.windows.process
+        else:
+            self.process = subprocess.Popen(argv, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, start_new_session=True)
+        self.finished = None
         self.condition = threading.Condition()
         self.buffers = [bytearray(), bytearray()]
         self.records = [[], []]
@@ -60,6 +70,8 @@ class OwnedWatch:
         finally:
             pipe.close()
             with self.condition:
+                if self.pending[index]:
+                    self.failed = True  # Incomplete NDJSON cannot supply a receipt.
                 self.closed[index] = True
                 self.condition.notify_all()
 
@@ -89,6 +101,10 @@ class OwnedWatch:
                 self.condition.wait(until - time.monotonic())
 
     def finish(self):
+        if self.finished is not None:
+            return self.finished
+        if self.windows is not None:
+            return self.finish_windows()
         requested = self.process.poll() is None
         if requested:
             try:
@@ -130,4 +146,29 @@ class OwnedWatch:
                              not graceful, self.overflow, self.failed or not all(self.closed),
                              round((time.monotonic() - self.started) * 1000), self.process.pid,
                              complete, "process-group", requested)
-            return result, graceful and receipt, list(self.records[0])
+            self.finished = result, graceful and receipt, list(self.records[0])
+            return self.finished
+
+    def finish_windows(self):
+        requested, graceful = self.windows.finish(max(0.1, min(12, self.deadline - time.monotonic())))
+        for worker in self.workers:
+            worker.join(2)
+        with self.condition:
+            controllers = [row for row in self.records[1] if isinstance(row, dict)
+                           and row.get("operation") == "owned_watch_supervisor"]
+            reclaimed = next((row for row in controllers if row.get("state") == "host_reclaimed"), None)
+            native = any(row.get("state") == "stopped" and row.get("native_reclaimed") is True
+                         for row in self.records[1] if isinstance(row, dict)
+                         and row.get("operation") != "owned_watch_supervisor")
+            graceful = (graceful and reclaimed is not None and reclaimed.get("forced") is False
+                        and reclaimed.get("job_empty") is True and (not requested or reclaimed.get("interrupt_sent") is True))
+            complete = self.windows.complete and all(self.closed) and all(not worker.is_alive() for worker in self.workers)
+            failed = self.failed or any(worker.is_alive() for worker in self.workers)
+            result = Capture(bytes(self.buffers[0]), bytes(self.buffers[1]), self.process.returncode,
+                             not graceful, self.overflow, failed or not all(self.closed),
+                             round((time.monotonic() - self.started) * 1000),
+                             reclaimed.get("child_pid", self.process.pid) if reclaimed else self.process.pid,
+                             complete, "windows-job", requested)
+            self.finished = result, (graceful and native and complete and not self.failed
+                                     and not self.overflow and self.process.returncode == 0), list(self.records[0])
+            return self.finished
