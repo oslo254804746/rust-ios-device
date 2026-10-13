@@ -18,6 +18,7 @@ impl Candidate {
     pub(super) fn first_usb_bytes(udid: &str) -> usize {
         2 * std::mem::size_of::<Self>() + super::candidate_input::Input::bytes(udid, &Route::Usbmux)
             - udid.len()
+            + super::scan_seen::Seen::first_bytes()
     }
 }
 

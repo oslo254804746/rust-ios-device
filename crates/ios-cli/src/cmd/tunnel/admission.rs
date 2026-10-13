@@ -1,6 +1,5 @@
 //! Admission of manager selectors, retained Source snapshots and scan candidates.
 //! Source allocation before return and allocator/RSS are separate boundaries.
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -171,6 +170,7 @@ pub(super) enum PairedCandidates {
         targets: Vec<PairedMobdev2Device>,
         indices: Vec<usize>,
         _storage: OwnedSemaphorePermit,
+        observed: super::paired_observed::Index,
     },
     Incomplete(anyhow::Error),
 }
@@ -179,17 +179,20 @@ impl CandidateBudget {
     pub(super) fn paired_candidates(
         &self,
         targets: Vec<PairedMobdev2Device>,
-        usb_seen: &HashSet<String>,
+        usb_seen: impl Fn(&str) -> bool,
         permits: impl Fn(&str) -> bool,
         bank: &Arc<Semaphore>,
     ) -> PairedCandidates {
-        match paired_snapshot(&targets)
-            .and_then(|()| self.paired_plan(&targets, usb_seen, permits, bank))
-        {
-            Ok((indices, storage)) => PairedCandidates::Complete {
+        match paired_snapshot(&targets).and_then(|()| {
+            let (indices, storage) = self.paired_plan(&targets, usb_seen, permits, bank)?;
+            let observed = super::paired_observed::Index::new(&targets, bank)?;
+            Ok((indices, storage, observed))
+        }) {
+            Ok((indices, storage, observed)) => PairedCandidates::Complete {
                 targets,
                 indices,
                 _storage: storage,
+                observed,
             },
             // Reject without retaining the input across USB candidate waits.
             Err(error) => PairedCandidates::Incomplete(error),
@@ -217,7 +220,7 @@ impl CandidateBudget {
     fn paired_plan(
         &self,
         targets: &[PairedMobdev2Device],
-        usb_seen: &HashSet<String>,
+        usb_seen: impl Fn(&str) -> bool,
         permits: impl Fn(&str) -> bool,
         bank: &Arc<Semaphore>,
     ) -> Result<(Vec<usize>, OwnedSemaphorePermit)> {
@@ -228,7 +231,7 @@ impl CandidateBudget {
         })?;
         let storage = known_vec_backing(bank, &indices)?;
         for (index, target) in targets.iter().enumerate() {
-            if permits(&target.udid) && !usb_seen.contains(&target.udid) {
+            if permits(&target.udid) && !usb_seen(&target.udid) {
                 indices.push(index);
             }
         }

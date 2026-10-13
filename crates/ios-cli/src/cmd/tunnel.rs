@@ -39,11 +39,13 @@ mod intent;
 mod lifecycle;
 mod metadata_vec;
 mod ownership;
+mod paired_observed;
 mod reconnect;
 mod retirement;
 mod scan;
 mod scan_desired;
 mod scan_publications;
+mod scan_seen;
 mod scoped;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
@@ -1898,7 +1900,7 @@ impl TunnelAgentState {
             Arc::clone(&self.inner.global_metadata_bytes),
             MAX_FAILURE_RECORDS,
         );
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = scan_seen::Seen::new(&self.inner.global_metadata_bytes);
         let mut candidate_budget = admission::CandidateBudget::default();
         let (selected, _usb_selection_charge) =
             source::selected_devices(devices, &self.inner.global_metadata_bytes)?;
@@ -1937,12 +1939,12 @@ impl TunnelAgentState {
                 _ => 0,
             };
             candidate_budget.admit(udid.len(), bytes)?;
-            seen.insert(udid.to_owned());
             let input = candidate_input::Input::owned(
                 udid.to_owned(),
                 route,
                 &self.inner.global_metadata_bytes,
             )?;
+            seen.insert(&input)?;
             candidates.push(candidate_index::Candidate {
                 input,
                 ticket: ticket.clone(),
@@ -1958,8 +1960,20 @@ impl TunnelAgentState {
                 && !suppressed.contains(udid.as_str())
             {
                 candidate_budget.admit(udid.len(), 0)?;
-                seen.insert(udid.clone());
-                let Some(ticket) = control.drive(self.inner.lifecycle.ticket(&udid)).await? else {
+                let input = candidate_input::Input::usb(
+                    udid,
+                    _usb_snapshot_charge
+                        .as_mut()
+                        .expect("complete USB snapshot has charge"),
+                    &self.inner.global_metadata_bytes,
+                )?;
+                // Keep the admitted identity even if coordinator admission
+                // refuses it; paired discovery must not retry that same UID.
+                seen.insert(&input)?;
+                let Some(ticket) = control
+                    .drive(self.inner.lifecycle.ticket(&input.udid))
+                    .await?
+                else {
                     return Ok(());
                 };
                 let ticket = match ticket {
@@ -1973,13 +1987,6 @@ impl TunnelAgentState {
                     }
                     Err(error) => return Err(error),
                 };
-                let input = candidate_input::Input::usb(
-                    udid,
-                    _usb_snapshot_charge
-                        .as_mut()
-                        .expect("complete USB snapshot has charge"),
-                    &self.inner.global_metadata_bytes,
-                )?;
                 candidates.push(candidate_index::Candidate {
                     input,
                     ticket,
@@ -2067,7 +2074,7 @@ impl TunnelAgentState {
             }
             let reply = candidate_budget.paired_candidates(
                 targets,
-                &seen,
+                |udid| seen.contains(udid),
                 |udid| {
                     self.inner.access.permits_device(udid)
                         && !suppressed.contains(udid)
@@ -2096,7 +2103,7 @@ impl TunnelAgentState {
                 );
                 inputs.reserve(planned.len() + indices.len())?;
                 for (udid, ticket, index) in planned.as_slice() {
-                    if !seen.contains(*udid) {
+                    if !seen.contains(udid) {
                         let input = candidate_input::Input::owned(
                             (*udid).to_owned(),
                             Route::Mobdev2(targets[*index].host.clone()),
@@ -2121,6 +2128,7 @@ impl TunnelAgentState {
                     }
                 }
                 candidates.reserve(inputs.len())?;
+                seen.reserve(inputs.len())?;
                 Ok(inputs)
             })();
             match prepare {
@@ -2136,7 +2144,7 @@ impl TunnelAgentState {
                         if !self.inner.access.permits_device(&input.udid) {
                             continue;
                         }
-                        if !seen.insert(input.udid.clone()) {
+                        if !seen.insert_reserved(&input) {
                             continue;
                         }
                         whole.check()?;
@@ -2183,11 +2191,10 @@ impl TunnelAgentState {
             }
             complete => complete.map(|(reply, _)| reply),
         };
-        if let Some(admission::PairedCandidates::Complete { targets, .. }) = &paired {
-            let observed = targets
-                .iter()
-                .map(|target| (target.udid.as_str(), target.host.as_str()))
-                .collect::<std::collections::HashSet<_>>();
+        if let Some(admission::PairedCandidates::Complete {
+            targets, observed, ..
+        }) = &paired
+        {
             let mut tunnels = self.inner.tunnels.write().await;
             epoch.retain(whole, &mut tunnels, |udid, tunnel| {
                 // An older browse cannot retire a concurrent publication. A
@@ -2196,7 +2203,7 @@ impl TunnelAgentState {
                     .get(udid)
                     .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
                     || match &tunnel.observed_route {
-                        Route::Mobdev2(host) => observed.contains(&(udid, host.as_str())),
+                        Route::Mobdev2(host) => observed.contains(targets, udid, host),
                         _ => true,
                     }
             })?;
