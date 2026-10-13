@@ -5,6 +5,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, DuplexStream};
 
 use super::*;
 
+#[path = "manifest_tests.rs"]
+mod manifest_tests;
 #[path = "test_assets.rs"]
 mod test_assets;
 
@@ -360,7 +362,7 @@ fn has_elapsed(error: &anyhow::Error) -> bool {
 }
 
 #[tokio::test]
-async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tunnel_route() {
+async fn explicit_device_assessment_uses_six_fresh_readonly_sessions_and_no_tunnel_route() {
     let (trust, trust_peer) = tokio::io::duplex(65_536);
     let (developer, developer_peer) = tokio::io::duplex(65_536);
     let (image_developer, mut image_developer_peer) = tokio::io::duplex(65_536);
@@ -369,6 +371,8 @@ async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tun
     let (mounted, mounted_peer) = tokio::io::duplex(65_536);
     let (image_mounted, mut image_mounted_peer) = tokio::io::duplex(65_536);
     let (usable, usable_peer) = tokio::io::duplex(65_536);
+    let (manifest, manifest_peer) = tokio::io::duplex(65_536);
+    let (image_manifest, mut image_manifest_peer) = tokio::io::duplex(65_536);
     let source = FakeSource::new(vec![
         (LOCKDOWN_PORT, trust),
         (LOCKDOWN_PORT, developer),
@@ -378,8 +382,10 @@ async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tun
         (LOCKDOWN_PORT, mounted),
         (IMAGE_PORT, image_mounted),
         (LOCKDOWN_PORT, usable),
+        (LOCKDOWN_PORT, manifest),
+        (IMAGE_PORT, image_manifest),
     ]);
-    let (assessment, (), (), (), (), (), (), (), ()) = within(async {
+    let (assessment, (), (), (), (), (), (), (), (), (), ()) = within(async {
         tokio::join!(
             inspect(&source, UDID, Duration::from_secs(2)),
             serve_value(
@@ -418,12 +424,23 @@ async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tun
                     .await
                     .unwrap();
                 eof(&mut tls).await;
+            },
+            serve_service(manifest_peer, service_reply()),
+            async {
+                image_request(&mut image_manifest_peer, "CopyDevices", None).await;
+                send_lockdown(
+                    &mut image_manifest_peer,
+                    &dictionary([("EntryList", plist::Value::Array(vec![]))]),
+                )
+                .await
+                .unwrap();
+                eof(&mut image_manifest_peer).await;
             }
         )
     })
     .await;
     assert!(!assessment.failed());
-    assert_eq!(assessment.checks.len(), 7);
+    assert_eq!(assessment.checks.len(), 8);
     assert_eq!(assessment.checks[0].value, Some(true));
     assert_eq!(assessment.checks[1].value, Some(false));
     assert_eq!(assessment.checks[1].state, State::Available);
@@ -433,6 +450,8 @@ async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tun
     assert_eq!(assessment.checks[5].value, Some(false));
     assert_eq!(assessment.checks[6].status, Status::Unknown);
     assert_eq!(assessment.checks[6].state, State::Unsupported);
+    assert_eq!(assessment.checks[7].id, "ddi_manifests");
+    assert_eq!(assessment.checks[7].value, Some(false));
     assert!(assessment.checks[3..5]
         .iter()
         .all(|check| check.state == State::NotProbed));
@@ -462,7 +481,11 @@ async fn explicit_device_assessment_uses_five_fresh_readonly_sessions_and_no_tun
             Call::Port(7, IMAGE_PORT),
             Call::Devices,
             Call::PairRecord,
-            Call::Port(7, LOCKDOWN_PORT)
+            Call::Port(7, LOCKDOWN_PORT),
+            Call::Devices,
+            Call::PairRecord,
+            Call::Port(7, LOCKDOWN_PORT),
+            Call::Port(7, IMAGE_PORT)
         ]
     );
     assert!(source.ports.lock().unwrap().is_empty());

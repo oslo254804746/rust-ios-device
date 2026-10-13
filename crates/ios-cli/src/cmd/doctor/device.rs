@@ -28,6 +28,7 @@ use tokio::time::Instant;
 
 use super::Status;
 
+mod manifest;
 pub(super) mod rsd;
 
 pub(super) trait Source: Send + Sync {
@@ -109,6 +110,8 @@ pub(super) struct Check {
     error: Option<anyhow::Error>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rsd: Option<rsd::Metadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ddi_manifests: Option<manifest::Metadata>,
 }
 
 impl fmt::Debug for Check {
@@ -149,11 +152,15 @@ impl Check {
                 (Probe::DdiMounted, None) => "CopyDevices omitted EntryList or an entry omitted DiskImageType. Mounted state is unknown; signatures and local files do not replace this observation.",
                 (Probe::DdiUsable, Some(true)) => "The selected existing-trust developer service completed DeviceInfo runningProcesses with a valid DTX reply. This proves that specific read-only operation worked; it does not establish Apple signature validity or every developer service.",
                 (Probe::DdiUsable, _) => "The target developer service did not provide a validated read-only operation result; DDI usability remains unknown.",
+                (Probe::DdiManifests, Some(true)) => "The selected target returned nonempty personalization manifests for every reported DeveloperDiskImage signature. These opaque bytes are a read-only device observation; Apple cryptographic validity and local BuildManifest matching remain unproven.",
+                (Probe::DdiManifests, Some(false)) => "CopyDevices reported no mounted personalized DeveloperDiskImage entry. No personalization manifest query was sent; other DDI evidence remains independent.",
+                (Probe::DdiManifests, None) => "Required mounted developer image or personalization manifest metadata was omitted or empty. No manifest validity or negative service capability was inferred.",
                 (Probe::Session, _) => "The read-only session did not provide ProductType metadata.",
             },
             hint: None,
             error: None,
             rsd: None,
+            ddi_manifests: None,
         }
     }
 
@@ -194,6 +201,7 @@ impl Check {
             },
             error: Some(error),
             rsd: None,
+            ddi_manifests: None,
         }
     }
 
@@ -208,6 +216,7 @@ impl Check {
             hint: Some(hint),
             error: None,
             rsd: None,
+            ddi_manifests: None,
         }
     }
 }
@@ -266,7 +275,7 @@ async fn inspect_base(
     timeout: Duration,
     existing_rsd: bool,
 ) -> Assessment {
-    let mut checks = Vec::with_capacity(5);
+    let mut checks = Vec::with_capacity(8);
     for probe in [Probe::Session, Probe::DeveloperMode, Probe::DdiSignatures] {
         checks.push(probe_once(source, udid, probe, timeout).await);
     }
@@ -286,6 +295,7 @@ async fn inspect_base(
     } else {
         probe_once(source, udid, Probe::DdiUsable, timeout).await
     });
+    checks.push(manifest::inspect(source, udid, timeout).await);
     Assessment {
         target: ios_core::redaction::diagnostic_id(udid).to_string(),
         transport: "usbmux_existing_trust",
@@ -316,6 +326,7 @@ enum Probe {
     DdiSignatures,
     DdiMounted,
     DdiUsable,
+    DdiManifests,
 }
 
 impl Probe {
@@ -326,6 +337,7 @@ impl Probe {
             Self::DdiSignatures => "ddi_signatures",
             Self::DdiMounted => "ddi_mounted",
             Self::DdiUsable => "ddi_usable",
+            Self::DdiManifests => "ddi_manifests",
         }
     }
 }
@@ -749,7 +761,7 @@ async fn probe_value(
                 Ok(None)
             }
         }
-        Probe::Session | Probe::DdiMounted | Probe::DdiUsable => {
+        Probe::Session | Probe::DdiMounted | Probe::DdiUsable | Probe::DdiManifests => {
             Err(anyhow!("unreachable doctor probe selection"))
         }
     }

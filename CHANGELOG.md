@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extend explicit-target doctor reports with bounded read-only personalization
+  manifest observations. Add pairing-directory metadata and stricter platform
+  USB observations; missing or malformed metadata cannot produce an OK result.
+
 - Give SpringBoard requests one configurable send/receive/parse deadline and
   retire the original stream after committed cancellation or failure. The CLI
   defaults to 30 seconds per request with `--request-timeout-ms`.

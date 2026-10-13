@@ -8461,3 +8461,17 @@ success writer转移原key和permit；5新增及tunnel413通过、2原ignored。
 CLI build、只读manager/host smoke通过，真实设备NOT_RUN；原主项未关闭。
 见[验证](validation/tunnel-desired-list-bytes-2026-10-13.md)及
 [原错误创建端复核](validation/tunnel-error-creation-contract-2026-10-13.md)。
+
+
+## 2026-10-13 L01/F01 profile接线与验证
+
+SpringBoard原stream进展/取消/失败所有权、共享总期限及逐IO fence已接线；CLI
+request-timeout-ms正值默认30秒，minimal/allfeature均21通过，parser1通过，
+严格Core/CLI Clippy/build通过；建连/其它L01 profile仍缺，见
+[验证](validation/springboard-lifecycle-2026-10-13.md)。
+
+Doctor显式目标追加已有协议personalization manifest观察，host配对目录只枚举
+metadata，平台USB malformed/缺失不冒称Ok；60项fixture通过、1原ignored，
+严格CLI Clippy/build和119项capability inventory通过。未运行真实设备/平台发现；
+完整本地BuildManifest/组件/摘要/签名范围仍缺，原F01不关闭，见
+[验证](validation/doctor-manifest-directories-2026-10-13.md)。

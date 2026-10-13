@@ -717,6 +717,31 @@ impl Source for EmptySource {
     }
 }
 
+fn assert_manifest_check_retains_separate_missing_target_failure(check: &super::super::Check) {
+    assert_eq!(check.id, "ddi_manifests");
+    assert_eq!(check.status, Status::Failed);
+    assert_eq!(check.state, State::Unreachable);
+    assert_eq!(check.value, None);
+    assert_eq!(check.error_class, Some(ErrorClass::DeviceNotFound));
+    assert!(matches!(
+        check
+            .error
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<ios_core::CoreError>(),
+        Some(ios_core::CoreError::DeviceNotFound(_))
+    ));
+    assert!(check.rsd.is_none());
+    let json = serde_json::to_value(check).unwrap();
+    assert_eq!(json["ddi_manifests"]["mounted_entries"], 0);
+    assert_eq!(json["ddi_manifests"]["developer_entries"], 0);
+    assert_eq!(json["ddi_manifests"]["manifests_returned"], 0);
+    assert_eq!(json["ddi_manifests"]["signature_bytes"], 0);
+    assert_eq!(json["ddi_manifests"]["manifest_bytes"], 0);
+    assert_eq!(json["ddi_manifests"]["complete"], false);
+    assert!(!serde_json::to_string(check).unwrap().contains(UDID));
+}
+
 #[tokio::test]
 async fn integrated_rsd_checks_run_after_existing_trust_failures_and_keep_original_order() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -743,7 +768,8 @@ async fn integrated_rsd_checks_run_after_existing_trust_failures_and_keep_origin
             "rsd_services",
             "device_route",
             "ddi_mounted",
-            "ddi_usable"
+            "ddi_usable",
+            "ddi_manifests"
         ]
     );
     assert!(assessment.checks[..3]
@@ -752,6 +778,9 @@ async fn integrated_rsd_checks_run_after_existing_trust_failures_and_keep_origin
     assert!(assessment.checks[3..5]
         .iter()
         .all(|check| check.value == Some(true)));
+    // Existing RSD success is independent of the appended existing-trust
+    // manifest probe; it cannot supply missing mounted signatures for it.
+    assert_manifest_check_retains_separate_missing_target_failure(&assessment.checks[7]);
     // Failure ownership/order is unchanged: successful RSD evidence does not
     // erase or replace an earlier acquired existing-trust native cause.
     let error = assessment.take_first_failed_error().unwrap();
@@ -907,11 +936,15 @@ async fn no_selectors_preserve_schema_and_existing_checks_with_separate_ddi_prob
             "rsd_services",
             "device_route",
             "ddi_mounted",
-            "ddi_usable"
+            "ddi_usable",
+            "ddi_manifests"
         ]
     );
     assert_eq!(device.checks[3].state, State::NotProbed);
     assert_eq!(device.checks[4].state, State::NotProbed);
+    // Omitting existing-route selectors leaves only the two route checks
+    // unprobed; an explicit target still owns its independent manifest probe.
+    assert_manifest_check_retains_separate_missing_target_failure(&device.checks[7]);
     let host = Report {
         schema_version: 1,
         scope: "host",
