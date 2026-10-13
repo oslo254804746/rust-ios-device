@@ -198,7 +198,7 @@ async fn run_web_server(
         crate::http_diagnostics::ErrorShape::Manager,
     );
     let (stop, stop_rx) = watch::channel(false);
-    let native = crate::cmd::tunnel::NativeScope::new();
+    let native = crate::cmd::tunnel::NativeScope::new()?;
     let (frames, mut frame_rx) = watch::channel(None);
     let (requests, receiver) = mpsc::channel(8);
     *state.backend.write().await = Some(requests);
@@ -337,7 +337,7 @@ async fn run_vnc_server(
     let bound = listener.local_addr()?;
     let principal = owner_principal(&access, token.as_deref(), &udid, bound.port())?;
     let (stop, stop_rx) = watch::channel(false);
-    let native = crate::cmd::tunnel::NativeScope::new();
+    let native = crate::cmd::tunnel::NativeScope::new()?;
     let (frames, mut frame_rx) = watch::channel(None);
     let (requests, receiver) = mpsc::channel(8);
     let state = VncServerState::new(0, 0, password, principal.clone(), share_clipboard, requests);
@@ -403,7 +403,7 @@ async fn run_vnc_server(
 }
 async fn run_clipboard_sync(udid: String, principal: Principal) -> Result<()> {
     let mut clipboard = arboard::Clipboard::new().context("local clipboard unavailable")?;
-    let native = crate::cmd::tunnel::NativeScope::new();
+    let native = crate::cmd::tunnel::NativeScope::new()?;
     let mut device = DeviceInput::new(udid, true, native.clone());
     let mut sync = clipboard::ClipboardSyncState::new();
     let mut interval = tokio::time::interval(Duration::from_millis(500));

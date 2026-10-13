@@ -105,7 +105,7 @@ impl RunTestCmd {
         let mut app_tracker =
             crate::cmd::test_workflow::AppLifecycleTracker::new(self.workflow.uninstall_on_finish);
 
-        let native = crate::cmd::tunnel::NativeScope::new();
+        let native = crate::cmd::tunnel::NativeScope::new()?;
         let mut crashes = self.workflow.crash_output.as_deref().map(|root| {
             crate::cmd::test_workflow::crash::CrashCapture::new(
                 root,
@@ -911,7 +911,7 @@ pub async fn start_test_plan(udid: &str, plan: TestLaunchPlan) -> Result<TestSta
 
 #[allow(dead_code)] // Used by the retained local-owner helper above.
 pub async fn start_test_plan_session(udid: &str, plan: TestLaunchPlan) -> Result<ActiveTestPlan> {
-    let native = crate::cmd::tunnel::NativeScope::new();
+    let native = crate::cmd::tunnel::NativeScope::new()?;
     let mut cleanup = TestStartupCleanup::default();
     let result =
         start_test_plan_session_inner(udid, plan, None, false, &mut cleanup, &native).await;

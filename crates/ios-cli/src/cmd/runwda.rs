@@ -46,7 +46,7 @@ impl RunWdaCmd {
             .checked_add(Duration::from_secs(self.startup_timeout_secs))
             .ok_or_else(|| crate::output::input_decision("WDA startup timeout is too large"))?;
         crate::output::write_error_line(format_args!("UNTESTED: WebDriverAgent startup and port proxy have not been real-device validated in this workspace."))?;
-        let native = crate::cmd::tunnel::NativeScope::new();
+        let native = crate::cmd::tunnel::NativeScope::new()?;
         let mut cleanup = crate::cmd::runtest::TestStartupCleanup::default();
         let mut session: Option<crate::cmd::runtest::ActiveTestPlan> = None;
         let startup = Box::pin(async {

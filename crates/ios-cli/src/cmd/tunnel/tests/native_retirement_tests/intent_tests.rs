@@ -485,7 +485,8 @@ async fn intent_native_manual_retry_exhaustion_survives_partial_discovery_withou
         source.clone(),
         OBSERVE,
         policy,
-    );
+    )
+    .unwrap();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let base = format!("http://127.0.0.1:{port}");
     let client = client();

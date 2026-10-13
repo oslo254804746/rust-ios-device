@@ -38,11 +38,11 @@ impl Drop for NativeConnection {
     }
 }
 impl NativeScope {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(Inner {
-            registry: Registry::new(),
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self(Arc::new(Inner {
+            registry: Registry::new()?,
             connections: Arc::new(Semaphore::new(4)),
-        }))
+        })))
     }
     pub(crate) async fn connect(&self, udid: &str, mode: TunMode) -> Result<NativeConnection> {
         super::admission::selectors(udid, None)?;
@@ -136,7 +136,7 @@ mod tests {
             .await
             .unwrap();
         let mut peer = listener.accept().await.unwrap().0;
-        let scope = NativeScope::new();
+        let scope = NativeScope::new().unwrap();
         let ownership = Ownership::standalone(scope.0.registry.clone()).unwrap();
         let mut reservation = ownership.reserve().unwrap();
         let runtime = UserspaceTunDevice::start("fd00::2", "fd00::1", 1280, stream)

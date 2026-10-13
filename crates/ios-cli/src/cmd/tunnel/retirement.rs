@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::{ErrorClass, TunnelError, TunnelHandle, TunnelShutdownFailure};
-use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{error::Elapsed, Instant};
 
 pub(super) const MAX_NATIVE_OWNERS: usize = 4096;
@@ -172,31 +172,84 @@ pub(super) struct Registry {
     state: StdMutex<State>,
     drains: Mutex<()>,
     changed: Notify,
+    // Backing and application-owned payload fees outlive the fields they own.
+    _slots_storage: OwnedSemaphorePermit,
+    _body_storage: OwnedSemaphorePermit,
 }
 
 impl Registry {
-    pub(super) fn new() -> Arc<Self> {
-        Self::allocate(MAX_NATIVE_OWNERS)
+    pub(super) fn new() -> Result<Arc<Self>> {
+        Self::with_metadata(&Arc::new(Semaphore::new(
+            super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
+        )))
     }
 
-    fn allocate(capacity: usize) -> Arc<Self> {
-        Arc::new(Self {
+    pub(super) fn with_metadata(bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
+        Self::allocate(bank, MAX_NATIVE_OWNERS)
+    }
+
+    fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<Arc<Self>> {
+        let body_storage =
+            super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(capacity).map_err(|original| {
+            crate::output::resource_decision("native registry backing allocation failed")
+                .context(original)
+        })?;
+        let slots_storage = super::admission::known_vec_backing(bank, &slots)?;
+        slots.resize_with(capacity, || None);
+        Ok(Arc::new(Self {
             state: StdMutex::new(State {
                 sealed: false,
-                slots: std::iter::repeat_with(|| None).take(capacity).collect(),
+                slots,
                 first_failure: None,
                 first_expiry: None,
                 additional_failed_owners: 0,
             }),
             drains: Mutex::new(()),
             changed: Notify::new(),
-        })
+            _slots_storage: slots_storage,
+            _body_storage: body_storage,
+        }))
     }
 
     #[cfg(test)]
     fn small(capacity: NonZeroUsize) -> Arc<Self> {
         assert!(capacity.get() <= MAX_NATIVE_OWNERS);
-        Self::allocate(capacity.get())
+        Self::allocate(
+            &Arc::new(Semaphore::new(super::MAX_GLOBAL_KNOWN_METADATA_BYTES)),
+            capacity.get(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(test)]
+    pub(super) fn structural_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.lock().slots.capacity() * std::mem::size_of::<Option<Entry>>()
+    }
+
+    #[cfg(test)]
+    pub(super) fn rebind_empty_metadata(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
+        let state = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
+        anyhow::ensure!(
+            !state.sealed
+                && state.slots.iter().all(Option::is_none)
+                && state.first_failure.is_none()
+                && state.first_expiry.is_none(),
+            "native registry bank can only change before ownership/history"
+        );
+        let mut replacement = super::admission::known_metadata_charge(
+            bank,
+            std::mem::size_of::<Self>()
+                + state.slots.capacity() * std::mem::size_of::<Option<Entry>>(),
+        )?;
+        let body = replacement
+            .split(std::mem::size_of::<Self>())
+            .expect("reserved registry body");
+        self._slots_storage = replacement;
+        self._body_storage = body;
+        Ok(())
     }
 
     fn lock(&self) -> StdMutexGuard<'_, State> {
@@ -928,6 +981,10 @@ impl Error for HistoryFailure {
 }
 
 #[cfg(test)]
+#[path = "retirement/metadata_tests.rs"]
+mod metadata_tests;
+#[cfg(test)]
 mod native_tests;
+
 #[cfg(test)]
 mod tests;

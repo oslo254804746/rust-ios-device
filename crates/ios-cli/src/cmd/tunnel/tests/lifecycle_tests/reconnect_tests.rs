@@ -107,6 +107,7 @@ fn configured(source: Arc<FakeSource>, retry: reconnect::RetryPolicy) -> TunnelA
         TUNNEL_CONNECT_TIMEOUT,
         retry,
     )
+    .unwrap()
 }
 
 fn attach(source: &FakeSource, id: u32) {
