@@ -8442,3 +8442,13 @@ writer、发现错误合并和readiness；原Source对象与phase完成状态保
 EOF/对象/权限等断言不放宽。完整门禁、初始fixture失败与精确剩余见[证据](validation/tunnel-write-batches-2026-10-13.md)。
 原error payload创建端/其它history backing、manual副本/其它集合与完整刷新规则继续；
 L02仍待完整收口，账本23/6/待收口、有效30与Q04全部排除不变。
+
+## 2026-10-13：L02 manual desired route共享准入owner
+
+Manual desired的原RouteIntent buffer由已准入RetainedRoute持有，Snapshot/rollback
+clone同一Arc而不复制或重复收费。按原capacity/inline size同池准入，替换先检clock/
+grant再准备owner，额度拒绝保持原version/watch/pending；迟到回滚恢复原Arc，stop/
+clear不提前释放caller旧Snapshot，最后owner归还。新增4项与受影响tunnel408通过、
+2原ignored，严格Clippy与其余出口见[证据](validation/tunnel-manual-route-bytes-2026-10-13.md)。
+原error payload创建端、listing key/backing与其它副本/集合/native/history/internal
+backing及完整刷新规则继续；账本23/6/L02待收口、有效30与Q04全部排除不变。

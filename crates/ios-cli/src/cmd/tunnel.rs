@@ -1154,7 +1154,7 @@ impl TunnelAgentState {
             }
         });
         let route_intent = match (&manual, &desired.desired) {
-            (None, intent::Desired::Manual { route, .. }) => route.clone(),
+            (None, intent::Desired::Manual { route, .. }) => route.route.clone(),
             _ => intent::RouteIntent::established(
                 &route,
                 manual.and_then(|request| request.host_filter.as_deref()),
@@ -1893,14 +1893,14 @@ impl TunnelAgentState {
             if !ticket.is_current() {
                 continue;
             }
-            let (route, expected_id) = match route {
+            let (route, expected_id) = match &route.route {
                 intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
                 intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
                     let id = attached_ids.get(udid.as_str()).copied();
                     if usb_complete && id.is_none() {
                         continue;
                     }
-                    let route = match route {
+                    let route = match &route.route {
                         intent::RouteIntent::Usb(host) => Route::Usb(host.clone()),
                         _ => Route::Usbmux,
                     };
@@ -2294,7 +2294,7 @@ impl TunnelAgentState {
         candidates: &[candidate_index::Candidate],
         paired_complete: bool,
         usb_complete: bool,
-        manual: &HashMap<String, (Ticket, intent::RouteIntent)>,
+        manual: &HashMap<String, (Ticket, Arc<intent::RetainedRoute>)>,
         whole: &scan::Deadline,
         epoch: &scan::Epoch,
     ) -> Result<()> {
@@ -2311,7 +2311,7 @@ impl TunnelAgentState {
                             || (!usb_complete
                                 && matches!(failed.identity.route, Route::Usbmux | Route::Usb(_)))
                             || manual.get(udid).is_some_and(|(_, route)| {
-                                matches!(route, intent::RouteIntent::Wifi(_))
+                                matches!(&route.route, intent::RouteIntent::Wifi(_))
                             })
                     }
                 }
@@ -2329,7 +2329,7 @@ impl TunnelAgentState {
                                 || (!usb_complete
                                     && matches!(identity.route, Route::Usbmux | Route::Usb(_)))
                                 || manual.get(udid).is_some_and(|(_, route)| {
-                                    matches!(route, intent::RouteIntent::Wifi(_))
+                                    matches!(&route.route, intent::RouteIntent::Wifi(_))
                                 }))
                         }
                     }

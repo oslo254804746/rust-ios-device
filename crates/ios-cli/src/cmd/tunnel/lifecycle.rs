@@ -309,7 +309,10 @@ impl Lifecycle {
                 let gate = Arc::new(DeviceGate {
                     serial: Mutex::new(()),
                     generation: watch::channel(Arc::new(())).0,
-                    intent: super::intent::Cell::new(shutdown_generation.clone()),
+                    intent: super::intent::Cell::new(
+                        shutdown_generation.clone(),
+                        Arc::clone(&self.metadata_bytes),
+                    ),
                     _metadata: metadata,
                 });
                 devices.rows.push((key, gate.clone()));
@@ -540,10 +543,7 @@ impl Ticket {
     ) -> Result<()> {
         debug_assert!(self.intent_version.is_none());
         self.gate.intent.checked_replace(
-            super::intent::Desired::Manual {
-                route,
-                authority: authority.clone(),
-            },
+            || self.gate.intent.manual(route, authority.clone()),
             failure,
             || {
                 if let Some(deadline) = deadline {

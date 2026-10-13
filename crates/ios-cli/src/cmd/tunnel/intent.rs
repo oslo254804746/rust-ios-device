@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::watch;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::source::Route;
 use crate::access::DeviceAuthority;
@@ -31,11 +32,47 @@ impl RouteIntent {
     }
 }
 
+pub(super) struct RetainedRoute {
+    pub(super) route: RouteIntent,
+    _storage: OwnedSemaphorePermit,
+}
+
+impl RetainedRoute {
+    fn new(route: RouteIntent, bank: &Arc<Semaphore>) -> anyhow::Result<Arc<Self>> {
+        let host = match &route {
+            RouteIntent::Usbmux => None,
+            RouteIntent::Usb(host) | RouteIntent::Wifi(host) | RouteIntent::Mobdev2(host) => {
+                host.as_ref()
+            }
+        };
+        super::admission::selectors("", host.map(String::as_str))?;
+        let bytes = std::mem::size_of::<Self>()
+            .checked_add(host.map_or(0, String::capacity))
+            .ok_or_else(|| crate::output::resource_decision("tunnel manual route size overflow"))?;
+        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        Ok(Arc::new(Self {
+            route,
+            _storage: storage,
+        }))
+    }
+
+    #[cfg(test)]
+    fn bytes(route: &RouteIntent) -> usize {
+        std::mem::size_of::<Self>()
+            + match route {
+                RouteIntent::Usbmux => 0,
+                RouteIntent::Usb(host) | RouteIntent::Wifi(host) | RouteIntent::Mobdev2(host) => {
+                    host.as_ref().map_or(0, String::capacity)
+                }
+            }
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum Desired {
     Automatic,
     Manual {
-        route: RouteIntent,
+        route: Arc<RetainedRoute>,
         authority: DeviceAuthority,
     },
     Stopped,
@@ -55,6 +92,7 @@ pub(super) struct Cell {
     // failure history/permit. Updated by its original commit and rollback.
     failure: Mutex<Option<(Arc<()>, Arc<()>)>>,
     pending_success: Mutex<Option<(Arc<()>, Arc<()>)>>,
+    metadata_bytes: Arc<Semaphore>,
     #[cfg(test)]
     before_checked_replace: Mutex<Option<ReplaceCallback>>,
     #[cfg(test)]
@@ -62,7 +100,7 @@ pub(super) struct Cell {
 }
 
 impl Cell {
-    pub(super) fn new(epoch: Arc<()>) -> Self {
+    pub(super) fn new(epoch: Arc<()>, metadata_bytes: Arc<Semaphore>) -> Self {
         let version = Arc::new(());
         Self {
             state: Mutex::new(Snapshot {
@@ -73,6 +111,7 @@ impl Cell {
             changes: watch::channel(version).0,
             failure: Mutex::new(None),
             pending_success: Mutex::new(None),
+            metadata_bytes,
             #[cfg(test)]
             before_checked_replace: Mutex::new(None),
             #[cfg(test)]
@@ -140,7 +179,7 @@ impl Cell {
     // to observe it. A failed candidate restores the exact previous identities.
     pub(super) fn checked_replace(
         &self,
-        desired: Desired,
+        desired: impl FnOnce() -> anyhow::Result<Desired>,
         failure: Option<Arc<()>>,
         check: impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<Arc<()>> {
@@ -152,6 +191,7 @@ impl Cell {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         check()?;
+        let desired = desired()?;
         let previous = state.clone();
         let previous_pending = pending.clone();
         let version = Arc::new(());
@@ -167,6 +207,17 @@ impl Cell {
         }
         self.changes.send_replace(version.clone());
         Ok(version)
+    }
+
+    pub(super) fn manual(
+        &self,
+        route: RouteIntent,
+        authority: DeviceAuthority,
+    ) -> anyhow::Result<Desired> {
+        Ok(Desired::Manual {
+            route: RetainedRoute::new(route, &self.metadata_bytes)?,
+            authority,
+        })
     }
 
     #[cfg(test)]
@@ -253,3 +304,6 @@ pub(super) struct ManualRequest {
     pub(super) authority: DeviceAuthority,
     pub(super) host_filter: Option<String>,
 }
+
+#[cfg(test)]
+mod tests;
