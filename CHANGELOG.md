@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit manual paired pending/plan vector backing while borrowing original
+  desired UID, ticket and host filters. Keep incomplete-browse behavior and
+  original manual/USB publications when plan admission fails.
+
 - Admit raw and selected USB attachment-index backing while borrowing original
   snapshot buffers. Preserve exact numeric ID membership and last-key lookup
   without private hash-table allocations or quadratic publication scans.

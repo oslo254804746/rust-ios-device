@@ -1,5 +1,142 @@
 use super::*;
 
+async fn manual_paired_fixture() -> (Arc<FakeSource>, TunnelAgentState, Ticket) {
+    let source = FakeSource::new();
+    source.script(
+        A,
+        [
+            Behavior::Failure(std::io::ErrorKind::BrokenPipe),
+            Behavior::Success,
+        ],
+    );
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: A.into(),
+        host: "192.0.2.50".into(),
+    });
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let (port, server) = spawn_test_router(agent_router(state.clone())).await;
+    let response = client()
+        .post(format!("http://127.0.0.1:{port}/start-tunnel"))
+        .json(&json!({"udid":A,"ip":"192.0.2.50"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    server.abort();
+    let _ = server.await;
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    assert!(
+        matches!(&ticket.desired().desired, intent::Desired::Manual { route, .. } if route.route == intent::RouteIntent::Mobdev2(Some("192.0.2.50".into())))
+    );
+    source.usb_calls.store(0, Ordering::SeqCst);
+    source.paired_calls.store(0, Ordering::SeqCst);
+    (source, state, ticket)
+}
+
+#[tokio::test]
+async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication_before_browse() {
+    let (source, state, ticket) = manual_paired_fixture().await;
+    let original = ticket.desired();
+    let publication = state.inner.tunnels.read().await[A].publication.clone();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let desired = state.inner.lifecycle.desired().await.unwrap();
+    let listing_bytes = before - bank.available_permits();
+    let mut manual = scan_desired::Manual::new(&bank);
+    manual.insert(&desired.as_slice()[0]).unwrap();
+    let manual_bytes = manual.storage_bytes();
+    drop(manual);
+    drop(desired);
+    assert_eq!(bank.available_permits(), before);
+    let pending = 2 * std::mem::size_of::<(&str, &Ticket, Option<&str>)>();
+    let admitted = scan::capsule_reservation_bytes()
+        + listing_bytes
+        + manual_bytes
+        + scan_publications::InitialPublications::first_bytes(A)
+        + pending
+        - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - admitted) as u32)
+        .unwrap();
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.count(A), 2);
+    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(Arc::ptr_eq(
+        &publication,
+        &state.inner.tunnels.read().await[A].publication
+    ));
+    drop(error);
+    assert_eq!(bank.available_permits(), admitted);
+    drop(held);
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
+#[tokio::test]
+async fn manual_paired_plan_one_byte_refusal_is_incomplete_and_preserves_both_original_publications(
+) {
+    let (source, state, ticket) = manual_paired_fixture().await;
+    source.usb.lock().unwrap().push(B.into());
+    start(state.clone(), B).await.unwrap();
+    source.usb_calls.store(0, Ordering::SeqCst);
+    let original = ticket.desired();
+    let (a, b) = {
+        let tunnels = state.inner.tunnels.read().await;
+        (
+            tunnels[A].publication.clone(),
+            tunnels[B].publication.clone(),
+        )
+    };
+    let targets = source.paired.lock().unwrap().clone();
+    let raw = targets.capacity() * std::mem::size_of::<PairedMobdev2Device>()
+        + targets
+            .iter()
+            .map(|target| target.udid.capacity() + target.host.capacity())
+            .sum::<usize>();
+    let plan = 2 * std::mem::size_of::<(&str, &Ticket, usize)>();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        let leave = raw + plan - 1;
+        *retained.lock().unwrap() = Some(
+            bank.clone()
+                .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.count(A), 2);
+    assert_eq!(source.count(B), 1);
+    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    {
+        let tunnels = state.inner.tunnels.read().await;
+        assert!(Arc::ptr_eq(&a, &tunnels[A].publication));
+        assert!(Arc::ptr_eq(&b, &tunnels[B].publication));
+    }
+    drop(error);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
 #[tokio::test]
 async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_stop_epoch() {
     let source = FakeSource::new();

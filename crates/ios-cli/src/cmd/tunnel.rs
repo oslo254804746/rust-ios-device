@@ -1906,7 +1906,10 @@ impl TunnelAgentState {
         // Manual intent wins over ordinary discovery for the same exact key.
         // Hostless Wi-Fi is rediscovered inside NativeSource on each admitted
         // attempt; no old ConnectedDevice, RSD address or service is replayed.
-        let mut pending_mobdev2 = Vec::new();
+        let mut pending_mobdev2 = metadata_vec::KnownVec::new(
+            Arc::clone(&self.inner.global_metadata_bytes),
+            MAX_FAILURE_RECORDS,
+        );
         for (udid, (ticket, route)) in manual.iter() {
             if !ticket.is_current() {
                 continue;
@@ -1925,7 +1928,7 @@ impl TunnelAgentState {
                     (route, id)
                 }
                 intent::RouteIntent::Mobdev2(host) => {
-                    pending_mobdev2.push((udid.to_owned(), ticket.clone(), host.clone()));
+                    pending_mobdev2.push((udid, ticket, host.as_deref()))?;
                     continue;
                 }
             };
@@ -2022,25 +2025,44 @@ impl TunnelAgentState {
         // Admit complete paired metadata before a saved Mobdev2 selector uses
         // it. A failed/partial browse preserves that selector and episode.
         let mut _paired_snapshot_charge = None;
+        let empty_manual_plan = || {
+            metadata_vec::KnownVec::new(
+                Arc::clone(&self.inner.global_metadata_bytes),
+                MAX_FAILURE_RECORDS,
+            )
+        };
         let mut paired = paired.map(|targets| {
             let charge = match admission::retain_paired_snapshot(
                 &self.inner.global_metadata_bytes,
                 &targets,
             ) {
                 Ok(charge) => charge,
-                Err(error) => return (admission::PairedCandidates::Incomplete(error), Vec::new()),
+                Err(error) => {
+                    return (
+                        admission::PairedCandidates::Incomplete(error),
+                        empty_manual_plan(),
+                    )
+                }
             };
-            let mut planned = Vec::new();
+            let mut planned = empty_manual_plan();
             for (udid, ticket, host) in pending_mobdev2 {
                 if let Some(index) = targets.iter().position(|target| {
-                    target.udid == udid && host.as_ref().map_or(true, |host| *host == target.host)
+                    target.udid == udid && host.map_or(true, |host| host == target.host)
                 }) {
                     if let Err(error) =
                         candidate_budget.admit(udid.len(), targets[index].host.len())
                     {
-                        return (admission::PairedCandidates::Incomplete(error), Vec::new());
+                        return (
+                            admission::PairedCandidates::Incomplete(error),
+                            empty_manual_plan(),
+                        );
                     }
-                    planned.push((udid, ticket, index));
+                    if let Err(error) = planned.push((udid, ticket, index)) {
+                        return (
+                            admission::PairedCandidates::Incomplete(error),
+                            empty_manual_plan(),
+                        );
+                    }
                 }
             }
             let reply = candidate_budget.paired_candidates(
@@ -2073,14 +2095,14 @@ impl TunnelAgentState {
                     MAX_FAILURE_RECORDS,
                 );
                 inputs.reserve(planned.len() + indices.len())?;
-                for (udid, ticket, index) in planned {
-                    if !seen.contains(udid) {
+                for (udid, ticket, index) in planned.as_slice() {
+                    if !seen.contains(*udid) {
                         let input = candidate_input::Input::owned(
-                            udid.clone(),
+                            (*udid).to_owned(),
                             Route::Mobdev2(targets[*index].host.clone()),
                             &self.inner.global_metadata_bytes,
                         )?;
-                        inputs.push((input, Some(ticket.clone())))?;
+                        inputs.push((input, Some((*ticket).clone())))?;
                     }
                 }
                 for &index in indices {
@@ -2104,7 +2126,10 @@ impl TunnelAgentState {
             match prepare {
                 Err(error) => {
                     _paired_snapshot_charge = None;
-                    paired = Some((admission::PairedCandidates::Incomplete(error), Vec::new()));
+                    paired = Some((
+                        admission::PairedCandidates::Incomplete(error),
+                        empty_manual_plan(),
+                    ));
                 }
                 Ok(inputs) => {
                     for (input, manual_ticket) in inputs {
