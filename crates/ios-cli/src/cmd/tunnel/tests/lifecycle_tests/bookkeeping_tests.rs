@@ -15,17 +15,22 @@ fn bounded_state(source: Arc<FakeSource>, budget: Duration) -> TunnelAgentState 
 async fn intent(state: &TunnelAgentState, udid: &str) -> FailureIntent {
     let ticket = state.inner.lifecycle.ticket(udid).await.unwrap();
     let slot = state.reserve_failure_slot(udid).await.unwrap();
+    let mut node = failure_table::Node::owned(
+        udid.into(),
+        AttemptIdentity {
+            route: Route::Usbmux,
+            native_id: Some(1),
+        },
+        &state.inner.global_metadata_bytes,
+    )
+    .unwrap();
+    node.row.slot = Some(slot);
     FailureIntent {
-        _input: None,
-        udid: udid.into(),
         ticket,
         failed: DeferredFailure {
-            identity: AttemptIdentity {
-                route: Route::Usbmux,
-                native_id: Some(1),
-            },
-            slot,
+            node,
             receipt: None,
+            destination: None,
         },
     }
 }
@@ -132,7 +137,11 @@ async fn lifecycle_tunnel_bookkeeping_late_update_restores_original_backoff_and_
     let state = bounded_state(source, WRITE_BUDGET);
     let first = intent(&state, A).await;
     state
-        .record_failed_attempt(A, first.failed.identity, first.failed.slot, &first.ticket)
+        .record_prepared_failure(
+            first.failed.node,
+            failure_table::Destination::new(&state.inner.global_metadata_bytes).unwrap(),
+            &first.ticket,
+        )
         .await;
     let before = state.inner.failed_attempts.read().await[A].clone();
     let pending = intent(&state, A).await;

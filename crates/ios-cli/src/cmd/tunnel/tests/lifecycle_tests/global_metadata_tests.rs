@@ -1,6 +1,175 @@
 use super::*;
 
 #[tokio::test]
+async fn failure_window_roots_one_byte_refusal_precedes_source_with_prepared_single_key() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    let target =
+        bookkeeping::WriteBatch::backing_bytes(1) - failure_table::Destination::minimum_bytes();
+    // Seen and all candidate nodes remain paid through reconciliation/window.
+    // The callback leaves exactly one byte less than the new window backing.
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        let leave = target - 1;
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned((observed_bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.count(A), 0);
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert_eq!(state.inner.retry.receipt_count(), 0);
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert!(!state.is_ready().await);
+    drop(error);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
+async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_without_ticket_prefix(
+) {
+    let source = FakeSource::new();
+    let old_host = "original-mobdev2-host";
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: B.into(),
+        host: old_host.into(),
+    });
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    state.refresh_once().await.unwrap();
+    let publication = state.inner.tunnels.read().await[B].publication.clone();
+    let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
+    let slot = state.reserve_failure_slot(B).await.unwrap();
+    state
+        .record_failed_attempt(
+            B,
+            AttemptIdentity {
+                route: Route::Mobdev2(old_host.into()),
+                native_id: None,
+            },
+            slot,
+            &ticket,
+        )
+        .await;
+    let original = state.inner.failed_attempts.read().await[B].clone();
+    source.usb.lock().unwrap().push(A.into());
+    let targets = vec![
+        PairedMobdev2Device {
+            udid: B.into(),
+            host: old_host.into(),
+        },
+        PairedMobdev2Device {
+            udid: "fresh-paired-one".into(),
+            host: "h".repeat(4096),
+        },
+        PairedMobdev2Device {
+            udid: "fresh-paired-two".into(),
+            host: "i".repeat(4096),
+        },
+        PairedMobdev2Device {
+            udid: "fresh-paired-three".into(),
+            host: "j".repeat(4096),
+        },
+    ];
+    let raw = targets.len() * std::mem::size_of::<PairedMobdev2Device>()
+        + targets
+            .iter()
+            .map(|target| target.udid.len() + target.host.len())
+            .sum::<usize>();
+    let plans = 2 * targets.len() * std::mem::size_of::<usize>();
+    let inputs = targets.len()
+        * std::mem::size_of::<(
+            Arc<candidate_input::Input>,
+            Option<Ticket>,
+            Box<failure_table::Node>,
+        )>();
+    let owners = targets
+        .iter()
+        .map(|target| {
+            let route = Route::Mobdev2(target.host.clone());
+            candidate_input::Input::bytes(&target.udid, &route)
+                + failure_table::Node::input_bytes(&route)
+        })
+        .sum::<usize>();
+    let leave = raw + plans + inputs + owners - 1;
+    *source.paired.lock().unwrap() = targets;
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned((observed_bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.count(A), 1);
+    assert_eq!(source.count(B), 1);
+    for uid in ["fresh-paired-one", "fresh-paired-two", "fresh-paired-three"] {
+        assert_eq!(source.count(uid), 0);
+    }
+    assert_eq!(
+        state.inner.lifecycle.coordinator_count().await,
+        2,
+        "rejected paired nodes created an automatic ticket prefix"
+    );
+    assert!(state.get_record(A).await.is_some());
+    assert!(Arc::ptr_eq(
+        &publication,
+        &state.inner.tunnels.read().await[B].publication
+    ));
+    {
+        let failed = state.inner.failed_attempts.read().await;
+        assert!(Arc::ptr_eq(&original.version, &failed[B].version));
+        assert_eq!(original.identity, failed[B].identity);
+        assert_eq!(original.last_attempt, failed[B].last_attempt);
+        assert_eq!(original.fail_count, failed[B].fail_count);
+        assert!(Arc::ptr_eq(
+            original.slot.as_ref().unwrap(),
+            failed[B].slot.as_ref().unwrap()
+        ));
+    }
+    assert!(
+        state.is_ready().await,
+        "incomplete paired view changed established readiness"
+    );
+    drop(error);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+    drop(original);
+    drop(ticket);
+    drop(publication);
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
 async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_pool_recovers() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
@@ -23,6 +192,7 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
         + std::mem::size_of::<candidate_input::Input>()
         + A.len()
         + scan_seen::Seen::first_bytes()
+        + failure_table::Node::input_bytes(&Route::Usbmux)
         + Lifecycle::additional_metadata_bytes(A)
         - 1;
     let held = Arc::new(StdMutex::new(Some(
@@ -466,6 +636,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
         + Lifecycle::additional_metadata_bytes(A)
         + candidate_index::Candidate::first_usb_bytes(A)
         + std::mem::size_of::<usize>()
+        + failure_table::Destination::minimum_bytes()
         - 1;
     let occupied = bank
         .clone()
@@ -522,6 +693,7 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
         + candidate_index::Candidate::first_usb_bytes(A)
         + raw_paired
         + std::mem::size_of::<usize>()
+        + failure_table::Destination::minimum_bytes()
         - 1;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let native_bytes =
@@ -576,7 +748,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
                 + charge
                 + selection
                 + candidate
-                + Lifecycle::initial_metadata_bytes(A)),
+                + Lifecycle::initial_metadata_bytes(A)
+                + failure_table::Destination::minimum_bytes()),
     );
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
@@ -586,7 +759,11 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     drop(scan);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        scan::capsule_reservation_bytes() + charge + selection + candidate
+        scan::capsule_reservation_bytes()
+            + charge
+            + selection
+            + candidate
+            + failure_table::Destination::minimum_bytes()
     );
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);

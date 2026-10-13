@@ -122,6 +122,134 @@ fn original(error: &anyhow::Error) -> usize {
     io as *const std::io::Error as usize
 }
 
+#[tokio::test]
+async fn failure_node_real_original_records_at_zero_quota_and_last_receipt_retains_input() {
+    let source = RefusedSource::new().await;
+    let state = manager(source.clone());
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(Vec::with_capacity(2)));
+    let return_bank = Arc::clone(&bank);
+    let return_held = Arc::clone(&held);
+    *source.on_return.lock().unwrap() = Some(Box::new(move || {
+        let permit = return_bank
+            .clone()
+            .try_acquire_many_owned(return_bank.available_permits() as u32)
+            .unwrap();
+        return_held.lock().unwrap().push(permit);
+        assert_eq!(return_bank.available_permits(), 0);
+    }));
+    let write_bank = Arc::clone(&bank);
+    let write_held = Arc::clone(&held);
+    let wrote_at_zero = Arc::new(AtomicBool::new(false));
+    let observed_zero = Arc::clone(&wrote_at_zero);
+    state.inner.lifecycle.on_next_failure_record(move |_| {
+        let permit = write_bank
+            .clone()
+            .try_acquire_many_owned(write_bank.available_permits() as u32)
+            .unwrap();
+        write_held.lock().unwrap().push(permit);
+        assert_eq!(write_bank.available_permits(), 0);
+        observed_zero.store(true, Ordering::SeqCst);
+    });
+    state.refresh_once().await.unwrap();
+    assert!(wrote_at_zero.load(Ordering::SeqCst));
+    assert_eq!(source.count(A), 1);
+    assert_eq!(state.inner.failed_attempts.read().await[A].fail_count, 1);
+    let receipt = state.inner.retry.receipt(A).unwrap();
+    let address = original(receipt.primary());
+    assert_eq!(address, source.originals.lock().unwrap()[0]);
+    assert_eq!(receipt.completion(), reconnect::Completion::Recorded);
+    let input = Arc::downgrade(
+        &receipt
+            .primary()
+            .downcast_ref::<candidate_input::SourceInputContext>()
+            .unwrap()
+            .input,
+    );
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    held.lock().unwrap().clear();
+    assert!(input.upgrade().is_some());
+    assert_eq!(original(receipt.primary()), address);
+    assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    drop(receipt);
+    assert!(input.upgrade().is_none());
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
+async fn failure_writer_late_after_adopt_refunds_empty_actual_backing_and_preserves_original() {
+    let source = RefusedSource::new().await;
+    let gate = Arc::new(Semaphore::new(0));
+    *source.return_gate.lock().unwrap() = Some(Arc::clone(&gate));
+    let mut state = manager(source.clone());
+    Arc::get_mut(&mut state.inner)
+        .unwrap()
+        .failure_write_timeout = Duration::from_millis(40);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    let adopted = Arc::new(AtomicBool::new(false));
+    let observed_adopt = Arc::clone(&adopted);
+    let mut scan = Box::pin(state.refresh_once());
+    source.until_error(&mut scan).await;
+    {
+        let mut failed = state.inner.failed_attempts.write().await;
+        assert!(failed.is_empty());
+        failed.on_after_adopt(move || {
+            let permit = observed_bank
+                .clone()
+                .try_acquire_many_owned(observed_bank.available_permits() as u32)
+                .unwrap();
+            *retained.lock().unwrap() = Some(permit);
+            assert_eq!(observed_bank.available_permits(), 0);
+            observed_adopt.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+    }
+    gate.add_permits(1);
+    let error = tokio::time::timeout(REFUSAL_BUDGET, scan.as_mut())
+        .await
+        .unwrap()
+        .unwrap_err();
+    drop(scan);
+    assert!(adopted.load(Ordering::SeqCst));
+    assert!(error.is::<tokio::time::error::Elapsed>());
+    let context = error
+        .downcast_ref::<bookkeeping::SourceFailuresContext>()
+        .unwrap();
+    assert_eq!(context.receipts().len(), 1);
+    assert_eq!(
+        original(context.receipts()[0].primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    assert_eq!(
+        context.receipts()[0].completion(),
+        reconnect::Completion::Failed(ios_core::ErrorClass::Timeout)
+    );
+    assert_eq!(source.count(A), 1);
+    {
+        let failed = state.inner.failed_attempts.read().await;
+        assert!(failed.is_empty());
+        assert_eq!(
+            failed.backing_bytes(),
+            0,
+            "late adoption retained an empty 32768-byte backing"
+        );
+    }
+    assert!(bank.available_permits() >= failure_table::Destination::minimum_bytes());
+    assert!(!state.is_ready().await);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    drop(error);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
 async fn pending_manual_cleanup(state: &TunnelAgentState) {
     let ticket = state.inner.lifecycle.ticket(B).await.unwrap();
     let slot = state.reserve_failure_slot(B).await.unwrap();

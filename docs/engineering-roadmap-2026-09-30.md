@@ -8608,3 +8608,15 @@ seen以真实收费KnownVec共享原Input/UID，coordinator拒绝后的身份保
 [验证](validation/tunnel-seen-observed-bytes-2026-10-13.md)。failure额外owner与
 原error/private/native存储及完整freshness继续；L02未关闭，账本23/6/待收口、
 有效30和Q04全部排除保持。
+
+
+## 2026-10-13 L02 failure 表原 owner 准入与回滚
+
+Source前准备收费Box<Node>/共享route owner，移动Input已预留的唯一outcome UID，
+实际destination backing先保留USB window；paired新增node整批在ticket前准入。
+writer/成功删除/失败pruning移动和还原同一node，无key副本或后quota，最后owner
+退款。原fence/错误/EOF/joins不放宽，462通过、2原ignored；最终解包消费lint修正
+后成功清理11/严格CLI/build/readonly1/host5通过、22NOT_RUN，见
+[验证](validation/tunnel-failure-table-owners-2026-10-13.md)。nonempty manual cleanup
+晚准入、publication/private error/native存储与完整freshness等继续；L02未关闭，
+账本23/6/待收口、有效30及Q04全部排除保持。

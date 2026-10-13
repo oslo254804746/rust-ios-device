@@ -431,8 +431,6 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
         .clone();
     state
         .flush_failure_intents(vec![FailureIntent {
-            _input: None,
-            udid: AUTH_DEVICE.into(),
             ticket: old_ticket.clone(),
             failed: deferred,
         }])

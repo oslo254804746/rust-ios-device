@@ -33,6 +33,10 @@ fn route_length(route: &Route) -> usize {
 }
 
 impl Input {
+    pub(super) fn storage_bank(&self) -> &Arc<Semaphore> {
+        self._storage.semaphore()
+    }
+
     pub(super) fn owned(udid: String, route: Route, bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
         super::admission::selectors(
             &udid,

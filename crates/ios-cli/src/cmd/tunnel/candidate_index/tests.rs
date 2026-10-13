@@ -3,10 +3,14 @@ use super::*;
 fn admitted(data: (String, Route, Ticket, Option<u32>)) -> Candidate {
     let (udid, route, ticket, native_id) = data;
     let bank = Arc::new(Semaphore::new(64 * 1024));
+    let input = super::super::candidate_input::Input::owned(udid, route, &bank).unwrap();
+    let node =
+        super::super::failure_table::Node::input(Arc::clone(&input), native_id, &bank).unwrap();
     Candidate {
-        input: super::super::candidate_input::Input::owned(udid, route, &bank).unwrap(),
+        input,
         ticket,
         native_id,
+        node,
     }
 }
 

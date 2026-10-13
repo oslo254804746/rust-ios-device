@@ -71,3 +71,19 @@ fn write_batch_payload_refusal_precedes_every_destination_backing_and_preserves_
     drop(empty);
     assert_eq!(bank.available_permits(), bytes);
 }
+
+#[test]
+fn success_only_and_empty_batches_never_allocate_failure_destination() {
+    let capacity = 1;
+    let bytes = WriteBatch::backing_bytes(capacity) - Destination::minimum_bytes();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let batch = WriteBatch::success_only(&bank, capacity).unwrap();
+    assert!(batch.destination.is_none());
+    assert_eq!(bank.available_permits(), 0);
+    drop(batch);
+    assert_eq!(bank.available_permits(), bytes);
+    let empty = WriteBatch::new(&bank, 0).unwrap();
+    assert!(empty.destination.is_none());
+    drop(empty);
+    assert_eq!(bank.available_permits(), bytes);
+}
