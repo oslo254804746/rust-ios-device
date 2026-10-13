@@ -35,6 +35,7 @@ mod bookkeeping;
 mod candidate_index;
 mod candidate_input;
 mod error_payload;
+mod failure_table;
 mod intent;
 mod lifecycle;
 mod metadata_vec;
@@ -397,7 +398,7 @@ struct TunnelAgentInner {
     tunnels: RwLock<HashMap<String, ManagedTunnel>>,
     upstreams: RwLock<BTreeSet<String>>,
     upstream_access: Upstreams,
-    failed_attempts: RwLock<HashMap<String, FailedTunnelAttempt>>,
+    failed_attempts: RwLock<failure_table::Table>,
     retry: Arc<reconnect::Ledger>,
     failure_slots: Arc<Semaphore>,
     metadata_bytes: Arc<Semaphore>,
@@ -504,7 +505,7 @@ struct FailedTunnelAttempt {
     version: Arc<()>,
     last_attempt: Instant,
     fail_count: u32,
-    identity: AttemptIdentity,
+    identity: failure_table::Identity,
     slot: Option<Arc<OwnedSemaphorePermit>>,
 }
 
@@ -739,7 +740,7 @@ impl TunnelAgentState {
                 tunnels: RwLock::new(HashMap::new()),
                 upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
                 upstream_access,
-                failed_attempts: RwLock::new(HashMap::new()),
+                failed_attempts: RwLock::new(failure_table::Table::new(&global_metadata_bytes)),
                 retry: reconnect::Ledger::with_metadata(retry, Arc::clone(&global_metadata_bytes))?,
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
                 metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
@@ -785,6 +786,8 @@ impl TunnelAgentState {
             reconnect::Ledger::with_metadata(inner.retry.policy().clone(), Arc::clone(&bank))
                 .unwrap();
         inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
+        assert!(inner.failed_attempts.get_mut().is_empty());
+        *inner.failed_attempts.get_mut() = failure_table::Table::new(&bank);
         inner.global_metadata_bytes = bank;
     }
 
@@ -833,7 +836,10 @@ impl TunnelAgentState {
             reconnect::Ledger::cancelled(retired, reconnect::Reason::Cleared);
         }
         drop(old);
-        self.inner.failed_attempts.write().await.clear();
+        let mut failed = self.inner.failed_attempts.write().await;
+        let removed = failed.take_all();
+        drop(failed);
+        drop(removed);
         self.inner.retry.clear_retired_causes();
     }
 
@@ -1472,11 +1478,15 @@ impl TunnelAgentState {
     ) {
         // Keep the original direct-attempt test seam and its immediate failure
         // write. Production scans defer that write until their window finishes.
-        if let Some(failed) = self
+        if let Some(mut failed) = self
             .refresh_connect_deferred(udid, route, ticket, expected_id)
             .await
         {
-            self.record_failed_attempt(udid, failed.identity, failed.slot, ticket)
+            let destination = failed
+                .destination
+                .take()
+                .expect("pre-Source direct destination");
+            self.record_prepared_failure(failed.node, destination, ticket)
                 .await;
         }
     }
@@ -1530,8 +1540,27 @@ impl TunnelAgentState {
         expected_id: Option<u32>,
         whole: Option<&scan::Deadline>,
     ) -> ScanAttemptOutcome {
-        self.refresh_connect_with_input(udid, route, ticket, expected_id, whole, None)
-            .await
+        // Fixture preparation must fail loudly; zero/overflow/stale profiles
+        // still exercise the original production clock and ticket fences.
+        let destination = failure_table::Destination::new(&self.inner.global_metadata_bytes)
+            .expect("direct-attempt destination admitted before Source");
+        let prepared_node = failure_table::Node::owned(
+            udid.to_owned(),
+            AttemptIdentity {
+                route: route.clone(),
+                native_id: expected_id,
+            },
+            &self.inner.global_metadata_bytes,
+        )
+        .expect("direct-attempt node admitted before Source");
+        let mut prepared = Some(prepared_node);
+        let mut outcome = self
+            .refresh_connect_with_input(udid, route, ticket, whole, None, &mut prepared)
+            .await;
+        if let ScanAttemptOutcome::Failure(failed) = &mut outcome {
+            failed.destination = Some(destination);
+        }
+        outcome
     }
 
     async fn refresh_connect_with_input(
@@ -1539,14 +1568,17 @@ impl TunnelAgentState {
         udid: &str,
         route: Route,
         ticket: &Ticket,
-        expected_id: Option<u32>,
         whole: Option<&scan::Deadline>,
         input: Option<Arc<candidate_input::Input>>,
+        prepared: &mut Option<Box<failure_table::Node>>,
     ) -> ScanAttemptOutcome {
-        let identity = AttemptIdentity {
-            route: route.clone(),
-            native_id: expected_id,
-        };
+        let identity = prepared
+            .as_ref()
+            .expect("pre-Source failure node")
+            .row
+            .identity
+            .clone();
+        let expected_id = identity.native_id;
         // Keep the reservation outside the cancellable connection future until
         // its failure is recorded or the attempt releases it.
         let mut failure_slot = None;
@@ -1623,6 +1655,8 @@ impl TunnelAgentState {
                     }
                     let slot = self.reserve_failure_slot(udid).await?;
                     failure_slot = Some(Arc::clone(&slot));
+                    prepared.as_mut().expect("pre-Source failure node").row.slot =
+                        Some(Arc::clone(&slot));
                     let _permit = self.inner.lifecycle.connects.acquire().await?;
                     deadline.check()?;
                     self.connect_and_store_with_context(
@@ -1632,7 +1666,7 @@ impl TunnelAgentState {
                         ConnectionContext {
                             expected_id,
                             deadline: Some(&deadline),
-                            retry: Some((identity.clone(), slot)),
+                            retry: Some(((*identity).clone(), slot)),
                             manual: None,
                             input: input.clone(),
                         },
@@ -1699,14 +1733,17 @@ impl TunnelAgentState {
                     error = %crate::output::error_message(&error),
                     "tunnel agent: failed to establish tunnel"
                 );
-                if let Some(slot) = failure_slot {
+                if failure_slot.is_some() {
                     let receipt = error
                         .downcast_ref::<reconnect::SourceFailure>()
                         .map(reconnect::SourceFailure::receipt);
                     return ScanAttemptOutcome::Failure(DeferredFailure {
-                        identity,
-                        slot,
+                        node: prepared
+                            .take()
+                            .expect("prepared failure node survives Source"),
                         receipt,
+                        #[cfg(test)]
+                        destination: None,
                     });
                 }
             }
@@ -1793,11 +1830,9 @@ impl TunnelAgentState {
             let Some(mut failed) = control.drive(self.inner.failed_attempts.write()).await? else {
                 return Ok(());
             };
-            epoch.commit(whole, || {
-                failed.clear();
-                Ok(())
-            })?;
+            let removed = epoch.commit(whole, || Ok(failed.take_all()))?;
             drop(failed);
+            drop(removed);
             let removed =
                 epoch.commit(whole, || self.inner.retry.reconcile(whole, |_, _, _| true))?;
             reconnect::Ledger::cancelled(removed, reconnect::Reason::Detached);
@@ -1945,10 +1980,17 @@ impl TunnelAgentState {
                 &self.inner.global_metadata_bytes,
             )?;
             seen.insert(&input)?;
+            candidates.reserve(1)?;
+            let node = failure_table::Node::input(
+                Arc::clone(&input),
+                expected_id,
+                &self.inner.global_metadata_bytes,
+            )?;
             candidates.push(candidate_index::Candidate {
                 input,
                 ticket: ticket.clone(),
                 native_id: expected_id,
+                node,
             })?;
         }
         drop(attached_ids);
@@ -1970,6 +2012,12 @@ impl TunnelAgentState {
                 // Keep the admitted identity even if coordinator admission
                 // refuses it; paired discovery must not retry that same UID.
                 seen.insert(&input)?;
+                candidates.reserve(1)?;
+                let node = failure_table::Node::input(
+                    Arc::clone(&input),
+                    Some(device.device_id),
+                    &self.inner.global_metadata_bytes,
+                )?;
                 let Some(ticket) = control
                     .drive(self.inner.lifecycle.ticket(&input.udid))
                     .await?
@@ -1991,9 +2039,20 @@ impl TunnelAgentState {
                     input,
                     ticket,
                     native_id: Some(device.device_id),
+                    node,
                 })?;
             }
         }
+        // Keep the original USB window's independently allocated destination
+        // through paired rejection. A small rejected paired snapshot cannot
+        // deprive USB outcomes of their already-admitted table backing.
+        let mut failure_destination = if candidates.len() == 0 {
+            None
+        } else {
+            Some(failure_table::Destination::new(
+                &self.inner.global_metadata_bytes,
+            )?)
+        };
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
@@ -2109,7 +2168,12 @@ impl TunnelAgentState {
                             Route::Mobdev2(targets[*index].host.clone()),
                             &self.inner.global_metadata_bytes,
                         )?;
-                        inputs.push((input, Some((*ticket).clone())))?;
+                        let node = failure_table::Node::input(
+                            Arc::clone(&input),
+                            None,
+                            &self.inner.global_metadata_bytes,
+                        )?;
+                        inputs.push((input, Some((*ticket).clone()), node))?;
                     }
                 }
                 for &index in indices {
@@ -2124,12 +2188,24 @@ impl TunnelAgentState {
                             Route::Mobdev2(target.host.clone()),
                             &self.inner.global_metadata_bytes,
                         )?;
-                        inputs.push((input, None))?;
+                        let node = failure_table::Node::input(
+                            Arc::clone(&input),
+                            None,
+                            &self.inner.global_metadata_bytes,
+                        )?;
+                        inputs.push((input, None, node))?;
                     }
                 }
                 candidates.reserve(inputs.len())?;
                 seen.reserve(inputs.len())?;
-                Ok(inputs)
+                let destination = if failure_destination.is_none() && inputs.len() != 0 {
+                    Some(failure_table::Destination::new(
+                        &self.inner.global_metadata_bytes,
+                    )?)
+                } else {
+                    None
+                };
+                Ok((inputs, destination))
             })();
             match prepare {
                 Err(error) => {
@@ -2139,8 +2215,11 @@ impl TunnelAgentState {
                         empty_manual_plan(),
                     ));
                 }
-                Ok(inputs) => {
-                    for (input, manual_ticket) in inputs {
+                Ok((inputs, destination)) => {
+                    if let Some(destination) = destination {
+                        failure_destination = Some(destination);
+                    }
+                    for (input, manual_ticket, node) in inputs {
                         if !self.inner.access.permits_device(&input.udid) {
                             continue;
                         }
@@ -2172,6 +2251,7 @@ impl TunnelAgentState {
                             input,
                             ticket,
                             native_id: None,
+                            node,
                         })?;
                     }
                 }
@@ -2217,7 +2297,8 @@ impl TunnelAgentState {
             epoch,
         )
         .await?;
-        self.refresh_candidates(candidates, whole, session).await?;
+        self.refresh_candidates(candidates, whole, session, failure_destination)
+            .await?;
         if session.has_primary() {
             return Ok(());
         }
@@ -2234,19 +2315,25 @@ impl TunnelAgentState {
         candidates: metadata_vec::KnownVec<candidate_index::Candidate>,
         whole: &scan::Deadline,
         session: &scan::Session<'_>,
+        destination: Option<failure_table::Destination>,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
-        let mut batch =
-            bookkeeping::WriteBatch::new(&self.inner.global_metadata_bytes, candidates.len())?;
+        let mut batch = bookkeeping::WriteBatch::with_destination(
+            &self.inner.global_metadata_bytes,
+            candidates.len(),
+            destination,
+        )?;
         session.retain_writes(batch.owner())?;
         let mut connections = futures_util::stream::iter(candidates)
             .map(|candidate| async move {
                 let candidate_index::Candidate {
                     input,
                     ticket,
-                    native_id,
+                    node,
+                    ..
                 } = candidate;
+                let mut node = Some(node);
                 let route = match input.source_route() {
                     Ok(route) => route,
                     Err(error) => return Err(error),
@@ -2256,27 +2343,24 @@ impl TunnelAgentState {
                         &input.udid,
                         route,
                         &ticket,
-                        native_id,
                         Some(whole),
                         Some(Arc::clone(&input)),
+                        &mut node,
                     )
                     .await
                 {
                     ScanAttemptOutcome::Failure(failed) => {
-                        Ok(Some(ScanIntent::Failure(FailureIntent {
-                            udid: input.udid.clone(),
-                            ticket,
-                            failed,
-                            _input: Some(Arc::clone(&input)),
-                        })))
+                        Ok(Some(ScanIntent::Failure(FailureIntent { ticket, failed })))
                     }
                     ScanAttemptOutcome::Success(success) => {
+                        let (udid, input, key_storage) =
+                            (*node.take().expect("successful prepared key")).into_success_key();
                         Ok(Some(ScanIntent::Success(SuccessIntent {
-                            _key_storage: None,
-                            udid: input.udid.clone(),
+                            _key_storage: key_storage,
+                            udid,
                             ticket,
                             success,
-                            _input: Some(Arc::clone(&input)),
+                            _input: input,
                         })))
                     }
                     ScanAttemptOutcome::NoChange => Ok(None),
@@ -2311,8 +2395,11 @@ impl TunnelAgentState {
     async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
         whole.check()?;
         let rows = self.inner.lifecycle.desired().await?;
+        if rows.len() == 0 {
+            return Ok(());
+        }
         let mut batch =
-            bookkeeping::WriteBatch::new(&self.inner.global_metadata_bytes, rows.len())?;
+            bookkeeping::WriteBatch::success_only(&self.inner.global_metadata_bytes, rows.len())?;
         let mut completed =
             metadata_vec::KnownVec::new(Arc::clone(&self.inner.global_metadata_bytes), rows.len());
         completed.reserve(rows.len())?;
@@ -2358,7 +2445,7 @@ impl TunnelAgentState {
     ) -> Result<()> {
         let known = candidate_index::Index::new(candidates, &self.inner.global_metadata_bytes)?;
         let mut failed = self.inner.failed_attempts.write().await;
-        epoch.retain(whole, &mut failed, |udid, failed| {
+        let removed = failed.retain(whole, epoch, |udid, failed| {
             self.inner.access.permits_device(udid)
                 && match known.get(udid) {
                     Some((route, native_id)) => {
@@ -2375,6 +2462,7 @@ impl TunnelAgentState {
                 }
         })?;
         drop(failed);
+        drop(removed);
         let removed = epoch.commit(whole, || {
             self.inner.retry.reconcile(whole, |udid, identity, _| {
                 !self.inner.access.permits_device(udid)
@@ -2427,38 +2515,55 @@ impl TunnelAgentState {
         slot: Arc<OwnedSemaphorePermit>,
         ticket: &Ticket,
     ) {
+        let destination = failure_table::Destination::new(&self.inner.global_metadata_bytes)
+            .expect("test seed destination admission");
+        let mut node = failure_table::Node::owned(
+            udid.to_owned(),
+            identity,
+            &self.inner.global_metadata_bytes,
+        )
+        .expect("test seed node admission");
+        node.row.slot = Some(slot);
+        self.record_prepared_failure(node, destination, ticket)
+            .await;
+    }
+
+    #[cfg(test)]
+    async fn record_prepared_failure(
+        &self,
+        node: Box<failure_table::Node>,
+        destination: failure_table::Destination,
+        ticket: &Ticket,
+    ) {
         let mut failed = self.inner.failed_attempts.write().await;
         // Clear/stop can run while this write lock is queued. An old outcome
         // must not resurrect metadata after its lifecycle generation ended.
         if !ticket.is_current() {
+            drop(failed);
             return;
         }
+        failed.adopt(destination);
         #[cfg(test)]
         self.inner.lifecycle.before_failure_record();
         // A close/clear/stop after the first check must not resurrect a row.
         // Keep the same synchronous epoch fence as successful publication.
-        let _ = ticket.commit(|| {
-            failed
-                .entry(udid.to_string())
-                .and_modify(|attempt| {
-                    attempt.version = Arc::new(());
-                    attempt.last_attempt = Instant::now();
-                    if attempt.identity == identity {
-                        attempt.fail_count = attempt.fail_count.saturating_add(1);
-                    } else {
-                        attempt.identity = identity.clone();
-                        attempt.fail_count = 1;
-                    }
-                })
-                .or_insert(FailedTunnelAttempt {
-                    version: Arc::new(()),
-                    last_attempt: Instant::now(),
-                    fail_count: 1,
-                    identity,
-                    slot: Some(slot),
-                });
-            Ok(())
+        let mut prepared = Some(node);
+        let old = ticket.commit(|| {
+            let mut node = prepared.take().expect("prepared seed node");
+            node.row.last_attempt = Instant::now();
+            node.row.fail_count = failed
+                .get(&node.udid)
+                .filter(|old| old.identity == node.row.identity)
+                .map_or(1, |old| old.fail_count.saturating_add(1));
+            if let Some(previous) = failed.get(&node.udid) {
+                node.row.slot = previous.slot.clone();
+            }
+            Ok(failure_table::Table::commit(failed.insert_reserved(node)))
         });
+        failed.release_empty_backing();
+        drop(failed);
+        drop(old);
+        drop(prepared);
     }
 }
 
@@ -3820,10 +3925,14 @@ mod tests {
             version: Arc::new(()),
             last_attempt: now - Duration::from_secs(10),
             fail_count: 2,
-            identity: AttemptIdentity {
-                route: Route::Usbmux,
-                native_id: None,
-            },
+            identity: failure_table::Identity::owned(
+                AttemptIdentity {
+                    route: Route::Usbmux,
+                    native_id: None,
+                },
+                &Arc::new(Semaphore::new(1024)),
+            )
+            .unwrap(),
             slot: None,
         };
         assert!(failed.should_skip(now));
@@ -3832,10 +3941,14 @@ mod tests {
             version: Arc::new(()),
             last_attempt: now - Duration::from_secs(61),
             fail_count: 2,
-            identity: AttemptIdentity {
-                route: Route::Usbmux,
-                native_id: None,
-            },
+            identity: failure_table::Identity::owned(
+                AttemptIdentity {
+                    route: Route::Usbmux,
+                    native_id: None,
+                },
+                &Arc::new(Semaphore::new(1024)),
+            )
+            .unwrap(),
             slot: None,
         };
         assert!(!expired.should_skip(now));

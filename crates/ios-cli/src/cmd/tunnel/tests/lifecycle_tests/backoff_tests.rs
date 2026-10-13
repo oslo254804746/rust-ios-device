@@ -155,10 +155,14 @@ fn lifecycle_tunnel_backoff_debug_does_not_expose_retained_route_host() {
         version: Arc::new(()),
         last_attempt: Instant::now(),
         fail_count: 2,
-        identity: AttemptIdentity {
-            route: Route::Mobdev2(secret.into()),
-            native_id: None,
-        },
+        identity: failure_table::Identity::owned(
+            AttemptIdentity {
+                route: Route::Mobdev2(secret.into()),
+                native_id: None,
+            },
+            &Arc::new(Semaphore::new(1024)),
+        )
+        .unwrap(),
         slot: None,
     };
     let rendered = format!("{attempt:?}");

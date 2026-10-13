@@ -25,7 +25,9 @@ impl Drop for Owner {
             tunnels.clear();
         }
         if let Ok(mut failed) = self.0.inner.failed_attempts.try_write() {
-            failed.clear();
+            let removed = failed.take_all();
+            drop(failed);
+            drop(removed);
         }
     }
 }

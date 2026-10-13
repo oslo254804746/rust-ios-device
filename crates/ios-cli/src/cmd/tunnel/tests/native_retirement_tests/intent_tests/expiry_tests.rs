@@ -187,8 +187,6 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         .unwrap();
     state
         .flush_failure_intents(vec![FailureIntent {
-            _input: None,
-            udid: AUTH_DEVICE.into(),
             ticket: failure_ticket,
             failed,
         }])

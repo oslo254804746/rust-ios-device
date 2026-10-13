@@ -1,6 +1,6 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
-use super::{AttemptIdentity, FailedTunnelAttempt, Ticket, TunnelAgentState};
-use std::collections::HashMap;
+use super::failure_table::{Destination, Node, RemovedBatch, Table};
+use super::{Ticket, TunnelAgentState};
 use std::sync::Arc;
 
 use super::metadata_vec::KnownVec;
@@ -11,16 +11,16 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 pub(super) struct DeferredFailure {
-    pub(super) identity: AttemptIdentity,
-    pub(super) slot: Arc<OwnedSemaphorePermit>,
+    pub(super) node: Box<Node>,
     pub(super) receipt: Option<Arc<super::reconnect::FailureReceipt>>,
+    // Direct-attempt fixtures also reserve their destination before Source.
+    #[cfg(test)]
+    pub(super) destination: Option<Destination>,
 }
 
 pub(super) struct FailureIntent {
-    pub(super) udid: String,
     pub(super) ticket: Ticket,
     pub(super) failed: DeferredFailure,
-    pub(super) _input: Option<Arc<super::candidate_input::Input>>,
 }
 
 pub(super) struct DeferredSuccess {
@@ -179,17 +179,43 @@ impl Drop for FailureWriteOwner {
     }
 }
 
-// All three destination allocations are admitted before any Source request.
+// All outcome/receipt destinations and the table backing are admitted before Source.
 // There is at most one outcome/receipt/displaced row per candidate. No later
 // byte admission can discard an acquired original after its Ready(Err) poll.
 pub(super) struct WriteBatch {
     owner: Arc<FailureWriteOwner>,
     intents: KnownVec<ScanIntent>,
-    displaced: KnownVec<FailedTunnelAttempt>,
+    displaced: RemovedBatch,
+    destination: Option<Destination>,
 }
 
 impl WriteBatch {
+    #[cfg(test)]
     pub(super) fn new(bank: &Arc<Semaphore>, capacity: usize) -> Result<Self> {
+        anyhow::ensure!(
+            capacity <= super::MAX_FAILURE_RECORDS,
+            crate::output::resource_decision("tunnel scan write batch limit")
+        );
+        Self::with_destination(
+            bank,
+            capacity,
+            if capacity == 0 {
+                None
+            } else {
+                Some(Destination::new(bank)?)
+            },
+        )
+    }
+
+    pub(super) fn success_only(bank: &Arc<Semaphore>, capacity: usize) -> Result<Self> {
+        Self::with_destination(bank, capacity, None)
+    }
+
+    pub(super) fn with_destination(
+        bank: &Arc<Semaphore>,
+        capacity: usize,
+        destination: Option<Destination>,
+    ) -> Result<Self> {
         anyhow::ensure!(
             capacity <= super::MAX_FAILURE_RECORDS,
             crate::output::resource_decision("tunnel scan write batch limit")
@@ -207,8 +233,6 @@ impl WriteBatch {
         intents.reserve(capacity)?;
         let mut receipts = KnownVec::new(Arc::clone(bank), capacity);
         receipts.reserve(capacity)?;
-        let mut displaced = KnownVec::new(Arc::clone(bank), capacity);
-        displaced.reserve(capacity)?;
         Ok(Self {
             owner: Arc::new(FailureWriteOwner {
                 state: Mutex::new(WriteState {
@@ -220,7 +244,8 @@ impl WriteBatch {
                 _storage: owner_storage,
             }),
             intents,
-            displaced,
+            displaced: RemovedBatch::default(),
+            destination,
         })
     }
 
@@ -252,8 +277,12 @@ impl WriteBatch {
             + std::mem::size_of::<SourceFailuresContext>()
             + capacity
                 * (std::mem::size_of::<ScanIntent>()
-                    + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>()
-                    + std::mem::size_of::<FailedTunnelAttempt>())
+                    + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>())
+            + if capacity == 0 {
+                0
+            } else {
+                Destination::minimum_bytes()
+            }
     }
 }
 
@@ -349,12 +378,12 @@ impl TunnelAgentState {
     // exact row before another observer can acquire the table.
     pub(super) fn remove_success_row(
         &self,
-        failed: &mut HashMap<String, FailedTunnelAttempt>,
+        failed: &mut Table,
         udid: &str,
         success: &DeferredSuccess,
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
-    ) -> Result<Option<FailedTunnelAttempt>> {
+    ) -> Result<Option<Box<Node>>> {
         if !failed
             .get(udid)
             .is_some_and(|old| Arc::ptr_eq(&old.version, &success.version))
@@ -371,7 +400,7 @@ impl TunnelAgentState {
         let failure_stamp = ticket.failure_stamp();
         ticket.commit(|| {
             deadline.check()?;
-            let old = failed.remove_entry(udid);
+            let old = failed.remove(udid);
             ticket.clear_failure_version(&success.version);
             #[cfg(test)]
             {
@@ -381,23 +410,45 @@ impl TunnelAgentState {
                 }
             }
             if let Err(error) = deadline.check() {
-                if let Some((key, old)) = old {
-                    failed.insert(key, old);
+                if let Some(old) = old {
+                    failed.restore(old);
                 }
                 ticket.restore_failure_stamp(failure_stamp);
                 return Err(error);
             }
-            Ok(old.map(|(_, old)| old))
+            Ok(old)
         })
     }
 
     #[cfg(test)]
     pub(super) async fn flush_scan_intents_with_total(
         &self,
-        intents: Vec<ScanIntent>,
+        mut intents: Vec<ScanIntent>,
         whole: Option<&super::scan::Deadline>,
     ) -> Result<()> {
-        let mut batch = match WriteBatch::new(&self.inner.global_metadata_bytes, intents.len()) {
+        let mut destination = None;
+        for intent in &mut intents {
+            if let ScanIntent::Failure(failure) = intent {
+                if destination.is_none() {
+                    destination = failure.failed.destination.take();
+                }
+            }
+        }
+        if destination.is_none()
+            && intents
+                .iter()
+                .any(|intent| matches!(intent, ScanIntent::Failure(_)))
+        {
+            destination = match Destination::new(&self.inner.global_metadata_bytes) {
+                Ok(destination) => Some(destination),
+                Err(error) => return Err(error.context(ExternalIntentsContext(intents))),
+            };
+        }
+        let mut batch = match WriteBatch::with_destination(
+            &self.inner.global_metadata_bytes,
+            intents.len(),
+            destination,
+        ) {
             Ok(batch) => batch,
             Err(error) => return Err(error.context(ExternalIntentsContext(intents))),
         };
@@ -416,6 +467,7 @@ impl TunnelAgentState {
             owner,
             intents,
             mut displaced,
+            destination,
         } = batch;
         if intents.len() == 0 {
             return owner.finish(Ok(()));
@@ -431,8 +483,15 @@ impl TunnelAgentState {
                 // Keep displaced rows outside the guards until their original
                 // permit/metadata owners can be released without either fence.
                 let mut failed = self.inner.failed_attempts.write().await;
+                let mut destination = destination;
+                let mut remaining = Some(intents);
                 let result = (|| {
-                    for intent in intents {
+                    deadline.check()?;
+                    if let Some(destination) = destination.take() {
+                        failed.adopt(destination);
+                    }
+                    deadline.check()?;
+                    for intent in remaining.take().expect("one original intent batch") {
                         let outcome = match intent {
                             ScanIntent::Success(intent) => {
                                 if !intent.ticket.is_current() {
@@ -447,9 +506,7 @@ impl TunnelAgentState {
                                 )
                                 .map(|old| {
                                     if let Some(old) = old {
-                                        displaced
-                                            .push(old)
-                                            .expect("admitted displaced slot per intent");
+                                        displaced.push(old);
                                     }
                                 })
                             }
@@ -460,30 +517,27 @@ impl TunnelAgentState {
                                 #[cfg(test)]
                                 self.inner.lifecycle.before_failure_record();
                                 let previous_current =
-                                    failed.get(&intent.udid).is_some_and(|old| {
+                                    failed.get(&intent.failed.node.udid).is_some_and(|old| {
                                         intent.ticket.failure_is_current(&old.version)
                                     });
-                                intent.ticket.commit(|| {
+                                let mut prepared = Some(intent.failed.node);
+                                let outcome = intent.ticket.commit(|| {
                                     deadline.check()?;
                                     let failure_stamp = intent.ticket.failure_stamp();
-                                    let previous = failed.get(&intent.udid);
-                                    let next = FailedTunnelAttempt {
-                                        version: Arc::new(()),
-                                        last_attempt: Instant::now(),
-                                        fail_count: previous
-                                            .filter(|old| {
-                                                previous_current
-                                                    && old.identity == intent.failed.identity
-                                            })
-                                            .map_or(1, |old| old.fail_count.saturating_add(1)),
-                                        identity: intent.failed.identity,
-                                        slot: previous.map_or_else(
-                                            || Some(intent.failed.slot.clone()),
-                                            |old| old.slot.clone(),
-                                        ),
-                                    };
-                                    let version = next.version.clone();
-                                    let old = failed.insert(intent.udid.clone(), next);
+                                    let mut next =
+                                        prepared.take().expect("one pre-Source failure node");
+                                    let previous = failed.get(&next.udid);
+                                    next.row.last_attempt = Instant::now();
+                                    next.row.fail_count = previous
+                                        .filter(|old| {
+                                            previous_current && old.identity == next.row.identity
+                                        })
+                                        .map_or(1, |old| old.fail_count.saturating_add(1));
+                                    if let Some(previous) = previous {
+                                        next.row.slot = previous.slot.clone();
+                                    }
+                                    let version = next.row.version.clone();
+                                    let change = failed.insert_reserved(next);
                                     intent.ticket.remember_failure(Some(version));
                                     #[cfg(test)]
                                     {
@@ -496,27 +550,20 @@ impl TunnelAgentState {
                                     if let Err(error) = deadline.check() {
                                         // This row is unobserved under both table and
                                         // ticket guards. Restore the exact old value.
-                                        if let Some(late) = failed.remove(&intent.udid) {
-                                            displaced
-                                                .push(late)
-                                                .expect("admitted displaced slot per intent");
-                                        }
-                                        if let Some(old) = old {
-                                            failed.insert(intent.udid, old);
-                                        }
+                                        displaced.push(failed.rollback(change));
                                         intent.ticket.restore_failure_stamp(failure_stamp);
                                         return Err(error);
                                     }
-                                    if let Some(old) = old {
-                                        displaced
-                                            .push(old)
-                                            .expect("admitted displaced slot per intent");
+                                    if let Some(old) = Table::commit(change) {
+                                        displaced.push(old);
                                     }
                                     if let Some(receipt) = &intent.failed.receipt {
                                         receipt.complete(super::reconnect::Completion::Recorded);
                                     }
                                     Ok(())
-                                })
+                                });
+                                drop(prepared);
+                                outcome
                             }
                         };
                         if let Err(error) = outcome {
@@ -527,8 +574,11 @@ impl TunnelAgentState {
                     }
                     Ok(())
                 })();
+                failed.release_empty_backing();
                 drop(failed);
                 drop(displaced);
+                drop(remaining);
+                drop(destination);
                 result
             })
             .await;

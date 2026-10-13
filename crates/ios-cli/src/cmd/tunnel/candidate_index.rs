@@ -11,6 +11,7 @@ pub(super) struct Candidate {
     pub(super) input: Arc<super::candidate_input::Input>,
     pub(super) ticket: Ticket,
     pub(super) native_id: Option<u32>,
+    pub(super) node: Box<super::failure_table::Node>,
 }
 
 #[cfg(test)]
@@ -19,6 +20,7 @@ impl Candidate {
         2 * std::mem::size_of::<Self>() + super::candidate_input::Input::bytes(udid, &Route::Usbmux)
             - udid.len()
             + super::scan_seen::Seen::first_bytes()
+            + super::failure_table::Node::input_bytes(&Route::Usbmux)
     }
 }
 
