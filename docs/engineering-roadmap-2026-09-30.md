@@ -8596,3 +8596,15 @@ manual/USB publication。原tunnel442及新增2项通过，targeted3包含1原
 [验证](validation/tunnel-manual-paired-plan-bytes-2026-10-13.md)。原error/private
 allocation、seen/observed/失败表backing及完整刷新仍缺，不关闭L02；
 账本23/6/L02待收口、有效30、Q04全部排除保持。
+
+
+## 2026-10-13 L02 seen/paired observed 已知存储
+
+seen以真实收费KnownVec共享原Input/UID，coordinator拒绝后的身份保留到扫描
+结束；paired完整view借用原UID/host的排序位置，backing在Complete/ticket前
+整批准入，拒绝保持Incomplete及USB window。新增6项和整组450通过、2原ignored；
+一处等价自动解引用lint修正后预算14项/严格CLI Clippy/build/fmt/readonly1/host5
+通过，22行NOT_RUN。原backoff/UID/source/native joins/严格EOF断言保持，见
+[验证](validation/tunnel-seen-observed-bytes-2026-10-13.md)。failure额外owner与
+原error/private/native存储及完整freshness继续；L02未关闭，账本23/6/待收口、
+有效30和Q04全部排除保持。

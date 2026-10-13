@@ -1,5 +1,121 @@
 use super::*;
 
+#[tokio::test]
+async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_pool_recovers() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    source
+        .paired
+        .lock()
+        .unwrap()
+        .extend([A, B].map(|udid| PairedMobdev2Device {
+            udid: udid.into(),
+            host: "192.0.2.88".into(),
+        }));
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let remaining = scan::capsule_reservation_bytes()
+        + std::mem::size_of::<source::UsbDevice>()
+        + A.len()
+        + std::mem::size_of::<source::UsbDevice>()
+        + std::mem::size_of::<usize>()
+        + std::mem::size_of::<candidate_input::Input>()
+        + A.len()
+        + scan_seen::Seen::first_bytes()
+        + Lifecycle::additional_metadata_bytes(A)
+        - 1;
+    let held = Arc::new(StdMutex::new(Some(
+        bank.clone()
+            .try_acquire_many_owned((before - remaining) as u32)
+            .unwrap(),
+    )));
+    let retained = Arc::clone(&held);
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        drop(retained.lock().unwrap().take());
+    }));
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        source.paired_calls.load(Ordering::SeqCst),
+        1,
+        "{error:?}; remaining={remaining}; available={}",
+        bank.available_permits()
+    );
+    assert_eq!(source.count(A), 0);
+    assert_eq!(source.count(B), 1);
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
+    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(B).await.is_some());
+    drop(error);
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
+#[tokio::test]
+async fn observed_last_byte_refusal_preserves_old_paired_publication_and_publishes_usb_window() {
+    let source = FakeSource::new();
+    let old_host = "192.0.2.87";
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: B.into(),
+        host: old_host.into(),
+    });
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    state.ensure_tunnel(B, Some(old_host), None).await.unwrap();
+    let old = state.inner.tunnels.read().await[B].publication.clone();
+    source.usb.lock().unwrap().push(A.into());
+    // A complete missing-host view would prune the original B publication.
+    *source.paired.lock().unwrap() = vec![PairedMobdev2Device {
+        udid: "new-paired".into(),
+        host: "h".repeat(2048),
+    }];
+    let targets = source.paired.lock().unwrap().clone();
+    let raw = targets.capacity() * std::mem::size_of::<PairedMobdev2Device>()
+        + targets
+            .iter()
+            .map(|target| target.udid.capacity() + target.host.capacity())
+            .sum::<usize>();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        // Raw, candidate plan and all but the last observed-index byte fit.
+        let leave = raw + 2 * std::mem::size_of::<usize>() - 1;
+        *retained.lock().unwrap() = Some(
+            bank.clone()
+                .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert!(Arc::ptr_eq(
+        &old,
+        &state.inner.tunnels.read().await[B].publication
+    ));
+    assert!(state.get_record(A).await.is_some());
+    assert_eq!(source.count(A), 1);
+    assert_eq!(source.count(B), 1);
+    assert_eq!(source.count("new-paired"), 0);
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 2);
+    assert!(!state.is_ready().await);
+    drop(error);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
 async fn manual_paired_fixture() -> (Arc<FakeSource>, TunnelAgentState, Ticket) {
     let source = FakeSource::new();
     source.script(
