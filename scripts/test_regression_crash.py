@@ -23,7 +23,8 @@ CLI = Path(os.environ.get("IOS_REGRESSION_CLI", regression.ROOT / "target/debug"
 
 @unittest.skipUnless(sys.platform == "win32" and CLI.is_file(), "Windows isolated existing trust and a compiled native CLI required")
 class ActualCrashWorkflowTests(unittest.TestCase):
-    def run_case(self, *, crash_fault=None, fault=None, enabled=True, rerun=False, junit_directory=False):
+    def run_case(self, *, crash_fault=None, fault=None, enabled=True, rerun=False, junit_directory=False,
+                 entry="runxctest"):
         with tempfile.TemporaryDirectory(prefix="ios-native-crash-workflow-") as directory:
             root = Path(directory)
             peer = CliWorkflowPeer(root / "trust", runner_preexisting=False, crash_fault=crash_fault,
@@ -46,7 +47,18 @@ class ActualCrashWorkflowTests(unittest.TestCase):
             context = regression.ExecutionContext(binary=CLI, device=regression.DeviceTarget(UDID), environment=peer.environment)
             arguments = ["runxctest", "--bundle-id", APP_ID, "--test-runner-bundle-id", RUNNER_ID,
                          "--xctest-config", "MatrixTests.xctest", "--xctest", "--wait", "--timeout", "8",
-                         "--test", "MatrixTests/testExample", "--install-app", packages[0], "--install-runner", packages[1],
+                         "--test", "MatrixTests/testExample"]
+            if entry == "runtest":
+                xctestrun = root / "MatrixTests.xctestrun"
+                xctestrun.write_bytes(plistlib.dumps({"__xctestrun_metadata__": {"FormatVersion": 2},
+                    "TestConfigurations": [{"Name": "Matrix", "TestTargets": [{
+                        "TestHostBundleIdentifier": RUNNER_ID, "TestBundlePath": "MatrixTests.xctest",
+                        "IsUITestBundle": True, "OnlyTestIdentifiers": ["MatrixTests/testExample"],
+                        "UITargetAppEnvironmentVariables": {"UITargetAppBundleIdentifier": APP_ID},
+                    }]}]}))
+                arguments = ["runtest", xctestrun, "--wait", "--startup-timeout-secs", "4",
+                             "--result-timeout-secs", "4"]
+            arguments += ["--install-app", packages[0], "--install-runner", packages[1],
                          "--uninstall-on-finish", "--junit-output", xml]
             if enabled:
                 arguments += ["--crash-output", crash_root]
@@ -149,6 +161,22 @@ class ActualCrashWorkflowTests(unittest.TestCase):
         self.assertEqual(len(payloads), 1)
         self.assertEqual(summary["status"], "complete")
         self.assertEqual([attempt["state"] for attempt in history["attempts"]], ["failed_tests", "completed"])
+
+    def test_final_receipt_agrees_with_exit_and_sidecar_after_actual_crash_failure(self):
+        for entry in ("runxctest", "runtest"):
+            with self.subTest(entry=entry):
+                result, peer, summary, _, history = self.run_case(entry=entry, crash_fault="list-after")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                body = json.loads(result.stdout)
+                self.assertEqual(body["status"], "finished")
+                self.assertEqual(body["outcome"], "failed")
+                self.assertEqual(body["test_outcome"], "passed")
+                self.assertEqual(body["attempts"], history)
+                self.assertEqual(body["terminal_error_class"], history["terminal_error_class"])
+                self.assertIsNotNone(body["terminal_error_class"])
+                self.assertEqual(history["attempts"][0]["state"], "completed")
+                self.assertEqual(summary["status"], "incomplete")
+                self.assertEqual(peer.calls.count("killPid:"), 1)
 
 
 if __name__ == "__main__":

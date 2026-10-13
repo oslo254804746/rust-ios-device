@@ -1,5 +1,11 @@
 > 本页保留 af20f6a 交付时的历史声明。2026-10-10 独立审查已否定其完整开发/验收结论；不能据本文将占位流程或 NOT_RUN 记为通过。当前代码与实际结果以 [修复记录](review-fixes-2026-10-10.md) 为准。
 
+2026-10-13补充[终态CI判定和最终receipt](f02-terminal-integrity-2026-10-13.md)：
+原始开始/结束事件及支持状态均经过验证；未完成、stalled、未知、uncaught不能
+退出0。`status=finished`记录收到结束事件，最终`outcome`和`test_outcome`分别
+表示包含收尾的工作流及测试结果；输出在清理/报告/sidecar之后。26项实际localhost
+CLI方法通过，完整现代流程及其它原F02缺口仍未关闭。
+
 2026-10-12 接力已补WDA owner期限竞态修复与实际localhost CLI gate：启动、TCP ready、单次转发及失败收尾5项通过；共享fixture回归35通过/1 POSIX跳过。见[精确边界与失败历史](wda-continuation-2026-10-12.md)。下方编辑时“WDA端到端待运行”只描述当时状态，现代全流程、物理设备和其他平台仍未补验。
 
 ## 2026-10-11 续修实现

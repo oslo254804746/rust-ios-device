@@ -122,7 +122,8 @@ class CliWorkflowPeer(CliAfcPeer):
     })
 
     def __init__(self, directory, *, preexisting=False, install_error=False, test_error=False,
-                 fault=None, runner_preexisting=True, first_test_fails=False, crash_fault=None):
+                 fault=None, runner_preexisting=True, first_test_fails=False, crash_fault=None,
+                 terminal_scenario=None, rerun_terminal_scenario=None):
         self.crash_fault, self.crash_copies, self.crash_movers = crash_fault, 0, 0
         self.crash_events = []
         self.apps = {RUNNER_ID: self.app_record(RUNNER_ID)} if runner_preexisting else {}
@@ -130,6 +131,7 @@ class CliWorkflowPeer(CliAfcPeer):
             self.apps[APP_ID] = self.app_record(APP_ID)
         self.install_error, self.test_error = install_error, test_error
         self.fault, self.first_test_fails, self.test_attempts = fault, first_test_fails, 0
+        self.terminal_scenario, self.rerun_terminal_scenario = terminal_scenario, rerun_terminal_scenario
         self.calls, self.transferred, self.pids, self.configurations = [], {}, set(), []
         super().__init__(directory)
 
@@ -269,8 +271,11 @@ class CliWorkflowPeer(CliAfcPeer):
                 bundle_id = request.get("ApplicationIdentifier")
                 if bundle_id not in (APP_ID, RUNNER_ID):
                     raise ValueError("fixture-uninstall-nonowned-bundle")
-                self.apps.pop(bundle_id, None)
-                send_plist(stream, {"Status": "Complete"})
+                if self.fault == "uninstall" and bundle_id == RUNNER_ID:
+                    send_plist(stream, {"Error": "SyntheticUninstallRejected"})
+                else:
+                    self.apps.pop(bundle_id, None)
+                    send_plist(stream, {"Status": "Complete"})
             else:
                 raise ValueError("fixture-installation-operation")
 
@@ -377,14 +382,29 @@ class CliWorkflowPeer(CliAfcPeer):
                     exact(stream, 1)
                     raise ValueError("fixture-unexpected-start-write")
                 failure = self.test_error or (self.first_test_fails and attempt == 1)
+                scenario = self.rerun_terminal_scenario if attempt > 1 else self.terminal_scenario
+                failure = failure or scenario in ("failed", "failed-zero-counter", "expected-failure")
                 events = [("_XCT_didBeginExecutingTestPlan", ()),
                           ("_XCT_testCaseDidStartForTestClass:method:", ("MatrixTests", "testExample"))]
                 if failure:
                     events.append(("_XCT_testCaseDidFailForTestClass:method:withMessage:file:line:",
                                    ("MatrixTests", "testExample", "synthetic assertion", "Synthetic.swift", 4)))
-                events += [("_XCT_testCaseDidFinishForTestClass:method:withStatus:duration:",
-                            ("MatrixTests", "testExample", "failed" if failure else "passed", 0.01)),
-                           ("_XCT_didFinishExecutingTestPlan", ())]
+                status = {"stalled": "stalled", "unknown": "synthetic-new-status", "skipped": "skipped",
+                          "expected-failure": "expected failure"}.get(scenario, "failed" if failure else "passed")
+                if scenario != "unfinished":
+                    events.append(("_XCT_testCaseDidFinishForTestClass:method:withStatus:duration:",
+                                   ("MatrixTests", "testExample", status, 0.01)))
+                if scenario in ("failed-zero-counter", "uncaught"):
+                    events.append(("_XCT_testSuiteWithIdentifier:didFinishAt:runCount:skipCount:failureCount:expectedFailureCount:uncaughtExceptionCount:testDuration:totalDuration:",
+                                   ("MatrixTests", "synthetic-finish", 1, 0, 0, 0, int(scenario == "uncaught"), 0.01, 0.01)))
+                if scenario == "unexpected-zero-counter":
+                    events.append(("_XCT_testSuite:didFinishAt:runCount:withFailures:unexpected:testDuration:totalDuration:",
+                                   ("MatrixTests", "synthetic-finish", 1, 0, 1, 0.01, 0.01)))
+                if scenario == "empty":
+                    events = events[:1]
+                if scenario == "finish-only":
+                    events = []
+                events.append(("_XCT_didFinishExecutingTestPlan", ()))
                 for index, (method, values) in enumerate(events, 600):
                     send_dtx(stream, index, channel=-1, value=method, args=values, reply=True)
                     if index == 601 and (self.fault in ("result", "deadline-result") or (self.fault == "rerun-result" and attempt > 1)):

@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ios_core::testmanager::results::{TestCaseStatus, TestRunSummary};
+use ios_core::testmanager::results::{TestCaseStatus, TestRunOutcome, TestRunSummary};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use tokio_stream::StreamExt;
 
 pub(crate) mod crash;
@@ -132,10 +133,13 @@ impl AttemptHistory {
             .attempts
             .last_mut()
             .context("no active workflow attempt")?;
-        attempt.state = if summary.failed_tests > 0 {
-            "failed_tests"
-        } else {
-            "completed"
+        attempt.state = match summary.terminal_outcome() {
+            Ok(TestRunOutcome::FailedTests) => "failed_tests",
+            Ok(TestRunOutcome::Passed) => "completed",
+            Err(error) => {
+                attempt.error_class = Some(ios_core::classify_error(&error));
+                "incomplete"
+            }
         };
         attempt.summary = Some(summary.clone());
         Ok(())
@@ -174,6 +178,57 @@ impl AttemptHistory {
         }
         Ok(())
     }
+
+    pub(crate) async fn write_until(&self, junit: Option<&Path>, deadline: Instant) -> Result<()> {
+        if junit.is_none() {
+            return Ok(());
+        }
+        artifact_clock(deadline).await?;
+        // A started filesystem commit is not physically cancellable. Keep the
+        // original writer owner until completion, then check the same clock.
+        let written = self.write(junit).await;
+        combine_results(
+            written,
+            artifact_clock(deadline).await,
+            "workflow artifact deadline expired",
+        )
+    }
+}
+
+async fn artifact_clock(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        tokio::time::timeout_at(deadline, std::future::pending::<()>())
+            .await
+            .context("workflow attempt artifact deadline expired")?;
+    }
+    Ok(())
+}
+
+/// Reclassify once under the original artifact clock when receipt output fails.
+/// Never repeat the output or leave a published sidecar silently claiming success.
+pub(crate) async fn finish_output(
+    outcome: Result<()>,
+    output: Result<()>,
+    attempts: &mut AttemptHistory,
+    junit: Option<&Path>,
+    artifact_deadline: Instant,
+) -> Result<()> {
+    if output.is_ok() {
+        return outcome;
+    }
+    let mut outcome = combine_results(outcome, output, "XCTest final receipt output failed");
+    let recorded = attempts.fail(outcome.as_ref().expect_err("failed receipt output"), None);
+    outcome = combine_results(
+        outcome,
+        recorded,
+        "workflow output failure classification failed",
+    );
+    let rewritten = attempts.write_until(junit, artifact_deadline).await;
+    combine_results(
+        outcome,
+        rewritten,
+        "workflow output failure sidecar update failed",
+    )
 }
 
 struct HistoryBudget {
@@ -358,6 +413,9 @@ impl Drop for LogCaptureGuard {
 
 /// Extract failed test selector strings from a summary (e.g. `ClassName/methodName`).
 pub fn extract_failed_selectors(summary: &TestRunSummary) -> Vec<String> {
+    if summary.terminal_outcome().is_err() {
+        return Vec::new();
+    }
     summary
         .suites
         .iter()
@@ -369,10 +427,7 @@ pub fn extract_failed_selectors(summary: &TestRunSummary) -> Vec<String> {
 
 /// Merge rerun test results into the primary summary, replacing prior failures with new outcomes.
 pub fn merge_rerun_summary(primary: &mut TestRunSummary, rerun: TestRunSummary) -> Result<()> {
-    anyhow::ensure!(
-        rerun.began && rerun.finished,
-        "rerun did not finish its test plan"
-    );
+    rerun.terminal_outcome()?;
     let expected: std::collections::HashSet<_> = primary
         .suites
         .iter()
@@ -387,10 +442,6 @@ pub fn merge_rerun_summary(primary: &mut TestRunSummary, rerun: TestRunSummary) 
             anyhow::ensure!(
                 expected.contains(&key),
                 "rerun returned an unselected test case"
-            );
-            anyhow::ensure!(
-                case.status.is_some(),
-                "rerun returned an unfinished test case"
             );
             anyhow::ensure!(
                 rerun_cases.insert(key, case).is_none(),
@@ -445,6 +496,29 @@ pub fn merge_rerun_summary(primary: &mut TestRunSummary, rerun: TestRunSummary) 
         .count() as u64;
     primary.logs.extend(rerun.logs);
     primary.debug_logs.extend(rerun.debug_logs);
+    Ok(())
+}
+
+/// Add the final workflow outcome only after cleanup and artifact owners have finished.
+pub(crate) fn finish_receipt(
+    receipt: &mut serde_json::Value,
+    summary: &TestRunSummary,
+    attempts: &AttemptHistory,
+    outcome: &Result<()>,
+) -> Result<()> {
+    receipt["summary"] = serde_json::to_value(summary)?;
+    receipt["attempts"] = serde_json::to_value(attempts)?;
+    receipt["outcome"] = serde_json::json!(if outcome.is_ok() { "passed" } else { "failed" });
+    receipt["test_outcome"] = match summary.terminal_outcome() {
+        Ok(outcome) => serde_json::to_value(outcome)?,
+        Err(_) => serde_json::json!("incomplete"),
+    };
+    receipt["terminal_error_class"] = serde_json::to_value(
+        outcome
+            .as_ref()
+            .err()
+            .map(|error| ios_core::classify_error(error.as_ref())),
+    )?;
     Ok(())
 }
 
@@ -755,7 +829,17 @@ mod tests {
     fn rerun_merge_rejects_unselected_duplicate_missing_and_unfinished_evidence_without_changing_primary(
     ) {
         let initial = attempt_summary(TestCaseStatus::Failed);
-        for mode in ["unselected", "duplicate", "missing", "unfinished"] {
+        for mode in [
+            "unselected",
+            "duplicate",
+            "missing",
+            "unfinished",
+            "no-begin",
+            "no-status",
+            "stalled",
+            "unknown",
+            "uncaught",
+        ] {
             let mut primary = initial.clone();
             let mut rerun = attempt_summary(TestCaseStatus::Passed);
             match mode {
@@ -766,11 +850,127 @@ mod tests {
                 }
                 "missing" => rerun.suites[0].cases.clear(),
                 "unfinished" => rerun.finished = false,
+                "no-begin" => rerun.began = false,
+                "no-status" => rerun.suites[0].cases[0].status = None,
+                "stalled" => rerun.suites[0].cases[0].status = Some(TestCaseStatus::Stalled),
+                "unknown" => {
+                    rerun.suites[0].cases[0].status = Some(TestCaseStatus::Other("future".into()))
+                }
+                "uncaught" => rerun.suites[0].uncaught_exceptions = Some(1),
                 _ => unreachable!(),
             }
             assert!(merge_rerun_summary(&mut primary, rerun).is_err());
             assert_eq!(primary, initial);
         }
+    }
+
+    #[test]
+    fn incomplete_attempt_keeps_actual_terminal_evidence_and_does_not_authorize_rerun() {
+        let mut summary = attempt_summary(TestCaseStatus::Failed);
+        summary.suites[0].uncaught_exceptions = Some(1);
+        let mut history = AttemptHistory::default();
+        history.start(vec![]);
+        history.complete(&summary).unwrap();
+        assert_eq!(history.attempts[0].state, "incomplete");
+        assert_eq!(history.attempts[0].summary.as_ref(), Some(&summary));
+        assert!(history.attempts[0].error_class.is_some());
+        assert!(extract_failed_selectors(&summary).is_empty());
+    }
+
+    #[test]
+    fn final_receipt_keeps_test_completion_separate_from_original_cleanup_error() {
+        let summary = attempt_summary(TestCaseStatus::Passed);
+        let mut history = AttemptHistory::default();
+        history.start(vec![]);
+        history.complete(&summary).unwrap();
+        let outcome = Err(anyhow::Error::new(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )));
+        history.fail(outcome.as_ref().unwrap_err(), None).unwrap();
+        let mut receipt = serde_json::json!({"status": "finished"});
+        finish_receipt(&mut receipt, &summary, &history, &outcome).unwrap();
+        assert_eq!(receipt["outcome"], "failed");
+        assert_eq!(receipt["test_outcome"], "passed");
+        assert_eq!(receipt["attempts"]["attempts"][0]["state"], "completed");
+        assert_eq!(
+            receipt["terminal_error_class"],
+            receipt["attempts"]["terminal_error_class"]
+        );
+        assert!(outcome
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.downcast_ref::<std::io::Error>().is_some()));
+    }
+
+    #[tokio::test]
+    async fn failed_output_reclassifies_sidecar_once_and_keeps_original_output_error() {
+        let directory =
+            std::env::temp_dir().join(format!("workflow-output-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("results.xml");
+        let mut history = AttemptHistory::default();
+        history.start(vec![]);
+        history
+            .complete(&attempt_summary(TestCaseStatus::Passed))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        history.write_until(Some(&path), deadline).await.unwrap();
+        let output = Err(anyhow::Error::new(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        )));
+        let error = finish_output(Ok(()), output, &mut history, Some(&path), deadline)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        let sidecar = directory.join("results.xml.attempts.json");
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(artifact["attempts"][0]["state"], "completed");
+        assert!(!artifact["terminal_error_class"].is_null());
+        assert_eq!(artifact, serde_json::to_value(&history).unwrap());
+        std::fs::remove_file(sidecar).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_output_with_expired_shared_artifact_clock_keeps_original_error_and_prior_file()
+    {
+        let directory =
+            std::env::temp_dir().join(format!("workflow-output-expired-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("results.xml");
+        let sidecar = directory.join("results.xml.attempts.json");
+        let mut history = AttemptHistory::default();
+        history.start(vec![]);
+        history
+            .complete(&attempt_summary(TestCaseStatus::Passed))
+            .unwrap();
+        history.write(Some(&path)).await.unwrap();
+        let before = std::fs::read(&sidecar).unwrap();
+        let output = Err(anyhow::Error::new(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        )));
+        let error = finish_output(Ok(()), output, &mut history, Some(&path), Instant::now())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert!(error
+            .downcast_ref::<WorkflowSecondaryFailure>()
+            .unwrap()
+            .error
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before);
+        assert!(history.terminal_error_class.is_some());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_file(sidecar).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[tokio::test]

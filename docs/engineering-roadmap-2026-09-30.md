@@ -8484,3 +8484,13 @@ Source首次poll前原子预留原context/cleanup/abandoned payload，permit随�
 9新增及整组422通过、2原ignored；严格Core/CLI Clippy/build/只读CLI和host通过。
 原不透明payload及其它heap/完整刷新仍缺合同，不关闭L02，见
 [验证](validation/tunnel-scan-capsule-bytes-2026-10-13.md)。
+
+
+## 2026-10-13 F02终态CI与最终receipt子项
+
+Core共同终态验证不再把未完成/未知/异常结果写成成功；保留case及unexpected
+失败计数，重跑不能覆盖初次失败。最终stdout在原cleanup/report/sidecar之后，
+stdout失败的唯一sidecar重写共用原artifact clock。Core5新增/19原integration、
+CLI15/10/11及实际CLI26方法通过，严格Clippy/build/fmt通过；原错误/EOF/任务
+join保持。现代全流程、结果准入和整体Rust组合等原范围仍缺，主项不关闭，见
+[验证](validation/f02-terminal-integrity-2026-10-13.md)。
