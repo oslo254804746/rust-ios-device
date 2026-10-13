@@ -8494,3 +8494,11 @@ stdout失败的唯一sidecar重写共用原artifact clock。Core5新增/19原int
 CLI15/10/11及实际CLI26方法通过，严格Clippy/build/fmt通过；原错误/EOF/任务
 join保持。现代全流程、结果准入和整体Rust组合等原范围仍缺，主项不关闭，见
 [验证](validation/f02-terminal-integrity-2026-10-13.md)。
+
+
+## 2026-10-13 L02 failure writer自有payload子项
+
+实体owner/context payload在Source connection window之前预留，未用context完成
+即退款，实体份额保留到最后owner；相关9和整组424通过/2原ignored，严格CLI
+Clippy/build、readonly/host/fmt通过。完整原error/native/history/backing及刷新
+规则继续，不关闭原L02，见[验证](validation/tunnel-write-payloads-2026-10-13.md)。

@@ -52,6 +52,7 @@ pub(super) enum ScanIntent {
 // exposes independent Source originals without allocating diagnostic strings.
 pub(super) struct SourceFailuresContext {
     receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
+    _storage: OwnedSemaphorePermit,
 }
 impl SourceFailuresContext {
     pub(super) fn receipts(&self) -> &[Arc<super::reconnect::FailureReceipt>] {
@@ -75,17 +76,21 @@ struct WriteState {
     receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
     finished: bool,
     in_scan: bool,
+    context_storage: Option<OwnedSemaphorePermit>,
 }
 
-pub(super) struct FailureWriteOwner(Mutex<WriteState>);
+pub(super) struct FailureWriteOwner {
+    state: Mutex<WriteState>,
+    _storage: OwnedSemaphorePermit,
+}
 
 impl FailureWriteOwner {
     pub(super) fn in_scan(&self) {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).in_scan = true;
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).in_scan = true;
     }
 
     fn finish(&self, result: Result<()>) -> Result<()> {
-        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.in_scan {
             let marker = result.as_ref().err().is_some_and(|error| {
                 error.is::<super::scan::DeadlineReached>()
@@ -112,7 +117,7 @@ impl FailureWriteOwner {
     }
 
     pub(super) fn finish_scan(&self, result: Result<()>) -> Result<()> {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.finished {
             return result;
         }
@@ -126,16 +131,21 @@ impl FailureWriteOwner {
         for receipt in state.receipts.as_slice() {
             receipt.complete(completion);
         }
+        let context_storage = state
+            .context_storage
+            .take()
+            .expect("one admitted source failure context");
         match result {
             Err(error) if state.receipts.len() != 0 => Err(error.context(SourceFailuresContext {
                 receipts: state.receipts.take(),
+                _storage: context_storage,
             })),
             result => result,
         }
     }
 
     pub(super) fn abandon(&self, primary: Option<anyhow::Error>) -> Option<anyhow::Error> {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.finished {
             return primary;
         }
@@ -143,10 +153,15 @@ impl FailureWriteOwner {
         for receipt in state.receipts.as_slice() {
             receipt.complete(super::reconnect::Completion::Abandoned);
         }
+        let context_storage = state
+            .context_storage
+            .take()
+            .expect("one admitted source failure context");
         match primary {
             Some(error) if state.receipts.len() != 0 => {
                 Some(error.context(SourceFailuresContext {
                     receipts: state.receipts.take(),
+                    _storage: context_storage,
                 }))
             }
             other => other,
@@ -155,7 +170,7 @@ impl FailureWriteOwner {
 }
 impl Drop for FailureWriteOwner {
     fn drop(&mut self) {
-        let state = self.0.get_mut().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
         if !state.finished {
             for receipt in state.receipts.as_slice() {
                 receipt.complete(super::reconnect::Completion::Abandoned);
@@ -179,6 +194,15 @@ impl WriteBatch {
             capacity <= super::MAX_FAILURE_RECORDS,
             crate::output::resource_decision("tunnel scan write batch limit")
         );
+        // Reserve both application-owned payloads before the Source window.
+        // Error Ready(Err) never has to acquire more bytes to keep its original.
+        let mut payloads = super::admission::known_metadata_charge(
+            bank,
+            std::mem::size_of::<FailureWriteOwner>() + std::mem::size_of::<SourceFailuresContext>(),
+        )?;
+        let owner_storage = payloads
+            .split(std::mem::size_of::<FailureWriteOwner>())
+            .expect("reserved failure write owner payload");
         let mut intents = KnownVec::new(Arc::clone(bank), capacity);
         intents.reserve(capacity)?;
         let mut receipts = KnownVec::new(Arc::clone(bank), capacity);
@@ -186,11 +210,15 @@ impl WriteBatch {
         let mut displaced = KnownVec::new(Arc::clone(bank), capacity);
         displaced.reserve(capacity)?;
         Ok(Self {
-            owner: Arc::new(FailureWriteOwner(Mutex::new(WriteState {
-                receipts,
-                finished: false,
-                in_scan: false,
-            }))),
+            owner: Arc::new(FailureWriteOwner {
+                state: Mutex::new(WriteState {
+                    receipts,
+                    finished: false,
+                    in_scan: false,
+                    context_storage: Some(payloads),
+                }),
+                _storage: owner_storage,
+            }),
             intents,
             displaced,
         })
@@ -200,7 +228,7 @@ impl WriteBatch {
         if let ScanIntent::Failure(failure) = &intent {
             if let Some(receipt) = &failure.failed.receipt {
                 self.owner
-                    .0
+                    .state
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .receipts
@@ -220,10 +248,12 @@ impl WriteBatch {
 
     #[cfg(test)]
     pub(super) fn backing_bytes(capacity: usize) -> usize {
-        capacity
-            * (std::mem::size_of::<ScanIntent>()
-                + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>()
-                + std::mem::size_of::<FailedTunnelAttempt>())
+        std::mem::size_of::<FailureWriteOwner>()
+            + std::mem::size_of::<SourceFailuresContext>()
+            + capacity
+                * (std::mem::size_of::<ScanIntent>()
+                    + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>()
+                    + std::mem::size_of::<FailedTunnelAttempt>())
     }
 }
 

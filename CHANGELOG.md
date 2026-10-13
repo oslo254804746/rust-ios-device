@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit failure-write owner bodies and their returned Source receipt contexts
+  before tunnel connection work. Refund unused context reservations at completion
+  and retain materialized charges through the final shared owner.
+
 - Validate observed XCTest terminal evidence and preserve concrete failure
   counts for CI. Publish final workflow receipts after cleanup/artifacts, and
   reclassify the sidecar once if stdout fails under the same artifact deadline.
