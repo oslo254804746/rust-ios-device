@@ -253,11 +253,23 @@ impl std::fmt::Debug for ExternalIntentsContext {
 // chain. The independent secondary is inspectable without logging device data.
 pub(super) struct FailureContext {
     secondary: anyhow::Error,
+    _storage: Option<OwnedSemaphorePermit>,
 }
 
 impl FailureContext {
+    #[cfg(test)]
     pub(super) fn new(secondary: anyhow::Error) -> Self {
-        Self { secondary }
+        Self {
+            secondary,
+            _storage: None,
+        }
+    }
+
+    pub(super) fn admitted(secondary: anyhow::Error, storage: OwnedSemaphorePermit) -> Self {
+        Self {
+            secondary,
+            _storage: Some(storage),
+        }
     }
 
     pub(super) fn secondary(&self) -> &anyhow::Error {

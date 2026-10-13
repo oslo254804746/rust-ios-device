@@ -506,6 +506,7 @@ struct FailedTunnelAttempt {
 struct ScanCleanupFailure {
     primary: anyhow::Error,
     cleanup: anyhow::Error,
+    _storage: OwnedSemaphorePermit,
 }
 
 impl std::fmt::Display for ScanCleanupFailure {
@@ -737,9 +738,9 @@ impl TunnelAgentState {
                 metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
                 global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                 ready: RwLock::new(false),
-                lifecycle: Lifecycle::with_metadata(global_metadata_bytes),
+                lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
                 scan_lock: Mutex::new(()),
-                scan_outcomes: scan::Outcomes::new(),
+                scan_outcomes: scan::Outcomes::with_metadata(global_metadata_bytes),
                 scan_timeout: TUNNEL_SCAN_TIMEOUT,
                 source,
                 connect_timeout,
@@ -769,6 +770,7 @@ impl TunnelAgentState {
         let inner = Arc::get_mut(&mut self.inner).expect("configure before sharing state");
         let bank = Arc::new(Semaphore::new(bytes));
         inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
         inner.global_metadata_bytes = bank;
     }
 
@@ -1829,6 +1831,7 @@ impl TunnelAgentState {
                         return Err(ScanCleanupFailure {
                             primary: session.take().expect("acquired list primary"),
                             cleanup,
+                            _storage: session.cleanup_storage(),
                         }
                         .into());
                     }
