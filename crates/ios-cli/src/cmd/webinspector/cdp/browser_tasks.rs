@@ -17,6 +17,10 @@ pub(super) struct PageOutcome {
     cleanup: Option<Result<()>>,
     join: Option<std::result::Result<(), tokio::task::JoinError>>,
     requested_abort: bool,
+    discovery_closed: bool,
+    final_message: Option<JsonValue>,
+    context_candidate: Option<JsonValue>,
+    terminal: bool,
 }
 
 impl std::fmt::Debug for PageOutcome {
@@ -44,11 +48,40 @@ impl std::fmt::Debug for PageOutcome {
 }
 
 impl PageOutcome {
+    pub(super) fn terminal(&mut self) {
+        self.terminal = true;
+    }
+    pub(super) fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+    pub(super) fn observe_discovery_closed(&mut self) {
+        self.discovery_closed = true;
+        if self.final_message.is_none() {
+            self.final_message = self.context_candidate.clone();
+        }
+    }
+    pub(super) fn context_candidate(&mut self, message: Option<JsonValue>) {
+        self.context_candidate = message;
+        if self.discovery_closed && self.final_message.is_none() {
+            self.final_message = self.context_candidate.clone();
+        }
+    }
+    pub(super) fn final_message(&mut self, message: Option<JsonValue>) {
+        if self.final_message.is_none() {
+            self.final_message = message;
+        }
+    }
+    pub(super) fn take_final_message(&mut self) -> Option<JsonValue> {
+        self.final_message.take()
+    }
     pub(super) fn primary(&mut self, result: Result<()>) {
         self.primary = result.err();
     }
     pub(super) fn cleanup(&mut self, result: Result<()>) {
-        self.cleanup = Some(result);
+        self.cleanup = Some(control::finish(
+            self.cleanup.take().unwrap_or(Ok(())),
+            result,
+        ));
     }
     pub(super) fn is_joined(&self) -> bool {
         self.join.is_some()
@@ -141,6 +174,15 @@ impl BrowserPageCleanup {
         }
     }
 
+    pub(super) fn push_with_budget(&mut self, page: BrowserPageSession, budget: Budget) {
+        let _ = page.cancel.send(true);
+        if self.budget.is_none() && self.waited.is_none() {
+            self.budget = Some(budget);
+        }
+        self.pages.push(page);
+    }
+
+    #[cfg(test)]
     pub(super) fn push(&mut self, page: BrowserPageSession) {
         self.pages.push(page);
     }

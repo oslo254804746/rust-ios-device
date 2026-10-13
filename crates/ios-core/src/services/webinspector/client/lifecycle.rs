@@ -73,6 +73,7 @@ impl<S> WebInspectorClient<S> {
         self.automation_availability = None;
         self.applications = Default::default();
         self.application_pages = Default::default();
+        self.connected_application_snapshot_seen = false;
         self.pending_events = Default::default();
         self.pending_event_bytes = 0;
     }
@@ -196,6 +197,12 @@ impl<'a, S> WebInspectorOperation<'a, S> {
         self.committed = true;
     }
 
+    /// A fully routed unrelated event is retained, with no partial frame or
+    /// automatic write outstanding. Cancellation can restore these same events.
+    pub(in super::super) fn retained_event_boundary(&mut self) {
+        self.committed = false;
+    }
+
     pub(in super::super) fn preserve(
         &mut self,
         event: WebInspectorEvent,
@@ -252,6 +259,13 @@ impl<S> Drop for WebInspectorOperation<'_, S> {
     fn drop(&mut self) {
         if !self.completed && self.committed {
             self.client.invalidate();
+        } else if !self.completed && self.client.is_usable() && !self.skipped.is_empty() {
+            // preserve() already admitted these immutable events together with
+            // the pending queue. No IO occurs between that admission and here.
+            self.client.pending_event_bytes += self.skipped_bytes;
+            while let Some(event) = self.skipped.pop_back() {
+                self.client.pending_events.push_front(event);
+            }
         }
         self.client.state.inherited_deadline = self.previous_deadline;
     }

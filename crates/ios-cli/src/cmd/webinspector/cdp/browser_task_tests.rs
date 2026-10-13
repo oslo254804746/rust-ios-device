@@ -11,6 +11,72 @@ use std::{
 use tokio::io::{AsyncWriteExt, DuplexStream};
 
 const BOUND: Duration = Duration::from_secs(4);
+
+#[tokio::test]
+async fn admitted_outputs_preserve_other_uuid_order_and_one_shared_capacity() {
+    let (sender, receiver) = mpsc::channel(CDP_PAGE_CHANNEL);
+    let permits = Arc::new(Semaphore::new(CDP_PAGE_CHANNEL));
+    let output = BrowserOutputSender::Admitted {
+        sender,
+        permits: permits.clone(),
+        closed: Arc::new(Notify::new()),
+    };
+    let mut outputs = BrowserPageOutputs {
+        receiver,
+        deferred: VecDeque::new(),
+    };
+    for id in 0..CDP_PAGE_CHANNEL {
+        output
+            .send(BrowserPageOutput::Message {
+                session_id: if id % 2 == 0 { "retired" } else { "other" }.into(),
+                message: json!({"id":id}),
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(permits.available_permits(), 0);
+    let retired = outputs.drain_session("retired").unwrap();
+    assert_eq!(retired.len(), CDP_PAGE_CHANNEL / 2);
+    assert_eq!(outputs.deferred.len(), CDP_PAGE_CHANNEL / 2);
+    assert_eq!(
+        permits.available_permits(),
+        0,
+        "draining retains original admission"
+    );
+    drop(retired);
+    assert_eq!(permits.available_permits(), CDP_PAGE_CHANNEL / 2);
+    for id in (1..CDP_PAGE_CHANNEL).step_by(2) {
+        let next = outputs.next().await.unwrap();
+        let BrowserPageOutput::Message {
+            session_id,
+            message,
+        } = &next.value
+        else {
+            panic!("message required")
+        };
+        assert_eq!(session_id, "other");
+        assert_eq!(message["id"], id);
+        drop(next);
+    }
+    assert_eq!(permits.available_permits(), CDP_PAGE_CHANNEL);
+}
+
+#[test]
+fn independent_discovery_retains_final_context_after_child_terminal_and_only_once() {
+    let mut outcome = browser_tasks::PageOutcome::default();
+    outcome.context_candidate(Some(
+        json!({"method":"Runtime.executionContextDestroyed", "params":{"executionContextId":1}}),
+    ));
+    outcome.terminal();
+    outcome.observe_discovery_closed();
+    outcome.observe_discovery_closed();
+    assert!(outcome.is_terminal());
+    assert_eq!(
+        outcome.take_final_message().unwrap()["params"]["executionContextId"],
+        1
+    );
+    assert!(outcome.take_final_message().is_none());
+}
 static PAGE: AtomicU64 = AtomicU64::new(18000);
 async fn bounded<T>(operation: impl Future<Output = T>) -> T {
     tokio::time::timeout(BOUND, operation)
@@ -92,7 +158,7 @@ async fn released_after_close(child: &mut Child) {
 async fn closed(child: &mut Child) {
     released(child).await;
     match bounded(child.output.recv()).await.unwrap() {
-        BrowserPageOutput::Closed { session_id } => assert_eq!(session_id, child.session),
+        BrowserPageOutput::Closed { session_id, .. } => assert_eq!(session_id, child.session),
         BrowserPageOutput::Message { .. } => panic!("cleanup must not publish a page reply"),
     }
 }
@@ -336,7 +402,7 @@ async fn lifecycle_cdp_browser_child_cancel_after_observed_partial_frame_skips_c
     assert!(child.source.dropped.load(Ordering::SeqCst));
     assert_eq!(child.source.calls.load(Ordering::SeqCst), 1);
     assert!(matches!(bounded(child.output.recv()).await,
-        Some(BrowserPageOutput::Closed {session_id}) if session_id == child.session));
+        Some(BrowserPageOutput::Closed {session_id, ..}) if session_id == child.session));
     drop(
         bounded(lock_cdp_page(
             &format!("PID:42:page-{}", child.page),

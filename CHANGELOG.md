@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Deliver JSContext destruction from observed native page/application closure
+  before detach, including independent discovery refresh and original child joins.
+  Add bounded public nonflat CDP routing for pinned Playwright noDefaults clients;
+  default download-policy initialization remains explicitly unsupported.
+
 - Admit retry/history table backing, selector copies and original-error capsules
   before Source poll. Keep preallocated removal owners and first/latest originals
   through quota refusal, stale completion, rollback and final caller release.

@@ -8523,3 +8523,17 @@ wrapper与实际copied key/route capacity；Source前完成，取得原错误后
 [验证](validation/tunnel-retry-owned-storage-2026-10-13.md)。任意dyn Error、
 Arc/anyhow私有分配、native/runtime/backing及完整刷新仍缺；不关闭L02。
 账本23交付/6缺开发/L02待收口、有效30和Q04全部排除保持。
+
+
+## 2026-10-13 F04 native context关闭与发现刷新接线
+
+原生已解析Listing/应用disconnect提供关闭证据；numeric page身份稳定，
+独立刷新保留exact UUID route到原child join、queued reply/context与最终销毁
+交付后再detach。channel/deferred共用64许可，join/flush/detach同一2秒绝对预算。
+完整无关事件边界取消恢复原事件，partial native IO继续失效；原EOF/cleanup
+源和task/native join断言保持。Core110、CLI184及pinned真实client10通过，
+严格Clippy/build/fmt和readonly/host通过，见
+[验证](validation/cdp-native-context-closure-2026-10-13.md)。public nonflat与
+Playwright noDefaults仅本Runtime子项；默认download初始化拒绝保持。
+Runtime console及Page/iframe/Input/Fetch/指标完整范围继续，不关闭F04；
+账本23/6/L02待收口、有效30、Q04全部排除保持。

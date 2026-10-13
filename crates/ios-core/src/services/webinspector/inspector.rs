@@ -9,6 +9,15 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Duration;
 use uuid::Uuid;
 
+/// An attached inspector's JSON traffic or a positively observed native close.
+/// `Closed` comes from an application disconnect or a complete, parsed listing
+/// that omits this session's numeric page ID. It is not a WebKit JSON event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InspectorSessionEvent {
+    Message(JsonValue),
+    Closed,
+}
+
 #[derive(Debug, Clone)]
 pub struct InspectorSession {
     application_id: String,
@@ -111,14 +120,38 @@ impl InspectorSession {
         client: &mut WebInspectorClient<S>,
         timeout_duration: Duration,
     ) -> Result<JsonValue, WebInspectorError> {
-        let event = client
-            .next_socket_data_with_timeout(timeout_duration)
-            .await?;
-        if let WebInspectorEvent::SocketData { message, .. } = event {
-            self.observe_message(&message)?;
-            return Ok(message);
+        match self.next_session_event(client, timeout_duration).await? {
+            InspectorSessionEvent::Message(message) => Ok(message),
+            InspectorSessionEvent::Closed => Err(WebInspectorError::Protocol(
+                "WebInspector application or page closed".into(),
+            )),
         }
-        unreachable!("next_socket_data_with_timeout only returns socket-data events");
+    }
+
+    /// Read JSON or native closure under one total deadline. Unrelated native
+    /// events are retained in order under the client's count/byte limits.
+    /// IO/EOF/parser errors keep their original source, never becoming `Closed`.
+    /// `next_raw_message` remains the JSON-only API and reports closure as an
+    /// error; bridges can use this typed API to send final lifecycle events.
+    pub async fn next_session_event<S: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        client: &mut WebInspectorClient<S>,
+        timeout_duration: Duration,
+    ) -> Result<InspectorSessionEvent, WebInspectorError> {
+        match client
+            .next_inspector_event_with_timeout(&self.application_id, self.page_id, timeout_duration)
+            .await?
+        {
+            WebInspectorEvent::SocketData { message, .. } => {
+                self.observe_message(&message)?;
+                Ok(InspectorSessionEvent::Message(message))
+            }
+            WebInspectorEvent::Listing { .. }
+            | WebInspectorEvent::ApplicationDisconnected { .. } => {
+                Ok(InspectorSessionEvent::Closed)
+            }
+            _ => unreachable!("inspector event reader only returns selected traffic or closure"),
+        }
     }
 
     pub async fn send_command<S: AsyncRead + AsyncWrite + Unpin>(
