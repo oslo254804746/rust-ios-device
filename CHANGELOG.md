@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit USB snapshot identity-index backing alongside raw storage in the shared
+  metadata bank. Validate all raw unique identities without copied keys, refund
+  the temporary index before returning the raw reservation, and preserve order.
+
 - Charge manual and suppressed scan index backing while borrowing admitted
   desired keys, tickets and routes. Keep captured iteration order and indexed
   lookups, original stop epochs, authority checks and failure reconciliation.

@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn usb_identity_index_byte_refusal_returns_raw_charge_and_keeps_all_original_buffers() {
+    let devices = vec![usb("same".into()), usb("other".into()), usb("same".into())];
+    let raw = devices.capacity() * std::mem::size_of::<UsbDevice>()
+        + devices
+            .iter()
+            .map(|device| device.udid.capacity())
+            .sum::<usize>();
+    let index = devices.len() * std::mem::size_of::<usize>();
+    let original = devices
+        .iter()
+        .map(|device| device.udid.as_ptr())
+        .collect::<Vec<_>>();
+    let bank = Arc::new(Semaphore::new(raw + index - 1));
+    let error = retain_usb_snapshot(&bank, &devices).unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), raw + index - 1);
+    for (device, pointer) in devices.iter().zip(original) {
+        assert_eq!(device.udid.as_ptr(), pointer);
+    }
+    bank.add_permits(1);
+    let retained = retain_usb_snapshot(&bank, &devices).unwrap();
+    assert_eq!(
+        bank.available_permits(),
+        index,
+        "temporary index releases before raw receipt returns"
+    );
+    assert_eq!(devices[0].udid, "same");
+    assert_eq!(devices[1].udid, "other");
+    assert_eq!(devices[2].udid, "same");
+    drop(retained);
+    assert_eq!(bank.available_permits(), raw + index);
+}
+
+#[test]
+fn usb_identity_index_validates_all_raw_identities_without_changing_discovery_order() {
+    let repeated = (0..MAX_RAW_ROWS)
+        .map(|_| usb("one".into()))
+        .collect::<Vec<_>>();
+    usb_snapshot(&repeated).unwrap();
+    let unique = (0..=MAX_CANDIDATES)
+        .rev()
+        .map(|id| usb(format!("fixture-{id}")))
+        .collect::<Vec<_>>();
+    let error = usb_snapshot(&unique).unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(unique[0].udid, format!("fixture-{MAX_CANDIDATES}"));
+    assert_eq!(unique.last().unwrap().udid, "fixture-0");
+}
+
+#[test]
 fn global_metadata_usb_paired_and_publication_use_one_atomic_known_byte_pool() {
     let devices = vec![usb(short_reserved(1024))];
     let targets = vec![PairedMobdev2Device {
