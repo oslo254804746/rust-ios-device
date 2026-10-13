@@ -139,4 +139,3 @@ physical JSContext/Safari/WebView workflows, full/default Playwright
 initialization and download semantics, Page/iframe, trusted Input/screenshots,
 complete Fetch cancellation/rollback/download and Memory/Performance fields and
 lifecycle mapping. This closure slice changes no aggregate capability maturity.
-
