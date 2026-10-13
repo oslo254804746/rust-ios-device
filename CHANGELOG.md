@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit initial tunnel publication snapshots with actual vector backing and
+  copied key capacity before discovery. Preserve exact publication identities
+  and release those fees when the last scan snapshot owner is dropped.
+
 - Deliver JSContext destruction from observed native page/application closure
   before detach, including independent discovery refresh and original child joins.
   Add bounded public nonflat CDP routing for pinned Playwright noDefaults clients;
