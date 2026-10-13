@@ -5,23 +5,28 @@
 //! silently restart an exhausted budget. Original native owners remain in the
 //! existing retirement registry; this ledger never stops or releases them.
 
-use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::ErrorClass;
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use super::{AttemptIdentity, Ticket, MAX_FAILURE_RECORDS};
 
 mod causes;
 pub(super) use causes::{Completion, FailureReceipt, SourceFailure};
+mod storage;
+pub(super) use storage::RemovedBatch;
+use storage::{CauseState, Removed, State};
 
 const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const MAX_DELAY: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+mod tests;
 
 #[derive(clap::Args, Clone, Debug)]
 pub(super) struct RetryArgs {
@@ -173,18 +178,11 @@ struct Episode {
     pending_event: Option<Reason>,
 }
 
-struct State {
-    sealed: bool,
-    rows: HashMap<String, Episode>,
-    // Uses the very same admission permits as rows/failure-table records.
-    // Original Source errors survive a default schedule's deferred writer.
-    causes: HashMap<String, Arc<FailureReceipt>>,
-    retired_causes: Vec<(String, Arc<FailureReceipt>)>,
-}
-
 pub(super) struct Ledger {
     policy: RetryPolicy,
     state: Mutex<State>,
+    bank: Arc<Semaphore>,
+    _storage: OwnedSemaphorePermit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,16 +193,14 @@ pub(super) enum Admission {
 }
 
 impl Ledger {
-    pub(super) fn new(policy: RetryPolicy) -> Arc<Self> {
-        Arc::new(Self {
+    pub(super) fn with_metadata(policy: RetryPolicy, bank: Arc<Semaphore>) -> Result<Arc<Self>> {
+        let storage = super::admission::known_metadata_charge(&bank, std::mem::size_of::<Self>())?;
+        Ok(Arc::new(Self {
             policy,
-            state: Mutex::new(State {
-                sealed: false,
-                rows: HashMap::new(),
-                causes: HashMap::new(),
-                retired_causes: Vec::new(),
-            }),
-        })
+            state: Mutex::new(State::new(&bank)),
+            bank,
+            _storage: storage,
+        }))
     }
 
     pub(super) fn policy(&self) -> &RetryPolicy {
@@ -234,8 +230,7 @@ impl Ledger {
             return Admission::Exhausted;
         }
         let Some(row) = state
-            .rows
-            .get_mut(udid)
+            .row_mut(udid)
             .filter(|row| Self::same(row, identity, ticket))
         else {
             return Admission::Ready;
@@ -275,10 +270,9 @@ impl Ledger {
     pub(super) fn slot(&self, udid: &str) -> Option<Arc<OwnedSemaphorePermit>> {
         let state = self.lock();
         state
-            .rows
-            .get(udid)
+            .row(udid)
             .map(|row| Arc::clone(&row.slot))
-            .or_else(|| state.causes.get(udid).map(|receipt| receipt.slot()))
+            .or_else(|| state.cause(udid).map(|receipt| receipt.slot()))
     }
 
     /// Event formatting/subscribers run after every lifecycle watch guard is
@@ -287,8 +281,7 @@ impl Ledger {
         let event = {
             let mut state = self.lock();
             state
-                .rows
-                .get_mut(udid)
+                .row_mut(udid)
                 .filter(|row| row.ticket.same_incarnation(ticket))
                 .and_then(|row| {
                     row.pending_event
@@ -308,8 +301,7 @@ impl Ledger {
         ticket: &Ticket,
     ) -> Option<Instant> {
         self.lock()
-            .rows
-            .get(udid)
+            .row(udid)
             .filter(|row| Self::same(row, identity, ticket))
             .and_then(|row| row.snapshot.deadline)
     }
@@ -317,14 +309,12 @@ impl Ledger {
     pub(super) fn version(&self, udid: &str, ticket: &Ticket) -> Option<Arc<()>> {
         let state = self.lock();
         state
-            .rows
-            .get(udid)
+            .row(udid)
             .filter(|row| row.ticket.same_incarnation(ticket))
             .map(|row| Arc::clone(&row.version))
             .or_else(|| {
                 state
-                    .causes
-                    .get(udid)
+                    .cause(udid)
                     .filter(|receipt| receipt.same_ticket(ticket))
                     .map(|receipt| receipt.version())
             })
@@ -337,21 +327,26 @@ impl Ledger {
         let mut cause = None;
         let _ = ticket.commit(|| {
             let mut state = self.lock();
-            if state.rows.get(udid).is_some_and(|row| {
+            if state.row(udid).is_some_and(|row| {
                 row.ticket.same_incarnation(ticket) && Arc::ptr_eq(&row.version, version)
             }) {
-                removed = state.rows.remove(udid);
+                removed = state.remove_row(udid);
             }
-            if state.causes.get(udid).is_some_and(|receipt| {
+            if state.cause(udid).is_some_and(|receipt| {
                 receipt.same_ticket(ticket)
                     && (Arc::ptr_eq(&receipt.version(), version) || removed.is_some())
             }) {
-                cause = state.causes.remove(udid);
+                cause = state.remove_cause(udid);
             }
+            state.release_empty_backing();
             Ok(())
         });
-        if let Some(row) = removed {
-            emit(udid, row.snapshot, Reason::Recovered);
+        if let Some(node) = removed {
+            emit(
+                udid,
+                node.row.as_ref().expect("episode node").snapshot,
+                Reason::Recovered,
+            );
         }
         drop(cause);
     }
@@ -385,22 +380,41 @@ impl Ledger {
             return Err(super::lifecycle::cancelled());
         }
         let same = state
-            .rows
-            .get(udid)
+            .row(udid)
             .is_some_and(|row| Self::same(row, &identity, ticket));
-        if !same && !state.rows.contains_key(udid) && state.rows.len() >= MAX_FAILURE_RECORDS {
+        if !same && state.row(udid).is_none() && state.rows.len() >= MAX_FAILURE_RECORDS {
             return Err(crate::output::resource_decision(
                 "tunnel retry episode capacity",
             ));
         }
-        let displaced = if !same {
-            state.rows.insert(
+        // Admit actual table backing, capsule payloads and every copied field
+        // before advancing the episode or polling an irreplaceable Source.
+        if state.row(udid).is_none() {
+            state.rows.reserve(1)?;
+        }
+        state.causes.reserve(1)?;
+        let version = Arc::new(());
+        let slot = state
+            .row(udid)
+            .filter(|_| same)
+            .map_or_else(|| slot, |row| Arc::clone(&row.slot));
+        let receipt = FailureReceipt::reserve(
+            udid,
+            &identity,
+            ticket,
+            Arc::clone(&slot),
+            Arc::clone(&version),
+            &self.bank,
+        )?;
+        let cause_node = Removed::receipt(Arc::clone(&receipt), &self.bank)?;
+        let replacement = if !same {
+            Some(Removed::episode(
                 udid.to_owned(),
                 Episode {
                     identity,
                     ticket: ticket.clone(),
                     slot,
-                    version: Arc::new(()),
+                    version: Arc::clone(&version),
                     snapshot: Snapshot {
                         schedule: if self.policy.authoritative_schedule() {
                             ScheduleProvenance::Episode
@@ -418,28 +432,35 @@ impl Ledger {
                     },
                     pending_event: None,
                 },
-            )
+                &self.bank,
+            )?)
         } else {
             None
         };
-        let row = state.rows.get_mut(udid).expect("admitted episode");
-        row.version = Arc::new(());
+        let displaced = if let Some(replacement) = replacement {
+            if let Some(index) = state.row_index(udid) {
+                let old = state.rows.remove(index);
+                state.rows.insert_reserved(index, replacement);
+                Some(old)
+            } else {
+                state.rows.push_reserved(replacement);
+                None
+            }
+        } else {
+            None
+        };
+        state.causes.push_reserved(cause_node);
+        let row = state.row_mut(udid).expect("admitted episode");
+        row.version = version;
         row.snapshot.attempts = row.snapshot.attempts.saturating_add(1);
         row.snapshot.phase = Phase::Connecting;
         row.snapshot.next_attempt = None;
         row.snapshot.sequence = row.snapshot.sequence.saturating_add(1);
         let snapshot = row.snapshot;
-        let version = Arc::clone(&row.version);
-        let identity = row.identity.clone();
-        let slot = Arc::clone(&row.slot);
         drop(state);
         Ok(Attempt {
             ledger: Arc::clone(self),
-            udid: udid.to_owned(),
-            ticket: ticket.clone(),
-            version,
-            identity,
-            slot,
+            receipt,
             started: snapshot,
             displaced,
             complete: false,
@@ -448,7 +469,7 @@ impl Ledger {
 
     #[cfg(test)]
     pub(super) fn snapshot(&self, udid: &str) -> Option<Snapshot> {
-        self.lock().rows.get(udid).map(|row| row.snapshot)
+        self.lock().row(udid).map(|row| row.snapshot)
     }
 
     fn finish(
@@ -463,21 +484,20 @@ impl Ledger {
         let mut removed = None;
         let mut removed_cause = None;
         let mut event = None;
-        let committed = attempt.ticket.commit(|| {
+        let committed = attempt.receipt.ticket.commit(|| {
             let mut state = self.lock();
             let Some(row) = state
-                .rows
-                .get_mut(&attempt.udid)
-                .filter(|row| Arc::ptr_eq(&row.version, &attempt.version))
+                .row_mut(&attempt.receipt.udid)
+                .filter(|row| Arc::ptr_eq(&row.version, &attempt.receipt.version))
             else {
                 return Ok(());
             };
             if success {
-                removed = state.rows.remove(&attempt.udid);
-                if state.causes.get(&attempt.udid).is_some_and(|receipt| {
-                    receipt.same_identity(&attempt.identity, &attempt.ticket)
+                removed = state.remove_row(&attempt.receipt.udid);
+                if state.cause(&attempt.receipt.udid).is_some_and(|receipt| {
+                    receipt.same_identity(&attempt.receipt.identity, &attempt.receipt.ticket)
                 }) {
-                    removed_cause = state.causes.remove(&attempt.udid);
+                    removed_cause = state.remove_cause(&attempt.receipt.udid);
                 }
                 return Ok(());
             }
@@ -526,185 +546,130 @@ impl Ledger {
             // Default scans retain only their existing failure-table owner.
             // A failed/abandoned deferred write must still release its permit.
             if !self.policy.authoritative_schedule() {
-                removed = state.rows.remove(&attempt.udid);
+                removed = state.remove_row(&attempt.receipt.udid);
             }
             Ok(())
         });
         if committed.is_err() {
             let mut state = self.lock();
             if state
-                .rows
-                .get(&attempt.udid)
-                .is_some_and(|row| Arc::ptr_eq(&row.version, &attempt.version))
+                .row(&attempt.receipt.udid)
+                .is_some_and(|row| Arc::ptr_eq(&row.version, &attempt.receipt.version))
             {
-                removed = state.rows.remove(&attempt.udid);
+                removed = state.remove_row(&attempt.receipt.udid);
             }
             // Removal of this exact obsolete row cannot touch a fresh epoch.
             // No cancelled attempt invents a connection failure or new budget.
-            event = removed.as_ref().map(|row| (row.snapshot, Reason::Stopped));
+            event = removed.as_ref().map(|node| {
+                (
+                    node.row.as_ref().expect("episode node").snapshot,
+                    Reason::Stopped,
+                )
+            });
         }
         if success && committed.is_ok() {
             if let Some(row) = &removed {
-                emit(&attempt.udid, row.snapshot, Reason::Recovered);
+                emit(
+                    &attempt.receipt.udid,
+                    row.row.as_ref().expect("episode node").snapshot,
+                    Reason::Recovered,
+                );
             }
         }
         if let Some((snapshot, reason)) = event {
-            emit(&attempt.udid, snapshot, reason);
+            emit(&attempt.receipt.udid, snapshot, reason);
         }
+        // An interrupted/successful Source produced no original. Remove only
+        // its exact pending reservation; acquired active/retired roots survive.
+        let pending = {
+            let mut state = self.lock();
+            let pending = state.remove_pending(&attempt.receipt);
+            state.release_empty_backing();
+            pending
+        };
+        drop(pending);
         drop(removed_cause);
     }
 
-    /// Return displaced rows so their permits/gates drop outside epoch borrows.
+    /// Every removed owner carries its pre-Source node and byte reservation.
     pub(super) fn remove_where(
         &self,
         predicate: impl Fn(&str, &AttemptIdentity, &Ticket) -> bool,
-    ) -> Vec<Removed> {
+    ) -> RemovedBatch {
         let mut state = self.lock();
-        let keys = state
-            .rows
-            .iter()
-            .filter(|(udid, row)| predicate(udid, &row.identity, &row.ticket))
-            .map(|(udid, _)| udid.clone())
-            .collect::<Vec<_>>();
-        let mut removed = keys
-            .into_iter()
-            .filter_map(|udid| {
-                state.rows.remove(&udid).map(|row| Removed {
-                    udid,
-                    row: Some(row),
-                    cause: None,
-                })
-            })
-            .collect::<Vec<_>>();
-        let causes = state
-            .causes
-            .iter()
-            .filter(|(udid, receipt)| receipt.selected(udid, &predicate))
-            .map(|(udid, _)| udid.clone())
-            .collect::<Vec<_>>();
-        for udid in causes {
-            removed.push(Removed {
-                cause: state.causes.remove(&udid),
-                udid,
-                row: None,
-            });
-        }
-        let mut retired = std::mem::take(&mut state.retired_causes);
-        for (udid, receipt) in retired.drain(..) {
-            if receipt.selected(&udid, &predicate) {
-                removed.push(Removed {
-                    udid,
-                    row: None,
-                    cause: Some(receipt),
-                });
-            } else {
-                state.retired_causes.push((udid, receipt));
-            }
-        }
+        state.select(&predicate);
+        let removed = state.remove_selected();
+        state.release_empty_backing();
         removed
     }
 
-    /// Reconciliation shares the whole scan clock. Restore exact unobserved
-    /// episodes before unlocking if synchronous filtering/removal runs late.
+    /// Reconciliation restores the same nodes at exact original positions if
+    /// synchronous predicate/removal work crosses the whole-scan deadline.
     pub(super) fn reconcile(
         &self,
         clock: &super::scan::Deadline,
         predicate: impl Fn(&str, &AttemptIdentity, &Ticket) -> bool,
-    ) -> Result<Vec<Removed>> {
+    ) -> Result<RemovedBatch> {
         let mut state = self.lock();
-        let keys = state
-            .rows
-            .iter()
-            .filter(|(udid, row)| predicate(udid, &row.identity, &row.ticket))
-            .map(|(udid, _)| udid.clone())
-            .collect::<Vec<_>>();
+        state.select(&predicate);
         clock.check()?;
-        let mut removed = keys
-            .into_iter()
-            .filter_map(|udid| {
-                state.rows.remove(&udid).map(|row| Removed {
-                    udid,
-                    row: Some(row),
-                    cause: None,
-                })
-            })
-            .collect::<Vec<_>>();
-        let causes = state
-            .causes
-            .iter()
-            .filter(|(udid, receipt)| receipt.selected(udid, &predicate))
-            .map(|(udid, _)| udid.clone())
-            .collect::<Vec<_>>();
-        for udid in causes {
-            removed.push(Removed {
-                cause: state.causes.remove(&udid),
-                udid,
-                row: None,
-            });
-        }
+        let removed = state.remove_selected();
         if let Err(error) = clock.check() {
-            for removed in removed {
-                if let Some(row) = removed.row {
-                    state.rows.insert(removed.udid.clone(), row);
-                }
-                if let Some(receipt) = removed.cause {
-                    state.causes.insert(removed.udid, receipt);
-                }
-            }
+            state.restore(removed);
             return Err(error);
         }
+        state.release_empty_backing();
         Ok(removed)
     }
 
-    pub(super) fn cancelled(rows: Vec<Removed>, reason: Reason) {
+    pub(super) fn cancelled(rows: RemovedBatch, reason: Reason) {
         for removed in rows {
-            if let Some(row) = removed.row {
+            if let Some(row) = removed.row.as_ref() {
                 emit(&removed.udid, row.snapshot, reason);
             }
         }
     }
 
     pub(super) fn close(&self) {
-        let (rows, causes, retired) = {
+        let removed = {
             let mut state = self.lock();
             state.sealed = true;
-            (
-                std::mem::take(&mut state.rows),
-                std::mem::take(&mut state.causes),
-                std::mem::take(&mut state.retired_causes),
-            )
+            state.select(&|_, _, _| true);
+            let removed = state.remove_selected();
+            state.release_empty_backing();
+            removed
         };
-        for (udid, row) in rows {
-            emit(&udid, row.snapshot, Reason::Shutdown);
-        }
-        drop(causes);
-        drop(retired);
+        Self::cancelled(removed, Reason::Shutdown);
     }
 
+    #[cfg(test)]
+    pub(super) fn structural_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    /// First insertion uses KnownVec's two-slot actual requested backing. The
+    /// copied selectors in this fixture have exactly their length as capacity.
+    #[cfg(test)]
+    pub(super) fn initial_attempt_bytes(udid: &str, identity: &AttemptIdentity) -> usize {
+        4 * std::mem::size_of::<Box<Removed>>()
+            + 2 * std::mem::size_of::<Removed>()
+            + udid.len()
+            + super::candidate_input::route_capacity(&identity.route)
+            + FailureReceipt::initial_bytes(udid, identity)
+    }
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.lock().rows.len()
     }
 }
 
-pub(super) struct Removed {
-    udid: String,
-    row: Option<Episode>,
-    cause: Option<Arc<FailureReceipt>>,
-}
-
 pub(super) struct Attempt {
     ledger: Arc<Ledger>,
-    udid: String,
-    ticket: Ticket,
-    version: Arc<()>,
-    identity: AttemptIdentity,
-    slot: Arc<OwnedSemaphorePermit>,
+    receipt: Arc<FailureReceipt>,
     started: Snapshot,
-    displaced: Option<Episode>,
+    displaced: Option<Box<Removed>>,
     complete: bool,
 }
-
 impl Attempt {
     pub(super) fn source_failed(&self, original: anyhow::Error) -> anyhow::Error {
         self.ledger.capture_source(self, original)
@@ -715,9 +680,13 @@ impl Attempt {
 
     pub(super) fn emit_start(&self) {
         if let Some(old) = &self.displaced {
-            emit(&self.udid, old.snapshot, Reason::IdentityChanged);
+            emit(
+                &self.receipt.udid,
+                old.row.as_ref().expect("episode node").snapshot,
+                Reason::IdentityChanged,
+            );
         }
-        emit(&self.udid, self.started, Reason::AttemptStarted);
+        emit(&self.receipt.udid, self.started, Reason::AttemptStarted);
     }
 
     pub(super) fn finish(mut self, result: &Result<super::TunnelRecord>) {

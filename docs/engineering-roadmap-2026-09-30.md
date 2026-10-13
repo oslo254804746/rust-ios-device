@@ -8511,3 +8511,15 @@ standalone沿用显式bank；生产构造失败返回，最后原Registry/Reserv
 退款。4新增/整组428通过2原ignored，六组前台57与实际CLI31通过，严格CLI
 Clippy/build/fmt及readonly/host通过。完整opaque/error/native/history及freshness
 仍缺合同，不关闭L02，见[验证](validation/tunnel-native-registry-bytes-2026-10-13.md)。
+
+
+## 2026-10-13 L02 retry/history自有存储准入
+
+同池准入Ledger body、真实Vec backing、Box删除节点、receipt/Original/调用方
+wrapper与实际copied key/route capacity；Source前完成，取得原错误后的历史落地
+和remove/rollback不再申请新额度。first/latest共享原对象，原source/downcast
+保持，最后实际node/caller owner释放才退款。诊断根快照收费，拒绝显式truncated。
+4项新增及受影响tunnel433通过、2既有ignored；完整门禁及来源见
+[验证](validation/tunnel-retry-owned-storage-2026-10-13.md)。任意dyn Error、
+Arc/anyhow私有分配、native/runtime/backing及完整刷新仍缺；不关闭L02。
+账本23交付/6缺开发/L02待收口、有效30和Q04全部排除保持。

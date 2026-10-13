@@ -411,3 +411,45 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
     state.clear().await;
     drop(native);
 }
+
+#[tokio::test]
+async fn payload_census_quota_refusal_marks_incomplete_without_losing_original_receipt() {
+    let source = Arc::new(PayloadSource {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        attached: std::sync::atomic::AtomicBool::new(true),
+    });
+    let state = TunnelAgentState::with_source(
+        ios_core::TunMode::Userspace,
+        crate::access::AccessControl::trusted_test_local(),
+        crate::access::Upstreams::default(),
+        source,
+        std::time::Duration::from_secs(1),
+    );
+    state.refresh_once().await.unwrap();
+    let original = state.inner.retry.receipt("payload-fixture").unwrap();
+    let pointer = original.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError;
+    let before = state.retained_error_payloads();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    let refused = state.retained_error_payloads();
+    assert!(refused.truncated);
+    assert!(!refused.fully_measured_payloads());
+    assert_eq!(refused.active_scans, before.active_scans);
+    assert_eq!(
+        refused.unjoined_native_owners,
+        before.unjoined_native_owners
+    );
+    let retained = state.inner.retry.receipt("payload-fixture").unwrap();
+    assert!(Arc::ptr_eq(&original, &retained));
+    assert_eq!(
+        retained.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError,
+        pointer
+    );
+    assert_eq!(bank.available_permits(), 0);
+    drop(held);
+    assert_eq!(state.retained_error_payloads(), before);
+    state.notify_shutdown();
+    state.clear().await;
+}

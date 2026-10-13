@@ -6,7 +6,8 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
     source.usb.lock().unwrap().push(A.into());
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let bytes = scan::capsule_reservation_bytes() - 1;
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -32,7 +33,8 @@ async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() 
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let reserve = scan::capsule_reservation_bytes();
     let bytes = Lifecycle::initial_metadata_bytes(A) + reserve;
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
@@ -71,7 +73,8 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
         + bookkeeping::WriteBatch::backing_bytes(1)
         - 1;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -177,7 +180,8 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
         + std::mem::size_of::<usize>()
         - 1;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(native_bytes + (bytes));
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let error = state.refresh_once().await.unwrap_err();
@@ -220,7 +224,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     let charge = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
     let candidate = candidate_index::Candidate::first_usb_bytes(A);
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
         native_bytes
             + (scan::capsule_reservation_bytes()
@@ -253,7 +258,8 @@ async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extr
     let charge =
         std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + A.len();
     let reserve = scan::capsule_reservation_bytes();
-    let native_bytes = state.inner.native.structural_bytes();
+    let native_bytes =
+        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
         native_bytes + (charge + Lifecycle::initial_metadata_bytes(A) + reserve),
     );

@@ -735,7 +735,7 @@ impl TunnelAgentState {
                 upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
                 upstream_access,
                 failed_attempts: RwLock::new(HashMap::new()),
-                retry: reconnect::Ledger::new(retry),
+                retry: reconnect::Ledger::with_metadata(retry, Arc::clone(&global_metadata_bytes))?,
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
                 metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
                 global_metadata_bytes: Arc::clone(&global_metadata_bytes),
@@ -776,6 +776,9 @@ impl TunnelAgentState {
             .rebind_empty_metadata(&bank)
             .unwrap();
         inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        inner.retry =
+            reconnect::Ledger::with_metadata(inner.retry.policy().clone(), Arc::clone(&bank))
+                .unwrap();
         inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
         inner.global_metadata_bytes = bank;
     }
