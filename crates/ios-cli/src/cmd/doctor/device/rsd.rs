@@ -193,6 +193,7 @@ fn check(id: &'static str, metadata: Metadata) -> Check {
         hint: None,
         error: None,
         rsd: Some(metadata),
+        ddi_manifests: None,
     }
 }
 

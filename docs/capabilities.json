@@ -4033,7 +4033,7 @@
       ],
       "compatibility_scope": [
         "Without --udid/IOS_UDID host schema1 is retained; a selector now requests schema2; migration is documented in docs/public-contract.md.",
-        "Without RSD selectors, host schema1 and target schema2/five-check order retain compatibility; explicit RSD replaces the last two device observations with optional safe metadata fields."
+        "Host-only reports retain schema1 and add pairing_directory plus optional state/error_class observations. Explicit targets use schema2 with trust_session, developer_mode, ddi_signatures, rsd_services, device_route, ddi_mounted, ddi_usable and ddi_manifests in that order; existing RSD selectors replace only rsd_services/device_route/ddi_usable with the corresponding selected-route observations."
       ],
       "observations": [
         {
@@ -4068,7 +4068,9 @@
       ],
       "limitations": [
         "Capability-level device and platform workflows have not been independently established by the aggregate build/test evidence.",
-        "Target probes use existing lockdown trust only; RSD/routes stay not_probed, DDI observations do not establish mounted/usable state, and platform/device acceptance remains pending. Blocking regular-file IO is not physically cancellable."
+        "Target probes use existing lockdown trust and only explicit already-established RSD routes; no pairing, tunnel activation, settings change, DDI download or mount is performed. Missing metadata and unsupported adapters stay Unknown; ProductVersion chooses legacy transport but does not establish service support.",
+        "DDI mounted state comes from strict CopyDevices metadata; usability requires an actual read-only DeviceInfo runningProcesses result through the implemented legacy/existing-RSD adapter. ddi_manifests queries opaque personalization manifests only for device-reported personalized DeveloperDiskImage signatures; nonempty replies do not verify Apple cryptographic signatures or match a local BuildManifest to target hardware. Root validated 60 doctor fixture tests (one original ignored), strict CLI Clippy/build and this inventory; physical/platform support is not established by synthetic responses.",
+        "Platform USB counts and directory observations establish bounded visibility only, without selected-device identity, trust, credential contents or write-access guarantees. macOS remoted coexistence requires running process samples before/after a successful target-identifying existing-RSD directory read; it does not prove uninterrupted liveness. Blocking local filesystem calls are not physically cancellable."
       ],
       "topic": "docs/troubleshooting.md"
     },

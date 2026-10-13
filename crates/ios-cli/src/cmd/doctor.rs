@@ -24,6 +24,7 @@ impl ProbeCancel {
 }
 
 mod device;
+mod host_directories;
 
 /// Safe typed context for this command's probe interpretation. Keeping it in
 /// anyhow context preserves the original native error and its downcasts.
@@ -70,7 +71,7 @@ enum Status {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct Check {
     id: &'static str,
     status: Status,
@@ -79,6 +80,24 @@ struct Check {
     hint: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     remoted_observations: Vec<RemotedObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<device::State>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_class: Option<ios_core::ErrorClass>,
+    #[serde(skip)]
+    error: Option<anyhow::Error>,
+}
+
+impl std::fmt::Debug for Check {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostCheck")
+            .field("id", &self.id)
+            .field("status", &self.status)
+            .field("state", &self.state)
+            .field("error_class", &self.error_class)
+            .field("error_retained", &self.error.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -96,12 +115,46 @@ impl Check {
             detail: detail.into(),
             hint: None,
             remoted_observations: Vec::new(),
+            state: None,
+            error_class: None,
+            error: None,
         }
     }
 
     fn hint(mut self, hint: &'static str) -> Self {
         self.hint = Some(hint);
         self
+    }
+
+    fn state(mut self, state: device::State) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    fn io_failure(id: &'static str, error: std::io::Error, detail: &'static str) -> Self {
+        Self::failure(id, error.into(), detail)
+    }
+
+    fn failure(id: &'static str, error: anyhow::Error, detail: &'static str) -> Self {
+        let class = ios_core::classify_error(error.as_ref());
+        let state = match class {
+            ios_core::ErrorClass::PermissionDenied => device::State::PermissionDenied,
+            ios_core::ErrorClass::NotFound => device::State::MetadataMissing,
+            ios_core::ErrorClass::ServiceMissing => device::State::ServiceUnavailable,
+            ios_core::ErrorClass::Unsupported => device::State::Unsupported,
+            ios_core::ErrorClass::Protocol | ios_core::ErrorClass::InvalidInput => {
+                device::State::Failed
+            }
+            ios_core::ErrorClass::Timeout
+            | ios_core::ErrorClass::Disconnected
+            | ios_core::ErrorClass::DeviceNotFound
+            | ios_core::ErrorClass::Io => device::State::Unreachable,
+            _ => device::State::Failed,
+        };
+        let mut check = Self::new(id, Status::Warning, detail).state(state);
+        check.error_class = Some(class);
+        check.error = Some(error);
+        check
     }
 }
 
@@ -260,7 +313,7 @@ impl DoctorCmd {
 
     async fn inspect(&self, cancel: &ProbeCancel) -> Report {
         let deadline = Duration::from_secs(self.timeout);
-        let (mux, ipv6, manager, kernel, platform_usb, platform_route, remoted, ddi_dir) = tokio::join!(
+        let (mux, ipv6, manager, kernel, platform_usb, platform_route, remoted, ddi_dir, pair_dir) = tokio::join!(
             bounded_cancel("usbmuxd", deadline, Status::Failed, probe_usbmux(), cancel),
             bounded_cancel(
                 "ipv6_loopback",
@@ -303,6 +356,13 @@ impl DoctorCmd {
                 probe_ddi_directory(),
                 cancel
             ),
+            bounded_cancel(
+                "pairing_directory",
+                deadline,
+                Status::Warning,
+                host_directories::probe_pairing_directory(),
+                cancel
+            ),
         );
         let mut checks = vec![
             mux,
@@ -318,6 +378,7 @@ impl DoctorCmd {
             platform_route,
             remoted,
             ddi_dir,
+            pair_dir,
         ];
         checks.push(if self.mdns {
             // Browsing itself uses the requested window; allow a bounded margin for setup/cleanup.
@@ -424,7 +485,7 @@ async fn bounded_cancel(
 ) -> Check {
     tokio::select! {
         biased;
-        _ = cancel.cancelled() => Check::new(id, Status::Unknown, "The probe was cancelled."),
+        _ = cancel.cancelled() => Check::new(id, Status::Unknown, "The probe was cancelled.").state(device::State::NotProbed),
         check = bounded(id, deadline, timeout_status, probe) => check,
     }
 }
@@ -448,7 +509,15 @@ async fn bounded(
 ) -> Check {
     match tokio::time::timeout(deadline, probe).await {
         Ok(check) => check,
-        Err(_) => Check::new(id, timeout_status, "The probe exceeded its deadline."),
+        Err(error) => {
+            let mut check = Check::io_failure(
+                id,
+                std::io::Error::new(std::io::ErrorKind::TimedOut, error),
+                "The probe exceeded its deadline.",
+            );
+            check.status = timeout_status;
+            check
+        }
     }
 }
 
@@ -752,43 +821,30 @@ async fn host_command_clock(deadline: tokio::time::Instant) -> Result<()> {
 async fn probe_platform_usb(_budget: Duration, _cancel: &ProbeCancel) -> Check {
     #[cfg(target_os = "linux")]
     {
-        let sys_bus = std::path::Path::new("/sys/bus/usb/devices");
-        if sys_bus.is_dir() {
-            let mut apple_count = 0;
-            let mut total_count = 0;
-            if let Ok(entries) = std::fs::read_dir(sys_bus) {
-                for entry in entries.flatten() {
-                    let vendor_path = entry.path().join("idVendor");
-                    if let Ok(vendor) = std::fs::read_to_string(vendor_path) {
-                        total_count += 1;
-                        if vendor.trim().eq_ignore_ascii_case("05ac") {
-                            apple_count += 1;
-                        }
-                    }
+        bounded_cancel(
+            "platform_usb",
+            _budget,
+            Status::Warning,
+            async {
+                match tokio::task::spawn_blocking(|| {
+                    host_directories::inspect_linux_usb(std::path::Path::new(
+                        "/sys/bus/usb/devices",
+                    ))
+                })
+                .await
+                {
+                    Ok(check) => check,
+                    Err(_) => Check::new(
+                        "platform_usb",
+                        Status::Unknown,
+                        "The Linux USB observation worker did not complete.",
+                    )
+                    .state(device::State::Unreachable),
                 }
-            }
-            if apple_count > 0 {
-                Check::new(
-                    "platform_usb",
-                    Status::Ok,
-                    format!("USB host subsystem operational: detected {apple_count} Apple USB device(s) (VID 0x05ac) among {total_count} USB device(s)."),
-                )
-            } else {
-                Check::new(
-                    "platform_usb",
-                    Status::Ok,
-                    format!("USB host subsystem operational: sysfs USB tree accessible ({total_count} devices found); no Apple USB device (VID 0x05ac) detected."),
-                )
-                .hint("Connect an iOS device via USB cable to enable USB communications.")
-            }
-        } else {
-            Check::new(
-                "platform_usb",
-                Status::Warning,
-                "Linux sysfs USB directory /sys/bus/usb/devices is not accessible.",
-            )
-            .hint("Check that sysfs is mounted and USB controller kernel modules are loaded.")
-        }
+            },
+            _cancel,
+        )
+        .await
     }
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
@@ -805,38 +861,18 @@ async fn probe_platform_usb(_budget: Duration, _cancel: &ProbeCancel) -> Check {
         match bounded_host_command(command, _budget, _cancel).await {
             Ok((status, stdout)) if status.success() => {
                 if cfg!(target_os = "windows") {
-                    match serde_json::from_slice::<serde_json::Value>(&stdout) {
-                        Ok(value)
-                            if value["total"].is_u64()
-                                && value["apple"].is_u64()
-                                && value["failed"].is_u64() =>
-                        {
-                            let failed = value["failed"].as_u64().unwrap();
-                            Check::new("platform_usb", if failed == 0 { Status::Ok } else { Status::Warning },
-                                format!("Enumerated {} present USB PnP entries, {} Apple entries, {} entries with a driver error; enumeration does not establish device trust or service connectivity.", value["total"], value["apple"], failed))
-                        }
-                        _ => Check::new(
-                            "platform_usb",
-                            Status::Unknown,
-                            "USB PnP enumeration returned an unrecognized response.",
-                        ),
-                    }
+                    host_directories::windows_usb_output(&stdout)
                 } else {
-                    let text = String::from_utf8_lossy(&stdout);
-                    let total = text.matches("idVendor").count();
-                    let apple = text
-                        .lines()
-                        .filter(|line| line.contains("idVendor") && line.contains("= 1452"))
-                        .count();
-                    Check::new("platform_usb", if total > 0 { Status::Ok } else { Status::Unknown },
-                        format!("Enumerated {total} IOUSB vendor entries, including {apple} Apple entries; enumeration does not establish device trust or service connectivity."))
+                    host_directories::ioreg_usb_output(&stdout)
                 }
             }
-            _ => Check::new(
+            Ok(_) => Check::new(
                 "platform_usb",
                 Status::Unknown,
-                "Platform USB enumeration could not complete or exceeded its output limit.",
-            ),
+                "The platform USB enumeration command exited unsuccessfully; its permission or service state is unknown.",
+            ).state(device::State::Failed),
+            Err(error) => Check::failure("platform_usb", error,
+                "Platform USB enumeration could not complete or exceeded its output limit."),
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -846,6 +882,7 @@ async fn probe_platform_usb(_budget: Duration, _cancel: &ProbeCancel) -> Check {
             Status::Unknown,
             "No USB enumeration adapter is available for this platform.",
         )
+        .state(device::State::Unsupported)
     }
 }
 
@@ -856,6 +893,7 @@ async fn probe_platform_route(address: Option<SocketAddrV6>) -> Check {
             Status::Unknown,
             "No existing target RSD endpoint selected for route observation.",
         )
+        .state(device::State::NotProbed)
         .hint(
             "Select --udid and --rsd-address for a bounded read-only route and RSD observation.",
         );
@@ -863,11 +901,11 @@ async fn probe_platform_route(address: Option<SocketAddrV6>) -> Check {
     match tokio::net::TcpStream::connect(address).await {
         Ok(stream) => match stream.local_addr() {
             Ok(local) if !local.ip().is_unspecified() => Check::new("platform_route", Status::Ok,
-                "The selected existing IPv6 RSD endpoint accepted TCP over a concrete local route; RSD identity and services are checked separately."),
-            _ => Check::new("platform_route", Status::Unknown, "The selected connection did not expose a concrete local route."),
+                "The selected existing IPv6 RSD endpoint accepted TCP over a concrete local route; RSD identity and services are checked separately.").state(device::State::Available),
+            _ => Check::new("platform_route", Status::Unknown, "The selected connection did not expose a concrete local route.").state(device::State::MetadataMissing),
         },
-        Err(error) => Check::new("platform_route", Status::Warning,
-            format!("The selected existing RSD endpoint could not be reached ({}).", ios_core::classify_error(&error))),
+        Err(error) => Check::io_failure("platform_route", error,
+            "The selected existing RSD endpoint could not be reached; RSD identity and services remain independently assessed."),
     }
 }
 
@@ -881,7 +919,9 @@ async fn probe_remoted_coexistence(_budget: Duration, _cancel: &ProbeCancel) -> 
             Ok((status, stdout)) if status.success() => {
                 remoted_output_check(&stdout)
             },
-            _ => Check::new("remoted_coexistence", Status::Unknown,
+            Ok(_) => Check::new("remoted_coexistence", Status::Unknown,
+                "The system remoted observation command exited unsuccessfully; no permission or service-state conclusion is available.").state(device::State::Failed),
+            Err(error) => Check::failure("remoted_coexistence", error,
                 "The system remoted service state could not be observed; no coexistence conclusion is available."),
         }
     }
@@ -892,6 +932,7 @@ async fn probe_remoted_coexistence(_budget: Duration, _cancel: &ProbeCancel) -> 
             Status::Unknown,
             "macOS remoted coexistence is not applicable on this host.",
         )
+        .state(device::State::Unsupported)
     }
 }
 
@@ -904,7 +945,7 @@ fn remoted_output_check(stdout: &[u8]) -> Check {
         .find_map(|line| line.trim().strip_prefix("pid = ")?.parse::<u32>().ok())
         .filter(|pid| *pid > 0);
     let mut check = Check::new("remoted_coexistence", Status::Unknown,
-        "launchctl observed the system remoted service. Coexistence requires a successful selected existing RSD observation while this service remains running; host enumeration alone does not establish it.");
+        "launchctl observed the system remoted service. Coexistence requires a successful selected existing RSD observation while this service remains running; host enumeration alone does not establish it.").state(device::State::Available);
     check.remoted_observations.push(RemotedObservation {
         running: running && pid.is_some(),
         pid,
@@ -950,7 +991,15 @@ async fn probe_ddi_directory() -> Check {
         ));
     }
 
-    inspect_ddi_directories(&search_paths)
+    match tokio::task::spawn_blocking(move || inspect_ddi_directories(&search_paths)).await {
+        Ok(check) => check,
+        Err(_) => Check::new(
+            "ddi_directory",
+            Status::Unknown,
+            "The DDI directory observation worker did not complete.",
+        )
+        .state(device::State::Unreachable),
+    }
 }
 
 fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
@@ -960,26 +1009,36 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
     let mut signed_pairs = 0usize;
     let mut inspected = 0usize;
     let mut unavailable = 0usize;
+    let mut first_error = None;
     while let Some((directory, depth)) = queue.pop_front() {
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
-            Err(_) => {
+            Err(error) => {
                 unavailable += 1;
+                first_error.get_or_insert(error);
                 continue;
             }
         };
         for entry in entries {
             inspected += 1;
             if inspected > 4096 {
-                return Check::new("ddi_directory", Status::Unknown, "DDI directory scan reached its 4096-entry limit; no usability conclusion is available.");
+                return Check::new("ddi_directory", Status::Unknown, "DDI directory scan reached its 4096-entry limit; no usability conclusion is available.").state(device::State::MetadataMissing);
             }
-            let Ok(entry) = entry else {
-                unavailable += 1;
-                continue;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    unavailable += 1;
+                    first_error.get_or_insert(error);
+                    continue;
+                }
             };
-            let Ok(kind) = entry.file_type() else {
-                unavailable += 1;
-                continue;
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    unavailable += 1;
+                    first_error.get_or_insert(error);
+                    continue;
+                }
             };
             // Do not follow symlinks/reparse points outside the selected roots.
             if kind.is_dir() && depth < 2 {
@@ -991,9 +1050,13 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
             {
                 continue;
             }
-            let Ok(metadata) = entry.metadata() else {
-                unavailable += 1;
-                continue;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    unavailable += 1;
+                    first_error.get_or_insert(error);
+                    continue;
+                }
             };
             if metadata.len() == 0 {
                 continue;
@@ -1007,9 +1070,28 @@ fn inspect_ddi_directories(search_paths: &[std::path::PathBuf]) -> Check {
             }
         }
     }
-    Check::new("ddi_directory", if regular_images == 0 { Status::Warning } else { Status::Unknown },
-        format!("Discovered {regular_images} nonempty regular DDI image files and {signed_pairs} nonempty signature companions; {unavailable} directory entries were unavailable. Target version/manifest matching and cryptographic acceptance remain unprobed."))
-        .hint("Select the target and use its image-mounter diagnostics to observe mounted-image usability; directory discovery alone is insufficient.")
+    let detail = format!("Discovered {regular_images} nonempty regular DDI image files and {signed_pairs} nonempty signature companions; {unavailable} directory entries were unavailable. Target version/manifest matching and cryptographic acceptance remain unprobed.");
+    let mut check = if let Some(error) = first_error {
+        Check::io_failure(
+            "ddi_directory",
+            error,
+            "DDI directory observation was incomplete.",
+        )
+    } else {
+        Check::new(
+            "ddi_directory",
+            Status::Unknown,
+            "DDI directory observation completed.",
+        )
+        .state(device::State::Available)
+    };
+    check.detail = detail;
+    check.status = if regular_images == 0 {
+        Status::Warning
+    } else {
+        Status::Unknown
+    };
+    check.hint("Select the target and use its image-mounter diagnostics to observe mounted-image usability; directory discovery alone is insufficient.")
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {

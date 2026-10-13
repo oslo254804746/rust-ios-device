@@ -353,14 +353,16 @@ def doctor_cases(binary, env, variants, device):
                         checks = {check["id"]: check for check in body["device"]["checks"]}
                         contract = contract and set(checks) == {
                             "trust_session", "developer_mode", "ddi_signatures",
-                            "rsd_services", "device_route"}
+                            "rsd_services", "device_route", "ddi_mounted",
+                            "ddi_usable", "ddi_manifests"}
                         contract = contract and all(
                             checks[name]["state"] == "unreachable"
                             and checks[name]["status"] == "failed"
                             and checks[name].get("error_class") in {
                                 "io", "disconnected", "timeout"}
                             and "value" not in checks[name]
-                            for name in ("trust_session", "developer_mode", "ddi_signatures"))
+                            for name in ("trust_session", "developer_mode", "ddi_signatures",
+                                         "ddi_mounted", "ddi_usable", "ddi_manifests"))
                         contract = contract and all(
                             checks[name]["state"] == "not_probed"
                             and "value" not in checks[name]
