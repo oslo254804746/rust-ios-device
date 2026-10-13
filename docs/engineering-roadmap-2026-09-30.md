@@ -8537,3 +8537,14 @@ Arc/anyhow私有分配、native/runtime/backing及完整刷新仍缺；不关闭
 Playwright noDefaults仅本Runtime子项；默认download初始化拒绝保持。
 Runtime console及Page/iframe/Input/Fetch/指标完整范围继续，不关闭F04；
 账本23/6/L02待收口、有效30、Q04全部排除保持。
+
+
+## 2026-10-13 L02 扫描起始publication快照收费
+
+initial publication索引以真实KnownVec backing和copied String capacity
+接入共享额度，USB/paired Source前完成；lookup借用原Arc，最后快照owner
+退款，任意准入失败完整释放临时存储。原ListError/USB detach/paired完整
+视图只作用于exact initial Arc的规则保持。3项新增及tunnel436通过、
+2原ignored，见[验证](validation/tunnel-scan-publications-bytes-2026-10-13.md)。
+其余manual/scan索引和key副本、error/native/runtime私有分配及完整刷新
+继续；L02与23/6/待收口账本、有效30及Q04全部排除保持。

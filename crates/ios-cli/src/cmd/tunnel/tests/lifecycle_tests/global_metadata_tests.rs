@@ -252,6 +252,47 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
 }
 
 #[tokio::test]
+async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exact_publication() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    state
+        .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Wifi))
+        .await
+        .unwrap();
+    let publication = state.inner.tunnels.read().await[A].publication.clone();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let desired = state.inner.lifecycle.desired().await.unwrap();
+    let desired_bytes = before - bank.available_permits();
+    drop(desired);
+    assert_eq!(bank.available_permits(), before);
+    let admitted = scan::capsule_reservation_bytes()
+        + desired_bytes
+        + scan_publications::InitialPublications::first_bytes(A)
+        - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - admitted) as u32)
+        .unwrap();
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.count(A), 1, "only the original explicit connection");
+    assert!(Arc::ptr_eq(
+        &state.inner.tunnels.read().await[A].publication,
+        &publication
+    ));
+    drop(error);
+    drop(held);
+    state.notify_shutdown();
+    state.clear().await;
+}
+
+#[tokio::test]
 async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extra_source() {
     let source = FakeSource::new();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);

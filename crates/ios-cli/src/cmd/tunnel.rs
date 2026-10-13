@@ -42,6 +42,7 @@ mod ownership;
 mod reconnect;
 mod retirement;
 mod scan;
+mod scan_publications;
 mod scoped;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
@@ -1775,10 +1776,12 @@ impl TunnelAgentState {
             epoch.retain(whole, &mut tunnels, |device, _| {
                 self.inner.access.permits_device(device)
             })?;
-            tunnels
-                .iter()
-                .map(|(udid, tunnel)| (udid.clone(), tunnel.publication.clone()))
-                .collect::<HashMap<_, _>>()
+            scan_publications::InitialPublications::capture(
+                &self.inner.global_metadata_bytes,
+                tunnels
+                    .iter()
+                    .map(|(udid, tunnel)| (udid, &tunnel.publication)),
+            )?
         };
         if !self.inner.access.permits_any_device() {
             let Some(mut failed) = control.drive(self.inner.failed_attempts.write()).await? else {
