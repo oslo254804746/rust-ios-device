@@ -42,6 +42,7 @@ mod ownership;
 mod reconnect;
 mod retirement;
 mod scan;
+mod scan_desired;
 mod scan_publications;
 mod scoped;
 pub(crate) use scoped::{NativeConnection, NativeScope};
@@ -1746,29 +1747,31 @@ impl TunnelAgentState {
             return Ok(());
         };
         let desired = desired?;
-        let mut manual = HashMap::new();
-        let mut suppressed = std::collections::HashSet::new();
+        let mut manual = scan_desired::Manual::new(&self.inner.global_metadata_bytes);
+        let mut suppressed = scan_desired::Suppressed::new(&self.inner.global_metadata_bytes);
         // Borrow the admitted listing keys for the entire scan. The maps below
         // do not create independent copies, and the listing retains each key
         // charge while Source/candidate/writer futures still use it.
         for row in desired.as_slice() {
             let (udid, ticket, snapshot) = (&row.udid, &row.ticket, &row.snapshot);
             match &snapshot.desired {
-                intent::Desired::Manual { route, authority } if authority.current() => {
-                    manual.insert(udid.as_str(), (ticket.clone(), route.clone()));
+                intent::Desired::Manual { authority, .. } if authority.current() => {
+                    manual.insert(row)?;
                 }
                 intent::Desired::Manual { .. } => {
                     // Use this exact captured desired version: a concurrent
                     // authorized explicit start must survive obsolete cleanup.
                     let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
-                    suppressed.insert(udid.as_str());
+                    suppressed.insert(udid.as_str())?;
                 }
                 intent::Desired::Stopped => {
-                    suppressed.insert(udid.as_str());
+                    suppressed.insert(udid.as_str())?;
                 }
                 intent::Desired::Automatic => {}
             }
         }
+        manual.sort();
+        suppressed.sort();
         let initial = {
             let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
                 return Ok(());
@@ -1909,14 +1912,14 @@ impl TunnelAgentState {
         // Hostless Wi-Fi is rediscovered inside NativeSource on each admitted
         // attempt; no old ConnectedDevice, RSD address or service is replayed.
         let mut pending_mobdev2 = Vec::new();
-        for (udid, (ticket, route)) in &manual {
+        for (udid, (ticket, route)) in manual.iter() {
             if !ticket.is_current() {
                 continue;
             }
             let (route, expected_id) = match &route.route {
                 intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
                 intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
-                    let id = attached_ids.get(*udid).copied();
+                    let id = attached_ids.get(udid).copied();
                     if usb_complete && id.is_none() {
                         continue;
                     }
@@ -1927,7 +1930,7 @@ impl TunnelAgentState {
                     (route, id)
                 }
                 intent::RouteIntent::Mobdev2(host) => {
-                    pending_mobdev2.push(((*udid).to_owned(), ticket.clone(), host.clone()));
+                    pending_mobdev2.push((udid.to_owned(), ticket.clone(), host.clone()));
                     continue;
                 }
             };
@@ -1936,9 +1939,9 @@ impl TunnelAgentState {
                 _ => 0,
             };
             candidate_budget.admit(udid.len(), bytes)?;
-            seen.insert((*udid).to_owned());
+            seen.insert(udid.to_owned());
             let input = candidate_input::Input::owned(
-                (*udid).to_owned(),
+                udid.to_owned(),
                 route,
                 &self.inner.global_metadata_bytes,
             )?;
@@ -2322,7 +2325,7 @@ impl TunnelAgentState {
         candidates: &[candidate_index::Candidate],
         paired_complete: bool,
         usb_complete: bool,
-        manual: &HashMap<&str, (Ticket, Arc<intent::RetainedRoute>)>,
+        manual: &scan_desired::Manual<'_>,
         whole: &scan::Deadline,
         epoch: &scan::Epoch,
     ) -> Result<()> {

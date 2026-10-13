@@ -1,6 +1,97 @@
 use super::*;
 
 #[tokio::test]
+async fn scan_desired_suppressed_index_quota_refusal_precedes_source_and_keeps_stop_epoch() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    state.inner.lifecycle.stop(A).await;
+    let original = ticket.desired();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let desired = state.inner.lifecycle.desired().await.unwrap();
+    let listing_bytes = before - bank.available_permits();
+    drop(desired);
+    let admitted =
+        scan::capsule_reservation_bytes() + listing_bytes + 2 * std::mem::size_of::<&str>() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - admitted) as u32)
+        .unwrap();
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert!(source.calls.lock().unwrap().is_empty());
+    assert!(Arc::ptr_eq(&original.version, &ticket.desired().version));
+    assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
+    drop(error);
+    drop(held);
+    state.notify_shutdown();
+    state.clear().await;
+}
+
+#[tokio::test]
+async fn scan_desired_manual_index_retains_original_snapshot_refs_and_exact_backing_owner() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let (port, server) = spawn_test_router(agent_router(state.clone())).await;
+    let response = client()
+        .post(format!("http://127.0.0.1:{port}/start-tunnel"))
+        .json(&json!({"udid":A,"connection_type":"wifi","ip":"192.0.2.45"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let desired = state.inner.lifecycle.desired().await.unwrap();
+    let row = desired.as_slice().iter().find(|row| row.udid == A).unwrap();
+    let intent::Desired::Manual { route, .. } = &row.snapshot.desired else {
+        panic!("production manual desired row")
+    };
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let mut manual = scan_desired::Manual::new(&bank);
+    manual.insert(row).unwrap();
+    manual.sort();
+    let charged = manual.storage_bytes();
+    assert_eq!(bank.available_permits(), before - charged);
+    let (same_ticket, same_route) = manual.get(A).unwrap();
+    assert!(std::ptr::eq(same_ticket, &row.ticket));
+    assert!(Arc::ptr_eq(same_route, route));
+    assert!(std::ptr::eq(
+        manual.iter().next().unwrap().0.as_ptr(),
+        row.udid.as_ptr()
+    ));
+    assert!(!manual.contains_key(B));
+    drop(manual);
+    assert_eq!(bank.available_permits(), before);
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - charged + 1) as u32)
+        .unwrap();
+    let mut refused = scan_desired::Manual::new(&bank);
+    assert!(refused.insert(row).is_err());
+    assert!(refused.is_empty());
+    assert_eq!(
+        bank.available_permits() + refused.storage_bytes(),
+        charged - 1
+    );
+    drop(refused);
+    assert_eq!(bank.available_permits(), charged - 1);
+    drop(held);
+    drop(desired);
+    server.abort();
+    let _ = server.await;
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    assert!(state.inner.native.snapshot().closed_and_empty());
+}
+
+#[tokio::test]
 async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_ready_change() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());

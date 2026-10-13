@@ -8548,3 +8548,15 @@ initial publication索引以真实KnownVec backing和copied String capacity
 2原ignored，见[验证](validation/tunnel-scan-publications-bytes-2026-10-13.md)。
 其余manual/scan索引和key副本、error/native/runtime私有分配及完整刷新
 继续；L02与23/6/待收口账本、有效30及Q04全部排除保持。
+
+
+## 2026-10-13 L02 manual/suppressed扫描索引字节归属
+
+用实际收费KnownVec row references/排序位置及suppressed key references
+替换未收费HashMap/HashSet backing；borrow保留原desired key/ticket/route
+身份，排序查找与捕获顺序迭代分开，部分准入失败不发布row，实际空backing
+到最后index owner释放退款。原tunnel436及新增2项通过，严格CLI
+Clippy/build/fmt、readonly1及host5/22NOT_RUN通过，见
+[验证](validation/tunnel-scan-desired-index-bytes-2026-10-13.md)。其余索引/key
+副本、原error/native/runtime私有allocation与完整刷新仍缺，不关闭L02；
+账本23/6/待收口、有效30及Q04全部排除保持。
