@@ -118,6 +118,7 @@ impl RunTestCmd {
         let mut attempts = crate::cmd::test_workflow::AttemptHistory::default();
         let mut latest_summary = None;
         let mut pending_startup = None;
+        let mut pending_finished = None;
         let work = Box::pin(async {
             if let Some(crashes) = &mut crashes {
                 crashes.baseline(&udid, deadline, &native).await?;
@@ -330,15 +331,27 @@ impl RunTestCmd {
                     }
                     Ok(Ok(summary)) => summary,
                 };
+                pending_finished = Some(serde_json::json!({
+                    "status": "finished",
+                    "untested": true,
+                    "configuration": configuration_name,
+                    "runner_bundle_id": result.runner_bundle_id,
+                    "target_bundle_id": result.target_bundle_id,
+                    "pid": result.pid,
+                    "protocol_version": result.protocol_version,
+                    "minimum_version": result.minimum_version,
+                    "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
+                }));
+                latest_summary = Some(summary.clone());
+                attempts.complete(&summary)?;
                 session.terminate().await;
                 if let Some(error) = session.take_termination_error() {
                     return Err(error);
                 }
 
-                attempts.complete(&summary)?;
-                latest_summary = Some(summary.clone());
+                summary.terminal_outcome()?;
                 // Rerun failed tests if requested
-                if summary.failed_tests > 0 && self.workflow.rerun_failed > 0 {
+                if summary.failure_count() > 0 && self.workflow.rerun_failed > 0 {
                     for rerun_idx in 0..self.workflow.rerun_failed {
                         let failed_selectors =
                             crate::cmd::test_workflow::extract_failed_selectors(&summary);
@@ -396,17 +409,17 @@ impl RunTestCmd {
                         let rerun_summary = rerun_res.map_err(|elapsed| {
                             xctest_wait_timeout(elapsed, "timed out waiting for rerun results")
                         })??;
+                        attempts.complete(&rerun_summary)?;
                         if let Some(error) = rerun_session.take_termination_error() {
                             return Err(error);
                         }
-                        attempts.complete(&rerun_summary)?;
                         {
                             crate::cmd::test_workflow::merge_rerun_summary(
                                 &mut summary,
                                 rerun_summary,
                             )?;
                             latest_summary = Some(summary.clone());
-                            if summary.failed_tests == 0 {
+                            if summary.failure_count() == 0 {
                                 break;
                             }
                         }
@@ -415,26 +428,10 @@ impl RunTestCmd {
 
                 write_junit_summary(self.junit_output.as_deref(), &summary)?;
 
-                crate::output::outln!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "status": "finished",
-                        "untested": true,
-                        "configuration": configuration_name,
-                        "runner_bundle_id": result.runner_bundle_id,
-                        "target_bundle_id": result.target_bundle_id,
-                        "pid": result.pid,
-                        "protocol_version": result.protocol_version,
-                        "minimum_version": result.minimum_version,
-                        "summary": summary,
-                        "attempts": attempts,
-                        "note": "Result event parsing is covered offline; real XCTest devices still need validation.",
-                    }))?
-                );
-                if summary.failed_tests > 0 {
+                if summary.failure_count() > 0 {
                     return Err(anyhow::anyhow!(
                         "XCTest run completed with {} failed test(s)",
-                        summary.failed_tests
+                        summary.failure_count()
                     ));
                 }
                 return Ok(());
@@ -561,16 +558,73 @@ impl RunTestCmd {
         } else {
             Ok(())
         };
-        let outcome = crate::cmd::test_workflow::combine_results(
+        let mut outcome = crate::cmd::test_workflow::combine_results(
             outcome,
             recorded,
             "workflow terminal history failed",
         );
-        let outcome = crate::cmd::test_workflow::combine_results(
+        if let Err(error) = &outcome {
+            let recorded = attempts.fail(error, None);
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                recorded,
+                "workflow final history classification failed",
+            );
+        }
+        let artifact_deadline = Instant::now() + Duration::from_secs(5);
+        let artifact = attempts
+            .write_until(self.junit_output.as_deref(), artifact_deadline)
+            .await;
+        let artifact_failed = artifact.is_err();
+        outcome = crate::cmd::test_workflow::combine_results(
             outcome,
-            attempts.write(self.junit_output.as_deref()).await,
+            artifact,
             "workflow attempt artifact failed",
         );
+        if artifact_failed {
+            let diagnostic = latest_summary
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| incomplete_summary(false));
+            let reported = write_junit_diagnostic(
+                self.junit_output.as_deref(),
+                &diagnostic,
+                outcome.as_ref().expect_err("failed attempt artifact"),
+            );
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                reported,
+                "workflow artifact diagnostic failed",
+            );
+        }
+        if let Err(error) = &outcome {
+            let recorded = attempts.fail(error, None);
+            outcome = crate::cmd::test_workflow::combine_results(
+                outcome,
+                recorded,
+                "workflow artifact failure classification failed",
+            );
+        }
+        if let Some(mut receipt) = pending_finished {
+            let output = (|| -> Result<()> {
+                crate::cmd::test_workflow::finish_receipt(
+                    &mut receipt,
+                    latest_summary.as_ref().expect("observed finished summary"),
+                    &attempts,
+                    &outcome,
+                )?;
+                crate::output::outln!("{}", serde_json::to_string_pretty(&receipt)?);
+                Ok(())
+            })();
+            return crate::cmd::test_workflow::finish_output(
+                outcome,
+                output,
+                &mut attempts,
+                self.junit_output.as_deref(),
+                artifact_deadline,
+            )
+            .await;
+        }
         if let Some(mut receipt) = pending_startup {
             receipt["service_cleanup"] = serde_json::json!(if outcome.is_ok() {
                 "complete"

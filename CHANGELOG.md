@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Validate observed XCTest terminal evidence and preserve concrete failure
+  counts for CI. Publish final workflow receipts after cleanup/artifacts, and
+  reclassify the sidecar once if stdout fails under the same artifact deadline.
+
 - Reserve tunnel scan-owned failure contexts, cleanup capsules and abandoned
   history payloads before Source work. Preserve original error objects and
   chain depth; release materialized charges with their final caller/history owner.

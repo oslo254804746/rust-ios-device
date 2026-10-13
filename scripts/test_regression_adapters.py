@@ -354,13 +354,58 @@ class ActualCliAfcTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32" and CLI.is_file(), "Windows existing-trust path isolation and an existing native CLI required")
 class ActualCliWorkflowTests(unittest.TestCase):
+    def capture_closed_stdout(self, command, environment):
+        import threading
+        import time
+        from regression_windows_process import CapturedProcess
+        started = time.monotonic()
+        process = CapturedProcess(command, cwd=regression.ROOT, env=environment)
+        # Close the original reader before the command publishes its final receipt.
+        process.stdout.close()
+        error_bytes, reader_errors = bytearray(), []
+        overflow, forced, timed_out = False, False, False
+
+        def reader():
+            nonlocal overflow
+            try:
+                while chunk := process.stderr.read1(4096):
+                    remaining = 65536 - len(error_bytes)
+                    error_bytes.extend(chunk[:remaining])
+                    overflow = overflow or len(chunk) > remaining
+            except (OSError, ValueError):
+                reader_errors.append(True)
+            finally:
+                process.stderr.close()
+
+        worker = threading.Thread(target=reader, name="owned-closed-output-stderr")
+        worker.start()
+        try:
+            process.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        finally:
+            if process.poll() is None or process.job.active():
+                forced = True
+                process.terminate()
+            process.wait(timeout=2)
+            empty = process.job.empty(2)
+            worker.join(timeout=1)
+            complete = empty and not worker.is_alive() and not forced
+            process.close()
+        return Capture(b"", bytes(error_bytes), process.returncode, timed_out, overflow,
+                       bool(reader_errors) or worker.is_alive(), round((time.monotonic() - started) * 1000),
+                       process.pid, complete, "windows-job")
+
     def run_native_xctest(self, *, fault=None, first_test_fails=False, rerun=False, report_directory=False,
-                          preexisting_runner=False):
+                          preexisting_runner=False, entry="runxctest", terminal_scenario=None,
+                          rerun_terminal_scenario=None, sidecar_directory=False, human_output=False,
+                          closed_output=False):
         from xml.etree import ElementTree
         with tempfile.TemporaryDirectory(prefix="ios-native-xctest-stages-") as directory:
             root = Path(directory)
             peer = CliWorkflowPeer(root / "trust", fault=fault, runner_preexisting=preexisting_runner,
-                                   first_test_fails=first_test_fails)
+                                   first_test_fails=first_test_fails, terminal_scenario=terminal_scenario,
+                                   rerun_terminal_scenario=rerun_terminal_scenario)
             packages = []
             for name, bundle_id in (("wrong-name.ipa", APP_ID), ("wrong-runner-name.ipa", RUNNER_ID)):
                 package = root / name
@@ -372,22 +417,43 @@ class ActualCliWorkflowTests(unittest.TestCase):
             if report_directory:
                 xml.mkdir()
                 (xml / "preserved-marker").write_bytes(b"preserve-directory")
+            history_path = Path(str(xml) + ".attempts.json")
+            if sidecar_directory:
+                history_path.mkdir()
+                (history_path / "preserved-marker").write_bytes(b"preserve-sidecar-directory")
             context = regression.ExecutionContext(binary=CLI, device=regression.DeviceTarget(UDID), environment=peer.environment)
             arguments = ["runxctest", "--bundle-id", APP_ID, "--test-runner-bundle-id", RUNNER_ID,
                          "--xctest-config", "MatrixTests.xctest", "--xctest", "--wait", "--timeout", "5",
-                         "--test", "MatrixTests/testExample", "--install-app", packages[0], "--install-runner", packages[1],
+                         "--test", "MatrixTests/testExample"]
+            if entry == "runtest":
+                xctestrun = root / "MatrixTests.xctestrun"
+                xctestrun.write_bytes(plistlib.dumps({"__xctestrun_metadata__": {"FormatVersion": 2},
+                    "TestConfigurations": [{"Name": "Matrix", "TestTargets": [{
+                        "TestHostBundleIdentifier": RUNNER_ID, "TestBundlePath": "MatrixTests.xctest",
+                        "IsUITestBundle": True, "OnlyTestIdentifiers": ["MatrixTests/testExample"],
+                        "UITargetAppEnvironmentVariables": {"UITargetAppBundleIdentifier": APP_ID},
+                    }]}]}))
+                arguments = ["runtest", xctestrun, "--wait", "--startup-timeout-secs", "2",
+                             "--result-timeout-secs", "3"]
+            arguments += ["--install-app", packages[0], "--install-runner", packages[1],
                          "--uninstall-on-finish", "--junit-output", xml, "--log-output", log]
             if rerun:
                 arguments += ["--rerun-failed", "1"]
             try:
-                result = capture(adapters.command(context, *arguments), env=peer.environment, timeout=12, max_bytes=65536)
+                command = adapters.command(context, *arguments)
+                if human_output:
+                    command.insert(1, "--no-json")
+                result = (self.capture_closed_stdout(command, peer.environment) if closed_output else
+                          capture(command, env=peer.environment, timeout=12, max_bytes=65536))
                 xml_value = ElementTree.parse(xml).getroot() if xml.is_file() else None
                 log_value = log.read_bytes() if log.is_file() else b""
-                history_path = Path(str(xml) + ".attempts.json")
                 history = json.loads(history_path.read_bytes()) if history_path.is_file() else None
                 if report_directory:
                     self.assertEqual((xml / "preserved-marker").read_bytes(), b"preserve-directory")
                     self.assertEqual(set(xml.iterdir()), {xml / "preserved-marker"})
+                if sidecar_directory:
+                    self.assertEqual((history_path / "preserved-marker").read_bytes(), b"preserve-sidecar-directory")
+                    self.assertEqual(set(history_path.iterdir()), {history_path / "preserved-marker"})
                 self.assertFalse(result.timed_out, result.stderr)
                 self.assertTrue(result.cleanup_complete)
                 self.assertFalse(result.overflow)
@@ -397,7 +463,7 @@ class ActualCliWorkflowTests(unittest.TestCase):
             self.assertTrue(complete, peer.errors)
             self.assertFalse(peer.pids)
             self.assertNotIn(APP_ID, peer.apps)
-            self.assertEqual(RUNNER_ID in peer.apps, preexisting_runner)
+            self.assertEqual(RUNNER_ID in peer.apps, preexisting_runner or fault == "uninstall")
             self.assertIn(b"log capture finished", log_value)
             self.assertFalse(list(root.glob(".*.tmp")))
             return result, peer, xml_value, log_value, history
@@ -542,6 +608,138 @@ class ActualCliWorkflowTests(unittest.TestCase):
                 self.assertEqual(peer.calls.count("Uninstall"), 2)
                 self.assertIsNotNone(history["terminal_error_class"])
                 self.assertIsNotNone(xml)
+
+    def assert_final_receipt(self, result, history, *, outcome, test_outcome):
+        # A single JSON value proves that an earlier successful receipt was not emitted.
+        body = json.loads(result.stdout)
+        self.assertEqual(body["status"], "finished")
+        self.assertEqual(body["outcome"], outcome)
+        self.assertEqual(body["test_outcome"], test_outcome)
+        self.assertEqual(body["attempts"], history)
+        self.assertEqual(body["terminal_error_class"], history["terminal_error_class"])
+        self.assertEqual(body["terminal_error_class"] is None, outcome == "passed")
+        return body
+
+    def test_terminal_supported_statuses_and_empty_plan_preserve_actual_cli_outcomes(self):
+        for entry in ("runxctest", "runtest"):
+            for scenario in (None, "failed", "skipped", "expected-failure", "empty"):
+                with self.subTest(entry=entry, scenario=scenario):
+                    result, peer, xml, _, history = self.run_native_xctest(entry=entry, terminal_scenario=scenario)
+                    failed = scenario == "failed"
+                    self.assertEqual(result.returncode, int(failed), result.stderr)
+                    body = self.assert_final_receipt(result, history, outcome="failed" if failed else "passed",
+                                                     test_outcome="failed_tests" if failed else "passed")
+                    self.assertEqual(body["summary"]["failed_tests"], int(failed))
+                    self.assertEqual(body["summary"]["total_tests"], int(scenario != "empty"))
+                    self.assertEqual(body["summary"]["skipped_tests"], int(scenario in ("skipped", "expected-failure")))
+                    self.assertEqual(peer.test_attempts, 1)
+                    self.assertEqual(peer.calls.count("killPid:"), 1)
+                    self.assertFalse(xml.findall(".//error") if not failed else [])
+                    if scenario == "expected-failure":
+                        self.assertEqual(body["summary"]["suites"][0]["cases"][0]["failure"]["message"], "synthetic assertion")
+
+    def test_terminal_invalid_evidence_is_nonzero_and_keeps_raw_history_without_rerun(self):
+        for entry in ("runxctest", "runtest"):
+            for scenario in ("unfinished", "stalled", "unknown", "uncaught", "failed-zero-counter", "unexpected-zero-counter", "finish-only"):
+                with self.subTest(entry=entry, scenario=scenario):
+                    result, peer, xml, _, history = self.run_native_xctest(entry=entry, terminal_scenario=scenario,
+                                                                         rerun=scenario not in ("failed-zero-counter", "unexpected-zero-counter"))
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    supported_failure = scenario in ("failed-zero-counter", "unexpected-zero-counter")
+                    body = self.assert_final_receipt(result, history, outcome="failed",
+                                                     test_outcome="failed_tests" if supported_failure else "incomplete")
+                    attempt = history["attempts"][0]
+                    self.assertEqual(attempt["state"], "failed_tests" if supported_failure else "incomplete")
+                    self.assertEqual(attempt["summary"], body["summary"])
+                    self.assertEqual(body["summary"]["finished"], True)
+                    self.assertEqual(peer.test_attempts, 1)
+                    self.assertEqual(peer.calls.count("InstallTransferred"), 2)
+                    self.assertEqual(peer.calls.count("Uninstall"), 2)
+                    self.assertEqual(peer.calls.count("killPid:"), 1)
+                    self.assertTrue(xml.findall(".//failure") if scenario == "failed-zero-counter" else xml.findall(".//error"))
+                    if supported_failure:
+                        self.assertEqual(body["summary"]["failed_tests"], 1)
+                        self.assertEqual(body["summary"]["suites"][0]["failures"], 0)
+                    if scenario == "unexpected-zero-counter":
+                        self.assertEqual(body["summary"]["suites"][0]["unexpected_failures"], 1)
+                    if scenario == "uncaught":
+                        self.assertEqual(body["summary"]["suites"][0]["uncaught_exceptions"], 1)
+                    if scenario == "finish-only":
+                        self.assertEqual(body["summary"]["began"], False)
+                    if scenario in ("unfinished", "stalled", "unknown"):
+                        expected_status = {"unfinished": None, "stalled": "stalled",
+                                           "unknown": {"other": "synthetic-new-status"}}[scenario]
+                        self.assertEqual(body["summary"]["suites"][0]["cases"][0]["status"], expected_status)
+
+    def test_rerun_invalid_terminal_evidence_preserves_first_failure_and_both_attempts(self):
+        for entry in ("runxctest", "runtest"):
+            for scenario in ("unfinished", "stalled", "unknown", "uncaught", "finish-only"):
+                with self.subTest(entry=entry, scenario=scenario):
+                    result, peer, xml, _, history = self.run_native_xctest(entry=entry, first_test_fails=True,
+                        rerun=True, rerun_terminal_scenario=scenario)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    body = self.assert_final_receipt(result, history, outcome="failed", test_outcome="failed_tests")
+                    self.assertEqual([attempt["state"] for attempt in history["attempts"]], ["failed_tests", "incomplete"])
+                    first = history["attempts"][0]["summary"]
+                    self.assertEqual(first, body["summary"])
+                    self.assertEqual(first["suites"][0]["cases"][0]["failure"]["message"], "synthetic assertion")
+                    self.assertEqual(history["attempts"][1]["summary"]["finished"], True)
+                    self.assertEqual(peer.test_attempts, 2)
+                    self.assertEqual(peer.calls.count("InstallTransferred"), 2)
+                    self.assertEqual(peer.calls.count("Uninstall"), 2)
+                    self.assertEqual(peer.calls.count("killPid:"), 2)
+                    self.assertTrue(xml.findall(".//failure"))
+
+    def test_final_output_waits_for_log_uninstall_report_and_sidecar_outcomes(self):
+        for entry in ("runxctest", "runtest"):
+            for parameters in (dict(fault="log-eof"), dict(fault="uninstall"),
+                               dict(report_directory=True), dict(sidecar_directory=True)):
+                with self.subTest(entry=entry, parameters=parameters):
+                    result, peer, _, _, history = self.run_native_xctest(entry=entry, **parameters)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    if history is not None:
+                        body = self.assert_final_receipt(result, history, outcome="failed", test_outcome="passed")
+                        self.assertEqual(history["attempts"][0]["state"], "completed")
+                    else:
+                        body = json.loads(result.stdout)
+                        self.assertEqual(body["outcome"], "failed")
+                        self.assertEqual(body["test_outcome"], "passed")
+                        self.assertIsNotNone(body["terminal_error_class"])
+                        self.assertEqual(body["terminal_error_class"], body["attempts"]["terminal_error_class"])
+                    self.assertEqual(body["summary"]["finished"], True)
+                    self.assertEqual(peer.calls.count("killPid:"), 1)
+                    self.assertEqual(peer.calls.count("Uninstall"), 2)
+
+    def test_human_finished_output_reports_final_failure_after_cleanup(self):
+        result, _, _, _, history = self.run_native_xctest(fault="log-eof", human_output=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"XCTest failed", result.stdout)
+        self.assertNotIn(b"XCTest finished", result.stdout)
+        self.assertIsNotNone(history["terminal_error_class"])
+
+    def test_closed_stdout_failure_reclassifies_actual_sidecar_after_cleanup_without_replay(self):
+        for entry in ("runxctest", "runtest"):
+            with self.subTest(entry=entry):
+                result, peer, _, _, history = self.run_native_xctest(entry=entry, closed_output=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, b"")
+                self.assertIsNotNone(history["terminal_error_class"])
+                self.assertEqual(history["attempts"][0]["state"], "completed")
+                self.assertEqual(history["attempts"][0]["summary"]["failed_tests"], 0)
+                self.assertEqual(peer.test_attempts, 1)
+                self.assertEqual(peer.calls.count("InstallTransferred"), 2)
+                self.assertEqual(peer.calls.count("Uninstall"), 2)
+                self.assertEqual(peer.calls.count("killPid:"), 1)
+
+    def test_runtest_passing_rerun_retains_first_failure_and_single_package_installation(self):
+        result, peer, _, _, history = self.run_native_xctest(entry="runtest", first_test_fails=True, rerun=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.assert_final_receipt(result, history, outcome="passed", test_outcome="passed")
+        self.assertEqual(body["summary"]["failed_tests"], 0)
+        self.assertEqual([attempt["state"] for attempt in history["attempts"]], ["failed_tests", "completed"])
+        self.assertEqual(history["attempts"][0]["summary"]["suites"][0]["cases"][0]["failure"]["message"], "synthetic assertion")
+        self.assertEqual(peer.calls.count("InstallTransferred"), 2)
+        self.assertEqual(peer.calls.count("killPid:"), 2)
 
 
 if __name__ == "__main__":

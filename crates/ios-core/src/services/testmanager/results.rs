@@ -299,6 +299,151 @@ pub struct TestRunSummary {
     pub suites: Vec<TestSuiteSummary>,
 }
 
+/// Supported terminal test outcomes, independent of workflow cleanup or reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestRunOutcome {
+    /// Every observed case has a supported terminal status and no failure was reported.
+    Passed,
+    /// XCTest reported failed cases or a nonzero suite failure counter.
+    FailedTests,
+}
+
+/// Observed result evidence that cannot establish a supported terminal outcome.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TestRunIncomplete {
+    /// No plan-start event was observed.
+    PlanNotBegun,
+    /// No plan-finish event was observed.
+    PlanNotFinished,
+    /// A case has no final status, is stalled, or has an unsupported status.
+    CaseStatus {
+        /// Class name reported by XCTest.
+        class_name: String,
+        /// Method name reported by XCTest.
+        method_name: String,
+        /// Actual status, if one was reported.
+        status: Option<TestCaseStatus>,
+    },
+    /// A suite reported uncaught exceptions.
+    UncaughtExceptions {
+        /// Suite name reported by XCTest.
+        suite_name: String,
+        /// Number of reported exceptions.
+        count: u64,
+    },
+}
+
+impl std::fmt::Debug for TestRunIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlanNotBegun => formatter.write_str("TestRunIncomplete::PlanNotBegun"),
+            Self::PlanNotFinished => formatter.write_str("TestRunIncomplete::PlanNotFinished"),
+            Self::CaseStatus { status, .. } => formatter
+                .debug_struct("TestRunIncomplete::CaseStatus")
+                .field("class_name_retained", &true)
+                .field("method_name_retained", &true)
+                .field("status", &terminal_status_label(status.as_ref()))
+                .field("status_retained", &status.is_some())
+                .finish(),
+            Self::UncaughtExceptions { count, .. } => formatter
+                .debug_struct("TestRunIncomplete::UncaughtExceptions")
+                .field("suite_name_retained", &true)
+                .field("count", count)
+                .finish(),
+        }
+    }
+}
+
+fn terminal_status_label(status: Option<&TestCaseStatus>) -> &'static str {
+    match status {
+        None => "unfinished",
+        Some(TestCaseStatus::Stalled) => "stalled",
+        Some(TestCaseStatus::Other(_)) => "unsupported",
+        Some(TestCaseStatus::Passed) => "passed",
+        Some(TestCaseStatus::Failed) => "failed",
+        Some(TestCaseStatus::Skipped) => "skipped",
+        Some(TestCaseStatus::ExpectedFailure) => "expected_failure",
+    }
+}
+
+impl std::fmt::Display for TestRunIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlanNotBegun => formatter.write_str("XCTest plan did not report a start"),
+            Self::PlanNotFinished => formatter.write_str("XCTest plan did not report completion"),
+            Self::CaseStatus { status, .. } => write!(
+                formatter,
+                "XCTest case has no supported terminal status ({})",
+                terminal_status_label(status.as_ref())
+            ),
+            Self::UncaughtExceptions { count, .. } => write!(
+                formatter,
+                "XCTest suite reported {count} uncaught exception(s)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TestRunIncomplete {}
+
+impl TestRunSummary {
+    /// Count failure evidence without allowing a suite counter to hide concrete failed cases.
+    pub fn failure_count(&self) -> u64 {
+        self.failed_tests
+            .max(self.suites.iter().fold(0u64, |total, suite| {
+                let cases = suite
+                    .cases
+                    .iter()
+                    .filter(|case| case.status == Some(TestCaseStatus::Failed))
+                    .count() as u64;
+                total.saturating_add(
+                    suite
+                        .failures
+                        .unwrap_or(0)
+                        .max(suite.unexpected_failures.unwrap_or(0))
+                        .max(cases),
+                )
+            }))
+    }
+
+    /// Validate actual observed terminal evidence. An empty began-and-finished plan is valid;
+    /// this does not infer selection coverage or compare nested suite counters.
+    pub fn terminal_outcome(&self) -> Result<TestRunOutcome, TestRunIncomplete> {
+        if !self.began {
+            return Err(TestRunIncomplete::PlanNotBegun);
+        }
+        if !self.finished {
+            return Err(TestRunIncomplete::PlanNotFinished);
+        }
+        for suite in &self.suites {
+            if let Some(count) = suite.uncaught_exceptions.filter(|count| *count > 0) {
+                return Err(TestRunIncomplete::UncaughtExceptions {
+                    suite_name: suite.name.clone(),
+                    count,
+                });
+            }
+            for case in &suite.cases {
+                if matches!(
+                    case.status,
+                    None | Some(TestCaseStatus::Stalled) | Some(TestCaseStatus::Other(_))
+                ) {
+                    return Err(TestRunIncomplete::CaseStatus {
+                        class_name: case.class_name.clone(),
+                        method_name: case.method_name.clone(),
+                        status: case.status.clone(),
+                    });
+                }
+            }
+        }
+        Ok(if self.failure_count() > 0 {
+            TestRunOutcome::FailedTests
+        } else {
+            TestRunOutcome::Passed
+        })
+    }
+}
+
 /// Stateful accumulator for XCTest events.
 #[derive(Debug, Default, Clone)]
 pub struct TestRunRecorder {
@@ -416,13 +561,17 @@ impl TestRunRecorder {
             .suites
             .iter()
             .map(|suite| {
-                suite.failures.unwrap_or_else(|| {
-                    suite
-                        .cases
-                        .iter()
-                        .filter(|case| case.status == Some(TestCaseStatus::Failed))
-                        .count() as u64
-                })
+                suite
+                    .failures
+                    .unwrap_or(0)
+                    .max(suite.unexpected_failures.unwrap_or(0))
+                    .max(
+                        suite
+                            .cases
+                            .iter()
+                            .filter(|case| case.status == Some(TestCaseStatus::Failed))
+                            .count() as u64,
+                    )
             })
             .sum();
         let skipped_tests = self
@@ -893,5 +1042,202 @@ fn identifier_suite_name(value: Option<&NSObject>) -> Option<String> {
             .and_then(NSObject::as_str)
             .map(ToString::to_string),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod terminal_outcome_tests {
+    use super::*;
+
+    fn recorded_case(status: Option<TestCaseStatus>) -> TestRunRecorder {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+        recorder.apply(TestExecutionEvent::CaseStarted {
+            class_name: "Cases".into(),
+            method_name: "example".into(),
+        });
+        if let Some(status) = status {
+            recorder.apply(TestExecutionEvent::CaseFinished {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                status,
+                duration_seconds: 0.1,
+            });
+        }
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        recorder
+    }
+
+    fn finish_suite(recorder: &mut TestRunRecorder, failures: u64, uncaught_exceptions: u64) {
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: "Cases".into(),
+            finished_at: None,
+            test_count: 1,
+            skipped: 0,
+            failures,
+            expected_failures: 0,
+            unexpected_failures: 0,
+            uncaught_exceptions,
+            test_duration_seconds: 0.1,
+            total_duration_seconds: 0.1,
+        });
+    }
+
+    #[test]
+    fn terminal_outcome_requires_observed_start_and_finish_but_allows_empty_plan() {
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::PlanNotBegun)
+        );
+        let mut recorder = TestRunRecorder::default();
+        recorder.apply(TestExecutionEvent::BeganPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::PlanNotFinished)
+        );
+        recorder.apply(TestExecutionEvent::FinishedPlan);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Ok(TestRunOutcome::Passed)
+        );
+        assert_eq!(recorder.summary().total_tests, 0);
+    }
+
+    #[test]
+    fn terminal_outcome_rejects_unfinished_stalled_unknown_and_uncaught_evidence() {
+        for status in [
+            None,
+            Some(TestCaseStatus::Stalled),
+            Some(TestCaseStatus::Other("future".into())),
+        ] {
+            let summary = recorded_case(status.clone()).summary();
+            assert_eq!(
+                summary.terminal_outcome(),
+                Err(TestRunIncomplete::CaseStatus {
+                    class_name: "Cases".into(),
+                    method_name: "example".into(),
+                    status,
+                })
+            );
+            assert!(summary.finished);
+        }
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        finish_suite(&mut recorder, 0, 2);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Err(TestRunIncomplete::UncaughtExceptions {
+                suite_name: "Cases".into(),
+                count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_failure_evidence_survives_zero_suite_counter_and_zero_summary_counter() {
+        let mut recorder = recorded_case(Some(TestCaseStatus::Failed));
+        finish_suite(&mut recorder, 0, 0);
+        let mut summary = recorder.summary();
+        assert_eq!(summary.suites[0].failures, Some(0));
+        assert_eq!(summary.failed_tests, 1);
+        summary.failed_tests = 0;
+        assert_eq!(summary.failure_count(), 1);
+        assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::FailedTests));
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        finish_suite(&mut recorder, 3, 0);
+        assert_eq!(recorder.summary().failure_count(), 3);
+        assert_eq!(
+            recorder.summary().terminal_outcome(),
+            Ok(TestRunOutcome::FailedTests)
+        );
+        let mut recorder = recorded_case(Some(TestCaseStatus::Passed));
+        recorder.apply(TestExecutionEvent::SuiteFinished {
+            name: "Cases".into(),
+            finished_at: None,
+            test_count: 1,
+            skipped: 0,
+            failures: 0,
+            expected_failures: 0,
+            unexpected_failures: 2,
+            uncaught_exceptions: 0,
+            test_duration_seconds: 0.1,
+            total_duration_seconds: 0.1,
+        });
+        let summary = recorder.summary();
+        assert_eq!(summary.suites[0].failures, Some(0));
+        assert_eq!(summary.suites[0].unexpected_failures, Some(2));
+        assert_eq!(summary.failed_tests, 2);
+        assert_eq!(summary.failure_count(), 2);
+        assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::FailedTests));
+    }
+
+    #[test]
+    fn expected_failure_details_and_skipped_cases_are_supported_terminal_outcomes() {
+        for status in [
+            TestCaseStatus::Passed,
+            TestCaseStatus::Skipped,
+            TestCaseStatus::ExpectedFailure,
+        ] {
+            let mut recorder = TestRunRecorder::default();
+            recorder.apply(TestExecutionEvent::BeganPlan);
+            recorder.apply(TestExecutionEvent::CaseFailed {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                message: "retained description".into(),
+                file: None,
+                line: None,
+            });
+            recorder.apply(TestExecutionEvent::CaseFinished {
+                class_name: "Cases".into(),
+                method_name: "example".into(),
+                status,
+                duration_seconds: 0.1,
+            });
+            recorder.apply(TestExecutionEvent::FinishedPlan);
+            let summary = recorder.summary();
+            assert!(summary.suites[0].cases[0].failure.is_some());
+            assert_eq!(summary.failed_tests, 0);
+            assert_eq!(summary.terminal_outcome(), Ok(TestRunOutcome::Passed));
+        }
+    }
+
+    #[test]
+    fn incomplete_error_keeps_names_and_status_while_debug_and_display_are_safe() {
+        let error = TestRunIncomplete::CaseStatus {
+            class_name: "private-class-marker".into(),
+            method_name: "private-method-marker".into(),
+            status: Some(TestCaseStatus::Other("private-status-marker".into())),
+        };
+        let debug = format!("{error:?}");
+        let display = error.to_string();
+        for marker in [
+            "private-class-marker",
+            "private-method-marker",
+            "private-status-marker",
+        ] {
+            assert!(!debug.contains(marker));
+            assert!(!display.contains(marker));
+        }
+        let TestRunIncomplete::CaseStatus {
+            class_name,
+            method_name,
+            status,
+        } = error
+        else {
+            panic!("original terminal evidence lost");
+        };
+        assert_eq!(class_name, "private-class-marker");
+        assert_eq!(method_name, "private-method-marker");
+        assert_eq!(
+            status,
+            Some(TestCaseStatus::Other("private-status-marker".into()))
+        );
+        let error = TestRunIncomplete::UncaughtExceptions {
+            suite_name: "private-suite-marker".into(),
+            count: 2,
+        };
+        assert!(!format!("{error:?}").contains("private-suite-marker"));
+        assert!(!error.to_string().contains("private-suite-marker"));
     }
 }
