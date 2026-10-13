@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit retry/history table backing, selector copies and original-error capsules
+  before Source poll. Keep preallocated removal owners and first/latest originals
+  through quota refusal, stale completion, rollback and final caller release.
+
 - Charge native tunnel registry bodies and actual fixed slot backing in the
   shared metadata bank before Source work. Propagate construction failure through
   manager and foreground owners; retain fees to final registry release.

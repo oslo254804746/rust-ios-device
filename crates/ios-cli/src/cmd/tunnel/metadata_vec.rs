@@ -60,6 +60,28 @@ impl<T> KnownVec<T> {
     pub(super) fn as_slice(&self) -> &[T] {
         &self.values
     }
+    pub(super) fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.values
+    }
+    #[cfg(test)]
+    pub(super) fn capacity(&self) -> usize {
+        self.values.capacity()
+    }
+    /// The caller reserved this slot before acquiring an irreplaceable value.
+    pub(super) fn push_reserved(&mut self, value: T) {
+        assert!(self.values.len() < self.values.capacity());
+        assert!(self.values.len() < self.ceiling);
+        self.values.push(value);
+    }
+    pub(super) fn remove(&mut self, index: usize) -> T {
+        self.values.remove(index)
+    }
+    /// Restore a removal without allocation; the original backing is retained.
+    pub(super) fn insert_reserved(&mut self, index: usize, value: T) {
+        assert!(self.values.len() < self.values.capacity());
+        assert!(self.values.len() < self.ceiling);
+        self.values.insert(index, value);
+    }
     pub(super) fn len(&self) -> usize {
         self.values.len()
     }

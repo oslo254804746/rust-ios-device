@@ -199,10 +199,21 @@ impl super::TunnelAgentState {
         let receipts = self.inner.retry.payload_receipts();
         let (active_scans, scans) = self.inner.scan_outcomes.payload_history();
         let (unjoined_native_owners, native) = self.inner.native.payload_outcomes();
+        let receipts = match receipts {
+            Ok(receipts) => receipts,
+            Err(_) => {
+                return Snapshot {
+                    active_scans,
+                    unjoined_native_owners,
+                    truncated: true,
+                    ..Snapshot::default()
+                }
+            }
+        };
         let mut census = Census::default();
         census.snapshot.active_scans = active_scans;
         census.snapshot.unjoined_native_owners = unjoined_native_owners;
-        for receipt in &receipts {
+        for receipt in receipts.as_slice() {
             census.anyhow(receipt.primary(), 0);
             census.anyhow(receipt.latest(), 0);
         }
