@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit raw and selected USB attachment-index backing while borrowing original
+  snapshot buffers. Preserve exact numeric ID membership and last-key lookup
+  without private hash-table allocations or quadratic publication scans.
+
 - Admit USB snapshot identity-index backing alongside raw storage in the shared
   metadata bank. Validate all raw unique identities without copied keys, refund
   the temporary index before returning the raw reservation, and preserve order.

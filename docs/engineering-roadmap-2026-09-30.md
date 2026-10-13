@@ -8571,3 +8571,16 @@ UID buffer与发现顺序保持，成功只返回raw owner，失败释放两者�
 host5/22NOT_RUN通过，见[验证](validation/tunnel-usb-identity-index-bytes-2026-10-13.md)。
 Source返回前分配、其余索引/key/error/native/runtime及完整刷新仍缺，
 不关闭L02；23/6/待收口、有效30和Q04全部排除保持。
+
+
+## 2026-10-13 L02 raw/selected USB attachment索引
+
+raw attached集合和selected device-ID映射统一为borrowed UsbDevice slice+
+真实收费sorted Vec<usize>，binary UID范围中匹配exact numeric ID，last
+输入lookup保持。不同publication UID范围不重叠，不在table锁内进行
+rawRows×pubRows全扫描或排序/分配。两个owner按原raw/selection阶段释放，
+新增2项及tunnel442通过、2原ignored，旧quota/Source/error/native/EOF
+断言未改，严格CLI Clippy/build/fmt和readonly1/host5/22NOT_RUN通过，见
+[验证](validation/tunnel-usb-attachment-index-bytes-2026-10-13.md)。其余集合/
+key/原error/native/runtime及完整刷新仍缺；L02/23/6/待收口、有效30和
+Q04全部排除保持。

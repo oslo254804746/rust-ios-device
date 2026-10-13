@@ -48,6 +48,7 @@ mod scoped;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;
+mod usb_index;
 use bookkeeping::{
     DeferredFailure, DeferredSuccess, FailureIntent, ScanAttemptOutcome, ScanIntent, SuccessIntent,
 };
@@ -1874,10 +1875,7 @@ impl TunnelAgentState {
             }
         };
         let devices = if usb_complete { devices } else { Vec::new() };
-        let attached = devices
-            .iter()
-            .map(|device| (device.udid.as_str(), device.device_id))
-            .collect::<std::collections::HashSet<_>>();
+        let attached = usb_index::Index::new(&devices, &self.inner.global_metadata_bytes)?;
         let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
             return Ok(());
         };
@@ -1886,7 +1884,7 @@ impl TunnelAgentState {
                 && self.inner.access.permits_device(udid)
                 && (!tunnel.usbmux
                     || !usb_complete
-                    || attached.contains(&(udid, tunnel.device.device_id()))
+                    || attached.contains(udid, tunnel.device.device_id())
                     || !initial
                         .get(udid)
                         .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
@@ -1904,10 +1902,7 @@ impl TunnelAgentState {
         let mut candidate_budget = admission::CandidateBudget::default();
         let (selected, _usb_selection_charge) =
             source::selected_devices(devices, &self.inner.global_metadata_bytes)?;
-        let attached_ids = selected
-            .iter()
-            .map(|device| (device.udid.as_str(), device.device_id))
-            .collect::<HashMap<_, _>>();
+        let attached_ids = usb_index::Index::new(&selected, &self.inner.global_metadata_bytes)?;
         // Manual intent wins over ordinary discovery for the same exact key.
         // Hostless Wi-Fi is rediscovered inside NativeSource on each admitted
         // attempt; no old ConnectedDevice, RSD address or service is replayed.
@@ -1919,7 +1914,7 @@ impl TunnelAgentState {
             let (route, expected_id) = match &route.route {
                 intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
                 intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
-                    let id = attached_ids.get(udid).copied();
+                    let id = attached_ids.get(udid);
                     if usb_complete && id.is_none() {
                         continue;
                     }
