@@ -52,8 +52,23 @@ pub(super) struct JsSource {
     pub(super) runtime_seen: Arc<Notify>,
     target: JsTarget,
     block_runtime: bool,
+    closure: Arc<ClosureState>,
     calls: Mutex<usize>,
     tasks: Mutex<Vec<JoinHandle<Result<PeerReceipt>>>>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum NativeClosure {
+    Page,
+    Application,
+    DiscoveryPage,
+    DiscoveryApplication,
+    DiscoveryRace,
+}
+
+struct ClosureState {
+    mode: Option<NativeClosure>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 pub(super) struct PeerReceipt {
@@ -73,9 +88,22 @@ impl JsSource {
             runtime_seen: Arc::new(Notify::new()),
             target,
             block_runtime,
+            closure: Arc::new(ClosureState {
+                mode: None,
+                closed: std::sync::atomic::AtomicBool::new(false),
+            }),
             calls: Mutex::new(0),
             tasks: Mutex::default(),
         })
+    }
+
+    pub(super) fn with_closure(target: JsTarget, closure: NativeClosure) -> Arc<Self> {
+        let mut source = Self::new(target, false);
+        Arc::get_mut(&mut source).unwrap().closure = Arc::new(ClosureState {
+            mode: Some(closure),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        });
+        source
     }
 
     pub(super) fn calls(&self) -> usize {
@@ -161,6 +189,7 @@ impl InspectorSource for JsSource {
                 id,
                 self.target,
                 self.block_runtime,
+                self.closure.clone(),
                 self.runtime_seen.clone(),
                 self.evidence.clone(),
             )));
@@ -223,9 +252,11 @@ async fn js_peer(
     id: usize,
     target: JsTarget,
     block_runtime: bool,
+    closure_state: Arc<ClosureState>,
     runtime_seen: Arc<Notify>,
     evidence: SharedEvidence,
 ) -> Result<PeerReceipt> {
+    let closure = closure_state.mode;
     let mut receipt = PeerReceipt {
         stream: id,
         setups: 0,
@@ -291,7 +322,15 @@ async fn js_peer(
                 ] {
                     app.insert(key.into(), Value::Boolean(value));
                 }
-                let apps = Dictionary::from_iter([("PID:42", Value::Dictionary(app))]);
+                let apps = if matches!(closure, Some(NativeClosure::DiscoveryApplication))
+                    && closure_state
+                        .closed
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    Dictionary::new()
+                } else {
+                    Dictionary::from_iter([("PID:42", Value::Dictionary(app))])
+                };
                 native_send(
                     &mut stream,
                     id,
@@ -326,10 +365,19 @@ async fn js_peer(
                 let mut listing = strings(&[("WIRApplicationIdentifierKey", "PID:42")]);
                 listing.insert(
                     "WIRListingKey".into(),
-                    Value::Dictionary(Dictionary::from_iter([(
-                        target.listing,
-                        Value::Dictionary(page),
-                    )])),
+                    Value::Dictionary(
+                        if matches!(
+                            closure,
+                            Some(NativeClosure::DiscoveryPage | NativeClosure::DiscoveryRace)
+                        ) && closure_state
+                            .closed
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            Dictionary::new()
+                        } else {
+                            Dictionary::from_iter([(target.listing, Value::Dictionary(page))])
+                        },
+                    ),
                 );
                 native_send(
                     &mut stream,
@@ -385,7 +433,12 @@ async fn js_peer(
                         json!({"id": wire["id"], "result": {}})
                     }
                     Some("Runtime.evaluate") => {
-                        if wire["params"]["expression"] != "6*7"
+                        if (wire["params"]["expression"] != "6*7"
+                            && !(closure.is_some()
+                                && matches!(
+                                    wire["params"]["expression"].as_str(),
+                                    Some("fixture:unrelated" | "fixture:native-close")
+                                )))
                             || wire["params"].get("contextId").is_some()
                             || wire["params"].get("uniqueContextId").is_some()
                         {
@@ -401,7 +454,70 @@ async fn js_peer(
                     }
                     _ => return Err(anyhow!("unexpected owned JSContext Runtime request")),
                 };
+                if wire["params"]["expression"] == "fixture:unrelated" {
+                    // Unrelated application closure and a complete selected-app
+                    // listing retaining the numeric page must not close it.
+                    native_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        envelope(
+                            "_rpc_applicationDisconnected:",
+                            strings(&[("WIRApplicationIdentifierKey", "PID:99")]),
+                        ),
+                    )
+                    .await?;
+                    native_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        native_listing("PID:99", target.page, "unrelated-key"),
+                    )
+                    .await?;
+                    native_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        native_listing("PID:42", target.page, "renamed-listing-key"),
+                    )
+                    .await?;
+                    let mut other = strings(&[("WIRApplicationIdentifierKey", "PID:99")]);
+                    other.insert("WIRMessageDataKey".into(), Value::Data(serde_json::to_vec(&json!({"id": wire["id"], "result": {"result": {"type": "number", "value": -99}}}))?));
+                    native_send(
+                        &mut stream,
+                        id,
+                        &evidence,
+                        envelope("_rpc_applicationSentData:", other),
+                    )
+                    .await?;
+                }
                 runtime_send(&mut stream, id, &evidence, reply).await?;
+                if wire["params"]["expression"] == "fixture:native-close" {
+                    closure_state
+                        .closed
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    if matches!(
+                        closure,
+                        Some(NativeClosure::DiscoveryPage | NativeClosure::DiscoveryApplication)
+                    ) {
+                        // Only a fresh, independent discovery socket observes closure.
+                        continue;
+                    }
+                    let close =
+                        match closure.ok_or_else(|| anyhow!("native closure mode absent"))? {
+                            NativeClosure::Page | NativeClosure::DiscoveryRace => {
+                                native_listing("PID:42", target.page + 1, "surviving-sibling")
+                            }
+                            NativeClosure::Application => envelope(
+                                "_rpc_applicationDisconnected:",
+                                strings(&[("WIRApplicationIdentifierKey", "PID:42")]),
+                            ),
+                            NativeClosure::DiscoveryPage | NativeClosure::DiscoveryApplication => {
+                                unreachable!("independent discovery only")
+                            }
+                        };
+                    native_send(&mut stream, id, &evidence, close).await?;
+                }
             }
             "_rpc_forwardDidClose:" => {
                 if receipt.setups != 1 || receipt.teardowns != 0 {
@@ -415,6 +531,23 @@ async fn js_peer(
     receipt.eof = true;
     record(&evidence, json!({"event": "peer_eof", "stream": id}))?;
     Ok(receipt)
+}
+
+fn native_listing(application_id: &str, page_id: u64, listing_key: &str) -> Value {
+    let mut page = strings(&[("WIRTypeKey", "WIRTypeJavaScript")]);
+    page.insert(
+        "WIRPageIdentifierKey".into(),
+        Value::Integer(page_id.into()),
+    );
+    let mut argument = strings(&[("WIRApplicationIdentifierKey", application_id)]);
+    argument.insert(
+        "WIRListingKey".into(),
+        Value::Dictionary(Dictionary::from_iter([(
+            listing_key,
+            Value::Dictionary(page),
+        )])),
+    );
+    envelope("_rpc_applicationSentListing:", argument)
 }
 
 pub(super) struct OwnedServer {

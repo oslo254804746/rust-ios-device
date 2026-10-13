@@ -2,7 +2,7 @@
 // server, method overrides, or manufactured success responses live here.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import puppeteer from 'puppeteer-core';
+import puppeteer, { CDPSessionEvent } from 'puppeteer-core';
 
 const versions = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).dependencies;
 const MAX_RECORDS = 512;
@@ -40,11 +40,18 @@ function arguments_() {
   assert.equal(endpoint.hostname, '127.0.0.1');
   assert(endpoint.port && endpoint.pathname === '/' && !endpoint.search && !endpoint.hash);
   assert(!endpoint.username && !endpoint.password);
-  assert(['initialization-rejection', 'runtime-workflow'].includes(expectation));
+  assert(['initialization-rejection', 'runtime-workflow', 'native-page-closure', 'native-application-closure', 'native-discovery-page-closure', 'native-discovery-application-closure', 'native-discovery-race-closure'].includes(expectation));
   return { client, endpoint: endpoint.origin, targetUrl, expectation };
 }
 
-async function puppeteerWorkflow(endpoint, targetUrl) {
+async function bounded(promise) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('fixture event absent')), TIMEOUT);
+  })]).finally(() => clearTimeout(timer));
+}
+
+async function puppeteerWorkflow(endpoint, targetUrl, expectation) {
   const token = process.env.IOS_CDP_FIXTURE_TOKEN;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   let browser;
@@ -95,10 +102,29 @@ async function puppeteerWorkflow(endpoint, targetUrl) {
     }
     assert(unknown, 'unknown context unexpectedly succeeded');
     assert.equal(unknown.method, 'Runtime.evaluate');
-    await session.detach();
-    session = undefined;
-    steps.push('detached');
-    result = { status: 'runtime-workflow', steps, contexts, evaluated: 42, unknown };
+    if (expectation.startsWith('native-')) {
+      const preserved = await session.send('Runtime.evaluate', { expression: 'fixture:unrelated', contextId });
+      assert.equal(preserved.result.value, 42);
+      steps.push('unrelated-preserved');
+      const destroyed = new Promise(resolve => session.once('Runtime.executionContextDestroyed', resolve));
+      const detached = new Promise(resolve => session.once(CDPSessionEvent.Disconnected, resolve));
+      await session.send('Runtime.evaluate', { expression: 'fixture:native-close', contextId });
+      // Polling uses another native discovery socket; the selected socket has
+      // no closure message in the two independent-discovery fixtures.
+      const event = await bounded(destroyed);
+      assert.equal(event.executionContextId, contextId);
+      assert.equal(event.executionContextUniqueId, 'jscontext.1');
+      steps.push('context-destroyed');
+      await bounded(detached);
+      session = undefined;
+      steps.push('native-detached');
+      result = { status: expectation, steps, contexts, evaluated: 42, unknown, destroyed: event };
+    } else {
+      await session.detach();
+      session = undefined;
+      steps.push('detached');
+      result = { status: 'runtime-workflow', steps, contexts, evaluated: 42, unknown };
+    }
     return result;
   } catch (error) {
     result = { status: 'failed', steps, failure: failure(error, steps.at(-1) ?? 'initialization') };
@@ -118,7 +144,90 @@ async function puppeteerWorkflow(endpoint, targetUrl) {
   }
 }
 
-async function playwrightInitialization(endpoint) {
+async function playwrightClosure(chromium, endpoint, targetUrl, headers, expectation) {
+  let browser;
+  let session;
+  let result;
+  const steps = [];
+  try {
+    // Public option leaves the existing default context's download policy alone.
+    // The default connectOverCDP rejection gate below still uses its defaults.
+    browser = await chromium.connectOverCDP(endpoint, { headers, timeout: TIMEOUT, noDefaults: true });
+    steps.push('initialized-no-defaults');
+    session = await browser.newBrowserCDPSession();
+    await session.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
+    const { targetInfos } = await session.send('Target.getTargets');
+    const target = targetInfos.find(target => target.url === targetUrl);
+    assert(target, 'fixture target absent');
+    steps.push('discovered');
+    const pending = new Map();
+    const contexts = [];
+    let resolveCreated;
+    let resolveDestroyed;
+    let resolveDetached;
+    const created = new Promise(resolve => { resolveCreated = resolve; });
+    const destroyed = new Promise(resolve => { resolveDestroyed = resolve; });
+    const detached = new Promise(resolve => { resolveDetached = resolve; });
+    let childId;
+    session.on('Target.receivedMessageFromTarget', event => {
+      if (event.sessionId !== childId) return;
+      const message = JSON.parse(event.message);
+      if (message.method === 'Runtime.executionContextCreated') {
+        contexts.push(message.params.context.id);
+        resolveCreated(message.params.context.id);
+      }
+      if (message.method === 'Runtime.executionContextDestroyed') resolveDestroyed(message.params);
+      if (pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); }
+    });
+    session.on('Target.detachedFromTarget', event => { if (event.sessionId === childId) resolveDetached(); });
+    ({ sessionId: childId } = await session.send('Target.attachToTarget', { targetId: target.targetId, flatten: false }));
+    steps.push('attached-nonflat');
+    let unknownSessionRejected = false;
+    try { await session.send('Target.sendMessageToTarget', { sessionId: 'absent-fixture-session', message: '{"id":1,"method":"Runtime.enable"}' }); }
+    catch { unknownSessionRejected = true; }
+    assert(unknownSessionRejected, 'unknown session unexpectedly succeeded');
+    let nextId = 1000;
+    async function send(method, params = {}) {
+      const id = ++nextId;
+      const response = new Promise(resolve => pending.set(id, resolve));
+      try {
+        await session.send('Target.sendMessageToTarget', { sessionId: childId, message: JSON.stringify({ id, method, params }) });
+        return await bounded(response);
+      } finally { pending.delete(id); }
+    }
+    assert((await send('Runtime.enable')).result);
+    const contextId = await bounded(created);
+    steps.push('context-selected');
+    const evaluated = await send('Runtime.evaluate', { expression: '6*7', contextId, returnByValue: true });
+    assert.equal(evaluated.result.result.value, 42);
+    steps.push('evaluated');
+    const unknown = await send('Runtime.evaluate', { expression: '6*7', contextId: contextId + 1 });
+    assert.equal(unknown.error.code, -32602);
+    const preserved = await send('Runtime.evaluate', { expression: 'fixture:unrelated', contextId });
+    assert.equal(preserved.result.result.value, 42);
+    steps.push('unrelated-preserved');
+    await send('Runtime.evaluate', { expression: 'fixture:native-close', contextId });
+    if (expectation.includes('discovery')) await session.send('Target.getTargets');
+    const event = await bounded(destroyed);
+    assert.equal(event.executionContextId, contextId);
+    assert.equal(event.executionContextUniqueId, 'jscontext.1');
+    steps.push('context-destroyed');
+    await bounded(detached);
+    steps.push('native-detached');
+    result = { status: expectation, steps, contexts, evaluated: 42, unknown: { code: unknown.error.code }, unknown_session_rejected: unknownSessionRejected, destroyed: event };
+    return result;
+  } catch (error) {
+    result = { status: 'failed', steps, failure: failure(error, steps.at(-1) ?? 'initialization') };
+    return result;
+  } finally {
+    const cleanup = [];
+    // Browser.close releases this root browser CDPSession and the connection.
+    try { if (browser) { await browser.close(); steps.push('disconnected'); } } catch (error) { cleanup.push(failure(error, 'disconnect')); }
+    if (cleanup.length) result.cleanup_failures = cleanup;
+  }
+}
+
+async function playwrightInitialization(endpoint, targetUrl, expectation) {
   // Capture the pinned client's real protocol diagnostic sink. This changes
   // neither its CDP methods nor responses and does not expose HTTP headers.
   process.env.DEBUG = 'pw:protocol';
@@ -155,10 +264,14 @@ async function playwrightInitialization(endpoint) {
     // DEBUG is read during module initialization, so import after admission to
     // the diagnostic capture. The public connectOverCDP is used unchanged.
     const { chromium } = await import('playwright-core');
-    browser = await chromium.connectOverCDP(endpoint, { headers, timeout: TIMEOUT });
-    result = { status: 'connected', contexts: browser.contexts().length };
+    if (expectation.startsWith('native-')) {
+      result = await playwrightClosure(chromium, endpoint, targetUrl, headers, expectation);
+    } else {
+      browser = await chromium.connectOverCDP(endpoint, { headers, timeout: TIMEOUT });
+      result = { status: 'connected', contexts: browser.contexts().length };
+    }
   } catch (error) {
-    result = { status: 'initialization-rejection', failure: failure(error, 'initialization') };
+    result = { status: expectation.startsWith('native-') ? 'failed' : 'initialization-rejection', failure: failure(error, 'initialization') };
   } finally {
     // Closing an attached Playwright Browser releases its CDP connection.
     try {
@@ -177,8 +290,8 @@ async function playwrightInitialization(endpoint) {
 async function main() {
   const { client, endpoint, targetUrl, expectation } = arguments_();
   const result = client === 'puppeteer'
-    ? await puppeteerWorkflow(endpoint, targetUrl)
-    : await playwrightInitialization(endpoint);
+    ? await puppeteerWorkflow(endpoint, targetUrl, expectation)
+    : await playwrightInitialization(endpoint, targetUrl, expectation);
   const download = trace.find(item => item.direction === 'send' && item.message.method === 'Browser.setDownloadBehavior');
   const rejected = download && trace.find(item => item.direction === 'receive' &&
     item.message.id === download.message.id && item.message.sessionId === download.message.sessionId &&

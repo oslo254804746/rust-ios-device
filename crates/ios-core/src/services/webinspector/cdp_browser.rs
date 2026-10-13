@@ -14,9 +14,23 @@ use super::{ApplicationPage, WirType};
 #[derive(Debug)]
 pub enum BrowserCdpAction {
     Send(Vec<Value>),
-    Attach { request: Value, target_id: String },
-    Detach { request: Value, session_id: String },
-    Forward { session_id: String, message: Value },
+    Attach {
+        request: Value,
+        target_id: String,
+    },
+    Detach {
+        request: Value,
+        session_id: String,
+    },
+    Forward {
+        session_id: String,
+        message: Value,
+    },
+    NonFlatForward {
+        request: Value,
+        session_id: String,
+        message: Value,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -26,6 +40,16 @@ pub struct BrowserCdpRefresh {
     pub auto_attach_targets: Vec<String>,
 }
 
+/// Only parsed native metadata grants removal authority. A missing listing for
+/// one application leaves its existing targets intact, even if another app's
+/// complete listing or disconnect positively closes a selected target.
+#[derive(Debug, Default)]
+pub struct BrowserDiscoveryKnowledge {
+    pub connected_applications: Option<HashSet<String>>,
+    pub listed_applications: HashSet<String>,
+    pub disconnected_applications: HashSet<String>,
+}
+
 #[derive(Debug)]
 pub struct BrowserCdpState {
     browser_id: String,
@@ -33,8 +57,10 @@ pub struct BrowserCdpState {
     // imply WebKit browser-context creation or isolated cookies/downloads.
     default_context_id: String,
     targets: IndexMap<String, Value>,
+    native_targets: HashMap<(String, u64), String>,
     browser_sessions: HashSet<String>,
     page_sessions: HashMap<String, String>, // CDP session ID -> qualified target ID
+    nonflat_parents: HashMap<String, Option<String>>, // child -> owning browser session (or root)
     target_sessions: HashMap<String, String>, // qualified target ID -> CDP session ID
     discover: bool,
     auto_attach: bool,
@@ -49,8 +75,10 @@ impl BrowserCdpState {
             default_context_id: format!("{browser_id}:default"),
             browser_id,
             targets: IndexMap::new(),
+            native_targets: HashMap::new(),
             browser_sessions: HashSet::new(),
             page_sessions: HashMap::new(),
+            nonflat_parents: HashMap::new(),
             target_sessions: HashMap::new(),
             discover: false,
             auto_attach: false,
@@ -82,6 +110,13 @@ impl BrowserCdpState {
 
     pub fn target_for_session(&self, session_id: &str) -> Option<&str> {
         self.page_sessions.get(session_id).map(String::as_str)
+    }
+
+    pub fn native_page_for_target(&self, target_id: &str) -> Option<(String, u64)> {
+        self.native_targets
+            .iter()
+            .find(|(_, id)| id.as_str() == target_id)
+            .map(|(identity, _)| identity.clone())
     }
 
     fn filter_allows(&self, info: &Value) -> bool {
@@ -117,14 +152,22 @@ impl BrowserCdpState {
             return Vec::new();
         };
         self.target_sessions.remove(&target_id);
+        let parent = self.nonflat_parents.remove(session_id);
         if let Some(info) = self.targets.get_mut(&target_id) {
             info["attached"] = Value::Bool(false);
         }
         if notify {
-            vec![self.event(
+            let mut event = self.event(
                 "Target.detachedFromTarget",
                 json!({"sessionId": session_id, "targetId": target_id}),
-            )]
+            );
+            if let Some(parent) = parent {
+                event.as_object_mut().unwrap().remove("sessionId");
+                if let Some(parent) = parent {
+                    event["sessionId"] = Value::String(parent);
+                }
+            }
+            vec![event]
         } else {
             Vec::new()
         }
@@ -140,21 +183,80 @@ impl BrowserCdpState {
     }
 
     pub fn page_message(&self, session_id: &str, mut message: Value) -> Option<Value> {
-        self.page_sessions.get(session_id)?;
+        let target_id = self.page_sessions.get(session_id)?;
+        if let Some(parent) = self.nonflat_parents.get(session_id) {
+            let mut event = json!({"method": "Target.receivedMessageFromTarget", "params": {
+                "sessionId": session_id, "targetId": target_id, "message": message.to_string()
+            }});
+            if let Some(parent) = parent {
+                event["sessionId"] = Value::String(parent.clone());
+            }
+            return Some(event);
+        }
         let object = message.as_object_mut()?;
         object.insert("sessionId".into(), Value::String(session_id.to_string()));
         Some(message)
     }
 
+    /// Explicit nonflat attachment routes only through the browser session that
+    /// created it. This is a CDP transport envelope, not a WebKit Target command.
+    pub fn register_attachment_for_request(
+        &mut self,
+        target_id: &str,
+        request: &Value,
+    ) -> Option<String> {
+        let session_id = self.register_attachment(target_id)?;
+        if request["params"]["flatten"] == false {
+            self.nonflat_parents.insert(
+                session_id.clone(),
+                request
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            );
+        }
+        Some(session_id)
+    }
+
     pub fn refresh(&mut self, pages: &[ApplicationPage]) -> BrowserCdpRefresh {
+        self.refresh_inner(pages, false, None)
+    }
+
+    /// Keep removed sessions routable until the owner has joined its child and
+    /// flushed final lifecycle messages. The caller then invokes `detach`.
+    pub fn refresh_preserving_sessions(&mut self, pages: &[ApplicationPage]) -> BrowserCdpRefresh {
+        self.refresh_inner(pages, true, None)
+    }
+
+    pub fn refresh_observed(
+        &mut self,
+        pages: &[ApplicationPage],
+        knowledge: &BrowserDiscoveryKnowledge,
+    ) -> BrowserCdpRefresh {
+        self.refresh_inner(pages, true, Some(knowledge))
+    }
+
+    fn refresh_inner(
+        &mut self,
+        pages: &[ApplicationPage],
+        preserve_sessions: bool,
+        knowledge: Option<&BrowserDiscoveryKnowledge>,
+    ) -> BrowserCdpRefresh {
         let mut next = IndexMap::new();
+        let mut native_targets = HashMap::new();
         for item in pages {
             let target_type = match item.page.page_type {
                 WirType::Web | WirType::WebPage | WirType::Page => "page",
                 WirType::JavaScript => "node",
                 _ => continue,
             };
-            let target_id = format!("{}:{}", item.application.id, item.page.listing_key);
+            let identity = (item.application.id.clone(), item.page.id);
+            let target_id = self
+                .native_targets
+                .get(&identity)
+                .cloned()
+                .unwrap_or_else(|| format!("{}:{}", item.application.id, item.page.listing_key));
+            native_targets.insert(identity, target_id.clone());
             let title = if target_type == "node" {
                 format!(
                     "{} ({}): {}",
@@ -179,16 +281,47 @@ impl BrowserCdpState {
             );
         }
 
+        if let Some(knowledge) = knowledge {
+            for (identity, target_id) in &self.native_targets {
+                let (application_id, _) = identity;
+                let positively_observed =
+                    knowledge.disconnected_applications.contains(application_id)
+                        || knowledge.listed_applications.contains(application_id)
+                        || knowledge
+                            .connected_applications
+                            .as_ref()
+                            .is_some_and(|apps| !apps.contains(application_id));
+                if !positively_observed && !next.contains_key(target_id) {
+                    if let Some(info) = self.targets.get(target_id) {
+                        next.insert(target_id.clone(), info.clone());
+                        native_targets.insert(identity.clone(), target_id.clone());
+                    }
+                }
+            }
+        }
+
         let mut output = BrowserCdpRefresh::default();
         for old in self.targets.keys() {
             if !next.contains_key(old) {
-                if let Some(session_id) = self.target_sessions.remove(old) {
+                if preserve_sessions {
+                    if let Some(session_id) = self.target_sessions.get(old) {
+                        output.removed_sessions.push(session_id.clone());
+                    }
+                } else if let Some(session_id) = self.target_sessions.remove(old) {
                     self.page_sessions.remove(&session_id);
+                    let parent = self.nonflat_parents.remove(&session_id);
                     output.removed_sessions.push(session_id.clone());
-                    output.messages.push(self.event(
+                    let mut event = self.event(
                         "Target.detachedFromTarget",
                         json!({"sessionId": session_id, "targetId": old}),
-                    ));
+                    );
+                    if let Some(parent) = parent {
+                        event.as_object_mut().unwrap().remove("sessionId");
+                        if let Some(parent) = parent {
+                            event["sessionId"] = Value::String(parent);
+                        }
+                    }
+                    output.messages.push(event);
                 }
                 if self.discover {
                     output
@@ -211,6 +344,7 @@ impl BrowserCdpState {
             }
         }
         self.targets = next;
+        self.native_targets = native_targets;
         output
     }
 
@@ -377,13 +511,12 @@ impl BrowserCdpState {
             "Target.attachToTarget" => {
                 if params
                     .and_then(|p| p.get("flatten"))
-                    .and_then(Value::as_bool)
-                    == Some(false)
+                    .is_some_and(|flatten| !flatten.is_boolean())
                 {
                     return BrowserCdpAction::Send(vec![error(
                         &message,
                         -32602,
-                        "Only flattened sessions are supported",
+                        "flatten must be a boolean",
                     )]);
                 }
                 let Some(target_id) = params
@@ -404,6 +537,19 @@ impl BrowserCdpState {
                     )]);
                 }
                 if let Some(existing) = self.target_sessions.get(target_id) {
+                    let nonflat = params
+                        .and_then(|p| p.get("flatten"))
+                        .and_then(Value::as_bool)
+                        == Some(false);
+                    if nonflat != self.nonflat_parents.contains_key(existing)
+                        || (nonflat && self.nonflat_parents.get(existing) != Some(&session_id))
+                    {
+                        return BrowserCdpAction::Send(vec![error(
+                            &message,
+                            -32000,
+                            "Target already attached with another transport",
+                        )]);
+                    }
                     return BrowserCdpAction::Send(vec![reply(
                         &message,
                         json!({"sessionId": existing}),
@@ -413,6 +559,50 @@ impl BrowserCdpState {
                 return BrowserCdpAction::Attach {
                     request: message,
                     target_id,
+                };
+            }
+            "Target.sendMessageToTarget" => {
+                let Some(child) = params
+                    .and_then(|p| p.get("sessionId"))
+                    .and_then(Value::as_str)
+                else {
+                    return BrowserCdpAction::Send(vec![error(
+                        &message,
+                        -32602,
+                        "sessionId must be a string",
+                    )]);
+                };
+                if !self.page_sessions.contains_key(child)
+                    || self.nonflat_parents.get(child) != Some(&session_id)
+                {
+                    return BrowserCdpAction::Send(vec![error(
+                        &message,
+                        -32001,
+                        "Nonflat session with given id not found",
+                    )]);
+                }
+                let nested = params
+                    .and_then(|p| p.get("message"))
+                    .and_then(Value::as_str)
+                    .filter(|text| text.len() <= 1024 * 1024)
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    .filter(|nested| {
+                        nested.is_object()
+                            && nested.get("id").and_then(Value::as_u64).is_some()
+                            && nested.get("method").and_then(Value::as_str).is_some()
+                            && nested.get("sessionId").is_none()
+                    });
+                let Some(nested) = nested else {
+                    return BrowserCdpAction::Send(vec![error(
+                        &message,
+                        -32602,
+                        "Invalid nonflat protocol message",
+                    )]);
+                };
+                return BrowserCdpAction::NonFlatForward {
+                    session_id: child.to_string(),
+                    message: nested,
+                    request: message,
                 };
             }
             "Target.detachFromTarget" => {
@@ -431,6 +621,17 @@ impl BrowserCdpState {
                         &message,
                         -32001,
                         "Session with given id not found",
+                    )]);
+                }
+                if self
+                    .nonflat_parents
+                    .get(detach_id)
+                    .is_some_and(|parent| parent != &session_id)
+                {
+                    return BrowserCdpAction::Send(vec![error(
+                        &message,
+                        -32001,
+                        "Nonflat session with given id not found",
                     )]);
                 }
                 let session_id = detach_id.to_string();
@@ -485,6 +686,13 @@ pub fn reply(request: &Value, result: Value) -> Value {
         response["sessionId"] = session_id.clone();
     }
     response
+}
+
+/// Logical compact-JSON relay ceiling, including a nonflat nested string and
+/// its outer Target envelope. Native parser/temporary allocations are separate.
+pub fn validate_routed_message(message: &Value) -> Result<(), super::WebInspectorError> {
+    const LIMIT: usize = 1024 * 1024;
+    super::retained::encoded_size(message, LIMIT, "CDP relay message bytes", LIMIT).map(|_| ())
 }
 
 pub fn error(request: &Value, code: i32, message: &str) -> Value {
@@ -612,14 +820,6 @@ impl JsContextCdpAdapter {
             }));
         }
         let method = message.get("method").and_then(Value::as_str);
-        if method == Some("Runtime.executionContextsCleared") {
-            return vec![self.contexts_cleared()];
-        }
-        if method == Some("Inspector.detached") || method == Some("Target.targetDestroyed") {
-            if let Some(event) = self.context_destroyed() {
-                messages.push(event);
-            }
-        }
         if method == Some("Console.messageAdded") && self.context_announced {
             if let Some(msg) = message.get("params").and_then(|p| p.get("message")) {
                 let text = msg.get("text").and_then(Value::as_str).unwrap_or("");
@@ -645,11 +845,19 @@ impl JsContextCdpAdapter {
     }
 
     pub fn context_destroyed(&mut self) -> Option<Value> {
+        self.pending_runtime_enable = None;
+        let event = self.announced_context_destruction();
+        self.context_announced = false;
+        event
+    }
+
+    /// The announced local context's destruction shape. A bridge may retain it
+    /// with its session generation; emission still requires native close proof.
+    pub fn announced_context_destruction(&self) -> Option<Value> {
         if self.context_announced {
-            self.context_announced = false;
             Some(json!({
                 "method": "Runtime.executionContextDestroyed",
-                "params": {"executionContextId": 1}
+                "params": {"executionContextId": 1, "executionContextUniqueId": "jscontext.1"}
             }))
         } else {
             None
@@ -782,6 +990,84 @@ mod tests {
     }
 
     #[test]
+    fn nonflat_sessions_keep_parent_target_binding_and_reject_invalid_messages() {
+        let mut state = BrowserCdpState::new("owned-browser");
+        state.refresh(&[page("PID:42", "1", WirType::JavaScript)]);
+        let parent = sent(
+            &mut state,
+            json!({"id":1,"method":"Target.attachToBrowserTarget"}),
+        )[0]["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let attach = json!({"id":2,"sessionId":parent,"method":"Target.attachToTarget","params":{"targetId":"PID:42:1","flatten":false}});
+        assert!(matches!(
+            state.handle(attach.clone()),
+            BrowserCdpAction::Attach { .. }
+        ));
+        let child = state
+            .register_attachment_for_request("PID:42:1", &attach)
+            .unwrap();
+        let request = json!({"id":3,"sessionId":parent,"method":"Target.sendMessageToTarget","params":{"sessionId":child,"message":"{\"id\":11,\"method\":\"Runtime.enable\"}"}});
+        assert!(
+            matches!(state.handle(request.clone()), BrowserCdpAction::NonFlatForward { session_id, message, .. } if session_id == child && message["id"] == 11)
+        );
+        let reply = state
+            .page_message(&child, json!({"id":11,"result":{}}))
+            .unwrap();
+        assert_eq!(reply["method"], "Target.receivedMessageFromTarget");
+        assert_eq!(reply["sessionId"], parent);
+        assert_eq!(reply["params"]["targetId"], "PID:42:1");
+        assert_eq!(reply["params"]["sessionId"], child);
+        let inner: Value =
+            serde_json::from_str(reply["params"]["message"].as_str().unwrap()).unwrap();
+        assert_eq!(inner, json!({"id":11,"result":{}}));
+        let mut wrong_parent = request.clone();
+        wrong_parent.as_object_mut().unwrap().remove("sessionId");
+        assert_eq!(sent(&mut state, wrong_parent)[0]["error"]["code"], -32001);
+        for text in [
+            "[]",
+            "{",
+            "{\"id\":12,\"method\":\"Runtime.enable\",\"sessionId\":\"other\"}",
+        ] {
+            let mut malformed = request.clone();
+            malformed["params"]["message"] = json!(text);
+            assert_eq!(sent(&mut state, malformed)[0]["error"]["code"], -32602);
+        }
+        let detached = state.detach(&child, true);
+        assert_eq!(detached[0]["sessionId"], parent);
+        assert_eq!(detached[0]["params"]["sessionId"], child);
+        assert_eq!(sent(&mut state, request)[0]["error"]["code"], -32001);
+        assert!(state.page_message(&child, json!({"id":11})).is_none());
+        let oversized = json!({"method":"Target.receivedMessageFromTarget","params":{"message":"x".repeat(1024*1024)}});
+        assert_eq!(
+            crate::classify_error(&validate_routed_message(&oversized).unwrap_err()),
+            crate::ErrorClass::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn js_context_native_closure_is_idempotent_without_guessed_inspector_events() {
+        let mut adapter = JsContextCdpAdapter::default();
+        assert!(adapter.context_destroyed().is_none());
+        adapter.outgoing(json!({"id":7,"method":"Runtime.enable"}));
+        adapter.incoming(json!({"id":7,"result":{}}));
+        assert_eq!(
+            adapter
+                .incoming(json!({"method":"Inspector.detached"}))
+                .len(),
+            1
+        );
+        let destroyed = adapter.context_destroyed().unwrap();
+        assert_eq!(destroyed["params"]["executionContextId"], 1);
+        assert_eq!(
+            destroyed["params"]["executionContextUniqueId"],
+            "jscontext.1"
+        );
+        assert!(adapter.context_destroyed().is_none());
+    }
+
+    #[test]
     fn default_context_identity_is_consistent_without_claiming_context_creation() {
         let mut state = BrowserCdpState::new("owned-browser");
         let pages = [
@@ -861,6 +1147,42 @@ mod tests {
         let added = state.refresh(&[first]);
         assert_eq!(added.auto_attach_targets, vec!["PID:42:1"]);
         assert_eq!(added.messages[0]["method"], "Target.targetCreated");
+    }
+
+    #[test]
+    fn observed_refresh_retains_numeric_identity_and_uuid_route_until_detach() {
+        let mut state = BrowserCdpState::new("ios-cli");
+        let first = page("PID:42", "first-key", WirType::JavaScript);
+        state.refresh(std::slice::from_ref(&first));
+        let session = state.register_attachment("PID:42:first-key").unwrap();
+        let mut renamed = first;
+        renamed.page.listing_key = "renamed-key".into();
+        let mut knowledge = BrowserDiscoveryKnowledge {
+            connected_applications: Some(HashSet::from(["PID:42".into()])),
+            ..BrowserDiscoveryKnowledge::default()
+        };
+        knowledge.listed_applications.insert("PID:42".into());
+        let retained = state.refresh_observed(&[renamed], &knowledge);
+        assert!(retained.removed_sessions.is_empty());
+        assert_eq!(
+            state.target_session("PID:42:first-key"),
+            Some(session.as_str())
+        );
+        // A missing per-app listing cannot prove that the target vanished.
+        knowledge.listed_applications.clear();
+        assert!(state
+            .refresh_observed(&[], &knowledge)
+            .removed_sessions
+            .is_empty());
+        assert!(state.native_page_for_target("PID:42:first-key").is_some());
+        knowledge.listed_applications.insert("PID:42".into());
+        let removed = state.refresh_observed(&[], &knowledge);
+        assert_eq!(removed.removed_sessions, vec![session.clone()]);
+        let final_message = state.page_message(&session, json!({"method":"Runtime.executionContextDestroyed", "params":{"executionContextId":1}})).unwrap();
+        assert_eq!(final_message["sessionId"], session);
+        assert_eq!(state.detach(&session, true).len(), 1);
+        assert!(state.detach(&session, true).is_empty());
+        assert!(state.page_message(&session, json!({"id":1})).is_none());
     }
 
     #[test]

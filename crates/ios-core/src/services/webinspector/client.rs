@@ -29,6 +29,7 @@ pub struct WebInspectorClient<S> {
     automation_availability: Option<AutomationAvailability>,
     applications: IndexMap<String, Application>,
     application_pages: IndexMap<String, IndexMap<u64, Page>>,
+    connected_application_snapshot_seen: bool,
     pending_events: VecDeque<WebInspectorEvent>,
     pending_event_bytes: usize,
     state: WebInspectorState,
@@ -46,6 +47,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
             automation_availability: None,
             applications: IndexMap::new(),
             application_pages: IndexMap::new(),
+            connected_application_snapshot_seen: false,
             pending_events: VecDeque::new(),
             pending_event_bytes: 0,
             state: WebInspectorState::default(),
@@ -66,6 +68,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
 
     pub fn application_pages(&self, application_id: &str) -> Option<&IndexMap<u64, Page>> {
         self.application_pages.get(application_id)
+    }
+
+    /// Positive discovery evidence requires an admitted connected-application
+    /// snapshot and a complete parsed listing for every surviving application.
+    /// An empty idle read alone cannot certify that missing listings are empty.
+    pub fn has_complete_application_snapshot(&self) -> bool {
+        self.is_usable()
+            && self.connected_application_snapshot_seen
+            && self
+                .applications
+                .keys()
+                .all(|id| self.application_pages.contains_key(id))
     }
 
     pub fn application_by_bundle(&self, bundle_identifier: &str) -> Option<&Application> {
@@ -187,9 +201,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         &mut self,
         idle_timeout: Duration,
     ) -> Result<Vec<ApplicationPage>, WebInspectorError> {
+        self.discover_application_pages(idle_timeout, false)
+            .await
+            .map(|(pages, _)| pages)
+    }
+
+    /// Discovery plus bounded original parsed observations, allowing callers to
+    /// distinguish complete per-application evidence from missing responses.
+    /// Shares the same idle/configured total deadlines as `open_application_pages`.
+    pub async fn open_application_pages_observed(
+        &mut self,
+        idle_timeout: Duration,
+    ) -> Result<(Vec<ApplicationPage>, Vec<WebInspectorEvent>), WebInspectorError> {
+        self.discover_application_pages(idle_timeout, true).await
+    }
+
+    async fn discover_application_pages(
+        &mut self,
+        idle_timeout: Duration,
+        observe: bool,
+    ) -> Result<(Vec<ApplicationPage>, Vec<WebInspectorEvent>), WebInspectorError> {
         let total = self.deadline(None)?;
         let request = checked_deadline(idle_timeout)?;
         await_operation(total, "discover WebInspector pages", async {
+            let mut observations = Vec::new();
+            let mut observation_bytes = 0;
             await_operation(
                 Some(request),
                 "request WebInspector applications",
@@ -207,9 +243,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                 )
                 .await
                 {
-                    Ok(_) => tokio::task::yield_now().await,
+                    Ok(event) => {
+                        if observe {
+                            if observations.len() >= MAX_EVENTS {
+                                return Err(super::local_limit(
+                                    "discovery observation count",
+                                    MAX_EVENTS as u64,
+                                ));
+                            }
+                            observation_bytes += event_size(
+                                &event,
+                                MAX_EVENT_BYTES.saturating_sub(observation_bytes),
+                            )?;
+                            observations.push(event);
+                        }
+                        tokio::task::yield_now().await;
+                    }
                     Err(error) if error.timeout_duration().is_some() && self.is_usable() => {
-                        return Ok(self.open_pages_snapshot())
+                        return Ok((self.open_pages_snapshot(), observations))
                     }
                     Err(error) => return Err(error),
                 }
@@ -452,19 +503,58 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
         self.next_event_with_deadline(deadline).await
     }
 
-    pub(super) async fn next_socket_data_with_timeout(
+    pub(super) async fn next_inspector_event_with_timeout(
         &mut self,
+        application_id: &str,
+        page_id: u64,
         timeout_duration: Duration,
     ) -> Result<WebInspectorEvent, WebInspectorError> {
         let deadline = self.deadline(Some(timeout_duration))?;
-        let operation = WebInspectorOperation::with_deadline(self, deadline)?;
-        let result = await_operation(
-            deadline,
-            "receive WebInspector socket data",
-            operation.client.next_socket_data(),
-        )
+        let mut operation = WebInspectorOperation::with_deadline(self, deadline)?;
+        let result = await_operation(deadline, "receive WebInspector inspector event", async {
+            loop {
+                let event = operation.client.next_event().await?;
+                // Cancellation after consuming an event must not silently
+                // discard preserved events and allow reuse of the stream.
+                operation.commit();
+                let selected = match &event {
+                    WebInspectorEvent::SocketData {
+                        application_id: source,
+                        ..
+                    } => source
+                        .as_deref()
+                        .map_or(true, |source| source == application_id),
+                    WebInspectorEvent::ApplicationDisconnected {
+                        application_id: source,
+                    } => source == application_id,
+                    WebInspectorEvent::Listing {
+                        application_id: source,
+                        pages,
+                    } => source == application_id && !pages.iter().any(|page| page.id == page_id),
+                    _ => false,
+                };
+                if selected {
+                    return Ok(event);
+                }
+                operation.preserve(event)?;
+                operation.retained_event_boundary();
+                tokio::task::yield_now().await;
+            }
+        })
         .await;
-        operation.finish(result)
+        // A completed unrelated metadata event leaves no wire obligation.
+        // Preserve an empty idle expiry after it; partial native IO has already
+        // invalidated the client and must retain that failure instead.
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.timeout_duration().is_some())
+            && operation.client.is_usable()
+        {
+            operation.finish_response(result)
+        } else {
+            operation.finish(result)
+        }
     }
 
     pub(super) async fn next_socket_data(
@@ -586,6 +676,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebInspectorClient<S> {
                 for application_id in applications.keys() {
                     self.request_listing(application_id).await?;
                 }
+                self.connected_application_snapshot_seen = true;
 
                 Ok(WebInspectorEvent::ConnectedApplications {
                     applications: applications.into_values().collect(),

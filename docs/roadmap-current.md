@@ -12,7 +12,7 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 | 范围 | 本轮工作与验收出口 |
 | --- | --- |
 | Viewer/S01/S02/F05 | Principal设备/端口范围与撤销、DES认证；真实PNG/Web/VNC共享源、设备输入/文本剪贴板、统一owner预算与退出。原HEVC/方向/图像子项独立登记。 |
-| CDP/F04 | 清除生产常量和空成功，真实WebInspector请求/响应/event关联；实际pinned客户端验证每域，未知字段/无法保证语义明确拒绝。 |
+| CDP/F04 | 清除生产常量和空成功，真实WebInspector请求/响应/event关联；[原生context关闭/独立刷新](validation/cdp-native-context-closure-2026-10-13.md)已接线，pinned实际客户端10通过，默认Playwright初始化拒绝保持。其它Runtime语义、Page/iframe/Input/Fetch/指标各域原交付继续，F04未关闭。 |
 | SDK/A03/L01 | A03开发交付：apps/AFC/logs共同checked trust owner、Python/C预算/取消/并发/close/join、公开aclose，installed wheel与C实际ABI gate分别30场景通过；[SpringBoard请求owner/总期限](validation/springboard-lifecycle-2026-10-13.md)及CLI接线已验，L01其它profiles继续。 |
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
 | Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA和依赖已本地提交94574d6；Windows watch原console/Job/reader工具9项通过，见[本轮证据](validation/windows-watch-2026-10-12.md)。Q02已按原FUP/矩阵交付物核查完成开发收口；[终态CI判定/最终receipt](validation/f02-terminal-integrity-2026-10-13.md)实际CLI26方法通过；现代全流程、结果准入及整体Rust组合仍缺代码/证据，真实验收仍待条件。 |

@@ -13,7 +13,7 @@ mod client;
 pub use client::WebInspectorClient;
 
 mod inspector;
-pub use inspector::InspectorSession;
+pub use inspector::{InspectorSession, InspectorSessionEvent};
 mod automation;
 pub use automation::{AutomationSession, By};
 

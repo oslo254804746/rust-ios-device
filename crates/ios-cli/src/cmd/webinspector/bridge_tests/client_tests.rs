@@ -40,7 +40,19 @@ async fn gate(
     target: JsTarget,
     expectation: &str,
 ) -> (Capture, Vec<PeerReceipt>, JsonValue) {
-    let source = JsSource::new(target, false);
+    gate_with_closure(client_name, target, expectation, None).await
+}
+
+async fn gate_with_closure(
+    client_name: &str,
+    target: JsTarget,
+    expectation: &str,
+    closure: Option<NativeClosure>,
+) -> (Capture, Vec<PeerReceipt>, JsonValue) {
+    let source = match closure {
+        Some(closure) => JsSource::with_closure(target, closure),
+        None => JsSource::new(target, false),
+    };
     let (port, server, _policy) = start_js(source.clone()).await;
     let captured = async {
         denied_without_source_io(port, &source).await?;
@@ -379,4 +391,220 @@ async fn aborted_actual_client_waiter_reaps_child_and_joins_original_jscontext_p
     safe_bytes(&serde_json::to_vec(&evidence).unwrap());
     assert_native_order(&evidence, &peers);
     println!("F03 actual-client abort evidence: {}", evidence);
+}
+
+async fn native_closure_gate(client_name: &str, page: u64, closure: NativeClosure) {
+    let target = JsTarget {
+        page,
+        listing: "client-native-closure",
+        url: "https://example.invalid/owned-native-closure",
+    };
+    let expectation = match closure {
+        NativeClosure::Page => "native-page-closure",
+        NativeClosure::Application => "native-application-closure",
+        NativeClosure::DiscoveryPage => "native-discovery-page-closure",
+        NativeClosure::DiscoveryApplication => "native-discovery-application-closure",
+        NativeClosure::DiscoveryRace => "native-discovery-race-closure",
+    };
+    let (capture, receipts, evidence) =
+        gate_with_closure(client_name, target, expectation, Some(closure)).await;
+    let version = if client_name == "puppeteer" {
+        "25.12.0"
+    } else {
+        "1.63.0"
+    };
+    let report = report(&capture, client_name, version, expectation);
+    assert_eq!(report["contexts"], json!([1]));
+    assert_eq!(report["evaluated"], 42);
+    assert_eq!(report["destroyed"]["executionContextId"], 1);
+    assert_eq!(
+        report["destroyed"]["executionContextUniqueId"],
+        "jscontext.1"
+    );
+    let trace = report["trace"].as_array().unwrap();
+    // Decode real standard transport envelopes only for correlation assertions;
+    // the report retains every original pinned-client packet unchanged.
+    let decoded: Vec<_> = trace
+        .iter()
+        .map(|item| {
+            let mut item = item.clone();
+            if matches!(
+                item["message"]["method"].as_str(),
+                Some("Target.sendMessageToTarget" | "Target.receivedMessageFromTarget")
+            ) {
+                let mut nested: JsonValue =
+                    serde_json::from_str(item["message"]["params"]["message"].as_str().unwrap())
+                        .unwrap();
+                nested["sessionId"] = item["message"]["params"]["sessionId"].clone();
+                item["message"] = nested;
+            }
+            item
+        })
+        .collect();
+    let created = at(&decoded, "receive", "Runtime.executionContextCreated");
+    let destroyed = at(&decoded, "receive", "Runtime.executionContextDestroyed");
+    let detached = decoded
+        .iter()
+        .enumerate()
+        .skip(destroyed + 1)
+        .find(|(_, item)| {
+            item["direction"] == "receive"
+                && item["message"]["method"] == "Target.detachedFromTarget"
+        })
+        .map(|(index, _)| index)
+        .expect("native detach absent after context destruction");
+    assert!(created < destroyed && destroyed < detached);
+    assert_eq!(
+        decoded[destroyed]["message"]["sessionId"],
+        decoded[created]["message"]["sessionId"]
+    );
+    assert_eq!(
+        decoded[detached]["message"]["params"]["sessionId"],
+        decoded[destroyed]["message"]["sessionId"]
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|item| item["direction"] == "receive"
+                && item["message"]["method"] == "Runtime.executionContextDestroyed")
+            .count(),
+        1
+    );
+    let evaluations: Vec<_> = decoded
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item["direction"] == "send" && item["message"]["method"] == "Runtime.evaluate"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(evaluations.len(), 4);
+    assert_eq!(
+        response_after(&decoded, evaluations[2])["result"]["result"]["value"],
+        42
+    );
+    assert_eq!(
+        response_after(&decoded, evaluations[1])["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.evaluations)
+            .sum::<usize>(),
+        3
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.runtime_enables)
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.console_enables)
+            .sum::<usize>(),
+        1
+    );
+    let records = evidence["records"].as_array().unwrap();
+    let selected = receipts
+        .iter()
+        .find(|receipt| receipt.evaluations == 3)
+        .unwrap();
+    let independent = matches!(
+        closure,
+        NativeClosure::DiscoveryPage | NativeClosure::DiscoveryApplication
+    );
+    let closing_selector = match closure {
+        NativeClosure::Page | NativeClosure::DiscoveryRace | NativeClosure::DiscoveryPage => {
+            "_rpc_applicationSentListing:"
+        }
+        NativeClosure::Application => "_rpc_applicationDisconnected:",
+        NativeClosure::DiscoveryApplication => "_rpc_reportConnectedApplicationList:",
+    };
+    let close = records
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            (if independent {
+                item["stream"] != selected.stream
+            } else {
+                item["stream"] == selected.stream
+            }) && item["event"] == "plist_send"
+                && item["message"]["__selector"] == closing_selector
+                && if matches!(closure, NativeClosure::DiscoveryApplication) {
+                    item["message"]["__argument"]["WIRApplicationDictionaryKey"] == json!({})
+                } else if independent {
+                    item["message"]["__argument"]["WIRApplicationIdentifierKey"] == "PID:42"
+                        && item["message"]["__argument"]["WIRListingKey"] == json!({})
+                } else {
+                    item["message"]["__argument"]["WIRApplicationIdentifierKey"] == "PID:42"
+                }
+        })
+        .map(|(index, _)| index)
+        .next_back()
+        .unwrap();
+    let teardown = records
+        .iter()
+        .position(|item| {
+            item["stream"] == selected.stream
+                && item["event"] == "plist_receive"
+                && item["message"]["__selector"] == "_rpc_forwardDidClose:"
+        })
+        .unwrap();
+    assert!(close < teardown);
+    if client_name == "playwright" {
+        assert_eq!(report["unknown_session_rejected"], true);
+        assert!(!trace
+            .iter()
+            .any(|item| item["message"]["method"] == "Browser.setDownloadBehavior"));
+        assert!(trace.iter().any(
+            |item| item["direction"] == "receive" && item["message"]["error"]["code"] == -32001
+        ));
+    }
+    assert_native_order(&evidence, &receipts);
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 native closure gate"]
+async fn pinned_puppeteer_native_page_closure_destroys_context_before_flat_detach() {
+    native_closure_gate("puppeteer", 1044, NativeClosure::Page).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; explicit F04 native closure gate"]
+async fn pinned_puppeteer_native_application_closure_destroys_context_before_flat_detach() {
+    native_closure_gate("puppeteer", 1045, NativeClosure::Application).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; narrow public noDefaults/nonflat F04 gate"]
+async fn pinned_playwright_native_page_closure_destroys_context_before_nonflat_detach() {
+    native_closure_gate("playwright", 1046, NativeClosure::Page).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; narrow public noDefaults/nonflat F04 gate"]
+async fn pinned_playwright_native_application_closure_destroys_context_before_nonflat_detach() {
+    native_closure_gate("playwright", 1047, NativeClosure::Application).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; independent discovery closure"]
+async fn pinned_puppeteer_native_discovery_page_closure_delivers_context_before_detach() {
+    native_closure_gate("puppeteer", 1048, NativeClosure::DiscoveryPage).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; independent discovery closure"]
+async fn pinned_playwright_native_discovery_application_closure_delivers_context_before_detach() {
+    native_closure_gate("playwright", 1049, NativeClosure::DiscoveryApplication).await;
+}
+
+#[tokio::test]
+#[ignore = "requires cached pinned Node clients; selected/discovery closure race"]
+async fn pinned_puppeteer_native_discovery_race_closure_destroys_context_once() {
+    native_closure_gate("puppeteer", 1050, NativeClosure::DiscoveryRace).await;
 }
