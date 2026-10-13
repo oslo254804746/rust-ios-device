@@ -17,11 +17,11 @@ codex/review-fixes-20261010，原交付基线993a366和迁移起点660bd46保留
 | Restore/F06 | 拒绝未实现执行、失败非零与取消/terminal；实际restored传输子项、IPSW全组件CRC和TSS请求关联；完整模式转换/票据/ASR/FDR仍需代码与协议证据。 |
 | Q02/F02 | 正确矩阵CLI及manifest、精确操作/失败/hash/清理；真实包ID与本轮安装owner、统一finally、log原task取消/join、全阶段失败fixture。WDA和依赖已本地提交94574d6；Windows watch原console/Job/reader工具9项通过，见[本轮证据](validation/windows-watch-2026-10-12.md)。Q02已按原FUP/矩阵交付物核查完成开发收口；现代全流程与真实验收仍待条件。 |
 | F01 | 真实平台枚举与目标route，未执行remoted/DDI可用性为Unknown；不凭文件名或socket猜定Ok。 |
-| L02 | Snapshot/publication、coordinator、selection/plan、candidate输入/索引、[写入批次](validation/tunnel-write-batches-2026-10-13.md)及[manual desired route](validation/tunnel-manual-route-bytes-2026-10-13.md)同池owner/准入已接线，64MiB发布子限保持。原error/history payload创建端、desired listing/其它manual副本/其余backing完整全局归属与刷新规则继续，[未计量边界](validation/manager-error-payload-2026-10-12.md)明确，L02未关闭。 |
+| L02 | Snapshot/publication、coordinator、selection/plan、candidate输入/索引、[写入批次](validation/tunnel-write-batches-2026-10-13.md)及[manual desired route](validation/tunnel-manual-route-bytes-2026-10-13.md)同池owner/准入已接线，64MiB发布子限保持。[desired listing原key/backing](validation/tunnel-desired-list-bytes-2026-10-13.md)也已接线；原error/history payload创建端、其它manual副本/其余backing完整全局归属与刷新规则继续，[未计量边界](validation/manager-error-payload-2026-10-12.md)明确，L02未关闭。 |
 | L04已交付 | 同fixture前后1/4/16与16轮启停/断连、生产native/AFC/Syslog连续资源采样、默认堆归因与基线派生性能参考范围。见[证据](validation/manager-resource-baseline-2026-10-11.md)；物理设备和其他平台NOT_RUN，超出参考范围保持观察标志。 |
 | 原门禁维护 | 能力登记含目录mod.rs、Windows五项core失败诊断；保持原错误source、严格EOF、native join/worker恢复断言。 |
 
-当前按用户最新要求不派发子agent；Rust/Cargo/maturin串行。开发检查使用冻结源码，
+用户最新允许独立子agent加速；Rust/Cargo/maturin仍由主线程串行。开发检查使用冻结源码，
 集中验收固定源码hash与受测提交。不会终止其它会话进程或覆盖用户改动。
 修复可本地提交，不推送、发布、部署。
 用户于2026-10-12明确要求：每完成一个可验收工作项，验证后立即本地提交，

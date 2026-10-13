@@ -42,6 +42,15 @@ struct DeviceGate {
 
 type DeviceRow = (String, Arc<DeviceGate>);
 
+pub(super) struct DesiredRow {
+    pub(super) udid: String,
+    pub(super) ticket: Ticket,
+    pub(super) snapshot: super::intent::Snapshot,
+    // This exact copied key can move into the manual-success writer. Keep its
+    // permit with that owner, independently of this listing's backing.
+    pub(super) key_storage: OwnedSemaphorePermit,
+}
+
 #[derive(Default)]
 struct DeviceTable {
     // Vec exposes its actual backing capacity. HashMap capacity alone does not
@@ -329,36 +338,39 @@ impl Lifecycle {
         })
     }
 
-    pub(super) async fn desired(&self) -> Vec<(String, Ticket, super::intent::Snapshot)> {
+    pub(super) async fn desired(&self) -> Result<super::metadata_vec::KnownVec<DesiredRow>> {
+        let mut rows =
+            super::metadata_vec::KnownVec::new(Arc::clone(&self.metadata_bytes), MAX_DEVICE_GATES);
         let shutdown = self.shutdown.subscribe();
         let Some(epoch) = shutdown.borrow().clone() else {
-            return Vec::new();
+            return Ok(rows);
         };
         let devices = self.devices.lock().await;
-        devices
-            .rows
-            .iter()
-            .filter_map(|(udid, gate)| {
-                let snapshot = gate.intent.snapshot();
-                if !Arc::ptr_eq(&snapshot.epoch, &epoch) {
-                    return None;
-                }
-                if matches!(&snapshot.desired, super::intent::Desired::Automatic) {
-                    return None;
-                }
-                Some((
-                    udid.clone(),
-                    Ticket {
-                        gate: gate.clone(),
-                        generation: gate.generation.borrow().clone(),
-                        shutdown: shutdown.clone(),
-                        shutdown_generation: epoch.clone(),
-                        intent_version: Some(snapshot.version.clone()),
-                    },
-                    snapshot,
-                ))
-            })
-            .collect()
+        for (udid, gate) in &devices.rows {
+            let snapshot = gate.intent.snapshot();
+            if !Arc::ptr_eq(&snapshot.epoch, &epoch)
+                || matches!(&snapshot.desired, super::intent::Desired::Automatic)
+            {
+                continue;
+            }
+            rows.reserve(1)?;
+            let udid = udid.clone();
+            let key_storage =
+                super::admission::known_metadata_charge(&self.metadata_bytes, udid.capacity())?;
+            rows.push(DesiredRow {
+                udid,
+                ticket: Ticket {
+                    gate: gate.clone(),
+                    generation: gate.generation.borrow().clone(),
+                    shutdown: shutdown.clone(),
+                    shutdown_generation: epoch.clone(),
+                    intent_version: Some(snapshot.version.clone()),
+                },
+                snapshot,
+                key_storage,
+            })?;
+        }
+        Ok(rows)
     }
 
     #[cfg(test)]
@@ -728,6 +740,10 @@ pub(super) fn cancelled() -> anyhow::Error {
 }
 
 #[cfg(test)]
+#[path = "lifecycle/desired_tests.rs"]
+mod desired_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -860,7 +876,7 @@ mod tests {
         let before = old.gate.intent.snapshot();
         lifecycle.clear();
         assert!(!old.is_current());
-        let desired = lifecycle.desired().await;
+        let desired = lifecycle.desired().await.unwrap();
         assert_eq!(
             desired.len(),
             0,

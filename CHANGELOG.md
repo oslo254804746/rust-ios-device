@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admit tunnel desired-list key buffers and actual vector backing in the shared
+  metadata bank. Scan indexes borrow the admitted keys, and deferred manual
+  success retains the original key charge until its final owner releases it.
+
 - Add Windows owned watch supervision using a hidden private console and atomic
   Job Object admission. Verify original Ctrl-C, process trees, reader joins and
   actual CLI TLS-start cancellation without treating forced cleanup as native success.
