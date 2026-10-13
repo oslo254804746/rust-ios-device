@@ -8560,3 +8560,14 @@ Clippy/build/fmt、readonly1及host5/22NOT_RUN通过，见
 [验证](validation/tunnel-scan-desired-index-bytes-2026-10-13.md)。其余索引/key
 副本、原error/native/runtime私有allocation与完整刷新仍缺，不关闭L02；
 账本23/6/待收口、有效30及Q04全部排除保持。
+
+
+## 2026-10-13 L02 USB唯一身份校验临时backing
+
+未收费HashSet改为实际收费sorted Vec<usize>；先验证原字段/容量、取得raw
+费用，再取得临时index实际费用并全raw计数。原4096unique及16384raw上限、
+UID buffer与发现顺序保持，成功只返回raw owner，失败释放两者。新增2项
+及tunnel440通过、2原ignored，严格CLI Clippy/build/fmt、readonly1和
+host5/22NOT_RUN通过，见[验证](validation/tunnel-usb-identity-index-bytes-2026-10-13.md)。
+Source返回前分配、其余索引/key/error/native/runtime及完整刷新仍缺，
+不关闭L02；23/6/待收口、有效30和Q04全部排除保持。

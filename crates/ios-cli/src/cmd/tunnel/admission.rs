@@ -76,7 +76,7 @@ pub(super) fn retain_usb_snapshot(
     bank: &Arc<Semaphore>,
     devices: &Vec<UsbDevice>,
 ) -> Result<OwnedSemaphorePermit> {
-    usb_snapshot(devices)?;
+    usb_snapshot_fields(devices)?;
     let text = devices
         .iter()
         .map(|device| device.udid.capacity())
@@ -84,7 +84,9 @@ pub(super) fn retain_usb_snapshot(
     // The per-snapshot validator already checked these same capacities; the
     // borrowed input cannot change before this synchronous global admission.
     let bytes = devices.capacity() * std::mem::size_of::<UsbDevice>() + text;
-    known_metadata_charge(bank, bytes)
+    let storage = known_metadata_charge(bank, bytes)?;
+    usb_snapshot_identities(devices, bank)?;
+    Ok(storage)
 }
 
 pub(super) fn retain_paired_snapshot(
@@ -100,19 +102,43 @@ pub(super) fn retain_paired_snapshot(
     known_metadata_charge(bank, bytes)
 }
 
-pub(super) fn usb_snapshot(devices: &Vec<UsbDevice>) -> Result<()> {
+fn usb_snapshot_fields(devices: &Vec<UsbDevice>) -> Result<()> {
     anyhow::ensure!(devices.len() <= MAX_RAW_ROWS, snapshot_limit());
     let mut bytes = 0;
-    let mut unique = HashSet::new();
     for device in devices {
         charge_field(&mut bytes, &device.udid)?;
-        if !unique.contains(device.udid.as_str()) {
-            // Count all raw identities before selection/authorization or clones.
-            anyhow::ensure!(unique.len() < MAX_CANDIDATES, snapshot_limit());
-            unique.insert(device.udid.as_str());
-        }
     }
     snapshot_storage(devices.capacity(), std::mem::size_of::<UsbDevice>(), bytes)
+}
+
+fn usb_snapshot_identities(devices: &[UsbDevice], bank: &Arc<Semaphore>) -> Result<()> {
+    let mut positions = Vec::new();
+    positions.try_reserve_exact(devices.len()).map_err(|_| {
+        crate::output::resource_decision("tunnel snapshot identity index allocation failed")
+    })?;
+    let _storage = known_vec_backing(bank, &positions)?;
+    positions.extend(0..devices.len());
+    positions.sort_unstable_by(|a, b| devices[*a].udid.cmp(&devices[*b].udid));
+    let mut last = None;
+    let mut unique = 0;
+    for index in positions {
+        let identity = devices[index].udid.as_str();
+        if last != Some(identity) {
+            // Validate every raw identity, before selection or authorization.
+            anyhow::ensure!(unique < MAX_CANDIDATES, snapshot_limit());
+            unique += 1;
+            last = Some(identity);
+        }
+    }
+    Ok(())
+}
+
+// Logical validator tests have no production bank. All production consumers
+// use retain_usb_snapshot, which admits raw storage and this temporary index.
+#[cfg(test)]
+fn usb_snapshot(devices: &Vec<UsbDevice>) -> Result<()> {
+    usb_snapshot_fields(devices)?;
+    usb_snapshot_identities(devices, &Arc::new(Semaphore::new(MAX_RAW_STORAGE_BYTES)))
 }
 
 pub(super) fn paired_snapshot(devices: &Vec<PairedMobdev2Device>) -> Result<()> {
