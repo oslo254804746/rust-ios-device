@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Charge manual and suppressed scan index backing while borrowing admitted
+  desired keys, tickets and routes. Keep captured iteration order and indexed
+  lookups, original stop epochs, authority checks and failure reconciliation.
+
 - Admit initial tunnel publication snapshots with actual vector backing and
   copied key capacity before discovery. Preserve exact publication identities
   and release those fees when the last scan snapshot owner is dropped.
