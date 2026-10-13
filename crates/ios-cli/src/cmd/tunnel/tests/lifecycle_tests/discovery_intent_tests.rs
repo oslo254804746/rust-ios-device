@@ -40,7 +40,6 @@ async fn intent_discovery_fixed_sources_keep_priority_and_bound_repeated_refusal
         .await
         .unwrap_err();
     let error = session.finish(Err(elapsed.into())).unwrap_err();
-    drop(session);
     assert!(outcomes.history().is_empty());
     assert_eq!(
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -103,7 +102,6 @@ async fn intent_discovery_single_source_preserves_existing_failure_context_acces
         .await
         .unwrap_err();
     let error = session.finish(Err(elapsed.into())).unwrap_err();
-    drop(session);
     assert!(outcomes.history().is_empty());
     assert!(error.downcast_ref::<scan::SourceContext>().is_none());
     assert!(error

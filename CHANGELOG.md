@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reserve tunnel scan-owned failure contexts, cleanup capsules and abandoned
+  history payloads before Source work. Preserve original error objects and
+  chain depth; release materialized charges with their final caller/history owner.
+
 - Extend explicit-target doctor reports with bounded read-only personalization
   manifest observations. Add pairing-directory metadata and stricter platform
   USB observations; missing or malformed metadata cannot produce an OK result.

@@ -8475,3 +8475,12 @@ metadata，平台USB malformed/缺失不冒称Ok；60项fixture通过、1原igno
 严格CLI Clippy/build和119项capability inventory通过。未运行真实设备/平台发现；
 完整本地BuildManifest/组件/摘要/签名范围仍缺，原F01不关闭，见
 [验证](validation/doctor-manifest-directories-2026-10-13.md)。
+
+
+## 2026-10-13 L02 scan自有胶囊预算子项
+
+Source首次poll前原子预留原context/cleanup/abandoned payload，permit随实际
+胶囊及最后caller/history owner保留；原error对象/chain、native joins及EOF保持。
+9新增及整组422通过、2原ignored；严格Core/CLI Clippy/build/只读CLI和host通过。
+原不透明payload及其它heap/完整刷新仍缺合同，不关闭L02，见
+[验证](validation/tunnel-scan-capsule-bytes-2026-10-13.md)。

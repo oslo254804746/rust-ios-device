@@ -5,10 +5,14 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::{watch, MutexGuard};
+use tokio::sync::{watch, MutexGuard, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_ABANDONED_SCANS: usize = 8;
+
+#[cfg(test)]
+#[path = "scan/capsule_tests.rs"]
+mod capsule_tests;
 
 enum Slot {
     Empty,
@@ -21,18 +25,42 @@ struct Slots {
     entries: [Slot; MAX_ABANDONED_SCANS],
 }
 
-pub(super) struct Outcomes(StdMutex<Slots>);
+pub(super) struct Outcomes {
+    slots: StdMutex<Slots>,
+    bank: Arc<Semaphore>,
+}
+
+fn compound_bytes() -> usize {
+    std::mem::size_of::<SourceContext>()
+        .max(std::mem::size_of::<super::bookkeeping::FailureContext>())
+}
+
+pub(super) fn capsule_reservation_bytes() -> usize {
+    compound_bytes()
+        + std::mem::size_of::<AbandonedScan>()
+        + std::mem::size_of::<super::ScanCleanupFailure>()
+}
 
 impl Outcomes {
+    #[cfg(test)]
     pub(super) fn new() -> Arc<Self> {
-        Arc::new(Self(StdMutex::new(Slots {
-            closed: false,
-            entries: std::array::from_fn(|_| Slot::Empty),
-        })))
+        Self::with_metadata(Arc::new(Semaphore::new(
+            super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
+        )))
+    }
+
+    pub(super) fn with_metadata(bank: Arc<Semaphore>) -> Arc<Self> {
+        Arc::new(Self {
+            slots: StdMutex::new(Slots {
+                closed: false,
+                entries: std::array::from_fn(|_| Slot::Empty),
+            }),
+            bank,
+        })
     }
 
     pub(super) fn begin<'a>(self: &Arc<Self>, lock: MutexGuard<'a, ()>) -> Result<Session<'a>> {
-        let mut slots = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         if slots.closed {
             return Err(super::lifecycle::cancelled());
         }
@@ -43,22 +71,35 @@ impl Outcomes {
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel abandoned scan error capacity")
             })?;
+        // One atomic prospective reservation, before any original Source can
+        // return an error. No later quota refusal may discard that original.
+        let mut storage =
+            super::admission::known_metadata_charge(&self.bank, capsule_reservation_bytes())?;
+        let compound = storage
+            .split(compound_bytes())
+            .expect("reserved compound bytes");
+        let cleanup = storage
+            .split(std::mem::size_of::<super::ScanCleanupFailure>())
+            .expect("reserved cleanup bytes");
         slots.entries[index] = Slot::Active;
         Ok(Session {
             outcomes: Arc::clone(self),
             index,
             acquired: StdMutex::new(Acquired::default()),
             writes: StdMutex::new(None),
+            compound: StdMutex::new(Some(compound)),
+            cleanup: StdMutex::new(Some(cleanup)),
+            abandoned: Some(storage),
             _lock: lock,
         })
     }
 
     pub(super) fn close(&self) {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
+        self.slots.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
     }
 
     pub(super) fn history(&self) -> Vec<Arc<AbandonedScan>> {
-        self.0
+        self.slots
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .entries
@@ -71,7 +112,7 @@ impl Outcomes {
     }
 
     pub(super) fn payload_history(&self) -> (usize, Vec<Arc<AbandonedScan>>) {
-        let slots = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         let active = slots
             .entries
             .iter()
@@ -94,6 +135,11 @@ pub(super) struct Session<'a> {
     index: usize,
     acquired: StdMutex<Acquired>,
     writes: StdMutex<Option<Arc<super::bookkeeping::FailureWriteOwner>>>,
+    // Stack-held prospective permits are not a claim about stack/heap size.
+    // Only actually materialized app-owned payloads receive their exact slice.
+    compound: StdMutex<Option<OwnedSemaphorePermit>>,
+    cleanup: StdMutex<Option<OwnedSemaphorePermit>>,
+    abandoned: Option<OwnedSemaphorePermit>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
 }
@@ -129,7 +175,11 @@ impl Acquired {
         }
     }
 
-    fn finish(mut self, mut completion: Option<anyhow::Error>) -> Option<anyhow::Error> {
+    fn finish(
+        mut self,
+        mut completion: Option<anyhow::Error>,
+        storage: &StdMutex<Option<OwnedSemaphorePermit>>,
+    ) -> Option<anyhow::Error> {
         let primary = self
             .usb
             .take()
@@ -140,7 +190,10 @@ impl Acquired {
             // Keep the existing one-source completion context and its typed
             // secondary accessor for callers already inspecting that contract.
             return Some(match completion {
-                Some(error) => primary.context(super::bookkeeping::FailureContext::new(error)),
+                Some(error) => primary.context(super::bookkeeping::FailureContext::admitted(
+                    error,
+                    materialize::<super::bookkeeping::FailureContext>(storage),
+                )),
                 None => primary,
             });
         }
@@ -149,6 +202,7 @@ impl Acquired {
             paired: self.paired,
             coordinator: self.coordinator,
             completion,
+            _storage: materialize::<SourceContext>(storage),
         }))
     }
 }
@@ -160,6 +214,19 @@ pub(super) struct SourceContext {
     paired: Option<anyhow::Error>,
     coordinator: Option<anyhow::Error>,
     completion: Option<anyhow::Error>,
+    _storage: OwnedSemaphorePermit,
+}
+
+fn materialize<T>(storage: &StdMutex<Option<OwnedSemaphorePermit>>) -> OwnedSemaphorePermit {
+    let mut reserved = storage
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .expect("one terminal compound context per admitted scan");
+    // The unused maximum is refunded before constructing the chosen payload.
+    reserved
+        .split(std::mem::size_of::<T>())
+        .expect("reserved exact context payload")
 }
 
 impl SourceContext {
@@ -227,21 +294,31 @@ impl Session<'_> {
     }
 
     pub(super) fn take(&self) -> Option<anyhow::Error> {
-        self.take_acquired().finish(None)
+        // Terminal extraction: production does not refill Source slots after
+        // this point. A subsequent finish only returns its completion intact.
+        self.take_acquired().finish(None, &self.compound)
+    }
+
+    pub(super) fn cleanup_storage(&self) -> OwnedSemaphorePermit {
+        self.cleanup
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .expect("one original list cleanup payload per scan")
     }
 
     fn take_acquired(&self) -> Acquired {
         std::mem::take(&mut *self.acquired.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
-    pub(super) fn finish(&self, result: Result<Option<()>>) -> Result<()> {
+    pub(super) fn finish(self, result: Result<Option<()>>) -> Result<()> {
         let acquired = self.take_acquired();
         let completion = match result {
             Err(error) => Some(error),
             Ok(None) if !acquired.is_empty() => Some(super::lifecycle::cancelled()),
             Ok(_) => None,
         };
-        let result = match acquired.finish(completion) {
+        let result = match acquired.finish(completion, &self.compound) {
             Some(error) => Err(error),
             None => Ok(()),
         };
@@ -261,19 +338,32 @@ impl Drop for Session<'_> {
             Some(owner) => owner.abandon(primary),
             None => primary,
         };
-        let mut slots = self.outcomes.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slots = self
+            .outcomes
+            .slots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         slots.entries[self.index] = match primary {
-            Some(primary) => Slot::Abandoned(Arc::new(AbandonedScan(primary))),
+            Some(primary) => Slot::Abandoned(Arc::new(AbandonedScan {
+                original: primary,
+                _storage: self
+                    .abandoned
+                    .take()
+                    .expect("reserved abandoned scan payload"),
+            })),
             None => Slot::Empty,
         };
     }
 }
 
-pub(super) struct AbandonedScan(anyhow::Error);
+pub(super) struct AbandonedScan {
+    original: anyhow::Error,
+    _storage: OwnedSemaphorePermit,
+}
 
 impl AbandonedScan {
     pub(super) fn original(&self) -> &anyhow::Error {
-        &self.0
+        &self.original
     }
 }
 
@@ -296,7 +386,7 @@ impl std::fmt::Debug for AbandonedScan {
 
 impl Error for AbandonedScan {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.0.as_ref())
+        Some(self.original.as_ref())
     }
 }
 
