@@ -8584,3 +8584,15 @@ rawRows×pubRows全扫描或排序/分配。两个owner按原raw/selection阶段
 [验证](validation/tunnel-usb-attachment-index-bytes-2026-10-13.md)。其余集合/
 key/原error/native/runtime及完整刷新仍缺；L02/23/6/待收口、有效30和
 Q04全部排除保持。
+
+
+## 2026-10-13 L02 manual pending/planned暂停改动收口
+
+pending_mobdev2/planned改为真实收费KnownVec backing，借用原desired
+UID/ticket/host pin，不增加这些副本。pending在browse前准入，planned
+拒绝按Incomplete处理，释放部分plan/raw费用，保留USB window和原
+manual/USB publication。原tunnel442及新增2项通过，targeted3包含1原
+方法；严格CLI Clippy/build/fmt、readonly1及host5/22NOT_RUN通过，见
+[验证](validation/tunnel-manual-paired-plan-bytes-2026-10-13.md)。原error/private
+allocation、seen/observed/失败表backing及完整刷新仍缺，不关闭L02；
+账本23/6/L02待收口、有效30、Q04全部排除保持。
