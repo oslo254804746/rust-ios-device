@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Give SpringBoard requests one configurable send/receive/parse deadline and
+  retire the original stream after committed cancellation or failure. The CLI
+  defaults to 30 seconds per request with `--request-timeout-ms`.
+
 - Admit tunnel desired-list key buffers and actual vector backing in the shared
   metadata bank. Scan indexes borrow the admitted keys, and deferred manual
   success retains the original key charge until its final owner releases it.

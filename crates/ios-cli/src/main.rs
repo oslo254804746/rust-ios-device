@@ -903,6 +903,37 @@ mod tests {
     }
 
     #[test]
+    fn springboard_request_budget_is_bounded_and_available_after_subcommand() {
+        for args in [
+            vec!["ios", "springboard", "orientation"],
+            vec![
+                "ios",
+                "springboard",
+                "--request-timeout-ms",
+                "25",
+                "orientation",
+            ],
+            vec![
+                "ios",
+                "springboard",
+                "orientation",
+                "--request-timeout-ms",
+                "25",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(Cli::try_parse_from([
+            "ios",
+            "springboard",
+            "orientation",
+            "--request-timeout-ms",
+            "0",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn doctor_needs_no_device_and_rejects_unbounded_probe_windows() {
         let cli = Cli::try_parse_from(["ios", "doctor", "--mdns", "--timeout", "1"]).unwrap();
         assert!(!command_needs_default_udid(&cli.command));

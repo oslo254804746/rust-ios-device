@@ -1,6 +1,7 @@
 use ios_core::plist_json::{self, DataEncoding, PlistJsonPolicy};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use ios_core::springboard::{Icon, SpringboardClient};
@@ -10,6 +11,14 @@ use tokio::fs;
 
 #[derive(clap::Args)]
 pub struct SpringboardCmd {
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 30_000,
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Total budget per SpringBoard request, including send, receive and parse (milliseconds)"
+    )]
+    request_timeout_ms: u64,
     #[command(subcommand)]
     sub: SpringboardSub,
 }
@@ -109,6 +118,7 @@ impl SpringboardCmd {
             .connect_service(ios_core::springboard::SERVICE_NAME)
             .await?;
         let mut client = SpringboardClient::new(stream);
+        client.set_operation_timeout(Some(Duration::from_millis(self.request_timeout_ms)));
 
         match self.sub {
             SpringboardSub::Icons { json } => {

@@ -25,6 +25,12 @@ workspace.
   pinned upstream client does not implement their file-transfer protocol.
 - Built on `ios-core` with the `full` feature set.
 
+SpringBoard requests use a 30-second total send/receive/parse budget. Set
+`ios springboard orientation --request-timeout-ms 5000` to change that request
+budget. A cancelled or failed request after wire progress retires the original
+connection; reconnect before another command. This budget starts at the service
+request and does not bound device discovery or service connection setup.
+
 From a checkout, `python scripts/validate.py quick --package ios-cli` runs
 focused tests. `python scripts/validate.py full --python <interpreter>` runs
 the same complete check set used by CI; see [build notes](../../docs/build.md).
