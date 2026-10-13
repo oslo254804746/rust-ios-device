@@ -95,7 +95,8 @@ fn configured(
         source,
         OBSERVE,
         policy,
-    );
+    )
+    .unwrap();
     (state, base)
 }
 
@@ -307,7 +308,8 @@ async fn reconnect_native_post_source_resource_limit_keeps_class_and_original_pu
             None,
         )
         .unwrap(),
-    );
+    )
+    .unwrap();
     publish(&state, Route::Wifi(None)).await.unwrap();
     let old = base.handle();
     let publication = state.inner.tunnels.read().await[DEVICE].publication.clone();
@@ -502,7 +504,8 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
             Some(TOTAL),
         )
         .unwrap(),
-    );
+    )
+    .unwrap();
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let scan_state = state.clone();
     let mut scan = tokio::spawn(async move { scan_state.refresh_once().await });

@@ -8502,3 +8502,12 @@ join保持。现代全流程、结果准入和整体Rust组合等原范围仍缺
 即退款，实体份额保留到最后owner；相关9和整组424通过/2原ignored，严格CLI
 Clippy/build、readonly/host/fmt通过。完整原error/native/history/backing及刷新
 规则继续，不关闭原L02，见[验证](validation/tunnel-write-payloads-2026-10-13.md)。
+
+
+## 2026-10-13 L02 native registry结构预算子项
+
+manager同池实际Vec capacity与自有Registry sizeof在Source前收费，前台与
+standalone沿用显式bank；生产构造失败返回，最后原Registry/Reservation owner
+退款。4新增/整组428通过2原ignored，六组前台57与实际CLI31通过，严格CLI
+Clippy/build/fmt及readonly/host通过。完整opaque/error/native/history及freshness
+仍缺合同，不关闭L02，见[验证](validation/tunnel-native-registry-bytes-2026-10-13.md)。

@@ -309,7 +309,7 @@ pub async fn run_tunnel_start(udid: &str, tun_mode: TunMode, script_mode: bool) 
         crate::output::write_error_line(format_args!("tunnel: connecting ({mode})..."))?;
     }
 
-    let native = retirement::Registry::new();
+    let native = retirement::Registry::new()?;
     let _owner = StandaloneOwner(Arc::clone(&native));
     let ownership = ownership::Ownership::standalone(Arc::clone(&native))?;
     let primary = async {
@@ -714,6 +714,7 @@ impl TunnelAgentState {
             connect_timeout,
             reconnect::RetryPolicy::default(),
         )
+        .unwrap()
     }
 
     fn with_source_and_retry(
@@ -723,9 +724,10 @@ impl TunnelAgentState {
         source: Arc<dyn Source>,
         connect_timeout: Duration,
         retry: reconnect::RetryPolicy,
-    ) -> Self {
+    ) -> Result<Self> {
         let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
-        Self {
+        let native = retirement::Registry::with_metadata(&global_metadata_bytes)?;
+        Ok(Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
                 tun_mode,
@@ -746,7 +748,7 @@ impl TunnelAgentState {
                 connect_timeout,
                 failure_write_timeout: FAILURE_WRITE_TIMEOUT,
                 shutdown: watch::channel(false).0,
-                native: retirement::Registry::new(),
+                native,
                 #[cfg(test)]
                 publication_after_insert: std::sync::Mutex::new(None),
                 #[cfg(test)]
@@ -758,7 +760,7 @@ impl TunnelAgentState {
                 #[cfg(test)]
                 success_after_remove: std::sync::Mutex::new(None),
             }),
-        }
+        })
     }
 
     async fn is_ready(&self) -> bool {
@@ -769,6 +771,10 @@ impl TunnelAgentState {
     fn set_global_metadata_limit(&mut self, bytes: usize) {
         let inner = Arc::get_mut(&mut self.inner).expect("configure before sharing state");
         let bank = Arc::new(Semaphore::new(bytes));
+        Arc::get_mut(&mut inner.native)
+            .expect("configure before native sharing")
+            .rebind_empty_metadata(&bank)
+            .unwrap();
         inner.lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
         inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
         inner.global_metadata_bytes = bank;
@@ -2687,7 +2693,7 @@ async fn run_tunnel_agent(
         Arc::new(NativeSource),
         TUNNEL_CONNECT_TIMEOUT,
         retry,
-    );
+    )?;
 
     let listener = TcpListener::bind((address, port))
         .await

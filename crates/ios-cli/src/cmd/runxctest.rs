@@ -156,7 +156,7 @@ impl RunXcTestCmd {
             None
         };
 
-        let native = crate::cmd::tunnel::NativeScope::new();
+        let native = crate::cmd::tunnel::NativeScope::new()?;
         let mut crashes = self.workflow.crash_output.as_deref().map(|root| {
             crate::cmd::test_workflow::crash::CrashCapture::new(
                 root,

@@ -64,7 +64,7 @@ pub async fn run_port_forward(
     host: String,
     once: bool,
 ) -> Result<()> {
-    let scope = NativeScope::new();
+    let scope = NativeScope::new()?;
     let primary = Box::pin(run_port_forward_scoped(
         udid,
         host_port,

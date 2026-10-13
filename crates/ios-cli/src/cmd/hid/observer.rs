@@ -81,7 +81,7 @@ pub(super) async fn run(
     let deadline = Instant::now()
         .checked_add(timeout)
         .context("HID observer deadline overflow")?;
-    let scope = NativeScope::new();
+    let scope = NativeScope::new()?;
     let mut owners = Owners::default();
     let work = Box::pin(async {
         owners.device = Some(Box::pin(scope.connect(udid, TunMode::Kernel)).await?);

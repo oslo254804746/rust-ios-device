@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Charge native tunnel registry bodies and actual fixed slot backing in the
+  shared metadata bank before Source work. Propagate construction failure through
+  manager and foreground owners; retain fees to final registry release.
+
 - Admit failure-write owner bodies and their returned Source receipt contexts
   before tunnel connection work. Refund unused context reservations at completion
   and retain materialized charges through the final shared owner.

@@ -64,7 +64,10 @@ fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let charged =
         std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + DEVICE.len();
     Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
-    state.set_global_metadata_limit(charged + Lifecycle::initial_metadata_bytes(DEVICE));
+    let native_bytes = state.inner.native.structural_bytes();
+    state.set_global_metadata_limit(
+        native_bytes + (charged + Lifecycle::initial_metadata_bytes(DEVICE)),
+    );
     (state, charged)
 }
 
@@ -156,7 +159,10 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     let snapshot_size =
         devices.capacity() * std::mem::size_of::<source::UsbDevice>() + devices[0].udid.capacity();
     let total = charged + snapshot_size - 1;
-    state.set_global_metadata_limit(total + Lifecycle::initial_metadata_bytes(DEVICE));
+    let native_bytes = state.inner.native.structural_bytes();
+    state.set_global_metadata_limit(
+        native_bytes + (total + Lifecycle::initial_metadata_bytes(DEVICE)),
+    );
     let snapshot =
         admission::retain_usb_snapshot(&state.inner.global_metadata_bytes, &devices).unwrap();
     let result = publish(&state, Route::Wifi(None)).await;
