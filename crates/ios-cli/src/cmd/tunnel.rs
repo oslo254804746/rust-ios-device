@@ -1733,21 +1733,26 @@ impl TunnelAgentState {
         let Some(desired) = control.drive(self.inner.lifecycle.desired()).await? else {
             return Ok(());
         };
+        let desired = desired?;
         let mut manual = HashMap::new();
         let mut suppressed = std::collections::HashSet::new();
-        for (udid, ticket, snapshot) in desired {
-            match snapshot.desired {
+        // Borrow the admitted listing keys for the entire scan. The maps below
+        // do not create independent copies, and the listing retains each key
+        // charge while Source/candidate/writer futures still use it.
+        for row in desired.as_slice() {
+            let (udid, ticket, snapshot) = (&row.udid, &row.ticket, &row.snapshot);
+            match &snapshot.desired {
                 intent::Desired::Manual { route, authority } if authority.current() => {
-                    manual.insert(udid, (ticket, route));
+                    manual.insert(udid.as_str(), (ticket.clone(), route.clone()));
                 }
                 intent::Desired::Manual { .. } => {
                     // Use this exact captured desired version: a concurrent
                     // authorized explicit start must survive obsolete cleanup.
-                    let _ = self.stop_tunnel_with_ticket(&udid, &ticket).await;
-                    suppressed.insert(udid);
+                    let _ = self.stop_tunnel_with_ticket(udid, ticket).await;
+                    suppressed.insert(udid.as_str());
                 }
                 intent::Desired::Stopped => {
-                    suppressed.insert(udid);
+                    suppressed.insert(udid.as_str());
                 }
                 intent::Desired::Automatic => {}
             }
@@ -1896,7 +1901,7 @@ impl TunnelAgentState {
             let (route, expected_id) = match &route.route {
                 intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
                 intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
-                    let id = attached_ids.get(udid.as_str()).copied();
+                    let id = attached_ids.get(*udid).copied();
                     if usb_complete && id.is_none() {
                         continue;
                     }
@@ -1907,7 +1912,7 @@ impl TunnelAgentState {
                     (route, id)
                 }
                 intent::RouteIntent::Mobdev2(host) => {
-                    pending_mobdev2.push((udid.clone(), ticket.clone(), host.clone()));
+                    pending_mobdev2.push(((*udid).to_owned(), ticket.clone(), host.clone()));
                     continue;
                 }
             };
@@ -1916,9 +1921,9 @@ impl TunnelAgentState {
                 _ => 0,
             };
             candidate_budget.admit(udid.len(), bytes)?;
-            seen.insert(udid.clone());
+            seen.insert((*udid).to_owned());
             let input = candidate_input::Input::owned(
-                udid.clone(),
+                (*udid).to_owned(),
                 route,
                 &self.inner.global_metadata_bytes,
             )?;
@@ -1933,8 +1938,8 @@ impl TunnelAgentState {
             let udid = device.udid;
             if self.inner.access.permits_device(&udid)
                 && !seen.contains(&udid)
-                && !manual.contains_key(&udid)
-                && !suppressed.contains(&udid)
+                && !manual.contains_key(udid.as_str())
+                && !suppressed.contains(udid.as_str())
             {
                 candidate_budget.admit(udid.len(), 0)?;
                 seen.insert(udid.clone());
@@ -2068,8 +2073,8 @@ impl TunnelAgentState {
                 for &index in indices {
                     let target = &targets[index];
                     if self.inner.access.permits_device(&target.udid)
-                        && !manual.contains_key(&target.udid)
-                        && !suppressed.contains(&target.udid)
+                        && !manual.contains_key(target.udid.as_str())
+                        && !suppressed.contains(target.udid.as_str())
                         && !seen.contains(&target.udid)
                     {
                         let input = candidate_input::Input::owned(
@@ -2222,6 +2227,7 @@ impl TunnelAgentState {
                     }
                     ScanAttemptOutcome::Success(success) => {
                         Ok(Some(ScanIntent::Success(SuccessIntent {
+                            _key_storage: None,
                             udid: input.udid.clone(),
                             ticket,
                             success,
@@ -2259,13 +2265,19 @@ impl TunnelAgentState {
 
     async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
         whole.check()?;
-        let rows = self.inner.lifecycle.desired().await;
+        let rows = self.inner.lifecycle.desired().await?;
         let mut batch =
             bookkeeping::WriteBatch::new(&self.inner.global_metadata_bytes, rows.len())?;
         let mut completed =
             metadata_vec::KnownVec::new(Arc::clone(&self.inner.global_metadata_bytes), rows.len());
         completed.reserve(rows.len())?;
-        for (udid, ticket, snapshot) in rows {
+        for lifecycle::DesiredRow {
+            udid,
+            ticket,
+            snapshot,
+            key_storage,
+        } in rows
+        {
             if !matches!(&snapshot.desired, intent::Desired::Manual { authority, .. } if authority.current())
             {
                 continue;
@@ -2273,6 +2285,7 @@ impl TunnelAgentState {
             if let Some((desired, success)) = ticket.pending_success() {
                 completed.push((ticket.clone(), desired, success.version.clone()))?;
                 batch.record(ScanIntent::Success(SuccessIntent {
+                    _key_storage: Some(key_storage),
                     udid,
                     ticket,
                     success,
@@ -2294,7 +2307,7 @@ impl TunnelAgentState {
         candidates: &[candidate_index::Candidate],
         paired_complete: bool,
         usb_complete: bool,
-        manual: &HashMap<String, (Ticket, Arc<intent::RetainedRoute>)>,
+        manual: &HashMap<&str, (Ticket, Arc<intent::RetainedRoute>)>,
         whole: &scan::Deadline,
         epoch: &scan::Epoch,
     ) -> Result<()> {

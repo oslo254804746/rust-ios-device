@@ -40,6 +40,7 @@ pub(super) struct SuccessIntent {
     pub(super) ticket: Ticket,
     pub(super) success: DeferredSuccess,
     pub(super) _input: Option<Arc<super::candidate_input::Input>>,
+    pub(super) _key_storage: Option<OwnedSemaphorePermit>,
 }
 
 pub(super) enum ScanIntent {

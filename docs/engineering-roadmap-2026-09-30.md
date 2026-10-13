@@ -8452,3 +8452,12 @@ clear不提前释放caller旧Snapshot，最后owner归还。新增4项与受影�
 2原ignored，严格Clippy与其余出口见[证据](validation/tunnel-manual-route-bytes-2026-10-13.md)。
 原error payload创建端、listing key/backing与其它副本/集合/native/history/internal
 backing及完整刷新规则继续；账本23/6/L02待收口、有效30与Q04全部排除不变。
+
+
+## 2026-10-13 L02 desired listing子项
+
+原key capacity与实际Vec backing进入同一已知元数据bank，scan借用key，manual
+success writer转移原key和permit；5新增及tunnel413通过、2原ignored。严格Clippy、
+CLI build、只读manager/host smoke通过，真实设备NOT_RUN；原主项未关闭。
+见[验证](validation/tunnel-desired-list-bytes-2026-10-13.md)及
+[原错误创建端复核](validation/tunnel-error-creation-contract-2026-10-13.md)。

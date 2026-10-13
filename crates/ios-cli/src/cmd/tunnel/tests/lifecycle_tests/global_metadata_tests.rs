@@ -1,6 +1,34 @@
 use super::*;
 
 #[tokio::test]
+async fn desired_listing_bytes_refusal_is_before_discovery_and_preserves_stop() {
+    let source = FakeSource::new();
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let bytes = Lifecycle::initial_metadata_bytes(A);
+    state.set_global_metadata_limit(bytes);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    state.inner.lifecycle.stop(A).await;
+    let before = ticket.desired();
+    assert_eq!(bank.available_permits(), 0);
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert!(source.calls.lock().unwrap().is_empty());
+    assert!(Arc::ptr_eq(&before.version, &ticket.desired().version));
+    assert!(matches!(ticket.desired().desired, intent::Desired::Stopped));
+    assert!(!state.is_ready().await);
+    assert_eq!(bank.available_permits(), 0);
+    drop(ticket);
+    drop(state);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[tokio::test]
 async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
