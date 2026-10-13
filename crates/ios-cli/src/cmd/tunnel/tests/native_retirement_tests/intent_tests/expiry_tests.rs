@@ -353,7 +353,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         Arc::ptr_eq(&before.epoch, &after.epoch) && Arc::ptr_eq(&before.version, &after.version)
     );
     assert!(
-        matches!(after.desired, intent::Desired::Manual { route, authority } if route == old_route && authority.current())
+        matches!(after.desired, intent::Desired::Manual { route, authority } if route.route == old_route && authority.current())
     );
     assert!(same_pair(&old_pending, &after_pending) && same_pair(&old_stamp, &after_stamp));
     assert!(

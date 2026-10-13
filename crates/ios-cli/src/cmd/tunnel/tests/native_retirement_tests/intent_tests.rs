@@ -461,7 +461,7 @@ async fn intent_native_manual_success_discards_old_deferred_failure_without_reti
     assert!(!old_ticket.is_current());
     assert!(failed_empty && Arc::ptr_eq(&published, &retained));
     assert!(
-        matches!(selector.desired, intent::Desired::Manual { route:intent::RouteIntent::Wifi(Some(host)), .. } if host == "192.0.2.99")
+        matches!(selector.desired, intent::Desired::Manual { route, .. } if matches!(&route.route, intent::RouteIntent::Wifi(Some(host)) if host == "192.0.2.99"))
     );
     assert!(drained.is_ok() && old_joined.is_ok() && still_alive);
     assert_eq!(failure_slots, MAX_FAILURE_RECORDS);

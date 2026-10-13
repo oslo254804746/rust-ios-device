@@ -38,7 +38,7 @@ async fn post(base: &str, udid: &str, transport: Option<&str>, host: Option<&str
 fn route(state: &TunnelAgentState, ticket: &Ticket) -> Option<intent::RouteIntent> {
     let _ = state;
     match ticket.desired().desired {
-        intent::Desired::Manual { route, .. } => Some(route),
+        intent::Desired::Manual { route, .. } => Some(route.route.clone()),
         _ => None,
     }
 }
