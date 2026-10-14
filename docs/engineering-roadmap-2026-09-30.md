@@ -8630,3 +8630,15 @@ pruning条件保持。7新增、tunnel469/预算16、严格CLI/build/readonly1/h
 通过，2原ignored/22NOT_RUN，见[验证](validation/tunnel-publication-retain-owners-2026-10-14.md)。
 publication原backing、manual cleanup晚准入、private/native创建合同与完整
 freshness仍缺；L02未关闭，账本23/6/待收口、有效30、Q04全部排除不变。
+
+## 2026-10-14 L02 manual success Source 前准入
+
+第一 Source poll 前准入4096项真实success-only/Completed backing和Preflight payload，
+canonical原key随最后gate/ticket持费。晚收尾读取当前exact epoch/desired/pending
+proof，authority→ticket writer/clear fences与晚clock原owner回滚已接线；Source
+期间new UID/latest version零额度可收尾，idleAutomatic pruning保留。新增12项，
+最终tunnel481/strictCLI/read-only manager1/host5通过，2原ignored/22NOT_RUN。
+首次三项quota阶段失败、strict字段命名失败和续轮不完整日志均保留，见
+[验证](validation/tunnel-manual-success-preflight-2026-10-14.md)。原error/private/
+native/runtime和完整freshness等继续；本子项不关闭L02，账本23/6/待收口、
+有效30、Q04全部排除保持。只本地提交，无设备操作或推送。

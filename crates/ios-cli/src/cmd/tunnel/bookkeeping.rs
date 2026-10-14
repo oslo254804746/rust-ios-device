@@ -35,12 +35,38 @@ pub(super) enum ScanAttemptOutcome {
     Success(DeferredSuccess),
 }
 
+pub(super) enum SuccessKey {
+    Owned(String),
+    Coordinator {
+        desired: Arc<()>,
+        authority: crate::access::DeviceAuthority,
+    },
+}
+impl From<String> for SuccessKey {
+    fn from(key: String) -> Self {
+        Self::Owned(key)
+    }
+}
+impl From<&str> for SuccessKey {
+    fn from(key: &str) -> Self {
+        Self::Owned(key.to_owned())
+    }
+}
+
 pub(super) struct SuccessIntent {
-    pub(super) udid: String,
+    pub(super) udid: SuccessKey,
     pub(super) ticket: Ticket,
     pub(super) success: DeferredSuccess,
     pub(super) _input: Option<Arc<super::candidate_input::Input>>,
     pub(super) _key_storage: Option<OwnedSemaphorePermit>,
+}
+impl SuccessIntent {
+    fn udid(&self) -> &str {
+        match &self.udid {
+            SuccessKey::Owned(key) => key,
+            SuccessKey::Coordinator { .. } => self.ticket.udid(),
+        }
+    }
 }
 
 pub(super) enum ScanIntent {
@@ -208,12 +234,21 @@ impl WriteBatch {
     }
 
     pub(super) fn success_only(bank: &Arc<Semaphore>, capacity: usize) -> Result<Self> {
-        Self::with_destination(bank, capacity, None)
+        Self::with_capacities(bank, capacity, 0, None)
     }
 
     pub(super) fn with_destination(
         bank: &Arc<Semaphore>,
         capacity: usize,
+        destination: Option<Destination>,
+    ) -> Result<Self> {
+        Self::with_capacities(bank, capacity, capacity, destination)
+    }
+
+    fn with_capacities(
+        bank: &Arc<Semaphore>,
+        capacity: usize,
+        receipt_capacity: usize,
         destination: Option<Destination>,
     ) -> Result<Self> {
         anyhow::ensure!(
@@ -231,8 +266,8 @@ impl WriteBatch {
             .expect("reserved failure write owner payload");
         let mut intents = KnownVec::new(Arc::clone(bank), capacity);
         intents.reserve(capacity)?;
-        let mut receipts = KnownVec::new(Arc::clone(bank), capacity);
-        receipts.reserve(capacity)?;
+        let mut receipts = KnownVec::new(Arc::clone(bank), receipt_capacity);
+        receipts.reserve(receipt_capacity)?;
         Ok(Self {
             owner: Arc::new(FailureWriteOwner {
                 state: Mutex::new(WriteState {
@@ -263,12 +298,23 @@ impl WriteBatch {
         self.intents.push(intent)
     }
 
+    pub(super) fn record_success_reserved(&mut self, intent: SuccessIntent) {
+        self.intents.push_reserved(ScanIntent::Success(intent));
+    }
+
     pub(super) fn finish(self, result: Result<()>) -> Result<()> {
         self.owner.finish(result)
     }
 
     pub(super) fn owner(&self) -> Arc<FailureWriteOwner> {
         Arc::clone(&self.owner)
+    }
+
+    #[cfg(test)]
+    pub(super) fn success_only_bytes(capacity: usize) -> usize {
+        std::mem::size_of::<FailureWriteOwner>()
+            + std::mem::size_of::<SourceFailuresContext>()
+            + capacity * std::mem::size_of::<ScanIntent>()
     }
 
     #[cfg(test)]
@@ -384,6 +430,18 @@ impl TunnelAgentState {
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
     ) -> Result<Option<Box<Node>>> {
+        self.remove_success_row_authorized(failed, udid, success, ticket, deadline, None)
+    }
+
+    fn remove_success_row_authorized(
+        &self,
+        failed: &mut Table,
+        udid: &str,
+        success: &DeferredSuccess,
+        ticket: &Ticket,
+        deadline: &super::lifecycle::ConnectionDeadline,
+        authority: Option<&crate::access::DeviceAuthority>,
+    ) -> Result<Option<Box<Node>>> {
         if !failed
             .get(udid)
             .is_some_and(|old| Arc::ptr_eq(&old.version, &success.version))
@@ -400,6 +458,9 @@ impl TunnelAgentState {
         let failure_stamp = ticket.failure_stamp();
         ticket.commit(|| {
             deadline.check()?;
+            if let Some(authority) = authority {
+                authority.check_clock()?;
+            }
             let old = failed.remove(udid);
             ticket.clear_failure_version(&success.version);
             #[cfg(test)]
@@ -409,7 +470,10 @@ impl TunnelAgentState {
                     callback();
                 }
             }
-            if let Err(error) = deadline.check() {
+            let final_check = deadline.check().and_then(|()| {
+                authority.map_or(Ok(()), crate::access::DeviceAuthority::check_clock)
+            });
+            if let Err(error) = final_check {
                 if let Some(old) = old {
                     failed.restore(old);
                 }
@@ -497,14 +561,37 @@ impl TunnelAgentState {
                                 if !intent.ticket.is_current() {
                                     continue;
                                 }
-                                self.remove_success_row(
-                                    &mut failed,
-                                    &intent.udid,
-                                    &intent.success,
-                                    &intent.ticket,
-                                    &deadline,
-                                )
-                                .map(|old| {
+                                let outcome = match &intent.udid {
+                                    SuccessKey::Owned(_) => self.remove_success_row(
+                                        &mut failed,
+                                        intent.udid(),
+                                        &intent.success,
+                                        &intent.ticket,
+                                        &deadline,
+                                    ),
+                                    SuccessKey::Coordinator { desired, authority } => {
+                                        if !authority.current()
+                                            || !Arc::ptr_eq(
+                                                desired,
+                                                &intent.ticket.desired().version,
+                                            )
+                                        {
+                                            continue;
+                                        }
+                                        // Authority is acquired outside Ticket's state fence.
+                                        authority.commit(intent.udid(), || {
+                                            self.remove_success_row_authorized(
+                                                &mut failed,
+                                                intent.udid(),
+                                                &intent.success,
+                                                &intent.ticket,
+                                                &deadline,
+                                                Some(authority),
+                                            )
+                                        })
+                                    }
+                                };
+                                outcome.map(|old| {
                                     if let Some(old) = old {
                                         displaced.push(old);
                                     }
