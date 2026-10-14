@@ -8691,3 +8691,11 @@ host5通过，2原ignored/22NOT_RUN保留，见
 [验证](validation/tunnel-native-transmit-storage-2026-10-14.md)。SocketSet内部backing/
 Tokio/task/report/private/rawparser及其它原scope继续；128MiB非完整heap/RSS、
 L02不关闭、23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。
+## 2026-10-14 L02 SocketStorage actual backing
+
+真实dynamic SocketStorage Vec先准入增长peak，原whole Meta/socket/handles移位保持，
+borrowed scope views不跨await/growth；zeroquota空位复用与lastowner费用接线。4新
+门禁及core114、CLI504/strictcoreCLI/build/Source0 manager1/host5通过，2原ignored/
+22NOT_RUN保留，见[验证](validation/tunnel-socket-storage-2026-10-14.md)。runtime/
+Tokio/private/task/report/rawparser和其它originalscope继续；128MiB非完整heap/RSS、
+L02未关闭，23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。

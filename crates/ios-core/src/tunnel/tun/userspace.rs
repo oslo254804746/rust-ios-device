@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+#[cfg(test)]
+use smoltcp::iface::SocketSet;
+use smoltcp::iface::{Config, Interface, SocketHandle};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant as SmolInstant;
@@ -26,6 +28,8 @@ pub(crate) mod owned_buffer;
 use owned_buffer::OwnedBuffer;
 mod runtime_storage;
 use runtime_storage::{socket_buffers, OwnedQueue, RuntimeStorage, SocketFees};
+mod socket_slots;
+use socket_slots::SocketSlots;
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -581,7 +585,7 @@ async fn run_smoltcp(
     // cancelled or unwinding exits, and explicit removal follows the same order.
     let mut connections: OwnedQueue<(SocketHandle, ConnState)> =
         OwnedQueue::new(storage.bank.as_ref());
-    let mut sockets = SocketSet::new(vec![]);
+    let mut sockets = SocketSlots::new(storage.bank.as_ref());
     let mut ephemeral_port: u16 = EPHEMERAL_PORT_MIN;
     let mut pending_ios_tx = OwnedQueue::new(storage.bank.as_ref());
 
@@ -614,6 +618,10 @@ async fn run_smoltcp(
                 storage.fail(ParentRole::Smoltcp, original);
                 return;
             }
+            if let Err(original) = sockets.prepare_add() {
+                storage.fail(ParentRole::Smoltcp, original);
+                return;
+            }
             let (rx, tx, socket_fees) =
                 match socket_buffers(storage.bank.as_ref(), SOCKET_BUFFER_BYTES) {
                     Ok(buffers) => buffers,
@@ -630,10 +638,11 @@ async fn run_smoltcp(
             let Some(local_port) = take_ephemeral_port(&mut ephemeral_port, |port| {
                 connections.iter().any(|(handle, _)| {
                     let handle = *handle;
-                    sockets
-                        .get::<tcp::Socket>(handle)
-                        .local_endpoint()
-                        .is_some_and(|endpoint| endpoint.port == port)
+                    sockets.with_set(|set| {
+                        set.get::<tcp::Socket>(handle)
+                            .local_endpoint()
+                            .is_some_and(|endpoint| endpoint.port == port)
+                    })
                 })
             }) else {
                 tracing::error!(
@@ -647,7 +656,7 @@ async fn run_smoltcp(
             match socket.connect(iface.context(), remote_ep, local_port) {
                 Ok(()) => {
                     tracing::debug!("userspace: socket connected state={:?}", socket.state());
-                    let handle = sockets.add(socket);
+                    let handle = sockets.with_set(|set| set.add(socket));
                     let state = ConnState {
                         from_client: req.from_client,
                         to_client: req.to_client,
@@ -665,7 +674,7 @@ async fn run_smoltcp(
             }
         }
 
-        iface.poll(smol_now(), &mut device, &mut sockets);
+        sockets.with_set(|set| iface.poll(smol_now(), &mut device, set));
         if storage.stopped.load(Ordering::Acquire) {
             return;
         }
@@ -693,100 +702,109 @@ async fn run_smoltcp(
         made_progress |= flush_channel_queue(&ios_tx, &mut pending_ios_tx);
 
         let mut to_remove = OwnedQueue::new(storage.bank.as_ref());
-        for (handle, state) in connections.iter_mut() {
-            let handle = *handle;
-            let socket = sockets.get_mut::<tcp::Socket>(handle);
-            tracing::trace!(
-                "userspace: socket state={:?} can_send={} can_recv={} is_open={}",
-                socket.state(),
-                socket.can_send(),
-                socket.can_recv(),
-                socket.is_open()
-            );
+        let socket_result = sockets.with_set(|set| -> Result<(), ()> {
+            for (handle, state) in connections.iter_mut() {
+                let handle = *handle;
+                let socket = set.get_mut::<tcp::Socket>(handle);
+                tracing::trace!(
+                    "userspace: socket state={:?} can_send={} can_recv={} is_open={}",
+                    socket.state(),
+                    socket.can_send(),
+                    socket.can_recv(),
+                    socket.is_open()
+                );
 
-            // Notify proxy_local_client when TCP connection is established
-            if socket.state() == tcp::State::Established {
-                if let Some(tx) = state.connected.take() {
-                    let _ = tx.send(());
-                    made_progress = true;
+                // Notify proxy_local_client when TCP connection is established
+                if socket.state() == tcp::State::Established {
+                    if let Some(tx) = state.connected.take() {
+                        let _ = tx.send(());
+                        made_progress = true;
+                    }
                 }
-            }
-            made_progress |= flush_channel_queue(&state.to_client, &mut state.pending_to_client);
-            if state.pending_to_client.is_empty() {
-                while socket.can_recv() {
-                    let mut buf =
-                        match OwnedBuffer::zeroed(SOCKET_RECV_CHUNK_BYTES, storage.bank.as_ref()) {
+                made_progress |=
+                    flush_channel_queue(&state.to_client, &mut state.pending_to_client);
+                if state.pending_to_client.is_empty() {
+                    while socket.can_recv() {
+                        let mut buf = match OwnedBuffer::zeroed(
+                            SOCKET_RECV_CHUNK_BYTES,
+                            storage.bank.as_ref(),
+                        ) {
                             Ok(buffer) => buffer,
                             Err(original) => {
                                 storage.fail(ParentRole::Smoltcp, original);
-                                return;
+                                return Err(());
                             }
                         };
-                    match socket.recv_slice(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.truncate(n);
-                            tracing::trace!("userspace: from_device {} bytes", n);
-                            match state.to_client.try_send(buf) {
-                                Ok(()) => {
-                                    made_progress = true;
-                                }
-                                Err(mpsc::error::TrySendError::Full(buf)) => {
-                                    if let Err((original, buffer)) =
-                                        state.pending_to_client.push_back(buf)
-                                    {
-                                        storage.fail(ParentRole::Smoltcp, original);
-                                        drop(buffer);
-                                        return;
+                        match socket.recv_slice(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                buf.truncate(n);
+                                tracing::trace!("userspace: from_device {} bytes", n);
+                                match state.to_client.try_send(buf) {
+                                    Ok(()) => {
+                                        made_progress = true;
                                     }
-                                    break;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    tracing::debug!(
-                                        "userspace: local client receive channel closed"
-                                    );
-                                    socket.close();
-                                    break;
+                                    Err(mpsc::error::TrySendError::Full(buf)) => {
+                                        if let Err((original, buffer)) =
+                                            state.pending_to_client.push_back(buf)
+                                        {
+                                            storage.fail(ParentRole::Smoltcp, original);
+                                            drop(buffer);
+                                            return Err(());
+                                        }
+                                        break;
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        tracing::debug!(
+                                            "userspace: local client receive channel closed"
+                                        );
+                                        socket.close();
+                                        break;
+                                    }
                                 }
                             }
+                            Err(_) => break,
                         }
-                        Err(_) => break,
                     }
                 }
-            }
-            made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
-            if state.pending_from_client.is_empty() && socket.can_send() {
-                loop {
-                    let data = match state.from_client.try_recv() {
-                        Ok(data) => data,
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
-                            socket.close();
+                made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
+                if state.pending_from_client.is_empty() && socket.can_send() {
+                    loop {
+                        let data = match state.from_client.try_recv() {
+                            Ok(data) => data,
+                            Err(mpsc::error::TryRecvError::Empty) => break,
+                            Err(mpsc::error::TryRecvError::Disconnected) => {
+                                socket.close();
+                                break;
+                            }
+                        };
+                        tracing::trace!("userspace: to_device {} bytes via socket", data.len());
+                        if let Err((original, buffer)) = state.pending_from_client.push_back(data) {
+                            storage.fail(ParentRole::Smoltcp, original);
+                            drop(buffer);
+                            return Err(());
+                        }
+                        made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
+                        if !state.pending_from_client.is_empty() || !socket.can_send() {
                             break;
                         }
-                    };
-                    tracing::trace!("userspace: to_device {} bytes via socket", data.len());
-                    if let Err((original, buffer)) = state.pending_from_client.push_back(data) {
+                    }
+                }
+                if !socket.is_open() {
+                    tracing::debug!("userspace: socket closed state={:?}", socket.state());
+                    if let Err((original, _)) = to_remove.push_back(handle) {
                         storage.fail(ParentRole::Smoltcp, original);
-                        drop(buffer);
-                        return;
-                    }
-                    made_progress |= flush_socket_send(socket, &mut state.pending_from_client);
-                    if !state.pending_from_client.is_empty() || !socket.can_send() {
-                        break;
+                        return Err(());
                     }
                 }
             }
-            if !socket.is_open() {
-                tracing::debug!("userspace: socket closed state={:?}", socket.state());
-                if let Err((original, _)) = to_remove.push_back(handle) {
-                    storage.fail(ParentRole::Smoltcp, original);
-                    return;
-                }
-            }
+            Ok(())
+        });
+        if socket_result.is_err() {
+            return;
         }
         while let Some(handle) = to_remove.pop_front() {
-            drop(sockets.remove(handle));
+            sockets.with_set(|set| drop(set.remove(handle)));
             let index = connections
                 .iter()
                 .position(|(current, _)| *current == handle)
@@ -807,7 +825,7 @@ async fn run_smoltcp(
             biased;
             _ = stop.changed() => return,
             _ = tokio::time::sleep(smoltcp_poll_sleep_duration(
-                iface.poll_delay(smol_now(), &sockets), !connections.is_empty(),
+                sockets.with_set(|set| iface.poll_delay(smol_now(), set)), !connections.is_empty(),
             )) => {},
         }
     }
