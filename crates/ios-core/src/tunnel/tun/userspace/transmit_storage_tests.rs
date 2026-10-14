@@ -357,14 +357,31 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     let baseline = alive();
     let mtu = ValidatedMtu::new(1280).unwrap();
     let connection_backing = 4 * std::mem::size_of::<(SocketHandle, ConnState)>();
+    let socket_backing = 4 * std::mem::size_of::<smoltcp::iface::SocketStorage<'static>>();
     let tx_backing = 4 * std::mem::size_of::<OwnedBuffer>();
     let quota = IPV6_HEADER_LEN
+        + runtime_channel_bytes()
+        + client_channel_bytes()
         + SOCKET_BUFFER_BYTES * 2
         + connection_backing
+        + socket_backing
         + tx_backing
         + mtu.as_usize()
         - 1;
     let bank = Arc::new(Semaphore::new(quota));
+    let tx_phase = Arc::new(AtomicBool::new(false));
+    let reached = Arc::clone(&tx_phase);
+    let observed_bank = Arc::clone(&bank);
+    TX_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |refused| {
+            assert_eq!(observed_bank.available_permits(), mtu.as_usize() - 1);
+            assert!(
+                refused,
+                "runtime quota did not target the actual Tx buffer admission"
+            );
+            reached.store(true, Ordering::SeqCst);
+        }))
+    });
     let (inner, mut peer) = tokio::io::duplex(4096);
     let probe = Arc::new(Probe::default());
     let stream = Tracked {
@@ -412,6 +429,10 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     let client_eof = tokio::time::timeout(OBSERVE, client.read(&mut byte)).await;
     write.unwrap().unwrap();
     assert!(stopped, "quota refusal did not stop the original runtime");
+    assert!(
+        tx_phase.load(Ordering::SeqCst),
+        "runtime stopped before actual Tx admission"
+    );
     for error in [result.unwrap_err(), second.unwrap_err()] {
         assert_eq!(
             crate::classify_error(&error),
