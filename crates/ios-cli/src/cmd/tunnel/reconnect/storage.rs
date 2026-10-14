@@ -140,25 +140,40 @@ pub(in super::super) struct Removed {
 }
 
 impl Removed {
-    pub(super) fn episode(udid: String, row: Episode, bank: &Arc<Semaphore>) -> Result<Box<Self>> {
+    pub(super) fn episode(
+        udid: &str,
+        identity: &super::AttemptIdentity,
+        make_row: impl FnOnce(super::AttemptIdentity) -> Episode,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Box<Self>> {
         let bytes = std::mem::size_of::<Self>()
-            .checked_add(udid.capacity())
+            .checked_add(udid.len())
             .and_then(|bytes| {
-                bytes.checked_add(super::super::candidate_input::route_capacity(
-                    &row.identity.route,
-                ))
+                bytes.checked_add(super::super::candidate_input::route_length(&identity.route))
             })
             .ok_or_else(|| crate::output::resource_decision("tunnel retry row size overflow"))?;
-        let storage = super::super::admission::known_metadata_charge(bank, bytes)?;
+        let mut storage = super::super::admission::known_metadata_charge(bank, bytes)?;
+        // Admission precedes both independent selector buffers and the Box.
+        let udid = udid.to_owned();
+        let identity = identity.clone();
+        let actual = std::mem::size_of::<Self>()
+            + udid.capacity()
+            + super::super::candidate_input::route_capacity(&identity.route);
+        anyhow::ensure!(
+            actual <= bytes,
+            crate::output::resource_decision("tunnel retry row clone capacity exceeded")
+        );
+        let exact = storage.split(actual).expect("admitted retry row selectors");
+        drop(storage);
         Ok(Box::new(Self {
             udid,
-            row: Some(row),
+            row: Some(make_row(identity)),
             cause: None,
             cause_state: CauseState::Pending,
             selected: false,
             position: 0,
             next: None,
-            _storage: storage,
+            _storage: exact,
         }))
     }
     pub(super) fn receipt(

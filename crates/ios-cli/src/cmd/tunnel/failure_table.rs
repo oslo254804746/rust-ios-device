@@ -72,6 +72,11 @@ impl Deref for Identity {
         &self.0.value
     }
 }
+impl std::borrow::Borrow<AttemptIdentity> for Identity {
+    fn borrow(&self) -> &AttemptIdentity {
+        &self.0.value
+    }
+}
 impl PartialEq for Identity {
     fn eq(&self, other: &Self) -> bool {
         self.0.value == other.0.value

@@ -24,7 +24,7 @@ pub(super) fn route_capacity(route: &Route) -> usize {
     }
 }
 
-fn route_length(route: &Route) -> usize {
+pub(super) fn route_length(route: &Route) -> usize {
     match route {
         Route::Usbmux => 0,
         Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),

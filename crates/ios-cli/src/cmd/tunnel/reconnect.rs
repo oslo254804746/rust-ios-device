@@ -354,14 +354,17 @@ impl Ledger {
     /// Admission is synchronous immediately before the Source future is polled.
     /// Owner reservation and connection semaphore admission already succeeded.
     /// Caller holds the ticket's commit guard, never the asynchronous tables.
-    pub(super) fn start(
+    pub(super) fn start<I: std::borrow::Borrow<AttemptIdentity>>(
         self: &Arc<Self>,
         udid: &str,
-        identity: AttemptIdentity,
+        identity: I,
         ticket: &Ticket,
         slot: Arc<OwnedSemaphorePermit>,
     ) -> Result<Attempt> {
-        if self.admission(udid, &identity, ticket) != Admission::Ready {
+        // Production supplies the already-admitted shared node identity. Keep
+        // that owner alive until every independent copy has its own fee.
+        let identity = identity.borrow();
+        if self.admission(udid, identity, ticket) != Admission::Ready {
             return Err(crate::output::resource_decision(
                 "tunnel retry episode is not admitted",
             ));
@@ -381,7 +384,7 @@ impl Ledger {
         }
         let same = state
             .row(udid)
-            .is_some_and(|row| Self::same(row, &identity, ticket));
+            .is_some_and(|row| Self::same(row, identity, ticket));
         if !same && state.row(udid).is_none() && state.rows.len() >= MAX_FAILURE_RECORDS {
             return Err(crate::output::resource_decision(
                 "tunnel retry episode capacity",
@@ -400,7 +403,7 @@ impl Ledger {
             .map_or_else(|| slot, |row| Arc::clone(&row.slot));
         let receipt = FailureReceipt::reserve(
             udid,
-            &identity,
+            identity,
             ticket,
             Arc::clone(&slot),
             Arc::clone(&version),
@@ -409,8 +412,9 @@ impl Ledger {
         let cause_node = Removed::receipt(Arc::clone(&receipt), &self.bank)?;
         let replacement = if !same {
             Some(Removed::episode(
-                udid.to_owned(),
-                Episode {
+                udid,
+                identity,
+                |identity| Episode {
                     identity,
                     ticket: ticket.clone(),
                     slot,
@@ -654,7 +658,7 @@ impl Ledger {
         4 * std::mem::size_of::<Box<Removed>>()
             + 2 * std::mem::size_of::<Removed>()
             + udid.len()
-            + super::candidate_input::route_capacity(&identity.route)
+            + super::candidate_input::route_length(&identity.route)
             + FailureReceipt::initial_bytes(udid, identity)
     }
     #[cfg(test)]
