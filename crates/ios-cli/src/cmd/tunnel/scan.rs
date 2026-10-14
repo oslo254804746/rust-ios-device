@@ -436,7 +436,7 @@ impl Epoch {
     pub(super) fn retain<T>(
         &self,
         clock: &Deadline,
-        table: &mut std::collections::HashMap<String, T>,
+        table: &mut super::publication_table::Table<T>,
         bank: &Arc<Semaphore>,
         keep: impl Fn(&str, &T) -> bool,
     ) -> Result<super::publication_retain::Removed<T>> {

@@ -22,7 +22,9 @@ impl Drop for Owner {
         self.0.notify_shutdown();
         self.0.inner.lifecycle.clear();
         if let Ok(mut tunnels) = self.0.inner.tunnels.try_write() {
-            tunnels.clear();
+            let removed = tunnels.take_all();
+            drop(tunnels);
+            drop(removed);
         }
         if let Ok(mut failed) = self.0.inner.failed_attempts.try_write() {
             let removed = failed.take_all();

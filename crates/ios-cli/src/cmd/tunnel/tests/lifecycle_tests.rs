@@ -16,10 +16,19 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     let source = FakeSource::new();
     source.script(A, [Behavior::Success, Behavior::Success]);
     source.script(B, [Behavior::Success, Behavior::Success]);
-    let charged =
-        std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + A.len();
+    let global = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
+    let mut probe = publication_table::Table::<ManagedTunnel>::new(&global, &published);
+    let prepared = probe.prepare(A).unwrap();
+    let destination = MAX_PUBLISHED_METADATA_BYTES - published.available_permits();
+    drop(prepared);
+    drop(probe.take_all());
+    let charged = std::mem::size_of::<OwnedDevice>() + destination;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
+    let inner = Arc::get_mut(&mut state.inner).unwrap();
+    inner.metadata_bytes = Arc::new(Semaphore::new(charged));
+    *inner.tunnels.get_mut() =
+        publication_table::Table::new(&inner.global_metadata_bytes, &inner.metadata_bytes);
     start(state.clone(), A).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
     let error = start(state.clone(), B).await.unwrap_err();
@@ -30,8 +39,8 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     assert_eq!(state.list_records().await.len(), 1);
     assert_eq!(
         source.drops.load(Ordering::SeqCst),
-        1,
-        "rejected original owner must be dropped"
+        0,
+        "pre-Source destination refusal creates no original owner"
     );
     state.clear().await;
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);

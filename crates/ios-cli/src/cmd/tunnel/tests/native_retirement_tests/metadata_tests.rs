@@ -20,7 +20,10 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         input.upgrade().is_some(),
         "input refunded before original native joins"
     );
-    assert_eq!(bank.available_permits(), before);
+    assert_eq!(
+        bank.available_permits(),
+        before + actual_publication_destination_bytes()
+    );
     state.drain_native(OBSERVE).await.unwrap();
     assert!(input.upgrade().is_none());
     assert!(source.handle().shutdown_status().is_ok());
@@ -61,8 +64,7 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
 
 fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let mut state = state(source);
-    let charged =
-        std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + DEVICE.len();
+    let charged = std::mem::size_of::<NativeDevice>() + actual_publication_destination_bytes();
     Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
@@ -82,8 +84,14 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
     state.clear().await;
     assert_eq!(state.inner.native.snapshot().retired, 1);
-    assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
-    assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        actual_publication_destination_bytes()
+    );
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        actual_publication_destination_bytes()
+    );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
@@ -134,17 +142,27 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     drop(connection);
     assert_eq!(state.inner.tunnels.read().await.len(), 0);
     assert_eq!(state.inner.native.snapshot().retired, 1);
-    assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
-    assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
-    state.drain_native(OBSERVE).await.unwrap();
-    assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
+    let backing = state.inner.tunnels.read().await.backing_bytes();
+    let node_bytes = actual_publication_destination_bytes() - backing;
+    assert_eq!(state.inner.metadata_bytes.available_permits(), node_bytes);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged
+        node_bytes
+    );
+    state.drain_native(OBSERVE).await.unwrap();
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        charged - backing
+    );
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        charged - backing
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
     state.notify_shutdown();
+    state.clear().await;
+    assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
 }
 
 #[tokio::test]
@@ -173,21 +191,28 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
         ios_core::ErrorClass::ResourceLimit
     );
     assert!(state.inner.tunnels.read().await.is_empty());
+    let backing = state.inner.tunnels.read().await.backing_bytes();
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - 1
+        charged - backing - 1
     );
-    assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        charged - backing
+    );
     assert_eq!(state.inner.native.snapshot().retired, 1);
     state.drain_native(OBSERVE).await.unwrap();
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - 1
+        charged - backing - 1
     );
     drop(snapshot);
-    assert_eq!(state.inner.global_metadata_bytes.available_permits(), total);
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        total - backing
+    );
     state.notify_shutdown();
     state.clear().await;
 }

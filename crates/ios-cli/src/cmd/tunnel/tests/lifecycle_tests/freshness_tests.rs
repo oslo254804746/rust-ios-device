@@ -57,11 +57,19 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
     assert!(state.get_record(A).await.is_none());
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
+    let table = state.inner.tunnels.read().await;
+    assert!(table.is_empty());
+    let retained_backing = table.backing_bytes();
+    drop(table);
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        MAX_PUBLISHED_METADATA_BYTES - retained_backing
+    );
+    state.clear().await;
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
         MAX_PUBLISHED_METADATA_BYTES
     );
-    state.clear().await;
 }
 
 #[tokio::test]

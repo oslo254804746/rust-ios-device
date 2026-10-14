@@ -8671,3 +8671,13 @@ Source0 manager1/host5通过，2原ignored/22NOT_RUN保留，见
 publication存储与完整physical刷新/reuse/restart规则继续；同UID/ports不证明远程
 incarnation，无虚构ACK。L02不关闭，128MiB非完整heap/RSS，23/6/待收口、
 有效30与Q04全部排除保持。只本地提交，无设备操作或推送。
+## 2026-10-14 L02 publication 真实表/node存储
+
+唯一publication表为actual slot Vec/Box<Node>，global/sub双池先准入再分配，
+原key/node/value/incarnation/slot rollback与paid intrusive removals接线；所有
+list/query/clear/server Owner在guard外释放原owner，native/freshness费用仍随原
+最后owner/joins。7table/3Epoch与真实native Source0/zeroquota门禁覆盖，完整CLI504
+通过；最后cfg-only修复后affected46/strict/build/readonly manager1/host5通过，
+2原ignored/22NOT_RUN保持，见[验证](validation/tunnel-publication-table-storage-2026-10-14.md)。
+未收费的其它copies/manager/private/native/rawparser存储与物理刷新规则继续；
+128MiB非完整heap/RSS、L02主项不关闭、23/6/待收口、有效30/Q04全部排除不变。

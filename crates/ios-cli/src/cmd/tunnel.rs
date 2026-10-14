@@ -44,6 +44,7 @@ mod metadata_vec;
 mod ownership;
 mod paired_observed;
 mod publication_retain;
+mod publication_table;
 mod reconnect;
 mod retirement;
 mod scan;
@@ -398,7 +399,7 @@ type PublicationCallback = Box<dyn FnOnce() + Send>;
 struct TunnelAgentInner {
     access: AccessControl,
     tun_mode: TunMode,
-    tunnels: RwLock<HashMap<String, ManagedTunnel>>,
+    tunnels: RwLock<publication_table::Table<ManagedTunnel>>,
     upstreams: RwLock<BTreeSet<String>>,
     upstream_access: Upstreams,
     failed_attempts: RwLock<failure_table::Table>,
@@ -420,6 +421,10 @@ struct TunnelAgentInner {
     publication_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
     paired_after_first_check: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    publication_before_prepare: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
+    publication_before_write: std::sync::Mutex<Option<Arc<Semaphore>>>,
     #[cfg(test)]
     usb_before_snapshot: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
@@ -477,7 +482,7 @@ enum ManagedDevice {
 
 fn managed_metadata_bytes(
     device: &ManagedDevice,
-    udid: &str,
+    _udid: &str,
     desired: &intent::RouteIntent,
     observed: &Route,
 ) -> Result<usize> {
@@ -485,7 +490,7 @@ fn managed_metadata_bytes(
     let device_bytes = match device {
         ManagedDevice::Native(device) => device.retained_metadata_bytes().ok_or_else(overflow)?,
         #[cfg(test)]
-        ManagedDevice::Fake(_) => std::mem::size_of::<ManagedDevice>(),
+        ManagedDevice::Fake(device) => std::mem::size_of_val(&**device),
     };
     let desired_bytes = match desired {
         intent::RouteIntent::Usbmux => 0,
@@ -498,13 +503,11 @@ fn managed_metadata_bytes(
         Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::capacity),
         Route::Mobdev2(host) => host.capacity(),
     };
-    // Include the table key, row and both distinct retained route strings.
-    // Hash table backing, allocator overhead, runtime buffers and dyn Error
-    // allocations remain separate; this is a known-capacity admission charge.
+    // The real publication Node already owns its entire Box payload (including
+    // ManagedTunnel), original key and Vec slot backing in both byte banks.
+    // This shared native/table fee follows the device and retained route buffers.
     device_bytes
-        .checked_add(std::mem::size_of::<ManagedTunnel>())
-        .and_then(|bytes| bytes.checked_add(udid.len()))
-        .and_then(|bytes| bytes.checked_add(desired_bytes))
+        .checked_add(desired_bytes)
         .and_then(|bytes| bytes.checked_add(observed_bytes))
         .ok_or_else(overflow)
 }
@@ -743,18 +746,22 @@ impl TunnelAgentState {
         retry: reconnect::RetryPolicy,
     ) -> Result<Self> {
         let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+        let metadata_bytes = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
         let native = retirement::Registry::with_metadata(&global_metadata_bytes)?;
         Ok(Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
                 tun_mode,
-                tunnels: RwLock::new(HashMap::new()),
+                tunnels: RwLock::new(publication_table::Table::new(
+                    &global_metadata_bytes,
+                    &metadata_bytes,
+                )),
                 upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
                 upstream_access,
                 failed_attempts: RwLock::new(failure_table::Table::new(&global_metadata_bytes)),
                 retry: reconnect::Ledger::with_metadata(retry, Arc::clone(&global_metadata_bytes))?,
                 failure_slots: Arc::new(Semaphore::new(MAX_FAILURE_RECORDS)),
-                metadata_bytes: Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES)),
+                metadata_bytes,
                 global_metadata_bytes: Arc::clone(&global_metadata_bytes),
                 ready: RwLock::new(false),
                 lifecycle: Lifecycle::with_metadata(Arc::clone(&global_metadata_bytes)),
@@ -770,6 +777,10 @@ impl TunnelAgentState {
                 publication_after_insert: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 paired_after_first_check: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                publication_before_prepare: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                publication_before_write: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 usb_before_snapshot: std::sync::Mutex::new(None),
                 #[cfg(test)]
@@ -801,6 +812,8 @@ impl TunnelAgentState {
         inner.scan_outcomes = scan::Outcomes::with_metadata(Arc::clone(&bank));
         assert!(inner.failed_attempts.get_mut().is_empty());
         *inner.failed_attempts.get_mut() = failure_table::Table::new(&bank);
+        assert!(inner.tunnels.get_mut().is_empty());
+        *inner.tunnels.get_mut() = publication_table::Table::new(&bank, &inner.metadata_bytes);
         inner.global_metadata_bytes = bank;
     }
 
@@ -838,7 +851,7 @@ impl TunnelAgentState {
     async fn clear(&self) {
         let mut tunnels = self.inner.tunnels.write().await;
         let old_epoch = self.inner.lifecycle.clear_owned();
-        let old = std::mem::take(&mut *tunnels);
+        let old = tunnels.take_all();
         drop(tunnels);
         if let Some(old_epoch) = old_epoch {
             self.inner.native.retire_global(&old_epoch);
@@ -858,8 +871,11 @@ impl TunnelAgentState {
 
     async fn list_records(&self) -> Vec<TunnelRecord> {
         let mut tunnels = self.inner.tunnels.write().await;
-        tunnels.retain(|_, tunnel| tunnel.is_alive());
-        tunnels.values().filter_map(|t| t.record().ok()).collect()
+        let removed = tunnels.retain(|_, tunnel| tunnel.is_alive());
+        let records = tunnels.values().filter_map(|t| t.record().ok()).collect();
+        drop(tunnels);
+        drop(removed);
+        records
     }
 
     async fn list_tunneld_view(&self) -> FederationListing {
@@ -963,7 +979,9 @@ impl TunnelAgentState {
         match tunnels.get(udid) {
             Some(tunnel) if tunnel.is_alive() => tunnel.record().ok(),
             Some(_) => {
-                tunnels.remove(udid);
+                let removed = tunnels.remove(udid);
+                drop(tunnels);
+                drop(removed);
                 None
             }
             None => None,
@@ -1219,6 +1237,22 @@ impl TunnelAgentState {
         } else {
             None
         };
+        #[cfg(test)]
+        {
+            let callback = self.inner.publication_before_prepare.lock().unwrap().take();
+            if let Some(callback) = callback {
+                callback();
+            }
+        }
+        let mut publication_destination = Some({
+            let mut tunnels = self.inner.tunnels.write().await;
+            ticket.commit(|| {
+                if let Some(deadline) = deadline {
+                    deadline.check()?;
+                }
+                tunnels.prepare(udid)
+            })?
+        });
         let ownership = ownership::Ownership::admitted_with_input(
             Arc::clone(&self.inner.native),
             ticket,
@@ -1365,6 +1399,13 @@ impl TunnelAgentState {
                     }
                 }
             }
+            #[cfg(test)]
+            {
+                let gate = self.inner.publication_before_write.lock().unwrap().clone();
+                if let Some(gate) = gate {
+                    gate.acquire().await?.forget();
+                }
+            }
             let mut tunnels = self.inner.tunnels.write().await;
             if !ticket.is_current() {
                 return Err(lifecycle::cancelled());
@@ -1384,6 +1425,11 @@ impl TunnelAgentState {
                 if let Some(deadline) = deadline {
                     deadline.check()?;
                 }
+                let publication_slot = tunnels.destination(
+                    publication_destination
+                        .as_ref()
+                        .expect("pre-Source destination"),
+                )?;
                 if let Some(native) = &acquired.as_ref().expect("unpublished owner").1 {
                     native.publish(ownership.stamp())?;
                 }
@@ -1391,8 +1437,9 @@ impl TunnelAgentState {
                     deadline.check()?;
                 }
                 let (device, native) = acquired.take().expect("single publication");
-                let old = tunnels.insert(
-                    udid.to_owned(),
+                let change = tunnels.publish(
+                    publication_slot,
+                    publication_destination.take().expect("single destination"),
                     ManagedTunnel {
                         device,
                         publication: Arc::new(()),
@@ -1436,13 +1483,10 @@ impl TunnelAgentState {
                     // Nothing has observed this row while the table and epoch
                     // fences are held. Restore the displaced original row and
                     // retire the late runtime only after releasing those guards.
-                    late_record = tunnels.remove(udid);
-                    if let Some(old) = old {
-                        tunnels.insert(udid.to_owned(), old);
-                    }
+                    late_record = Some(tunnels.rollback(change));
                     return Err(error);
                 }
-                Ok((record, old))
+                Ok((record, change.finish()))
             };
             let result = ticket.commit(|| {
                 if let Some(authority) = &authority {

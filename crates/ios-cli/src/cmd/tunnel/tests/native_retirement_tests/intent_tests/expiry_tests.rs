@@ -82,7 +82,7 @@ fn install_crossing(
 // so the final commit really displaces it and must undo that displacement.
 struct PublicationSource {
     base: Arc<IntentSource>,
-    displaced: StdMutex<Option<(TunnelAgentState, ManagedTunnel)>>,
+    displaced: StdMutex<Option<(TunnelAgentState, publication_table::Removed<ManagedTunnel>)>>,
 }
 
 impl Source for PublicationSource {
@@ -104,14 +104,8 @@ impl Source for PublicationSource {
         Box::pin(async move {
             let device = self.base.connect_owned(udid, route, mode, owner).await?;
             let displaced = self.displaced.lock().unwrap().take();
-            if let Some((state, row)) = displaced {
-                let old = state
-                    .inner
-                    .tunnels
-                    .write()
-                    .await
-                    .insert(udid.to_owned(), row);
-                drop(old);
+            if let Some((state, original)) = displaced {
+                state.inner.tunnels.write().await.restore(original);
             }
             Ok(device)
         })

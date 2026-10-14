@@ -766,13 +766,14 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
         let global = state.inner.global_metadata_bytes.clone();
         let publication = state.inner.metadata_bytes.clone();
         let charged = publication.available_permits();
+        let table_storage = state.inner.tunnels.read().await.owned_publication_bytes();
         if clear_first {
             state.clear().await;
             assert!(
                 owner.upgrade().is_some(),
                 "fresh cache fees released before original native joins"
             );
-            assert_eq!(publication.available_permits(), charged);
+            assert_eq!(publication.available_permits(), charged + table_storage);
             state.drain_native(OBSERVE).await.unwrap();
         } else {
             state.notify_shutdown();
