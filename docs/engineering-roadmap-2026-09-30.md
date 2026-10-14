@@ -8699,3 +8699,13 @@ borrowed scope views不跨await/growth；zeroquota空位复用与lastowner费用
 22NOT_RUN保留，见[验证](validation/tunnel-socket-storage-2026-10-14.md)。runtime/
 Tokio/private/task/report/rawparser和其它originalscope继续；128MiB非完整heap/RSS、
 L02未关闭，23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。
+## 2026-10-14 L02 channel actual message backing
+
+manager runtime/client channels使用实际fixed message backing/body，创建前准入，
+原FIFO/blocked send取消/close/最后value与body owner保持；Nonebank保留Tokio。
+7新tests/core121/最终7复验/CLI504和strictcoreCLI/build/Source0 manager1/host5
+通过，2原ignored/22NOT_RUN保留。旧Tx runtime额度补齐SocketStorage，并用
+实际Tx hook证明MTU-1拒绝阶段，原fatal/joins/EOF不弱化，见
+[验证](validation/tunnel-owned-channel-2026-10-14.md)。waiter/Arc/task/report/error/
+rawparser等其它scope继续，128MiB非完整heap/RSS，L02未关闭，23/6/待收口、
+有效30与Q04全部排除不变。只本地提交，无设备操作或推送。

@@ -19,7 +19,7 @@ use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv6Address};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 
 use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
@@ -30,6 +30,8 @@ mod runtime_storage;
 use runtime_storage::{socket_buffers, OwnedQueue, RuntimeStorage, SocketFees};
 mod socket_slots;
 use socket_slots::SocketSlots;
+mod owned_channel;
+use owned_channel as mpsc;
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -47,7 +49,26 @@ const LOCAL_PROXY_PREAMBLE_LEN: usize = 16 + 4;
 const LOCAL_PROXY_PREAMBLE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
+#[cfg(test)]
+fn runtime_channel_bytes() -> usize {
+    2 * mpsc::required_bytes::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY)
+        + mpsc::required_bytes::<ConnRequest>(32)
+}
+
+#[cfg(test)]
+fn client_channel_bytes() -> usize {
+    2 * mpsc::required_bytes::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY)
+}
+
 // ── smoltcp Device implementation ─────────────────────────────────────────────
+
+#[cfg(test)]
+type TxAdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce(bool)>>>;
+
+#[cfg(test)]
+thread_local! {
+    static TX_ADMISSION: TxAdmissionHook = const { std::cell::RefCell::new(None) };
+}
 
 struct ChannelDevice {
     mtu: ValidatedMtu,
@@ -76,6 +97,12 @@ impl ChannelDevice {
                 .as_ref()
                 .map(|bank| OwnedBuffer::zeroed(self.mtu.as_usize(), Some(bank)))
                 .transpose()
+        });
+        #[cfg(test)]
+        TX_ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback(prepared.is_err());
+            }
         });
         match prepared {
             Ok(buffer) => Some(buffer),
@@ -244,15 +271,15 @@ impl UserspaceTunDevice {
         // The exact Vec and permit then move into the original reader task.
         let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, byte_bank.as_ref())?;
 
-        // Finish fallible listener setup before any worker can outlive an error.
+        let (ios_to_smol_tx, ios_to_smol_rx) =
+            mpsc::with_bank::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY, byte_bank.as_ref())?;
+        let (smol_to_ios_tx, smol_to_ios_rx) =
+            mpsc::with_bank::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY, byte_bank.as_ref())?;
+        let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
+
+        // All buffer/channel admission precedes listener setup and workers.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
-
-        let (ios_to_smol_tx, ios_to_smol_rx) =
-            mpsc::channel::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY);
-        let (smol_to_ios_tx, smol_to_ios_rx) =
-            mpsc::channel::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY);
-        let (conn_req_tx, conn_req_rx) = mpsc::channel::<ConnRequest>(32);
 
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
         let outcomes = Ledger::new();
@@ -1060,9 +1087,19 @@ async fn handle_local_client_storage(
 
     tracing::info!(remote = %crate::redaction::diagnostic_id(&remote_ip.to_string()), port = remote_port, "userspace: tunneling");
 
-    let (from_client_tx, from_client_rx) =
-        mpsc::channel::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY);
-    let (to_client_tx, to_client_rx) = mpsc::channel::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY);
+    let channels = (|| -> Result<_, TunnelError> {
+        Ok((
+            mpsc::with_bank::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY, storage.bank.as_ref())?,
+            mpsc::with_bank::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY, storage.bank.as_ref())?,
+        ))
+    })();
+    let ((from_client_tx, from_client_rx), (to_client_tx, to_client_rx)) = match channels {
+        Ok(channels) => channels,
+        Err(original) => {
+            storage.fail(ParentRole::Smoltcp, original);
+            return;
+        }
+    };
     let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
 
     let req = ConnRequest {
@@ -1197,8 +1234,8 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use super::mpsc;
     use tokio::io::AsyncWrite;
-    use tokio::sync::mpsc;
 
     use super::*;
 

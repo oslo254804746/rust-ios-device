@@ -146,6 +146,8 @@ async fn socket_storage_actual_runtime_last_byte_refusal_keeps_typed_fatal_and_o
         .metrics()
         .num_alive_tasks();
     let bytes = IPV6_HEADER_LEN
+        + super::super::runtime_channel_bytes()
+        + super::super::client_channel_bytes()
         + 4 * mem::size_of::<(SocketHandle, ConnState)>()
         + 4 * mem::size_of::<SocketStorage<'static>>()
         - 1;
