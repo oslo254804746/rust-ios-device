@@ -64,7 +64,7 @@ async fn publication_retain_native_late_clock_restores_original_key_publication_
 }
 
 #[tokio::test]
-async fn publication_retain_native_depleted_bank_rejects_without_stopping_original_runtime() {
+async fn publication_retain_native_paid_node_removal_at_zero_quota_retires_original_after_guard() {
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
@@ -78,24 +78,79 @@ async fn publication_retain_native_depleted_bank_rejects_without_stopping_origin
     let control = state.inner.lifecycle.scan_control(OBSERVE).unwrap();
     let clock = scan::Deadline::new(OBSERVE).unwrap();
     let mut tunnels = state.inner.tunnels.write().await;
-    let key = tunnels.get_key_value(DEVICE).unwrap().0.as_ptr();
-    let error = control
+    let removed = control
         .epoch
         .retain(&clock, &mut tunnels, &bank, |_, _| false)
-        .err()
         .unwrap();
-    assert_eq!(
-        crate::output::operation_error_class(error.as_ref()),
-        ios_core::ErrorClass::ResourceLimit
+    assert!(tunnels.is_empty());
+    assert!(
+        native.is_alive(),
+        "removed original must remain owned until table guard ends"
     );
-    assert_eq!(tunnels.get_key_value(DEVICE).unwrap().0.as_ptr(), key);
-    assert!(native.is_alive());
     assert_eq!(bank.available_permits(), 0);
     drop(tunnels);
+    drop(removed);
+    assert!(!native.is_alive());
+    assert_eq!(state.inner.native.snapshot().retired, 1);
+    assert!(
+        bank.available_permits() > 0,
+        "actual Node/key dropped and refunded"
+    );
     drop(held);
     drop(control);
     assert!(finish(&state, &source, expected).await);
     assert!(native.shutdown_status().is_ok());
+}
+
+fn actual_publication_destination_bytes() -> usize {
+    let global = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
+    let mut table = publication_table::Table::<ManagedTunnel>::new(&global, &published);
+    let prepared = table.prepare(DEVICE).unwrap();
+    let actual = MAX_GLOBAL_KNOWN_METADATA_BYTES - global.available_permits();
+    assert_eq!(
+        MAX_PUBLISHED_METADATA_BYTES - published.available_permits(),
+        actual
+    );
+    drop(prepared);
+    drop(table.take_all());
+    assert_eq!(global.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    assert_eq!(published.available_permits(), MAX_PUBLISHED_METADATA_BYTES);
+    actual
+}
+
+#[tokio::test]
+async fn publication_table_actual_destination_one_byte_refusal_before_any_native_source() {
+    for shared in [true, false] {
+        let expected = baseline();
+        let source = LocalSource::new();
+        let mut state = state(source.clone());
+        let bytes = actual_publication_destination_bytes();
+        if shared {
+            let original_structure =
+                state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
+            state.set_global_metadata_limit(
+                original_structure + Lifecycle::initial_metadata_bytes(DEVICE) + bytes - 1,
+            );
+        } else {
+            let inner = Arc::get_mut(&mut state.inner).unwrap();
+            inner.metadata_bytes = Arc::new(Semaphore::new(bytes - 1));
+            *inner.tunnels.get_mut() =
+                publication_table::Table::new(&inner.global_metadata_bytes, &inner.metadata_bytes);
+        }
+        let error = publish(&state, Route::Wifi(None)).await.unwrap_err();
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(source.connect_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+        assert!(state.inner.tunnels.read().await.is_empty());
+        assert_eq!(state.inner.native.snapshot().native_handles, 0);
+        assert_eq!(baseline(), expected);
+        state.notify_shutdown();
+        state.clear().await;
+    }
 }
 
 struct NativeDevice {
@@ -395,8 +450,26 @@ async fn native_cli_publication_table_caller_drop_keeps_owner_outside_locked_met
     let expected = baseline();
     let source = LocalSource::new();
     let state = state(source.clone());
-    let table = state.inner.tunnels.write().await;
+    let gate = Arc::new(Semaphore::new(0));
+    *state.inner.publication_before_write.lock().unwrap() = Some(gate.clone());
     let mut connection = Box::pin(publish(&state, Route::Wifi(None)));
+    let waiting = tokio::time::timeout(OBSERVE, async {
+        while source.handles.lock().unwrap().is_empty() {
+            if futures_util::poll!(&mut connection).is_ready() {
+                return false;
+            }
+            tokio::task::yield_now().await;
+        }
+        true
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        waiting,
+        "native Source did not reach the owned pre-publication phase"
+    );
+    let table = state.inner.tunnels.write().await;
+    gate.add_permits(1);
     let pending = futures_util::poll!(&mut connection).is_pending();
     let native = source.handle();
     drop(connection);

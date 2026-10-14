@@ -724,24 +724,28 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
         udid: B.into(),
         host: host.clone(),
     });
-    let raw_usb = std::mem::size_of::<source::UsbDevice>() + A.len();
-    let selection = std::mem::size_of::<source::UsbDevice>();
     let raw_paired = std::mem::size_of::<PairedMobdev2Device>() + B.len() + host.len();
-    let bytes = scan::capsule_reservation_bytes()
-        + manual_success::Preflight::bytes()
-        + raw_usb
-        + selection
-        + Lifecycle::initial_metadata_bytes(A)
-        + candidate_index::Candidate::first_usb_bytes(A)
-        + raw_paired
-        + std::mem::size_of::<usize>()
-        + failure_table::Destination::minimum_bytes()
-        - 1;
-    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let native_bytes =
-        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
-    state.set_global_metadata_limit(native_bytes + (bytes));
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let before = bank.available_permits();
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        // Reject the actual paired index's final byte, after the USB window is
+        // prepared. Its incomplete view must survive later publication storage.
+        let leave = raw_paired + std::mem::size_of::<usize>() - 1;
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned((observed_bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
+    let retained = Arc::clone(&held);
+    *state.inner.publication_before_prepare.lock().unwrap() = Some(Box::new(move || {
+        drop(retained.lock().unwrap().take());
+    }));
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -760,13 +764,13 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     state.clear().await;
     assert_eq!(
         bank.available_permits(),
-        bytes - Lifecycle::initial_metadata_bytes(A)
+        before - Lifecycle::initial_metadata_bytes(A)
     );
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     state.notify_shutdown();
     drop(state);
-    assert_eq!(bank.available_permits(), bytes + native_bytes);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
 #[tokio::test]
