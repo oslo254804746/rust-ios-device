@@ -23,6 +23,9 @@ use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use crate::tunnel::owner::{self, ChildRole, Ledger, OwnedTask, ParentRole, SharedChildTaskSet};
 use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
+pub(crate) mod owned_buffer;
+use owned_buffer::OwnedBuffer;
+
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
 // The device-to-client side can carry packets up to SOCKET_RECV_CHUNK_BYTES;
@@ -43,11 +46,11 @@ const MAX_LOCAL_PROXY_CLIENTS: usize = 64;
 
 struct ChannelDevice {
     mtu: ValidatedMtu,
-    rx_buf: VecDeque<Vec<u8>>,
+    rx_buf: VecDeque<OwnedBuffer>,
     tx_buf: VecDeque<Vec<u8>>,
 }
 
-struct SmolRxToken(Vec<u8>);
+struct SmolRxToken(OwnedBuffer);
 struct SmolTxToken<'a>(&'a mut VecDeque<Vec<u8>>);
 
 impl smoltcp::phy::RxToken for SmolRxToken {
@@ -146,17 +149,37 @@ impl UserspaceTunDevice {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
+        Self::start_validated_with_bank(client_address, _server_address, mtu, ios_stream, None)
+            .await
+    }
+
+    /// Manager-owned runtime storage uses the reservation's original byte bank.
+    /// Legacy callers keep the same no-bank constructor and packet semantics.
+    pub(crate) async fn start_validated_with_bank<S>(
+        client_address: &str,
+        _server_address: &str,
+        mtu: ValidatedMtu,
+        ios_stream: S,
+        byte_bank: Option<Arc<Semaphore>>,
+    ) -> Result<Self, TunnelError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let payload_capacity = mtu.ipv6_payload_capacity()?;
         let client_ipv6: Ipv6Address = client_address.parse().map_err(|_| {
             TunnelError::Protocol(format!("invalid client IPv6 address: {client_address}"))
         })?;
+
+        // Header admission and allocation finish before listener or workers.
+        // The exact Vec and permit then move into the original reader task.
+        let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, byte_bank.as_ref())?;
 
         // Finish fallible listener setup before any worker can outlive an error.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
 
         let (ios_to_smol_tx, ios_to_smol_rx) =
-            mpsc::channel::<Vec<u8>>(IOS_PACKET_CHANNEL_CAPACITY);
+            mpsc::channel::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY);
         let (smol_to_ios_tx, smol_to_ios_rx) =
             mpsc::channel::<Vec<u8>>(IOS_PACKET_CHANNEL_CAPACITY);
         let (conn_req_tx, conn_req_rx) = mpsc::channel::<ConnRequest>(32);
@@ -167,8 +190,14 @@ impl UserspaceTunDevice {
         let (stop, stop_rx) = watch::channel(());
 
         let reader_task = tokio::spawn(async move {
-            let result =
-                read_ios_packets_owned(&mut ios_reader, payload_capacity, ios_to_smol_tx).await;
+            let result = read_ios_packets_owned(
+                &mut ios_reader,
+                payload_capacity,
+                ios_to_smol_tx,
+                header,
+                byte_bank,
+            )
+            .await;
             tracing::debug!("userspace: iOS packet reader exited");
             result
         });
@@ -288,22 +317,24 @@ impl Drop for UserspaceTunDevice {
 // ── iOS packet I/O ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<Vec<u8>>)
+async fn read_ios_packets<R>(reader: &mut R, payload_capacity: usize, tx: mpsc::Sender<OwnedBuffer>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let _ = read_ios_packets_owned(reader, payload_capacity, tx).await;
+    let header = OwnedBuffer::zeroed(IPV6_HEADER_LEN, None).unwrap();
+    let _ = read_ios_packets_owned(reader, payload_capacity, tx, header, None).await;
 }
 
 async fn read_ios_packets_owned<R>(
     reader: &mut R,
     payload_capacity: usize,
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<OwnedBuffer>,
+    mut hdr: OwnedBuffer,
+    byte_bank: Option<Arc<Semaphore>>,
 ) -> Result<(), TunnelError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut hdr = vec![0u8; IPV6_HEADER_LEN];
     loop {
         reader.read_exact(&mut hdr).await?;
         let payload_len = u16::from_be_bytes([hdr[4], hdr[5]]) as usize;
@@ -326,9 +357,8 @@ where
                 break;
             }
         };
-        let mut pkt = Vec::with_capacity(packet_len);
-        pkt.extend_from_slice(&hdr);
-        pkt.resize(packet_len, 0);
+        let mut pkt = OwnedBuffer::zeroed(packet_len, byte_bank.as_ref())?;
+        pkt[..IPV6_HEADER_LEN].copy_from_slice(&hdr);
         reader.read_exact(&mut pkt[IPV6_HEADER_LEN..]).await?;
         if tx.send(pkt).await.is_err() {
             break;
@@ -446,7 +476,7 @@ fn take_ephemeral_port(cursor: &mut u16, mut in_use: impl FnMut(u16) -> bool) ->
 async fn run_smoltcp(
     client_ipv6: Ipv6Address,
     mtu: ValidatedMtu,
-    mut ios_rx: mpsc::Receiver<Vec<u8>>,
+    mut ios_rx: mpsc::Receiver<OwnedBuffer>,
     ios_tx: mpsc::Sender<Vec<u8>>,
     mut conn_req_rx: mpsc::Receiver<ConnRequest>,
 ) {
@@ -880,6 +910,9 @@ async fn proxy_local_client(
 
 #[cfg(test)]
 mod shutdown_tests;
+
+#[cfg(test)]
+mod receive_storage_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1347,7 +1380,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         read_ios_packets(&mut reader, payload_capacity, tx).await;
 
-        assert_eq!(rx.recv().await.unwrap(), expected);
+        assert_eq!(&*rx.recv().await.unwrap(), expected.as_slice());
         assert!(rx.recv().await.is_none());
     }
 

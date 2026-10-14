@@ -118,6 +118,10 @@ struct Attempt<'a, 'ticket> {
 }
 
 impl TunnelReservation for Attempt<'_, '_> {
+    fn byte_bank(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        self.reservation.as_ref().map(Reservation::byte_bank)
+    }
+
     fn attach(&mut self, handle: Arc<TunnelHandle>) -> std::result::Result<(), CoreError> {
         let reservation = self.reservation.take().ok_or_else(|| {
             CoreError::Io(std::io::Error::new(
@@ -146,3 +150,38 @@ impl TunnelReservation for Attempt<'_, '_> {
 
 // Attempt Drop retires its acquired lease or releases its empty reservation.
 // Ownership Drop retires the successful unpublished lease if not transferred.
+
+#[cfg(test)]
+mod buffer_bank_tests {
+    use super::*;
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn native_runtime_bank_is_the_original_registry_bank_before_attachment() {
+        let bank = Arc::new(Semaphore::new(
+            super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
+        ));
+        let registry = Registry::with_metadata(&bank).unwrap();
+        let baseline = bank.available_permits();
+        let owner = Ownership::standalone(Arc::clone(&registry)).unwrap();
+        let reservation = owner.reserve().unwrap();
+        let supplied = reservation
+            .byte_bank()
+            .expect("manager bank handoff missing");
+        assert!(
+            Arc::ptr_eq(&supplied, &bank),
+            "runtime received a replacement byte pool"
+        );
+        let header_fee = supplied.try_acquire_many_owned(40).unwrap();
+        assert_eq!(bank.available_permits(), baseline - 40);
+        drop(header_fee);
+        assert_eq!(bank.available_permits(), baseline);
+        drop(reservation);
+        drop(owner);
+        drop(registry);
+        assert_eq!(
+            bank.available_permits(),
+            super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
+        );
+    }
+}

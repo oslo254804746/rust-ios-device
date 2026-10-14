@@ -172,6 +172,7 @@ pub(super) struct Registry {
     state: StdMutex<State>,
     drains: Mutex<()>,
     changed: Notify,
+    byte_bank: Arc<Semaphore>,
     // Backing and application-owned payload fees outlive the fields they own.
     _slots_storage: OwnedSemaphorePermit,
     _body_storage: OwnedSemaphorePermit,
@@ -208,6 +209,7 @@ impl Registry {
             }),
             drains: Mutex::new(()),
             changed: Notify::new(),
+            byte_bank: Arc::clone(bank),
             _slots_storage: slots_storage,
             _body_storage: body_storage,
         }))
@@ -249,6 +251,7 @@ impl Registry {
             .expect("reserved registry body");
         self._slots_storage = replacement;
         self._body_storage = body;
+        self.byte_bank = Arc::clone(bank);
         Ok(())
     }
 
@@ -727,6 +730,10 @@ pub(super) struct Reservation {
 }
 
 impl Reservation {
+    pub(super) fn byte_bank(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.registry.byte_bank)
+    }
+
     pub(super) fn start(&self) -> Result<()> {
         let key = self.key.as_ref().expect("live reservation has its key");
         let mut state = self.registry.lock();

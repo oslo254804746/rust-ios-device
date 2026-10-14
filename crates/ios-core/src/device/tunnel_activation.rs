@@ -185,11 +185,13 @@ where
             }
             #[cfg(feature = "tunnel-userspace")]
             {
-                let userspace = UserspaceTunDevice::start_validated(
+                let byte_bank = reservation.as_ref().and_then(|owner| owner.byte_bank());
+                let userspace = UserspaceTunDevice::start_validated_with_bank(
                     &tunnel_info.client_address,
                     &tunnel_info.server_address,
                     mtu,
                     stream,
+                    byte_bank,
                 )
                 .await
                 .map_err(CoreError::Tunnel)?;
