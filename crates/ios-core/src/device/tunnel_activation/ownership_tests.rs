@@ -15,6 +15,7 @@ struct Owner {
     completed: AtomicUsize,
     retired: AtomicUsize,
     reject: bool,
+    byte_bank: Option<Arc<tokio::sync::Semaphore>>,
 }
 impl Owner {
     fn new(reject: bool) -> Self {
@@ -24,6 +25,7 @@ impl Owner {
             completed: AtomicUsize::new(0),
             retired: AtomicUsize::new(0),
             reject,
+            byte_bank: None,
         }
     }
     fn handle(&self) -> Option<Arc<TunnelHandle>> {
@@ -45,6 +47,10 @@ impl TunnelOwner for Owner {
     }
 }
 impl TunnelReservation for Reservation<'_> {
+    fn byte_bank(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        self.owner.byte_bank.clone()
+    }
+
     fn attach(&mut self, handle: Arc<TunnelHandle>) -> Result<(), CoreError> {
         self.owner.handles.lock().unwrap().push(Arc::clone(&handle));
         self.handle = Some(handle);
@@ -234,4 +240,51 @@ async fn native_activation_rejected_attachment_stops_workers_and_retains_origina
     assert_eq!(error.to_string(), "synthetic-private-owner-rejection");
     assert_eq!(owner.completed.load(Ordering::SeqCst), 0);
     assert_eq!(owner.retired.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_activation_passes_the_original_reservation_bank_before_any_userspace_worker() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let bank = Arc::new(tokio::sync::Semaphore::new(
+        crate::tunnel::IPV6_HEADER_LEN - 1,
+    ));
+    let mut owner = Owner::new(false);
+    owner.byte_bank = Some(Arc::clone(&bank));
+    let (stream, peer_task) = peer("invalid-rsd-address");
+    let result = activate_tunnel(
+        connection(),
+        stream,
+        TunMode::Userspace,
+        Some(owner.reserve().unwrap()),
+    )
+    .await;
+    let mut peer = peer_task.await.unwrap();
+    let mut byte = [0];
+    let eof = tokio::time::timeout(OBSERVE, peer.read(&mut byte)).await;
+    assert!(
+        matches!(eof, Ok(Ok(0))),
+        "failed bank handoff retained native transport: {eof:?}"
+    );
+    assert_eq!(
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks(),
+        baseline
+    );
+    assert!(
+        owner.handle().is_none(),
+        "header refusal attached a worker runtime"
+    );
+    assert_eq!(owner.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(owner.retired.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), crate::tunnel::IPV6_HEADER_LEN - 1);
+    let error = result
+        .err()
+        .expect("activation ignored the reservation's byte bank");
+    assert_eq!(
+        crate::classify_error(&error),
+        crate::ErrorClass::ResourceLimit
+    );
 }

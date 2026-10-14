@@ -8651,3 +8651,12 @@ strictCLI/readonly manager1/host5通过，2原ignored与22NOT_RUN保留，见
 [验证](validation/tunnel-retry-selector-owners-2026-10-14.md)。publication/private
 allocation/native/runtime与完整freshness仍缺；不关闭L02，23/6/待收口、有效30、
 Q04全部排除不变。只本地提交，无设备操作或推送。
+## 2026-10-14 L02 native RX buffer 归属
+
+原Reservation向activation传递同一manager bank，真实header/packet Vec capacity
+在创建前准入，clone-free buffer随queue/device/RxToken/closure最后owner退款；
+原typed error/Ledger/strictEOF/taskjoin保持。新增10项，core tunnel101、activation4、
+classification12、CLI485及strict core/CLI/build/readonly manager1/host5全部通过，
+2原ignored/22NOT_RUN保留，见[验证](validation/tunnel-native-rx-storage-2026-10-14.md)。
+Tx/socket/chunk/backing/private allocation/publication及完整freshness继续；L02
+未关闭，128MiB非完整heap/RSS，23/6/待收口、有效30和Q04全部排除保持。

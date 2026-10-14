@@ -153,6 +153,10 @@ fn direct_class(error: &(dyn Error + 'static)) -> Option<ErrorClass> {
     if error.is::<super::OperationCancelled>() {
         return Some(ErrorClass::Cancelled);
     }
+    #[cfg(feature = "tunnel-userspace")]
+    if error.is::<crate::tunnel::tun::userspace::owned_buffer::BufferAdmission>() {
+        return Some(ErrorClass::ResourceLimit);
+    }
     use crate::mux::MuxError;
     use crate::{CoreError, LockdownError, PairRecordError, TunnelError, XpcError};
     typed_class!(error, CoreError, {
