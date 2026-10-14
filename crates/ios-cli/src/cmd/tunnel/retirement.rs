@@ -87,6 +87,9 @@ struct Entry {
     metadata: Option<Arc<OwnedSemaphorePermit>>,
     global_metadata: Option<Arc<OwnedSemaphorePermit>>,
     _input: Option<Arc<super::candidate_input::Input>>,
+    fresh_metadata: Option<Arc<super::freshness::Metadata>>,
+    first_freshness: Option<Arc<super::freshness::Receipt>>,
+    latest_freshness: Option<Arc<super::freshness::Receipt>>,
     failure_observed: bool,
 }
 
@@ -96,6 +99,7 @@ struct State {
     slots: Vec<Option<Entry>>,
     first_failure: Option<Arc<TunnelError>>,
     first_expiry: Option<Arc<TunnelError>>,
+    first_orphan_freshness: Option<Arc<super::freshness::Receipt>>,
     additional_failed_owners: u64,
 }
 
@@ -205,6 +209,7 @@ impl Registry {
                 slots,
                 first_failure: None,
                 first_expiry: None,
+                first_orphan_freshness: None,
                 additional_failed_owners: 0,
             }),
             drains: Mutex::new(()),
@@ -238,7 +243,8 @@ impl Registry {
             !state.sealed
                 && state.slots.iter().all(Option::is_none)
                 && state.first_failure.is_none()
-                && state.first_expiry.is_none(),
+                && state.first_expiry.is_none()
+                && state.first_orphan_freshness.is_none(),
             "native registry bank can only change before ownership/history"
         );
         let mut replacement = super::admission::known_metadata_charge(
@@ -290,6 +296,9 @@ impl Registry {
             metadata: None,
             global_metadata: None,
             _input: input,
+            fresh_metadata: None,
+            first_freshness: None,
+            latest_freshness: None,
             failure_observed: false,
         });
         Ok(Reservation {
@@ -995,3 +1004,5 @@ mod native_tests;
 
 #[cfg(test)]
 mod tests;
+
+include!("retirement_refresh.inc.rs");

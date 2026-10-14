@@ -91,6 +91,46 @@ impl ConnectedDevice {
         self.rsd.as_ref()
     }
 
+    /// Current admitted refresh catalogue. rsd() remains the historical initial
+    /// legacy snapshot; service connection resolution prefers this current view.
+    #[cfg(feature = "tunnel")]
+    pub fn current_rsd_catalogue(&self) -> Option<&super::PreparedRsdCatalogue> {
+        self.prepared_rsd.as_deref()
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub fn prepared_rsd_owner(&self) -> Option<&Arc<super::PreparedRsdCatalogue>> {
+        self.prepared_rsd.as_ref()
+    }
+
+    /// Synchronous swap for an exclusive device owner. This does not stop or
+    /// join a tunnel; the caller must coordinate publication/fees/epoch fences.
+    #[cfg(feature = "tunnel")]
+    pub fn swap_current_rsd_catalogue(
+        &mut self,
+        runtime: &Arc<TunnelHandle>,
+        proposed: Option<Arc<super::PreparedRsdCatalogue>>,
+    ) -> Result<Option<Arc<super::PreparedRsdCatalogue>>, CoreError> {
+        if !self
+            .tunnel
+            .as_ref()
+            .is_some_and(|original| Arc::ptr_eq(original, runtime))
+        {
+            return Err(CoreError::Protocol(
+                "RSD refresh runtime identity changed".into(),
+            ));
+        }
+        if proposed
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.udid() != self.info.udid)
+        {
+            return Err(CoreError::Protocol(
+                "RSD refresh device identity changed".into(),
+            ));
+        }
+        Ok(std::mem::replace(&mut self.prepared_rsd, proposed))
+    }
+
     /// Conservatively charge owned directory/identity/credential buffer
     /// capacities for manager admission. Shared credentials are charged once
     /// per owner. Opaque native error causes and tunnel runtime buffers are
@@ -520,6 +560,12 @@ impl ConnectedDevice {
         &self,
         service_name: &str,
     ) -> Result<ResolvedRsdService, CoreError> {
+        #[cfg(feature = "tunnel")]
+        if let Some(rsd) = self.prepared_rsd.as_ref() {
+            return rsd.resolved(service_name).ok_or_else(|| {
+                CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
+            });
+        }
         if let Some(rsd) = self.rsd.as_ref() {
             return resolve_rsd_service_details(rsd, service_name).ok_or_else(|| {
                 CoreError::Xpc(crate::XpcError::ServiceNotFound(service_name.into()))
@@ -739,6 +785,8 @@ mod tests {
                 },
                 tunnel: Some(Arc::new(handle)),
                 rsd,
+                #[cfg(feature = "tunnel")]
+                prepared_rsd: None,
                 initial_rsd_probe,
                 pair_record: None,
                 lockdown_transport: super::super::LockdownTransport::Usbmux { device_id: 42 },

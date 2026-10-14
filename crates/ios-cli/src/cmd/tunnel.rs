@@ -36,6 +36,7 @@ mod candidate_index;
 mod candidate_input;
 mod error_payload;
 mod failure_table;
+mod freshness;
 mod intent;
 mod lifecycle;
 mod manual_success;
@@ -429,6 +430,11 @@ struct TunnelAgentInner {
     success_after_remove: std::sync::Mutex<Option<PublicationCallback>>,
 }
 
+struct RefreshContext<'a, 's> {
+    whole: Option<&'a scan::Deadline>,
+    session: Option<&'a scan::Session<'s>>,
+}
+
 struct ConnectionContext<'a> {
     expected_id: Option<u32>,
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
@@ -452,6 +458,7 @@ struct ManagedTunnel {
     _metadata: Arc<OwnedSemaphorePermit>,
     _global_metadata: Arc<OwnedSemaphorePermit>,
     _input: Option<Arc<candidate_input::Input>>,
+    _fresh_metadata: Option<Arc<freshness::Metadata>>,
 }
 
 impl Drop for ManagedTunnel {
@@ -1027,6 +1034,14 @@ impl TunnelAgentState {
             .run(deadline.run(async {
                 let _serial = ticket.serial().await;
                 if let Some(record) = self.get_record(udid).await {
+                    self.refresh_alive_rsd(
+                        udid,
+                        &ticket,
+                        &deadline,
+                        None,
+                        manual.as_ref().map(|request| &request.authority),
+                    )
+                    .await?;
                     if let Some(manual) = &manual {
                         let tunnels = self.inner.tunnels.write().await;
                         if let Some(current) =
@@ -1389,6 +1404,7 @@ impl TunnelAgentState {
                         _metadata: metadata,
                         _global_metadata: global_metadata,
                         _input: input.clone(),
+                        _fresh_metadata: None,
                     },
                 );
                 #[cfg(test)]
@@ -1567,7 +1583,17 @@ impl TunnelAgentState {
         .expect("direct-attempt node admitted before Source");
         let mut prepared = Some(prepared_node);
         let mut outcome = self
-            .refresh_connect_with_input(udid, route, ticket, whole, None, &mut prepared)
+            .refresh_connect_with_input(
+                udid,
+                route,
+                ticket,
+                None,
+                &mut prepared,
+                RefreshContext {
+                    whole,
+                    session: None,
+                },
+            )
             .await;
         if let ScanAttemptOutcome::Failure(failed) = &mut outcome {
             failed.destination = Some(destination);
@@ -1580,10 +1606,14 @@ impl TunnelAgentState {
         udid: &str,
         route: Route,
         ticket: &Ticket,
-        whole: Option<&scan::Deadline>,
         input: Option<Arc<candidate_input::Input>>,
         prepared: &mut Option<Box<failure_table::Node>>,
+        context: RefreshContext<'_, '_>,
     ) -> ScanAttemptOutcome {
+        let RefreshContext {
+            whole,
+            session: refresh_session,
+        } = context;
         let identity = prepared
             .as_ref()
             .expect("pre-Source failure node")
@@ -1645,6 +1675,18 @@ impl TunnelAgentState {
                     drop(tunnels);
                     drop(removed);
                     if existing.is_some() {
+                        if let Err(error) = self
+                            .refresh_alive_rsd(udid, ticket, &deadline, refresh_session, None)
+                            .await
+                        {
+                            if let Some(session) = refresh_session {
+                                // Source errors were already owned in Ready(Err); this
+                                // retains independent preflight/commit failures as well.
+                                session.retain(scan::Source::Freshness, error);
+                            } else {
+                                return Err(error);
+                            }
+                        }
                         return Ok(());
                     }
                     let (skip, previous_version) =
@@ -2398,9 +2440,12 @@ impl TunnelAgentState {
                         &input.udid,
                         route,
                         &ticket,
-                        Some(whole),
                         Some(Arc::clone(&input)),
                         &mut node,
+                        RefreshContext {
+                            whole: Some(whole),
+                            session: Some(session),
+                        },
                     )
                     .await
                 {

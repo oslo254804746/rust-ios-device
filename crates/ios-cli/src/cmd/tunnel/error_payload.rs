@@ -84,6 +84,7 @@ impl<'a> Census<'a> {
                 super::scan::Source::Usb,
                 super::scan::Source::Paired,
                 super::scan::Source::Coordinator,
+                super::scan::Source::Freshness,
             ] {
                 if let Some(error) = context.secondary(source) {
                     self.anyhow(error, depth + 1);
@@ -98,6 +99,9 @@ impl<'a> Census<'a> {
                 self.anyhow(receipt.primary(), depth + 1);
                 self.anyhow(receipt.latest(), depth + 1);
             }
+        }
+        if let Some(failure) = error.downcast_ref::<super::freshness::Failure>() {
+            self.anyhow(failure.original(), depth + 1);
         }
         self.error(error.as_ref(), depth);
     }
@@ -199,8 +203,20 @@ impl super::TunnelAgentState {
         let receipts = self.inner.retry.payload_receipts();
         let (active_scans, scans) = self.inner.scan_outcomes.payload_history();
         let (unjoined_native_owners, native) = self.inner.native.payload_outcomes();
+        let freshness = self.inner.native.payload_freshness();
         let receipts = match receipts {
             Ok(receipts) => receipts,
+            Err(_) => {
+                return Snapshot {
+                    active_scans,
+                    unjoined_native_owners,
+                    truncated: true,
+                    ..Snapshot::default()
+                }
+            }
+        };
+        let freshness = match freshness {
+            Ok(roots) => roots,
             Err(_) => {
                 return Snapshot {
                     active_scans,
@@ -219,6 +235,9 @@ impl super::TunnelAgentState {
         }
         for scan in &scans {
             census.anyhow(scan.original(), 0);
+        }
+        for receipt in freshness.as_slice() {
+            census.anyhow(receipt.original(), 0);
         }
         for error in &native {
             census.error(error.as_ref(), 0);

@@ -63,6 +63,8 @@ pub struct ConnectedDevice {
     pub(crate) tunnel: Option<Arc<TunnelHandle>>,
     /// RSD service directory (only available after tunnel is up on iOS 17+)
     pub(crate) rsd: Option<RsdHandshake>,
+    #[cfg(feature = "tunnel")]
+    pub(crate) prepared_rsd: Option<std::sync::Arc<PreparedRsdCatalogue>>,
     initial_rsd_probe: InitialRsdProbe,
     pair_record: Option<Arc<PairRecord>>,
     lockdown_transport: LockdownTransport,
@@ -115,6 +117,8 @@ mod connection;
 #[cfg(feature = "tunnel")]
 pub(crate) mod existing_rsd;
 #[cfg(feature = "tunnel")]
+pub(crate) mod prepared_rsd;
+#[cfg(feature = "tunnel")]
 pub use existing_rsd::{
     observe_existing_rsd, observe_existing_rsd_with_selection, ExistingRsdCleanupFailure,
     ExistingRsdCleanupReceipt, ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdRoute,
@@ -122,6 +126,10 @@ pub use existing_rsd::{
     ExistingRsdServiceKind, ExistingRsdServiceOwner, ExistingRsdSession, RsdHandshakeMode,
     RsdSelectionReceipt,
 };
+#[cfg(feature = "tunnel")]
+pub use existing_rsd::{prepare_existing_rsd_at, prepare_existing_rsd_with_identity_at};
+#[cfg(feature = "tunnel")]
+pub use prepared_rsd::PreparedRsdCatalogue;
 #[cfg(any(feature = "mdns", feature = "tunnel"))]
 pub(crate) mod error_context;
 mod lockdown_transport;

@@ -85,6 +85,34 @@ pub(super) fn selected_devices(
 mod selection_tests;
 
 pub(super) trait Source: Send + Sync {
+    #[cfg(not(test))]
+    fn observes_freshness(&self) -> bool;
+    #[cfg(test)]
+    fn observes_freshness(&self) -> bool {
+        false
+    }
+
+    #[cfg(not(test))]
+    fn refresh_existing_rsd<'a>(
+        &'a self,
+        route: ios_core::device::ExistingRsdRoute,
+        deadline: tokio::time::Instant,
+        bank: &'a Arc<Semaphore>,
+    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>>;
+    #[cfg(test)]
+    fn refresh_existing_rsd<'a>(
+        &'a self,
+        _route: ios_core::device::ExistingRsdRoute,
+        _deadline: tokio::time::Instant,
+        _bank: &'a Arc<Semaphore>,
+    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        Box::pin(async {
+            Err(crate::output::input_decision(
+                "private fixture refresh Source not implemented",
+            ))
+        })
+    }
+
     fn connect<'a>(
         &'a self,
         udid: &'a str,
@@ -142,6 +170,20 @@ impl Source for NoDevices {
 }
 
 impl Source for NativeSource {
+    fn observes_freshness(&self) -> bool {
+        true
+    }
+    fn refresh_existing_rsd<'a>(
+        &'a self,
+        route: ios_core::device::ExistingRsdRoute,
+        deadline: tokio::time::Instant,
+        bank: &'a Arc<Semaphore>,
+    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        Box::pin(async move {
+            Ok(ios_core::device::prepare_existing_rsd_at(route, deadline, bank).await?)
+        })
+    }
+
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
@@ -243,6 +285,20 @@ impl Source for NativeSource {
 // native protocols do not gain a synthetic constructor or alternate wire path.
 #[cfg(test)]
 pub(super) trait FakeDevice: Send + Sync {
+    fn freshness_route(&self) -> anyhow::Result<Option<ios_core::device::ExistingRsdRoute>> {
+        Ok(None)
+    }
+    fn freshness_catalogue(&self) -> Option<&Arc<ios_core::device::PreparedRsdCatalogue>> {
+        None
+    }
+    fn swap_freshness_catalogue(
+        &mut self,
+        _runtime: &Arc<TunnelHandle>,
+        _proposed: Option<Arc<ios_core::device::PreparedRsdCatalogue>>,
+    ) -> anyhow::Result<Option<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        Err(super::lifecycle::cancelled())
+    }
+
     fn record(&self) -> TunnelRecord;
     fn is_alive(&self) -> bool;
     fn device_id(&self) -> u32;
@@ -252,6 +308,53 @@ pub(super) trait FakeDevice: Send + Sync {
 }
 
 impl ManagedDevice {
+    pub(super) fn freshness_route(
+        &self,
+    ) -> anyhow::Result<Option<ios_core::device::ExistingRsdRoute>> {
+        match self {
+            Self::Native(device) => {
+                let address = device
+                    .server_address()
+                    .ok_or_else(super::lifecycle::cancelled)?
+                    .parse()?;
+                let endpoint = std::net::SocketAddrV6::new(
+                    address,
+                    device.rsd_port().ok_or_else(super::lifecycle::cancelled)?,
+                    0,
+                    0,
+                );
+                Ok(Some(match device.userspace_port() {
+                    Some(proxy) => {
+                        ios_core::device::ExistingRsdRoute::via_userspace_proxy(endpoint, proxy)?
+                    }
+                    None => ios_core::device::ExistingRsdRoute::direct(endpoint)?,
+                }))
+            }
+            #[cfg(test)]
+            Self::Fake(device) => device.freshness_route(),
+        }
+    }
+    pub(super) fn freshness_catalogue(
+        &self,
+    ) -> Option<&Arc<ios_core::device::PreparedRsdCatalogue>> {
+        match self {
+            Self::Native(device) => device.prepared_rsd_owner(),
+            #[cfg(test)]
+            Self::Fake(device) => device.freshness_catalogue(),
+        }
+    }
+    pub(super) fn swap_freshness_catalogue(
+        &mut self,
+        runtime: &Arc<TunnelHandle>,
+        proposed: Option<Arc<ios_core::device::PreparedRsdCatalogue>>,
+    ) -> anyhow::Result<Option<Arc<ios_core::device::PreparedRsdCatalogue>>> {
+        match self {
+            Self::Native(device) => Ok(device.swap_current_rsd_catalogue(runtime, proposed)?),
+            #[cfg(test)]
+            Self::Fake(device) => device.swap_freshness_catalogue(runtime, proposed),
+        }
+    }
+
     pub(super) fn native_handle(&self) -> Option<&Arc<TunnelHandle>> {
         match self {
             Self::Native(device) => device.tunnel_handle(),

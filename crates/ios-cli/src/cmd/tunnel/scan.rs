@@ -149,6 +149,7 @@ pub(super) enum Source {
     Usb,
     Paired,
     Coordinator,
+    Freshness,
 }
 
 /// Fixed source slots: repeated unknown keys never extend an error chain.
@@ -157,11 +158,15 @@ struct Acquired {
     usb: Option<anyhow::Error>,
     paired: Option<anyhow::Error>,
     coordinator: Option<anyhow::Error>,
+    freshness: Option<anyhow::Error>,
 }
 
 impl Acquired {
     fn is_empty(&self) -> bool {
-        self.usb.is_none() && self.paired.is_none() && self.coordinator.is_none()
+        self.usb.is_none()
+            && self.paired.is_none()
+            && self.coordinator.is_none()
+            && self.freshness.is_none()
     }
 
     fn retain(&mut self, source: Source, error: anyhow::Error) {
@@ -169,6 +174,7 @@ impl Acquired {
             Source::Usb => &mut self.usb,
             Source::Paired => &mut self.paired,
             Source::Coordinator => &mut self.coordinator,
+            Source::Freshness => &mut self.freshness,
         };
         if slot.is_none() {
             *slot = Some(error);
@@ -185,6 +191,7 @@ impl Acquired {
             .take()
             .or_else(|| self.paired.take())
             .or_else(|| self.coordinator.take())
+            .or_else(|| self.freshness.take())
             .or_else(|| completion.take())?;
         if self.is_empty() {
             // Keep the existing one-source completion context and its typed
@@ -201,6 +208,7 @@ impl Acquired {
             usb: self.usb,
             paired: self.paired,
             coordinator: self.coordinator,
+            freshness: self.freshness,
             completion,
             _storage: materialize::<SourceContext>(storage),
         }))
@@ -213,6 +221,7 @@ pub(super) struct SourceContext {
     usb: Option<anyhow::Error>,
     paired: Option<anyhow::Error>,
     coordinator: Option<anyhow::Error>,
+    freshness: Option<anyhow::Error>,
     completion: Option<anyhow::Error>,
     _storage: OwnedSemaphorePermit,
 }
@@ -235,6 +244,7 @@ impl SourceContext {
             Source::Usb => self.usb.as_ref(),
             Source::Paired => self.paired.as_ref(),
             Source::Coordinator => self.coordinator.as_ref(),
+            Source::Freshness => self.freshness.as_ref(),
         }
     }
 
@@ -260,6 +270,7 @@ impl std::fmt::Debug for SourceContext {
             .field("usb_class", &class(&self.usb))
             .field("paired_class", &class(&self.paired))
             .field("coordinator_class", &class(&self.coordinator))
+            .field("freshness_class", &class(&self.freshness))
             .field("completion_class", &class(&self.completion))
             .finish()
     }

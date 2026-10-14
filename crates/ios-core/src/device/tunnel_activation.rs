@@ -83,6 +83,8 @@ impl TunnelConnection {
             info: self.info,
             tunnel: Some(handle.into()),
             rsd,
+            #[cfg(feature = "tunnel")]
+            prepared_rsd: None,
             initial_rsd_probe,
             pair_record: self.pair_record,
             lockdown_transport: self.lockdown_transport,

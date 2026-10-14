@@ -172,6 +172,11 @@ impl ConnectionDeadline {
         *retry = Some(retry.map_or(at, |old| old.min(at)));
     }
 
+    pub(super) fn absolute_at(&self) -> Instant {
+        self.whole
+            .map_or_else(|| self.effective(), |whole| whole.min(self.effective()))
+    }
+
     fn effective(&self) -> Instant {
         self.retry
             .lock()
@@ -577,6 +582,18 @@ impl Ticket {
     pub(super) fn fenced(&self) -> Self {
         let mut ticket = self.clone();
         ticket.intent_version = Some(self.gate.intent.snapshot().version);
+        ticket
+    }
+
+    /// Preserve an existing fence; otherwise bind the observation to the exact
+    /// captured desired version, without reading or reviving a later selector.
+    pub(super) fn observe_version(&self, version: &Arc<()>) -> Self {
+        let mut ticket = self.clone();
+        ticket.intent_version = Some(
+            self.intent_version
+                .clone()
+                .unwrap_or_else(|| Arc::clone(version)),
+        );
         ticket
     }
 
