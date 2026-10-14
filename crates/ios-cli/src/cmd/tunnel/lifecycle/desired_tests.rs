@@ -22,7 +22,9 @@ async fn desired_listing_backing_and_key_follow_iterator_and_transferred_owner()
     assert_eq!(bank.available_permits(), before - key_bytes - row_bytes);
     let mut iterator = rows.into_iter();
     let DesiredRow {
-        udid, key_storage, ..
+        udid,
+        _key_storage: key_storage,
+        ..
     } = iterator.next().unwrap();
     assert_eq!(bank.available_permits(), before - key_bytes - row_bytes);
     // A writer can move this exact key and permit out of the listing. Its

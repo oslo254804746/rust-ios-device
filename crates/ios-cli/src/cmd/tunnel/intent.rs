@@ -278,6 +278,30 @@ impl Cell {
             .clone()
     }
 
+    /// The state and exact pending tuple use checked_replace/reset's lock order.
+    /// Returning shared evidence makes latest-version collection allocation-free.
+    pub(super) fn manual_success(
+        &self,
+        epoch: &Arc<()>,
+    ) -> Option<(Arc<()>, Arc<()>, DeviceAuthority)> {
+        let state = self.lock();
+        if !Arc::ptr_eq(&state.epoch, epoch) {
+            return None;
+        }
+        let Desired::Manual { authority, .. } = &state.desired else {
+            return None;
+        };
+        let pending = self
+            .pending_success
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (desired, failure) = pending.as_ref()?;
+        if !Arc::ptr_eq(desired, &state.version) {
+            return None;
+        }
+        Some((Arc::clone(desired), Arc::clone(failure), authority.clone()))
+    }
+
     pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &Arc<()>) {
         let mut pending = self
             .pending_success
@@ -288,6 +312,29 @@ impl Cell {
         }) {
             *pending = None;
         }
+    }
+
+    pub(super) fn clear_success_checked(
+        &self,
+        desired: &Arc<()>,
+        failure: &Arc<()>,
+        check: impl Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let mut pending = self
+            .pending_success
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        check()?;
+        if pending.as_ref().is_some_and(|(current, row)| {
+            Arc::ptr_eq(current, desired) && Arc::ptr_eq(row, failure)
+        }) {
+            let original = pending.take();
+            if let Err(error) = check() {
+                *pending = original;
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn changed(&self, version: &Arc<()>) {

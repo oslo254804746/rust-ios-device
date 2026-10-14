@@ -9,7 +9,7 @@ use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) const MAX_CONNECTS: usize = 4;
-const MAX_DEVICE_GATES: usize = 4096;
+pub(super) const MAX_DEVICE_GATES: usize = 4096;
 
 #[cfg(test)]
 type LifecycleCallback = Box<dyn FnOnce(&Lifecycle) + Send>;
@@ -31,6 +31,9 @@ pub(super) struct Lifecycle {
 }
 
 struct DeviceGate {
+    // The original canonical key follows this already-paid gate through tickets.
+    // Late success collection borrows it instead of creating another String.
+    udid: String,
     serial: Mutex<()>,
     generation: watch::Sender<Arc<()>>,
     intent: super::intent::Cell,
@@ -40,7 +43,7 @@ struct DeviceGate {
     _metadata: OwnedSemaphorePermit,
 }
 
-type DeviceRow = (String, Arc<DeviceGate>);
+type DeviceRow = Arc<DeviceGate>;
 
 pub(super) struct DesiredRow {
     pub(super) udid: String,
@@ -48,7 +51,7 @@ pub(super) struct DesiredRow {
     pub(super) snapshot: super::intent::Snapshot,
     // This exact copied key can move into the manual-success writer. Keep its
     // permit with that owner, independently of this listing's backing.
-    pub(super) key_storage: OwnedSemaphorePermit,
+    pub(super) _key_storage: OwnedSemaphorePermit,
 }
 
 #[derive(Default)]
@@ -61,10 +64,7 @@ struct DeviceTable {
 
 impl DeviceTable {
     fn get(&self, udid: &str) -> Option<&Arc<DeviceGate>> {
-        self.rows
-            .iter()
-            .find(|(key, _)| key == udid)
-            .map(|(_, gate)| gate)
+        self.rows.iter().find(|gate| gate.udid == udid)
     }
 
     fn reserve_row(&mut self, bank: &Arc<Semaphore>) -> Result<()> {
@@ -285,7 +285,7 @@ impl Lifecycle {
         // Clear never waits on this map. Renew old desired states on the next
         // admission, retaining the canonical gate while old tickets still own
         // it. Removing/replacing those Arcs would evade the live 4096 ceiling.
-        for (_, gate) in &devices.rows {
+        for gate in &devices.rows {
             if !gate.intent.is_epoch(&shutdown_generation) {
                 gate.intent.reset(shutdown_generation.clone());
                 gate.generation.send_replace(Arc::new(()));
@@ -295,9 +295,9 @@ impl Lifecycle {
             Some(gate) => gate,
             None => {
                 if devices.rows.len() >= MAX_DEVICE_GATES {
-                    devices.rows.retain(|(_, gate)| {
-                        Arc::strong_count(gate) > 1 || gate.intent.persistent()
-                    });
+                    devices
+                        .rows
+                        .retain(|gate| Arc::strong_count(gate) > 1 || gate.intent.persistent());
                     anyhow::ensure!(
                         devices.rows.len() < MAX_DEVICE_GATES,
                         crate::output::resource_decision("tunnel device coordinator limit")
@@ -316,6 +316,7 @@ impl Lifecycle {
                     super::admission::known_metadata_charge(&self.metadata_bytes, bytes)?;
                 devices.reserve_row(&self.metadata_bytes)?;
                 let gate = Arc::new(DeviceGate {
+                    udid: key,
                     serial: Mutex::new(()),
                     generation: watch::channel(Arc::new(())).0,
                     intent: super::intent::Cell::new(
@@ -324,7 +325,7 @@ impl Lifecycle {
                     ),
                     _metadata: metadata,
                 });
-                devices.rows.push((key, gate.clone()));
+                devices.rows.push(gate.clone());
                 gate
             }
         };
@@ -346,7 +347,8 @@ impl Lifecycle {
             return Ok(rows);
         };
         let devices = self.devices.lock().await;
-        for (udid, gate) in &devices.rows {
+        for gate in &devices.rows {
+            let udid = &gate.udid;
             let snapshot = gate.intent.snapshot();
             if !Arc::ptr_eq(&snapshot.epoch, &epoch)
                 || matches!(&snapshot.desired, super::intent::Desired::Automatic)
@@ -367,10 +369,44 @@ impl Lifecycle {
                     intent_version: Some(snapshot.version.clone()),
                 },
                 snapshot,
-                key_storage,
+                _key_storage: key_storage,
             })?;
         }
         Ok(rows)
+    }
+
+    /// Read CURRENT gates and one atomic desired/pending proof after Source.
+    /// Every destination was allocated before Source; no key/body is cloned here.
+    pub(super) async fn fill_manual_successes(
+        &self,
+        prepared: &mut super::manual_success::Preflight,
+    ) {
+        let shutdown = self.shutdown.subscribe();
+        let Some(epoch) = shutdown.borrow().clone() else {
+            return;
+        };
+        let devices = self.devices.lock().await;
+        for gate in &devices.rows {
+            let Some((desired, failure, authority)) = gate.intent.manual_success(&epoch) else {
+                continue;
+            };
+            // Do not take an authority revision borrow while intent locks are held.
+            if !authority.current() {
+                continue;
+            }
+            prepared.record(
+                Ticket {
+                    gate: Arc::clone(gate),
+                    generation: gate.generation.borrow().clone(),
+                    shutdown: shutdown.clone(),
+                    shutdown_generation: Arc::clone(&epoch),
+                    intent_version: Some(Arc::clone(&desired)),
+                },
+                desired,
+                failure,
+                authority,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -534,6 +570,10 @@ impl ScanControl {
 }
 
 impl Ticket {
+    pub(super) fn udid(&self) -> &str {
+        &self.gate.udid
+    }
+
     pub(super) fn fenced(&self) -> Self {
         let mut ticket = self.clone();
         ticket.intent_version = Some(self.gate.intent.snapshot().version);
@@ -639,6 +679,17 @@ impl Ticket {
 
     pub(super) fn clear_success(&self, desired: &Arc<()>, failure: &Arc<()>) {
         self.gate.intent.clear_success(desired, failure);
+    }
+
+    pub(super) fn clear_success_checked(
+        &self,
+        desired: &Arc<()>,
+        failure: &Arc<()>,
+        check: impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        self.gate
+            .intent
+            .clear_success_checked(desired, failure, check)
     }
 
     /// Compare immutable identities without borrowing either watch again from
@@ -853,7 +904,7 @@ mod tests {
                 + devices
                     .rows
                     .iter()
-                    .map(|(key, _)| key.capacity() + std::mem::size_of::<DeviceGate>())
+                    .map(|gate| gate.udid.capacity() + std::mem::size_of::<DeviceGate>())
                     .sum::<usize>();
             assert_eq!(bank.available_permits(), 64 * 1024 - actual);
         }

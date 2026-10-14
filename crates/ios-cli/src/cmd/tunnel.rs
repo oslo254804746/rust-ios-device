@@ -38,6 +38,7 @@ mod error_payload;
 mod failure_table;
 mod intent;
 mod lifecycle;
+mod manual_success;
 mod metadata_vec;
 mod ownership;
 mod paired_observed;
@@ -1857,6 +1858,9 @@ impl TunnelAgentState {
             return Ok(());
         }
 
+        // Future manual gates may appear during discovery/connection waits.
+        // Prepare the full bounded destinations before the FIRST Source poll.
+        let manual_success = manual_success::Preflight::new(&self.inner.global_metadata_bytes)?;
         whole.check()?;
         #[cfg(test)]
         {
@@ -2335,8 +2339,14 @@ impl TunnelAgentState {
             epoch,
         )
         .await?;
-        self.refresh_candidates(candidates, whole, session, failure_destination)
-            .await?;
+        self.refresh_candidates(
+            candidates,
+            whole,
+            session,
+            failure_destination,
+            manual_success,
+        )
+        .await?;
         if session.has_primary() {
             return Ok(());
         }
@@ -2354,6 +2364,7 @@ impl TunnelAgentState {
         whole: &scan::Deadline,
         session: &scan::Session<'_>,
         destination: Option<failure_table::Destination>,
+        manual_success: Box<manual_success::Preflight>,
     ) -> Result<()> {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
@@ -2395,7 +2406,7 @@ impl TunnelAgentState {
                             (*node.take().expect("successful prepared key")).into_success_key();
                         Ok(Some(ScanIntent::Success(SuccessIntent {
                             _key_storage: key_storage,
-                            udid,
+                            udid: udid.into(),
                             ticket,
                             success,
                             _input: input,
@@ -2424,52 +2435,18 @@ impl TunnelAgentState {
         if let Err(error) = whole.check() {
             return batch.finish(Err(error));
         }
-        if let Err(error) = self.flush_manual_successes(whole).await {
+        if let Err(error) = (*manual_success).flush(self, whole).await {
             return batch.finish(Err(error));
         }
         self.flush_write_batch(batch, Some(whole)).await
     }
 
+    #[cfg(test)]
     async fn flush_manual_successes(&self, whole: &scan::Deadline) -> Result<()> {
-        whole.check()?;
-        let rows = self.inner.lifecycle.desired().await?;
-        if rows.len() == 0 {
-            return Ok(());
-        }
-        let mut batch =
-            bookkeeping::WriteBatch::success_only(&self.inner.global_metadata_bytes, rows.len())?;
-        let mut completed =
-            metadata_vec::KnownVec::new(Arc::clone(&self.inner.global_metadata_bytes), rows.len());
-        completed.reserve(rows.len())?;
-        for lifecycle::DesiredRow {
-            udid,
-            ticket,
-            snapshot,
-            key_storage,
-        } in rows
-        {
-            if !matches!(&snapshot.desired, intent::Desired::Manual { authority, .. } if authority.current())
-            {
-                continue;
-            }
-            if let Some((desired, success)) = ticket.pending_success() {
-                completed.push((ticket.clone(), desired, success.version.clone()))?;
-                batch.record(ScanIntent::Success(SuccessIntent {
-                    _key_storage: Some(key_storage),
-                    udid,
-                    ticket,
-                    success,
-                    _input: None,
-                }))?;
-            }
-        }
-        // A separate bounded batch keeps both collections <=4096 and queues
-        // no writer until every candidate in the Source window has finished.
-        self.flush_write_batch(batch, Some(whole)).await?;
-        for (ticket, desired, failure) in completed {
-            ticket.clear_success(&desired, &failure);
-        }
-        Ok(())
+        // External direct fixtures prepare their own owners before invoking
+        // this cleanup seam; production carries its Source-before preflight.
+        let prepared = manual_success::Preflight::new(&self.inner.global_metadata_bytes)?;
+        (*prepared).flush(self, whole).await
     }
 
     async fn reconcile_failures(

@@ -1,6 +1,33 @@
 use super::*;
 
 #[tokio::test]
+async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keeps_namespace() {
+    let source = FakeSource::new();
+    source.usb.lock().unwrap().push(A.into());
+    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let bytes = scan::capsule_reservation_bytes() + manual_success::Preflight::bytes() - 1;
+    let structural = state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
+    state.set_global_metadata_limit(structural + bytes);
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let error = state.refresh_once().await.unwrap_err();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.count(A), 0);
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert!(!state.is_ready().await);
+    drop(error);
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    assert_eq!(bank.available_permits(), structural + bytes);
+}
+
+#[tokio::test]
 async fn failure_window_roots_one_byte_refusal_precedes_source_with_prepared_single_key() {
     let source = FakeSource::new();
     source.usb.lock().unwrap().push(A.into());
@@ -185,6 +212,7 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let before = bank.available_permits();
     let remaining = scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
         + std::mem::size_of::<source::UsbDevice>()
         + A.len()
         + std::mem::size_of::<source::UsbDevice>()
@@ -336,6 +364,7 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     assert_eq!(bank.available_permits(), before);
     let pending = 2 * std::mem::size_of::<(&str, &Ticket, Option<&str>)>();
     let admitted = scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
         + listing_bytes
         + manual_bytes
         + scan_publications::InitialPublications::first_bytes(A)
@@ -590,6 +619,7 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
     let selection = std::mem::size_of::<source::UsbDevice>();
     let rows = candidate_index::Candidate::first_usb_bytes(A);
     let bytes = scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
         + raw
         + selection
         + rows
@@ -641,6 +671,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
     let remaining = scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
         + raw
         + selection
         + Lifecycle::additional_metadata_bytes(A)
@@ -697,6 +728,7 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     let selection = std::mem::size_of::<source::UsbDevice>();
     let raw_paired = std::mem::size_of::<PairedMobdev2Device>() + B.len() + host.len();
     let bytes = scan::capsule_reservation_bytes()
+        + manual_success::Preflight::bytes()
         + raw_usb
         + selection
         + Lifecycle::initial_metadata_bytes(A)
@@ -755,6 +787,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     state.set_global_metadata_limit(
         native_bytes
             + (scan::capsule_reservation_bytes()
+                + manual_success::Preflight::bytes()
                 + charge
                 + selection
                 + candidate
@@ -770,6 +803,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
         scan::capsule_reservation_bytes()
+            + manual_success::Preflight::bytes()
             + charge
             + selection
             + candidate
@@ -827,24 +861,28 @@ async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exac
 #[tokio::test]
 async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extra_source() {
     let source = FakeSource::new();
-    let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
-    let charge =
-        std::mem::size_of::<ManagedDevice>() + std::mem::size_of::<ManagedTunnel>() + A.len();
-    let reserve = scan::capsule_reservation_bytes();
-    let native_bytes =
-        state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
-    state.set_global_metadata_limit(
-        native_bytes + (charge + Lifecycle::initial_metadata_bytes(A) + reserve),
-    );
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     state
         .ensure_tunnel(A, None, Some(StartTunnelConnectionType::Wifi))
         .await
         .unwrap();
     let publication = state.inner.tunnels.read().await[A].publication.clone();
-    assert_eq!(
-        state.inner.global_metadata_bytes.available_permits(),
-        reserve
-    );
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    // All upstream publication/manual storage is already charged. Refuse the
+    // actual USB snapshot identity backing by exactly one byte at its own phase.
+    let raw = std::mem::size_of::<source::UsbDevice>() + A.len();
+    *state.inner.usb_before_snapshot.lock().unwrap() = Some(Box::new(move || {
+        let leave = raw + std::mem::size_of::<usize>() - 1;
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned((observed_bank.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    }));
     *source.usb_details.lock().unwrap() = Some(vec![source::UsbDevice {
         udid: A.into(),
         device_id: 7,
@@ -860,15 +898,16 @@ async fn global_metadata_rejected_usb_snapshot_keeps_old_publication_and_no_extr
         &publication
     ));
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        source.usb_calls.load(Ordering::SeqCst),
+        1,
+        "snapshot refusal was intercepted by upstream preflight"
+    );
     assert_eq!(source.count(A), 1);
-    assert_eq!(
-        state.inner.global_metadata_bytes.available_permits(),
-        reserve
-    );
+    drop(held.lock().unwrap().take());
     state.clear().await;
-    assert_eq!(
-        state.inner.global_metadata_bytes.available_permits(),
-        charge + reserve
-    );
     state.notify_shutdown();
+    drop(publication);
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }

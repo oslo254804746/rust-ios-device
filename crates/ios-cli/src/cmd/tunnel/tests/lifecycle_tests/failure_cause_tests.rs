@@ -288,6 +288,136 @@ async fn pending_manual_cleanup(state: &TunnelAgentState) {
 }
 
 #[tokio::test]
+async fn manual_success_preflight_real_source_new_gate_and_latest_pending_cleanup_at_zero_quota() {
+    use futures_util::FutureExt;
+    let source = RefusedSource::new().await;
+    let state = manager(source.clone());
+    pending_manual_cleanup(&state).await;
+    let old = state
+        .inner
+        .lifecycle
+        .ticket(B)
+        .await
+        .unwrap()
+        .desired()
+        .version;
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let worker = state.clone();
+    let observed_bank = Arc::clone(&bank);
+    *source.on_return.lock().unwrap() = Some(Box::new(move || {
+        // This independent metadata creator admits its own gate/key before
+        // publishing a pending manual proof. Scan storage was prepared earlier.
+        for uid in [B, "source-created-new-manual-gate"] {
+            let ticket = worker
+                .inner
+                .lifecycle
+                .ticket(uid)
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+            let failure = if uid == B {
+                worker.inner.failed_attempts.try_read().unwrap()[B]
+                    .version
+                    .clone()
+            } else {
+                let slot = worker
+                    .reserve_failure_slot(uid)
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap();
+                worker
+                    .record_failed_attempt(
+                        uid,
+                        AttemptIdentity {
+                            route: Route::Wifi(None),
+                            native_id: None,
+                        },
+                        slot,
+                        &ticket,
+                    )
+                    .now_or_never()
+                    .expect("independent fixture seed is uncontended");
+                worker.inner.failed_attempts.try_read().unwrap()[uid]
+                    .version
+                    .clone()
+            };
+            let authority = worker
+                .inner
+                .access
+                .authenticate(&axum::http::HeaderMap::new())
+                .unwrap()
+                .device_authority(Permission::ManageTunnels, uid)
+                .ok()
+                .unwrap();
+            ticket
+                .commit(|| {
+                    ticket.establish_manual(
+                        intent::RouteIntent::Wifi(None),
+                        authority,
+                        Some(failure),
+                        None,
+                    )
+                })
+                .unwrap();
+        }
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned(observed_bank.available_permits() as u32)
+                .unwrap(),
+        );
+        assert_eq!(observed_bank.available_permits(), 0);
+    }));
+    state.refresh_once().await.unwrap();
+    assert_eq!(
+        (
+            source.count(A),
+            source.count(B),
+            source.count("source-created-new-manual-gate")
+        ),
+        (1, 0, 0)
+    );
+    assert!(!Arc::ptr_eq(
+        &old,
+        &state
+            .inner
+            .lifecycle
+            .ticket(B)
+            .await
+            .unwrap()
+            .desired()
+            .version
+    ));
+    assert_eq!(state.inner.lifecycle.coordinator_count().await, 3);
+    for uid in [B, "source-created-new-manual-gate"] {
+        assert!(!state.inner.failed_attempts.read().await.contains_key(uid));
+        assert!(state
+            .inner
+            .lifecycle
+            .ticket(uid)
+            .await
+            .unwrap()
+            .pending_success()
+            .is_none());
+    }
+    let receipt = state.inner.retry.receipt(A).unwrap();
+    assert_eq!(
+        original(receipt.primary()),
+        source.originals.lock().unwrap()[0]
+    );
+    assert_eq!(receipt.completion(), reconnect::Completion::Recorded);
+    assert_eq!(state.inner.failed_attempts.read().await[A].fail_count, 1);
+    drop(held.lock().unwrap().take());
+    state.notify_shutdown();
+    state.clear().await;
+    drop(state);
+    drop(receipt);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
 async fn write_batch_bytes_manual_cleanup_timeout_preserves_original_source_and_last_report_owner()
 {
     let source = RefusedSource::new().await;
