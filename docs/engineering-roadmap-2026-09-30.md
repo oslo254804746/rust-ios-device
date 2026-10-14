@@ -8681,3 +8681,13 @@ list/query/clear/server Owner在guard外释放原owner，native/freshness费用�
 2原ignored/22NOT_RUN保持，见[验证](validation/tunnel-publication-table-storage-2026-10-14.md)。
 未收费的其它copies/manager/private/native/rawparser存储与物理刷新规则继续；
 128MiB非完整heap/RSS、L02主项不关闭、23/6/待收口、有效30/Q04全部排除不变。
+## 2026-10-14 L02 native Tx/socket/chunk存储
+
+metered Tx在提供token前准入整MTU与真实queue，拒绝持原fatal再stop/no token；
+原closure返回值/partialcursor/buffercapacity最后owner保持。真实queue peak、
+connection backing、两个1MiB socket与4096/65536 chunks接线，socket先drop再
+退fee。9新tests，core110/activation4/CLI504与strictcoreCLI/build/Source0 manager1/
+host5通过，2原ignored/22NOT_RUN保留，见
+[验证](validation/tunnel-native-transmit-storage-2026-10-14.md)。SocketSet内部backing/
+Tokio/task/report/private/rawparser及其它原scope继续；128MiB非完整heap/RSS、
+L02不关闭、23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。

@@ -17,6 +17,7 @@ pub(crate) enum BufferAdmission {
     Exhausted,
     Overflow(TryFromIntError),
     UnexpectedCapacity,
+    SizeOverflow,
     Allocation(TryReserveError),
 }
 
@@ -36,7 +37,7 @@ impl std::error::Error for BufferAdmission {
     }
 }
 
-fn rejected(error: BufferAdmission) -> TunnelError {
+pub(super) fn rejected(error: BufferAdmission) -> TunnelError {
     TunnelError::Io(std::io::Error::other(error))
 }
 
@@ -44,11 +45,21 @@ fn rejected(error: BufferAdmission) -> TunnelError {
 /// Exposes slices only; a caller cannot grow the Vec without another admission.
 pub(super) struct OwnedBuffer {
     bytes: Vec<u8>,
+    offset: usize,
     // Declared after bytes: release the actual Vec before its capacity fee.
     _charge: Option<OwnedSemaphorePermit>,
 }
 
 impl OwnedBuffer {
+    /// Only the legacy no-bank Tx path uses infallible allocation in consume.
+    pub(super) fn unmetered_zeroed(len: usize) -> Self {
+        Self {
+            bytes: vec![0; len],
+            offset: 0,
+            _charge: None,
+        }
+    }
+
     pub(super) fn zeroed(len: usize, bank: Option<&Arc<Semaphore>>) -> Result<Self, TunnelError> {
         // Reserve the requested capacity before the allocation or payload read.
         // Refuse an allocator's larger reported capacity before using it; do not
@@ -82,8 +93,25 @@ impl OwnedBuffer {
         bytes.resize(len, 0);
         Ok(Self {
             bytes,
+            offset: 0,
             _charge: charge,
         })
+    }
+
+    pub(super) fn truncate(&mut self, len: usize) {
+        assert_eq!(self.offset, 0);
+        assert!(len <= self.bytes.len());
+        self.bytes.truncate(len);
+    }
+
+    pub(super) fn advance(&mut self, amount: usize) {
+        assert!(amount <= self.len());
+        self.offset += amount;
+    }
+
+    pub(super) fn into_socket_parts(self) -> (Vec<u8>, Option<OwnedSemaphorePermit>) {
+        assert_eq!(self.offset, 0);
+        (self.bytes, self._charge)
     }
 
     #[cfg(test)]
@@ -92,17 +120,26 @@ impl OwnedBuffer {
     }
 }
 
+impl std::fmt::Debug for OwnedBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserspaceBuffer")
+            .field("len", &self.len())
+            .field("capacity", &self.bytes.capacity())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Deref for OwnedBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.bytes
+        &self.bytes[self.offset..]
     }
 }
 
 impl DerefMut for OwnedBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes
+        &mut self.bytes[self.offset..]
     }
 }
 
