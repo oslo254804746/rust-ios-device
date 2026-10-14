@@ -130,7 +130,7 @@ impl Ledger {
 
     // A running parent cannot join its own handle; this typed task result
     // reports acquired failures without certifying whole-runtime completion.
-    #[cfg(feature = "tunnel-kernel")]
+    #[cfg(any(feature = "tunnel-kernel", feature = "tunnel-userspace"))]
     pub(crate) fn work_result(&self) -> Result<(), TunnelError> {
         self.snapshot(None, false)
     }

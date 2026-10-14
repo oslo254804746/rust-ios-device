@@ -368,7 +368,10 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
     .unwrap();
     let pending = state.retained_error_payloads();
     assert_eq!(pending.unjoined_native_owners, 1);
-    assert_eq!(pending.known_payload_capacity_bytes, 0);
+    // The runtime records its acquired original before signalling stop. Join
+    // accounting remains incomplete, but the actual payload is already owned
+    // and observable; later reports must not duplicate or replace this buffer.
+    assert_eq!(pending.known_payload_capacity_bytes, 16384);
     assert!(!pending.fully_measured_payloads());
     assert!(native
         .shutdown(std::time::Duration::from_secs(2))

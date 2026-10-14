@@ -1,0 +1,194 @@
+//! Creation-owned userspace packet, queue and socket capacity. No heap/RSS claim.
+
+use std::collections::VecDeque;
+use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+
+use super::owned_buffer::{rejected, BufferAdmission, OwnedBuffer};
+use super::{Ledger, ParentRole, TunnelError};
+
+#[derive(Clone)]
+pub(super) struct RuntimeStorage {
+    pub(super) bank: Option<Arc<Semaphore>>,
+    pub(super) ledger: Arc<Ledger>,
+    pub(super) stop: watch::Sender<()>,
+    pub(super) stopped: Arc<AtomicBool>,
+}
+
+impl RuntimeStorage {
+    pub(super) fn fail(&self, role: ParentRole, original: TunnelError) {
+        // The original cause becomes durable before any worker sees stop. The
+        // existing ledger retains per-role errors and original typed join slots.
+        self.ledger.record_work(role as usize, Arc::new(original));
+        self.stopped.store(true, Ordering::Release);
+        self.stop.send_replace(());
+    }
+
+    pub(super) fn result(&self) -> Result<(), TunnelError> {
+        self.ledger.work_result()
+    }
+
+    #[cfg(test)]
+    pub(super) fn unmetered() -> Self {
+        let (stop, _) = watch::channel(());
+        Self {
+            bank: None,
+            ledger: Ledger::new(),
+            stop,
+            stopped: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+pub(super) fn charge(
+    bank: Option<&Arc<Semaphore>>,
+    bytes: usize,
+) -> Result<Option<OwnedSemaphorePermit>, TunnelError> {
+    bank.map(|bank| {
+        let count = u32::try_from(bytes)
+            .map_err(|original| rejected(BufferAdmission::Overflow(original)))?;
+        Arc::clone(bank)
+            .try_acquire_many_owned(count)
+            .map_err(|_| rejected(BufferAdmission::Exhausted))
+    })
+    .transpose()
+}
+
+/// Real backing follows the queue. Growth prepays the replacement allocation
+/// while the original backing remains charged; no post-read guessed top-up.
+pub(super) struct OwnedQueue<T> {
+    items: VecDeque<T>,
+    bank: Option<Arc<Semaphore>>,
+    // Declared after items, and replaced only after the original allocation dies.
+    backing: Option<OwnedSemaphorePermit>,
+}
+
+impl<T> OwnedQueue<T> {
+    pub(super) fn new(bank: Option<&Arc<Semaphore>>) -> Self {
+        Self {
+            items: VecDeque::new(),
+            bank: bank.cloned(),
+            backing: None,
+        }
+    }
+
+    pub(super) fn prepare_push(&mut self) -> Result<(), TunnelError> {
+        if self.items.len() < self.items.capacity() {
+            return Ok(());
+        }
+        let capacity = self
+            .items
+            .capacity()
+            .checked_mul(2)
+            .and_then(|capacity| capacity.max(4).checked_next_power_of_two())
+            .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
+        let bytes = capacity
+            .checked_mul(mem::size_of::<T>())
+            .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
+        let mut backing = charge(self.bank.as_ref(), bytes)?;
+        let mut replacement = VecDeque::new();
+        replacement
+            .try_reserve_exact(capacity)
+            .map_err(|original| rejected(BufferAdmission::Allocation(original)))?;
+        let actual = replacement
+            .capacity()
+            .checked_mul(mem::size_of::<T>())
+            .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
+        if actual > bytes {
+            return Err(rejected(BufferAdmission::UnexpectedCapacity));
+        }
+        backing = backing.map(|mut fee| {
+            let actual = fee.split(actual).expect("prepaid queue backing");
+            drop(fee);
+            actual
+        });
+        replacement.append(&mut self.items);
+        drop(mem::replace(&mut self.items, replacement));
+        self.backing = backing;
+        Ok(())
+    }
+
+    pub(super) fn push_back(&mut self, value: T) -> Result<(), (TunnelError, T)> {
+        if let Err(original) = self.prepare_push() {
+            return Err((original, value));
+        }
+        self.push_reserved(value);
+        Ok(())
+    }
+
+    pub(super) fn push_reserved(&mut self, value: T) {
+        assert!(
+            self.items.len() < self.items.capacity(),
+            "prepared queue slot missing"
+        );
+        self.items.push_back(value);
+    }
+
+    pub(super) fn push_front_reserved(&mut self, value: T) {
+        assert!(
+            self.items.len() < self.items.capacity(),
+            "returned queue slot missing"
+        );
+        self.items.push_front(value);
+    }
+
+    pub(super) fn pop_front(&mut self) -> Option<T> {
+        self.items.pop_front()
+    }
+    pub(super) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    pub(super) fn clear(&mut self) {
+        self.items.clear();
+    }
+    pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.items.iter()
+    }
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items.iter_mut()
+    }
+    pub(super) fn remove(&mut self, index: usize) -> Option<T> {
+        self.items.remove(index)
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.items.len()
+    }
+    #[cfg(test)]
+    pub(super) fn backing_bytes(&self) -> usize {
+        self.items.capacity() * mem::size_of::<T>()
+    }
+    #[cfg(test)]
+    pub(super) fn values(&self) -> &VecDeque<T> {
+        &self.items
+    }
+}
+
+/// The smoltcp-owned Vec buffers and these permits are split only at the socket
+/// construction boundary. Private loop drop/removal order releases Socket first.
+pub(super) struct SocketFees {
+    _rx: Option<OwnedSemaphorePermit>,
+    _tx: Option<OwnedSemaphorePermit>,
+}
+
+pub(super) fn socket_buffers(
+    bank: Option<&Arc<Semaphore>>,
+    size: usize,
+) -> Result<(Vec<u8>, Vec<u8>, SocketFees), TunnelError> {
+    let rx = OwnedBuffer::zeroed(size, bank)?;
+    let tx = OwnedBuffer::zeroed(size, bank)?;
+    let (rx, rx_fee) = rx.into_socket_parts();
+    let (tx, tx_fee) = tx.into_socket_parts();
+    Ok((
+        rx,
+        tx,
+        SocketFees {
+            _rx: rx_fee,
+            _tx: tx_fee,
+        },
+    ))
+}

@@ -318,37 +318,54 @@ async fn receive_blocked_send_keeps_full_packet_fee_until_queue_or_pending_owner
 async fn receive_actual_8192_channel_device_and_last_rx_token_share_the_same_buffer_fee() {
     let baseline = alive();
     let bytes = packet(b"abcd");
-    let quota = IPV6_HEADER_LEN + bytes.len() * 2;
+    let mtu = ValidatedMtu::new(1280).unwrap();
+    let backing = 4 * std::mem::size_of::<OwnedBuffer>();
+    let quota = IPV6_HEADER_LEN + bytes.len() * 2 + mtu.as_usize() + backing * 2;
     let bank = Arc::new(Semaphore::new(quota));
     let (reader, mut peer, probe) = stream(None, usize::MAX);
     let (task, ledger, mut rx) = reader_task(reader, 1240, IOS_PACKET_CHANNEL_CAPACITY, &bank);
     let mut input = bytes.clone();
     input.extend_from_slice(&bytes);
     let write = tokio::time::timeout(OBSERVE, peer.write_all(&input)).await;
-    let queued = until(|| rx.len() == 2 && bank.available_permits() == 0).await;
+    let queued = until(|| {
+        rx.len() == 2 && bank.available_permits() == quota - IPV6_HEADER_LEN - bytes.len() * 2
+    })
+    .await;
     let result = finish(&task, &ledger, &mut peer, &probe, baseline).await;
     let first = rx.recv().await;
     let second = rx.recv().await;
     write.unwrap().unwrap();
     result.unwrap();
     assert!(queued);
-    assert_eq!(bank.available_permits(), IPV6_HEADER_LEN);
+    assert_eq!(bank.available_permits(), quota - bytes.len() * 2);
     let first = first.unwrap();
     let second = second.unwrap();
     let original_ptr = second.as_ptr();
-    let mut device = ChannelDevice {
-        mtu: ValidatedMtu::new(1280).unwrap(),
-        rx_buf: VecDeque::from([first, second]),
-        tx_buf: VecDeque::new(),
+    let (stop, _) = watch::channel(());
+    let storage = RuntimeStorage {
+        bank: Some(Arc::clone(&bank)),
+        ledger: Arc::clone(&ledger),
+        stop,
+        stopped: Arc::new(AtomicBool::new(false)),
     };
+    let mut device = ChannelDevice::new(mtu, storage);
+    device.rx_buf.push_back(first).unwrap();
+    device.rx_buf.push_back(second).unwrap();
     drop(rx);
     let first_token = device.receive(smol_now()).unwrap().0;
-    assert_eq!(bank.available_permits(), IPV6_HEADER_LEN);
+    let queue_fee = device.rx_buf.backing_bytes() + device.tx_buf.backing_bytes();
+    assert_eq!(
+        bank.available_permits(),
+        quota - bytes.len() * 2 - queue_fee
+    );
     first_token.consume(|packet| {
-        assert_eq!(bank.available_permits(), IPV6_HEADER_LEN);
+        assert_eq!(
+            bank.available_permits(),
+            quota - bytes.len() * 2 - queue_fee
+        );
         assert_eq!(packet, bytes.as_slice());
     });
-    assert_eq!(bank.available_permits(), quota - bytes.len());
+    assert_eq!(bank.available_permits(), quota - bytes.len() - queue_fee);
     let last_token = device.receive(smol_now()).unwrap().0;
     drop(device);
     assert_eq!(bank.available_permits(), quota - bytes.len());
