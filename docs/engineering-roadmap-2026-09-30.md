@@ -8642,3 +8642,12 @@ proof，authority→ticket writer/clear fences与晚clock原owner回滚已接线
 [验证](validation/tunnel-manual-success-preflight-2026-10-14.md)。原error/private/
 native/runtime和完整freshness等继续；本子项不关闭L02，账本23/6/待收口、
 有效30、Q04全部排除保持。只本地提交，无设备操作或推送。
+## 2026-10-14 L02 retry selector 创建前归属
+
+生产retry借用已准入shared Identity，去除无owner的临时route副本；receipt/episode
+真实key/route与payload先同池准入再复制/构造。原Source/retry/owner/error规则
+保持，新增3项actual容量/原buffer/一字节拒绝/最后report退款覆盖；tunnel484、
+strictCLI/readonly manager1/host5通过，2原ignored与22NOT_RUN保留，见
+[验证](validation/tunnel-retry-selector-owners-2026-10-14.md)。publication/private
+allocation/native/runtime与完整freshness仍缺；不关闭L02，23/6/待收口、有效30、
+Q04全部排除不变。只本地提交，无设备操作或推送。

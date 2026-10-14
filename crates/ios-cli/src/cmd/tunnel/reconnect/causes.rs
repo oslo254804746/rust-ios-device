@@ -49,25 +49,35 @@ impl FailureReceipt {
         version: Arc<()>,
         bank: &Arc<Semaphore>,
     ) -> Result<Arc<Self>> {
-        let udid = udid.to_owned();
-        let identity = identity.clone();
         let bytes = std::mem::size_of::<Self>()
-            .checked_add(udid.capacity())
+            .checked_add(udid.len())
             .and_then(|bytes| {
-                bytes.checked_add(super::super::candidate_input::route_capacity(
-                    &identity.route,
-                ))
+                bytes.checked_add(super::super::candidate_input::route_length(&identity.route))
             })
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel Source receipt size overflow")
             })?;
-        let storage = super::super::admission::known_metadata_charge(bank, bytes)?;
+        let mut storage = super::super::admission::known_metadata_charge(bank, bytes)?;
         let original_storage =
             super::super::admission::known_metadata_charge(bank, std::mem::size_of::<Original>())?;
         let wrapper_storage = super::super::admission::known_metadata_charge(
             bank,
             std::mem::size_of::<SourceFailure>(),
         )?;
+        // No copied selector exists while any required capsule is unadmitted.
+        let udid = udid.to_owned();
+        let identity = identity.clone();
+        let actual = std::mem::size_of::<Self>()
+            + udid.capacity()
+            + super::super::candidate_input::route_capacity(&identity.route);
+        anyhow::ensure!(
+            actual <= bytes,
+            crate::output::resource_decision("tunnel Source receipt clone capacity exceeded")
+        );
+        let exact = storage
+            .split(actual)
+            .expect("admitted Source receipt selectors");
+        drop(storage);
         Ok(Arc::new(Self {
             udid,
             identity,
@@ -81,7 +91,7 @@ impl FailureReceipt {
             history: OnceLock::new(),
             completion: Mutex::new(Completion::Pending),
             wrapper_storage: Mutex::new(Some(wrapper_storage)),
-            _storage: storage,
+            _storage: exact,
         }))
     }
     pub(in super::super) fn primary(&self) -> &anyhow::Error {
@@ -138,7 +148,7 @@ impl FailureReceipt {
     pub(super) fn initial_bytes(udid: &str, identity: &AttemptIdentity) -> usize {
         std::mem::size_of::<Self>()
             + udid.len()
-            + super::super::candidate_input::route_capacity(&identity.route)
+            + super::super::candidate_input::route_length(&identity.route)
             + std::mem::size_of::<Original>()
             + std::mem::size_of::<SourceFailure>()
     }

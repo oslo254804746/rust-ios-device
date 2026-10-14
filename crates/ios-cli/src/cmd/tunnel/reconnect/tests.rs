@@ -35,6 +35,115 @@ fn failed_result(error: anyhow::Error) -> Result<super::super::TunnelRecord> {
     Err(error)
 }
 
+fn buffered_identity() -> AttemptIdentity {
+    let mut host = String::with_capacity(4096);
+    host.push_str("private-retry-host");
+    AttemptIdentity {
+        route: Route::Mobdev2(host),
+        native_id: Some(11),
+    }
+}
+
+#[tokio::test]
+async fn retry_shared_identity_exact_quota_keeps_original_buffer_and_last_report_fees() {
+    let bank = Arc::new(Semaphore::new(32 * 1024));
+    let shared = super::super::failure_table::Identity::owned(buffered_identity(), &bank).unwrap();
+    let Route::Mobdev2(host) = &shared.route else {
+        unreachable!()
+    };
+    let original_host = host.as_ptr();
+    assert_eq!(host.capacity(), 4096);
+    let original_owner_bytes = 32 * 1024 - bank.available_permits();
+    let required = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared);
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - required) as u32)
+        .unwrap();
+    let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
+    let lifecycle = lifecycle();
+    let ticket = lifecycle.ticket(A).await.unwrap();
+    let attempt = ticket
+        .commit(|| ledger.start(A, shared.clone(), &ticket, slot()))
+        .unwrap();
+    assert_eq!(bank.available_permits(), 0);
+    let Route::Mobdev2(receipt_host) = &attempt.receipt.identity.route else {
+        unreachable!()
+    };
+    assert_eq!(receipt_host.capacity(), host.len());
+    assert_ne!(receipt_host.as_ptr(), original_host);
+    assert_eq!(host.as_ptr(), original_host);
+    let (original, original_pointer) = io_original("shared-retry-private-original");
+    let result = failed_result(attempt.source_failed(original));
+    attempt.finish(&result);
+    let receipt = ledger.receipt(A).unwrap();
+    let removed = ledger.remove_where(|_, _, _| true);
+    drop(removed);
+    drop(ledger);
+    drop(result);
+    assert_eq!(pointer(receipt.primary()), original_pointer);
+    drop(held);
+    assert!(bank.available_permits() < 32 * 1024 - original_owner_bytes);
+    drop(receipt);
+    assert_eq!(bank.available_permits(), 32 * 1024 - original_owner_bytes);
+    assert_eq!(host.as_ptr(), original_host);
+    drop(shared);
+    assert_eq!(bank.available_permits(), 32 * 1024);
+}
+
+#[tokio::test]
+async fn retry_shared_identity_one_byte_refusal_keeps_owner_without_episode_or_receipt() {
+    let owner_bank = Arc::new(Semaphore::new(8192));
+    let shared =
+        super::super::failure_table::Identity::owned(buffered_identity(), &owner_bank).unwrap();
+    let owner_remaining = owner_bank.available_permits();
+    let required = Ledger::structural_bytes() + Ledger::initial_attempt_bytes(A, &shared);
+    let bank = Arc::new(Semaphore::new(required - 1));
+    let ledger = Ledger::with_metadata(RetryPolicy::default(), Arc::clone(&bank)).unwrap();
+    let lifecycle = lifecycle();
+    let ticket = lifecycle.ticket(A).await.unwrap();
+    let error = ticket
+        .commit(|| ledger.start(A, shared.clone(), &ticket, slot()))
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert!(ledger.snapshot(A).is_none());
+    assert_eq!(ledger.receipt_count(), 0);
+    assert_eq!(owner_bank.available_permits(), owner_remaining);
+    drop(ledger);
+    assert_eq!(bank.available_permits(), required - 1);
+    drop(shared);
+    assert_eq!(owner_bank.available_permits(), 8192);
+}
+
+#[tokio::test]
+async fn retry_episode_selector_refusal_never_constructs_a_row_and_refunds_all_bytes() {
+    let identity = buffered_identity();
+    let bytes = std::mem::size_of::<Removed>()
+        + A.len()
+        + super::super::candidate_input::route_length(&identity.route);
+    let bank = Arc::new(Semaphore::new(bytes - 1));
+    let error = Removed::episode(
+        A,
+        &identity,
+        |_| panic!("unadmitted episode constructed"),
+        &bank,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), bytes - 1);
+    let Route::Mobdev2(host) = &identity.route else {
+        unreachable!()
+    };
+    assert_eq!(host.capacity(), 4096);
+}
+
 #[tokio::test]
 async fn retry_receipt_exact_pre_source_fee_rejects_one_byte_short_without_advancing_episode() {
     let identity = identity();

@@ -432,7 +432,7 @@ struct TunnelAgentInner {
 struct ConnectionContext<'a> {
     expected_id: Option<u32>,
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
-    retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
+    retry: Option<(failure_table::Identity, Arc<OwnedSemaphorePermit>)>,
     manual: Option<&'a intent::ManualRequest>,
     input: Option<Arc<candidate_input::Input>>,
 }
@@ -1140,6 +1140,12 @@ impl TunnelAgentState {
         deadline: Option<&lifecycle::ConnectionDeadline>,
         retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
     ) -> Result<TunnelRecord> {
+        let retry = retry
+            .map(|(identity, slot)| {
+                failure_table::Identity::owned(identity, &self.inner.global_metadata_bytes)
+                    .map(|identity| (identity, slot))
+            })
+            .transpose()?;
         self.connect_and_store_with_context(
             udid,
             route,
@@ -1672,7 +1678,7 @@ impl TunnelAgentState {
                         ConnectionContext {
                             expected_id,
                             deadline: Some(&deadline),
-                            retry: Some(((*identity).clone(), slot)),
+                            retry: Some((identity.clone(), slot)),
                             manual: None,
                             input: input.clone(),
                         },
