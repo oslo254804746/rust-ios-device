@@ -341,10 +341,20 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
         + scan_publications::InitialPublications::first_bytes(A)
         + pending
         - 1;
-    let held = bank
-        .clone()
-        .try_acquire_many_owned((before - admitted) as u32)
-        .unwrap();
+    // Earlier retain scratch now has its own temporary peak. Deplete at the
+    // actual pending phase, after that scratch has been released, rather than
+    // accidentally testing an upstream refusal with the old fixed allowance.
+    let held = Arc::new(StdMutex::new(None));
+    let retained = Arc::clone(&held);
+    let observed_bank = Arc::clone(&bank);
+    *state.inner.usb_before_snapshot.lock().unwrap() = Some(Box::new(move || {
+        *retained.lock().unwrap() = Some(
+            observed_bank
+                .clone()
+                .try_acquire_many_owned((observed_bank.available_permits() - pending + 1) as u32)
+                .unwrap(),
+        );
+    }));
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
         crate::output::operation_error_class(error.as_ref()),
@@ -360,7 +370,7 @@ async fn manual_paired_pending_one_byte_refusal_preserves_intent_and_publication
     ));
     drop(error);
     assert_eq!(bank.available_permits(), admitted);
-    drop(held);
+    drop(held.lock().unwrap().take());
     state.notify_shutdown();
     state.clear().await;
     state.drain_native(LOCAL_BUDGET).await.unwrap();
@@ -789,6 +799,7 @@ async fn initial_publication_snapshot_refusal_is_before_discovery_and_keeps_exac
     assert_eq!(bank.available_permits(), before);
     let admitted = scan::capsule_reservation_bytes()
         + desired_bytes
+        + publication_retain::first_bytes::<ManagedTunnel>()
         + scan_publications::InitialPublications::first_bytes(A)
         - 1;
     let held = bank

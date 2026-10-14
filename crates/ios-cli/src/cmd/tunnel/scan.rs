@@ -426,26 +426,10 @@ impl Epoch {
         &self,
         clock: &Deadline,
         table: &mut std::collections::HashMap<String, T>,
+        bank: &Arc<Semaphore>,
         keep: impl Fn(&str, &T) -> bool,
-    ) -> Result<()> {
-        let keys = table
-            .iter()
-            .filter(|(key, value)| !keep(key, value))
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        let mut removed = Vec::new();
-        self.commit(clock, || {
-            for key in keys {
-                if let Some(value) = table.remove(&key) {
-                    removed.push((key, value));
-                }
-            }
-            if let Err(error) = clock.check() {
-                table.extend(removed.drain(..));
-                return Err(error);
-            }
-            Ok(())
-        })
+    ) -> Result<super::publication_retain::Removed<T>> {
+        super::publication_retain::retain(self, clock, table, bank, keep)
     }
 }
 

@@ -8620,3 +8620,13 @@ writer/成功删除/失败pruning移动和还原同一node，无key副本或后q
 [验证](validation/tunnel-failure-table-owners-2026-10-13.md)。nonempty manual cleanup
 晚准入、publication/private error/native存储与完整freshness等继续；L02未关闭，
 账本23/6/待收口、有效30及Q04全部排除保持。
+
+
+## 2026-10-14 L02 publication pruning 原 entry
+
+真实临时KnownVec backing同池准入，predicate/watch分开，late/stale/unwind
+恢复原key/value/native/费用，成功原owner在table guard外析构；四条原生产
+pruning条件保持。7新增、tunnel469/预算16、严格CLI/build/readonly1/host5
+通过，2原ignored/22NOT_RUN，见[验证](validation/tunnel-publication-retain-owners-2026-10-14.md)。
+publication原backing、manual cleanup晚准入、private/native创建合同与完整
+freshness仍缺；L02未关闭，账本23/6/待收口、有效30、Q04全部排除不变。
