@@ -301,7 +301,7 @@ where
 /// errors, never a reason to replace them with another dial or timeout.
 #[cfg(feature = "tunnel")]
 pub(crate) async fn checked_handshake_with_connector_observed<F, Fut, S>(
-    mut connector: F,
+    connector: F,
     identity: uuid::Uuid,
     deadline: tokio::time::Instant,
 ) -> Result<
@@ -316,10 +316,48 @@ where
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    checked_handshake_with_parser(
+        connector,
+        identity,
+        deadline,
+        None,
+        parse_checked_handshake_dictionary,
+    )
+    .await
+    .map(|(directory, receipt, _)| (directory, receipt))
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_with_parser<F, Fut, S, T, P>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: FnMut(&indexmap::IndexMap<String, XpcValue>) -> Result<T, XpcError>,
+{
     use crate::device::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
     use std::time::Duration;
     let mut last_error = None;
-    let mut attempted_modes = Vec::with_capacity(4);
+    let (mut attempted_modes, selection_fee) = match bank {
+        Some(bank) => {
+            let (values, fee) = crate::device::prepared_rsd::exact_vec(bank, 4)?;
+            (values, Some(fee))
+        }
+        None => (Vec::with_capacity(4), None),
+    };
     for mode in [
         HandshakeMode::Active,
         HandshakeMode::Queued,
@@ -334,8 +372,9 @@ where
                     std::future::pending::<
                         Result<
                             (
-                                crate::device::existing_rsd::ExistingRsdObservation,
+                                T,
                                 RsdSelectionReceipt,
+                                Option<tokio::sync::OwnedSemaphorePermit>,
                             ),
                             XpcError,
                         >,
@@ -380,7 +419,12 @@ where
             HandshakeMode::Legacy => Duration::from_secs(3),
             HandshakeMode::Passive => Duration::from_secs(2),
         };
-        match tokio::time::timeout(response_budget, read_checked_handshake(&mut framer)).await {
+        match tokio::time::timeout(
+            response_budget,
+            read_checked_handshake(&mut framer, &mut parse),
+        )
+        .await
+        {
             Ok(Ok(observation)) => {
                 return Ok((
                     observation,
@@ -388,6 +432,7 @@ where
                         handshake_mode: observed_mode,
                         attempted_modes,
                     },
+                    selection_fee,
                 ))
             }
             Ok(Err(CheckedReadError::Final(error))) => return Err(error),
@@ -420,9 +465,10 @@ enum CheckedReadError {
 }
 
 #[cfg(feature = "tunnel")]
-async fn read_checked_handshake<S>(
+async fn read_checked_handshake<S, T>(
     framer: &mut H2Framer<S>,
-) -> Result<crate::device::existing_rsd::ExistingRsdObservation, CheckedReadError>
+    parse: &mut impl FnMut(&indexmap::IndexMap<String, XpcValue>) -> Result<T, XpcError>,
+) -> Result<T, CheckedReadError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -446,8 +492,7 @@ where
             None => continue,
             Some(XpcValue::String(value)) if value != "Handshake" => continue,
             Some(XpcValue::String(_)) => {
-                result =
-                    parse_checked_handshake_dictionary(dictionary).map_err(CheckedReadError::Final);
+                result = parse(dictionary).map_err(CheckedReadError::Final);
                 break;
             }
             Some(_) => {
@@ -468,12 +513,17 @@ where
 }
 
 #[cfg(feature = "tunnel")]
-fn parse_checked_handshake_dictionary(
+type CheckedHandshakeParts<'a> = (
+    Option<&'a String>,
+    Option<&'a indexmap::IndexMap<String, XpcValue>>,
+);
+
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_handshake_parts(
     dictionary: &indexmap::IndexMap<String, XpcValue>,
-) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError> {
+) -> Result<CheckedHandshakeParts<'_>, XpcError> {
     use crate::device::existing_rsd::{
-        ExistingRsdObservation, ExistingRsdProbeError, ExistingRsdService, MAX_FEATURES,
-        MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
+        ExistingRsdProbeError, MAX_FEATURES, MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
     };
     let protocol = |message: &'static str| XpcError::Tls(message.into());
     let mut text_bytes = 0usize;
@@ -542,6 +592,15 @@ fn parse_checked_handshake_dictionary(
             }
         }
     }
+    Ok((udid, services))
+}
+
+#[cfg(feature = "tunnel")]
+fn parse_checked_handshake_dictionary(
+    dictionary: &indexmap::IndexMap<String, XpcValue>,
+) -> Result<crate::device::existing_rsd::ExistingRsdObservation, XpcError> {
+    use crate::device::existing_rsd::{ExistingRsdObservation, ExistingRsdService};
+    let (udid, services) = checked_handshake_parts(dictionary)?;
     let services = services
         .map(|services| {
             services
@@ -573,7 +632,7 @@ fn parse_checked_handshake_dictionary(
 }
 
 #[cfg(feature = "tunnel")]
-fn checked_service_port(value: &XpcValue) -> Result<u16, XpcError> {
+pub(crate) fn checked_service_port(value: &XpcValue) -> Result<u16, XpcError> {
     let port = match value {
         XpcValue::String(port) => port.parse::<u16>().map_err(|source| {
             XpcError::Io(crate::error::context::received_io(

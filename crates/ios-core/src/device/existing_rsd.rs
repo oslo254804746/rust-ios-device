@@ -285,6 +285,79 @@ pub async fn observe_existing_rsd_with_selection(
     observe_selected_from_source(&NativeSource, route, &clock).await
 }
 
+/// Prepare a current catalogue under the caller's original absolute deadline.
+/// Only the new catalogue/selection own exact-layout admission. The legacy H2
+/// decoder's raw scratch/tree and private native/error allocations stay outside
+/// this known storage contract and must not be called a global manager heap cap.
+pub async fn prepare_existing_rsd_at(
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
+    prepare_selected_from_source(&NativeSource, route, deadline, bank).await
+}
+
+/// Prepare through an explicit host identity, bypassing host identity lookup.
+/// The selected socket/checked protocol and byte-owned catalogue are unchanged.
+pub async fn prepare_existing_rsd_with_identity_at(
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+    identity: uuid::Uuid,
+) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
+    struct ExplicitIdentity(uuid::Uuid);
+    impl Source for ExplicitIdentity {
+        fn identity(&self) -> BoxFuture<'_, Result<uuid::Uuid, XpcError>> {
+            Box::pin(async { Ok(self.0) })
+        }
+        fn dial(&self, route: ExistingRsdRoute) -> BoxFuture<'_, Result<ServiceStream, CoreError>> {
+            NativeSource.dial(route)
+        }
+    }
+    prepare_selected_from_source(&ExplicitIdentity(identity), route, deadline, bank).await
+}
+
+async fn prepare_selected_from_source(
+    source: &dyn Source,
+    route: ExistingRsdRoute,
+    deadline: Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<std::sync::Arc<super::PreparedRsdCatalogue>, CoreError> {
+    let clock = Clock {
+        deadline,
+        budget: deadline.saturating_duration_since(Instant::now()),
+    };
+    clock
+        .run(async {
+            let identity = source.identity().await?;
+            clock.check()?;
+            let (catalogue, receipt, fee) = crate::xpc::rsd::checked_handshake_with_parser(
+                || async {
+                    clock.check().map_err(connection_error)?;
+                    let stream = source.dial(route).await.map_err(connection_error)?;
+                    clock.check().map_err(connection_error)?;
+                    let mut stream = clock.guard(stream);
+                    if route.proxy_port.is_some() {
+                        stream.write_all(&route.endpoint.ip().octets()).await?;
+                        stream
+                            .write_all(&(route.endpoint.port() as u32).to_le_bytes())
+                            .await?;
+                        stream.flush().await?;
+                    }
+                    clock.check().map_err(connection_error)?;
+                    Ok(stream)
+                },
+                identity,
+                deadline,
+                Some(bank),
+                |dictionary| super::PreparedRsdCatalogue::decode(dictionary, bank),
+            )
+            .await?;
+            catalogue.finish(receipt, fee.expect("prepared selection admission"))
+        })
+        .await
+}
+
 trait Source: Send + Sync {
     fn identity(&self) -> BoxFuture<'_, Result<uuid::Uuid, XpcError>>;
     fn dial(&self, route: ExistingRsdRoute) -> BoxFuture<'_, Result<ServiceStream, CoreError>>;

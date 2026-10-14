@@ -8660,3 +8660,14 @@ classification12、CLI485及strict core/CLI/build/readonly manager1/host5全部�
 2原ignored/22NOT_RUN保留，见[验证](validation/tunnel-native-rx-storage-2026-10-14.md)。
 Tx/socket/chunk/backing/private allocation/publication及完整freshness继续；L02
 未关闭，128MiB非完整heap/RSS，23/6/待收口、有效30和Q04全部排除保持。
+## 2026-10-14 L02 当前 RSD 目录与原 lease 更新
+
+生产alive path读取当前checked directory，SDK resolver使用new ports；原initial
+API/cause保持。非lease exact proof和原绝对min clocks、Source前cause capsule，
+cache/table/registry metadata原位swap/rollback与最后fees owners已接线，17新tests。
+Core RSD4/18/34与CLI498通过，等价lint整理后affected16、strictcoreCLI/build/
+Source0 manager1/host5通过，2原ignored/22NOT_RUN保留，见
+[验证](validation/tunnel-rsd-current-owners-2026-10-14.md)。raw/private parser/native/
+publication存储与完整physical刷新/reuse/restart规则继续；同UID/ports不证明远程
+incarnation，无虚构ACK。L02不关闭，128MiB非完整heap/RSS，23/6/待收口、
+有效30与Q04全部排除保持。只本地提交，无设备操作或推送。

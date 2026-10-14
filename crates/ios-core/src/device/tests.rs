@@ -11,6 +11,8 @@ fn retained_metadata_charge_includes_spare_tcp_and_native_identity_capacities() 
         },
         tunnel: None,
         rsd: None,
+        #[cfg(feature = "tunnel")]
+        prepared_rsd: None,
         initial_rsd_probe: super::InitialRsdProbe::skipped(
             super::InitialRsdProbeSkipReason::TunnelSkipped,
         ),

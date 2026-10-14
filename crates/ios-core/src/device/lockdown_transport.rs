@@ -102,6 +102,8 @@ pub(super) async fn connect_via_lockdown_transport(
             info,
             tunnel: None,
             rsd: None,
+            #[cfg(feature = "tunnel")]
+            prepared_rsd: None,
             initial_rsd_probe: InitialRsdProbe::skipped(InitialRsdProbeSkipReason::TunnelSkipped),
             pair_record: Some(pair_record),
             lockdown_transport,
