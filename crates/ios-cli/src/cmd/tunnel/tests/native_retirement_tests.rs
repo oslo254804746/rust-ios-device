@@ -24,6 +24,79 @@ mod scan_outcome_tests;
 mod snapshot_admission_tests;
 mod success_bookkeeping_tests;
 
+#[tokio::test]
+async fn publication_retain_native_late_clock_restores_original_key_publication_and_runtime() {
+    let expected = baseline();
+    let source = LocalSource::new();
+    let state = state(source.clone());
+    publish(&state, Route::Wifi(None)).await.unwrap();
+    let native = source.handle();
+    let (key, publication) = {
+        let tunnels = state.inner.tunnels.read().await;
+        let (key, row) = tunnels.get_key_value(DEVICE).unwrap();
+        (key.as_ptr(), Arc::clone(&row.publication))
+    };
+    let control = state.inner.lifecycle.scan_control(OBSERVE).unwrap();
+    let clock = scan::Deadline::new(Duration::from_millis(20)).unwrap();
+    publication_retain::on_after_insert(|| std::thread::sleep(Duration::from_millis(60)));
+    let mut tunnels = state.inner.tunnels.write().await;
+    let error = control
+        .epoch
+        .retain(
+            &clock,
+            &mut tunnels,
+            &state.inner.global_metadata_bytes,
+            |_, _| false,
+        )
+        .err()
+        .unwrap();
+    let (same_key, same_row) = tunnels.get_key_value(DEVICE).unwrap();
+    assert_eq!(same_key.as_ptr(), key);
+    assert!(Arc::ptr_eq(&same_row.publication, &publication));
+    assert!(native.is_alive());
+    assert!(error.is::<scan::DeadlineReached>());
+    drop(tunnels);
+    drop(publication);
+    drop(control);
+    assert!(finish(&state, &source, expected).await);
+    assert!(native.shutdown_status().is_ok());
+}
+
+#[tokio::test]
+async fn publication_retain_native_depleted_bank_rejects_without_stopping_original_runtime() {
+    let expected = baseline();
+    let source = LocalSource::new();
+    let state = state(source.clone());
+    publish(&state, Route::Wifi(None)).await.unwrap();
+    let native = source.handle();
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    let control = state.inner.lifecycle.scan_control(OBSERVE).unwrap();
+    let clock = scan::Deadline::new(OBSERVE).unwrap();
+    let mut tunnels = state.inner.tunnels.write().await;
+    let key = tunnels.get_key_value(DEVICE).unwrap().0.as_ptr();
+    let error = control
+        .epoch
+        .retain(&clock, &mut tunnels, &bank, |_, _| false)
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(tunnels.get_key_value(DEVICE).unwrap().0.as_ptr(), key);
+    assert!(native.is_alive());
+    assert_eq!(bank.available_permits(), 0);
+    drop(tunnels);
+    drop(held);
+    drop(control);
+    assert!(finish(&state, &source, expected).await);
+    assert!(native.shutdown_status().is_ok());
+}
+
 struct NativeDevice {
     native: Arc<TunnelHandle>,
 }

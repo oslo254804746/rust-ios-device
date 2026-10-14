@@ -41,6 +41,7 @@ mod lifecycle;
 mod metadata_vec;
 mod ownership;
 mod paired_observed;
+mod publication_retain;
 mod reconnect;
 mod retirement;
 mod scan;
@@ -418,6 +419,8 @@ struct TunnelAgentInner {
     #[cfg(test)]
     paired_after_first_check: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
+    usb_before_snapshot: std::sync::Mutex<Option<PublicationCallback>>,
+    #[cfg(test)]
     failure_after_insert: std::sync::Mutex<Option<PublicationCallback>>,
     #[cfg(test)]
     success_before_remove: std::sync::Mutex<Option<PublicationCallback>>,
@@ -759,6 +762,8 @@ impl TunnelAgentState {
                 publication_after_insert: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 paired_after_first_check: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                usb_before_snapshot: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 failure_after_insert: std::sync::Mutex::new(None),
                 #[cfg(test)]
@@ -1816,15 +1821,21 @@ impl TunnelAgentState {
             let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
                 return Ok(());
             };
-            epoch.retain(whole, &mut tunnels, |device, _| {
-                self.inner.access.permits_device(device)
-            })?;
-            scan_publications::InitialPublications::capture(
+            let removed = epoch.retain(
+                whole,
+                &mut tunnels,
+                &self.inner.global_metadata_bytes,
+                |device, _| self.inner.access.permits_device(device),
+            )?;
+            let captured = scan_publications::InitialPublications::capture(
                 &self.inner.global_metadata_bytes,
                 tunnels
                     .iter()
                     .map(|(udid, tunnel)| (udid, &tunnel.publication)),
-            )?
+            );
+            drop(tunnels);
+            drop(removed);
+            captured?
         };
         if !self.inner.access.permits_any_device() {
             let Some(mut failed) = control.drive(self.inner.failed_attempts.write()).await? else {
@@ -1847,6 +1858,13 @@ impl TunnelAgentState {
         }
 
         whole.check()?;
+        #[cfg(test)]
+        {
+            let callback = self.inner.usb_before_snapshot.lock().unwrap().take();
+            if let Some(callback) = callback {
+                callback();
+            }
+        }
         let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
             return Ok(());
         };
@@ -1872,12 +1890,19 @@ impl TunnelAgentState {
                 session.retain(scan::Source::Usb, error);
                 match control.drive(self.inner.tunnels.write()).await {
                     Ok(Some(mut tunnels)) => {
-                        epoch.retain(whole, &mut tunnels, |udid, tunnel| {
-                            !initial
-                                .get(udid)
-                                .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
-                                || manual.contains_key(udid)
-                        })?;
+                        let removed = epoch.retain(
+                            whole,
+                            &mut tunnels,
+                            &self.inner.global_metadata_bytes,
+                            |udid, tunnel| {
+                                !initial
+                                    .get(udid)
+                                    .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                                    || manual.contains_key(udid)
+                            },
+                        )?;
+                        drop(tunnels);
+                        drop(removed);
                     }
                     Ok(None) => {}
                     Err(cleanup) => {
@@ -1916,17 +1941,23 @@ impl TunnelAgentState {
         let Some(mut tunnels) = control.drive(self.inner.tunnels.write()).await? else {
             return Ok(());
         };
-        epoch.retain(whole, &mut tunnels, |udid, tunnel| {
-            tunnel.is_alive()
-                && self.inner.access.permits_device(udid)
-                && (!tunnel.usbmux
-                    || !usb_complete
-                    || attached.contains(udid, tunnel.device.device_id())
-                    || !initial
-                        .get(udid)
-                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
-        })?;
+        let removed = epoch.retain(
+            whole,
+            &mut tunnels,
+            &self.inner.global_metadata_bytes,
+            |udid, tunnel| {
+                tunnel.is_alive()
+                    && self.inner.access.permits_device(udid)
+                    && (!tunnel.usbmux
+                        || !usb_complete
+                        || attached.contains(udid, tunnel.device.device_id())
+                        || !initial
+                            .get(udid)
+                            .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication)))
+            },
+        )?;
         drop(tunnels);
+        drop(removed);
         drop(attached);
 
         // Capture every device generation before waiting for the first connection.
@@ -2276,17 +2307,24 @@ impl TunnelAgentState {
         }) = &paired
         {
             let mut tunnels = self.inner.tunnels.write().await;
-            epoch.retain(whole, &mut tunnels, |udid, tunnel| {
-                // An older browse cannot retire a concurrent publication. A
-                // failed/incomplete browse never reaches this complete view.
-                !initial
-                    .get(udid)
-                    .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
-                    || match &tunnel.observed_route {
-                        Route::Mobdev2(host) => observed.contains(targets, udid, host),
-                        _ => true,
-                    }
-            })?;
+            let removed = epoch.retain(
+                whole,
+                &mut tunnels,
+                &self.inner.global_metadata_bytes,
+                |udid, tunnel| {
+                    // An older browse cannot retire a concurrent publication. A
+                    // failed/incomplete browse never reaches this complete view.
+                    !initial
+                        .get(udid)
+                        .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
+                        || match &tunnel.observed_route {
+                            Route::Mobdev2(host) => observed.contains(targets, udid, host),
+                            _ => true,
+                        }
+                },
+            )?;
+            drop(tunnels);
+            drop(removed);
         }
         self.reconcile_failures(
             candidates.as_slice(),
