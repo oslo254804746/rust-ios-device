@@ -9,7 +9,6 @@
 
 crate::redaction::error_debug!(H2Error);
 
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -28,6 +27,9 @@ mod pending;
 use pending::PendingFrames;
 mod windows;
 use windows::WindowMap;
+use windows::WindowMap as StateMap;
+mod state;
+use state::{Arrival, Membership, PeerStateAdmission};
 
 // ── Stream IDs ──────────────────────────────────────────────────────────────
 // Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
@@ -141,19 +143,19 @@ pub struct H2Framer<S> {
     // Accumulated data from stream 3 (serverClient)
     server_client_buf: RawBuffer,
     // Accumulated data from arbitrary additional streams.
-    stream_bufs: HashMap<u32, RawBuffer>,
+    stream_bufs: StateMap<RawBuffer>,
     // Streams for which the client has already sent HEADERS.
-    locally_open_streams: HashSet<u32>,
+    locally_open_streams: Membership,
     // Whether HEADERS have been sent on each stream
     client_server_open: bool,
     server_client_open: bool,
     // Streams for which the peer has sent END_STREAM. This is separate from
     // buffered bytes so a reader cannot wait forever after a clean HTTP/2 EOF.
-    closed_streams: HashSet<u32>,
+    closed_streams: Membership,
     // Unknown-stream EOF tombstones in arrival order. Fixed XPC streams and
     // streams opened by this client are kept in `closed_streams` indefinitely;
     // only this queue is eligible for bounded eviction.
-    closed_unknown_order: VecDeque<u32>,
+    closed_unknown_order: Arrival,
     // Bytes consumed per window (keyed by stream id, `STREAM_INIT` = connection)
     // since the last WINDOW_UPDATE we sent for it.
     pending_window_updates: WindowMap<u32>,
@@ -162,24 +164,24 @@ pub struct H2Framer<S> {
     // Peer-created streams which have not sent END_STREAM yet. This is kept
     // independently of `stream_bufs` because `read_next_data_frame` returns
     // DATA directly and therefore does not need a per-stream buffer.
-    peer_open_streams: HashSet<u32>,
+    peer_open_streams: Membership,
     // Flow-control state for DATA frames sent by this client. The connection
     // starts at HTTP/2's default 65535-byte window; peer SETTINGS and
     // WINDOW_UPDATE frames change these values.
     outbound_connection_window: i64,
     peer_initial_window_size: i64,
     outbound_stream_windows: WindowMap<i64>,
-    locally_finished_streams: HashSet<u32>,
+    locally_finished_streams: Membership,
     outbound_max_frame_size: usize,
     // DATA frames consumed by the writer's flow-control reader. Keeping the
     // frame boundary and flags here prevents a later read_next_data_frame from
     // losing business DATA that arrived while write_stream was blocked.
     pending_data_frames: PendingFrames,
     // Stream-local and connection-wide remote shutdown state.
-    reset_streams: HashMap<u32, u32>,
+    reset_streams: StateMap<u32>,
     // Unknown reset tombstones in arrival order. As with clean EOF, known
     // streams are never displaced by an unknown-stream flood.
-    reset_unknown_order: VecDeque<u32>,
+    reset_unknown_order: Arrival,
     // Highest additional stream ID observed from the peer. This prevents an
     // evicted unknown tombstone from being reused as a fresh stream.
     highest_peer_stream_id: u32,
@@ -368,23 +370,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             raw_bank: None,
             client_server_buf: RawBuffer::default(),
             server_client_buf: RawBuffer::default(),
-            stream_bufs: HashMap::new(),
-            locally_open_streams: HashSet::new(),
+            stream_bufs: StateMap::new(None),
+            locally_open_streams: Membership::new(None),
             client_server_open: false,
             server_client_open: false,
-            closed_streams: HashSet::new(),
-            closed_unknown_order: VecDeque::new(),
+            closed_streams: Membership::new(None),
+            closed_unknown_order: Arrival::new(None),
             pending_window_updates: WindowMap::new(None),
             buffered_bytes: 0,
-            peer_open_streams: HashSet::new(),
+            peer_open_streams: Membership::new(None),
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
             outbound_stream_windows: WindowMap::new(None),
-            locally_finished_streams: HashSet::new(),
+            locally_finished_streams: Membership::new(None),
             outbound_max_frame_size: MAX_FRAME_PAYLOAD,
             pending_data_frames: PendingFrames::new(None),
-            reset_streams: HashMap::new(),
-            reset_unknown_order: VecDeque::new(),
+            reset_streams: StateMap::new(None),
+            reset_unknown_order: Arrival::new(None),
             highest_peer_stream_id: 0,
             goaway: None,
             connection_error: None,
@@ -418,6 +420,35 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         })
     }
 
+    // Configure a fresh single-owner framer before the first received frame.
+    fn configure_bank(&mut self, bank: Option<&Arc<Semaphore>>) {
+        debug_assert!(
+            self.stream_bufs.is_empty()
+                && self.reset_streams.is_empty()
+                && self.peer_open_streams.is_empty()
+                && self.locally_open_streams.is_empty()
+                && self.closed_streams.is_empty()
+                && self.locally_finished_streams.is_empty()
+                && self.pending_data_frames.is_empty()
+                && self.closed_unknown_order.len() == 0
+                && self.reset_unknown_order.len() == 0
+        );
+        self.raw_bank = bank.cloned();
+        self.client_server_buf = RawBuffer::new(bank.cloned());
+        self.server_client_buf = RawBuffer::new(bank.cloned());
+        self.pending_data_frames = PendingFrames::new(bank);
+        self.pending_window_updates = WindowMap::new(bank);
+        self.outbound_stream_windows = WindowMap::new(bank);
+        self.stream_bufs = StateMap::new(bank);
+        self.reset_streams = StateMap::new(bank);
+        self.locally_open_streams = Membership::new(bank);
+        self.closed_streams = Membership::new(bank);
+        self.peer_open_streams = Membership::new(bank);
+        self.locally_finished_streams = Membership::new(bank);
+        self.closed_unknown_order = Arrival::new(bank);
+        self.reset_unknown_order = Arrival::new(bank);
+    }
+
     #[cfg(feature = "tunnel")]
     pub(crate) fn raw_bank(&self) -> Option<Arc<Semaphore>> {
         self.raw_bank.clone()
@@ -431,12 +462,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         // The preface path reads no peer bytes. Configure before finish_connect
         // or any queued bootstrap can retain a received frame.
         let mut framer = Self::begin_connect(stream).await?;
-        framer.raw_bank = bank.cloned();
-        framer.client_server_buf = RawBuffer::new(bank.cloned());
-        framer.server_client_buf = RawBuffer::new(bank.cloned());
-        framer.pending_data_frames = PendingFrames::new(bank);
-        framer.pending_window_updates = WindowMap::new(bank);
-        framer.outbound_stream_windows = WindowMap::new(bank);
+        framer.configure_bank(bank);
         Ok(framer)
     }
 
@@ -621,7 +647,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 self.append_stream_data(frame.stream_id, &frame.payload)?;
                 self.replenish_receive_window(frame.stream_id, frame.payload.len())
                     .await?;
-                self.mark_end_stream(frame.stream_id, frame.flags);
+                self.mark_end_stream(frame.stream_id, frame.flags)?;
             }
             FRAME_HEADERS => {
                 if frame.stream_id == STREAM_INIT {
@@ -631,7 +657,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 }
                 self.ensure_incoming_stream_available(frame.stream_id)?;
                 self.track_peer_stream(frame.stream_id)?;
-                self.mark_end_stream(frame.stream_id, frame.flags);
+                self.mark_end_stream(frame.stream_id, frame.flags)?;
             }
             FRAME_SETTINGS => {
                 if frame.stream_id != STREAM_INIT {
@@ -667,9 +693,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     )));
                 }
                 let error_code = u32::from_be_bytes(frame.payload[..4].try_into().unwrap());
-                self.clear_stream_buffer(frame.stream_id);
-                self.outbound_stream_windows.remove(&frame.stream_id);
-                self.record_reset_stream(frame.stream_id, error_code);
+                self.record_reset_stream(frame.stream_id, error_code)
+                    .map_err(|original| {
+                        PeerStateAdmission::reset(frame.stream_id, error_code, original)
+                    })?;
             }
             FRAME_GOAWAY => {
                 self.process_goaway(frame.stream_id, &frame.payload)?;
@@ -753,20 +780,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(())
     }
 
-    fn record_reset_stream(&mut self, stream_id: u32, error_code: u32) {
-        // A reset stream cannot be reused, so retain enough state for a later
-        // caller to receive the reset instead of reopening it. Keep the
-        // tombstones bounded: a peer can send validly-shaped RST_STREAM frames
-        // for arbitrary stream IDs without allocating DATA buffers.
-        if !self.reset_streams.contains_key(&stream_id) && !self.is_known_stream(stream_id) {
-            if self.reset_unknown_order.len() >= MAX_CLOSED_STREAMS {
+    fn record_reset_stream(&mut self, stream_id: u32, error_code: u32) -> std::io::Result<()> {
+        let unknown =
+            !self.reset_streams.contains_key(&stream_id) && !self.is_known_stream(stream_id);
+        let evict = unknown && self.reset_unknown_order.len() >= MAX_CLOSED_STREAMS;
+        let oldest = if evict {
+            self.reset_unknown_order.front().copied()
+        } else {
+            None
+        };
+        // Preserve the previous records, buffers and eviction order until all
+        // required backing is admitted. Existing vacant slots need no growth.
+        self.reset_streams.prepare_replacing(stream_id, oldest)?;
+        if unknown {
+            self.reset_unknown_order.prepare_push(evict)?;
+        }
+        self.clear_stream_buffer(stream_id);
+        self.outbound_stream_windows.remove(&stream_id);
+        if unknown {
+            if evict {
                 if let Some(oldest) = self.reset_unknown_order.pop_front() {
                     self.reset_streams.remove(&oldest);
                 }
             }
             self.reset_unknown_order.push_back(stream_id);
         }
-        self.reset_streams.insert(stream_id, error_code);
+        self.reset_streams.insert_reserved(stream_id, error_code);
+        Ok(())
     }
 
     async fn process_settings(&mut self, flags: u8, payload: &[u8]) -> Result<(), H2Error> {
@@ -1092,7 +1132,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     self.track_peer_stream(frame.stream_id)?;
                     self.replenish_receive_window(frame.stream_id, frame.payload.len())
                         .await?;
-                    self.mark_end_stream(frame.stream_id, frame.flags);
+                    self.mark_end_stream(frame.stream_id, frame.flags)?;
                     return Ok(DataFrame {
                         stream_id: frame.stream_id,
                         flags: frame.flags,
@@ -1179,22 +1219,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
     }
 
-    fn buffered_stream_ids(&self) -> Vec<u32> {
-        let mut stream_ids = Vec::new();
-        if !self.client_server_buf.is_empty() {
-            stream_ids.push(STREAM_CLIENT_SERVER);
-        }
-        if !self.server_client_buf.is_empty() {
-            stream_ids.push(STREAM_SERVER_CLIENT);
-        }
-        stream_ids.extend(
-            self.stream_bufs
-                .iter()
-                .filter(|(_, buffer)| !buffer.is_empty())
-                .map(|(stream_id, _)| *stream_id),
-        );
-        stream_ids.sort_unstable();
-        stream_ids
+    fn next_buffered_stream_id(&self, after: Option<u32>) -> Option<u32> {
+        [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT]
+            .into_iter()
+            .chain(self.stream_bufs.iter().map(|(id, _)| *id))
+            .filter(|id| after.map_or(true, |after| *id > after))
+            .filter(|id| {
+                self.stream_buffer(*id)
+                    .is_some_and(|buffer| !buffer.is_empty())
+            })
+            .min()
     }
 
     /// Return whether the stream has enough buffered bytes for one XPC
@@ -1240,10 +1274,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     }
 
     fn first_ready_xpc_stream(&self) -> Result<Option<u32>, H2Error> {
-        for stream_id in self.buffered_stream_ids() {
+        let mut after = None;
+        while let Some(stream_id) = self.next_buffered_stream_id(after) {
             if self.stream_has_ready_xpc_message(stream_id)? {
                 return Ok(Some(stream_id));
             }
+            after = Some(stream_id);
         }
         Ok(None)
     }
@@ -1252,9 +1288,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// complete message always wins, so an empty END_STREAM marker on one
     /// stream cannot hide a response already buffered on another stream.
     fn first_unfinished_closed_stream(&self) -> Result<Option<u32>, H2Error> {
-        let mut stream_ids: Vec<u32> = self.closed_streams.iter().copied().collect();
-        stream_ids.sort_unstable();
-        for stream_id in stream_ids {
+        let mut after = None;
+        while let Some(stream_id) = self
+            .closed_streams
+            .iter()
+            .copied()
+            .filter(|id| after.map_or(true, |after| *id > after))
+            .min()
+        {
+            after = Some(stream_id);
             // An empty END_STREAM marker is a harmless closed-stream
             // tombstone. It carries no partial XPC message and must not
             // prevent a later response on another stream from being chosen.
@@ -1368,6 +1410,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 )));
             }
             self.outbound_stream_windows.prepare_keys(&[stream_id])?;
+            if !matches!(stream_id, STREAM_CLIENT_SERVER | STREAM_SERVER_CLIENT) {
+                self.locally_open_streams.prepare(stream_id)?;
+                self.stream_bufs.prepare_keys(&[stream_id])?;
+            }
             let headers = build_headers_frame(stream_id);
             self.stream.write_all(&headers).await?;
             self.stream.flush().await?;
@@ -1380,9 +1426,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     self.locally_open_streams.insert(stream_id);
                     self.peer_open_streams.remove(&stream_id);
                     let bank = self.raw_bank.clone();
-                    self.stream_bufs
-                        .entry(stream_id)
-                        .or_insert_with(|| RawBuffer::new(bank));
+                    if !self.stream_bufs.contains_key(&stream_id) {
+                        self.stream_bufs
+                            .insert_reserved(stream_id, RawBuffer::new(bank));
+                    }
                 }
             }
         }
@@ -1407,6 +1454,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     #[cfg(any(feature = "cryptex", test))]
     async fn finish_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
         self.open_stream_inner(stream_id).await?;
+        self.locally_finished_streams.prepare(stream_id)?;
         self.stream
             .write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, stream_id, &[]))
             .await?;
@@ -1505,6 +1553,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 "too many unknown H2 streams: limit {MAX_UNKNOWN_BUFFERED_STREAMS}"
             )));
         }
+        self.peer_open_streams.prepare(stream_id)?;
         self.highest_peer_stream_id = stream_id;
         self.peer_open_streams.insert(stream_id);
         Ok(())
@@ -1640,7 +1689,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         });
         self.replenish_receive_window(stream_id, payload_len)
             .await?;
-        self.mark_end_stream(stream_id, flags);
+        self.mark_end_stream(stream_id, flags)?;
         Ok(())
     }
 
@@ -1649,11 +1698,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         match stream_id {
             STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(payload),
             STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(payload),
-            other => self
-                .stream_bufs
-                .entry(other)
-                .or_insert_with(|| RawBuffer::new(bank))
-                .extend_from_slice(payload),
+            other => {
+                if !self.stream_bufs.contains_key(&other) {
+                    self.stream_bufs.prepare_keys(&[other])?;
+                    self.stream_bufs
+                        .insert_reserved(other, RawBuffer::new(bank));
+                }
+                self.stream_bufs
+                    .get_mut(&other)
+                    .expect("admitted stream buffer")
+                    .extend_from_slice(payload)
+            }
         }
     }
 
@@ -1669,16 +1724,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(())
     }
 
-    fn mark_end_stream(&mut self, stream_id: u32, flags: u8) {
+    fn mark_end_stream(&mut self, stream_id: u32, flags: u8) -> Result<(), H2Error> {
         if flags & FLAG_END_STREAM == 0 {
-            return;
+            return Ok(());
         }
-        // Retain EOF for every stream, including an empty unknown stream, so a
-        // reader cannot wait forever after a clean END_STREAM. Keep this set
-        // bounded because an attacker can otherwise send unlimited empty
-        // END_STREAM frames without consuming the byte budget.
-        if !self.closed_streams.contains(&stream_id) && !self.is_known_stream(stream_id) {
-            if self.closed_unknown_order.len() >= MAX_CLOSED_STREAMS {
+        let unknown = !self.closed_streams.contains(&stream_id) && !self.is_known_stream(stream_id);
+        let evict = unknown && self.closed_unknown_order.len() >= MAX_CLOSED_STREAMS;
+        let oldest = if evict {
+            self.closed_unknown_order.front().copied()
+        } else {
+            None
+        };
+        self.closed_streams
+            .prepare_replacing(stream_id, oldest)
+            .map_err(|original| PeerStateAdmission::end(stream_id, original))?;
+        if unknown {
+            self.closed_unknown_order
+                .prepare_push(evict)
+                .map_err(|original| PeerStateAdmission::end(stream_id, original))?;
+            if evict {
                 if let Some(oldest) = self.closed_unknown_order.pop_front() {
                     self.closed_streams.remove(&oldest);
                 }
@@ -1688,6 +1752,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.closed_streams.insert(stream_id);
         self.peer_open_streams.remove(&stream_id);
         self.pending_window_updates.remove(&stream_id);
+        Ok(())
     }
 
     fn stream_buffer_len(&self, stream_id: u32) -> usize {
@@ -1852,8 +1917,7 @@ mod tests {
         });
         let (client, mut peer) = tokio::io::duplex(4096);
         let mut framer = H2Framer::new(client);
-        framer.raw_bank = Some(Arc::clone(&bank));
-        framer.client_server_buf = RawBuffer::new(Some(Arc::clone(&bank)));
+        framer.configure_bank(Some(&bank));
         peer.write_all(&build_data_frame(1, &[0x41; 32]))
             .await
             .unwrap();
@@ -1906,8 +1970,7 @@ mod tests {
         let (client, mut peer) = tokio::io::duplex(4096);
         let bank = Arc::new(Semaphore::new(0));
         let mut framer = H2Framer::new(client);
-        framer.raw_bank = Some(Arc::clone(&bank));
-        framer.client_server_buf = RawBuffer::new(Some(Arc::clone(&bank)));
+        framer.configure_bank(Some(&bank));
         peer.write_all(&build_data_frame(1, b"same")).await.unwrap();
         let error = framer.read_stream(1, 4).await.unwrap_err();
         assert!(

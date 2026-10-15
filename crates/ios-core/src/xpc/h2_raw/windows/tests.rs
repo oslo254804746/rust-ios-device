@@ -98,9 +98,7 @@ mod wire {
         bank: &Arc<Semaphore>,
     ) -> H2Framer<tokio::io::DuplexStream> {
         let mut framer = H2Framer::new(stream);
-        framer.raw_bank = Some(Arc::clone(bank));
-        framer.pending_window_updates = WindowMap::new(Some(bank));
-        framer.outbound_stream_windows = WindowMap::new(Some(bank));
+        framer.configure_bank(Some(bank));
         framer
     }
     async fn eof(peer: &mut tokio::io::DuplexStream) {

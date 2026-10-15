@@ -8783,3 +8783,14 @@ SETTINGS验证后独占原位更新移除scratch Vec，两帧WINDOW_UPDATE使用
 受测hash/Source0 smoke见[验证](validation/tunnel-window-storage-2026-10-15.md)。
 其余H2container/outbound/private和fullfreshness继续，128MiB非完整heap/RSS；
 L02不关闭、23/6/待收口、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-15 L02 H2 stream state actual storage
+
+stream/reset maps、四组membership及EOF/reset arrival队列按真实Layout创建前
+准入，原known/local固定状态、最旧unknown淘汰/highwater不复用保持；原升序
+stream选择移除collect/sort scratch。新quota路径保留已观察peer reset/END事实
+和原quota source，private error/IO boxing仍MISSING。新增12项、XPC178/core131/
+CLI504及strictcoreCLI/build/Source0manager/host5通过，2原ignored/22NOT_RUN，
+见[验证](validation/tunnel-stream-state-storage-2026-10-15.md)。其它outbound/
+initial/SDK/private与原fullfreshness继续；128MiB非完整heap/RSS，L02不关闭，
+23/6/待收口、有效30与Q04全部排除不变，仅本地提交。

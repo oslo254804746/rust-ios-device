@@ -1,4 +1,4 @@
-//! Real keyed window counters; no estimate of HashMap buckets or scratch.
+//! Real keyed application storage; no estimate of HashMap buckets or scratch.
 use crate::xpc::raw_storage::{exact_vec, limit};
 use std::collections::HashMap;
 use std::io;
@@ -86,6 +86,18 @@ impl<V> WindowMap<V> {
             }
         }
     }
+    pub(super) fn prepare_replacing(&mut self, key: u32, removed: Option<u32>) -> io::Result<()> {
+        if self.contains_key(&key) || removed.is_some_and(|old| self.contains_key(&old)) {
+            return Ok(());
+        }
+        self.prepare_keys(&[key])
+    }
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Legacy(map) => map.len(),
+            Self::Banked(owner) => owner.values.len(),
+        }
+    }
     pub(super) fn get(&self, key: &u32) -> Option<&V> {
         match self {
             Self::Legacy(map) => map.get(key),
@@ -149,7 +161,6 @@ impl<V> WindowMap<V> {
             Self::Banked(owner) => Values::Banked(owner.values.iter_mut()),
         }
     }
-    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.iter().next().is_none()
     }
