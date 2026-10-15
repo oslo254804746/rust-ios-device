@@ -362,6 +362,7 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     let quota = IPV6_HEADER_LEN
         + runtime_channel_bytes()
         + client_channel_bytes()
+        + runtime_owner_bytes()
         + SOCKET_BUFFER_BYTES * 2
         + connection_backing
         + socket_backing
@@ -466,7 +467,11 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     assert_eq!(drops, 1);
     assert_eq!(
         bank.available_permits(),
-        quota,
-        "retained original handle held freed buffer fees"
+        quota - runtime_owner_bytes(),
+        "only actual persistent owner bodies/backing may remain after buffer joins"
     );
+    drop(native);
+    assert_eq!(bank.available_permits(), quota - runtime_owner_bytes());
+    drop(retained);
+    assert_eq!(bank.available_permits(), quota);
 }

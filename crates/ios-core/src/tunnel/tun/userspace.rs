@@ -26,8 +26,8 @@ use crate::tunnel::{TunnelError, ValidatedMtu, IPV6_HEADER_LEN};
 
 pub(crate) mod owned_buffer;
 use owned_buffer::OwnedBuffer;
-mod runtime_storage;
-use runtime_storage::{socket_buffers, OwnedQueue, RuntimeStorage, SocketFees};
+pub(crate) mod runtime_storage;
+use runtime_storage::{socket_buffers, OwnedQueue, RuntimeStorage, SocketFees, TaskHandles};
 mod socket_slots;
 use socket_slots::SocketSlots;
 mod owned_channel;
@@ -58,6 +58,13 @@ fn runtime_channel_bytes() -> usize {
 #[cfg(test)]
 fn client_channel_bytes() -> usize {
     2 * mpsc::required_bytes::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY)
+}
+
+#[cfg(test)]
+fn runtime_owner_bytes() -> usize {
+    std::mem::size_of::<Ledger>()
+        + std::mem::size_of::<SharedChildTaskSet>()
+        + 4 * std::mem::size_of::<OwnedTask>()
 }
 
 // ── smoltcp Device implementation ─────────────────────────────────────────────
@@ -210,7 +217,7 @@ struct ConnState {
 /// Userspace TUN device using smoltcp + local TCP proxy.
 pub struct UserspaceTunDevice {
     pub local_port: u16,
-    task_handles: Vec<OwnedTask>,
+    task_handles: TaskHandles,
     stopped: Arc<AtomicBool>,
     stop: watch::Sender<()>,
     clients: Arc<SharedChildTaskSet>,
@@ -276,14 +283,19 @@ impl UserspaceTunDevice {
         let (smol_to_ios_tx, smol_to_ios_rx) =
             mpsc::with_bank::<OwnedBuffer>(IOS_PACKET_CHANNEL_CAPACITY, byte_bank.as_ref())?;
         let (conn_req_tx, conn_req_rx) = mpsc::with_bank::<ConnRequest>(32, byte_bank.as_ref())?;
+        let outcomes = Ledger::with_metadata(byte_bank.as_ref())?;
+        let clients = SharedChildTaskSet::with_metadata(
+            Arc::clone(&outcomes),
+            ChildRole::ProxyClient,
+            byte_bank.as_ref(),
+        )?;
+        let mut task_handles = runtime_storage::task_handles(byte_bank.as_ref())?;
 
         // All buffer/channel admission precedes listener setup and workers.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
 
         let (mut ios_reader, mut ios_writer) = tokio::io::split(ios_stream);
-        let outcomes = Ledger::new();
-        let clients = SharedChildTaskSet::new(Arc::clone(&outcomes), ChildRole::ProxyClient);
         let (stop, stop_rx) = watch::channel(());
 
         let stopped = Arc::new(AtomicBool::new(false));
@@ -357,18 +369,19 @@ impl UserspaceTunDevice {
         });
 
         tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
+        task_handles.initialize([
+            OwnedTask::new(
+                reader_task,
+                ParentRole::ForwardOrReader,
+                Arc::clone(&outcomes),
+            ),
+            OwnedTask::new(writer_task, ParentRole::Writer, Arc::clone(&outcomes)),
+            OwnedTask::new(smoltcp_task, ParentRole::Smoltcp, Arc::clone(&outcomes)),
+            OwnedTask::new(listener_task, ParentRole::Listener, Arc::clone(&outcomes)),
+        ]);
         Ok(Self {
             local_port,
-            task_handles: vec![
-                OwnedTask::new(
-                    reader_task,
-                    ParentRole::ForwardOrReader,
-                    Arc::clone(&outcomes),
-                ),
-                OwnedTask::new(writer_task, ParentRole::Writer, Arc::clone(&outcomes)),
-                OwnedTask::new(smoltcp_task, ParentRole::Smoltcp, Arc::clone(&outcomes)),
-                OwnedTask::new(listener_task, ParentRole::Listener, Arc::clone(&outcomes)),
-            ],
+            task_handles,
             stopped,
             stop,
             clients,
@@ -428,7 +441,7 @@ impl UserspaceTunDevice {
 
 impl Drop for UserspaceTunDevice {
     fn drop(&mut self) {
-        for handle in self.task_handles.drain(..) {
+        for handle in self.task_handles.drain() {
             handle.abort();
         }
     }
@@ -1181,6 +1194,9 @@ async fn proxy_local_client(
 
 #[cfg(test)]
 mod shutdown_tests;
+
+#[cfg(test)]
+mod owner_storage_tests;
 
 #[cfg(test)]
 mod receive_storage_tests;

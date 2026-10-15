@@ -8709,3 +8709,13 @@ manager runtime/client channels使用实际fixed message backing/body，创建�
 [验证](validation/tunnel-owned-channel-2026-10-14.md)。waiter/Arc/task/report/error/
 rawparser等其它scope继续，128MiB非完整heap/RSS，L02未关闭，23/6/待收口、
 有效30与Q04全部排除不变。只本地提交，无设备操作或推送。
+## 2026-10-15 L02 native owner body/backing
+
+metered userspace Ledger/SharedChildTaskSet应用body与真实四task-handle Vec在
+worker前准入，费用随最后owner/backing；cleanup snapshot/Debug不再创建临时
+Vec，原causes/identity/immutable report/pendingjoins/EOF保持。新增5项通过，
+修正旧Tx fixture保留真实owner费用直至两个handle销毁；最终core126/CLI504及
+strictcoreCLI/build/Source0 manager1/host5通过，2原ignored/22NOT_RUN保持，见
+[验证](validation/tunnel-native-owner-bodies-2026-10-15.md)。Tokio/control/future/
+JoinSet/Arc/report/private/rawparser等其它scope继续，128MiB非完整heap/RSS，
+L02不关闭、23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。

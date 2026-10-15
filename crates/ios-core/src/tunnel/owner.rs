@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::task::Poll;
 use std::time::Duration;
 
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::task::{AbortHandle, JoinError, JoinHandle, JoinSet};
 use tokio::time::{error::Elapsed, Instant};
@@ -31,15 +32,64 @@ struct Outcomes {
     additional_unretained_outcomes: u64,
 }
 
+// One slot per retained outcome, plus this attempt's possible native expiry.
+// These are actual inline report fields, not an estimated unused heap reserve.
+struct Cleanup {
+    values: [Option<Cause>; OUTCOME_SLOTS + 1],
+    len: usize,
+}
+impl Cleanup {
+    fn new() -> Self {
+        Self {
+            values: std::array::from_fn(|_| None),
+            len: 0,
+        }
+    }
+    fn push(&mut self, cause: Cause) {
+        assert!(self.len < self.values.len());
+        self.values[self.len] = Some(cause);
+        self.len += 1;
+    }
+    fn iter(&self) -> impl Iterator<Item = &Cause> {
+        self.values[..self.len].iter().flatten()
+    }
+}
+struct CleanupClasses<'a>(&'a Cleanup);
+impl std::fmt::Debug for CleanupClasses<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(
+                self.0
+                    .iter()
+                    .map(|cause| crate::classify_error(cause.as_ref())),
+            )
+            .finish()
+    }
+}
+
 pub(crate) struct Ledger {
     identity: Arc<()>,
     outcomes: StdMutex<Outcomes>,
     pending: AtomicUsize,
     invalid_count: AtomicBool,
+    _body_storage: Option<OwnedSemaphorePermit>,
 }
 
 impl Ledger {
     pub(crate) fn new() -> Arc<Self> {
+        Self::with_storage(None)
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn with_metadata(
+        bank: Option<&Arc<tokio::sync::Semaphore>>,
+    ) -> Result<Arc<Self>, TunnelError> {
+        let storage =
+            super::tun::userspace::runtime_storage::charge(bank, std::mem::size_of::<Self>())?;
+        Ok(Self::with_storage(storage))
+    }
+
+    fn with_storage(storage: Option<OwnedSemaphorePermit>) -> Arc<Self> {
         Arc::new(Self {
             identity: Arc::new(()),
             outcomes: StdMutex::new(Outcomes {
@@ -50,6 +100,7 @@ impl Ledger {
             }),
             pending: AtomicUsize::new(0),
             invalid_count: AtomicBool::new(false),
+            _body_storage: storage,
         })
     }
 
@@ -164,13 +215,16 @@ impl Ledger {
         let Some(primary) = primary else {
             return Ok(());
         };
-        let mut cleanup = outcomes
+        let mut cleanup = Cleanup::new();
+        for cause in outcomes
             .slots
             .iter()
             .enumerate()
             .filter(|(slot, _)| Some(*slot) != primary_slot)
             .filter_map(|(_, recorded)| recorded.as_ref().map(|value| Arc::clone(&value.cause)))
-            .collect::<Vec<_>>();
+        {
+            cleanup.push(cause);
+        }
         if primary_slot.is_some() {
             if let Some(elapsed) = elapsed {
                 cleanup.push(elapsed);
@@ -205,7 +259,7 @@ pub struct TunnelShutdownFailure {
     identity: Arc<()>,
     work_report: bool,
     primary: Cause,
-    cleanup: Vec<Cause>,
+    cleanup: Cleanup,
     pending_joins: usize,
     join_accounting_valid: bool,
     retained_outcomes: bool,
@@ -256,13 +310,7 @@ impl std::fmt::Debug for TunnelShutdownFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunnelShutdownFailure")
             .field("primary_class", &crate::classify_error(self.primary()))
-            .field(
-                "cleanup_classes",
-                &self
-                    .cleanup()
-                    .map(crate::classify_error)
-                    .collect::<Vec<_>>(),
-            )
+            .field("cleanup_classes", &CleanupClasses(&self.cleanup))
             .field("pending_joins", &self.pending_joins)
             .field("joins_complete", &self.joins_complete())
             .field(
@@ -457,16 +505,37 @@ pub(crate) struct SharedChildTaskSet {
     cleanup_slot: usize,
     requested_abort: AtomicBool,
     first_expected_abort: StdMutex<Option<Arc<JoinError>>>,
+    _body_storage: Option<OwnedSemaphorePermit>,
 }
 
 impl SharedChildTaskSet {
     pub(crate) fn new(ledger: Arc<Ledger>, cleanup_slot: ChildRole) -> Arc<Self> {
+        Self::with_storage(ledger, cleanup_slot, None)
+    }
+
+    #[cfg(feature = "tunnel-userspace")]
+    pub(crate) fn with_metadata(
+        ledger: Arc<Ledger>,
+        cleanup_slot: ChildRole,
+        bank: Option<&Arc<tokio::sync::Semaphore>>,
+    ) -> Result<Arc<Self>, TunnelError> {
+        let storage =
+            super::tun::userspace::runtime_storage::charge(bank, std::mem::size_of::<Self>())?;
+        Ok(Self::with_storage(ledger, cleanup_slot, storage))
+    }
+
+    fn with_storage(
+        ledger: Arc<Ledger>,
+        cleanup_slot: ChildRole,
+        storage: Option<OwnedSemaphorePermit>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             set: Mutex::new(JoinSet::new()),
             ledger,
             cleanup_slot: cleanup_slot as usize,
             requested_abort: AtomicBool::new(false),
             first_expected_abort: StdMutex::new(None),
+            _body_storage: storage,
         })
     }
 
@@ -561,3 +630,7 @@ impl Drop for ChildGuard<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "tunnel-userspace"))]
+#[path = "owner/storage_tests.rs"]
+mod storage_tests;
