@@ -48,6 +48,10 @@ impl TunnelOwner for Owner {
 }
 impl TunnelReservation for Reservation<'_> {
     fn byte_bank(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        assert!(
+            self.handle.is_none(),
+            "bank requested after attach consumed reservation"
+        );
         self.owner.byte_bank.clone()
     }
 

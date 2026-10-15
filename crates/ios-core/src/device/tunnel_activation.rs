@@ -11,10 +11,10 @@ use std::sync::Arc;
 #[cfg(feature = "tunnel")]
 use tokio::io::{AsyncRead, AsyncWrite};
 
-#[cfg(feature = "tunnel-kernel")]
-use super::rsd_connect::attempt_rsd;
 #[cfg(feature = "tunnel-userspace")]
-use super::rsd_connect::attempt_rsd_via_proxy;
+use super::rsd_connect::attempt_rsd_via_proxy_with_bank;
+#[cfg(feature = "tunnel-kernel")]
+use super::rsd_connect::attempt_rsd_with_bank;
 #[cfg(feature = "tunnel")]
 use super::{ConnectedDevice, LockdownTransport};
 use crate::discovery::DeviceInfo;
@@ -139,6 +139,9 @@ where
             }
             #[cfg(feature = "tunnel-kernel")]
             {
+                // attach may consume the owner's reservation. Capture the
+                // original bank before starting or attaching native workers.
+                let byte_bank = reservation.as_ref().and_then(|owner| owner.byte_bank());
                 let tun = KernelTunDevice::create_validated(&tunnel_info.client_address, mtu)
                     .await
                     .map_err(CoreError::Tunnel)?;
@@ -169,8 +172,12 @@ where
                         return Err(error);
                     }
                 }
-                let rsd =
-                    attempt_rsd(&tunnel_info.server_address, tunnel_info.server_rsd_port).await;
+                let rsd = attempt_rsd_with_bank(
+                    &tunnel_info.server_address,
+                    tunnel_info.server_rsd_port,
+                    byte_bank.as_ref(),
+                )
+                .await;
                 if let Some(owner) = reservation.as_mut() {
                     owner.complete();
                 }
@@ -193,7 +200,7 @@ where
                     &tunnel_info.server_address,
                     mtu,
                     stream,
-                    byte_bank,
+                    byte_bank.clone(),
                 )
                 .await
                 .map_err(CoreError::Tunnel)?;
@@ -212,10 +219,11 @@ where
                         return Err(error);
                     }
                 }
-                let rsd = attempt_rsd_via_proxy(
+                let rsd = attempt_rsd_via_proxy_with_bank(
                     proxy_port,
                     &tunnel_info.server_address,
                     tunnel_info.server_rsd_port,
+                    byte_bank.as_ref(),
                 )
                 .await;
                 if let Some(owner) = reservation.as_mut() {

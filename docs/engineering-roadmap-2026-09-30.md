@@ -8816,3 +8816,13 @@ core131/CLI freshness13及strictcoreCLI/build/Source0 manager/host5通过，前�
 [验证](validation/tunnel-vectored-sending-2026-10-15.md)。其它SDK/initial/private/
 fullfreshness继续，128MiB非完整heap/RSS，L02不关闭；23/6/待收口、有效30与
 Q04全部排除不变，仅本地提交。
+
+## 2026-10-15 L02 initial RSD scratch admission
+
+initial direct/proxy沿用原reservation池，在attach前捕获；raw H2/bootstrap/
+operation/borrowed arena创建前准入，旧空UID/零port/过滤规则与六semantic消息、
+四mode及原期限保持。Nonebank/后续SDK/历史观察未改，公开目录持久buffer仍
+MISSING，不能用设备sidecar覆盖into_rsd逃逸。XPC201及activation/proxy和无mdns
+组合通过，最终门禁见[验证](validation/tunnel-initial-rsd-scratch-2026-10-15.md)。
+128MiB非完整heap/RSS，原fullfreshness/private等继续；L02不关闭，23/6/待收口、
+有效30与Q04全部排除不变，仅本地提交。

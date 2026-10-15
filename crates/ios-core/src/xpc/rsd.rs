@@ -31,6 +31,8 @@ use crate::xpc::message::{
 use crate::xpc::XpcError;
 
 #[cfg(feature = "tunnel")]
+mod initial;
+#[cfg(feature = "tunnel")]
 mod sending;
 
 pub const RSD_PORT: u16 = 58783;
@@ -167,6 +169,20 @@ pub async fn handshake(addr: Ipv6Addr, port: u16) -> Result<RsdHandshake, XpcErr
     .await
 }
 
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(crate) async fn handshake_with_bank(
+    addr: Ipv6Addr,
+    port: u16,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<RsdHandshake, XpcError> {
+    let sock_addr = SocketAddr::new(addr.into(), port);
+    handshake_with_connector_and_bank(
+        || async { TcpStream::connect(sock_addr).await.map_err(XpcError::from) },
+        bank,
+    )
+    .await
+}
+
 /// Resolve the UUID shared by RSD connections from this host.
 ///
 /// On macOS this queries the local `remoted` identity once, with a bounded
@@ -198,13 +214,29 @@ where
     Fut: std::future::Future<Output = Result<S, XpcError>>,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    handshake_with_connector_and_bank(connector, None).await
+}
+
+/// Initial discovery keeps the legacy directory and retry policy while sharing
+/// the owner's pool for raw H2, bootstrap wire and borrowed parser scratch.
+/// The public, mutable RsdHandshake allocations remain outside that pool.
+#[cfg(feature = "tunnel")]
+pub(crate) async fn handshake_with_connector_and_bank<F, Fut, S>(
+    connector: F,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<RsdHandshake, XpcError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let identity = default_handshake_uuid().await?;
     // Preserve the former direct path's dial + handshake upper bound across
     // all retries instead of multiplying it by the number of bootstrap modes.
     rsd_timeout(
         crate::tunnel::TUNNEL_CONNECT_TIMEOUT * 2,
         "RSD discovery timed out",
-        handshake_attempts(connector, identity),
+        handshake_attempts(connector, identity, bank),
     )
     .await
 }
@@ -213,6 +245,7 @@ where
 async fn handshake_attempts<F, Fut, S>(
     mut connector: F,
     identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> Result<RsdHandshake, XpcError>
 where
     F: FnMut() -> Fut,
@@ -238,7 +271,7 @@ where
             let mut framer = rsd_timeout(
                 Duration::from_secs(3),
                 "RSD bootstrap timed out",
-                bootstrap_rsd(stream, mode, identity),
+                bootstrap_rsd_with_bank(stream, mode, identity, bank),
             )
             .await?;
             let response_timeout = match mode {
@@ -257,24 +290,19 @@ where
         match attempt {
             Ok(handshake) => return Ok(handshake),
             Err(error) => {
+                // New pool refusals retain their original source instead of
+                // being replaced by a later mode's EOF/dial error.
+                if bank.is_some()
+                    && crate::classify_error(&error) == crate::ErrorClass::ResourceLimit
+                {
+                    return Err(error);
+                }
                 tracing::debug!(?mode, "RSD bootstrap attempt failed");
                 last_error = Some(error);
             }
         }
     }
     Err(last_error.expect("RSD attempted every bootstrap mode"))
-}
-
-#[cfg(feature = "tunnel")]
-async fn bootstrap_rsd<S>(
-    stream: S,
-    mode: HandshakeMode,
-    identity: uuid::Uuid,
-) -> Result<H2Framer<S>, XpcError>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    bootstrap_rsd_with_bank(stream, mode, identity, None).await
 }
 
 #[cfg(feature = "tunnel")]
@@ -1003,8 +1031,18 @@ where
 {
     let mut last_err = None;
     for _ in 0..6 {
-        let msg = read_xpc_on_client_server(framer, progressed).await?;
-        match parse_handshake_message(msg) {
+        let parsed = if let Some(bank) = framer.raw_bank() {
+            let (header, body) = read_raw_xpc_on_client_server(framer).await?;
+            *progressed = true;
+            // Wire failures end this mode; semantic failures still consume one
+            // of the same six legacy message slots below.
+            let tree = crate::xpc::message::borrowed::decode(&header, &body, &bank)?;
+            initial::parse_handshake(tree.as_ref())
+        } else {
+            let msg = read_xpc_on_client_server(framer, progressed).await?;
+            parse_handshake_message(msg)
+        };
+        match parsed {
             Ok(handshake) => return Ok(handshake),
             Err(err) => {
                 tracing::debug!(error = %crate::redaction::diagnostic_error(&err), "RSD: skipping non-handshake stream-1 message");
@@ -2796,6 +2834,7 @@ mod tests {
                         .expect("modern handshake should connect once")))
                 },
                 identity,
+                None,
             ),
         )
         .await
@@ -2829,6 +2868,7 @@ mod tests {
             handshake_attempts(
                 || std::future::ready(Ok(streams.pop_front().unwrap())),
                 uuid::Uuid::from_bytes([0x4a; 16]),
+                None,
             ),
         )
         .await
@@ -2863,6 +2903,7 @@ mod tests {
             handshake_attempts(
                 || std::future::ready(Ok(streams.pop_front().unwrap())),
                 uuid::Uuid::from_bytes([0x4a; 16]),
+                None,
             ),
         )
         .await

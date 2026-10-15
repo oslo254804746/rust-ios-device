@@ -5,18 +5,29 @@ use super::tunnel_endpoint::{connection_error_to_xpc, TunnelEndpoint};
 #[cfg(not(feature = "mdns"))]
 use super::InitialRsdProbeSkipReason;
 #[cfg(feature = "mdns")]
-use crate::xpc::rsd::handshake as rsd_handshake;
+use crate::xpc::rsd::handshake_with_bank as rsd_handshake;
 use crate::CoreError;
+use std::sync::Arc;
 #[cfg(test)]
 use std::time::Duration;
 #[cfg(feature = "mdns")]
 use std::{net::Ipv6Addr, str::FromStr};
 #[cfg(test)]
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 
 /// Attempt the optional RSD handshake, retaining the actual owner outcome.
 #[cfg(all(feature = "tunnel", feature = "mdns"))]
 pub(super) async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> RsdProbeOutcome {
+    attempt_rsd_with_bank(server_addr, rsd_port, None).await
+}
+
+#[cfg(all(feature = "tunnel", feature = "mdns"))]
+pub(super) async fn attempt_rsd_with_bank(
+    server_addr: &str,
+    rsd_port: u16,
+    bank: Option<&Arc<Semaphore>>,
+) -> RsdProbeOutcome {
     let addr = match Ipv6Addr::from_str(server_addr) {
         Ok(addr) => addr,
         Err(error) => {
@@ -26,7 +37,7 @@ pub(super) async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> RsdProbeOut
             ))));
         }
     };
-    match rsd_handshake(addr, rsd_port).await {
+    match rsd_handshake(addr, rsd_port, bank).await {
         Ok(h) => {
             tracing::info!("RSD: {} services discovered", h.services.len());
             RsdProbeOutcome::Completed(Ok(h))
@@ -43,7 +54,16 @@ pub(super) async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> RsdProbeOut
 /// discover RSD through their local proxy, while kernel/tunnel-only callers can
 /// observe a skipped initial probe while retaining the legacy optional cache.
 #[cfg(all(feature = "tunnel", not(feature = "mdns")))]
-pub(super) async fn attempt_rsd(_server_addr: &str, _rsd_port: u16) -> RsdProbeOutcome {
+pub(super) async fn attempt_rsd(server_addr: &str, rsd_port: u16) -> RsdProbeOutcome {
+    attempt_rsd_with_bank(server_addr, rsd_port, None).await
+}
+
+#[cfg(all(feature = "tunnel", not(feature = "mdns")))]
+pub(super) async fn attempt_rsd_with_bank(
+    _server_addr: &str,
+    _rsd_port: u16,
+    _bank: Option<&Arc<Semaphore>>,
+) -> RsdProbeOutcome {
     tracing::debug!("RSD direct probe skipped because ios-core feature 'mdns' is disabled");
     RsdProbeOutcome::Skipped(InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable)
 }
@@ -56,6 +76,16 @@ pub(super) async fn attempt_rsd_via_proxy(
     server_addr: &str,
     rsd_port: u16,
 ) -> RsdProbeOutcome {
+    attempt_rsd_via_proxy_with_bank(proxy_port, server_addr, rsd_port, None).await
+}
+
+#[cfg(feature = "tunnel")]
+pub(super) async fn attempt_rsd_via_proxy_with_bank(
+    proxy_port: u16,
+    server_addr: &str,
+    rsd_port: u16,
+    bank: Option<&Arc<Semaphore>>,
+) -> RsdProbeOutcome {
     let endpoint = match TunnelEndpoint::resolve(server_addr, Some(proxy_port)) {
         Ok(endpoint) => endpoint,
         Err(error) => {
@@ -63,12 +93,15 @@ pub(super) async fn attempt_rsd_via_proxy(
             return RsdProbeOutcome::Completed(Err(error));
         }
     };
-    let result = crate::xpc::rsd::handshake_with_connector(|| async {
-        endpoint
-            .connect(rsd_port)
-            .await
-            .map_err(connection_error_to_xpc)
-    })
+    let result = crate::xpc::rsd::handshake_with_connector_and_bank(
+        || async {
+            endpoint
+                .connect(rsd_port)
+                .await
+                .map_err(connection_error_to_xpc)
+        },
+        bank,
+    )
     .await;
     match result {
         Ok(handshake) => {
@@ -246,10 +279,12 @@ mod rsd_proxy_tests {
                 stream.write_all(&reply).await.unwrap();
             }
         });
-        for _ in 0..2 {
+        let quota = 16 * 1024 * 1024;
+        let bank = Arc::new(Semaphore::new(quota));
+        for bank in [None, Some(&bank)] {
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
-                attempt_rsd_via_proxy(proxy_port, "fd00::42", 58783),
+                attempt_rsd_via_proxy_with_bank(proxy_port, "fd00::42", 58783, bank),
             )
             .await
             .unwrap();
@@ -260,5 +295,24 @@ mod rsd_proxy_tests {
             assert_eq!(result.udid, "synthetic-proxy-device");
         }
         server.await.unwrap();
+        assert_eq!(bank.available_permits(), quota);
+    }
+
+    #[cfg(not(feature = "mdns"))]
+    #[tokio::test]
+    async fn direct_probe_without_mdns_keeps_skip_even_with_closed_bank() {
+        let bank = Arc::new(Semaphore::new(0));
+        bank.close();
+        let (directory, observation) =
+            attempt_rsd_with_bank("invalid-endpoint", 58783, Some(&bank))
+                .await
+                .into_parts();
+        assert!(directory.is_none());
+        assert_eq!(observation.state(), InitialRsdProbeState::NotAttempted);
+        assert_eq!(
+            observation.skip_reason(),
+            Some(InitialRsdProbeSkipReason::DirectProbeFeatureUnavailable)
+        );
+        assert!(observation.error().is_none());
     }
 }

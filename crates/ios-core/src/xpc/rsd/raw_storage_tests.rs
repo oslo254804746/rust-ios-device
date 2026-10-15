@@ -459,3 +459,280 @@ async fn raw_payload_bank_denial_is_final_without_another_connector_call() {
     drop(held.lock().unwrap().take());
     assert_eq!(bank.available_permits(), quota);
 }
+
+async fn initial_duplex(
+    target: RsdHandshakeMode,
+    messages: Vec<Bytes>,
+) -> Result<RsdHandshake, XpcError> {
+    let modes = [
+        RsdHandshakeMode::Direct,
+        RsdHandshakeMode::Queued,
+        RsdHandshakeMode::Legacy,
+        RsdHandshakeMode::Passive,
+    ];
+    let target_index = modes.iter().position(|mode| *mode == target).unwrap();
+    assert!(messages.len() <= target_index + 1);
+    let first_reply = target_index + 1 - messages.len();
+    let mut messages = messages.into_iter();
+    let mut clients = VecDeque::new();
+    let mut peers = Vec::new();
+    for (attempt, mode) in modes.into_iter().enumerate().take(target_index + 1) {
+        let (client, peer) = tokio::io::duplex(64 * 1024);
+        clients.push_back(client);
+        let message = (attempt >= first_reply).then(|| messages.next().unwrap());
+        peers.push(tokio::spawn(async move {
+            match message {
+                Some(message) => fixture(peer, mode, message).await,
+                None => {
+                    drop(peer);
+                    Ok(())
+                }
+            }
+        }));
+    }
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        handshake_attempts(
+            || std::future::ready(Ok(clients.pop_front().expect("unexpected extra mode"))),
+            uuid::Uuid::from_bytes([9; 16]),
+            Some(&bank),
+        ),
+    )
+    .await;
+    let all_used = clients.is_empty();
+    // An early-return regression must close the unused peers before joining;
+    // otherwise their preface read would outlive the probe's outer timeout.
+    drop(clients);
+    let joined = tokio::time::timeout(
+        Duration::from_secs(1),
+        futures_util::future::join_all(peers.iter_mut()),
+    )
+    .await;
+    let joined = match joined {
+        Ok(joined) => joined,
+        Err(_) => {
+            for peer in &peers {
+                peer.abort();
+            }
+            futures_util::future::join_all(peers).await;
+            panic!("initial fixture peers did not close after the probe");
+        }
+    };
+    assert!(
+        all_used,
+        "initial fallback failed to use the fresh transport"
+    );
+    for result in joined {
+        result.unwrap().unwrap();
+    }
+    // This assertion covers transient storage, not the public returned directory.
+    assert_eq!(bank.available_permits(), quota);
+    result.expect("fixture must not need the normal response timeout")
+}
+
+#[tokio::test]
+async fn initial_all_four_modes_keep_legacy_zero_port_and_return_all_scratch_grants() {
+    for mode in [
+        RsdHandshakeMode::Direct,
+        RsdHandshakeMode::Queued,
+        RsdHandshakeMode::Legacy,
+        RsdHandshakeMode::Passive,
+    ] {
+        let directory = initial_duplex(mode, vec![handshake(XpcValue::Uint64(0))])
+            .await
+            .unwrap();
+        assert_eq!(directory.udid, "fixture-only-udid");
+        assert_eq!(directory.services["fixture.service"].port, 0);
+        assert_eq!(
+            directory.services["fixture.service"].features,
+            ["fixture-feature"]
+        );
+    }
+}
+
+#[cfg(feature = "mdns")]
+#[tokio::test]
+async fn initial_direct_tcp_uses_original_bank_and_keeps_bare_directory_usable() {
+    let listener = tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        fixture(
+            socket,
+            RsdHandshakeMode::Direct,
+            handshake(XpcValue::Uint64(0)),
+        )
+        .await
+    });
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let directory = tokio::time::timeout(
+        Duration::from_secs(2),
+        handshake_with_bank(Ipv6Addr::LOCALHOST, port, Some(&bank)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    peer.await.unwrap().unwrap();
+    assert_eq!(bank.available_permits(), quota);
+    assert_eq!(directory.services["fixture.service"].port, 0);
+}
+
+fn initial_missing_uid() -> Bytes {
+    encode_message(&XpcMessage {
+        flags: flags::ALWAYS_SET,
+        msg_id: 0,
+        body: Some(XpcValue::Dictionary(IndexMap::from_iter([(
+            "MessageType".into(),
+            XpcValue::String("Handshake".into()),
+        )]))),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn initial_malformed_handshake_still_skips_to_valid_message_in_same_mode() {
+    let malformed = initial_missing_uid();
+    let mut messages = malformed.to_vec();
+    messages.extend_from_slice(&handshake(XpcValue::Uint64(12345)));
+    let directory = initial_duplex(RsdHandshakeMode::Direct, vec![Bytes::from(messages)])
+        .await
+        .unwrap();
+    assert_eq!(directory.services["fixture.service"].port, 12345);
+}
+
+#[tokio::test]
+async fn initial_six_semantic_failures_exhaust_mode_before_seventh_valid_message() {
+    let malformed = initial_missing_uid();
+    let mut messages = Vec::new();
+    for _ in 0..6 {
+        messages.extend_from_slice(&malformed);
+    }
+    messages.extend_from_slice(&handshake(XpcValue::Uint64(11111)));
+    let directory = initial_duplex(
+        RsdHandshakeMode::Queued,
+        vec![Bytes::from(messages), handshake(XpcValue::Uint64(22222))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(directory.services["fixture.service"].port, 22222);
+}
+
+#[tokio::test]
+async fn initial_six_semantic_failures_retain_last_parser_error() {
+    let malformed = initial_missing_uid();
+    let mut messages = Vec::new();
+    for _ in 0..6 {
+        messages.extend_from_slice(&malformed);
+    }
+    let error = initial_duplex(RsdHandshakeMode::Passive, vec![Bytes::from(messages)])
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, XpcError::Tls(message) if message == "RSD: missing UniqueDeviceID"));
+}
+
+#[tokio::test]
+async fn initial_wire_decode_failure_uses_fresh_fallback_without_semantic_skip() {
+    let mut invalid = handshake(XpcValue::Uint64(12345)).to_vec();
+    invalid[24..28].copy_from_slice(&0u32.to_le_bytes());
+    let mut messages = invalid;
+    messages.extend_from_slice(&handshake(XpcValue::Uint64(11111)));
+    let directory = initial_duplex(
+        RsdHandshakeMode::Queued,
+        vec![Bytes::from(messages), handshake(XpcValue::Uint64(22222))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(directory.services["fixture.service"].port, 22222);
+}
+
+#[tokio::test]
+async fn initial_raw_pool_refusal_is_final_and_releases_the_original_transport() {
+    let (client, mut peer) = tokio::io::duplex(4096);
+    let task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+    });
+    let bank = Arc::new(Semaphore::new(0));
+    let mut client = Some(client);
+    let calls = AtomicUsize::new(0);
+    let error = handshake_attempts(
+        || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(client.take().expect("quota refusal must be final")))
+        },
+        uuid::Uuid::from_bytes([9; 16]),
+        Some(&bank),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        crate::classify_error(&error),
+        crate::ErrorClass::ResourceLimit
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), 0);
+    tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn initial_cancelled_body_read_releases_admitted_body_and_original_socket() {
+    let (client, mut peer) = tokio::io::duplex(4096);
+    let (sent, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut preface = [0; 24];
+        peer.read_exact(&mut preface).await.unwrap();
+        read_frame(&mut peer).await.unwrap();
+        read_frame(&mut peer).await.unwrap();
+        peer.write_all(&frame(4, 0, 0, &[])).await.unwrap();
+        loop {
+            let (kind, _, bytes) = read_frame(&mut peer).await.unwrap();
+            if kind == 0 {
+                let message = decode_message(Bytes::from(bytes)).unwrap();
+                if message
+                    .body
+                    .as_ref()
+                    .and_then(XpcValue::as_dict)
+                    .and_then(|dictionary| dictionary.get("MessageType"))
+                    .and_then(XpcValue::as_str)
+                    == Some("Handshake")
+                {
+                    break;
+                }
+            }
+        }
+        let wire = handshake(XpcValue::Uint64(12345));
+        peer.write_all(&frame(1, 4, 1, &[])).await.unwrap();
+        peer.write_all(&frame(0, 0, 1, &wire[..25])).await.unwrap();
+        sent.send(()).unwrap();
+        let mut tail = [0; 1024];
+        while peer.read(&mut tail).await.unwrap() != 0 {}
+    });
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let mut client = Some(client);
+    let mut probe = Box::pin(handshake_attempts(
+        || std::future::ready(Ok(client.take().expect("single in-flight probe"))),
+        uuid::Uuid::from_bytes([9; 16]),
+        Some(&bank),
+    ));
+    tokio::select! {
+        result = &mut probe => panic!("incomplete reply completed: {result:?}"),
+        result = ready => result.unwrap(),
+    }
+    assert!(futures_util::poll!(&mut probe).is_pending());
+    assert!(bank.available_permits() < quota);
+    drop(probe);
+    assert_eq!(bank.available_permits(), quota);
+    tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
