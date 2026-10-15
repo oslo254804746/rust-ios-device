@@ -32,6 +32,8 @@ mod socket_slots;
 use socket_slots::SocketSlots;
 mod owned_channel;
 use owned_channel as mpsc;
+mod worker_future;
+use worker_future::PreparedWorker;
 
 const PREFIX_LEN: u8 = 64;
 const IOS_PACKET_CHANNEL_CAPACITY: usize = 8192;
@@ -56,11 +58,6 @@ fn runtime_channel_bytes() -> usize {
 }
 
 #[cfg(test)]
-fn client_channel_bytes() -> usize {
-    2 * mpsc::required_bytes::<OwnedBuffer>(LOCAL_PROXY_CHANNEL_CAPACITY)
-}
-
-#[cfg(test)]
 fn runtime_owner_bytes() -> usize {
     std::mem::size_of::<Ledger>()
         + std::mem::size_of::<SharedChildTaskSet>()
@@ -71,10 +68,13 @@ fn runtime_owner_bytes() -> usize {
 
 #[cfg(test)]
 type TxAdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce(bool)>>>;
+#[cfg(test)]
+type BeforeTxAdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
 
 #[cfg(test)]
 thread_local! {
     static TX_ADMISSION: TxAdmissionHook = const { std::cell::RefCell::new(None) };
+    static BEFORE_TX_ADMISSION: BeforeTxAdmissionHook = const { std::cell::RefCell::new(None) };
 }
 
 struct ChannelDevice {
@@ -98,6 +98,12 @@ impl ChannelDevice {
         if self.storage.stopped.load(Ordering::Acquire) {
             return None;
         }
+        #[cfg(test)]
+        BEFORE_TX_ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback();
+            }
+        });
         let prepared = self.tx_buf.prepare_push().and_then(|()| {
             self.storage
                 .bank
@@ -305,9 +311,10 @@ impl UserspaceTunDevice {
             stop: stop.clone(),
             stopped: Arc::clone(&stopped),
         };
+        let future_bank = byte_bank.clone();
         let reader_storage = storage.clone();
         let mut reader_stop = stop.subscribe();
-        let reader_task = tokio::spawn(async move {
+        let reader_future = async move {
             let result = tokio::select! {
                 biased;
                 result = read_ios_packets_owned(&mut ios_reader, payload_capacity, ios_to_smol_tx, header, byte_bank) => result,
@@ -319,11 +326,11 @@ impl UserspaceTunDevice {
             let result = reader_storage.result();
             tracing::debug!("userspace: iOS packet reader exited");
             result
-        });
+        };
 
         let writer_storage = storage.clone();
         let mut writer_stop = stop.subscribe();
-        let writer_task = tokio::spawn(async move {
+        let writer_future = async move {
             let result = tokio::select! {
                 biased;
                 result = write_ios_packets_owned(&mut ios_writer, mtu, smol_to_ios_rx) => result,
@@ -335,10 +342,10 @@ impl UserspaceTunDevice {
             let result = writer_storage.result();
             tracing::debug!("userspace: iOS packet writer exited");
             result
-        });
+        };
 
         let smoltcp_storage = storage.clone();
-        let smoltcp_task = tokio::spawn(async move {
+        let smoltcp_future = async move {
             run_smoltcp(
                 client_ipv6,
                 mtu,
@@ -350,11 +357,11 @@ impl UserspaceTunDevice {
             .await;
             tracing::debug!("userspace: smoltcp loop exited");
             smoltcp_storage.result()
-        });
+        };
 
         let listener_clients = Arc::clone(&clients);
         let listener_outcomes = Arc::clone(&outcomes);
-        let listener_task = tokio::spawn(async move {
+        let listener_future = async move {
             run_local_listener_owned(
                 listener,
                 conn_req_tx,
@@ -366,19 +373,21 @@ impl UserspaceTunDevice {
             .await;
             tracing::debug!("userspace: local listener exited");
             Ok(())
-        });
+        };
 
-        tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
+        // Every fallible payload admission completes before the first worker.
+        // Legacy callers retain Tokio's original unboxed spawn path.
+        let reader = PreparedWorker::prepare(reader_future, future_bank.as_ref())?;
+        let writer = PreparedWorker::prepare(writer_future, future_bank.as_ref())?;
+        let smoltcp = PreparedWorker::prepare(smoltcp_future, future_bank.as_ref())?;
+        let listener = PreparedWorker::prepare(listener_future, future_bank.as_ref())?;
         task_handles.initialize([
-            OwnedTask::new(
-                reader_task,
-                ParentRole::ForwardOrReader,
-                Arc::clone(&outcomes),
-            ),
-            OwnedTask::new(writer_task, ParentRole::Writer, Arc::clone(&outcomes)),
-            OwnedTask::new(smoltcp_task, ParentRole::Smoltcp, Arc::clone(&outcomes)),
-            OwnedTask::new(listener_task, ParentRole::Listener, Arc::clone(&outcomes)),
+            reader.spawn(ParentRole::ForwardOrReader, Arc::clone(&outcomes)),
+            writer.spawn(ParentRole::Writer, Arc::clone(&outcomes)),
+            smoltcp.spawn(ParentRole::Smoltcp, Arc::clone(&outcomes)),
+            listener.spawn(ParentRole::Listener, Arc::clone(&outcomes)),
         ]);
+        tracing::info!("userspace TUN started on 127.0.0.1:{local_port}");
         Ok(Self {
             local_port,
             task_handles,
@@ -1042,10 +1051,17 @@ async fn run_local_listener_with_limit_storage(
                 };
                 tracing::info!(peer = %crate::redaction::diagnostic_id(&peer.to_string()), "userspace: local connection");
                 let tx = conn_req_tx.clone();
-                let storage = storage.clone();
-                client_tasks.spawn(async move {
-                    handle_local_client_storage(client, tx, permit, preamble_timeout, storage).await;
-                });
+                let client_storage = storage.clone();
+                let future = async move {
+                    handle_local_client_storage(client, tx, permit, preamble_timeout, client_storage).await;
+                };
+                match PreparedWorker::prepare(future, storage.bank.as_ref()) {
+                    Ok(prepared) => prepared.spawn_child(&mut client_tasks),
+                    Err(original) => {
+                        storage.fail(ParentRole::Listener, original);
+                        break;
+                    }
+                }
             }
         }
     }

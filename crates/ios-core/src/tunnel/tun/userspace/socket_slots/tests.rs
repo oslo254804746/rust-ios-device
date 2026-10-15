@@ -1,7 +1,5 @@
 use super::*;
-use crate::tunnel::tun::userspace::{
-    ConnState, RuntimeStorage, UserspaceTunDevice, IPV6_HEADER_LEN,
-};
+use crate::tunnel::tun::userspace::{RuntimeStorage, UserspaceTunDevice};
 use smoltcp::iface::{Config, Interface, SocketHandle};
 use smoltcp::socket::tcp;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpEndpoint, Ipv6Address};
@@ -145,14 +143,25 @@ async fn socket_storage_actual_runtime_last_byte_refusal_keeps_typed_fatal_and_o
     let baseline = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
-    let bytes = IPV6_HEADER_LEN
-        + super::super::runtime_channel_bytes()
-        + super::super::client_channel_bytes()
-        + super::super::runtime_owner_bytes()
-        + 4 * mem::size_of::<(SocketHandle, ConnState)>()
-        + 4 * mem::size_of::<SocketStorage<'static>>()
-        - 1;
+    let bytes = 16 * 1024 * 1024;
     let bank = Arc::new(Semaphore::new(bytes));
+    let held = Arc::new(std::sync::Mutex::new(None));
+    let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&reached);
+    let hold = Arc::clone(&held);
+    let target_bank = Arc::clone(&bank);
+    ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |requested| {
+            assert_eq!(requested, 4 * mem::size_of::<SocketStorage<'static>>());
+            let take = target_bank.available_permits() - (requested - 1);
+            *hold.lock().unwrap() = Some(
+                Arc::clone(&target_bank)
+                    .try_acquire_many_owned(take.try_into().unwrap())
+                    .unwrap(),
+            );
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+    });
     let (stream, mut peer) = tokio::io::duplex(1280);
     let runtime = UserspaceTunDevice::start_validated_with_bank(
         "fd00::2",
@@ -177,6 +186,10 @@ async fn socket_storage_actual_runtime_last_byte_refusal_keeps_typed_fatal_and_o
     })
     .await
     .unwrap();
+    assert!(
+        reached.load(std::sync::atomic::Ordering::SeqCst),
+        "stopped before actual SocketStorage admission"
+    );
     let error = runtime.shutdown(Duration::from_secs(2)).await.unwrap_err();
     assert_eq!(
         crate::classify_error(&error),
@@ -204,5 +217,6 @@ async fn socket_storage_actual_runtime_last_byte_refusal_keeps_typed_fatal_and_o
     })
     .await
     .unwrap();
+    drop(held.lock().unwrap().take());
     assert_eq!(bank.available_permits(), bytes);
 }

@@ -9,6 +9,13 @@ use super::owned_buffer::{rejected, BufferAdmission};
 use super::runtime_storage::charge;
 use super::TunnelError;
 
+#[cfg(test)]
+type AdmissionHook = std::cell::RefCell<Option<Box<dyn FnOnce(usize)>>>;
+#[cfg(test)]
+thread_local! {
+    static ADMISSION: AdmissionHook = const { std::cell::RefCell::new(None) };
+}
+
 pub(super) struct SocketSlots {
     slots: Vec<SocketStorage<'static>>,
     // Actual socket storage and socket buffers drop before this backing fee.
@@ -66,6 +73,12 @@ impl SocketSlots {
         let requested = capacity
             .checked_mul(mem::size_of::<SocketStorage<'static>>())
             .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
+        #[cfg(test)]
+        ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().take() {
+                callback(requested);
+            }
+        });
         let mut fee = charge(self.bank.as_ref(), requested)?;
         let mut replacement = Vec::new();
         replacement
