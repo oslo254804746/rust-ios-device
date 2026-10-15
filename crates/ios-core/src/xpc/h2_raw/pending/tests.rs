@@ -169,14 +169,9 @@ mod wire {
         bank: &Arc<Semaphore>,
     ) -> H2Framer<tokio::io::DuplexStream> {
         let mut framer = H2Framer::new(stream);
-        framer.raw_bank = Some(Arc::clone(bank));
-        framer.client_server_buf = RawBuffer::new(Some(Arc::clone(bank)));
-        framer.server_client_buf = RawBuffer::new(Some(Arc::clone(bank)));
-        framer.pending_data_frames = PendingFrames::new(Some(bank));
+        framer.configure_bank(Some(bank));
         framer.client_server_open = true;
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows = WindowMap::new(Some(bank));
-        framer.pending_window_updates = WindowMap::new(Some(bank));
         framer.outbound_stream_windows.prepare_keys(&[1]).unwrap();
         framer.outbound_stream_windows.insert_reserved(1, 0);
         framer
@@ -223,7 +218,8 @@ mod wire {
             .unwrap()
             .unwrap();
         let counters = framer.outbound_stream_windows.backing_bytes()
-            + framer.pending_window_updates.backing_bytes();
+            + framer.pending_window_updates.backing_bytes()
+            + framer.closed_streams.backing_bytes();
         assert_eq!(bank.available_permits(), quota - backing(4) - 3 - counters);
         let mut original = Vec::new();
         for _ in 0..3 {
