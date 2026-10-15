@@ -226,6 +226,23 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for H2Stream<S> {
         result
     }
 
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        self.progressed |= matches!(result, Poll::Ready(Ok(n)) if n > 0);
+        self.failed |= matches!(result, Poll::Ready(Err(_)))
+            || (buffers.iter().any(|buffer| !buffer.is_empty())
+                && matches!(result, Poll::Ready(Ok(0))));
+        result
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let result = Pin::new(&mut self.inner).poll_flush(cx);
         self.failed |= matches!(result, Poll::Ready(Err(_)));
@@ -1362,9 +1379,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 .await?);
         }
         let header = frame_header(kind, flags, stream_id, payload.len());
-        self.stream.write_all(&header).await?;
-        if !payload.is_empty() {
-            self.stream.write_all(payload).await?;
+        let mut header_offset = 0;
+        let mut payload_offset = 0;
+        while header_offset < header.len() || payload_offset < payload.len() {
+            // Give native TCP both borrowed slices in one operation. Generic
+            // writers retain AsyncWrite's first-nonempty-buffer fallback.
+            let buffers = [
+                std::io::IoSlice::new(&header[header_offset..]),
+                std::io::IoSlice::new(&payload[payload_offset..]),
+            ];
+            let written = self.stream.write_vectored(&buffers).await?;
+            if written == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            let remaining_header = header.len() - header_offset;
+            assert!(
+                written <= remaining_header + payload.len() - payload_offset,
+                "AsyncWrite over-reported H2 frame length"
+            );
+            let header_written = written.min(remaining_header);
+            header_offset += header_written;
+            payload_offset += written - header_written;
         }
         Ok(())
     }
@@ -1946,6 +1981,10 @@ pub enum H2Error {
 #[cfg(all(test, feature = "tunnel"))]
 #[path = "h2_raw/sending_tests.rs"]
 mod sending_tests;
+
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "h2_raw/vectored_tests.rs"]
+mod vectored_tests;
 
 #[cfg(test)]
 mod tests {

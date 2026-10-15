@@ -8805,3 +8805,14 @@ nativeerrors/strictEOF与最后owner收费保持。新增9项和XPC187/core131�
 [验证](validation/tunnel-sending-storage-2026-10-15.md)。SDK/initial通用路径与
 private runtime/error/allocator及fullfreshness继续，128MiB非完整heap/RSS；
 L02不关闭，23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-15 L02 borrowed vectored sending
+
+banked H2将inline header与原payload slices一同交给底层vectored writer，partial
+进度/标志和无支持时fallback保持；原native error pointer、标准WriteZero、
+EOF与最后owner收费通过真实localhost TCP/duplex验证。新增3项、XPC190/
+core131/CLI freshness13及strictcoreCLI/build/Source0 manager/host5通过，前一
+提交9b703c3的完整CLI504证据准确分开，见
+[验证](validation/tunnel-vectored-sending-2026-10-15.md)。其它SDK/initial/private/
+fullfreshness继续，128MiB非完整heap/RSS，L02不关闭；23/6/待收口、有效30与
+Q04全部排除不变，仅本地提交。
