@@ -26,6 +26,8 @@ use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPE
 
 mod pending;
 use pending::PendingFrames;
+mod windows;
+use windows::WindowMap;
 
 // ── Stream IDs ──────────────────────────────────────────────────────────────
 // Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
@@ -154,7 +156,7 @@ pub struct H2Framer<S> {
     closed_unknown_order: VecDeque<u32>,
     // Bytes consumed per window (keyed by stream id, `STREAM_INIT` = connection)
     // since the last WINDOW_UPDATE we sent for it.
-    pending_window_updates: HashMap<u32, u32>,
+    pending_window_updates: WindowMap<u32>,
     // Bytes retained in the three primary/auxiliary stream buffers above.
     buffered_bytes: usize,
     // Peer-created streams which have not sent END_STREAM yet. This is kept
@@ -166,7 +168,7 @@ pub struct H2Framer<S> {
     // WINDOW_UPDATE frames change these values.
     outbound_connection_window: i64,
     peer_initial_window_size: i64,
-    outbound_stream_windows: HashMap<u32, i64>,
+    outbound_stream_windows: WindowMap<i64>,
     locally_finished_streams: HashSet<u32>,
     outbound_max_frame_size: usize,
     // DATA frames consumed by the writer's flow-control reader. Keeping the
@@ -372,12 +374,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             server_client_open: false,
             closed_streams: HashSet::new(),
             closed_unknown_order: VecDeque::new(),
-            pending_window_updates: HashMap::new(),
+            pending_window_updates: WindowMap::new(None),
             buffered_bytes: 0,
             peer_open_streams: HashSet::new(),
             outbound_connection_window: DEFAULT_PEER_WINDOW_SIZE,
             peer_initial_window_size: DEFAULT_PEER_WINDOW_SIZE,
-            outbound_stream_windows: HashMap::new(),
+            outbound_stream_windows: WindowMap::new(None),
             locally_finished_streams: HashSet::new(),
             outbound_max_frame_size: MAX_FRAME_PAYLOAD,
             pending_data_frames: PendingFrames::new(None),
@@ -433,6 +435,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         framer.client_server_buf = RawBuffer::new(bank.cloned());
         framer.server_client_buf = RawBuffer::new(bank.cloned());
         framer.pending_data_frames = PendingFrames::new(bank);
+        framer.pending_window_updates = WindowMap::new(bank);
+        framer.outbound_stream_windows = WindowMap::new(bank);
         Ok(framer)
     }
 
@@ -813,8 +817,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
 
         if let Some(new_initial_window) = initial_window {
             let delta = new_initial_window - self.peer_initial_window_size;
-            let mut updated = Vec::with_capacity(self.outbound_stream_windows.len());
-            for (&stream_id, &window) in &self.outbound_stream_windows {
+            for (&stream_id, &window) in self.outbound_stream_windows.iter() {
                 let Some(value) = window.checked_add(delta) else {
                     return Err(self.connection_protocol_error(format!(
                         "stream {stream_id} outbound window overflow applying SETTINGS_INITIAL_WINDOW_SIZE delta {delta}"
@@ -825,10 +828,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         "stream {stream_id} outbound window {value} is outside flow-control range"
                     )));
                 }
-                updated.push((stream_id, value));
             }
-            for (stream_id, value) in updated {
-                self.outbound_stream_windows.insert(stream_id, value);
+            // All checks precede mutation. Recompute under the same exclusive
+            // borrow instead of allocating an unowned SETTINGS scratch Vec.
+            for window in self.outbound_stream_windows.iter_mut() {
+                *window += delta;
             }
             self.peer_initial_window_size = new_initial_window;
         }
@@ -920,7 +924,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 "stream {stream_id} outbound window {value} exceeds {MAX_FLOW_CONTROL_WINDOW}"
             )));
         }
-        self.outbound_stream_windows.insert(stream_id, value);
+        self.outbound_stream_windows
+            .insert_reserved(stream_id, value);
         Ok(())
     }
 
@@ -984,7 +989,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             self.connection_protocol_source("convert H2 received DATA count", error)
         })?;
 
-        let mut frames = Vec::new();
         // The connection window is shared by every stream, so it always accrues.
         let connection_pending = self
             .pending_window_updates
@@ -1016,27 +1020,31 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             })?
         };
 
+        self.pending_window_updates
+            .prepare_keys(&[STREAM_INIT, stream_id])?;
+        let mut frames: [Option<[u8; 13]>; 2] = [None, None];
         if connection_total >= WINDOW_UPDATE_THRESHOLD {
-            frames.push(build_window_update_frame(STREAM_INIT, connection_total));
-            self.pending_window_updates.insert(STREAM_INIT, 0);
+            frames[0] = Some(window_update_bytes(STREAM_INIT, connection_total));
+            self.pending_window_updates.insert_reserved(STREAM_INIT, 0);
         } else {
             self.pending_window_updates
-                .insert(STREAM_INIT, connection_total);
+                .insert_reserved(STREAM_INIT, connection_total);
         }
 
         if stream_id != STREAM_INIT {
             if stream_total >= WINDOW_UPDATE_THRESHOLD {
-                frames.push(build_window_update_frame(stream_id, stream_total));
-                self.pending_window_updates.insert(stream_id, 0);
+                frames[1] = Some(window_update_bytes(stream_id, stream_total));
+                self.pending_window_updates.insert_reserved(stream_id, 0);
             } else {
-                self.pending_window_updates.insert(stream_id, stream_total);
+                self.pending_window_updates
+                    .insert_reserved(stream_id, stream_total);
             }
         }
 
-        if frames.is_empty() {
+        if frames.iter().all(Option::is_none) {
             return Ok(());
         }
-        for frame in &frames {
+        for frame in frames.iter().flatten() {
             self.stream.write_all(frame).await?;
         }
         self.stream.flush().await?;
@@ -1359,11 +1367,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     goaway.last_stream_id, goaway.error_code
                 )));
             }
+            self.outbound_stream_windows.prepare_keys(&[stream_id])?;
             let headers = build_headers_frame(stream_id);
             self.stream.write_all(&headers).await?;
             self.stream.flush().await?;
             self.outbound_stream_windows
-                .insert(stream_id, self.peer_initial_window_size);
+                .insert_reserved(stream_id, self.peer_initial_window_size);
             match stream_id {
                 STREAM_CLIENT_SERVER => self.client_server_open = true,
                 STREAM_SERVER_CLIENT => self.server_client_open = true,
@@ -1775,6 +1784,14 @@ fn build_settings_ack() -> Vec<u8> {
     build_frame(FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT, &[])
 }
 
+fn window_update_bytes(stream_id: u32, increment: u32) -> [u8; 13] {
+    let mut frame = [0u8; 13];
+    frame[..5].copy_from_slice(&[0, 0, 4, FRAME_WINDOW_UPDATE, 0]);
+    frame[5..9].copy_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
+    frame[9..].copy_from_slice(&(increment & 0x7fff_ffff).to_be_bytes());
+    frame
+}
+
 fn build_window_update_frame(stream_id: u32, increment: u32) -> Vec<u8> {
     build_frame(
         FRAME_WINDOW_UPDATE,
@@ -2115,7 +2132,7 @@ mod tests {
         framer.open_stream(1).await.unwrap();
         read_wire_frame(&mut peer).await;
         framer.outbound_connection_window = 2;
-        framer.outbound_stream_windows.insert(1, 2);
+        framer.outbound_stream_windows.insert_reserved(1, 2);
         framer.set_operation_timeout(Some(Duration::from_millis(30)));
         let (result, ()) = timeout(Duration::from_secs(1), async {
             tokio::join!(framer.write_stream(1, b"four"), async {
@@ -2143,7 +2160,7 @@ mod tests {
         framer.open_stream(1).await.unwrap();
         read_wire_frame(&mut peer).await;
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows.insert(1, 0);
+        framer.outbound_stream_windows.insert_reserved(1, 0);
         framer.set_operation_timeout(Some(Duration::from_millis(5)));
         lifecycle_timeout(framer.write_stream(1, b"ok").await.unwrap_err());
         assert!(framer.is_usable());
@@ -2253,7 +2270,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows.insert(5, 0);
+        framer.outbound_stream_windows.insert_reserved(5, 0);
         framer.finish_stream(5).await.unwrap();
         let end = read_wire_frame(&mut peer).await;
         assert_eq!(
@@ -2868,7 +2885,7 @@ mod tests {
         // Exercise min(connection window, stream window, max frame size) and
         // force the writer through several asynchronous update waits.
         framer.outbound_connection_window = 4;
-        framer.outbound_stream_windows.insert(5, 2);
+        framer.outbound_stream_windows.insert_reserved(5, 2);
         let payload: Vec<u8> = (0..10).collect();
         let expected = payload.clone();
         let peer_task = tokio::spawn(async move {
@@ -2924,7 +2941,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         assert_eq!(read_wire_frame(&mut peer).await.frame_type, FRAME_HEADERS);
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows.insert(5, 0);
+        framer.outbound_stream_windows.insert_reserved(5, 0);
 
         let peer_task = tokio::spawn(async move {
             peer.write_all(&build_frame(
@@ -3012,7 +3029,7 @@ mod tests {
         framer.peer_initial_window_size = 0;
         framer
             .outbound_stream_windows
-            .insert(5, MAX_FLOW_CONTROL_WINDOW);
+            .insert_reserved(5, MAX_FLOW_CONTROL_WINDOW);
 
         let error = framer
             .process_settings(
@@ -3057,7 +3074,7 @@ mod tests {
         let mut framer = test_framer(client);
         framer
             .outbound_stream_windows
-            .insert(5, DEFAULT_PEER_WINDOW_SIZE);
+            .insert_reserved(5, DEFAULT_PEER_WINDOW_SIZE);
 
         let error = framer
             .process_window_update(5, &0u32.to_be_bytes())
