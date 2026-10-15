@@ -2,7 +2,7 @@ use super::super::tests::{
     active_bootstrap, assert_control_tail, directory, frame, wire, SERVICE, UDID,
 };
 use super::*;
-use crate::xpc::XpcValue;
+use crate::xpc::message::XpcValue;
 use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
