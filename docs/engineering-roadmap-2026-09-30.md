@@ -8740,3 +8740,14 @@ catalogue接线；原四bootstrap/absoluteclock/nativeerrors/initialobservation�
 H2collection/outbound/future/initialRSD/Tokio/Arc/waiter/report等其它scope继续。
 128MiB非完整heap/RSS；L02不关闭、23/6/待收口、有效30与Q04全部排除不变。
 仅本地提交，无设备操作或推送。
+
+## 2026-10-15 L02 raw operation boxed futures
+
+H2七个operation与RSD五个原Box在分配前按实际future payload准入，原pin/
+借用/取消/析构、deadline/guard和typed native result保持。新增6项与
+XPC147/prepared4/existing18/core131及strictcore通过；最终CLI/feature/build/
+受测hash和Source0 smoke见
+[验证](validation/tunnel-raw-operation-futures-2026-10-15.md)。raw payload配额
+fixture明确在真实payload creation点触发len-1，避免新future费改变目标阶段。
+H2collection/outbound/initialRSD/privateBytes/Tokio/Arc/error/report等继续；
+128MiB非完整heap/RSS，L02不关闭、23/6/待收口、有效30与Q04全部排除不变。

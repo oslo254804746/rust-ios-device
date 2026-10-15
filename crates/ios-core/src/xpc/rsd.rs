@@ -771,11 +771,12 @@ impl<S> Drop for RsdOperation<'_, S> {
 
 #[cfg(feature = "tunnel")]
 fn await_rsd_operation<T>(
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
     operation: impl std::future::Future<Output = Result<T, XpcError>>,
-) -> impl std::future::Future<Output = Result<T, XpcError>> {
+) -> Result<impl std::future::Future<Output = Result<T, XpcError>>, XpcError> {
     // Box before constructing the caller's await state, as for H2/XPC. The
     // future remains directly owned; no task, reader or extra timer is added.
-    Box::pin(operation)
+    Ok(crate::xpc::raw_storage::boxed(operation, bank)?)
 }
 
 /// Announce this host on an RSD control connection after the XPC bootstrap.
@@ -849,10 +850,11 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut operation = RsdOperation::begin(framer)?;
-    let result = await_rsd_operation(initialize_xpc_connection_inner(
-        operation.framer,
-        &mut operation.progressed,
-    ))
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        initialize_xpc_connection_inner(operation.framer, &mut operation.progressed),
+    )?
     .await;
     operation.finish(result)
 }
@@ -922,10 +924,11 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut operation = RsdOperation::begin(framer)?;
-    let result = await_rsd_operation(queue_rsd_handshake_bootstrap_inner(
-        operation.framer,
-        &mut operation.progressed,
-    ))
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        queue_rsd_handshake_bootstrap_inner(operation.framer, &mut operation.progressed),
+    )?
     .await;
     operation.finish(result)
 }
@@ -993,10 +996,11 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut operation = RsdOperation::begin(framer)?;
-    let result = await_rsd_operation(read_rsd_handshake_inner(
-        operation.framer,
-        &mut operation.progressed,
-    ))
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_rsd_handshake_inner(operation.framer, &mut operation.progressed),
+    )?
     .await;
     operation.finish(result)
 }
@@ -1107,10 +1111,11 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut operation = RsdOperation::begin(framer)?;
-    let result = await_rsd_operation(read_raw_xpc_on_client_server_inner(
-        operation.framer,
-        &mut operation.progressed,
-    ))
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_raw_xpc_on_client_server_inner(operation.framer, &mut operation.progressed),
+    )?
     .await;
     operation.finish(result)
 }
@@ -1162,10 +1167,11 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut operation = RsdOperation::begin(framer)?;
-    let result = await_rsd_operation(read_raw_xpc_on_server_client_inner(
-        operation.framer,
-        &mut operation.progressed,
-    ))
+    let bank = operation.framer.raw_bank();
+    let result = await_rsd_operation(
+        bank.as_ref(),
+        read_raw_xpc_on_server_client_inner(operation.framer, &mut operation.progressed),
+    )?
     .await;
     operation.finish(result)
 }

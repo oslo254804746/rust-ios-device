@@ -336,7 +336,8 @@ async fn raw_h2_returned_bytes_keep_the_grant_after_framer_drop() {
         peer.write_all(&frame(1, 4, 1, &[])).await.unwrap();
         peer.write_all(&frame(0, 1, 1, b"kept")).await.unwrap();
     });
-    let bank = Arc::new(Semaphore::new(32));
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
     let mut framer = H2Framer::connect_with_bank(client, Some(&bank))
         .await
         .unwrap();
@@ -345,10 +346,10 @@ async fn raw_h2_returned_bytes_keep_the_grant_after_framer_drop() {
     drop(bytes);
     drop(framer);
     task.await.unwrap();
-    assert_eq!(bank.available_permits(), 28);
+    assert_eq!(bank.available_permits(), quota - 4);
     assert_eq!(&last[..], b"e");
     drop(last);
-    assert_eq!(bank.available_permits(), 32);
+    assert_eq!(bank.available_permits(), quota);
 }
 
 #[tokio::test]
@@ -368,7 +369,17 @@ async fn cancelled_partial_raw_frame_releases_payload_and_invalidates_original_f
         let mut byte = [0];
         assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
     });
-    let bank = Arc::new(Semaphore::new(64));
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let admitted_payload = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&admitted_payload);
+    crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |len| {
+            if len == 32 {
+                observed.store(true, Ordering::SeqCst);
+            }
+        }))
+    });
     let mut framer = H2Framer::connect_with_bank(client, Some(&bank))
         .await
         .unwrap();
@@ -378,7 +389,12 @@ async fn cancelled_partial_raw_frame_releases_payload_and_invalidates_original_f
             .is_err()
     );
     assert!(!framer.is_usable());
-    assert_eq!(bank.available_permits(), 64);
+    crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| hook.borrow_mut().take());
+    assert!(
+        admitted_payload.load(Ordering::SeqCst),
+        "did not reach the original partial payload read"
+    );
+    assert_eq!(bank.available_permits(), quota);
     drop(framer);
     finish.send(()).unwrap();
     task.await.unwrap();
@@ -400,7 +416,23 @@ async fn raw_payload_bank_denial_is_final_without_another_connector_call() {
         let mut drain = [0; 1024];
         while peer.read(&mut drain).await.unwrap() != 0 {}
     });
-    let bank = Arc::new(Semaphore::new(1024));
+    let quota = 16 * 1024 * 1024;
+    let bank = Arc::new(Semaphore::new(quota));
+    let held = Arc::new(std::sync::Mutex::new(None));
+    let hold = Arc::clone(&held);
+    let target_bank = Arc::clone(&bank);
+    crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |len| {
+            if len == 4096 {
+                let take = target_bank.available_permits() - (len - 1);
+                *hold.lock().unwrap() = Some(
+                    Arc::clone(&target_bank)
+                        .try_acquire_many_owned(take.try_into().unwrap())
+                        .unwrap(),
+                );
+            }
+        }))
+    });
     let mut client = Some(client);
     let calls = AtomicUsize::new(0);
     let result = checked_handshake_prepared(
@@ -413,11 +445,17 @@ async fn raw_payload_bank_denial_is_final_without_another_connector_call() {
         &bank,
     )
     .await;
+    crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| hook.borrow_mut().take());
     task.await.unwrap();
     assert_eq!(
         crate::classify_error(&result.expect_err("raw payload admission bypassed")),
         crate::ErrorClass::ResourceLimit
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(bank.available_permits(), 1024);
+    assert!(
+        held.lock().unwrap().is_some(),
+        "quota did not target actual raw payload creation"
+    );
+    drop(held.lock().unwrap().take());
+    assert_eq!(bank.available_permits(), quota);
 }

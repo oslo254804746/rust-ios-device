@@ -32,6 +32,43 @@ fn charge(bank: &Arc<Semaphore>, bytes: usize) -> io::Result<OwnedSemaphorePermi
         .map_err(|_| limit())
 }
 
+pub(super) struct BoxedOperation<F> {
+    future: std::pin::Pin<Box<F>>,
+    _fee: Option<OwnedSemaphorePermit>,
+}
+
+pub(super) fn boxed<F>(
+    operation: F,
+    bank: Option<&Arc<Semaphore>>,
+) -> io::Result<BoxedOperation<F>> {
+    // This is the existing Box allocation, with its concrete payload admitted
+    // before allocation. No task, timer, or detached operation is introduced.
+    let fee = bank
+        .map(|bank| charge(bank, std::mem::size_of_val(&operation)))
+        .transpose()?;
+    Ok(BoxedOperation {
+        future: Box::pin(operation),
+        _fee: fee,
+    })
+}
+
+impl<F: std::future::Future> std::future::Future for BoxedOperation<F> {
+    type Output = F::Output;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(cx)
+    }
+}
+
+#[cfg(test)]
+type PayloadAdmissionHook = std::cell::RefCell<Option<Box<dyn FnMut(usize)>>>;
+#[cfg(test)]
+thread_local! {
+    pub(super) static PAYLOAD_ADMISSION: PayloadAdmissionHook = const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) fn exact_vec<T>(
     bank: &Arc<Semaphore>,
     capacity: usize,
@@ -70,6 +107,12 @@ pub(crate) struct MutableBytes {
 }
 impl MutableBytes {
     pub(crate) fn zeroed(bank: &Arc<Semaphore>, len: usize) -> io::Result<Self> {
+        #[cfg(test)]
+        PAYLOAD_ADMISSION.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().as_mut() {
+                callback(len);
+            }
+        });
         let (data_fee, mut bytes) = exact_vec(bank, len)?;
         bytes.resize(len, 0);
         Ok(Self {
@@ -203,3 +246,7 @@ impl RawBuffer {
 #[cfg(test)]
 #[path = "raw_storage/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "raw_storage/future_tests.rs"]
+mod future_tests;
