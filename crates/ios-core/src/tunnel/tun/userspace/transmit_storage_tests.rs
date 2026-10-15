@@ -356,20 +356,23 @@ async fn transmit_actual_partial_duplex_write_keeps_full_packet_capacity_until_f
 async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_workers_and_client() {
     let baseline = alive();
     let mtu = ValidatedMtu::new(1280).unwrap();
-    let connection_backing = 4 * std::mem::size_of::<(SocketHandle, ConnState)>();
-    let socket_backing = 4 * std::mem::size_of::<smoltcp::iface::SocketStorage<'static>>();
     let tx_backing = 4 * std::mem::size_of::<OwnedBuffer>();
-    let quota = IPV6_HEADER_LEN
-        + runtime_channel_bytes()
-        + client_channel_bytes()
-        + runtime_owner_bytes()
-        + SOCKET_BUFFER_BYTES * 2
-        + connection_backing
-        + socket_backing
-        + tx_backing
-        + mtu.as_usize()
-        - 1;
+    let quota = 16 * 1024 * 1024;
     let bank = Arc::new(Semaphore::new(quota));
+    let held = Arc::new(std::sync::Mutex::new(None));
+    let hold = Arc::clone(&held);
+    let target_bank = Arc::clone(&bank);
+    BEFORE_TX_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            let available = tx_backing + mtu.as_usize() - 1;
+            let take = target_bank.available_permits() - available;
+            *hold.lock().unwrap() = Some(
+                Arc::clone(&target_bank)
+                    .try_acquire_many_owned(take.try_into().unwrap())
+                    .unwrap(),
+            );
+        }));
+    });
     let tx_phase = Arc::new(AtomicBool::new(false));
     let reached = Arc::clone(&tx_phase);
     let observed_bank = Arc::clone(&bank);
@@ -465,6 +468,7 @@ async fn transmit_actual_runtime_quota_failure_stops_and_joins_all_original_work
     );
     assert_eq!(tasks, baseline);
     assert_eq!(drops, 1);
+    drop(held.lock().unwrap().take());
     assert_eq!(
         bank.available_permits(),
         quota - runtime_owner_bytes(),

@@ -8719,3 +8719,12 @@ strictcoreCLI/build/Source0 manager1/host5通过，2原ignored/22NOT_RUN保持�
 [验证](validation/tunnel-native-owner-bodies-2026-10-15.md)。Tokio/control/future/
 JoinSet/Arc/report/private/rawparser等其它scope继续，128MiB非完整heap/RSS，
 L02不关闭、23/6/待收口、有效30与Q04全部排除不变。只本地提交，无设备操作。
+## 2026-10-15 L02 native future payloads
+
+四parent与实际local proxy child在原spawn/JoinSet前按真实Box<F> payload准入，
+原pinned future析构后退款，四parent全准入后才有worker；child不足保留原fatal/
+joins/EOF。新增5项及core131/CLI504、strictcoreCLI/build/Source0 manager1/host5
+通过，2原ignored/22NOT_RUN保持，见
+[验证](validation/tunnel-native-future-payloads-2026-10-15.md)。Tokio TaskCell/
+控制/结果、JoinSet/Arc/waiter/report/private/rawparser等其它scope继续；128MiB
+非完整heap/RSS，L02不关闭、23/6/待收口、有效30与Q04全部排除不变。仅本地提交。
