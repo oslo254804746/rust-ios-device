@@ -271,8 +271,21 @@ async fn bootstrap_rsd<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    bootstrap_rsd_with_bank(stream, mode, identity, None).await
+}
+
+#[cfg(feature = "tunnel")]
+async fn bootstrap_rsd_with_bank<S>(
+    stream: S,
+    mode: HandshakeMode,
+    identity: uuid::Uuid,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Result<H2Framer<S>, XpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut framer = if matches!(mode, HandshakeMode::Active) {
-        let mut framer = H2Framer::begin_connect(stream)
+        let mut framer = H2Framer::begin_connect_with_bank(stream, bank)
             .await
             .map_err(|error| h2_error("RSD H2: ", error))?;
         queue_rsd_handshake_bootstrap_on_framer(&mut framer).await?;
@@ -282,7 +295,7 @@ where
             .map_err(|error| h2_error("RSD H2: ", error))?;
         framer
     } else {
-        H2Framer::connect(stream)
+        H2Framer::connect_with_bank(stream, bank)
             .await
             .map_err(|error| h2_error("RSD H2: ", error))?
     };
@@ -329,7 +342,7 @@ where
 
 #[cfg(feature = "tunnel")]
 pub(crate) async fn checked_handshake_with_parser<F, Fut, S, T, P>(
-    mut connector: F,
+    connector: F,
     identity: uuid::Uuid,
     deadline: tokio::time::Instant,
     bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
@@ -348,15 +361,60 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     P: FnMut(&indexmap::IndexMap<String, XpcValue>) -> Result<T, XpcError>,
 {
+    checked_handshake_wire(connector, identity, deadline, bank, |header, body| {
+        // Compatibility parser for the unbanked observation API. The prepared
+        // path calls checked_handshake_prepared and never creates this tree.
+        let mut full = BytesMut::new();
+        full.extend_from_slice(header);
+        full.extend_from_slice(body);
+        let message = decode_message(full.freeze()).map_err(CheckedReadError::Retry)?;
+        let Some(dictionary) = message.body.as_ref().and_then(XpcValue::as_dict) else {
+            return Ok(None);
+        };
+        match dictionary.get("MessageType") {
+            None => Ok(None),
+            Some(XpcValue::String(value)) if value != "Handshake" => Ok(None),
+            Some(XpcValue::String(_)) => {
+                parse(dictionary).map(Some).map_err(CheckedReadError::Final)
+            }
+            Some(_) => Err(CheckedReadError::Final(XpcError::Tls(
+                "RSD: MessageType was not a string".into(),
+            ))),
+        }
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+async fn checked_handshake_wire<F, Fut, S, T, P>(
+    mut connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    mut parse: P,
+) -> Result<
+    (
+        T,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    P: FnMut(&[u8], &[u8]) -> Result<Option<T>, CheckedReadError>,
+{
     use crate::device::existing_rsd::{RsdHandshakeMode, RsdSelectionReceipt};
     use std::time::Duration;
     let mut last_error = None;
-    let (mut attempted_modes, selection_fee) = match bank {
+    let (selection_fee, mut attempted_modes) = match bank {
         Some(bank) => {
-            let (values, fee) = crate::device::prepared_rsd::exact_vec(bank, 4)?;
-            (values, Some(fee))
+            let (fee, values) = crate::device::prepared_rsd::exact_vec(bank, 4)?;
+            (Some(fee), values)
         }
-        None => (Vec::with_capacity(4), None),
+        None => (None, Vec::with_capacity(4)),
     };
     for mode in [
         HandshakeMode::Active,
@@ -401,12 +459,15 @@ where
         let bootstrap = rsd_timeout(
             Duration::from_secs(3),
             "RSD bootstrap timed out",
-            bootstrap_rsd(stream, mode, identity),
+            bootstrap_rsd_with_bank(stream, mode, identity, bank),
         )
         .await;
         let mut framer = match bootstrap {
             Ok(framer) => framer,
             Err(error) => {
+                if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit {
+                    return Err(error);
+                }
                 if tokio::time::Instant::now() >= deadline {
                     return Err(error);
                 }
@@ -467,7 +528,7 @@ enum CheckedReadError {
 #[cfg(feature = "tunnel")]
 async fn read_checked_handshake<S, T>(
     framer: &mut H2Framer<S>,
-    parse: &mut impl FnMut(&indexmap::IndexMap<String, XpcValue>) -> Result<T, XpcError>,
+    parse: &mut impl FnMut(&[u8], &[u8]) -> Result<Option<T>, CheckedReadError>,
 ) -> Result<T, CheckedReadError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -477,28 +538,24 @@ where
         "RSD: no handshake message received".into(),
     )));
     for _ in 0..6 {
-        let message =
-            match read_xpc_on_client_server(operation.framer, &mut operation.progressed).await {
-                Ok(message) => message,
-                Err(error) => {
-                    result = Err(CheckedReadError::Retry(error));
-                    break;
-                }
-            };
-        let Some(dictionary) = message.body.as_ref().and_then(XpcValue::as_dict) else {
-            continue;
-        };
-        match dictionary.get("MessageType") {
-            None => continue,
-            Some(XpcValue::String(value)) if value != "Handshake" => continue,
-            Some(XpcValue::String(_)) => {
-                result = parse(dictionary).map_err(CheckedReadError::Final);
+        let (header, body) = match read_raw_xpc_on_client_server(operation.framer).await {
+            Ok(raw) => {
+                operation.progressed = true;
+                raw
+            }
+            Err(error) => {
+                result = Err(checked_wire_error(error));
                 break;
             }
-            Some(_) => {
-                result = Err(CheckedReadError::Final(XpcError::Tls(
-                    "RSD: MessageType was not a string".into(),
-                )));
+        };
+        match parse(&header, &body) {
+            Ok(None) => continue,
+            Ok(Some(directory)) => {
+                result = Ok(directory);
+                break;
+            }
+            Err(error) => {
+                result = Err(error);
                 break;
             }
         }
@@ -1015,6 +1072,18 @@ async fn read_xpc_body_in_chunks<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    if let Some(bank) = framer.raw_bank() {
+        let mut body = crate::xpc::raw_storage::MutableBytes::zeroed(&bank, body_len)?;
+        let mut offset = 0;
+        const CHUNK: usize = MAX_BUFFERED_BYTES_PER_STREAM - MAX_FRAME_PAYLOAD;
+        while offset < body_len {
+            let len = (body_len - offset).min(CHUNK);
+            let chunk = framer.read_stream(stream_id, len).await?;
+            body.bytes[offset..offset + len].copy_from_slice(&chunk);
+            offset += len;
+        }
+        return Ok(body.freeze());
+    }
     // A DATA frame can overshoot read_stream's requested length by one frame.
     // Leave that much headroom so bytes left over after the 24-byte XPC header
     // cannot make an otherwise exact 16 MiB read trip the H2 buffer limit.
@@ -3778,3 +3847,187 @@ mod tests {
         server_task.await.unwrap();
     }
 }
+
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_borrowed_parts<'t, 'a>(
+    dictionary: crate::xpc::message::borrowed::Dictionary<'t, 'a>,
+) -> Result<
+    (
+        Option<&'a str>,
+        Option<crate::xpc::message::borrowed::Dictionary<'t, 'a>>,
+    ),
+    XpcError,
+> {
+    use crate::device::existing_rsd::{
+        ExistingRsdProbeError, MAX_FEATURES, MAX_FIELD_BYTES, MAX_SERVICES, MAX_TEXT_BYTES,
+    };
+    let protocol = |reason: &'static str| XpcError::Tls(reason.into());
+    let mut text_bytes = 0usize;
+    let mut feature_count = 0usize;
+    let mut admit_text = |text: &str| -> Result<(), XpcError> {
+        text_bytes = text_bytes.saturating_add(text.len());
+        if text.len() > MAX_FIELD_BYTES || text_bytes > MAX_TEXT_BYTES {
+            return Err(ExistingRsdProbeError::metadata_limit());
+        }
+        Ok(())
+    };
+    let properties = dictionary
+        .get("Properties")
+        .map(|value| {
+            value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: Properties was not a dictionary"))
+        })
+        .transpose()?;
+    let udid = properties
+        .and_then(|properties| properties.get("UniqueDeviceID"))
+        .map(|value| {
+            let text = value
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| protocol("RSD: UniqueDeviceID was not a nonempty string"))?;
+            admit_text(text)?;
+            Ok::<_, XpcError>(text)
+        })
+        .transpose()?;
+    let services = dictionary
+        .get("Services")
+        .map(|value| {
+            let services = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: Services was not a dictionary"))?;
+            if services.len() > MAX_SERVICES {
+                return Err(ExistingRsdProbeError::metadata_limit());
+            }
+            Ok::<_, XpcError>(services)
+        })
+        .transpose()?;
+    if let Some(services) = services {
+        for (name, value) in services.iter() {
+            admit_text(name)?;
+            let descriptor = value
+                .as_dict()
+                .ok_or_else(|| protocol("RSD: service entry was not a dictionary"))?;
+            if let Some(port) = descriptor.get("Port") {
+                if port
+                    .as_str()
+                    .is_some_and(|text| text.len() > MAX_FIELD_BYTES)
+                {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                checked_borrowed_port(port)?;
+            }
+            let properties = descriptor
+                .get("Properties")
+                .map(|value| {
+                    value
+                        .as_dict()
+                        .ok_or_else(|| protocol("RSD: service Properties was not a dictionary"))
+                })
+                .transpose()?;
+            if let Some(value) = properties.and_then(|properties| properties.get("Features")) {
+                let features = value
+                    .as_array()
+                    .ok_or_else(|| protocol("RSD: Features was not an array"))?;
+                feature_count = feature_count.saturating_add(features.len());
+                if feature_count > MAX_FEATURES {
+                    return Err(ExistingRsdProbeError::metadata_limit());
+                }
+                for feature in features.iter() {
+                    admit_text(
+                        feature
+                            .as_str()
+                            .ok_or_else(|| protocol("RSD: feature identifier was not a string"))?,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok((udid, services))
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) fn checked_borrowed_port(
+    value: crate::xpc::message::borrowed::Value<'_, '_>,
+) -> Result<u16, XpcError> {
+    let port = if let Some(text) = value.as_str() {
+        text.parse::<u16>().map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                None,
+                source,
+            ))
+        })?
+    } else if let Some(port) = value.as_uint64() {
+        u16::try_from(port).map_err(|source| {
+            XpcError::Io(crate::error::context::received_io(
+                "decode RSD service Port",
+                Some(port),
+                source,
+            ))
+        })?
+    } else {
+        return Err(XpcError::Tls("RSD: Port had an invalid type".into()));
+    };
+    if port == 0 {
+        Err(XpcError::Tls("RSD: service Port was zero".into()))
+    } else {
+        Ok(port)
+    }
+}
+
+#[cfg(feature = "tunnel")]
+pub(crate) async fn checked_handshake_prepared<F, Fut, S>(
+    connector: F,
+    identity: uuid::Uuid,
+    deadline: tokio::time::Instant,
+    bank: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<
+    (
+        crate::device::PreparedRsdCatalogue,
+        crate::device::existing_rsd::RsdSelectionReceipt,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+    XpcError,
+>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<S, XpcError>>,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    checked_handshake_wire(connector, identity, deadline, Some(bank), |header, body| {
+        let tree = crate::xpc::message::borrowed::decode(header, body, bank)
+            .map_err(checked_wire_error)?;
+        let Some(dictionary) = tree.as_ref().and_then(|tree| tree.root().as_dict()) else {
+            return Ok(None);
+        };
+        match dictionary.get("MessageType") {
+            None => Ok(None),
+            Some(value) => match value.as_str() {
+                Some("Handshake") => {
+                    crate::device::PreparedRsdCatalogue::decode_borrowed(dictionary, bank)
+                        .map(Some)
+                        .map_err(CheckedReadError::Final)
+                }
+                Some(_) => Ok(None),
+                None => Err(CheckedReadError::Final(XpcError::Tls(
+                    "RSD: MessageType was not a string".into(),
+                ))),
+            },
+        }
+    })
+    .await
+}
+
+#[cfg(feature = "tunnel")]
+fn checked_wire_error(error: XpcError) -> CheckedReadError {
+    if crate::classify_error(&error) == crate::ErrorClass::ResourceLimit {
+        CheckedReadError::Final(error)
+    } else {
+        CheckedReadError::Retry(error)
+    }
+}
+
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "rsd/raw_storage_tests.rs"]
+mod raw_storage_tests;

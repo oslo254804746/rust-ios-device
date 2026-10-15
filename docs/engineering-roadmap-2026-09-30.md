@@ -8728,3 +8728,15 @@ joins/EOF。新增5项及core131/CLI504、strictcoreCLI/build/Source0 manager1/h
 [验证](validation/tunnel-native-future-payloads-2026-10-15.md)。Tokio TaskCell/
 控制/结果、JoinSet/Arc/waiter/report/private/rawparser等其它scope继续；128MiB
 非完整heap/RSS，L02不关闭、23/6/待收口、有效30与Q04全部排除不变。仅本地提交。
+
+## 2026-10-15 L02 raw H2/XPC buffers and borrowed arena
+
+原bank沿checked prepared生产路径准入真实received payload/demux replacement/
+XPC body/borrowed Node+Edge数组，原slice/clone最后owner与两遍解析直接创建
+catalogue接线；原四bootstrap/absoluteclock/nativeerrors/initialobservation保持。
+新增17项，XPC141/prepared4/existing18/core131/CLI504及strictcore通过；最终
+构建、受测hash/commit和smoke见
+[验证](validation/tunnel-raw-parser-storage-2026-10-15.md)。Bytes私有ownerheader、
+H2collection/outbound/future/initialRSD/Tokio/Arc/waiter/report等其它scope继续。
+128MiB非完整heap/RSS；L02不关闭、23/6/待收口、有效30与Q04全部排除不变。
+仅本地提交，无设备操作或推送。

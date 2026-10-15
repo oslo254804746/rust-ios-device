@@ -15,8 +15,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
+use super::raw_storage::{MutableBytes, OwnerFees, RawBuffer};
+use bytes::Bytes;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::sync::Semaphore;
 use tokio::time::{error::Elapsed, Instant};
 
 use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPER_MAGIC};
@@ -127,12 +130,13 @@ pub const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub struct H2Framer<S> {
     stream: H2Stream<S>,
     operation_timeout: Option<Duration>,
+    raw_bank: Option<Arc<Semaphore>>,
     // Accumulated data from stream 1 (clientServer)
-    client_server_buf: BytesMut,
+    client_server_buf: RawBuffer,
     // Accumulated data from stream 3 (serverClient)
-    server_client_buf: BytesMut,
+    server_client_buf: RawBuffer,
     // Accumulated data from arbitrary additional streams.
-    stream_bufs: HashMap<u32, BytesMut>,
+    stream_bufs: HashMap<u32, RawBuffer>,
     // Streams for which the client has already sent HEADERS.
     locally_open_streams: HashSet<u32>,
     // Whether HEADERS have been sent on each stream
@@ -349,8 +353,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 failed: false,
             },
             operation_timeout: None,
-            client_server_buf: BytesMut::new(),
-            server_client_buf: BytesMut::new(),
+            raw_bank: None,
+            client_server_buf: RawBuffer::default(),
+            server_client_buf: RawBuffer::default(),
             stream_bufs: HashMap::new(),
             locally_open_streams: HashSet::new(),
             client_server_open: false,
@@ -399,6 +404,35 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             deadline,
             completed: false,
         })
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub(crate) fn raw_bank(&self) -> Option<Arc<Semaphore>> {
+        self.raw_bank.clone()
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub(crate) async fn begin_connect_with_bank(
+        stream: S,
+        bank: Option<&Arc<Semaphore>>,
+    ) -> Result<Self, H2Error> {
+        // The preface path reads no peer bytes. Configure before finish_connect
+        // or any queued bootstrap can retain a received frame.
+        let mut framer = Self::begin_connect(stream).await?;
+        framer.raw_bank = bank.cloned();
+        framer.client_server_buf = RawBuffer::new(bank.cloned());
+        framer.server_client_buf = RawBuffer::new(bank.cloned());
+        Ok(framer)
+    }
+
+    #[cfg(feature = "tunnel")]
+    pub(crate) async fn connect_with_bank(
+        stream: S,
+        bank: Option<&Arc<Semaphore>>,
+    ) -> Result<Self, H2Error> {
+        let mut framer = Self::begin_connect_with_bank(stream, bank).await?;
+        framer.finish_connect().await?;
+        Ok(framer)
     }
 
     /// Perform the HTTP/2 handshake and return a framer ready for use.
@@ -481,7 +515,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             )));
         }
 
-        let mut payload = vec![0u8; length];
+        let (raw_fees, mut payload) = match &self.raw_bank {
+            Some(bank) => {
+                let owned = MutableBytes::zeroed(bank, length)?;
+                let (fees, bytes) = owned.into_parts();
+                (Some(fees), bytes)
+            }
+            None => (None, vec![0u8; length]),
+        };
         if length > 0 {
             self.stream.read_exact(&mut payload).await?;
         }
@@ -491,6 +532,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             flags,
             stream_id,
             payload,
+            raw_fees,
         })
     }
 
@@ -521,7 +563,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     async fn read_stream_inner(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
         self.ensure_stream_available(stream_id)?;
         self.ensure_peer_stream_not_reused(stream_id)?;
-        self.drain_pending_data_frames();
+        self.drain_pending_data_frames()?;
         while self.stream_buffer_len(stream_id) < n {
             self.ensure_stream_available(stream_id)?;
             if self.closed_streams.contains(&stream_id) {
@@ -1029,7 +1071,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                     return Ok(DataFrame {
                         stream_id: frame.stream_id,
                         flags: frame.flags,
-                        payload: Bytes::from(frame.payload),
+                        payload: frame.into_payload(),
                     });
                 }
                 FRAME_GOAWAY => {
@@ -1090,7 +1132,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     async fn buffer_next_data_stream_inner(&mut self) -> Result<u32, H2Error> {
         self.ensure_connection_open()?;
         if !self.pending_data_frames.is_empty() {
-            self.drain_pending_data_frames();
+            self.drain_pending_data_frames()?;
         }
         if let Some(stream_id) = self.first_ready_xpc_stream()? {
             return Ok(stream_id);
@@ -1162,7 +1204,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(buffer.len() >= total_len || total_len > buffered_message_limit)
     }
 
-    fn stream_buffer(&self, stream_id: u32) -> Option<&BytesMut> {
+    fn stream_buffer(&self, stream_id: u32) -> Option<&RawBuffer> {
         match stream_id {
             STREAM_CLIENT_SERVER => Some(&self.client_server_buf),
             STREAM_SERVER_CLIENT => Some(&self.server_client_buf),
@@ -1193,7 +1235,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             // cut short.
             if self
                 .stream_buffer(stream_id)
-                .map_or(true, BytesMut::is_empty)
+                .map_or(true, RawBuffer::is_empty)
             {
                 continue;
             }
@@ -1305,7 +1347,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 _ => {
                     self.locally_open_streams.insert(stream_id);
                     self.peer_open_streams.remove(&stream_id);
-                    self.stream_bufs.entry(stream_id).or_default();
+                    let bank = self.raw_bank.clone();
+                    self.stream_bufs
+                        .entry(stream_id)
+                        .or_insert_with(|| RawBuffer::new(bank));
                 }
             }
         }
@@ -1466,14 +1511,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         }
 
         self.reserve_stream_buffer(stream_id, payload.len())?;
-        match stream_id {
-            STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(payload),
-            STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(payload),
-            other => self
-                .stream_bufs
-                .entry(other)
-                .or_default()
-                .extend_from_slice(payload),
+        if let Err(error) = self.append_admitted_payload(stream_id, payload) {
+            self.buffered_bytes = self.buffered_bytes.saturating_sub(payload.len());
+            return Err(error.into());
         }
         Ok(())
     }
@@ -1565,7 +1605,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         self.pending_data_frames.push_back(DataFrame {
             stream_id,
             flags,
-            payload: Bytes::from(frame.payload),
+            payload: frame.into_payload(),
         });
         self.replenish_receive_window(stream_id, payload_len)
             .await?;
@@ -1573,21 +1613,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         Ok(())
     }
 
-    fn drain_pending_data_frames(&mut self) {
+    fn append_admitted_payload(&mut self, stream_id: u32, payload: &[u8]) -> std::io::Result<()> {
+        let bank = self.raw_bank.clone();
+        match stream_id {
+            STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(payload),
+            STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(payload),
+            other => self
+                .stream_bufs
+                .entry(other)
+                .or_insert_with(|| RawBuffer::new(bank))
+                .extend_from_slice(payload),
+        }
+    }
+
+    fn drain_pending_data_frames(&mut self) -> Result<(), H2Error> {
         while let Some(frame) = self.pending_data_frames.pop_front() {
-            if frame.payload.is_empty() {
-                continue;
-            }
-            match frame.stream_id {
-                STREAM_CLIENT_SERVER => self.client_server_buf.extend_from_slice(&frame.payload),
-                STREAM_SERVER_CLIENT => self.server_client_buf.extend_from_slice(&frame.payload),
-                stream_id => self
-                    .stream_bufs
-                    .entry(stream_id)
-                    .or_default()
-                    .extend_from_slice(&frame.payload),
+            if let Err(error) = self.append_admitted_payload(frame.stream_id, &frame.payload) {
+                // The deque already charged these logical bytes. Preserve
+                // the remaining queue/accounting if exact replacement fails.
+                self.pending_data_frames.push_front(frame);
+                return Err(error.into());
             }
         }
+        Ok(())
     }
 
     fn mark_end_stream(&mut self, stream_id: u32, flags: u8) {
@@ -1615,7 +1663,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         match stream_id {
             STREAM_CLIENT_SERVER => self.client_server_buf.len(),
             STREAM_SERVER_CLIENT => self.server_client_buf.len(),
-            _ => self.stream_bufs.get(&stream_id).map_or(0, BytesMut::len),
+            _ => self.stream_bufs.get(&stream_id).map_or(0, RawBuffer::len),
         }
     }
 
@@ -1626,12 +1674,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             )));
         }
         let bytes = match stream_id {
-            STREAM_CLIENT_SERVER => self.client_server_buf.split_to(n).freeze(),
-            STREAM_SERVER_CLIENT => self.server_client_buf.split_to(n).freeze(),
+            STREAM_CLIENT_SERVER => self.client_server_buf.split_to(n),
+            STREAM_SERVER_CLIENT => self.server_client_buf.split_to(n),
             _ => self
                 .stream_bufs
                 .get_mut(&stream_id)
-                .map(|buf| buf.split_to(n).freeze())
+                .map(|buf| buf.split_to(n))
                 .ok_or_else(|| H2Error::Protocol(format!("stream {stream_id} not open")))?,
         };
         self.buffered_bytes = self.buffered_bytes.saturating_sub(n);
@@ -1640,7 +1688,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             && self
                 .stream_bufs
                 .get(&stream_id)
-                .is_some_and(BytesMut::is_empty)
+                .is_some_and(RawBuffer::is_empty)
             && !self.locally_open_streams.contains(&stream_id)
         {
             self.stream_bufs.remove(&stream_id);
@@ -1668,6 +1716,13 @@ struct RawFrame {
     flags: u8,
     stream_id: u32,
     payload: Vec<u8>,
+    raw_fees: Option<OwnerFees>,
+}
+
+impl RawFrame {
+    fn into_payload(self) -> Bytes {
+        super::raw_storage::freeze_parts(self.payload, self.raw_fees)
+    }
 }
 
 // ── Frame builders ────────────────────────────────────────────────────────────
@@ -2071,6 +2126,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_SETTINGS,
                 flags: 0,
                 stream_id: STREAM_INIT,
@@ -2092,6 +2148,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 4,
@@ -2137,6 +2194,7 @@ mod tests {
             stream.read_exact(&mut payload).await.unwrap();
         }
         RawFrame {
+            raw_fees: None,
             frame_type: header[3],
             flags: header[4],
             stream_id: u32::from_be_bytes([header[5] & 0x7F, header[6], header[7], header[8]]),
@@ -2399,6 +2457,7 @@ mod tests {
         for stream_id in [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT] {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: FLAG_END_STREAM,
                     stream_id,
@@ -2410,6 +2469,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: FLAG_END_STREAM,
                 stream_id: 5,
@@ -2421,6 +2481,7 @@ mod tests {
         for stream_id in 100..100 + MAX_CLOSED_STREAMS as u32 + 1 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: FLAG_END_STREAM,
                     stream_id,
@@ -2445,6 +2506,7 @@ mod tests {
         // Eviction never turns an old stream ID into a reusable stream.
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: 100,
@@ -2457,6 +2519,7 @@ mod tests {
         let next_stream = 100 + MAX_CLOSED_STREAMS as u32 + 1;
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: next_stream,
@@ -2475,6 +2538,7 @@ mod tests {
         for stream_id in [STREAM_CLIENT_SERVER, STREAM_SERVER_CLIENT] {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_RST_STREAM,
                     flags: 0,
                     stream_id,
@@ -2486,6 +2550,7 @@ mod tests {
         framer.open_stream(5).await.unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_RST_STREAM,
                 flags: 0,
                 stream_id: 5,
@@ -2497,6 +2562,7 @@ mod tests {
         for stream_id in 100..100 + MAX_CLOSED_STREAMS as u32 + 1 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_HEADERS,
                     flags: FLAG_END_HEADERS,
                     stream_id,
@@ -2506,6 +2572,7 @@ mod tests {
                 .unwrap();
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_RST_STREAM,
                     flags: 0,
                     stream_id,
@@ -2529,6 +2596,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_HEADERS,
                 flags: FLAG_END_HEADERS,
                 stream_id: 100,
@@ -2546,6 +2614,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: FLAG_END_STREAM,
                 stream_id: 6,
@@ -2555,6 +2624,7 @@ mod tests {
             .unwrap();
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -2882,6 +2952,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_RST_STREAM,
                 flags: 0,
                 stream_id: 9,
@@ -2974,6 +3045,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -2983,6 +3055,7 @@ mod tests {
             .unwrap();
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 6,
@@ -3013,6 +3086,7 @@ mod tests {
         for stream_id in 100..100 + MAX_UNKNOWN_BUFFERED_STREAMS as u32 {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: 0,
                     stream_id,
@@ -3025,6 +3099,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 100 + MAX_UNKNOWN_BUFFERED_STREAMS as u32,
@@ -3044,6 +3119,7 @@ mod tests {
 
         framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 8,
@@ -3055,6 +3131,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 8,
@@ -3076,6 +3153,7 @@ mod tests {
         for stream_id in stream_ids {
             framer
                 .dispatch_frame(RawFrame {
+                    raw_fees: None,
                     frame_type: FRAME_DATA,
                     flags: 0,
                     stream_id,
@@ -3088,6 +3166,7 @@ mod tests {
 
         let error = framer
             .dispatch_frame(RawFrame {
+                raw_fees: None,
                 frame_type: FRAME_DATA,
                 flags: 0,
                 stream_id: 16,

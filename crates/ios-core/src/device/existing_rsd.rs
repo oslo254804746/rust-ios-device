@@ -286,9 +286,10 @@ pub async fn observe_existing_rsd_with_selection(
 }
 
 /// Prepare a current catalogue under the caller's original absolute deadline.
-/// Only the new catalogue/selection own exact-layout admission. The legacy H2
-/// decoder's raw scratch/tree and private native/error allocations stay outside
-/// this known storage contract and must not be called a global manager heap cap.
+/// Catalogue/selection, received H2 payloads, demultiplexed buffers, XPC bodies
+/// and the explicit borrowed parser arena admit exact requested storage before
+/// allocation from this same bank. Private owner/maps/native/error allocations
+/// remain outside this contract; this is not a global manager heap/RSS cap.
 pub async fn prepare_existing_rsd_at(
     route: ExistingRsdRoute,
     deadline: Instant,
@@ -331,7 +332,7 @@ async fn prepare_selected_from_source(
         .run(async {
             let identity = source.identity().await?;
             clock.check()?;
-            let (catalogue, receipt, fee) = crate::xpc::rsd::checked_handshake_with_parser(
+            let (catalogue, receipt, fee) = crate::xpc::rsd::checked_handshake_prepared(
                 || async {
                     clock.check().map_err(connection_error)?;
                     let stream = source.dial(route).await.map_err(connection_error)?;
@@ -349,8 +350,7 @@ async fn prepare_selected_from_source(
                 },
                 identity,
                 deadline,
-                Some(bank),
-                |dictionary| super::PreparedRsdCatalogue::decode(dictionary, bank),
+                bank,
             )
             .await?;
             catalogue.finish(receipt, fee.expect("prepared selection admission"))
