@@ -605,7 +605,8 @@ impl TunnelAgentState {
                                 self.inner.lifecycle.before_failure_record();
                                 let previous_current =
                                     failed.get(&intent.failed.node.udid).is_some_and(|old| {
-                                        intent.ticket.failure_is_current(&old.version)
+                                        old.matches_global(&intent.ticket.global_epoch())
+                                            && intent.ticket.failure_is_current(&old.version)
                                     });
                                 let mut prepared = Some(intent.failed.node);
                                 let outcome = intent.ticket.commit(|| {
@@ -613,6 +614,7 @@ impl TunnelAgentState {
                                     let failure_stamp = intent.ticket.failure_stamp();
                                     let mut next =
                                         prepared.take().expect("one pre-Source failure node");
+                                    next.row.global = Some(intent.ticket.global_epoch());
                                     let previous = failed.get(&next.udid);
                                     next.row.last_attempt = Instant::now();
                                     next.row.fail_count = previous

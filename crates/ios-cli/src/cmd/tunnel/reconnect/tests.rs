@@ -210,7 +210,7 @@ async fn retry_receipt_stale_same_poll_original_uses_reserved_history_even_with_
     attempt.finish(&result);
     assert!(ledger.receipt(A).is_none());
     assert_eq!(ledger.receipt_count(), 1);
-    ledger.clear_retired_causes();
+    drop(ledger.take_retired_causes());
     drop(ledger);
     drop(block);
     assert!(

@@ -135,6 +135,7 @@ impl Node {
             udid,
             row: FailedTunnelAttempt {
                 version: Arc::new(()),
+                global: None,
                 last_attempt: Instant::now(),
                 fail_count: 0,
                 identity,
@@ -163,6 +164,7 @@ impl Node {
             udid,
             row: FailedTunnelAttempt {
                 version: Arc::new(()),
+                global: None,
                 last_attempt: Instant::now(),
                 fail_count: 0,
                 identity,
@@ -365,6 +367,18 @@ impl Table {
     }
     pub(super) fn take_all(&mut self) -> RemovedBatch {
         self.select(&|_, _| false);
+        let removed = self.remove_selected();
+        self.release_empty_backing();
+        removed
+    }
+
+    pub(super) fn take_other_globals(&mut self, current: Option<&Arc<()>>) -> RemovedBatch {
+        self.select(&|_, row| {
+            row.global
+                .as_ref()
+                .zip(current)
+                .is_some_and(|(row, current)| Arc::ptr_eq(row, current))
+        });
         let removed = self.remove_selected();
         self.release_empty_backing();
         removed

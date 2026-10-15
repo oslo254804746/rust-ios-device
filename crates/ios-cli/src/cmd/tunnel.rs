@@ -517,6 +517,9 @@ struct FailedTunnelAttempt {
     // Every committed failure write gets a fresh identity, even with a paused
     // clock, a saturated fail count or a reused reservation permit.
     version: Arc<()>,
+    // Set under the committing ticket fence; pending/test-only rows may be
+    // unbound. Device stop/manual generations do not change this global owner.
+    global: Option<Arc<()>>,
     last_attempt: Instant,
     fail_count: u32,
     identity: failure_table::Identity,
@@ -570,6 +573,14 @@ impl std::fmt::Debug for AttemptIdentity {
 }
 
 impl FailedTunnelAttempt {
+    fn matches_global(&self, epoch: &Arc<()>) -> bool {
+        // Unbound rows only exist in private table fixtures. Committed rows
+        // always carry the original ticket's admitted, shared epoch owner.
+        self.global
+            .as_ref()
+            .map_or(true, |global| Arc::ptr_eq(global, epoch))
+    }
+
     #[cfg(test)]
     fn should_skip(&self, now: Instant) -> bool {
         now.duration_since(self.last_attempt) < failed_device_backoff(self.fail_count)
@@ -850,9 +861,14 @@ impl TunnelAgentState {
 
     async fn clear(&self) {
         let mut tunnels = self.inner.tunnels.write().await;
+        // Detach pre-cutover history without running its arbitrary destructors
+        // under table guards. Pending Sources keep their original nodes.
+        let retired_causes = self.inner.retry.take_retired_causes();
         let old_epoch = self.inner.lifecycle.clear_owned();
         let old = tunnels.take_all();
         drop(tunnels);
+        #[cfg(test)]
+        self.inner.lifecycle.before_clear_cleanup();
         if let Some(old_epoch) = old_epoch {
             self.inner.native.retire_global(&old_epoch);
             let retired = self
@@ -863,10 +879,13 @@ impl TunnelAgentState {
         }
         drop(old);
         let mut failed = self.inner.failed_attempts.write().await;
-        let removed = failed.take_all();
+        // Old clear may resume after another epoch has already committed rows.
+        // Keep the actual current global under its read fence while selecting;
+        // also collect stale rows left by a previously cancelled clear.
+        let removed = self.inner.lifecycle.take_stale_failures(&mut failed);
         drop(failed);
         drop(removed);
-        self.inner.retry.clear_retired_causes();
+        drop(retired_causes);
     }
 
     async fn list_records(&self) -> Vec<TunnelRecord> {
@@ -1733,21 +1752,24 @@ impl TunnelAgentState {
                         }
                         return Ok(());
                     }
-                    let (skip, previous_version) =
-                        self.inner.failed_attempts.read().await.get(udid).map_or(
-                            (false, None),
-                            |failed| {
-                                (
-                                    ticket.failure_is_current(&failed.version)
-                                        && failed.identity == identity
-                                        && failed.should_skip_with_policy(
-                                            Instant::now(),
-                                            self.inner.retry.policy(),
-                                        ),
-                                    Some(Arc::clone(&failed.version)),
-                                )
-                            },
-                        );
+                    let (skip, previous_version) = self
+                        .inner
+                        .failed_attempts
+                        .read()
+                        .await
+                        .get(udid)
+                        .filter(|failed| failed.matches_global(&ticket.global_epoch()))
+                        .map_or((false, None), |failed| {
+                            (
+                                ticket.failure_is_current(&failed.version)
+                                    && failed.identity == identity
+                                    && failed.should_skip_with_policy(
+                                        Instant::now(),
+                                        self.inner.retry.policy(),
+                                    ),
+                                Some(Arc::clone(&failed.version)),
+                            )
+                        });
                     if skip {
                         return Ok(());
                     }
@@ -2556,7 +2578,8 @@ impl TunnelAgentState {
         let known = candidate_index::Index::new(candidates, &self.inner.global_metadata_bytes)?;
         let mut failed = self.inner.failed_attempts.write().await;
         let removed = failed.retain(whole, epoch, |udid, failed| {
-            self.inner.access.permits_device(udid)
+            failed.matches_global(&epoch.generation)
+                && self.inner.access.permits_device(udid)
                 && match known.get(udid) {
                     Some((route, native_id)) => {
                         failed.identity.route == *route && failed.identity.native_id == native_id
@@ -2660,10 +2683,13 @@ impl TunnelAgentState {
         let mut prepared = Some(node);
         let old = ticket.commit(|| {
             let mut node = prepared.take().expect("prepared seed node");
+            node.row.global = Some(ticket.global_epoch());
             node.row.last_attempt = Instant::now();
             node.row.fail_count = failed
                 .get(&node.udid)
-                .filter(|old| old.identity == node.row.identity)
+                .filter(|old| {
+                    old.matches_global(&ticket.global_epoch()) && old.identity == node.row.identity
+                })
                 .map_or(1, |old| old.fail_count.saturating_add(1));
             if let Some(previous) = failed.get(&node.udid) {
                 node.row.slot = previous.slot.clone();
@@ -4033,6 +4059,7 @@ mod tests {
         let now = Instant::now();
         let failed = FailedTunnelAttempt {
             version: Arc::new(()),
+            global: None,
             last_attempt: now - Duration::from_secs(10),
             fail_count: 2,
             identity: failure_table::Identity::owned(
@@ -4049,6 +4076,7 @@ mod tests {
 
         let expired = FailedTunnelAttempt {
             version: Arc::new(()),
+            global: None,
             last_attempt: now - Duration::from_secs(61),
             fail_count: 2,
             identity: failure_table::Identity::owned(
