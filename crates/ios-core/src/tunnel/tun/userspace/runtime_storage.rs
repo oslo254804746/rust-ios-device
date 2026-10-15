@@ -43,7 +43,7 @@ impl RuntimeStorage {
     }
 }
 
-pub(super) fn charge(
+pub(crate) fn charge(
     bank: Option<&Arc<Semaphore>>,
     bytes: usize,
 ) -> Result<Option<OwnedSemaphorePermit>, TunnelError> {
@@ -55,6 +55,61 @@ pub(super) fn charge(
             .map_err(|_| rejected(BufferAdmission::Exhausted))
     })
     .transpose()
+}
+
+pub(super) struct TaskHandles {
+    values: Vec<super::OwnedTask>,
+    _storage: Option<OwnedSemaphorePermit>,
+}
+impl TaskHandles {
+    pub(super) fn initialize(&mut self, tasks: [super::OwnedTask; 4]) {
+        assert!(self.values.is_empty() && self.values.capacity() >= tasks.len());
+        self.values.extend(tasks);
+    }
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, super::OwnedTask> {
+        self.values.iter()
+    }
+    pub(super) fn drain(&mut self) -> std::vec::Drain<'_, super::OwnedTask> {
+        self.values.drain(..)
+    }
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.values.len()
+    }
+}
+impl<'a> IntoIterator for &'a TaskHandles {
+    type Item = &'a super::OwnedTask;
+    type IntoIter = std::slice::Iter<'a, super::OwnedTask>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+
+pub(super) fn task_handles(bank: Option<&Arc<Semaphore>>) -> Result<TaskHandles, TunnelError> {
+    let bytes = 4 * mem::size_of::<super::OwnedTask>();
+    let mut storage = charge(bank, bytes)?;
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(4)
+        .map_err(|original| rejected(BufferAdmission::Allocation(original)))?;
+    let actual = handles
+        .capacity()
+        .checked_mul(mem::size_of::<super::OwnedTask>())
+        .ok_or_else(|| rejected(BufferAdmission::SizeOverflow))?;
+    if actual > bytes {
+        return Err(rejected(BufferAdmission::UnexpectedCapacity));
+    }
+    storage = storage.map(|mut fee| {
+        let exact = fee
+            .split(actual)
+            .expect("pre-admitted native task handle backing");
+        drop(fee);
+        exact
+    });
+    Ok(TaskHandles {
+        values: handles,
+        _storage: storage,
+    })
 }
 
 /// Real backing follows the queue. Growth prepays the replacement allocation
