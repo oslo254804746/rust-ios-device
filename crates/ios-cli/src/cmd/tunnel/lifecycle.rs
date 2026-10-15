@@ -28,6 +28,8 @@ pub(super) struct Lifecycle {
     scan_after_open: std::sync::Mutex<Option<LifecycleCallback>>,
     #[cfg(test)]
     failure_before_commit: std::sync::Mutex<Option<LifecycleCallback>>,
+    #[cfg(test)]
+    clear_before_cleanup: std::sync::Mutex<Option<LifecycleCallback>>,
 }
 
 struct DeviceGate {
@@ -263,6 +265,8 @@ impl Lifecycle {
             scan_after_open: std::sync::Mutex::new(None),
             #[cfg(test)]
             failure_before_commit: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            clear_before_cleanup: std::sync::Mutex::new(None),
         }
     }
 
@@ -464,6 +468,21 @@ impl Lifecycle {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn on_next_clear_cleanup(&self, callback: impl FnOnce(&Lifecycle) + Send + 'static) {
+        let mut pending = self.clear_before_cleanup.lock().unwrap();
+        assert!(pending.is_none(), "clear cleanup hook already installed");
+        *pending = Some(Box::new(callback));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_clear_cleanup(&self) {
+        let callback = self.clear_before_cleanup.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback(self);
+        }
+    }
+
     // The caller holds the tunnel table write guard. This fences publication
     // together with removal without waiting for a connecting device's serial lock.
     #[cfg(test)]
@@ -498,6 +517,16 @@ impl Lifecycle {
         });
         self.scan.send_replace(Arc::new(()));
         previous
+    }
+
+    pub(super) fn take_stale_failures(
+        &self,
+        failed: &mut super::failure_table::Table,
+    ) -> super::failure_table::RemovedBatch {
+        // Caller holds only the failure writer. Selection/removal is synchronous
+        // and returned payloads outlive both this watch read and the table guard.
+        let current = self.shutdown.borrow();
+        failed.take_other_globals(current.as_ref())
     }
 
     pub(super) fn close(&self) {
@@ -715,6 +744,10 @@ impl Ticket {
         Arc::ptr_eq(&self.gate, &other.gate)
             && Arc::ptr_eq(&self.generation, &other.generation)
             && Arc::ptr_eq(&self.shutdown_generation, &other.shutdown_generation)
+    }
+
+    pub(super) fn global_epoch(&self) -> Arc<()> {
+        Arc::clone(&self.shutdown_generation)
     }
 
     pub(super) fn belongs_to_global(&self, old: &Arc<()>) -> bool {

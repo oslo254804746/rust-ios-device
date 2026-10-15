@@ -8826,3 +8826,12 @@ MISSING，不能用设备sidecar覆盖into_rsd逃逸。XPC201及activation/proxy
 组合通过，最终门禁见[验证](validation/tunnel-initial-rsd-scratch-2026-10-15.md)。
 128MiB非完整heap/RSS，原fullfreshness/private等继续；L02不关闭，23/6/待收口、
 有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-15 L02 clear epoch failure/history race
+
+原clear发布新epoch后再无条件清空failure/retiredcause，可能删除新epoch记录。
+两项竞态已red复现；失败行保留原global owner、清理只移出失效epoch，退休
+history在切换前取出；原即时取消/guard外析构/Pending与typed对象保持。最终
+门禁见[验证](validation/tunnel-clear-epoch-2026-10-15.md)。仅修复原生命周期/退避
+子项，完整freshness/private等仍继续；128MiB非完整heap/RSS，L02不关闭，
+23/6/待收口、有效30与Q04全部排除不变，仅本地提交。

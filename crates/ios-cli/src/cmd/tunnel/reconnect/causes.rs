@@ -238,7 +238,9 @@ impl Ledger {
         }
         Ok(roots)
     }
-    pub(in super::super) fn clear_retired_causes(&self) {
+    /// Detach the current historical roots at the caller's cutover boundary.
+    /// Their payloads must be dropped after all caller lifecycle/table guards.
+    pub(in super::super) fn take_retired_causes(&self) -> RemovedBatch {
         let removed = {
             let mut state = self.lock();
             for node in state.rows.as_mut_slice() {
@@ -251,7 +253,7 @@ impl Ledger {
             state.release_empty_backing();
             removed
         };
-        drop(removed);
+        removed
     }
     pub(in super::super) fn capture_source(
         &self,

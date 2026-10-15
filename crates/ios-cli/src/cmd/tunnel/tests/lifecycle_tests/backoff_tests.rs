@@ -153,6 +153,7 @@ fn lifecycle_tunnel_backoff_debug_does_not_expose_retained_route_host() {
     let secret = "synthetic-private-host-identity";
     let attempt = FailedTunnelAttempt {
         version: Arc::new(()),
+        global: None,
         last_attempt: Instant::now(),
         fail_count: 2,
         identity: failure_table::Identity::owned(
