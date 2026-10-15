@@ -243,7 +243,13 @@ impl<S> H2Operation<'_, S> {
         match result {
             Ok(result) => {
                 self.completed = true;
-                if self.framer.stream.failed {
+                // An admission failure after a consumed frame header/body is
+                // not a native socket failure, but it leaves framing incomplete.
+                // Preserve the original typed cause while rejecting later IO.
+                let admission_after_progress = self.framer.stream.progressed
+                    && matches!(&result, Err(H2Error::Io(error))
+                        if crate::classify_error(error) == crate::ErrorClass::ResourceLimit);
+                if self.framer.stream.failed || admission_after_progress {
                     self.framer.invalidate();
                 }
                 result
@@ -1802,6 +1808,79 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use super::*;
+
+    #[cfg(feature = "tunnel")]
+    async fn quota_after_progress(target: usize) {
+        let quota = 16 * 1024 * 1024;
+        let bank = Arc::new(Semaphore::new(quota));
+        let held = Arc::new(std::sync::Mutex::new(None));
+        let hold = Arc::clone(&held);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let target_bank = Arc::clone(&bank);
+        crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |len| {
+                if len == 32
+                    && observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == target
+                {
+                    let take = target_bank.available_permits() - (len - 1);
+                    *hold.lock().unwrap() = Some(
+                        Arc::clone(&target_bank)
+                            .try_acquire_many_owned(take.try_into().unwrap())
+                            .unwrap(),
+                    );
+                }
+            }))
+        });
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let mut framer = H2Framer::new(client);
+        framer.raw_bank = Some(Arc::clone(&bank));
+        framer.client_server_buf = RawBuffer::new(Some(Arc::clone(&bank)));
+        peer.write_all(&build_data_frame(1, &[0x41; 32]))
+            .await
+            .unwrap();
+        let error = framer.read_stream(1, 32).await.unwrap_err();
+        crate::xpc::raw_storage::PAYLOAD_ADMISSION.with(|hook| hook.borrow_mut().take());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), target);
+        let H2Error::Io(original) = &error else {
+            panic!("typed admission cause lost");
+        };
+        assert_eq!(
+            crate::classify_error(original),
+            crate::ErrorClass::ResourceLimit
+        );
+        let original_source =
+            original.get_ref().unwrap() as *const (dyn std::error::Error + Send + Sync);
+        assert!(
+            !framer.is_usable(),
+            "consumed header/payload left a reusable framer after admission refusal"
+        );
+        assert!(framer.read_stream(1, 1).await.is_err());
+        assert!(std::ptr::eq(original.get_ref().unwrap(), original_source));
+        assert_eq!(
+            crate::classify_error(original),
+            crate::ErrorClass::ResourceLimit
+        );
+        let held_bytes = held.lock().unwrap().as_ref().unwrap().num_permits();
+        assert_eq!(bank.available_permits(), quota - held_bytes);
+        drop(framer);
+        drop(held.lock().unwrap().take());
+        assert_eq!(bank.available_permits(), quota);
+        let mut tail = [0; 1024];
+        while peer.read(&mut tail).await.unwrap() != 0 {}
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn quota_after_progress_payload_refusal_invalidates_original_frame_owner() {
+        quota_after_progress(1).await;
+    }
+
+    #[cfg(feature = "tunnel")]
+    #[tokio::test]
+    async fn quota_after_progress_demux_refusal_invalidates_original_frame_owner() {
+        quota_after_progress(2).await;
+    }
 
     #[tokio::test]
     #[cfg(feature = "tunnel")]

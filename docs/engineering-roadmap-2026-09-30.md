@@ -8751,3 +8751,13 @@ XPC147/prepared4/existing18/core131及strictcore通过；最终CLI/feature/build
 fixture明确在真实payload creation点触发len-1，避免新future费改变目标阶段。
 H2collection/outbound/initialRSD/privateBytes/Tokio/Arc/error/report等继续；
 128MiB非完整heap/RSS，L02不关闭、23/6/待收口、有效30与Q04全部排除不变。
+
+## 2026-10-15 L02 H2 quota refusal after progress
+
+真实payload/demux allocation拒绝两项先在原guard复现失败，再修复progressed且
+原ResourceLimit的invalidation；原error/source指针、严格EOF/fullrefund以及
+尚未IO的原连接可用性保持。XPC149/prepared4/existing18/core131和strictcore
+通过；新源码CLI相关freshness/strictCLI/build/Source0 smoke与前项完整504
+证据的准确边界见[验证](validation/tunnel-quota-progress-2026-10-15.md)。
+其余L02完整归属/预算/freshness继续；128MiB非完整heap/RSS，23/6/待收口、
+有效30与Q04全部排除不变，仅本地提交。

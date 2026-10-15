@@ -45,3 +45,5 @@ push/发布/部署；未运行平台/SDK/feature/MSRV/设备保持实际NOT_RUN�
 后续审查另发现：原H2 guard对已读header后的typed allocation拒绝尚缺明确
 invalidating回归用例；下一独立修复同时覆盖payload与demux准入阶段。此项
 对分配前拒绝保持原连接可用的用例不代表header后拒绝路径已完整验证。
+
+随后已以两项真实失败回归修复该边界，见[配额拒绝后失效](tunnel-quota-progress-2026-10-15.md)。
