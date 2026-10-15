@@ -8794,3 +8794,14 @@ CLI504及strictcoreCLI/build/Source0manager/host5通过，2原ignored/22NOT_RUN�
 见[验证](validation/tunnel-stream-state-storage-2026-10-15.md)。其它outbound/
 initial/SDK/private与原fullfreshness继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-15 L02 H2/RSD sending storage
+
+banked H2使用inline preface/control/ACK/headers/end和原DATA借用；banked RSD
+host/三bootstrap从借用grammar先按真实wire Layout准入，不建AST/body/full临时
+heap。Nonebank保留原编码/连续frame write，原wire/uuid/flags/window/deadline/
+nativeerrors/strictEOF与最后owner收费保持。新增9项和XPC187/core131等通过，
+完整门禁/受测binary/hash/Source0 smoke见
+[验证](validation/tunnel-sending-storage-2026-10-15.md)。SDK/initial通用路径与
+private runtime/error/allocator及fullfreshness继续，128MiB非完整heap/RSS；
+L02不关闭，23/6/待收口、有效30与Q04全部排除不变，仅本地提交。

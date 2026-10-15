@@ -903,3 +903,6 @@ mod tests {
 
 #[cfg(feature = "tunnel")]
 pub(crate) mod borrowed;
+
+#[cfg(feature = "tunnel")]
+pub(crate) mod prepared;
