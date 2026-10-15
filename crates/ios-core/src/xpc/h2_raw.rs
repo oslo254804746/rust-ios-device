@@ -266,18 +266,19 @@ impl<S> Drop for H2Operation<'_, S> {
 
 fn await_operation<T>(
     deadline: Option<Instant>,
+    bank: Option<&Arc<Semaphore>>,
     operation: impl Future<Output = Result<T, H2Error>>,
-) -> impl Future<Output = Result<Result<T, H2Error>, Elapsed>> {
+) -> Result<impl Future<Output = Result<Result<T, H2Error>, Elapsed>>, H2Error> {
     // Box before constructing the async timeout branches. Keeping a copy of
     // the inline operation in this future amplifies nested service/bootstrap
     // futures enough to overflow an ordinary CLI thread's stack.
-    let operation = Box::pin(operation);
-    async move {
+    let operation = super::raw_storage::boxed(operation, bank)?;
+    Ok(async move {
         match deadline {
             Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
             None => Ok(operation.await),
         }
-    }
+    })
 }
 
 impl<S> H2Framer<S> {
@@ -466,10 +467,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Receive and acknowledge the peer SETTINGS after the local preface.
     pub(crate) async fn finish_connect(&mut self) -> Result<(), H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.read_until_settings_ack_needed(),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -552,10 +555,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Read data from any stream, blocking until `n` bytes are available.
     pub async fn read_stream(&mut self, stream_id: u32, n: usize) -> Result<Bytes, H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.read_stream_inner(stream_id, n),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1032,10 +1037,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     #[allow(dead_code)]
     pub async fn read_next_data_frame(&mut self) -> Result<DataFrame, H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.read_next_data_frame_inner(),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1121,10 +1128,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// consume the body in bounded chunks.
     pub async fn buffer_next_data_stream(&mut self) -> Result<u32, H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.buffer_next_data_stream_inner(),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1259,10 +1268,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Write data to any stream, opening it with an empty HEADERS frame first.
     pub async fn write_stream(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.write_stream_inner(stream_id, data),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1303,10 +1314,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     /// Open an arbitrary stream with an empty HEADERS frame if it is not open yet.
     pub async fn open_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.open_stream_inner(stream_id),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1362,10 +1375,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     #[cfg(any(feature = "cryptex", test))]
     pub async fn finish_stream(&mut self, stream_id: u32) -> Result<(), H2Error> {
         let operation = self.begin_operation()?;
+        let bank = operation.framer.raw_bank.clone();
         let result = await_operation(
             operation.deadline,
+            bank.as_ref(),
             operation.framer.finish_stream_inner(stream_id),
-        )
+        )?
         .await;
         operation.finish(result)
     }
@@ -1787,6 +1802,59 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use super::*;
+
+    #[tokio::test]
+    #[cfg(feature = "tunnel")]
+    async fn boxed_operation_admission_refusal_keeps_same_framer_and_original_unread_bytes() {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let bank = Arc::new(Semaphore::new(0));
+        let mut framer = H2Framer::new(client);
+        framer.raw_bank = Some(Arc::clone(&bank));
+        framer.client_server_buf = RawBuffer::new(Some(Arc::clone(&bank)));
+        peer.write_all(&build_data_frame(1, b"same")).await.unwrap();
+        let error = framer.read_stream(1, 4).await.unwrap_err();
+        assert!(
+            matches!(&error, H2Error::Io(io) if crate::classify_error(io) == crate::ErrorClass::ResourceLimit)
+        );
+        assert!(framer.is_usable());
+        assert!(!framer.stream.progressed && !framer.stream.failed);
+        assert_eq!(bank.available_permits(), 0);
+        let quota = 16 * 1024 * 1024;
+        bank.add_permits(quota);
+        assert_eq!(&framer.read_stream(1, 4).await.unwrap()[..], b"same");
+        drop(framer);
+        assert_eq!(bank.available_permits(), quota);
+        let mut tail = [0; 1024];
+        while peer.read(&mut tail).await.unwrap() != 0 {}
+    }
+
+    #[tokio::test]
+    async fn boxed_operation_expired_original_deadline_drops_payload_before_fee_and_keeps_elapsed()
+    {
+        struct Original(Arc<Semaphore>, Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Original {
+            fn drop(&mut self) {
+                assert_eq!(self.0.available_permits(), 0);
+                self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let bank = Arc::new(Semaphore::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let original = Original(Arc::clone(&bank), Arc::clone(&dropped));
+        let future = async move {
+            let _original = original;
+            std::future::pending::<Result<(), H2Error>>().await
+        };
+        let bytes = std::mem::size_of_val(&future);
+        bank.add_permits(bytes);
+        let deadline = Instant::now();
+        let result = await_operation(Some(deadline), Some(&bank), future)
+            .unwrap()
+            .await;
+        assert!(result.is_err());
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(bank.available_permits(), bytes);
+    }
 
     fn lifecycle_timeout(error: H2Error) {
         let H2Error::Io(io) = error else {
