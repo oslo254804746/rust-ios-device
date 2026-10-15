@@ -8761,3 +8761,14 @@ H2collection/outbound/initialRSD/privateBytes/Tokio/Arc/error/report等继续；
 证据的准确边界见[验证](validation/tunnel-quota-progress-2026-10-15.md)。
 其余L02完整归属/预算/freshness继续；128MiB非完整heap/RSS，23/6/待收口、
 有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-15 L02 pending DATA actual ring backing
+
+原bank下pending DATA使用实际Vec<Option<DataFrame>>环形backing，创建前准入
+与old/new同时持费；原payload/flags/FIFO、零配额frontrollback、clear持费及
+最后slice owner保持。原1024frame/stream/byte limits和Nonebank deque不变。
+新增9项、XPC158/prepared4/existing18/core131与strictcore通过；最终CLI/构建/
+受测binary/hash/Source0 smoke证据见
+[验证](validation/tunnel-pending-data-storage-2026-10-15.md)。其它H2maps/sets/
+queues/outbound/private运行时与原freshness继续，128MiB非完整heap/RSS；
+L02不关闭、23/6/待收口、有效30与Q04全部排除保持，仅本地提交。
