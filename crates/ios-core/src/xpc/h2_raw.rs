@@ -24,6 +24,9 @@ use tokio::time::{error::Elapsed, Instant};
 
 use crate::xpc::message::{checked_xpc_body_len, xpc_body_limit_for_flags, WRAPPER_MAGIC};
 
+mod pending;
+use pending::PendingFrames;
+
 // ── Stream IDs ──────────────────────────────────────────────────────────────
 // Apple's XPC-over-HTTP/2 uses only odd-numbered client-initiated streams.
 // Stream 0 is the HTTP/2 connection control stream (per RFC 9113).
@@ -169,7 +172,7 @@ pub struct H2Framer<S> {
     // DATA frames consumed by the writer's flow-control reader. Keeping the
     // frame boundary and flags here prevents a later read_next_data_frame from
     // losing business DATA that arrived while write_stream was blocked.
-    pending_data_frames: VecDeque<DataFrame>,
+    pending_data_frames: PendingFrames,
     // Stream-local and connection-wide remote shutdown state.
     reset_streams: HashMap<u32, u32>,
     // Unknown reset tombstones in arrival order. As with clean EOF, known
@@ -377,7 +380,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
             outbound_stream_windows: HashMap::new(),
             locally_finished_streams: HashSet::new(),
             outbound_max_frame_size: MAX_FRAME_PAYLOAD,
-            pending_data_frames: VecDeque::new(),
+            pending_data_frames: PendingFrames::new(None),
             reset_streams: HashMap::new(),
             reset_unknown_order: VecDeque::new(),
             highest_peer_stream_id: 0,
@@ -429,6 +432,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         framer.raw_bank = bank.cloned();
         framer.client_server_buf = RawBuffer::new(bank.cloned());
         framer.server_client_buf = RawBuffer::new(bank.cloned());
+        framer.pending_data_frames = PendingFrames::new(bank);
         Ok(framer)
     }
 
@@ -1506,14 +1510,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 .remove(&stream_id)
                 .map_or(0, |buffer| buffer.len()),
         };
-        self.pending_data_frames.retain(|frame| {
-            if frame.stream_id == stream_id {
-                removed = removed.saturating_add(frame.payload.len());
-                false
-            } else {
-                true
-            }
-        });
+        removed = removed.saturating_add(self.pending_data_frames.clear_stream(stream_id));
         self.buffered_bytes = self.buffered_bytes.saturating_sub(removed);
         self.remove_closed_stream_tombstone(stream_id);
         self.peer_open_streams.remove(&stream_id);
@@ -1623,6 +1620,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         let flags = frame.flags;
         let payload_len = frame.payload.len();
         self.reserve_stream_buffer(stream_id, payload_len)?;
+        if let Err(original) = self.pending_data_frames.prepare_push() {
+            self.buffered_bytes = self.buffered_bytes.saturating_sub(payload_len);
+            return Err(original.into());
+        }
         self.pending_data_frames.push_back(DataFrame {
             stream_id,
             flags,

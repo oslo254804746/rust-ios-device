@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-fn limit() -> io::Error {
+pub(super) fn limit() -> io::Error {
     #[cfg(feature = "tunnel")]
     {
         let crate::XpcError::Io(error) =
