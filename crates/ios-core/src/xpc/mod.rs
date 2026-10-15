@@ -22,6 +22,13 @@ pub mod h2_raw;
 #[cfg(feature = "tunnel")]
 pub(crate) mod identity;
 pub mod message;
+#[cfg(any(
+    feature = "tunnel",
+    feature = "dproxy",
+    feature = "fetchsymbols",
+    feature = "restore"
+))]
+mod raw_storage;
 crate::redaction::error_debug!(XpcError);
 pub mod rsd;
 

@@ -1,9 +1,12 @@
 //! Byte-owned current RSD catalogue, prepared without cloning into an opaque HashMap.
 //! Charges cover requested application-owned layouts, not allocator headers, Arc internals,
-//! the upstream decoded XPC value tree, H2 scratch, OS sockets or process RSS.
+//! OS sockets or process RSS. The checked prepared path separately admits raw
+//! payload/body storage and an explicit borrowed parser arena from the same bank.
 use super::existing_rsd::{ExistingRsdProbeError, RsdSelectionReceipt};
+#[cfg(test)]
 use crate::xpc::message::XpcValue;
 use crate::{CoreError, XpcError};
+#[cfg(test)]
 use indexmap::IndexMap;
 use std::{
     alloc::{alloc, Layout},
@@ -26,12 +29,12 @@ pub(crate) fn charge(
 pub(crate) fn exact_vec<T>(
     bank: &Arc<Semaphore>,
     capacity: usize,
-) -> Result<(Vec<T>, OwnedSemaphorePermit), XpcError> {
+) -> Result<(OwnedSemaphorePermit, Vec<T>), XpcError> {
     let layout =
         Layout::array::<T>(capacity).map_err(|_| ExistingRsdProbeError::metadata_limit())?;
     let fee = charge(bank, layout.size())?;
     if layout.size() == 0 {
-        return Ok((Vec::with_capacity(capacity), fee));
+        return Ok((fee, Vec::with_capacity(capacity)));
     }
     // SAFETY: allocation uses T's exact nonzero layout; no initialized T is
     // assumed. Vec owns the same pointer/layout and initializes only via push.
@@ -39,7 +42,7 @@ pub(crate) fn exact_vec<T>(
     let pointer =
         NonNull::new(pointer.cast::<T>()).ok_or_else(ExistingRsdProbeError::metadata_limit)?;
     let values = unsafe { Vec::from_raw_parts(pointer.as_ptr(), 0, capacity) };
-    Ok((values, fee))
+    Ok((fee, values))
 }
 struct ExactText {
     text: String,
@@ -47,7 +50,7 @@ struct ExactText {
 }
 impl ExactText {
     fn copy(bank: &Arc<Semaphore>, text: &str) -> Result<Self, XpcError> {
-        let (mut bytes, fee) = exact_vec::<u8>(bank, text.len())?;
+        let (fee, mut bytes) = exact_vec::<u8>(bank, text.len())?;
         bytes.extend_from_slice(text.as_bytes());
         // SAFETY: copied UTF-8 bytes from a str; exact allocation remains owned.
         Ok(Self {
@@ -131,6 +134,7 @@ impl PreparedRsdCatalogue {
             }),
         })
     }
+    #[cfg(test)]
     pub(crate) fn decode(
         dictionary: &IndexMap<String, XpcValue>,
         bank: &Arc<Semaphore>,
@@ -150,7 +154,7 @@ impl PreparedRsdCatalogue {
             )?;
         }
         let body_fee = charge(bank, std::mem::size_of::<Self>())?;
-        let (mut rows, rows_fee) = exact_vec::<Row>(bank, services.len())?;
+        let (rows_fee, mut rows) = exact_vec::<Row>(bank, services.len())?;
         let udid = ExactText::copy(bank, uid)?;
         let mut bytes = std::mem::size_of::<Self>()
             .checked_add(udid.text.capacity())
@@ -166,10 +170,10 @@ impl PreparedRsdCatalogue {
                 .get("Properties")
                 .and_then(XpcValue::as_dict)
                 .and_then(|properties| properties.get("Features"));
-            let (features, features_fee) = match raw_features {
+            let (features_fee, features) = match raw_features {
                 None => (None, None),
                 Some(XpcValue::Array(raw)) => {
-                    let (mut features, fee) = exact_vec::<ExactText>(bank, raw.len())?;
+                    let (fee, mut features) = exact_vec::<ExactText>(bank, raw.len())?;
                     bytes = bytes
                         .checked_add(features.capacity() * std::mem::size_of::<ExactText>())
                         .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
@@ -183,7 +187,7 @@ impl PreparedRsdCatalogue {
                             .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
                         features.push(feature);
                     }
-                    (Some(features), Some(fee))
+                    (Some(fee), Some(features))
                 }
                 Some(_) => unreachable!("checked Features array"),
             };
@@ -207,6 +211,82 @@ impl PreparedRsdCatalogue {
             _body_fee: body_fee,
         })
     }
+    pub(crate) fn decode_borrowed(
+        dictionary: crate::xpc::message::borrowed::Dictionary<'_, '_>,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self, XpcError> {
+        let (uid, services) = crate::xpc::rsd::checked_borrowed_parts(dictionary)?;
+        let uid =
+            uid.ok_or_else(|| XpcError::Tls("RSD: current catalogue missing identity".into()))?;
+        let services = services
+            .ok_or_else(|| XpcError::Tls("RSD: current catalogue missing Services".into()))?;
+        for (_, value) in services.iter() {
+            let descriptor = value.as_dict().expect("checked service dictionary");
+            crate::xpc::rsd::checked_borrowed_port(
+                descriptor
+                    .get("Port")
+                    .ok_or_else(|| XpcError::Tls("RSD: current catalogue missing Port".into()))?,
+            )?;
+        }
+        let body_fee = charge(bank, std::mem::size_of::<Self>())?;
+        let (rows_fee, mut rows) = exact_vec::<Row>(bank, services.len())?;
+        let udid = ExactText::copy(bank, uid)?;
+        let mut bytes = std::mem::size_of::<Self>()
+            .checked_add(udid.text.capacity())
+            .and_then(|bytes| bytes.checked_add(rows.capacity() * std::mem::size_of::<Row>()))
+            .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
+        for (name, value) in services.iter() {
+            let descriptor = value.as_dict().expect("checked service dictionary");
+            let name = ExactText::copy(bank, name)?;
+            bytes = bytes
+                .checked_add(name.text.capacity())
+                .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
+            let raw_features = descriptor
+                .get("Properties")
+                .and_then(|value| value.as_dict())
+                .and_then(|properties| properties.get("Features"));
+            let (features_fee, features) = match raw_features {
+                None => (None, None),
+                Some(value) => {
+                    let raw = value.as_array().expect("checked Features array");
+                    let (fee, mut features) = exact_vec::<ExactText>(bank, raw.len())?;
+                    bytes = bytes
+                        .checked_add(features.capacity() * std::mem::size_of::<ExactText>())
+                        .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
+                    for feature in raw.iter() {
+                        let feature = ExactText::copy(
+                            bank,
+                            feature.as_str().expect("checked feature string"),
+                        )?;
+                        bytes = bytes
+                            .checked_add(feature.text.capacity())
+                            .ok_or_else(ExistingRsdProbeError::metadata_limit)?;
+                        features.push(feature);
+                    }
+                    (Some(fee), Some(features))
+                }
+            };
+            rows.push(Row {
+                name,
+                port: crate::xpc::rsd::checked_borrowed_port(
+                    descriptor.get("Port").expect("complete Port"),
+                )?,
+                features,
+                _features_fee: features_fee,
+            });
+        }
+        rows.sort_unstable_by(|a, b| a.name.text.cmp(&b.name.text));
+        Ok(Self {
+            udid,
+            rows,
+            selection: None,
+            bytes,
+            _rows_fee: rows_fee,
+            _selection_fee: None,
+            _body_fee: body_fee,
+        })
+    }
+
     pub(crate) fn finish(
         mut self,
         selection: RsdSelectionReceipt,

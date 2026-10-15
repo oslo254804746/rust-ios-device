@@ -900,3 +900,6 @@ mod tests {
         assert!(buffer.try_next().unwrap().is_none());
     }
 }
+
+#[cfg(feature = "tunnel")]
+pub(crate) mod borrowed;
