@@ -175,7 +175,10 @@ mod wire {
         framer.pending_data_frames = PendingFrames::new(Some(bank));
         framer.client_server_open = true;
         framer.outbound_connection_window = 0;
-        framer.outbound_stream_windows.insert(1, 0);
+        framer.outbound_stream_windows = WindowMap::new(Some(bank));
+        framer.pending_window_updates = WindowMap::new(Some(bank));
+        framer.outbound_stream_windows.prepare_keys(&[1]).unwrap();
+        framer.outbound_stream_windows.insert_reserved(1, 0);
         framer
     }
     async fn strict_eof(peer: &mut tokio::io::DuplexStream) {
@@ -219,7 +222,9 @@ mod wire {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(bank.available_permits(), quota - backing(4) - 3);
+        let counters = framer.outbound_stream_windows.backing_bytes()
+            + framer.pending_window_updates.backing_bytes();
+        assert_eq!(bank.available_permits(), quota - backing(4) - 3 - counters);
         let mut original = Vec::new();
         for _ in 0..3 {
             original.push(framer.read_next_data_frame().await.unwrap());
@@ -234,7 +239,7 @@ mod wire {
         assert_eq!(&original[0].payload[..], b"a");
         assert_eq!(&original[2].payload[..], b"bb");
         assert_eq!(framer.buffered_bytes, 0);
-        assert_eq!(bank.available_permits(), quota - backing(4) - 3);
+        assert_eq!(bank.available_permits(), quota - backing(4) - 3 - counters);
         drop(framer);
         task.await.unwrap();
         assert_eq!(bank.available_permits(), quota - 3);
@@ -290,7 +295,14 @@ mod wire {
         assert_eq!(framer.buffered_bytes, 0);
         assert!(framer.pending_data_frames.is_empty());
         let held_bytes = held.lock().unwrap().as_ref().unwrap().num_permits();
-        assert_eq!(bank.available_permits(), quota - held_bytes - backing(4));
+        assert_eq!(
+            bank.available_permits(),
+            quota
+                - held_bytes
+                - backing(4)
+                - framer.outbound_stream_windows.backing_bytes()
+                - framer.pending_window_updates.backing_bytes()
+        );
         assert!(framer.write_stream(1, b"late").await.is_err());
         assert_eq!(
             crate::classify_error(original),
@@ -356,7 +368,8 @@ mod wire {
 
     #[tokio::test]
     async fn queue_refusal_restores_logical_bytes_before_the_original_operation_guard() {
-        let quota = backing(4) + 4;
+        let outbound = 4 * std::mem::size_of::<(u32, i64)>();
+        let quota = backing(4) + 4 + outbound;
         let bank = Arc::new(Semaphore::new(quota));
         let (stream, mut peer) = tokio::io::duplex(128);
         let mut framer = metered(stream, &bank);
@@ -387,7 +400,7 @@ mod wire {
         );
         assert_eq!(&framer.server_client_buf[..], b"old!");
         assert!(framer.pending_data_frames.is_empty());
-        assert_eq!(bank.available_permits(), quota - 4);
+        assert_eq!(bank.available_permits(), quota - 4 - outbound);
         drop(framer);
         strict_eof(&mut peer).await;
         assert_eq!(bank.available_permits(), quota);
@@ -397,7 +410,9 @@ mod wire {
     async fn original_invalid_stream_protocol_precedes_queue_admission_at_zero_quota() {
         let bank = Arc::new(Semaphore::new(0));
         let (stream, mut peer) = tokio::io::duplex(128);
-        let mut framer = metered(stream, &bank);
+        let mut framer = H2Framer::new(stream);
+        framer.raw_bank = Some(Arc::clone(&bank));
+        framer.pending_data_frames = PendingFrames::new(Some(&bank));
         let error = framer
             .queue_incoming_data_frame(RawFrame {
                 frame_type: FRAME_DATA,

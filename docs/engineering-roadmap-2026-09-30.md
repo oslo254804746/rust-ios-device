@@ -8772,3 +8772,14 @@ H2collection/outbound/initialRSD/privateBytes/Tokio/Arc/error/report等继续；
 [验证](validation/tunnel-pending-data-storage-2026-10-15.md)。其它H2maps/sets/
 queues/outbound/private运行时与原freshness继续，128MiB非完整heap/RSS；
 L02不关闭、23/6/待收口、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-15 L02 flow-control actual counter storage
+
+pending receive credit/outbound stream window使用真实banked key/value backing，
+批次key准入先于counter reset/HEADERS，old/new peak/原ResourceLimit保持；
+SETTINGS验证后独占原位更新移除scratch Vec，两帧WINDOW_UPDATE使用inline
+13-byte字段。原wire/31bit/signedwindow/限制/EOF和Nonebank HashMap语义保持。
+新增8项及XPC166/prepared4/existing18/core131/strictcore通过；最终CLI/build/
+受测hash/Source0 smoke见[验证](validation/tunnel-window-storage-2026-10-15.md)。
+其余H2container/outbound/private和fullfreshness继续，128MiB非完整heap/RSS；
+L02不关闭、23/6/待收口、有效30与Q04全部排除保持，仅本地提交。
