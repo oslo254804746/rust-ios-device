@@ -459,10 +459,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         stream: S,
         bank: Option<&Arc<Semaphore>>,
     ) -> Result<Self, H2Error> {
-        // The preface path reads no peer bytes. Configure before finish_connect
-        // or any queued bootstrap can retain a received frame.
-        let mut framer = Self::begin_connect(stream).await?;
-        framer.configure_bank(bank);
+        let Some(bank) = bank else {
+            return Self::begin_connect(stream).await;
+        };
+        let mut framer = Self::new(stream);
+        framer.configure_bank(Some(bank));
+        // Fixed control frames live in the existing owned future, with no
+        // temporary payload/frame Vec. The original preface order is retained.
+        framer.stream.write_all(H2_PREFACE).await?;
+        let settings = initial_settings_bytes();
+        framer.stream.write_all(&settings).await?;
+        let update = window_update_bytes(STREAM_INIT, INITIAL_WINDOW_INCREMENT);
+        framer.stream.write_all(&update).await?;
+        framer.stream.flush().await?;
         Ok(framer)
     }
 
@@ -883,8 +892,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         // A SETTINGS frame is acknowledged only after all values have been
         // validated and applied. This also makes a waiting writer observe the
         // new window/frame limits before it resumes.
-        let ack = build_settings_ack();
-        self.stream.write_all(&ack).await?;
+        self.write_frame_bytes(FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT, &[])
+            .await?;
         self.stream.flush().await?;
         Ok(())
     }
@@ -1338,12 +1347,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
         operation.finish(result)
     }
 
+    async fn write_frame_bytes(
+        &mut self,
+        kind: u8,
+        flags: u8,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<(), H2Error> {
+        if self.raw_bank.is_none() {
+            // Keep the original contiguous write path for legacy callers.
+            return Ok(self
+                .stream
+                .write_all(&build_frame(kind, flags, stream_id, payload))
+                .await?);
+        }
+        let header = frame_header(kind, flags, stream_id, payload.len());
+        self.stream.write_all(&header).await?;
+        if !payload.is_empty() {
+            self.stream.write_all(payload).await?;
+        }
+        Ok(())
+    }
+
     async fn write_stream_inner(&mut self, stream_id: u32, data: &[u8]) -> Result<(), H2Error> {
         self.open_stream_inner(stream_id).await?;
         self.ensure_stream_available(stream_id)?;
         if data.is_empty() {
-            self.stream
-                .write_all(&build_data_frame(stream_id, data))
+            self.write_frame_bytes(FRAME_DATA, 0, stream_id, data)
                 .await?;
         } else {
             let mut offset = 0;
@@ -1360,8 +1390,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                         self.connection_protocol_error("outbound DATA offset overflow".to_string())
                     })?;
                 let chunk = &data[offset..end];
-                self.stream
-                    .write_all(&build_data_frame(stream_id, chunk))
+                self.write_frame_bytes(FRAME_DATA, 0, stream_id, chunk)
                     .await?;
                 self.consume_outbound_window(stream_id, chunk.len())?;
                 offset = end;
@@ -1414,8 +1443,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
                 self.locally_open_streams.prepare(stream_id)?;
                 self.stream_bufs.prepare_keys(&[stream_id])?;
             }
-            let headers = build_headers_frame(stream_id);
-            self.stream.write_all(&headers).await?;
+            self.write_frame_bytes(FRAME_HEADERS, FLAG_END_HEADERS, stream_id, &[])
+                .await?;
             self.stream.flush().await?;
             self.outbound_stream_windows
                 .insert_reserved(stream_id, self.peer_initial_window_size);
@@ -1455,8 +1484,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> H2Framer<S> {
     async fn finish_stream_inner(&mut self, stream_id: u32) -> Result<(), H2Error> {
         self.open_stream_inner(stream_id).await?;
         self.locally_finished_streams.prepare(stream_id)?;
-        self.stream
-            .write_all(&build_frame(FRAME_DATA, FLAG_END_STREAM, stream_id, &[]))
+        self.write_frame_bytes(FRAME_DATA, FLAG_END_STREAM, stream_id, &[])
             .await?;
         self.stream.flush().await?;
         self.locally_finished_streams.insert(stream_id);
@@ -1823,6 +1851,33 @@ impl RawFrame {
 
 // ── Frame builders ────────────────────────────────────────────────────────────
 
+fn frame_header(kind: u8, flags: u8, stream_id: u32, len: usize) -> [u8; 9] {
+    let mut header = [
+        ((len >> 16) & 255) as u8,
+        ((len >> 8) & 255) as u8,
+        (len & 255) as u8,
+        kind,
+        flags,
+        0,
+        0,
+        0,
+        0,
+    ];
+    header[5..].copy_from_slice(&(stream_id & 0x7fff_ffff).to_be_bytes());
+    header
+}
+
+#[cfg(any(feature = "tunnel", test))]
+fn initial_settings_bytes() -> [u8; 21] {
+    let mut bytes = [0; 21];
+    bytes[..9].copy_from_slice(&frame_header(FRAME_SETTINGS, 0, 0, 12));
+    bytes[9..11].copy_from_slice(&SETTINGS_MAX_CONCURRENT_STREAMS.to_be_bytes());
+    bytes[11..15].copy_from_slice(&100u32.to_be_bytes());
+    bytes[15..17].copy_from_slice(&SETTINGS_INITIAL_WINDOW_SIZE.to_be_bytes());
+    bytes[17..21].copy_from_slice(&INITIAL_WINDOW_SIZE.to_be_bytes());
+    bytes
+}
+
 fn build_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
     let len = payload.len();
     let mut out = Vec::with_capacity(9 + len);
@@ -1845,6 +1900,7 @@ fn build_settings_frame(settings: &[(u16, u32)]) -> Vec<u8> {
     build_frame(FRAME_SETTINGS, 0, STREAM_INIT, &payload)
 }
 
+#[cfg(test)]
 fn build_settings_ack() -> Vec<u8> {
     build_frame(FRAME_SETTINGS, FLAG_SETTINGS_ACK, STREAM_INIT, &[])
 }
@@ -1866,11 +1922,13 @@ fn build_window_update_frame(stream_id: u32, increment: u32) -> Vec<u8> {
     )
 }
 
+#[cfg(test)]
 fn build_headers_frame(stream_id: u32) -> Vec<u8> {
     // Empty HEADERS frame with END_HEADERS flag (opens the stream)
     build_frame(FRAME_HEADERS, FLAG_END_HEADERS, stream_id, &[])
 }
 
+#[cfg(test)]
 fn build_data_frame(stream_id: u32, data: &[u8]) -> Vec<u8> {
     build_frame(FRAME_DATA, 0, stream_id, data)
 }
@@ -1884,6 +1942,10 @@ pub enum H2Error {
     #[error("H2 protocol error: {0}")]
     Protocol(String),
 }
+
+#[cfg(all(test, feature = "tunnel"))]
+#[path = "h2_raw/sending_tests.rs"]
+mod sending_tests;
 
 #[cfg(test)]
 mod tests {

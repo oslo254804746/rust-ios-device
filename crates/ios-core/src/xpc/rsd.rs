@@ -30,6 +30,9 @@ use crate::xpc::message::{
 #[cfg(feature = "tunnel")]
 use crate::xpc::XpcError;
 
+#[cfg(feature = "tunnel")]
+mod sending;
+
 pub const RSD_PORT: u16 = 58783;
 
 /// Evidence in a successfully obtained RSD directory. This does not describe
@@ -789,7 +792,8 @@ pub async fn send_device_handshake_on_framer<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let message = crate::xpc::message::encode_message(&device_handshake_message(identity))?;
+    let bank = framer.raw_bank();
+    let message = sending::host(bank.as_ref(), identity)?;
     framer
         .write_client_server(&message)
         .await
@@ -867,13 +871,9 @@ async fn initialize_xpc_connection_inner<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use crate::xpc::message::{encode_message, flags, XpcMessage, XpcValue};
+    let bank = framer.raw_bank();
 
-    let msg1 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET,
-        msg_id: 0,
-        body: Some(XpcValue::Dictionary(indexmap::IndexMap::new())),
-    })?;
+    let msg1 = sending::control(bank.as_ref(), flags::ALWAYS_SET, true)?;
     framer
         .write_client_server(&msg1)
         .await
@@ -881,11 +881,7 @@ where
     *progressed = true;
     discard_xpc_on_client_server(framer).await?;
 
-    let msg3 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET | 0x200,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg3 = sending::control(bank.as_ref(), flags::ALWAYS_SET | 0x200, false)?;
     framer
         // remoted requires stream 3's HEADERS before the terminating stream-1
         // bootstrap message (the order used by pymobiledevice3).
@@ -898,11 +894,11 @@ where
         .map_err(|e| h2_error("xpc init write 2: ", e))?;
     discard_xpc_on_client_server(framer).await?;
 
-    let msg2 = encode_message(&XpcMessage {
-        flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg2 = sending::control(
+        bank.as_ref(),
+        flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
+        false,
+    )?;
     framer
         .write_server_client(&msg2)
         .await
@@ -941,13 +937,9 @@ async fn queue_rsd_handshake_bootstrap_inner<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use crate::xpc::message::{encode_message, flags, XpcMessage, XpcValue};
+    let bank = framer.raw_bank();
 
-    let msg1 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET,
-        msg_id: 0,
-        body: Some(XpcValue::Dictionary(indexmap::IndexMap::new())),
-    })?;
+    let msg1 = sending::control(bank.as_ref(), flags::ALWAYS_SET, true)?;
     framer
         .write_client_server(&msg1)
         .await
@@ -962,21 +954,17 @@ where
         .await
         .map_err(|e| h2_error("rsd bootstrap open stream 3: ", e))?;
 
-    let msg2 = encode_message(&XpcMessage {
-        flags: flags::ALWAYS_SET | 0x200,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg2 = sending::control(bank.as_ref(), flags::ALWAYS_SET | 0x200, false)?;
     framer
         .write_client_server(&msg2)
         .await
         .map_err(|e| h2_error("rsd bootstrap write 2: ", e))?;
 
-    let msg3 = encode_message(&XpcMessage {
-        flags: flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
-        msg_id: 0,
-        body: None,
-    })?;
+    let msg3 = sending::control(
+        bank.as_ref(),
+        flags::INIT_HANDSHAKE | flags::ALWAYS_SET,
+        false,
+    )?;
     framer
         .write_server_client(&msg3)
         .await
