@@ -171,7 +171,27 @@ impl UpstreamClient {
         Ok(Some(header))
     }
 
+    #[cfg(test)]
     pub(crate) async fn listing(&self, hop: u8, limit: usize) -> Result<serde_json::Value> {
+        let bytes = self
+            .listing_body(hop, limit, Vec::new(), |bytes, chunk| {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            })
+            .await?;
+        serde_json::from_slice(&bytes).context("invalid upstream listing JSON")
+    }
+
+    pub(crate) async fn listing_body<B, F>(
+        &self,
+        hop: u8,
+        limit: usize,
+        mut bytes: B,
+        mut append: F,
+    ) -> Result<B>
+    where
+        F: FnMut(&mut B, &[u8]) -> Result<()>,
+    {
         let mut url = reqwest::Url::parse(&self.root)?;
         url.query_pairs_mut().append_pair("hop", &hop.to_string());
         let header = self.header(&url)?;
@@ -189,19 +209,20 @@ impl UpstreamClient {
             response.status().is_success(),
             "upstream HTTP status refused"
         );
-        let mut bytes = Vec::new();
+        let mut count = 0usize;
         while let Some(chunk) = response
             .chunk()
             .await
             .context("upstream HTTP body failed")?
         {
             anyhow::ensure!(
-                bytes.len().saturating_add(chunk.len()) <= limit,
+                count.saturating_add(chunk.len()) <= limit,
                 "upstream listing byte limit exceeded"
             );
-            bytes.extend_from_slice(&chunk);
+            append(&mut bytes, &chunk)?;
+            count += chunk.len();
         }
-        serde_json::from_slice(&bytes).context("invalid upstream listing JSON")
+        Ok(bytes)
     }
 
     pub(crate) fn websocket_request(

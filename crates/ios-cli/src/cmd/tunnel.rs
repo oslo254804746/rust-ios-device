@@ -1,4 +1,6 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::str::FromStr;
@@ -16,6 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use ios_core::TunMode;
 use ios_core::{connect_with_owner, ConnectOptions, ConnectedDevice};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -43,6 +46,7 @@ mod lifecycle;
 mod manual_success;
 mod metadata_vec;
 mod ownership;
+mod paid_json;
 mod paired_observed;
 mod publication_retain;
 mod publication_table;
@@ -680,6 +684,7 @@ struct UpstreamBody {
     url: String,
 }
 
+#[cfg(test)]
 type FederationListing = HashMap<String, Vec<serde_json::Value>>;
 
 #[derive(Debug, Clone)]
@@ -921,7 +926,21 @@ impl TunnelAgentState {
     }
 
     async fn list_tunneld_view(&self) -> Result<federation_output::Listing> {
-        Ok(federation_output::Listing::new(self.list_records().await?))
+        Ok(federation_output::Listing::new(
+            self.list_records().await?,
+            &self.inner.global_metadata_bytes,
+        ))
+    }
+
+    async fn upstream_snapshot(&self) -> Result<metadata_vec::KnownVec<paid_json::Text>> {
+        let upstreams = self.inner.upstreams.read().await;
+        let bank = &self.inner.global_metadata_bytes;
+        let mut snapshot = metadata_vec::KnownVec::new(bank.clone(), MAX_UPSTREAMS);
+        snapshot.reserve(upstreams.len())?;
+        for url in upstreams.iter() {
+            snapshot.push_reserved(paid_json::Text::copy(url, bank)?);
+        }
+        Ok(snapshot)
     }
 
     async fn list_federated(&self, hop: u8) -> Result<federation_output::Listing> {
@@ -930,28 +949,20 @@ impl TunnelAgentState {
             return Ok(grouped);
         }
 
-        let upstreams = self
-            .inner
-            .upstreams
-            .read()
-            .await
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        let results = futures_util::future::join_all(upstreams.iter().map(|upstream| {
-            fetch_upstream_listing(&self.inner.upstream_access, upstream, hop + 1)
+        let upstreams = self.upstream_snapshot().await?;
+        grouped.reserve_remote(upstreams.len())?;
+        let results = futures_util::future::join_all(upstreams.as_slice().iter().map(|upstream| {
+            fetch_upstream_listing(
+                &self.inner.upstream_access,
+                upstream.as_str(),
+                hop + 1,
+                &self.inner.global_metadata_bytes,
+            )
         }))
         .await;
         for (upstream, result) in upstreams.into_iter().zip(results) {
             let listing = result.context("federation upstream failed")?;
-            for (udid, entries) in listing {
-                for mut entry in entries {
-                    if let Some(object) = entry.as_object_mut() {
-                        object.insert("upstream".into(), json!(upstream));
-                        grouped.remote.entry(udid.clone()).or_default().push(entry);
-                    }
-                }
-            }
+            grouped.push_remote(upstream, listing);
         }
         Ok(grouped)
     }
@@ -960,48 +971,50 @@ impl TunnelAgentState {
         if query.hop >= MAX_FEDERATION_HOPS {
             return Ok(None);
         }
-        let upstreams = self
-            .inner
-            .upstreams
-            .read()
-            .await
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut candidates = self.upstream_snapshot().await?;
         if let Some(requested) = &query.upstream {
-            anyhow::ensure!(upstreams.contains(requested), "upstream is not registered");
+            anyhow::ensure!(
+                candidates
+                    .as_slice()
+                    .iter()
+                    .any(|url| url.as_str() == requested),
+                "upstream is not registered"
+            );
         }
-        let candidates = upstreams
-            .into_iter()
-            .filter(|upstream| {
-                query
-                    .upstream
-                    .as_ref()
-                    .map_or(true, |wanted| wanted == upstream)
-            })
-            .collect::<Vec<_>>();
-        let results = futures_util::future::join_all(candidates.iter().map(|upstream| {
-            fetch_upstream_listing(&self.inner.upstream_access, upstream, query.hop + 1)
-        }))
-        .await;
+        candidates.retain(|upstream| {
+            query
+                .upstream
+                .as_ref()
+                .map_or(true, |wanted| wanted == upstream.as_str())
+        });
+        let results =
+            futures_util::future::join_all(candidates.as_slice().iter().map(|upstream| {
+                fetch_upstream_listing(
+                    &self.inner.upstream_access,
+                    upstream.as_str(),
+                    query.hop + 1,
+                    &self.inner.global_metadata_bytes,
+                )
+            }))
+            .await;
         for (upstream, result) in candidates.into_iter().zip(results) {
             let listing = result.context("target upstream failed")?;
-            if let Some(entries) = listing.get(&query.udid) {
+            if let Some(entries) = listing.entries(&query.udid) {
                 if let Some(entry) = entries.iter().find(|entry| {
                     query.interface.as_ref().map_or(true, |interface| {
-                        entry.get("interface").and_then(serde_json::Value::as_str)
+                        entry.get("interface").and_then(paid_json::Value::string)
                             == Some(interface.as_str())
                     })
                 }) {
                     return Ok(Some(RemoteTarget {
-                        upstream,
+                        upstream: upstream.as_str().to_owned(),
                         interface: entry
                             .get("interface")
-                            .and_then(serde_json::Value::as_str)
+                            .and_then(paid_json::Value::string)
                             .map(str::to_owned),
                         next_upstream: entry
                             .get("upstream")
-                            .and_then(serde_json::Value::as_str)
+                            .and_then(paid_json::Value::string)
                             .map(str::to_owned),
                     }));
                 }
@@ -2734,12 +2747,18 @@ async fn fetch_upstream_listing(
     access: &Upstreams,
     upstream: &str,
     hop: u8,
-) -> Result<FederationListing> {
-    let listing = access
+    bank: &Arc<Semaphore>,
+) -> Result<paid_json::Listing> {
+    let body = access
         .client(upstream)?
-        .listing(hop, MAX_LIST_BYTES)
+        .listing_body(
+            hop,
+            MAX_LIST_BYTES,
+            metadata_vec::KnownVec::new(bank.clone(), MAX_LIST_BYTES),
+            |bytes, chunk| bytes.extend_copy(chunk),
+        )
         .await?;
-    serde_json::from_value(listing).context("invalid upstream tunnel listing")
+    paid_json::Listing::parse(body.as_slice(), bank)
 }
 
 fn remote_connect_url(target: &RemoteTarget, query: &ConnectQuery) -> Result<reqwest::Url> {
@@ -3062,6 +3081,13 @@ async fn agent_list_tunneld(
         })?;
     principal.require_permission(Permission::List)?;
     records.retain(|device| principal.allows(Permission::List, Some(device), None));
+    let records = records.prepare().map_err(|error| {
+        replies.operation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation merge index admission failed",
+            error.as_ref(),
+        )
+    })?;
     replies.json(&records)
 }
 
