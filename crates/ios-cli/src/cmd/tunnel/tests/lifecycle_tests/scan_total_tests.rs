@@ -33,7 +33,7 @@ async fn lifecycle_tunnel_whole_scan_zero_and_overflow_do_not_poll_sources() {
         }
         assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
         assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
-        assert!(state.inner.scan_outcomes.history().is_empty());
+        assert!(state.inner.scan_outcomes.history().is_none());
         assert!(state.inner.scan_lock.try_lock().is_ok());
     }
 }
@@ -49,7 +49,7 @@ async fn lifecycle_tunnel_whole_scan_queued_lock_consumes_no_error_slot() {
         .unwrap_err();
     elapsed(&error);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
     drop(lock);
     state.refresh_once().await.unwrap();
     assert!(state.is_ready().await);

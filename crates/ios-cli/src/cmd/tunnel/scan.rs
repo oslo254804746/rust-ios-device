@@ -1,7 +1,7 @@
 //! Whole-scan control and bounded ownership of errors acquired before cancellation.
 use std::error::Error;
 use std::future::Future;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -23,6 +23,69 @@ enum Slot {
 struct Slots {
     closed: bool,
     entries: [Slot; MAX_ABANDONED_SCANS],
+    history_root: Option<Arc<HistorySnapshot>>,
+}
+
+struct HistoryRoots {
+    entries: [Option<Arc<AbandonedScan>>; MAX_ABANDONED_SCANS],
+    len: usize,
+}
+
+/// Immutable snapshot payload paid and created before its scan polls Source.
+/// The inline roots have no separate Vec allocation. Arc/anyhow private headers
+/// and the separate terminal report wrapper remain outside this body grant.
+pub(super) struct HistorySnapshot {
+    roots: OnceLock<HistoryRoots>,
+    // The original roots drop before this application-owned body grant.
+    _storage: OwnedSemaphorePermit,
+}
+
+impl HistorySnapshot {
+    fn freeze(&self, slots: &[Slot; MAX_ABANDONED_SCANS]) {
+        let mut roots = HistoryRoots {
+            entries: std::array::from_fn(|_| None),
+            len: 0,
+        };
+        for slot in slots {
+            if let Slot::Abandoned(original) = slot {
+                roots.entries[roots.len] = Some(Arc::clone(original));
+                roots.len += 1;
+            }
+        }
+        assert!(roots.len != 0, "only abandoned scans publish history");
+        assert!(self.roots.set(roots).is_ok(), "scan history freezes once");
+    }
+
+    fn roots(&self) -> &HistoryRoots {
+        self.roots.get().expect("history published after freeze")
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.roots().len
+    }
+
+    pub(super) fn first(&self) -> Option<&Arc<AbandonedScan>> {
+        self.iter().next()
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = &Arc<AbandonedScan>> {
+        let roots = self.roots();
+        roots.entries[..roots.len]
+            .iter()
+            .map(|root| root.as_ref().expect("packed scan history root"))
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Index<usize> for HistorySnapshot {
+    type Output = Arc<AbandonedScan>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        let roots = self.roots();
+        roots.entries[..roots.len][index]
+            .as_ref()
+            .expect("packed scan history root")
+    }
 }
 
 pub(super) struct Outcomes {
@@ -39,6 +102,7 @@ pub(super) fn capsule_reservation_bytes() -> usize {
     compound_bytes()
         + std::mem::size_of::<AbandonedScan>()
         + std::mem::size_of::<super::ScanCleanupFailure>()
+        + std::mem::size_of::<HistorySnapshot>()
 }
 
 impl Outcomes {
@@ -54,6 +118,7 @@ impl Outcomes {
             slots: StdMutex::new(Slots {
                 closed: false,
                 entries: std::array::from_fn(|_| Slot::Empty),
+                history_root: None,
             }),
             bank,
         })
@@ -81,6 +146,13 @@ impl Outcomes {
         let cleanup = storage
             .split(std::mem::size_of::<super::ScanCleanupFailure>())
             .expect("reserved cleanup bytes");
+        let snapshot_storage = storage
+            .split(std::mem::size_of::<HistorySnapshot>())
+            .expect("reserved immutable history snapshot body");
+        let history_snapshot = Arc::new(HistorySnapshot {
+            roots: OnceLock::new(),
+            _storage: snapshot_storage,
+        });
         slots.entries[index] = Slot::Active;
         Ok(Session {
             outcomes: Arc::clone(self),
@@ -90,6 +162,8 @@ impl Outcomes {
             compound: StdMutex::new(Some(compound)),
             cleanup: StdMutex::new(Some(cleanup)),
             abandoned: Some(storage),
+            // Separate from AbandonedScan: a snapshot must not own itself.
+            history_snapshot: Some(history_snapshot),
             _lock: lock,
         })
     }
@@ -98,34 +172,40 @@ impl Outcomes {
         self.slots.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
     }
 
-    pub(super) fn history(&self) -> Vec<Arc<AbandonedScan>> {
+    pub(super) fn history(&self) -> Option<Arc<HistorySnapshot>> {
         self.slots
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .entries
-            .iter()
-            .filter_map(|slot| match slot {
-                Slot::Abandoned(error) => Some(Arc::clone(error)),
-                _ => None,
-            })
-            .collect()
+            .history_root
+            .as_ref()
+            .map(Arc::clone)
     }
 
-    pub(super) fn payload_history(&self) -> (usize, Vec<Arc<AbandonedScan>>) {
+    pub(super) fn payload_history(
+        &self,
+    ) -> (
+        usize,
+        Result<super::metadata_vec::KnownVec<Arc<AbandonedScan>>>,
+    ) {
         let slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         let active = slots
             .entries
             .iter()
             .filter(|slot| matches!(slot, Slot::Active))
             .count();
-        let history = slots
-            .entries
-            .iter()
-            .filter_map(|slot| match slot {
-                Slot::Abandoned(error) => Some(Arc::clone(error)),
-                _ => None,
-            })
-            .collect();
+        let history = (|| {
+            let count = slots.history_root.as_ref().map_or(0, |root| root.len());
+            let mut roots =
+                super::metadata_vec::KnownVec::new(Arc::clone(&self.bank), MAX_ABANDONED_SCANS);
+            // Admit output backing before cloning any original roots.
+            roots.reserve(count)?;
+            if let Some(snapshot) = &slots.history_root {
+                for original in snapshot.iter() {
+                    roots.push_reserved(Arc::clone(original));
+                }
+            }
+            Ok(roots)
+        })();
         (active, history)
     }
 }
@@ -140,6 +220,7 @@ pub(super) struct Session<'a> {
     compound: StdMutex<Option<OwnedSemaphorePermit>>,
     cleanup: StdMutex<Option<OwnedSemaphorePermit>>,
     abandoned: Option<OwnedSemaphorePermit>,
+    history_snapshot: Option<Arc<HistorySnapshot>>,
     // Drop records the original error before this guard admits another scanner.
     _lock: MutexGuard<'a, ()>,
 }
@@ -354,16 +435,30 @@ impl Drop for Session<'_> {
             .slots
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        slots.entries[self.index] = match primary {
-            Some(primary) => Slot::Abandoned(Arc::new(AbandonedScan {
-                original: primary,
-                _storage: self
-                    .abandoned
+        let displaced = match primary {
+            Some(primary) => {
+                slots.entries[self.index] = Slot::Abandoned(Arc::new(AbandonedScan {
+                    original: primary,
+                    _storage: self
+                        .abandoned
+                        .take()
+                        .expect("reserved abandoned scan payload"),
+                }));
+                let snapshot = self
+                    .history_snapshot
                     .take()
-                    .expect("reserved abandoned scan payload"),
-            })),
-            None => Slot::Empty,
+                    .expect("one prepaid history snapshot per admitted scan");
+                snapshot.freeze(&slots.entries);
+                slots.history_root.replace(snapshot)
+            }
+            None => {
+                slots.entries[self.index] = Slot::Empty;
+                None
+            }
         };
+        drop(slots);
+        // Displaced roots and their body grant outlive the state guard.
+        drop(displaced);
     }
 }
 

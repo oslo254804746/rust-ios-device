@@ -573,7 +573,7 @@ async fn scan_capsule_preflight_refusal_has_zero_source_calls_and_no_history_or_
     assert!(source.calls.lock().unwrap().is_empty());
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 0);
     assert_eq!(state.inner.scan_outcomes.payload_history().0, 0);
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
     assert!(!state.is_ready().await);
     assert_eq!(bank.available_permits(), bytes);
     drop(state);

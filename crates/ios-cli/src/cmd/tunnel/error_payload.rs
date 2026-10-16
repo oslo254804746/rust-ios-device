@@ -238,6 +238,18 @@ impl super::TunnelAgentState {
                 }
             }
         };
+        let scans = match scans {
+            Ok(scans) => scans,
+            Err(_) => {
+                // A rejected census leaves the prepaid original history intact.
+                return Snapshot {
+                    active_scans,
+                    unjoined_native_owners,
+                    truncated: true,
+                    ..Snapshot::default()
+                };
+            }
+        };
         let mut census = Census::default();
         census.snapshot.active_scans = active_scans;
         census.snapshot.unjoined_native_owners = unjoined_native_owners;
@@ -245,7 +257,7 @@ impl super::TunnelAgentState {
             census.anyhow(receipt.primary(), 0);
             census.anyhow(receipt.latest(), 0);
         }
-        for scan in &scans {
+        for scan in scans.as_slice() {
             census.anyhow(scan.original(), 0);
         }
         for receipt in freshness.as_slice() {
