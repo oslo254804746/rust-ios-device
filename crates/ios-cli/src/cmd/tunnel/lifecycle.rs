@@ -623,6 +623,7 @@ impl Ticket {
 
     // Only an unfenced explicit start establishes a new desired selector. The
     // caller already owns the tunnel table and both ticket epoch guards.
+    #[cfg(test)]
     pub(super) fn establish_manual(
         &self,
         route: super::intent::RouteIntent,
@@ -630,17 +631,43 @@ impl Ticket {
         failure: Option<Arc<()>>,
         deadline: Option<&ConnectionDeadline>,
     ) -> Result<()> {
-        debug_assert!(self.intent_version.is_none());
-        self.gate.intent.checked_replace(
+        self.establish_manual_with(
             || self.gate.intent.manual(route, authority.clone()),
+            &authority,
             failure,
-            || {
-                if let Some(deadline) = deadline {
-                    deadline.check()?;
-                }
-                authority.check_clock()
-            },
-        )?;
+            deadline,
+        )
+    }
+
+    pub(super) fn establish_manual_shared(
+        &self,
+        route: Arc<super::intent::RetainedRoute>,
+        authority: crate::access::DeviceAuthority,
+        failure: Option<Arc<()>>,
+        deadline: Option<&ConnectionDeadline>,
+    ) -> Result<()> {
+        self.establish_manual_with(
+            || self.gate.intent.manual_shared(route, authority.clone()),
+            &authority,
+            failure,
+            deadline,
+        )
+    }
+
+    fn establish_manual_with(
+        &self,
+        desired: impl FnOnce() -> Result<super::intent::Desired>,
+        authority: &crate::access::DeviceAuthority,
+        failure: Option<Arc<()>>,
+        deadline: Option<&ConnectionDeadline>,
+    ) -> Result<()> {
+        debug_assert!(self.intent_version.is_none());
+        self.gate.intent.checked_replace(desired, failure, || {
+            if let Some(deadline) = deadline {
+                deadline.check()?;
+            }
+            authority.check_clock()
+        })?;
         Ok(())
     }
 

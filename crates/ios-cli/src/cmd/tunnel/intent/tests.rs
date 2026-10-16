@@ -1,6 +1,125 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
+    let host = "manual-filter-雪";
+    let bytes = std::mem::size_of::<RetainedRoute>() + host.len();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let charged = bank.clone();
+    let route = super::super::metadata_vec::with_allocation_hook(
+        move |layout, _| {
+            assert_eq!(layout.size(), host.len());
+            assert_eq!(charged.available_permits(), 0);
+        },
+        || {
+            RetainedRoute::established(
+                &Route::Mobdev2("observed-address".into()),
+                Some(host),
+                &bank,
+            )
+            .unwrap()
+        },
+    );
+    let RouteIntent::Mobdev2(Some(text)) = &route.route else {
+        unreachable!()
+    };
+    assert_eq!(text, host);
+    assert_eq!(text.capacity(), host.len());
+    let pointer = text.as_ptr();
+    let cell = Cell::new(Arc::new(()), bank.clone());
+    cell.checked_replace(
+        || cell.manual_shared(route.clone(), authority()),
+        None,
+        || Ok(()),
+    )
+    .unwrap();
+    let snapshot = cell.snapshot();
+    let Desired::Manual {
+        route: retained, ..
+    } = &snapshot.desired
+    else {
+        unreachable!()
+    };
+    assert!(Arc::ptr_eq(&route, retained));
+    cell.replace(Desired::Stopped);
+    drop(cell);
+    drop(route);
+    let RouteIntent::Mobdev2(Some(text)) = &retained.route else {
+        unreachable!()
+    };
+    assert_eq!(text.as_ptr(), pointer);
+    assert_eq!(bank.available_permits(), 0);
+    drop(snapshot);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn shared_route_body_and_text_last_byte_refusal_refund_without_destination_allocation() {
+    let host = "selected-host";
+    let body = std::mem::size_of::<RetainedRoute>();
+    for limit in [body - 1, body + host.len() - 1] {
+        let bank = Arc::new(Semaphore::new(limit));
+        let error = super::super::metadata_vec::with_allocation_hook(
+            |_, _| panic!("route refusal allocated destination text"),
+            || {
+                RetainedRoute::established(&Route::Wifi(Some(host.into())), None, &bank)
+                    .err()
+                    .unwrap()
+            },
+        );
+        assert!(error.is::<RouteAdmission>());
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(bank.available_permits(), limit);
+    }
+    let bank = Arc::new(Semaphore::new(2 * body));
+    let absent =
+        RetainedRoute::established(&Route::Wifi(None), Some("ignored-filter"), &bank).unwrap();
+    let empty = RetainedRoute::established(&Route::Usb(Some(String::new())), None, &bank).unwrap();
+    assert!(matches!(absent.route, RouteIntent::Wifi(None)));
+    assert!(matches!(&empty.route, RouteIntent::Usb(Some(host)) if host.is_empty()));
+    assert_eq!(bank.available_permits(), 0);
+    drop(absent);
+    drop(empty);
+    assert_eq!(bank.available_permits(), 2 * body);
+}
+
+#[test]
+fn shared_route_foreign_bank_rejection_keeps_original_version_watch_and_fees() {
+    let original_bank = Arc::new(Semaphore::new(4096));
+    let route =
+        RetainedRoute::established(&Route::Wifi(Some("original".into())), None, &original_bank)
+            .unwrap();
+    let before = original_bank.available_permits();
+    let bank = Arc::new(Semaphore::new(0));
+    let cell = Cell::new(Arc::new(()), bank.clone());
+    let version = cell.snapshot().version;
+    let watch = cell.changes.subscribe();
+    let error = cell
+        .checked_replace(
+            || cell.manual_shared(route.clone(), authority()),
+            None,
+            || Ok(()),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert!(Arc::ptr_eq(&version, &cell.snapshot().version));
+    assert!(!watch.has_changed().unwrap());
+    assert!(matches!(cell.snapshot().desired, Desired::Automatic));
+    assert_eq!(original_bank.available_permits(), before);
+    assert_eq!(bank.available_permits(), 0);
+    drop(cell);
+    drop(route);
+    assert_eq!(original_bank.available_permits(), 4096);
+}
+
 fn authority() -> DeviceAuthority {
     crate::access::AccessControl::trusted_test_local()
         .authenticate(&axum::http::HeaderMap::new())

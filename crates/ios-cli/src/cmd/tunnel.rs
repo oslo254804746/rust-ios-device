@@ -453,7 +453,7 @@ struct ConnectionContext<'a> {
     expected_id: Option<u32>,
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
     retry: Option<(failure_table::Identity, Arc<OwnedSemaphorePermit>)>,
-    manual: Option<&'a intent::ManualRequest>,
+    manual: Option<&'a intent::ManualRequest<'a>>,
     input: Option<Arc<candidate_input::Input>>,
 }
 
@@ -463,7 +463,7 @@ struct ManagedTunnel {
     usbmux: bool,
     native: Option<retirement::NativeLease>,
     // Actual selector established by Source, not the next caller's request.
-    route_intent: intent::RouteIntent,
+    route_intent: Arc<intent::RetainedRoute>,
     // Exact observed Source route, separate from a retained rediscovery filter.
     observed_route: Route,
     _ticket: Ticket,
@@ -492,7 +492,7 @@ enum ManagedDevice {
 fn managed_metadata_bytes(
     device: &ManagedDevice,
     _udid: &str,
-    desired: &intent::RouteIntent,
+    desired: &intent::RetainedRoute,
     observed: &Route,
 ) -> Result<usize> {
     let overflow = || crate::output::resource_decision("tunnel retained metadata size overflow");
@@ -501,12 +501,6 @@ fn managed_metadata_bytes(
         #[cfg(test)]
         ManagedDevice::Fake(device) => std::mem::size_of_val(&**device),
     };
-    let desired_bytes = match desired {
-        intent::RouteIntent::Usbmux => 0,
-        intent::RouteIntent::Usb(host)
-        | intent::RouteIntent::Wifi(host)
-        | intent::RouteIntent::Mobdev2(host) => host.as_ref().map_or(0, String::capacity),
-    };
     let observed_bytes = match observed {
         Route::Usbmux => 0,
         Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::capacity),
@@ -514,10 +508,12 @@ fn managed_metadata_bytes(
     };
     // The real publication Node already owns its entire Box payload (including
     // ManagedTunnel), original key and Vec slot backing in both byte banks.
-    // This shared native/table fee follows the device and retained route buffers.
+    // This shared native/table fee follows device and observed route buffers.
+    // Desired text remains in the separate publication ceiling. Its global
+    // fee belongs to RetainedRoute and is subtracted by the caller there.
     device_bytes
-        .checked_add(desired_bytes)
-        .and_then(|bytes| bytes.checked_add(observed_bytes))
+        .checked_add(observed_bytes)
+        .and_then(|bytes| bytes.checked_add(desired.text_bytes()))
         .ok_or_else(overflow)
 }
 
@@ -1115,7 +1111,7 @@ impl TunnelAgentState {
         udid: &str,
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
-        manual: Option<intent::ManualRequest>,
+        manual: Option<intent::ManualRequest<'_>>,
     ) -> Result<PaidRecord> {
         admission::selectors(udid, ip_filter)?;
         anyhow::ensure!(
@@ -1148,7 +1144,7 @@ impl TunnelAgentState {
                             let route = current.route_intent.clone();
                             ticket.commit(|| {
                                 manual.authority.commit(udid, || {
-                                    ticket.establish_manual(
+                                    ticket.establish_manual_shared(
                                         route,
                                         manual.authority.clone(),
                                         ticket.failure_version(),
@@ -1193,6 +1189,7 @@ impl TunnelAgentState {
                     // Source may have succeeded already. Output-copy refusal
                     // must not browse/connect another route or replace its cause.
                     Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
+                    Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1302,11 +1299,12 @@ impl TunnelAgentState {
             }
         });
         let route_intent = match (&manual, &desired.desired) {
-            (None, intent::Desired::Manual { route, .. }) => route.route.clone(),
-            _ => intent::RouteIntent::established(
+            (None, intent::Desired::Manual { route, .. }) => route.clone(),
+            _ => intent::RetainedRoute::established(
                 &route,
-                manual.and_then(|request| request.host_filter.as_deref()),
-            ),
+                manual.and_then(|request| request.host_filter),
+                &self.inner.global_metadata_bytes,
+            )?,
         };
         let previous_failure = if manual.is_some() {
             self.inner
@@ -1401,8 +1399,10 @@ impl TunnelAgentState {
             }
             let metadata_size =
                 managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
-            let global_metadata =
-                admission::known_metadata_charge(&self.inner.global_metadata_bytes, metadata_size)?;
+            let global_metadata = admission::known_metadata_charge(
+                &self.inner.global_metadata_bytes,
+                metadata_size - route_intent.text_bytes(),
+            )?;
             let metadata = self
                 .inner
                 .metadata_bytes
@@ -1552,7 +1552,7 @@ impl TunnelAgentState {
                     })
                     .and_then(|()| {
                         if let Some(manual) = manual {
-                            ticket.establish_manual(
+                            ticket.establish_manual_shared(
                                 route_intent,
                                 manual.authority.clone(),
                                 previous_failure,
@@ -3513,7 +3513,7 @@ async fn agent_start_tunnel(
     let authority = principal.device_authority(Permission::ManageTunnels, &query.udid)?;
     let manual = intent::ManualRequest {
         authority,
-        host_filter: query.ip.clone(),
+        host_filter: query.ip.as_deref(),
     };
     let record = principal
         .run(state.ensure_tunnel_with_intent(

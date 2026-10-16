@@ -13,6 +13,10 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         let table = state.inner.tunnels.read().await;
         Arc::downgrade(table[DEVICE]._input.as_ref().expect("scan input omitted"))
     };
+    let route = {
+        let table = state.inner.tunnels.read().await;
+        Arc::downgrade(&table[DEVICE].route_intent)
+    };
     let before = bank.available_permits();
     state.clear().await;
     assert_eq!(state.inner.native.snapshot().retired, 1);
@@ -20,9 +24,13 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         input.upgrade().is_some(),
         "input refunded before original native joins"
     );
+    assert!(
+        route.upgrade().is_none(),
+        "removed route still owns its body"
+    );
     assert_eq!(
         bank.available_permits(),
-        before + actual_publication_destination_bytes()
+        before + actual_publication_destination_bytes() + route_body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert!(input.upgrade().is_none());
@@ -83,6 +91,13 @@ fn record_copy_bytes() -> usize {
             .map_or(0, |text| text.len())
 }
 
+fn route_body_bytes() -> usize {
+    // These fixtures select Usbmux/Wifi(None), so the independent retained
+    // route has a real Arc payload and no host allocation. Unlike the native
+    // device permit, it ends when its last table/desired owner is destroyed.
+    std::mem::size_of::<intent::RetainedRoute>()
+}
+
 fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>() + actual_publication_destination_bytes();
@@ -90,7 +105,11 @@ fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
-        native_bytes + charged + Lifecycle::initial_metadata_bytes(DEVICE) + record_copy_bytes(),
+        native_bytes
+            + charged
+            + Lifecycle::initial_metadata_bytes(DEVICE)
+            + record_copy_bytes()
+            + route_body_bytes(),
     );
     (state, charged)
 }
@@ -111,13 +130,13 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        actual_publication_destination_bytes()
+        actual_publication_destination_bytes() + route_body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged
+        charged + route_body_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(
@@ -128,7 +147,7 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     drop(record);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + record_copy_bytes()
+        charged + route_body_bytes() + record_copy_bytes()
     );
 }
 
@@ -150,12 +169,12 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged
+        charged + route_body_bytes()
     );
     drop(record);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged + record_copy_bytes()
+        charged + route_body_bytes() + record_copy_bytes()
     );
 }
 
@@ -178,7 +197,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     assert_eq!(state.inner.metadata_bytes.available_permits(), node_bytes);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        node_bytes + record_copy_bytes()
+        node_bytes + record_copy_bytes() + route_body_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(
@@ -187,7 +206,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing + record_copy_bytes()
+        charged - backing + record_copy_bytes() + route_body_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);
@@ -208,7 +227,7 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     }];
     let snapshot_size =
         devices.capacity() * std::mem::size_of::<source::UsbDevice>() + devices[0].udid.capacity();
-    let total = charged + snapshot_size - 1;
+    let total = charged + snapshot_size + route_body_bytes() - 1;
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
@@ -225,7 +244,7 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     let backing = state.inner.tunnels.read().await.backing_bytes();
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing - 1
+        charged - backing + route_body_bytes() - 1
     );
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
@@ -237,7 +256,7 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     assert!(recovered(&source, expected).await);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing - 1
+        charged - backing + route_body_bytes() - 1
     );
     drop(snapshot);
     assert_eq!(
