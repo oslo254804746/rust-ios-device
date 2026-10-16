@@ -1,4 +1,4 @@
-//! Actual owned JSON destinations. Decoder scratch and HTTP internals are separate.
+//! Actual owned JSON destinations and escaped-string scratch; HTTP is separate.
 use std::cell::RefCell;
 use std::fmt;
 use std::sync::Arc;
@@ -10,6 +10,8 @@ use serde::{Serialize, Serializer};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::metadata_vec::{exact_backing, KnownVec};
+
+mod strings;
 
 pub(super) struct Text {
     data: String,
@@ -105,11 +107,19 @@ impl Serialize for Value {
     }
 }
 
-struct Context {
+struct Context<'a> {
     bank: Arc<Semaphore>,
     failure: RefCell<Option<anyhow::Error>>,
+    strings: Option<strings::Decoder<'a>>,
 }
-impl Context {
+impl Context<'_> {
+    fn text(&self, value: &str) -> Result<Text> {
+        match &self.strings {
+            Some(strings) => strings.copy(value, &self.bank),
+            None => Text::copy(value, &self.bank),
+        }
+    }
+
     fn failed<E: serde::de::Error>(&self, error: anyhow::Error) -> E {
         let mut failure = self.failure.borrow_mut();
         if failure.is_none() {
@@ -119,8 +129,8 @@ impl Context {
     }
 }
 
-struct Seed<'a>(&'a Context);
-impl<'de> DeserializeSeed<'de> for Seed<'_> {
+struct Seed<'a, 'input>(&'a Context<'input>);
+impl<'de> DeserializeSeed<'de> for Seed<'_, '_> {
     type Value = Value;
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
@@ -129,7 +139,7 @@ impl<'de> DeserializeSeed<'de> for Seed<'_> {
         deserializer.deserialize_any(self)
     }
 }
-impl<'de> Visitor<'de> for Seed<'_> {
+impl<'de> Visitor<'de> for Seed<'_, '_> {
     type Value = Value;
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a JSON value")
@@ -153,7 +163,8 @@ impl<'de> Visitor<'de> for Seed<'_> {
         ))
     }
     fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Value, E> {
-        Text::copy(value, &self.0.bank)
+        self.0
+            .text(value)
             .map(Value::Text)
             .map_err(|error| self.0.failed(error))
     }
@@ -197,11 +208,11 @@ impl<'de> Visitor<'de> for Seed<'_> {
     }
 }
 
-struct Element<'a> {
-    context: &'a Context,
+struct Element<'a, 'input> {
+    context: &'a Context<'input>,
     values: &'a mut KnownVec<Value>,
 }
-impl<'de> DeserializeSeed<'de> for Element<'_> {
+impl<'de> DeserializeSeed<'de> for Element<'_, '_> {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
@@ -215,8 +226,8 @@ impl<'de> DeserializeSeed<'de> for Element<'_> {
         Ok(())
     }
 }
-struct Key<'a>(&'a Context);
-impl<'de> DeserializeSeed<'de> for Key<'_> {
+struct Key<'a, 'input>(&'a Context<'input>);
+impl<'de> DeserializeSeed<'de> for Key<'_, '_> {
     type Value = Text;
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
@@ -225,22 +236,25 @@ impl<'de> DeserializeSeed<'de> for Key<'_> {
         deserializer.deserialize_str(self)
     }
 }
-impl<'de> Visitor<'de> for Key<'_> {
+impl<'de> Visitor<'de> for Key<'_, '_> {
     type Value = Text;
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a JSON object key")
     }
     fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Text, E> {
-        Text::copy(value, &self.0.bank).map_err(|error| self.0.failed(error))
+        self.0.text(value).map_err(|error| self.0.failed(error))
     }
 }
 
 pub(super) fn parse(bytes: &[u8], bank: &Arc<Semaphore>) -> Result<Value> {
+    let syntax = strings::Syntax::new(bytes, bank)?;
+    let input = syntax.as_ref().map_or(bytes, strings::Syntax::as_slice);
     let context = Context {
         bank: bank.clone(),
         failure: RefCell::new(None),
+        strings: syntax.as_ref().map(|_| strings::Decoder::new(bytes, input)),
     };
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let mut deserializer = serde_json::Deserializer::from_slice(input);
     let result = Seed(&context).deserialize(&mut deserializer);
     match result {
         Ok(value) => {
@@ -250,6 +264,9 @@ pub(super) fn parse(bytes: &[u8], bank: &Arc<Semaphore>) -> Result<Value> {
             Ok(value)
         }
         Err(error) => match context.failure.into_inner() {
+            Some(original) if original.is::<serde_json::Error>() => {
+                Err(original.context("invalid upstream listing JSON"))
+            }
             Some(original) => Err(original.context("upstream JSON destination admission failed")),
             None => Err(anyhow::Error::new(error).context("invalid upstream listing JSON")),
         },

@@ -8930,3 +8930,12 @@ Drop，最后iterator/output独立持费。10项新增专项与完整tunnel578/0
 [验证](validation/tunnel-federation-join-storage-2026-10-16.md)。decoder scratch/
 URI/header/WS/private及原完整freshness等继续；128MiB非完整heap/RSS，L02
 不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 upstream JSON string scratch
+
+原锁定serde reader使用预付实际scratch Vec，并以逐字节同位置syntax副本保留
+结构/number/depth和原typed错误/行列；同时存活syntax/scratch/Text全部持费，
+最后树独立于body。完整tunnel582/0FAIL/2原ignored、上游6/strictCLI/build/
+Source0通过，见[验证](validation/tunnel-json-string-scratch-2026-10-16.md)。
+URI/header/registry/WS/private与原完整freshness等继续；128MiB非完整heap/RSS，
+L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。

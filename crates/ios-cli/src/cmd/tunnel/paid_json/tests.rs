@@ -166,3 +166,148 @@ fn paid_json_reverse_object_and_late_duplicates_keep_last_values_with_in_place_s
     drop(paid);
     assert_eq!(bank.available_permits(), 8 * 1024 * 1024);
 }
+
+#[test]
+fn paid_json_escaped_scratch_actual_layout_and_destination_peak_are_paid_before_allocation() {
+    let input = br#""\u96ea""#;
+    let syntax = input.len() + 1;
+    let scratch = 6;
+    let decoded = "雪".len();
+    let total = syntax + scratch + decoded;
+    let bank = Arc::new(Semaphore::new(total));
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = observed.clone();
+    let charged = bank.clone();
+    let value = metadata_vec::with_allocation_hook(
+        move |layout, _| {
+            captured
+                .lock()
+                .unwrap()
+                .push((layout.size(), charged.available_permits()));
+        },
+        || parse(input, &bank).unwrap(),
+    );
+    assert_eq!(
+        *observed.lock().unwrap(),
+        [
+            (syntax, scratch + decoded),
+            (scratch, decoded),
+            (decoded, 0)
+        ]
+    );
+    assert_eq!(value.string(), Some("雪"));
+    assert_eq!(bank.available_permits(), total - decoded);
+    drop(value);
+    assert_eq!(bank.available_permits(), total);
+
+    for (limit, expected_allocations) in
+        [(syntax - 1, 0), (syntax + scratch - 1, 1), (total - 1, 2)]
+    {
+        let bank = Arc::new(Semaphore::new(limit));
+        let allocations = Arc::new(AtomicUsize::new(0));
+        let captured = allocations.clone();
+        let error = metadata_vec::with_allocation_hook(
+            move |_, _| {
+                captured.fetch_add(1, Ordering::SeqCst);
+            },
+            || parse(input, &bank).err().unwrap(),
+        );
+        assert_eq!(allocations.load(Ordering::SeqCst), expected_allocations);
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string() == "tunnel global known metadata byte limit exceeded"));
+        assert_eq!(bank.available_permits(), limit);
+    }
+}
+
+#[test]
+fn paid_json_string_adapter_keeps_original_grammar_error_class_location_and_message() {
+    let bank = Arc::new(Semaphore::new(1024 * 1024));
+    // Fixed protocol fixtures, including earlier syntax/depth/number errors.
+    // These are deterministic regression cases, not the excluded Q04 fuzz work.
+    let cases: &[&[u8]] = &[
+        br#""\q""#,
+        br#""\u12xz""#,
+        br#""\u123""#,
+        br#""\ud800""#,
+        br#""\udc00""#,
+        br#""\ud800\u0061""#,
+        br#""\ud800\ud800""#,
+        br#""\ud800\x""#,
+        br#""\ud800text""#,
+        b"\"\\",
+        br#""\q"#,
+        br#""valid\n"#,
+        b"\"\\n\n\"",
+        b"\"\\n\x00\"",
+        b"\"\\n\xff\"",
+        b"\"\\n\xe2\x82\"",
+        b"\n {\n\"key\\u0061\": [\n \"bad\\q\"]}",
+        b"\n {\n\"bad\\q\": 1}",
+        br#"{"key":"\ud800"}"#,
+        br#"{"key":"\u96ea",}"#,
+        br#"{"key":"\n" "next":0}"#,
+        br#"{"key" "\q"}"#,
+        br#"{"key":,"\q":0}"#,
+        br#"[1e999,"\q"]"#,
+        br#"[01,"\q"]"#,
+        br#"[falsex,"\q"]"#,
+        br#"{"x":true, "\q"}"#,
+        br#"{"x":true, 1:"\q"}"#,
+        br#""\n" false"#,
+        br#"0 "\q"#,
+        br#"["\n",]"#,
+        br#"["\n""#,
+        br#"{"\n":0"#,
+        br#"{"\n":0} trailing"#,
+        br#"\"#,
+    ];
+    for input in cases {
+        let expected = serde_json::from_slice::<serde_json::Value>(input).unwrap_err();
+        let error = parse(input, &bank).err().expect("original invalid input");
+        let actual = error.downcast_ref::<serde_json::Error>().unwrap();
+        assert_eq!(actual.classify(), expected.classify(), "input: {input:?}");
+        assert_eq!(actual.line(), expected.line(), "input: {input:?}");
+        assert_eq!(actual.column(), expected.column(), "input: {input:?}");
+        assert_eq!(actual.to_string(), expected.to_string(), "input: {input:?}");
+        assert_eq!(bank.available_permits(), 1024 * 1024);
+    }
+    for depth in [126, 127, 128, 129] {
+        let input = format!("{}\"\\q\"{}", "[".repeat(depth), "]".repeat(depth));
+        let expected = serde_json::from_str::<serde_json::Value>(&input).unwrap_err();
+        let error = parse(input.as_bytes(), &bank).err().unwrap();
+        assert_eq!(
+            error
+                .downcast_ref::<serde_json::Error>()
+                .unwrap()
+                .to_string(),
+            expected.to_string()
+        );
+        assert_eq!(bank.available_permits(), 1024 * 1024);
+    }
+}
+
+#[test]
+fn paid_json_string_adapter_preserves_all_escape_forms_and_mixed_plain_tokens() {
+    let bank = Arc::new(Semaphore::new(1024 * 1024));
+    let cases: &[&[u8]] = &[
+        br#""\"\\\/\b\f\n\r\t\u0000\u001f\u007f\u0080\u07ff\u0800\uffff\ud83e\udd80""#,
+        br#"{"plain":"kept","\u0061":"\u96ea","a":"last","empty":"","sequence":["a\\","\"b","c",0,-0.0,1e100]}"#,
+        b"{\n \"raw-\xe9\x9b\xaa\":\"\\u96ea\",\n\"empty\":\"\",\"emoji\":\"\xf0\x9f\xa6\x80\"\n}",
+        br#"["\n",{},[],null,true,false,"a",["\t"]]"#,
+    ];
+    for input in cases {
+        let expected: serde_json::Value = serde_json::from_slice(input).unwrap();
+        let actual = parse(input, &bank).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        drop(actual);
+        assert_eq!(bank.available_permits(), 1024 * 1024);
+    }
+}
