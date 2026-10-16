@@ -2086,8 +2086,9 @@ impl TunnelAgentState {
         );
         let mut seen = scan_seen::Seen::new(&self.inner.global_metadata_bytes);
         let mut candidate_budget = admission::CandidateBudget::default();
-        let (selected, _usb_selection_charge) =
-            source::selected_devices(devices, &self.inner.global_metadata_bytes)?;
+        let selection = source::selected_devices(devices, &self.inner.global_metadata_bytes)?;
+        let _usb_selection_charge = selection.1;
+        let selected = selection.0;
         let attached_ids = usb_index::Index::new(&selected, &self.inner.global_metadata_bytes)?;
         // Manual intent wins over ordinary discovery for the same exact key.
         // Hostless Wi-Fi is rediscovered inside NativeSource on each admitted

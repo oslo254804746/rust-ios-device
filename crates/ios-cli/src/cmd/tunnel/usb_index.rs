@@ -14,11 +14,9 @@ pub(super) struct Index<'a> {
 
 impl<'a> Index<'a> {
     pub(super) fn new(devices: &'a [UsbDevice], bank: &Arc<Semaphore>) -> Result<Self> {
-        let mut positions = Vec::new();
-        positions.try_reserve_exact(devices.len()).map_err(|_| {
-            crate::output::resource_decision("tunnel USB attachment index allocation failed")
-        })?;
-        let storage = super::admission::known_vec_backing(bank, &positions)?;
+        let allocation = super::metadata_vec::exact_backing(bank, devices.len())?;
+        let storage = allocation.storage;
+        let mut positions = allocation.values;
         positions.extend(0..devices.len());
         positions.sort_unstable_by(|a, b| devices[*a].udid.cmp(&devices[*b].udid).then(a.cmp(b)));
         Ok(Self {

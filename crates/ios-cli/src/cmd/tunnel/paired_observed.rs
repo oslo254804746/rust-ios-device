@@ -12,11 +12,9 @@ pub(super) struct Index {
 
 impl Index {
     pub(super) fn new(targets: &[PairedMobdev2Device], bank: &Arc<Semaphore>) -> Result<Self> {
-        let mut positions = Vec::new();
-        positions.try_reserve_exact(targets.len()).map_err(|_| {
-            crate::output::resource_decision("tunnel paired observed index allocation failed")
-        })?;
-        let storage = super::admission::known_vec_backing(bank, &positions)?;
+        let allocation = super::metadata_vec::exact_backing(bank, targets.len())?;
+        let storage = allocation.storage;
+        let mut positions = allocation.values;
         positions.extend(0..targets.len());
         positions.sort_unstable_by(|a, b| {
             let a = &targets[*a];

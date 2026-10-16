@@ -8835,3 +8835,12 @@ history在切换前取出；原即时取消/guard外析构/Pending与typed对象
 门禁见[验证](validation/tunnel-clear-epoch-2026-10-15.md)。仅修复原生命周期/退避
 子项，完整freshness/private等仍继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 admitted Vec creation order
+
+修正KnownVec/coordinator及八处直接backing先分配后收费的实际缺口，统一真实
+Layout准入后分配；增长保留双份费用，canonical key先收费复制，paired/selected
+局部Drop先释放数据再退费。完整tunnel518/0FAIL/2ignored、strictCLI/build/Source0
+门禁通过，见[验证](validation/tunnel-owned-vector-creation-2026-10-16.md)。未收费
+cleanup/history/HTTP/private与原完整freshness继续，128MiB非完整heap/RSS，
+L02不关闭；23/6/待收口、有效30与Q04全部排除不变，仅本地提交。

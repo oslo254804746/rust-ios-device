@@ -37,11 +37,9 @@ pub(super) fn selected_devices(
 ) -> anyhow::Result<(Vec<UsbDevice>, OwnedSemaphorePermit)> {
     // Borrow identities via indices rather than cloning keys into an opaque
     // hash table. Sort by identity, then original position within that identity.
-    let mut positions = Vec::new();
-    positions.try_reserve_exact(devices.len()).map_err(|_| {
-        crate::output::resource_decision("tunnel selection index allocation failed")
-    })?;
-    let _index_storage = super::admission::known_vec_backing(bank, &positions)?;
+    let allocation = super::metadata_vec::exact_backing(bank, devices.len())?;
+    let _index_storage = allocation.storage;
+    let mut positions = allocation.values;
     positions.extend((0..devices.len()).map(|index| (index, index)));
     positions
         .sort_unstable_by(|(_, a), (_, b)| devices[*a].udid.cmp(&devices[*b].udid).then(a.cmp(b)));
@@ -63,11 +61,9 @@ pub(super) fn selected_devices(
     }
     positions.truncate(write);
     positions.sort_unstable_by_key(|(first, _)| *first);
-    let mut selected = Vec::new();
-    selected.try_reserve_exact(write).map_err(|_| {
-        crate::output::resource_decision("tunnel selection output allocation failed")
-    })?;
-    let storage = super::admission::known_vec_backing(bank, &selected)?;
+    let allocation = super::metadata_vec::exact_backing(bank, write)?;
+    let storage = allocation.storage;
+    let mut selected = allocation.values;
     for (_, index) in positions {
         let device = &mut devices[index];
         // Move the original String buffer. The caller's raw snapshot reservation

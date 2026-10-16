@@ -79,19 +79,11 @@ impl DeviceTable {
             .max(1)
             .saturating_mul(2)
             .min(MAX_DEVICE_GATES);
-        let mut replacement = Vec::new();
-        replacement.try_reserve_exact(capacity).map_err(|_| {
-            crate::output::resource_decision("tunnel coordinator backing allocation failed")
-        })?;
-        let bytes = replacement
-            .capacity()
-            .checked_mul(std::mem::size_of::<DeviceRow>())
-            .ok_or_else(|| {
-                crate::output::resource_decision("tunnel coordinator backing size overflow")
-            })?;
-        // The old backing remains charged while admitting its replacement.
-        // No key, gate, epoch or original table changes on rejection.
-        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        // Both old and replacement layouts stay charged during growth.
+        // Rejection happens before allocation or moving an original gate.
+        let allocation = super::metadata_vec::exact_backing(bank, capacity)?;
+        let storage = allocation.storage;
+        let mut replacement = allocation.values;
         replacement.append(&mut self.rows);
         self.rows = replacement;
         self.storage = Some(storage);
@@ -312,17 +304,16 @@ impl Lifecycle {
                         crate::output::resource_decision("tunnel device coordinator limit")
                     );
                 }
-                let key = udid.to_owned();
-                let bytes = key
-                    .capacity()
-                    .checked_add(std::mem::size_of::<DeviceGate>())
-                    .ok_or_else(|| {
-                        crate::output::resource_decision(
-                            "tunnel coordinator metadata size overflow",
-                        )
-                    })?;
-                let metadata =
-                    super::admission::known_metadata_charge(&self.metadata_bytes, bytes)?;
+                let mut metadata = super::admission::known_metadata_charge(
+                    &self.metadata_bytes,
+                    std::mem::size_of::<DeviceGate>(),
+                )?;
+                let key_allocation =
+                    super::metadata_vec::exact_backing(&self.metadata_bytes, udid.len())?;
+                metadata.merge(key_allocation.storage);
+                let mut key_bytes = key_allocation.values;
+                key_bytes.extend_from_slice(udid.as_bytes());
+                let key = String::from_utf8(key_bytes).expect("copied UDID str is valid UTF-8");
                 devices.reserve_row(&self.metadata_bytes)?;
                 let gate = Arc::new(DeviceGate {
                     udid: key,
@@ -847,6 +838,51 @@ mod desired_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coordinator_vector_refusal_precedes_allocation_without_changing_backing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let bank = Arc::new(Semaphore::new(2 * std::mem::size_of::<DeviceRow>() - 1));
+        let mut table = DeviceTable::default();
+        let allocated = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&allocated);
+        super::super::metadata_vec::with_allocation_hook(
+            move |_, _| {
+                seen.fetch_add(1, Ordering::SeqCst);
+            },
+            || {
+                assert!(table.reserve_row(&bank).is_err());
+            },
+        );
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
+        assert_eq!(table.rows.capacity(), 0);
+        assert!(table.storage.is_none());
+        assert_eq!(
+            bank.available_permits(),
+            2 * std::mem::size_of::<DeviceRow>() - 1
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_canonical_key_is_admitted_before_its_first_copy() {
+        use futures_util::FutureExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let bytes = std::mem::size_of::<DeviceGate>();
+        let bank = Arc::new(Semaphore::new(bytes));
+        let lifecycle = Lifecycle::with_metadata(Arc::clone(&bank));
+        let allocated = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&allocated);
+        let result = super::super::metadata_vec::with_allocation_hook(
+            move |_, _| {
+                seen.fetch_add(1, Ordering::SeqCst);
+            },
+            || lifecycle.ticket("a").now_or_never().unwrap(),
+        );
+        assert!(result.is_err());
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
+        assert!(lifecycle.devices.lock().await.rows.is_empty());
+        assert_eq!(bank.available_permits(), bytes);
+    }
 
     fn resource(error: &anyhow::Error) {
         assert_eq!(
