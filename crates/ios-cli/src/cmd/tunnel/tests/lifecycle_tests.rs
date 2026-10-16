@@ -1,5 +1,6 @@
 use super::*;
 use crate::access::test_support::JsonRequest;
+use crate::cmd::tunnel::record_owner::PaidRecord;
 use futures_util::future::BoxFuture;
 use ios_core::device::PairedMobdev2Device;
 use std::collections::VecDeque;
@@ -36,7 +37,7 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
         crate::output::operation_error_class(error.as_ref()),
         ios_core::ErrorClass::ResourceLimit
     );
-    assert_eq!(state.list_records().await.len(), 1);
+    assert_eq!(state.list_records().await.unwrap().len(), 1);
     assert_eq!(
         source.drops.load(Ordering::SeqCst),
         0,
@@ -66,6 +67,7 @@ mod parallel_tests;
 mod publication_commit_tests;
 mod publication_tests;
 mod reconnect_tests;
+mod record_owner_tests;
 mod retention_tests;
 mod scan_setup_tests;
 mod scan_terminal_tests;
@@ -353,7 +355,7 @@ fn state(source: Arc<FakeSource>, timeout: Duration) -> TunnelAgentState {
     )
 }
 
-async fn start(state: TunnelAgentState, udid: &str) -> Result<TunnelRecord> {
+async fn start(state: TunnelAgentState, udid: &str) -> Result<PaidRecord> {
     state
         .ensure_tunnel(udid, None, Some(StartTunnelConnectionType::Usbmux))
         .await
@@ -362,7 +364,7 @@ async fn start(state: TunnelAgentState, udid: &str) -> Result<TunnelRecord> {
 fn spawn_start(
     state: &TunnelAgentState,
     udid: &str,
-) -> tokio::task::JoinHandle<Result<TunnelRecord>> {
+) -> tokio::task::JoinHandle<Result<PaidRecord>> {
     let state = state.clone();
     let udid = udid.to_owned();
     tokio::spawn(async move { start(state, &udid).await })
@@ -436,7 +438,7 @@ async fn lifecycle_tunnel_http_stalled_a_does_not_delay_b_list_get_stop() {
     let response = a.await.unwrap().unwrap();
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(response.headers()["x-ios-error-class"], "cancelled");
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     server.abort();
     server.await.unwrap_err();
@@ -459,7 +461,7 @@ async fn lifecycle_tunnel_same_device_requests_publish_one_owned_tunnel() {
     assert_eq!(second.await.unwrap().unwrap(), first);
     assert_eq!(third.await.unwrap().unwrap(), first);
     assert_eq!(source.count(A), 1);
-    assert_eq!(state.list_records().await.len(), 1);
+    assert_eq!(state.list_records().await.unwrap().len(), 1);
     assert!(state.remove_tunnel(A).await);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
@@ -486,7 +488,7 @@ async fn lifecycle_tunnel_stop_cancels_active_and_queued_generation_then_allows_
         .is::<ios_core::OperationCancelled>());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
     assert_eq!(source.count(A), 2);
     state.clear().await;
@@ -527,7 +529,7 @@ async fn lifecycle_tunnel_global_connect_limit_and_clear_release_all_owned_futur
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -665,8 +667,8 @@ async fn lifecycle_tunnel_stop_invalidates_device_queued_behind_stalled_scan() {
     gate.add_permits(4);
     scan.await.unwrap().unwrap();
     assert_eq!(source.count(B), 0);
-    assert!(state.get_record(B).await.is_none());
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(B).await.unwrap().is_none());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert!(!state.inner.failed_attempts.read().await.contains_key(B));
     state.clear().await;
 }
@@ -685,7 +687,7 @@ async fn lifecycle_tunnel_stop_during_discovery_rejects_unpublished_snapshot() {
     gate.add_permits(1);
     scan.await.unwrap();
     assert_eq!(source.count(A), 0);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -718,7 +720,7 @@ async fn lifecycle_tunnel_scan_backoff_and_disconnect_release_remain_observable(
     assert!(!state.inner.failed_attempts.read().await.contains_key(A));
     source.usb.lock().unwrap().clear();
     state.refresh_once().await.unwrap();
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }
 
@@ -742,8 +744,8 @@ async fn lifecycle_tunnel_stale_failed_scan_does_not_remove_new_publication() {
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
         std::io::ErrorKind::BrokenPipe
     );
-    assert!(state.get_record(B).await.is_some());
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(B).await.unwrap().is_some());
+    assert!(state.get_record(A).await.unwrap().is_none());
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
@@ -775,7 +777,7 @@ async fn lifecycle_tunnel_native_failure_and_unmatched_fallback_retain_original_
     assert!(!safe.contains(A));
     assert_eq!(source.count(A), 2);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -799,7 +801,7 @@ async fn lifecycle_tunnel_caller_drop_releases_completed_device_waiting_for_publ
         lifecycle::MAX_CONNECTS
     );
     drop(table);
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
@@ -811,8 +813,8 @@ async fn lifecycle_tunnel_dead_record_is_pruned_and_owned_device_released() {
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     start(state.clone(), A).await.unwrap();
     source.alive.store(false, Ordering::SeqCst);
-    assert!(state.get_record(A).await.is_none());
-    assert!(state.list_records().await.is_empty());
+    assert!(state.get_record(A).await.unwrap().is_none());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert!(!state.remove_tunnel(A).await);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
 }

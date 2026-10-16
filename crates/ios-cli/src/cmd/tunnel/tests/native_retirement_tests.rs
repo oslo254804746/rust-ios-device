@@ -1,6 +1,7 @@
 //! Real native workers through the production publication and server owners.
 //! Only discovery/device metadata are supplied by the CLI's private test seam.
 use super::*;
+use crate::cmd::tunnel::record_owner::PaidRecord;
 use futures_util::future::BoxFuture;
 use ios_core::{TunnelHandle, TunnelOwner};
 use std::io;
@@ -21,6 +22,7 @@ mod metadata_tests;
 mod paired_discovery_tests;
 mod paired_fence_tests;
 mod reconnect_tests;
+mod record_owner_tests;
 mod scan_outcome_tests;
 mod snapshot_admission_tests;
 mod success_bookkeeping_tests;
@@ -284,7 +286,7 @@ async fn recovered(source: &LocalSource, expected: usize) -> bool {
     .await
     .unwrap_or(false)
 }
-async fn publish(state: &TunnelAgentState, route: Route) -> Result<TunnelRecord> {
+async fn publish(state: &TunnelAgentState, route: Route) -> Result<PaidRecord> {
     let ticket = state.inner.lifecycle.ticket(DEVICE).await?;
     state
         .connect_and_store(DEVICE, route, &ticket, None, None)
@@ -635,9 +637,9 @@ async fn native_cli_dead_get_and_list_keep_original_native_joins_for_collection(
         let native = source.handle();
         native.request_stop();
         let removed = if list {
-            state.list_records().await.is_empty()
+            state.list_records().await.unwrap().as_slice().is_empty()
         } else {
-            state.get_record(DEVICE).await.is_none()
+            state.get_record(DEVICE).await.unwrap().is_none()
         };
         let snapshot = state.inner.native.snapshot();
         let recovery = finish(&state, &source, expected).await;
@@ -681,7 +683,7 @@ async fn native_cli_scan_detachment_retires_the_exact_published_usb_runtime() {
     let result = state.refresh_once().await;
     let snapshot = state.inner.native.snapshot();
     let stopped = !native.is_alive();
-    let absent = state.get_record(DEVICE).await.is_none();
+    let absent = state.get_record(DEVICE).await.unwrap().is_none();
     let recovery = finish(&state, &source, expected).await;
     result.unwrap();
     assert!(stopped && absent && recovery && native.shutdown_status().is_ok());
@@ -719,7 +721,7 @@ async fn native_cli_clear_and_stop_fence_unpublished_real_runtime_before_query_r
         let snapshot = state.inner.native.snapshot();
         gate.add_permits(1);
         let rejected = connection.await;
-        let absent = state.get_record(DEVICE).await.is_none();
+        let absent = state.get_record(DEVICE).await.unwrap().is_none();
         let recovery = finish(&state, &source, expected).await;
         assert!(waiting && !response && stopped_before_return && absent && recovery);
         assert!(rejected.is_err() && native.shutdown_status().is_ok());

@@ -1,4 +1,5 @@
 use super::*;
+use crate::cmd::tunnel::record_owner::PaidRecord;
 
 fn scan_job(state: &TunnelAgentState) -> tokio::task::JoinHandle<Result<()>> {
     let state = state.clone();
@@ -8,10 +9,10 @@ fn scan_job(state: &TunnelAgentState) -> tokio::task::JoinHandle<Result<()>> {
 async fn record_within_budget(
     state: &TunnelAgentState,
     udid: &str,
-) -> std::result::Result<TunnelRecord, tokio::time::error::Elapsed> {
+) -> std::result::Result<PaidRecord, tokio::time::error::Elapsed> {
     tokio::time::timeout(LOCAL_BUDGET, async {
         loop {
-            if let Some(record) = state.get_record(udid).await {
+            if let Some(record) = state.get_record(udid).await.unwrap() {
                 return record;
             }
             tokio::task::yield_now().await;
@@ -35,7 +36,7 @@ async fn lifecycle_tunnel_parallel_healthy_b_publishes_while_a_remains_stalled()
     source.entered(A, 1).await;
     let observed = record_within_budget(&state, B).await;
     let active = source.active.load(Ordering::SeqCst);
-    let a_record = state.get_record(A).await;
+    let a_record = state.get_record(A).await.unwrap();
     abort_scan(scan).await;
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -96,7 +97,7 @@ async fn lifecycle_tunnel_parallel_sixteen_candidates_start_four_and_restore_all
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert!(
         observed.is_ok(),
         "scan did not fill the bounded connection window"
@@ -132,11 +133,11 @@ async fn lifecycle_tunnel_parallel_caller_drop_owns_every_active_connection_futu
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(active, lifecycle::MAX_CONNECTS);
     assert_eq!(source.exited.load(Ordering::SeqCst), 4);
     state.refresh_once().await.unwrap();
-    assert_eq!(state.list_records().await.len(), 4);
+    assert_eq!(state.list_records().await.unwrap().len(), 4);
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 4);
 }
@@ -167,8 +168,8 @@ async fn lifecycle_tunnel_parallel_stop_a_does_not_cancel_healthy_b_connection()
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(state.get_record(A).await.is_none());
-    assert!(state.get_record(B).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_none());
+    assert!(state.get_record(B).await.unwrap().is_some());
     assert!(!state.inner.failed_attempts.read().await.contains_key(A));
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
@@ -216,7 +217,7 @@ async fn lifecycle_tunnel_parallel_paired_discovery_failure_keeps_usb_result_and
     );
     assert!(!crate::output::error_message(&error).contains("synthetic-private"));
     assert_eq!(source.count(A), 1);
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert!(!state.is_ready().await);
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
@@ -253,7 +254,7 @@ async fn lifecycle_tunnel_parallel_cross_family_duplicate_keeps_first_usb_route(
         calls.iter().find(|(id, _)| id == B).unwrap().1,
         Route::Mobdev2("192.0.2.42".into())
     );
-    assert_eq!(state.list_records().await.len(), 2);
+    assert_eq!(state.list_records().await.unwrap().len(), 2);
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
 }

@@ -241,7 +241,7 @@ async fn native_success_bookkeeping_read_lock_allows_complete_window_and_bounded
     let failed = state.inner.failed_attempts.read().await;
     source.release_first.add_permits(4);
     let later = drive_until(&mut scan, &source, 5, Duration::from_millis(200)).await;
-    let first_published = state.list_records().await.len();
+    let first_published = state.list_records().await.unwrap().len();
     let before_fifth = state.inner.native.snapshot();
     source.release_fifth.add_permits(1);
     let result = if later {
@@ -249,7 +249,7 @@ async fn native_success_bookkeeping_read_lock_allows_complete_window_and_bounded
     } else {
         None
     };
-    let published = state.list_records().await.len();
+    let published = state.list_records().await.unwrap().len();
     let after_flush = state.inner.native.snapshot();
     let unchanged = failed.len() == 5 && failed.values().all(|row| row.fail_count == 1);
     let slots = state.inner.failure_slots.available_permits();

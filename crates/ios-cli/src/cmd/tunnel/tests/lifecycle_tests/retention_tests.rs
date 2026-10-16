@@ -376,7 +376,7 @@ async fn lifecycle_tunnel_retention_success_releases_reserved_failure_capacity()
     assert_eq!(state.inner.failure_slots.available_permits(), 0);
     gate.add_permits(1);
     scan.await.unwrap_err();
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert_eq!(
         state.inner.failed_attempts.read().await.len(),
         MAX_FAILURE_RECORDS - 1

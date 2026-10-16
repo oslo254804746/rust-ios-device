@@ -12,7 +12,7 @@ async fn lifecycle_tunnel_liveness_inactive_native_result_is_released_without_qu
     assert_eq!(source.count(A), 1);
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
     assert_eq!(released, 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -69,7 +69,7 @@ async fn lifecycle_tunnel_liveness_owned_result_dies_while_publication_lock_pend
     state.clear().await;
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(released, 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS

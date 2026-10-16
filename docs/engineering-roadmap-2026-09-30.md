@@ -8873,3 +8873,13 @@ private/initial公开目录与原完整freshness继续；128MiB非完整heap/RSS
 有理由/逐字节复用记录）。record/Value输入图/WS/auth/framework/private与原完整
 freshness继续，128MiB非完整heap/RSS；L02不关闭，23/6/待收口、有效30与Q04
 全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 manager record copy owners
+
+原生record的独立文本先按精确Layout整笔准入再复制，PaidRecord最后副本退费；
+本地list实际backing预付，start借用字段保留record费用。复制拒绝不再当404或
+触发默认路由fallback，自动alive检查不复制输出。完整tunnel550/0FAIL/2ignored
+及strictCLI/build/Source0通过，原native joins/strictEOF与精确独立退款已验，见
+[验证](validation/tunnel-record-copy-owners-2026-10-16.md)。联邦Value/input与其它
+HTTP/WS/private及原完整freshness继续，128MiB非完整heap/RSS；L02不关闭，
+23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。

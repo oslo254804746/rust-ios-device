@@ -59,7 +59,7 @@ async fn intent_http_wifi_selector_survives_usb_and_partial_discovery_without_fa
         source.list_failure.store(true, Ordering::SeqCst);
         source.paired_failure.store(true, Ordering::SeqCst);
         let scan = state.refresh_once().await;
-        let restored = state.get_record(A).await;
+        let restored = state.get_record(A).await.unwrap();
         let calls = source.calls.lock().unwrap().clone();
         let recovered_route = route(&state, &ticket);
         server.abort();
@@ -105,7 +105,7 @@ async fn intent_http_actual_mobdev2_family_rediscovers_host_and_respects_origina
         source.usb.lock().unwrap().push(A.into());
         source.paired.lock().unwrap()[0].host = "192.0.2.51".into();
         let scan = state.refresh_once().await;
-        let record = state.get_record(A).await;
+        let record = state.get_record(A).await.unwrap();
         let calls = source.calls.lock().unwrap().clone();
         let retained = route(&state, &ticket);
         server.abort();

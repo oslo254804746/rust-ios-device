@@ -160,7 +160,7 @@ async fn lifecycle_tunnel_discovery_budget_ends_before_candidate_connection_phas
     assert_eq!(source.count(A), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(state.inner.failed_attempts.read().await[A].fail_count, 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS

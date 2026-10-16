@@ -86,7 +86,7 @@ async fn lifecycle_tunnel_server_http_shutdown_drops_pending_scan_and_clears_own
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     assert_eq!(signal_polls.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -129,7 +129,7 @@ async fn lifecycle_tunnel_server_caller_drop_owns_scanner_without_detached_monit
     tokio::time::timeout(LOCAL_BUDGET, state.wait_shutdown())
         .await
         .unwrap();
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -167,7 +167,7 @@ async fn lifecycle_tunnel_server_signal_failure_keeps_native_io_and_clears_state
         std::io::ErrorKind::PermissionDenied
     );
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert!(!crate::output::error_message(&error).contains("synthetic-private"));
 }
 
@@ -316,7 +316,7 @@ async fn lifecycle_tunnel_server_real_sigint_cancels_scan_and_exits_runtime() {
         owner.await.unwrap();
         assert_eq!(source.active.load(Ordering::SeqCst), 0);
         assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-        assert!(state.list_records().await.is_empty());
+        assert!(state.list_records().await.unwrap().as_slice().is_empty());
         return;
     }
 

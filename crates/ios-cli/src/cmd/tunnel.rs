@@ -46,6 +46,8 @@ mod paired_observed;
 mod publication_retain;
 mod publication_table;
 mod reconnect;
+mod record_owner;
+use record_owner::PaidRecord;
 mod response_json;
 mod retirement;
 mod scan;
@@ -598,7 +600,8 @@ fn failed_device_backoff(fail_count: u32) -> Duration {
     Duration::from_secs((30 * (1u64 << shift)).min(300))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
 struct TunnelRecord {
     udid: String,
     interface: String,
@@ -630,6 +633,7 @@ struct TunnelStopResponse {
     data: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct StartTunnelResponse {
     interface: String,
@@ -889,27 +893,44 @@ impl TunnelAgentState {
         drop(retired_causes);
     }
 
-    async fn list_records(&self) -> Vec<TunnelRecord> {
+    async fn list_records(&self) -> Result<metadata_vec::KnownVec<PaidRecord>> {
         let mut tunnels = self.inner.tunnels.write().await;
         let removed = tunnels.retain(|_, tunnel| tunnel.is_alive());
-        let records = tunnels.values().filter_map(|t| t.record().ok()).collect();
+        let records = (|| {
+            let count = tunnels
+                .values()
+                .filter(|t| t.device.record_fields_available())
+                .count();
+            let mut records = metadata_vec::KnownVec::new(
+                Arc::clone(&self.inner.global_metadata_bytes),
+                lifecycle::MAX_DEVICE_GATES,
+            );
+            records.reserve(count)?;
+            for tunnel in tunnels
+                .values()
+                .filter(|t| t.device.record_fields_available())
+            {
+                records.push_reserved(tunnel.record(&self.inner.global_metadata_bytes)?);
+            }
+            Ok(records)
+        })();
         drop(tunnels);
         drop(removed);
         records
     }
 
-    async fn list_tunneld_view(&self) -> FederationListing {
+    async fn list_tunneld_view(&self) -> Result<FederationListing> {
         let mut grouped = FederationListing::new();
-        for record in self.list_records().await {
+        for record in self.list_records().await? {
             if let Ok(value) = serde_json::to_value(&record) {
                 grouped.entry(record.udid.clone()).or_default().push(value);
             }
         }
-        grouped
+        Ok(grouped)
     }
 
     async fn list_federated(&self, hop: u8) -> Result<FederationListing> {
-        let mut grouped = self.list_tunneld_view().await;
+        let mut grouped = self.list_tunneld_view().await?;
         if hop >= MAX_FEDERATION_HOPS {
             return Ok(grouped);
         }
@@ -994,17 +1015,22 @@ impl TunnelAgentState {
         Ok(None)
     }
 
-    async fn get_record(&self, udid: &str) -> Option<TunnelRecord> {
+    async fn get_record(&self, udid: &str) -> Result<Option<PaidRecord>> {
         let mut tunnels = self.inner.tunnels.write().await;
         match tunnels.get(udid) {
-            Some(tunnel) if tunnel.is_alive() => tunnel.record().ok(),
+            Some(tunnel) if tunnel.is_alive() => {
+                if !tunnel.device.record_fields_available() {
+                    return Ok(None);
+                }
+                tunnel.record(&self.inner.global_metadata_bytes).map(Some)
+            }
             Some(_) => {
                 let removed = tunnels.remove(udid);
                 drop(tunnels);
                 drop(removed);
-                None
+                Ok(None)
             }
-            None => None,
+            None => Ok(None),
         }
     }
 
@@ -1047,7 +1073,7 @@ impl TunnelAgentState {
         udid: &str,
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
-    ) -> Result<TunnelRecord> {
+    ) -> Result<PaidRecord> {
         self.ensure_tunnel_with_intent(udid, ip_filter, requested_connection_type, None)
             .await
     }
@@ -1058,7 +1084,7 @@ impl TunnelAgentState {
         ip_filter: Option<&str>,
         requested_connection_type: Option<StartTunnelConnectionType>,
         manual: Option<intent::ManualRequest>,
-    ) -> Result<TunnelRecord> {
+    ) -> Result<PaidRecord> {
         admission::selectors(udid, ip_filter)?;
         anyhow::ensure!(
             manual.is_none() || !udid.is_empty(),
@@ -1071,7 +1097,7 @@ impl TunnelAgentState {
         ticket
             .run(deadline.run(async {
                 let _serial = ticket.serial().await;
-                if let Some(record) = self.get_record(udid).await {
+                if let Some(record) = self.get_record(udid).await? {
                     self.refresh_alive_rsd(
                         udid,
                         &ticket,
@@ -1132,6 +1158,9 @@ impl TunnelAgentState {
                 {
                     Ok(record) => Ok(record),
                     Err(error) if requested_connection_type.is_some() => Err(error),
+                    // Source may have succeeded already. Output-copy refusal
+                    // must not browse/connect another route or replace its cause.
+                    Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1178,7 +1207,7 @@ impl TunnelAgentState {
         ticket: &Ticket,
         expected_id: Option<u32>,
         deadline: Option<&lifecycle::ConnectionDeadline>,
-    ) -> Result<TunnelRecord> {
+    ) -> Result<PaidRecord> {
         self.connect_and_store_with_retry(udid, route, ticket, expected_id, deadline, None)
             .await
     }
@@ -1192,7 +1221,7 @@ impl TunnelAgentState {
         expected_id: Option<u32>,
         deadline: Option<&lifecycle::ConnectionDeadline>,
         retry: Option<(AttemptIdentity, Arc<OwnedSemaphorePermit>)>,
-    ) -> Result<TunnelRecord> {
+    ) -> Result<PaidRecord> {
         let retry = retry
             .map(|(identity, slot)| {
                 failure_table::Identity::owned(identity, &self.inner.global_metadata_bytes)
@@ -1220,7 +1249,7 @@ impl TunnelAgentState {
         route: Route,
         ticket: &Ticket,
         context: ConnectionContext<'_>,
-    ) -> Result<TunnelRecord> {
+    ) -> Result<PaidRecord> {
         let ConnectionContext {
             expected_id,
             deadline,
@@ -1382,7 +1411,8 @@ impl TunnelAgentState {
             if expected_id.is_some_and(|expected| expected != device.device_id()) {
                 return Err(lifecycle::cancelled().context("tunnel attachment snapshot changed"));
             }
-            let record = device.record_for_mode(self.inner.tun_mode)?;
+            let record =
+                device.record_for_mode(self.inner.tun_mode, &self.inner.global_metadata_bytes)?;
             if authority.is_some() && record.udid != udid {
                 return Err(ios_core::CoreError::Protocol(
                     "tunnel Source identity differs from authorized device".into(),
@@ -1721,12 +1751,12 @@ impl TunnelAgentState {
                     deadline.check()?;
                     let (existing, remove_dead) = match tunnels.get(udid) {
                         Some(tunnel) if tunnel.is_alive() => {
-                            let record = tunnel.record().ok();
+                            let valid = tunnel.device.record_fields_available();
                             deadline.check()?;
-                            (record, false)
+                            (valid, false)
                         }
-                        Some(_) => (None, true),
-                        None => (None, false),
+                        Some(_) => (false, true),
+                        None => (false, false),
                     };
                     let removed = ticket.commit(|| {
                         deadline.check()?;
@@ -1738,7 +1768,7 @@ impl TunnelAgentState {
                     })?;
                     drop(tunnels);
                     drop(removed);
-                    if existing.is_some() {
+                    if existing {
                         if let Err(error) = self
                             .refresh_alive_rsd(udid, ticket, &deadline, refresh_session, None)
                             .await
@@ -2890,57 +2920,23 @@ where
 }
 
 impl ManagedTunnel {
-    fn interface_name_for_device(device: &ConnectedDevice) -> String {
-        if device.info.device_id == 0 {
-            format!("mobdev2-{}", device.info.udid)
-        } else {
-            format!("usbmux-{}", device.info.udid)
-        }
-    }
-
-    fn record(&self) -> Result<TunnelRecord> {
-        self.device.record_for_mode(if self.device.userspace() {
-            TunMode::Userspace
-        } else {
-            TunMode::Kernel
-        })
+    fn record(&self, bank: &Arc<Semaphore>) -> Result<PaidRecord> {
+        self.device.record_for_mode(
+            if self.device.userspace() {
+                TunMode::Userspace
+            } else {
+                TunMode::Kernel
+            },
+            bank,
+        )
     }
 
     fn is_alive(&self) -> bool {
         self.device.is_alive()
     }
-
-    fn record_for_device(device: &ConnectedDevice, tun_mode: TunMode) -> Result<TunnelRecord> {
-        let server_address = device
-            .server_address()
-            .ok_or_else(|| anyhow::anyhow!("tunnel missing server address"))?
-            .to_string();
-        let rsd_port = device
-            .rsd_port()
-            .ok_or_else(|| anyhow::anyhow!("tunnel missing RSD port"))?;
-        let userspace_port = device.userspace_port();
-
-        Ok(TunnelRecord {
-            udid: device.info.udid.clone(),
-            interface: Self::interface_name_for_device(device),
-            connection_type: device.info.connection_type.clone(),
-            mode: match tun_mode {
-                TunMode::Userspace => "userspace",
-                TunMode::Kernel => "kernel",
-            }
-            .to_string(),
-            address: server_address.clone(),
-            rsd_port,
-            tunnel_address: server_address,
-            tunnel_port: rsd_port,
-            userspace_tun: userspace_port.is_some(),
-            userspace_tun_host: userspace_port.map(|_| "127.0.0.1".to_string()),
-            userspace_tun_port: userspace_port,
-            userspace_port,
-        })
-    }
 }
 
+#[cfg(test)]
 impl StartTunnelResponse {
     fn from_record(record: TunnelRecord) -> Self {
         Self {
@@ -3206,12 +3202,22 @@ async fn agent_connect_authorized(
         )
     })?;
     let local = if query.upstream.is_none() {
-        state.get_record(&query.udid).await.filter(|record| {
-            query
-                .interface
-                .as_ref()
-                .map_or(true, |wanted| wanted == &record.interface)
-        })
+        state
+            .get_record(&query.udid)
+            .await
+            .map_err(|error| {
+                replies.operation_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "tunnel record copy failed",
+                    error.as_ref(),
+                )
+            })?
+            .filter(|record| {
+                query
+                    .interface
+                    .as_ref()
+                    .map_or(true, |wanted| wanted == &record.interface)
+            })
     } else {
         None
     };
@@ -3354,10 +3360,19 @@ async fn agent_list_records(
 ) -> Result<Response, Response> {
     principal.require_permission(Permission::List)?;
     let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
-    let mut records = principal.run(state.list_records()).await?;
+    let mut records = principal
+        .run(state.list_records())
+        .await?
+        .map_err(|error| {
+            replies.operation_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel record list failed",
+                error.as_ref(),
+            )
+        })?;
     principal.require_permission(Permission::List)?;
     records.retain(|record| principal.allows(Permission::List, Some(&record.udid), None));
-    replies.json(&records)
+    replies.json(records.as_slice())
 }
 
 async fn agent_get_tunnel(
@@ -3374,7 +3389,16 @@ async fn agent_get_tunnel(
             error.as_ref(),
         )
     })?;
-    let record = principal.run(state.get_record(&udid)).await?;
+    let record = principal
+        .run(state.get_record(&udid))
+        .await?
+        .map_err(|error| {
+            replies.operation_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tunnel record copy failed",
+                error.as_ref(),
+            )
+        })?;
     principal.require(Permission::List, Some(&udid), None)?;
     match record {
         Some(record) => replies.json(&record),
@@ -3446,7 +3470,6 @@ async fn agent_start_tunnel(
             Some(manual),
         ))
         .await?
-        .map(StartTunnelResponse::from_record)
         .map_err(|err| {
             replies.operation_error(
                 StatusCode::BAD_GATEWAY,
@@ -3454,7 +3477,7 @@ async fn agent_start_tunnel(
                 err.as_ref(),
             )
         })?;
-    replies.json(&record)
+    replies.json(&record.start_reply())
 }
 
 async fn agent_health() -> StatusCode {
@@ -3746,7 +3769,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.headers()["x-ios-error-class"], "resource_limit");
         assert_eq!(state.inner.upstreams.read().await.len(), MAX_UPSTREAMS);
-        assert!(state.list_records().await.is_empty());
+        assert!(state.list_records().await.unwrap().as_slice().is_empty());
         server.abort();
         let _ = server.await;
     }

@@ -62,6 +62,27 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
+fn record_copy_bytes() -> usize {
+    // Same raw fixture as NativeDevice::record; ports have no text storage.
+    let mut record = fake_record(1);
+    record.udid = DEVICE.into();
+    [
+        &record.udid,
+        &record.interface,
+        &record.connection_type,
+        &record.mode,
+        &record.address,
+        &record.tunnel_address,
+    ]
+    .iter()
+    .map(|text| text.len())
+    .sum::<usize>()
+        + record
+            .userspace_tun_host
+            .as_ref()
+            .map_or(0, |text| text.len())
+}
+
 fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>() + actual_publication_destination_bytes();
@@ -69,7 +90,7 @@ fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
-        native_bytes + (charged + Lifecycle::initial_metadata_bytes(DEVICE)),
+        native_bytes + charged + Lifecycle::initial_metadata_bytes(DEVICE) + record_copy_bytes(),
     );
     (state, charged)
 }
@@ -79,7 +100,7 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     let expected = baseline();
     let source = LocalSource::new();
     let (state, charged) = configured(source.clone());
-    publish(&state, Route::Wifi(None)).await.unwrap();
+    let record = publish(&state, Route::Wifi(None)).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
     state.clear().await;
@@ -104,6 +125,11 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
         "native peer did not reach EOF or task baseline"
     );
     state.notify_shutdown();
+    drop(record);
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        charged + record_copy_bytes()
+    );
 }
 
 #[tokio::test]
@@ -111,7 +137,7 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
     let expected = baseline();
     let source = LocalSource::new();
     let (state, charged) = configured(source.clone());
-    publish(&state, Route::Wifi(None)).await.unwrap();
+    let record = publish(&state, Route::Wifi(None)).await.unwrap();
     state.notify_shutdown();
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
@@ -125,6 +151,11 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
         charged
+    );
+    drop(record);
+    assert_eq!(
+        state.inner.global_metadata_bytes.available_permits(),
+        charged + record_copy_bytes()
     );
 }
 
@@ -147,7 +178,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     assert_eq!(state.inner.metadata_bytes.available_permits(), node_bytes);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        node_bytes
+        node_bytes + record_copy_bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(
@@ -156,7 +187,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing
+        charged - backing + record_copy_bytes()
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);

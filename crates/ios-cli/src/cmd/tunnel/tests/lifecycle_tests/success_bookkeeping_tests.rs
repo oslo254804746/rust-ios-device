@@ -118,14 +118,14 @@ async fn lifecycle_tunnel_success_writers_do_not_occupy_later_candidate_window()
     let failed = state.inner.failed_attempts.read().await;
     first.add_permits(4);
     let later = drive_until(&mut scan, &source, 5).await;
-    let first_published = state.list_records().await.len();
+    let first_published = state.list_records().await.unwrap().len();
     fifth.add_permits(1);
     let result = if later {
         Some(tokio::time::timeout(LOCAL_BUDGET, scan.as_mut()).await)
     } else {
         None
     };
-    let published = state.list_records().await.len();
+    let published = state.list_records().await.unwrap().len();
     let unchanged = failed.len() == 5 && failed.values().all(|row| row.fail_count == 1);
     let slots = state.inner.failure_slots.available_permits();
     let not_ready = !state.is_ready().await;
@@ -169,7 +169,7 @@ async fn lifecycle_tunnel_success_flush_removes_old_rows_after_reader_releases()
     let cleared = state.inner.failed_attempts.read().await.is_empty();
     let slots = state.inner.failure_slots.available_permits();
     let ready = state.is_ready().await;
-    let published = state.list_records().await.len();
+    let published = state.list_records().await.unwrap().len();
     recover(&state, &source).await;
 
     assert!(
@@ -204,7 +204,7 @@ async fn lifecycle_tunnel_success_bookkeeping_whole_clear_and_close_never_mark_r
         fifth.add_permits(1);
         // Poll the fifth publication through to the held bookkeeping writer.
         let pending = futures_util::poll!(scan.as_mut()).is_pending();
-        let published = state.list_records().await.len();
+        let published = state.list_records().await.unwrap().len();
         if fence == 1 {
             state.inner.lifecycle.clear();
         } else if fence == 2 {
@@ -394,7 +394,7 @@ async fn lifecycle_tunnel_success_cleanup_deadline_crossing_restores_original_ro
             })
         };
         let slots = state.inner.failure_slots.available_permits();
-        let published = state.get_record(A).await.is_some();
+        let published = state.get_record(A).await.unwrap().is_some();
         recover(&state, &source).await;
 
         assert!(had_intent && restored && published);
@@ -525,7 +525,8 @@ async fn lifecycle_tunnel_success_fast_cleanup_returns_full_cache_slot_to_next_c
         && !state.inner.failed_attempts.read().await.contains_key(A)
         && state.inner.failure_slots.available_permits() == 1;
     let result = tokio::time::timeout(LOCAL_BUDGET, state.refresh_once()).await;
-    let published = state.get_record(A).await.is_some() && state.get_record(B).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some()
+        && state.get_record(B).await.unwrap().is_some();
     let remaining = state.inner.failed_attempts.read().await.len();
     let slots = state.inner.failure_slots.available_permits();
     recover(&state, &source).await;
@@ -582,7 +583,7 @@ async fn lifecycle_tunnel_success_fast_cleanup_crossing_candidate_clock_defers_w
             ) == before
         })
     };
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let pending = match outcome {
         ScanAttemptOutcome::Success(success) => Some(SuccessIntent {
             _key_storage: None,

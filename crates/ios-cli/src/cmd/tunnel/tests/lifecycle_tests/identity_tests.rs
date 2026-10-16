@@ -59,7 +59,7 @@ async fn lifecycle_tunnel_identity_stale_candidate_rejects_new_generation_withou
     connected(&source, A, 72);
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     state.refresh_once().await.unwrap();
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let failed = state.inner.failed_attempts.read().await.contains_key(A);
     let released = source.drops.load(Ordering::SeqCst);
     state.clear().await;
@@ -136,7 +136,7 @@ async fn lifecycle_tunnel_identity_old_snapshot_does_not_retire_concurrent_new_p
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
     source.alive.store(false, Ordering::SeqCst);
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     source.alive.store(true, Ordering::SeqCst);
     connected(&source, A, 72);
     attached(&source, &[(A, 72, true)]);
@@ -161,7 +161,7 @@ async fn lifecycle_tunnel_identity_route_family_controls_pruning_instead_of_zero
     assert_eq!(id(&state, A).await, 0);
     attached(&source, &[]);
     state.refresh_once().await.unwrap();
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
     // Zero is a synthetic value in this private fixture, not device-wire evidence.

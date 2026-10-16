@@ -54,7 +54,7 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
     );
     paired(&source, None);
     state.refresh_once().await.unwrap();
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     assert_eq!(source.count(A), 2);
     assert_eq!(source.drops.load(Ordering::SeqCst), 2);
     let table = state.inner.tunnels.read().await;
