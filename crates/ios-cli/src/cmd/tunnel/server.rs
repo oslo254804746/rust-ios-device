@@ -140,7 +140,7 @@ pub(super) async fn serve(
                 && acquired.native.is_none()
                 && acquired.metadata_http.is_none()
                 && history.is_none()
-                && scan_history.is_empty()
+                && scan_history.is_none()
                 && acquired.native_complete
                 && acquired.metadata_http_complete
                 && snapshot.closed_and_empty()
@@ -151,7 +151,7 @@ pub(super) async fn serve(
                 && acquired.native.is_none()
                 && acquired.metadata_http.is_none()
                 && history.is_none()
-                && scan_history.is_empty()
+                && scan_history.is_none()
                 && snapshot.closed_and_empty()
                 && elapsed.is_some()
             {
@@ -197,7 +197,9 @@ struct CleanupPhases {
 pub(super) struct TerminalCleanupFailure {
     native: Option<Cause>,
     history: Option<Cause>,
-    scan_history: Vec<Arc<super::scan::AbandonedScan>>,
+    // The prepaid root owns the array. The separate terminal wrapper/anyhow
+    // private body remains outside exact snapshot-body accounting.
+    scan_history: Option<Arc<super::scan::HistorySnapshot>>,
     metadata_http: Option<Cause>,
     elapsed: Option<Arc<tokio::time::error::Elapsed>>,
     snapshot: Snapshot,
@@ -230,7 +232,11 @@ impl TerminalCleanupFailure {
         if let Some(metadata) = &self.metadata_http {
             return metadata.as_ref();
         }
-        if let Some(scan) = self.scan_history.first() {
+        if let Some(scan) = self
+            .scan_history
+            .as_ref()
+            .and_then(|history| history.first())
+        {
             return scan.as_ref();
         }
         if let Some(elapsed) = &self.elapsed {
@@ -249,8 +255,8 @@ impl TerminalCleanupFailure {
         self.snapshot
     }
 
-    pub(super) fn abandoned_scans(&self) -> &[Arc<super::scan::AbandonedScan>] {
-        &self.scan_history
+    pub(super) fn abandoned_scans(&self) -> Option<&Arc<super::scan::HistorySnapshot>> {
+        self.scan_history.as_ref()
     }
 }
 
@@ -285,7 +291,10 @@ impl std::fmt::Debug for TerminalCleanupFailure {
                     .map(|cause| ios_core::classify_error(cause)),
             )
             .field("elapsed", &self.elapsed.is_some())
-            .field("abandoned_scans", &self.abandoned_scans().len())
+            .field(
+                "abandoned_scans",
+                &self.abandoned_scans().map_or(0, |root| root.len()),
+            )
             .field("native_complete", &self.native_complete)
             .field("metadata_http_complete", &self.metadata_http_complete)
             .field("native_ownership", &self.native_snapshot())
@@ -297,7 +306,7 @@ impl Error for TerminalCleanupFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         if self.native.is_none()
             && self.history.is_none()
-            && self.scan_history.is_empty()
+            && self.scan_history.is_none()
             && self.metadata_http.is_none()
             && self.elapsed.is_none()
         {
@@ -322,7 +331,7 @@ pub(super) async fn drain_native_terminal(native: &Registry, clock: CleanupClock
         Err(TerminalCleanupFailure {
             native: failure,
             history,
-            scan_history: Vec::new(),
+            scan_history: None,
             metadata_http: None,
             elapsed: None,
             snapshot,

@@ -267,7 +267,11 @@ async fn native_scan_outcome_eight_abandoned_errors_reject_ninth_before_source_p
         drop(scan);
         recover(&state, &source, expected).await;
         assert!(entered);
-        let history = state.inner.scan_outcomes.history();
+        let history = state
+            .inner
+            .scan_outcomes
+            .history()
+            .expect("abandoned scan history");
         assert_eq!(history.len(), count);
         for (error, original) in history.iter().zip(source.originals.lock().unwrap().iter()) {
             assert_eq!(original_address(error.as_ref()), Some(*original));
@@ -307,7 +311,7 @@ async fn native_scan_outcome_normal_return_preserves_direct_io_downcast_and_rele
     let error = state.refresh_once().await.unwrap_err();
     let direct = error.downcast_ref::<io::Error>().unwrap() as *const io::Error as usize;
     assert_eq!(direct, source.originals.lock().unwrap()[0]);
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
     assert!(!state.is_ready().await);
     state.clear().await;
     recover(&state, &source, expected).await;
@@ -330,9 +334,17 @@ async fn native_scan_outcome_caller_drop_retains_history_after_clear_and_termina
     ));
     assert!(drive_until(&mut owner, || source.entered.load(Ordering::SeqCst) == 1).await);
     drop(owner);
-    let before = state.inner.scan_outcomes.history();
+    let before = state
+        .inner
+        .scan_outcomes
+        .history()
+        .expect("abandoned scan history");
     recover(&state, &source, expected).await;
-    let after = state.inner.scan_outcomes.history();
+    let after = state
+        .inner
+        .scan_outcomes
+        .history()
+        .expect("abandoned scan history");
     assert_eq!(after.len(), 1);
     assert!(Arc::ptr_eq(&before[0], &after[0]));
     assert_eq!(
@@ -364,7 +376,7 @@ async fn native_scan_outcome_whole_expiry_returns_original_io_and_secondary_elap
         .unwrap()
         .secondary()
         .is::<tokio::time::error::Elapsed>());
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
     assert!(!state.is_ready().await);
     state.notify_shutdown();
 }
@@ -378,7 +390,15 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
     assert!(drive_until(&mut scan, || source.entered.load(Ordering::SeqCst) == 1).await);
     drop(scan);
     recover(&state, &source, expected).await;
-    let history = state.inner.scan_outcomes.history();
+    let history = state
+        .inner
+        .scan_outcomes
+        .history()
+        .expect("abandoned scan history");
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(bank.available_permits().try_into().unwrap())
+        .unwrap();
     for _ in 0..2 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let error = server::serve(
@@ -394,12 +414,16 @@ async fn native_scan_outcome_repeated_terminal_reports_share_original_history() 
         let terminal = error
             .downcast_ref::<server::TerminalCleanupFailure>()
             .unwrap();
-        assert_eq!(terminal.abandoned_scans().len(), 1);
-        assert!(Arc::ptr_eq(&history[0], &terminal.abandoned_scans()[0]));
+        let terminal_history = terminal.abandoned_scans().expect("shared prepaid history");
+        assert!(Arc::ptr_eq(&history, terminal_history));
+        assert_eq!(terminal_history.len(), 1);
+        assert!(Arc::ptr_eq(&history[0], &terminal_history[0]));
+        assert_eq!(bank.available_permits(), 0);
         assert_eq!(
             original_address(terminal.primary()),
             Some(source.originals.lock().unwrap()[0])
         );
         assert!(terminal.native_snapshot().closed_and_empty());
     }
+    drop(held);
 }

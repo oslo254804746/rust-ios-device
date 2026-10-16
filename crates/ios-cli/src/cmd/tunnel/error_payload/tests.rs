@@ -140,14 +140,18 @@ async fn payload_census_scan_originals_and_independent_sources_survive_abandonme
     assert_eq!(outcomes.payload_history().0, 1);
     drop(session);
     let (active, roots) = outcomes.payload_history();
+    let roots = roots.unwrap();
     assert_eq!(active, 0);
     assert_eq!(roots.len(), 1);
     let mut census = Census::default();
-    census.anyhow(roots[0].original(), 0);
+    census.anyhow(roots.as_slice()[0].original(), 0);
     assert_eq!(census.snapshot.known_payload_capacity_bytes, expected);
     assert!(!census.snapshot.fully_measured_payloads());
-    assert!(roots[0].original().downcast_ref::<CoreError>().is_some());
-    let context = roots[0]
+    assert!(roots.as_slice()[0]
+        .original()
+        .downcast_ref::<CoreError>()
+        .is_some());
+    let context = roots.as_slice()[0]
         .original()
         .downcast_ref::<scan::SourceContext>()
         .unwrap();

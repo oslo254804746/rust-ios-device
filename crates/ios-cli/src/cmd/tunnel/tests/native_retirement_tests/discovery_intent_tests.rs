@@ -240,7 +240,7 @@ async fn intent_discovery_two_original_tcp_causes_preserve_wifi_recovery_and_nat
     );
     let error = result.unwrap_err();
     assert_originals(&error, &source, 0);
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
 }
 
 #[tokio::test]
@@ -323,7 +323,7 @@ async fn intent_discovery_two_tcp_causes_and_actual_completion_elapsed_keep_all_
         .completion()
         .unwrap()
         .is::<tokio::time::error::Elapsed>());
-    assert!(state.inner.scan_outcomes.history().is_empty());
+    assert!(state.inner.scan_outcomes.history().is_none());
 }
 
 #[tokio::test]
@@ -352,7 +352,11 @@ async fn intent_discovery_eight_abandoned_two_source_errors_keep_originals_and_r
     let before = source.usb_calls.load(Ordering::SeqCst);
     let ninth = state.refresh_once().await;
     let after = source.usb_calls.load(Ordering::SeqCst);
-    let history = state.inner.scan_outcomes.history();
+    let history = state
+        .inner
+        .scan_outcomes
+        .history()
+        .expect("abandoned scan history");
     finish_all(&state, &source, expected).await;
     assert_eq!(started, StatusCode::OK);
     assert!(
@@ -395,7 +399,11 @@ async fn intent_discovery_incomplete_paired_metadata_is_retained_before_owned_ca
     let mut scan = Box::pin(state.refresh_once());
     let progress = drive_until(&mut scan, || source.entered.load(Ordering::SeqCst) == 2).await;
     drop(scan);
-    let history = state.inner.scan_outcomes.history();
+    let history = state
+        .inner
+        .scan_outcomes
+        .history()
+        .expect("abandoned scan history");
     let routes = source.routes.lock().unwrap().clone();
     finish_all(&state, &source, expected).await;
     assert_eq!(started, StatusCode::OK);

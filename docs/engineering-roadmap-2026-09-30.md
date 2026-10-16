@@ -8854,3 +8854,12 @@ stop/绝对clock/joins保持；诊断两数组准入后复制所有phase的原ow
 [验证](validation/tunnel-native-cleanup-selection-2026-10-16.md)。其它history/HTTP/
 private与原完整freshness继续，128MiB非完整heap/RSS，L02不关闭；23/6/待收口、
 有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 prepaid immutable scan history
+
+Session.begin在Source前独立预付/创建固定8根快照，abandon后冻结槽位顺序，
+terminal只共享原Arc，零配额/closed-bank晚Drop保持原错误；census实际数组
+另行准入，旧快照和bare original费用独立释放。完整tunnel530/strictCLI/build/
+Source0通过，见[验证](validation/tunnel-history-snapshot-2026-10-16.md)。HTTP/
+private/initial公开目录与原完整freshness继续；128MiB非完整heap/RSS，L02不
+关闭，23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
