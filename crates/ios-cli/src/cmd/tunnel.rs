@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::io::Write;
@@ -64,6 +63,7 @@ mod scoped;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;
+mod upstream_registry;
 mod usb_index;
 use bookkeeping::{
     DeferredFailure, DeferredSuccess, FailureIntent, ScanAttemptOutcome, ScanIntent, SuccessIntent,
@@ -409,7 +409,7 @@ struct TunnelAgentInner {
     access: AccessControl,
     tun_mode: TunMode,
     tunnels: RwLock<publication_table::Table<ManagedTunnel>>,
-    upstreams: RwLock<BTreeSet<String>>,
+    upstreams: RwLock<upstream_registry::Registry>,
     upstream_access: Upstreams,
     failed_attempts: RwLock<failure_table::Table>,
     retry: Arc<reconnect::Ledger>,
@@ -790,6 +790,8 @@ impl TunnelAgentState {
         let global_metadata_bytes = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
         let metadata_bytes = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
         let native = retirement::Registry::with_metadata(&global_metadata_bytes)?;
+        let upstreams =
+            upstream_registry::Registry::from_urls(&global_metadata_bytes, upstream_access.urls())?;
         Ok(Self {
             inner: Arc::new(TunnelAgentInner {
                 access,
@@ -798,7 +800,7 @@ impl TunnelAgentState {
                     &global_metadata_bytes,
                     &metadata_bytes,
                 )),
-                upstreams: RwLock::new(upstream_access.urls().cloned().collect()),
+                upstreams: RwLock::new(upstreams),
                 upstream_access,
                 failed_attempts: RwLock::new(failure_table::Table::new(&global_metadata_bytes)),
                 retry: reconnect::Ledger::with_metadata(retry, Arc::clone(&global_metadata_bytes))?,
@@ -856,6 +858,8 @@ impl TunnelAgentState {
         *inner.failed_attempts.get_mut() = failure_table::Table::new(&bank);
         assert!(inner.tunnels.get_mut().is_empty());
         *inner.tunnels.get_mut() = publication_table::Table::new(&bank, &inner.metadata_bytes);
+        assert_eq!(inner.upstreams.get_mut().len(), 0);
+        *inner.upstreams.get_mut() = upstream_registry::Registry::new(&bank);
         inner.global_metadata_bytes = bank;
     }
 
@@ -3173,7 +3177,13 @@ async fn agent_add_upstream(
         ));
     }
     let response = replies.upstream("add_upstream", &url, true)?;
-    upstreams.insert(url);
+    upstreams.insert(&url).map_err(|error| {
+        replies.operation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "upstream registration admission failed",
+            error.as_ref(),
+        )
+    })?;
     Ok(response)
 }
 
@@ -3194,7 +3204,9 @@ async fn agent_remove_upstream(
     let present = replies.upstream("remove_upstream", &url, true)?;
     let absent = replies.upstream("remove_upstream", &url, false)?;
     let removed = state.inner.upstreams.write().await.remove(&url);
-    Ok(if removed { present } else { absent })
+    let was_present = removed.is_some();
+    drop(removed);
+    Ok(if was_present { present } else { absent })
 }
 
 async fn agent_connect(
@@ -3798,9 +3810,15 @@ mod tests {
                 ),
             }
         }
-        state.inner.upstreams.write().await.extend(
-            (0..MAX_UPSTREAMS).map(|index| format!("https://owned-fixture-{index}.invalid:1/")),
-        );
+        for index in 0..MAX_UPSTREAMS {
+            state
+                .inner
+                .upstreams
+                .write()
+                .await
+                .insert(format!("https://owned-fixture-{index}.invalid:1/"))
+                .unwrap();
+        }
         let response = client
             .post(format!("{base}/upstream"))
             .json(&json!({"url": "https://unregistered.invalid:1/"}))
@@ -4342,7 +4360,8 @@ mod tests {
             .upstreams
             .write()
             .await
-            .insert(upstream_url.clone());
+            .insert(upstream_url.clone())
+            .unwrap();
         let (port, agent_task) = spawn_test_router(agent_router(state)).await;
         let listing_bytes = reqwest::get(format!("http://127.0.0.1:{port}/"))
             .await
@@ -4414,14 +4433,16 @@ mod tests {
             .upstreams
             .write()
             .await
-            .insert(format!("http://127.0.0.1:{leaf_port}/"));
+            .insert(format!("http://127.0.0.1:{leaf_port}/"))
+            .unwrap();
         let (middle_port, middle_task) = spawn_test_router(agent_router(middle)).await;
         let root = TunnelAgentState::new(TunMode::Userspace);
         root.inner
             .upstreams
             .write()
             .await
-            .insert(format!("http://127.0.0.1:{middle_port}/"));
+            .insert(format!("http://127.0.0.1:{middle_port}/"))
+            .unwrap();
         let (root_port, root_task) = spawn_test_router(agent_router(root)).await;
         let (mut client, _) = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{root_port}/connect?udid=test-udid&port=12345&interface=fake-interface"
@@ -4459,13 +4480,15 @@ mod tests {
             .upstreams
             .write()
             .await
-            .insert(format!("http://127.0.0.1:{second_port}/"));
+            .insert(format!("http://127.0.0.1:{second_port}/"))
+            .unwrap();
         second
             .inner
             .upstreams
             .write()
             .await
-            .insert(format!("http://127.0.0.1:{first_port}/"));
+            .insert(format!("http://127.0.0.1:{first_port}/"))
+            .unwrap();
         let response = tokio::time::timeout(
             Duration::from_secs(2),
             reqwest::get(format!("http://127.0.0.1:{first_port}/?hop=0")),

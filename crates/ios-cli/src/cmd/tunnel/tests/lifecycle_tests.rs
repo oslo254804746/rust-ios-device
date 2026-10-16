@@ -78,6 +78,7 @@ mod server_tests;
 mod shutdown_admission_tests;
 mod snapshot_admission_tests;
 mod success_bookkeeping_tests;
+mod upstream_registry_tests;
 
 enum Behavior {
     Success,

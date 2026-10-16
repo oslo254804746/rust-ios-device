@@ -147,7 +147,8 @@ async fn device_and_port_scopes_filter_lists_and_deny_before_upstream_contact() 
         .upstreams
         .write()
         .await
-        .insert(format!("http://127.0.0.1:{upstream_port}/"));
+        .insert(format!("http://127.0.0.1:{upstream_port}/"))
+        .unwrap();
     let (port, server) = spawn_test_router(agent_router(state)).await;
     let client = client();
     let base = format!("http://127.0.0.1:{port}");
@@ -322,7 +323,8 @@ async fn reload_cancels_an_admitted_listing_instead_of_returning_empty_success()
         .upstreams
         .write()
         .await
-        .insert(format!("http://127.0.0.1:{upstream_port}/"));
+        .insert(format!("http://127.0.0.1:{upstream_port}/"))
+        .unwrap();
     let (port, server) = spawn_test_router(agent_router(state)).await;
     let pending = tokio::spawn(async move {
         client()
@@ -434,7 +436,8 @@ async fn authenticated_bridge(expiry: bool, ticket: bool) {
         .upstreams
         .write()
         .await
-        .insert(format!("http://127.0.0.1:{upstream_port}/"));
+        .insert(format!("http://127.0.0.1:{upstream_port}/"))
+        .unwrap();
     let (port, server) = spawn_test_router(agent_router(state)).await;
     let request = if ticket {
         let origin = format!("http://127.0.0.1:{port}");
