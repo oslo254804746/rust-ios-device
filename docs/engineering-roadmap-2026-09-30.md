@@ -8958,3 +8958,12 @@ joins费用保持，路由body独立最后owner退款经Weak已验。完整tunne
 [验证](validation/tunnel-shared-route-owners-2026-10-16.md)。observed/Source文本、
 URI/header/WS/private及完整freshness等继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-16 L02 observed route destination owners
+
+observed route共享已付Input原对象，无Input时按实际Layout先准入文本；保持
+实际host与desired filter分离、原reconciliation和最后owner退款。完整tunnel
+598/0FAIL/2原ignored、上游6/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-observed-route-owners-2026-10-16.md)。Source/candidate
+创建、URI/header/WS/private及完整freshness审计继续；128MiB非完整heap/RSS，
+L02不关闭，23/6/待全审计、有效30和Q04全部排除保持，仅本地提交。

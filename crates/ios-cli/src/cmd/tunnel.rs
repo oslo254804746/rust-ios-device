@@ -44,6 +44,7 @@ mod intent;
 mod lifecycle;
 mod manual_success;
 mod metadata_vec;
+mod observed_route;
 mod owned_join;
 mod ownership;
 mod paid_json;
@@ -465,7 +466,7 @@ struct ManagedTunnel {
     // Actual selector established by Source, not the next caller's request.
     route_intent: Arc<intent::RetainedRoute>,
     // Exact observed Source route, separate from a retained rediscovery filter.
-    observed_route: Route,
+    observed_route: observed_route::Observed,
     _ticket: Ticket,
     // Table metadata and the original native retirement owner share one charge.
     // Only removal of both owners releases it; either may outlive the other.
@@ -493,7 +494,7 @@ fn managed_metadata_bytes(
     device: &ManagedDevice,
     _udid: &str,
     desired: &intent::RetainedRoute,
-    observed: &Route,
+    observed: &observed_route::Observed,
 ) -> Result<usize> {
     let overflow = || crate::output::resource_decision("tunnel retained metadata size overflow");
     let device_bytes = match device {
@@ -501,18 +502,12 @@ fn managed_metadata_bytes(
         #[cfg(test)]
         ManagedDevice::Fake(device) => std::mem::size_of_val(&**device),
     };
-    let observed_bytes = match observed {
-        Route::Usbmux => 0,
-        Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::capacity),
-        Route::Mobdev2(host) => host.capacity(),
-    };
     // The real publication Node already owns its entire Box payload (including
     // ManagedTunnel), original key and Vec slot backing in both byte banks.
-    // This shared native/table fee follows device and observed route buffers.
-    // Desired text remains in the separate publication ceiling. Its global
-    // fee belongs to RetainedRoute and is subtracted by the caller there.
+    // The publication ceiling still counts both route texts. Their independent
+    // global owners are subtracted by the caller, leaving the native device fee.
     device_bytes
-        .checked_add(observed_bytes)
+        .checked_add(observed.text_bytes())
         .and_then(|bytes| bytes.checked_add(desired.text_bytes()))
         .ok_or_else(overflow)
 }
@@ -1190,6 +1185,7 @@ impl TunnelAgentState {
                     // must not browse/connect another route or replace its cause.
                     Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
                     Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
+                    Err(error) if error.is::<observed_route::Admission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1365,7 +1361,11 @@ impl TunnelAgentState {
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
-            let observed_route = route.clone();
+            let observed_route = observed_route::Observed::new(
+                &route,
+                input.as_ref(),
+                &self.inner.global_metadata_bytes,
+            )?;
             let mut source =
                 self.inner
                     .source
@@ -1401,7 +1401,7 @@ impl TunnelAgentState {
                 managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
             let global_metadata = admission::known_metadata_charge(
                 &self.inner.global_metadata_bytes,
-                metadata_size - route_intent.text_bytes(),
+                metadata_size - route_intent.text_bytes() - observed_route.text_bytes(),
             )?;
             let metadata = self
                 .inner
@@ -2499,7 +2499,7 @@ impl TunnelAgentState {
                     !initial
                         .get(udid)
                         .is_some_and(|old| Arc::ptr_eq(old, &tunnel.publication))
-                        || match &tunnel.observed_route {
+                        || match tunnel.observed_route.route() {
                             Route::Mobdev2(host) => observed.contains(targets, udid, host),
                             _ => true,
                         }
