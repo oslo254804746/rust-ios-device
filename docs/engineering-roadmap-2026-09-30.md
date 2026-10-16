@@ -8883,3 +8883,12 @@ freshness继续，128MiB非完整heap/RSS；L02不关闭，23/6/待收口、有�
 [验证](validation/tunnel-record-copy-owners-2026-10-16.md)。联邦Value/input与其它
 HTTP/WS/private及原完整freshness继续，128MiB非完整heap/RSS；L02不关闭，
 23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 fixed diagnostic hex storage
+
+DiagnosticId/DiagnosticError内部两份hex String改为固定16字节值，保留原hash、
+source/类别、4096字节/8层限制与fmt失败。core诊断allfeature7/minimal8及完整
+tunnel550/core+CLI strict/build/Source0通过，见
+[验证](validation/tunnel-diagnostic-hex-2026-10-16.md)。任意底层Error Display与
+其它private/联邦Value/input/WS及原完整freshness继续，128MiB非完整heap/RSS；
+L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。

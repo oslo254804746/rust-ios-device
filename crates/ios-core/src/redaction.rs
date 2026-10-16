@@ -151,7 +151,7 @@ impl fmt::Write for ErrorHash {
     }
 }
 
-fn error_id(key: &[u8; 32], error: &(dyn Error + 'static)) -> String {
+fn error_id(key: &[u8; 32], error: &(dyn Error + 'static)) -> DigestHex {
     let mut hash = Sha256::new();
     hash.update(key);
     hash.update(b"ios diagnostic error v1\0");
@@ -167,7 +167,7 @@ fn error_id(key: &[u8; 32], error: &(dyn Error + 'static)) -> String {
         }
         current = error.source();
     }
-    hex::encode(&sink.hash.finalize()[..8])
+    digest_hex(sink.hash)
 }
 
 impl fmt::Debug for DiagnosticId<'_> {
@@ -176,16 +176,90 @@ impl fmt::Debug for DiagnosticId<'_> {
     }
 }
 
-fn encode_id(key: &[u8; 32], value: &str) -> String {
+fn encode_id(key: &[u8; 32], value: &str) -> DigestHex {
     let mut hash = Sha256::new();
     hash.update(key);
     hash.update(value.as_bytes());
-    hex::encode(&hash.finalize()[..8])
+    digest_hex(hash)
+}
+
+// The formatter owns a fixed 16-byte value, never a temporary heap String.
+// Underlying Error implementations retain their own formatting behavior.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+struct DigestHex([u8; 16]);
+
+fn digest_hex(hash: Sha256) -> DigestHex {
+    let digest = hash.finalize();
+    let mut encoded = [0; 16];
+    hex::encode_to_slice(&digest[..8], &mut encoded)
+        .expect("eight digest bytes always fit sixteen hex bytes");
+    DigestHex(encoded)
+}
+
+impl fmt::Display for DigestHex {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(std::str::from_utf8(&self.0).expect("hex digits are ASCII"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_hex_keeps_keyed_unicode_identifier_and_original_error_chain_bytes() {
+        let key = [0x42; 32];
+        assert_eq!(
+            encode_id(&key, "diagnostic-雪🦀\0quoted").to_string(),
+            "e6d772cf3061a1e9"
+        );
+        #[derive(Debug)]
+        struct Inner;
+        impl fmt::Display for Inner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("inner-🦀")
+            }
+        }
+        impl Error for Inner {}
+        #[derive(Debug)]
+        struct Outer(Inner);
+        impl fmt::Display for Outer {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("outer-雪")
+            }
+        }
+        impl Error for Outer {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let original = Outer(Inner);
+        assert_eq!(error_id(&key, &original).to_string(), "fe41cd10f8e73fae");
+        assert!(std::ptr::eq(
+            original.source().unwrap().downcast_ref::<Inner>().unwrap(),
+            &original.0
+        ));
+    }
+
+    #[test]
+    fn fixed_hex_propagates_failure_from_a_borrowed_output_writer() {
+        struct Refuses;
+        impl fmt::Write for Refuses {
+            fn write_str(&mut self, _: &str) -> fmt::Result {
+                Err(fmt::Error)
+            }
+        }
+        let value = encode_id(&[0x42; 32], "diagnostic-雪🦀\0quoted");
+        assert!(write!(&mut Refuses, "{value}").is_err());
+        assert_eq!(value.to_string(), "e6d772cf3061a1e9");
+        assert!(write!(&mut Refuses, "{}", diagnostic_id("synthetic-private-id")).is_err());
+        let original = std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "synthetic-private-original",
+        );
+        assert!(write!(&mut Refuses, "{}", diagnostic_error(&original)).is_err());
+        assert_eq!(original.kind(), std::io::ErrorKind::ConnectionReset);
+    }
 
     #[test]
     fn owned_error_debug_hides_parser_protocol_and_source_payloads() {
