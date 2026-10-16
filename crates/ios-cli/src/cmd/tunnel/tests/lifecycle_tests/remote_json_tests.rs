@@ -23,7 +23,13 @@ async fn remote_json_escaped_wire_keeps_listing_target_and_original_global_error
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let url = format!("http://127.0.0.1:{port}/");
-    state.inner.upstreams.write().await.insert(url.clone());
+    state
+        .inner
+        .upstreams
+        .write()
+        .await
+        .insert(url.clone())
+        .unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let grouped = state.list_federated(0).await.unwrap().prepare().unwrap();
@@ -91,7 +97,13 @@ async fn remote_json_actual_root_preserves_extensions_overlay_and_original_targe
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let url = format!("http://127.0.0.1:{upstream_port}/");
-    state.inner.upstreams.write().await.insert(url.clone());
+    state
+        .inner
+        .upstreams
+        .write()
+        .await
+        .insert(url.clone())
+        .unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let baseline = bank.available_permits();
     let query = ConnectQuery {
@@ -168,7 +180,13 @@ async fn remote_json_snapshot_refuses_before_http_and_body_copy_refuses_before_a
     let source = FakeSource::new();
     let state = state(source, TUNNEL_CONNECT_TIMEOUT);
     let url = format!("http://127.0.0.1:{port}/");
-    state.inner.upstreams.write().await.insert(url.clone());
+    state
+        .inner
+        .upstreams
+        .write()
+        .await
+        .insert(url.clone())
+        .unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let held = bank
         .clone()

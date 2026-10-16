@@ -16,13 +16,20 @@ async fn federation_join_late_future_refusal_precedes_both_production_http_and_s
         let source = FakeSource::new();
         let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
         let url = format!("http://127.0.0.1:{port}/a");
-        state.inner.upstreams.write().await.insert(url.clone());
         state
             .inner
             .upstreams
             .write()
             .await
-            .insert(format!("http://127.0.0.1:{port}/b"));
+            .insert(url.clone())
+            .unwrap();
+        state
+            .inner
+            .upstreams
+            .write()
+            .await
+            .insert(format!("http://127.0.0.1:{port}/b"))
+            .unwrap();
         let bank = state.inner.global_metadata_bytes.clone();
         let before = bank.available_permits();
         let original = fetch_upstream_listing(&state.inner.upstream_access, &url, 1, &bank);
@@ -166,7 +173,13 @@ async fn remote_target_result_keeps_exact_text_fees_after_input_and_manager_drop
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let url = format!("http://127.0.0.1:{port}/");
-    state.inner.upstreams.write().await.insert(url.clone());
+    state
+        .inner
+        .upstreams
+        .write()
+        .await
+        .insert(url.clone())
+        .unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
     let target = state

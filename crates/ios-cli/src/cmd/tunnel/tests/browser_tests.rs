@@ -123,7 +123,8 @@ async fn browser_fixture(node: &std::ffi::OsStr, chromium: &std::ffi::OsStr, exp
         .upstreams
         .write()
         .await
-        .insert(format!("http://127.0.0.1:{upstream_port}/"));
+        .insert(format!("http://127.0.0.1:{upstream_port}/"))
+        .unwrap();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let boundary = BoundaryOptions::parse_from(["fixture", "--allow-origin", &origin]).boundary;

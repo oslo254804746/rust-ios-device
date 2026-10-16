@@ -8939,3 +8939,12 @@ URI/header/WS/private及原完整freshness等继续；128MiB非完整heap/RSS，
 Source0通过，见[验证](validation/tunnel-json-string-scratch-2026-10-16.md)。
 URI/header/registry/WS/private与原完整freshness等继续；128MiB非完整heap/RSS，
 L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 registered upstream storage
+
+注册roots以实际paid Text数组替代BTreeSet私有node，初始roots和后续insert均
+先准入目的地；晚期拒绝保持原表/pointer，duplicate零额外配额，移出Text持费至
+最后owner。完整tunnel587/0FAIL/2原ignored、上游6/strictCLI/build/Source0通过，
+见[验证](validation/tunnel-upstream-registry-storage-2026-10-16.md)。URI/header/
+client/credentials/WS/private/manual副本与原完整freshness等继续；128MiB非
+完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
