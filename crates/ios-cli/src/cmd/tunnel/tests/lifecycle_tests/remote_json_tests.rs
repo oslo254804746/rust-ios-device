@@ -29,10 +29,11 @@ async fn remote_json_actual_root_preserves_extensions_overlay_and_original_targe
         hop: 0,
     };
     let selected = state.remote_target(&query).await.unwrap().unwrap();
-    assert_eq!(
-        selected.interface, None,
+    assert!(
+        selected.interface.is_none(),
         "legacy default selects first array entry even if scalar"
     );
+    drop(selected);
     let selected = state
         .remote_target(&ConnectQuery {
             interface: Some("selected".into()),
@@ -43,6 +44,7 @@ async fn remote_json_actual_root_preserves_extensions_overlay_and_original_targe
         .unwrap();
     assert_eq!(selected.interface.as_deref(), Some("selected"));
     assert_eq!(selected.next_upstream.as_deref(), Some("nested-original"));
+    drop(selected);
     let (port, server) = spawn_test_router(agent_router(state.clone())).await;
     let output = client()
         .get(format!("http://127.0.0.1:{port}/"))

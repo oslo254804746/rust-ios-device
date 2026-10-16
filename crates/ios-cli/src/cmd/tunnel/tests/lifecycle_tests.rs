@@ -69,6 +69,7 @@ mod publication_tests;
 mod reconnect_tests;
 mod record_owner_tests;
 mod remote_json_tests;
+mod remote_target_tests;
 mod retention_tests;
 mod scan_setup_tests;
 mod scan_terminal_tests;
