@@ -8892,3 +8892,12 @@ tunnel550/core+CLI strict/build/Source0通过，见
 [验证](validation/tunnel-diagnostic-hex-2026-10-16.md)。任意底层Error Display与
 其它private/联邦Value/input/WS及原完整freshness继续，128MiB非完整heap/RSS；
 L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 local federation borrowed output
+
+本地root listing直接借用PaidRecord，移除第二套Value/key/entries图；原地排序/
+无索引合并保留同UID local-first、remote扩展与顺序、scope及旧对象字段字节。
+完整tunnel555/0FAIL/2ignored、strictCLI/build/Source0通过，见
+[验证](validation/tunnel-local-federation-view-2026-10-16.md)。remote图/input/
+URL/join_all、WS/private和原完整freshness继续；128MiB非完整heap/RSS，L02
+不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
