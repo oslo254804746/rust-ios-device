@@ -45,6 +45,7 @@ mod intent;
 mod lifecycle;
 mod manual_success;
 mod metadata_vec;
+mod owned_join;
 mod ownership;
 mod paid_json;
 mod paired_observed;
@@ -970,15 +971,18 @@ impl TunnelAgentState {
 
         let upstreams = self.upstream_snapshot().await?;
         grouped.reserve_remote(upstreams.len())?;
-        let results = futures_util::future::join_all(upstreams.as_slice().iter().map(|upstream| {
-            fetch_upstream_listing(
-                &self.inner.upstream_access,
-                upstream.as_str(),
-                hop + 1,
-                &self.inner.global_metadata_bytes,
-            )
-        }))
-        .await;
+        let results = owned_join::all(
+            &self.inner.global_metadata_bytes,
+            upstreams.as_slice().iter().map(|upstream| {
+                fetch_upstream_listing(
+                    &self.inner.upstream_access,
+                    upstream.as_str(),
+                    hop + 1,
+                    &self.inner.global_metadata_bytes,
+                )
+            }),
+        )
+        .await?;
         for (upstream, result) in upstreams.into_iter().zip(results) {
             let listing = result.context("federation upstream failed")?;
             grouped.push_remote(upstream, listing);
@@ -1006,16 +1010,18 @@ impl TunnelAgentState {
                 .as_ref()
                 .map_or(true, |wanted| wanted == upstream.as_str())
         });
-        let results =
-            futures_util::future::join_all(candidates.as_slice().iter().map(|upstream| {
+        let results = owned_join::all(
+            &self.inner.global_metadata_bytes,
+            candidates.as_slice().iter().map(|upstream| {
                 fetch_upstream_listing(
                     &self.inner.upstream_access,
                     upstream.as_str(),
                     query.hop + 1,
                     &self.inner.global_metadata_bytes,
                 )
-            }))
-            .await;
+            }),
+        )
+        .await?;
         for (upstream, result) in candidates.into_iter().zip(results) {
             let listing = result.context("target upstream failed")?;
             if let Some(entries) = listing.entries(&query.udid) {

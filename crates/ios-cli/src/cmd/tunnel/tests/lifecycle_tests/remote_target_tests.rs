@@ -1,5 +1,81 @@
 use super::*;
 
+#[tokio::test]
+async fn federation_join_late_future_refusal_precedes_both_production_http_and_source() {
+    for listing in [false, true] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let (port, server) = spawn_test_router(Router::new().fallback(get(move || {
+            let requests = captured.clone();
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({}))
+            }
+        })))
+        .await;
+        let source = FakeSource::new();
+        let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+        let url = format!("http://127.0.0.1:{port}/a");
+        state.inner.upstreams.write().await.insert(url.clone());
+        state
+            .inner
+            .upstreams
+            .write()
+            .await
+            .insert(format!("http://127.0.0.1:{port}/b"));
+        let bank = state.inner.global_metadata_bytes.clone();
+        let before = bank.available_permits();
+        let original = fetch_upstream_listing(&state.inner.upstream_access, &url, 1, &bank);
+        let future_bytes = std::mem::size_of_val(&original);
+        drop(original);
+        let held = Arc::new(StdMutex::new(None));
+        let captured = held.clone();
+        let charged = bank.clone();
+        let guard = metadata_vec::on_allocation(move |layout, _| {
+            if layout.size() == future_bytes && captured.lock().unwrap().is_none() {
+                // The first real child body exists but is unpolled. Refuse
+                // the second actual body by exactly one byte.
+                let fee = charged
+                    .clone()
+                    .try_acquire_many_owned((charged.available_permits() - future_bytes + 1) as u32)
+                    .unwrap();
+                *captured.lock().unwrap() = Some(fee);
+            }
+        });
+        let error = if listing {
+            state.list_federated(0).await.err().unwrap()
+        } else {
+            state
+                .remote_target(&ConnectQuery {
+                    udid: "uid".into(),
+                    port: 12345,
+                    interface: None,
+                    upstream: None,
+                    hop: 0,
+                })
+                .await
+                .err()
+                .unwrap()
+        };
+        drop(guard);
+        assert!(held.lock().unwrap().is_some(), "actual future body reached");
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        held.lock().unwrap().take();
+        assert_eq!(bank.available_permits(), before);
+        tokio::task::yield_now().await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert_eq!(source.count(A), 0);
+        assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+        state.clear().await;
+        state.drain_native(LOCAL_BUDGET).await.unwrap();
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
 #[test]
 fn remote_target_moves_paid_url_and_keeps_optional_route_text_with_original_url_contract() {
     let bank = Arc::new(Semaphore::new(4096));
