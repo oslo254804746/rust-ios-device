@@ -46,6 +46,7 @@ mod paired_observed;
 mod publication_retain;
 mod publication_table;
 mod reconnect;
+mod response_json;
 mod retirement;
 mod scan;
 mod scan_desired;
@@ -3048,10 +3049,11 @@ async fn agent_list_tunneld(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Query(query): Query<FederationQuery>,
-) -> Result<Json<FederationListing>, Response> {
+) -> Result<Response, Response> {
     principal.require_permission(Permission::List)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     if query.hop > MAX_FEDERATION_HOPS {
-        return Err(manager_classified_error(
+        return Err(replies.classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
             ios_core::ErrorClass::ResourceLimit,
@@ -3061,7 +3063,7 @@ async fn agent_list_tunneld(
         .run(state.list_federated(query.hop))
         .await?
         .map_err(|error| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "federation listing failed",
                 error.as_ref(),
@@ -3069,37 +3071,31 @@ async fn agent_list_tunneld(
         })?;
     principal.require_permission(Permission::List)?;
     records.retain(|device, _| principal.allows(Permission::List, Some(device), None));
-    Ok(Json(records))
+    replies.json(&records)
 }
 
+#[cfg(test)]
 fn manager_classified_error(
     status: StatusCode,
     message: &'static str,
     class: ios_core::ErrorClass,
 ) -> Response {
-    crate::http_diagnostics::classified(
-        (status, Json(json!({ "message": message }))),
-        class,
-        crate::http_diagnostics::ErrorPhase::Manager,
-    )
+    let bank = Arc::new(Semaphore::new(4096));
+    response_json::Replies::new(&bank)
+        .unwrap()
+        .classified_error(status, message, class)
 }
 
+#[cfg(test)]
 fn manager_operation_error(
     status: StatusCode,
     phase: &'static str,
     error: &(dyn std::error::Error + 'static),
 ) -> Response {
-    crate::http_diagnostics::classified(
-        (
-            status,
-            Json(json!({
-                "message": phase,
-                "error": ios_core::redaction::diagnostic_error(error).to_string(),
-            })),
-        ),
-        crate::output::operation_error_class(error),
-        crate::http_diagnostics::ErrorPhase::Manager,
-    )
+    let bank = Arc::new(Semaphore::new(4096));
+    response_json::Replies::new(&bank)
+        .unwrap()
+        .operation_error(status, phase, error)
 }
 
 fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
@@ -3110,21 +3106,22 @@ fn bounded_websocket_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
 async fn agent_list_upstreams(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<Vec<String>>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
-    Ok(Json(
-        state.inner.upstreams.read().await.iter().cloned().collect(),
-    ))
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let upstreams = state.inner.upstreams.read().await;
+    replies.json(&*upstreams)
 }
 
 async fn agent_add_upstream(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Json(body): Json<UpstreamBody>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     let url = normalize_upstream_url(&body.url).map_err(|err| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "invalid upstream URL",
             err.as_ref(),
@@ -3132,35 +3129,35 @@ async fn agent_add_upstream(
     })?;
     let mut upstreams = state.inner.upstreams.write().await;
     if !upstreams.contains(&url) && upstreams.len() >= MAX_UPSTREAMS {
-        return Err(manager_classified_error(
+        return Err(replies.classified_error(
             StatusCode::BAD_REQUEST,
             "upstream limit reached",
             ios_core::ErrorClass::ResourceLimit,
         ));
     }
-    upstreams.insert(url.clone());
-    Ok(Json(
-        json!({ "operation": "add_upstream", "url": url, "data": true }),
-    ))
+    let response = replies.upstream("add_upstream", &url, true)?;
+    upstreams.insert(url);
+    Ok(response)
 }
 
 async fn agent_remove_upstream(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Json(body): Json<UpstreamBody>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     let url = normalize_upstream_url(&body.url).map_err(|err| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "invalid upstream URL",
             err.as_ref(),
         )
     })?;
+    let present = replies.upstream("remove_upstream", &url, true)?;
+    let absent = replies.upstream("remove_upstream", &url, false)?;
     let removed = state.inner.upstreams.write().await.remove(&url);
-    Ok(Json(
-        json!({ "operation": "remove_upstream", "url": url, "data": removed }),
-    ))
+    Ok(if removed { present } else { absent })
 }
 
 async fn agent_connect(
@@ -3186,22 +3183,23 @@ async fn agent_connect_authorized(
     ws: WebSocketUpgrade,
     principal: Principal,
 ) -> Result<Response, Response> {
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     if query.hop > MAX_FEDERATION_HOPS {
-        return Err(manager_classified_error(
+        return Err(replies.classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
             ios_core::ErrorClass::ResourceLimit,
         ));
     }
     if query.udid.is_empty() || query.port == 0 {
-        return Err(manager_classified_error(
+        return Err(replies.classified_error(
             StatusCode::BAD_REQUEST,
             "udid and nonzero port are required",
             ios_core::ErrorClass::InvalidInput,
         ));
     }
     admission::selectors(&query.udid, None).map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "tunnel selector metadata limit exceeded",
             error.as_ref(),
@@ -3224,14 +3222,14 @@ async fn agent_connect_authorized(
         )
         .await
         .map_err(|error| {
-            manager_classified_error(
+            replies.classified_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 "tunnel TCP dial timed out",
                 ios_core::classify_error(&error),
             )
         })?
         .map_err(|err| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "tunnel TCP dial failed",
                 err.as_ref(),
@@ -3251,7 +3249,7 @@ async fn agent_connect_authorized(
             .into_response());
     }
     if query.hop >= MAX_FEDERATION_HOPS {
-        return Err(manager_classified_error(
+        return Err(replies.classified_error(
             StatusCode::LOOP_DETECTED,
             "federation hop budget exceeded",
             ios_core::ErrorClass::ResourceLimit,
@@ -3259,7 +3257,7 @@ async fn agent_connect_authorized(
     }
     if let Some(upstream) = &query.upstream {
         if !state.inner.upstreams.read().await.contains(upstream) {
-            return Err(manager_classified_error(
+            return Err(replies.classified_error(
                 StatusCode::BAD_REQUEST,
                 "upstream is not registered",
                 ios_core::ErrorClass::NotFound,
@@ -3270,21 +3268,21 @@ async fn agent_connect_authorized(
         .remote_target(&query)
         .await
         .map_err(|err| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "target selection failed",
                 err.as_ref(),
             )
         })?
         .ok_or_else(|| {
-            manager_classified_error(
+            replies.classified_error(
                 StatusCode::NOT_FOUND,
                 "tunnel target not found",
                 ios_core::ErrorClass::NotFound,
             )
         })?;
     let url = remote_connect_url(&target, &query).map_err(|err| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "upstream WebSocket URL failed",
             err.as_ref(),
@@ -3295,14 +3293,14 @@ async fn agent_connect_authorized(
         .upstream_access
         .client(&target.upstream)
         .map_err(|error| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "upstream transport configuration failed",
                 error.as_ref(),
             )
         })?;
     let request = client.websocket_request(&url).map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_GATEWAY,
             "upstream authentication configuration failed",
             error.as_ref(),
@@ -3323,14 +3321,14 @@ async fn agent_connect_authorized(
     )
     .await
     .map_err(|error| {
-        manager_classified_error(
+        replies.classified_error(
             StatusCode::GATEWAY_TIMEOUT,
             "upstream WebSocket dial timed out",
             ios_core::classify_error(&error),
         )
     })?
     .map_err(|err| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_GATEWAY,
             "upstream WebSocket dial failed",
             &err,
@@ -3353,79 +3351,66 @@ async fn agent_connect_authorized(
 async fn agent_list_records(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<Vec<TunnelRecord>>, Response> {
+) -> Result<Response, Response> {
     principal.require_permission(Permission::List)?;
-    let records = principal.run(state.list_records()).await?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let mut records = principal.run(state.list_records()).await?;
     principal.require_permission(Permission::List)?;
-    Ok(Json(
-        records
-            .into_iter()
-            .filter(|record| principal.allows(Permission::List, Some(&record.udid), None))
-            .collect(),
-    ))
+    records.retain(|record| principal.allows(Permission::List, Some(&record.udid), None));
+    replies.json(&records)
 }
 
 async fn agent_get_tunnel(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
-) -> Result<Json<TunnelRecord>, Response> {
+) -> Result<Response, Response> {
+    principal.require(Permission::List, Some(&udid), None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     admission::selectors(&udid, None).map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "tunnel selector metadata limit exceeded",
             error.as_ref(),
         )
     })?;
-    principal.require(Permission::List, Some(&udid), None)?;
     let record = principal.run(state.get_record(&udid)).await?;
     principal.require(Permission::List, Some(&udid), None)?;
-    record.map(Json).ok_or_else(|| {
-        crate::http_diagnostics::classified((
-            StatusCode::NOT_FOUND,
-            Json(json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() })),
-        ), ios_core::ErrorClass::NotFound, crate::http_diagnostics::ErrorPhase::Manager)
-    })
+    match record {
+        Some(record) => replies.json(&record),
+        None => Err(replies.not_found(&udid)),
+    }
 }
 
 async fn agent_delete_tunnel(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Path(udid): Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
+    principal.require(Permission::ManageTunnels, Some(&udid), None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     admission::selectors(&udid, None).map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_REQUEST,
             "tunnel selector metadata limit exceeded",
             error.as_ref(),
         )
     })?;
-    principal.require(Permission::ManageTunnels, Some(&udid), None)?;
+    let success = replies.cancelled(&udid)?;
     let removed = principal
         .run(state.stop_tunnel(&udid))
         .await?
         .map_err(|error| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "failed to stop tunnel",
                 error.as_ref(),
             )
         })?;
     if removed {
-        Ok(Json(
-            json!({ "operation": "cancel", "udid": udid, "data": true }),
-        ))
+        Ok(success)
     } else {
-        Err(crate::http_diagnostics::classified(
-            (
-                StatusCode::NOT_FOUND,
-                Json(
-                    json!({ "message": "tunnel not found", "device": ios_core::redaction::diagnostic_id(&udid).to_string() }),
-                ),
-            ),
-            ios_core::ErrorClass::NotFound,
-            crate::http_diagnostics::ErrorPhase::Manager,
-        ))
+        Err(replies.not_found(&udid))
     }
 }
 
@@ -3433,26 +3418,16 @@ async fn agent_start_tunnel(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
     Json(query): Json<StartTunnelQuery>,
-) -> Result<Json<StartTunnelResponse>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageTunnels, Some(&query.udid), None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
     if let Some(message) = query.unsupported_transport_message() {
-        return Err(crate::http_diagnostics::classified(
-            (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "message": message,
-                    "device": ios_core::redaction::diagnostic_id(&query.udid).to_string(),
-                    "connection_type": query.requested_connection_type(),
-                })),
-            ),
-            ios_core::ErrorClass::Unsupported,
-            crate::http_diagnostics::ErrorPhase::Manager,
-        ));
+        return Err(replies.unsupported(&query, message));
     }
 
     // Bound selectors before the authority retains the exact target string.
     admission::selectors(&query.udid, query.ip.as_deref()).map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_GATEWAY,
             "failed to create tunnel",
             error.as_ref(),
@@ -3463,7 +3438,7 @@ async fn agent_start_tunnel(
         authority,
         host_filter: query.ip.clone(),
     };
-    principal
+    let record = principal
         .run(state.ensure_tunnel_with_intent(
             &query.udid,
             query.ip.as_deref(),
@@ -3472,14 +3447,14 @@ async fn agent_start_tunnel(
         ))
         .await?
         .map(StartTunnelResponse::from_record)
-        .map(Json)
         .map_err(|err| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_GATEWAY,
                 "failed to create tunnel",
                 err.as_ref(),
             )
-        })
+        })?;
+    replies.json(&record)
 }
 
 async fn agent_health() -> StatusCode {
@@ -3490,7 +3465,7 @@ async fn agent_health() -> StatusCode {
 // 2026-11-01 00:00 UTC, then retain an authenticated 410 tombstone.
 const LEGACY_GET_NOTICE_UNTIL: u64 = 1_793_491_200;
 
-fn legacy_management_reply(now: u64) -> Response {
+fn legacy_management_reply_with(replies: &response_json::Replies, now: u64) -> Response {
     let (status, message) = if now < LEGACY_GET_NOTICE_UNTIL {
         (
             StatusCode::METHOD_NOT_ALLOWED,
@@ -3499,7 +3474,7 @@ fn legacy_management_reply(now: u64) -> Response {
     } else {
         (StatusCode::GONE, "legacy GET management removed; use POST")
     };
-    let mut response = manager_classified_error(status, message, ios_core::ErrorClass::Unsupported);
+    let mut response = replies.classified_error(status, message, ios_core::ErrorClass::Unsupported);
     response
         .headers_mut()
         .insert(axum::http::header::ALLOW, "POST".parse().unwrap());
@@ -3507,17 +3482,28 @@ fn legacy_management_reply(now: u64) -> Response {
 }
 
 async fn legacy_shutdown_get(
+    State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
-    Ok(legacy_management_reply(legacy_notice_time()))
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    Ok(legacy_management_reply_with(&replies, legacy_notice_time()))
 }
 
 async fn legacy_start_get(
+    State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Response, Response> {
     principal.require_permission(Permission::ManageTunnels)?;
-    Ok(legacy_management_reply(legacy_notice_time()))
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    Ok(legacy_management_reply_with(&replies, legacy_notice_time()))
+}
+
+#[cfg(test)]
+fn legacy_management_reply(now: u64) -> Response {
+    let bank = Arc::new(Semaphore::new(4096));
+    let replies = response_json::Replies::new(&bank).unwrap();
+    legacy_management_reply_with(&replies, now)
 }
 
 fn legacy_notice_time() -> u64 {
@@ -3537,58 +3523,62 @@ async fn agent_ready(State(state): State<TunnelAgentState>) -> StatusCode {
 async fn agent_shutdown(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let response = replies.shutdown()?;
     state.notify_shutdown();
-    Ok(Json(json!({
-        "operation": "shutdown",
-        "data": true,
-        "message": "Server shutting down..."
-    })))
+    Ok(response)
 }
 
 async fn agent_reload_policy(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let response = replies.operation("reload_policy")?;
     state
         .inner
         .access
         .reload(&principal)
         .await
         .map_err(|error| {
-            manager_operation_error(
+            replies.operation_error(
                 StatusCode::BAD_REQUEST,
                 "manager policy reload failed",
                 error.as_ref(),
             )
         })?;
-    Ok(Json(json!({"operation": "reload_policy", "data": true})))
+    Ok(response)
 }
 
 async fn agent_refresh(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let response = replies.operation("refresh")?;
     state.refresh_once().await.map_err(|error| {
-        manager_operation_error(
+        replies.operation_error(
             StatusCode::BAD_GATEWAY,
             "tunnel agent refresh failed",
             error.as_ref(),
         )
     })?;
-    Ok(Json(json!({"operation": "refresh", "data": true})))
+    Ok(response)
 }
 
 async fn agent_epoch(
     State(state): State<TunnelAgentState>,
     Extension(principal): Extension<Principal>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     principal.require(Permission::ManageServer, None, None)?;
+    let replies = response_json::Replies::new(&state.inner.global_metadata_bytes)?;
+    let response = replies.operation("epoch")?;
     state.clear().await;
-    Ok(Json(json!({"operation": "epoch", "data": true})))
+    Ok(response)
 }
 
 #[cfg(test)]

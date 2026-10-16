@@ -8863,3 +8863,13 @@ terminal只共享原Arc，零配额/closed-bank晚Drop保持原错误；census�
 Source0通过，见[验证](validation/tunnel-history-snapshot-2026-10-16.md)。HTTP/
 private/initial公开目录与原完整freshness继续；128MiB非完整heap/RSS，L02不
 关闭，23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 manager JSON wire owner
+
+全部manager自有JSON handler改为同value计数/精确data准入/capped writer，grant
+跟随最后Bytes frame/slice；固定诊断Source前预留，权限先于池，简单mutation
+回复先构造。完整tunnel540/0FAIL/2ignored及最终Clippy/build/Source0通过，见
+[验证](validation/tunnel-json-wire-owner-2026-10-16.md)（Replies局部largeErr例外
+有理由/逐字节复用记录）。record/Value输入图/WS/auth/framework/private与原完整
+freshness继续，128MiB非完整heap/RSS；L02不关闭，23/6/待收口、有效30与Q04
+全部排除不变，仅本地提交。
