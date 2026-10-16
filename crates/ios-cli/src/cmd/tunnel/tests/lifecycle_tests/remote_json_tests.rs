@@ -1,6 +1,79 @@
 use super::*;
 
 #[tokio::test]
+async fn remote_json_escaped_wire_keeps_listing_target_and_original_global_error_without_source() {
+    const BODY: &[u8] = br#"{"uid\u002d\u96ea":[{"interface":"quote\"\u96ea","upstream":"https:\/\/nested.invalid\/","extension":"line\nnext"}]}"#;
+    const INVALID: &[u8] = b"{\n\"uid\\u0061\": [\n\"bad\\q\"]}";
+    let invalid = Arc::new(AtomicBool::new(false));
+    let captured = invalid.clone();
+    let (port, server) = spawn_test_router(Router::new().route(
+        "/",
+        get(move || {
+            let invalid = captured.clone();
+            async move {
+                if invalid.load(Ordering::SeqCst) {
+                    INVALID
+                } else {
+                    BODY
+                }
+            }
+        }),
+    ))
+    .await;
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let url = format!("http://127.0.0.1:{port}/");
+    state.inner.upstreams.write().await.insert(url.clone());
+    let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
+    let grouped = state.list_federated(0).await.unwrap().prepare().unwrap();
+    let output = serde_json::to_value(&grouped).unwrap();
+    assert_eq!(output["uid-雪"][0]["interface"], "quote\"雪");
+    assert_eq!(output["uid-雪"][0]["extension"], "line\nnext");
+    assert_eq!(output["uid-雪"][0]["upstream"], url);
+    drop(grouped);
+    assert_eq!(bank.available_permits(), before);
+    let target = state
+        .remote_target(&ConnectQuery {
+            udid: "uid-雪".into(),
+            port: 12345,
+            interface: Some("quote\"雪".into()),
+            upstream: None,
+            hop: 0,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.interface.as_deref(), Some("quote\"雪"));
+    assert_eq!(
+        target.next_upstream.as_deref(),
+        Some("https://nested.invalid/")
+    );
+    drop(target);
+    assert_eq!(bank.available_permits(), before);
+    invalid.store(true, Ordering::SeqCst);
+    let error = fetch_upstream_listing(&state.inner.upstream_access, &url, 1, &bank)
+        .await
+        .err()
+        .unwrap();
+    let expected = serde_json::from_slice::<serde_json::Value>(INVALID).unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<serde_json::Error>()
+            .unwrap()
+            .to_string(),
+        expected.to_string()
+    );
+    assert_eq!(bank.available_permits(), before);
+    assert_eq!(source.count(A), 0);
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
 async fn remote_json_actual_root_preserves_extensions_overlay_and_original_target_selection() {
     let body = serde_json::json!({
         "synthetic-雪":[null,{"interface":"selected","upstream":"nested-original","extension":{"snow":"雪🦀","items":[0,true,null]}},17],
