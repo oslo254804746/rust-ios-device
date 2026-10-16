@@ -21,7 +21,7 @@ candidate输入创建边界仍独立待核查，不能由本项推导全部文�
 新增6项覆盖实际allocation hook/精确容量/离开原输入，差一字节零分配并
 保留typed resource、所有route变体，零额外配额共享原Input地址/最后owner，
 异池或不同observed值不替换原观察；实际ensure在目标observed差一字节时
-HTTP/Source前拒绝、USB/paired调用0、native空且部分destination精确退款；
+Source前拒绝、USB/paired调用0、native空且部分destination精确退款；
 实际scan publication同原Input对象，并移出原observation后通过正常manager
 清理证明其持费寿命独立。原native metadata/joins/strict Ok(0) EOF全组保留。
 
