@@ -687,11 +687,30 @@ struct UpstreamBody {
 #[cfg(test)]
 type FederationListing = HashMap<String, Vec<serde_json::Value>>;
 
-#[derive(Debug, Clone)]
 struct RemoteTarget {
-    upstream: String,
-    interface: Option<String>,
-    next_upstream: Option<String>,
+    upstream: paid_json::Text,
+    interface: Option<paid_json::Text>,
+    next_upstream: Option<paid_json::Text>,
+}
+impl RemoteTarget {
+    fn new(
+        upstream: paid_json::Text,
+        interface: Option<&str>,
+        next_upstream: Option<&str>,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Self> {
+        let interface = interface
+            .map(|value| paid_json::Text::copy(value, bank))
+            .transpose()?;
+        let next_upstream = next_upstream
+            .map(|value| paid_json::Text::copy(value, bank))
+            .transpose()?;
+        Ok(Self {
+            upstream,
+            interface,
+            next_upstream,
+        })
+    }
 }
 
 impl StartTunnelQuery {
@@ -1006,17 +1025,12 @@ impl TunnelAgentState {
                             == Some(interface.as_str())
                     })
                 }) {
-                    return Ok(Some(RemoteTarget {
-                        upstream: upstream.as_str().to_owned(),
-                        interface: entry
-                            .get("interface")
-                            .and_then(paid_json::Value::string)
-                            .map(str::to_owned),
-                        next_upstream: entry
-                            .get("upstream")
-                            .and_then(paid_json::Value::string)
-                            .map(str::to_owned),
-                    }));
+                    return Ok(Some(RemoteTarget::new(
+                        upstream,
+                        entry.get("interface").and_then(paid_json::Value::string),
+                        entry.get("upstream").and_then(paid_json::Value::string),
+                        &self.inner.global_metadata_bytes,
+                    )?));
                 }
             }
         }

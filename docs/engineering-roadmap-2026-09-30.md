@@ -8911,3 +8911,12 @@ JSON错误类别保留；URL snapshot/source/index真实backing预付，借用ov
 [验证](validation/tunnel-remote-json-owners-2026-10-16.md)。decoder scratch/
 join_all/RemoteTarget/private/WS及原完整freshness继续，128MiB非完整heap/RSS；
 L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 remote target text owner
+
+target直接move原paid URL，interface/下一跳文本按精确Layout先准入再复制，
+部分拒绝与manager/input销毁后的最后owner退款已验，原URL参数/选择保持。
+完整tunnel568/0FAIL/2ignored、上游6/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-remote-target-owner-2026-10-16.md)。join_all/decoder/
+URI/header/WS/private和原完整freshness继续，128MiB非完整heap/RSS；L02不
+关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。

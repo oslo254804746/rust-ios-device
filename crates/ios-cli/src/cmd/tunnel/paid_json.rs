@@ -35,6 +35,12 @@ impl Serialize for Text {
         serializer.serialize_str(self.as_str())
     }
 }
+impl std::ops::Deref for Text {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
 
 pub(super) enum Value {
     Null,
