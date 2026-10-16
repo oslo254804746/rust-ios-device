@@ -8,6 +8,98 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
 
 const OBSERVE: Duration = Duration::from_secs(2);
 
+#[tokio::test]
+async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_eof() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let (stream, mut peer) = tokio::io::duplex(1280);
+    let native = runtime(stream).await;
+    let lease = registry
+        .reserve(stamp())
+        .unwrap()
+        .attach(Arc::clone(&native));
+    let bank = Arc::clone(&registry.byte_bank);
+    let before = bank.available_permits();
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(before.try_into().unwrap())
+        .unwrap();
+    drop(lease);
+    let drain = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
+    assert!(
+        !native.is_alive(),
+        "original stop must precede polling the drain"
+    );
+    let report = drain.await.unwrap();
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(OBSERVE, peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert!(recovered(baseline).await);
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.occupied()),
+        (1, 1, 0)
+    );
+    assert!(native.shutdown_status().is_ok());
+    assert_eq!(bank.available_permits(), 0);
+    drop(held);
+    assert_eq!(bank.available_permits(), before);
+}
+
+#[tokio::test]
+async fn native_census_keeps_active_original_io_on_quota_refusal_and_last_root_drop() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let owner = stamp();
+    let (stream, peer) = tokio::io::duplex(1280);
+    let native = runtime(stream).await;
+    let lease = registry
+        .reserve(owner.clone())
+        .unwrap()
+        .attach(Arc::clone(&native));
+    lease.publish(&owner).unwrap();
+    drop(peer);
+    assert!(inactive(&native).await);
+    let original_report = native.shutdown_status().unwrap_err();
+    let original = work(&original_report) as *const TunnelError;
+    let bank = Arc::clone(&registry.byte_bank);
+    let before = bank.available_permits();
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(before.try_into().unwrap())
+        .unwrap();
+    assert!(registry.payload_outcomes().is_err());
+    assert_eq!(registry.snapshot().active, 1);
+    assert_eq!(
+        work(&native.shutdown_status().unwrap_err()) as *const _,
+        original
+    );
+    drop(held);
+    let (unjoined, roots) = registry.payload_outcomes().unwrap();
+    assert_eq!(unjoined, 1);
+    assert_eq!(roots.as_slice().len(), 1);
+    assert_eq!(work(&roots.as_slice()[0]) as *const _, original);
+    assert!(bank.available_permits() < before);
+    drop(roots);
+    assert_eq!(bank.available_permits(), before);
+    drop(lease);
+    let failure = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap_err();
+    let joined = failure.primary().downcast_ref::<TunnelError>().unwrap();
+    assert!(shutdown_joins_certified(joined));
+    assert_eq!(work(joined) as *const _, original);
+    assert!(recovered(baseline).await);
+    assert_eq!(registry.snapshot().occupied(), 0);
+}
+
 fn stamp() -> OwnershipStamp {
     OwnershipStamp::new(Arc::new(()), Arc::new(()))
 }

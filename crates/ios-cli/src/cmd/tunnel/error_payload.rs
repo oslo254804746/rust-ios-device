@@ -202,8 +202,20 @@ impl super::TunnelAgentState {
         // This is a sampled union, not a globally linearized admission decision.
         let receipts = self.inner.retry.payload_receipts();
         let (active_scans, scans) = self.inner.scan_outcomes.payload_history();
-        let (unjoined_native_owners, native) = self.inner.native.payload_outcomes();
+        let native = self.inner.native.payload_outcomes();
         let freshness = self.inner.native.payload_freshness();
+        let (unjoined_native_owners, native) = match native {
+            Ok(native) => native,
+            Err(_) => {
+                // Counts/bytes are observed lower bounds. A rejected census
+                // cannot certify zero unjoined owners or fully measured roots.
+                return Snapshot {
+                    active_scans,
+                    truncated: true,
+                    ..Snapshot::default()
+                };
+            }
+        };
         let receipts = match receipts {
             Ok(receipts) => receipts,
             Err(_) => {
@@ -239,7 +251,7 @@ impl super::TunnelAgentState {
         for receipt in freshness.as_slice() {
             census.anyhow(receipt.original(), 0);
         }
-        for error in &native {
+        for error in native.as_slice() {
             census.error(error.as_ref(), 0);
         }
         census.snapshot

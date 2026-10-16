@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::future::{pending, poll_fn, Future};
+use std::num::NonZeroU64;
 #[cfg(test)]
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
@@ -81,6 +82,7 @@ struct Entry {
     incarnation: Arc<()>,
     stamp: OwnershipStamp,
     phase: Phase,
+    retired_at: Option<NonZeroU64>,
     handle: Option<Arc<TunnelHandle>>,
     // An admitted device's known metadata charge remains with the original
     // runtime until its joins are certified, even after its table row drops.
@@ -95,12 +97,67 @@ struct Entry {
 
 struct State {
     sealed: bool,
+    // Never reset/refund these counters, even when every slot is empty.
+    issued: u64,
+    retired: u64,
     // Fixed length after construction. Never push, evict or resize.
     slots: Vec<Option<Entry>>,
     first_failure: Option<Arc<TunnelError>>,
     first_expiry: Option<Arc<TunnelError>>,
     first_orphan_freshness: Option<Arc<super::freshness::Receipt>>,
     additional_failed_owners: u64,
+}
+
+#[derive(Clone, Copy)]
+struct Selection {
+    cutoff: u64,
+    count: usize,
+    capacity: usize,
+}
+
+impl Selection {
+    fn slots(self) -> std::ops::Range<usize> {
+        0..if self.count == 0 { 0 } else { self.capacity }
+    }
+
+    fn contains(self, entry: &Entry) -> bool {
+        entry.phase == Phase::Retired && entry.retired_at.is_some_and(|at| at.get() <= self.cutoff)
+    }
+}
+
+impl State {
+    fn retire_slot(&mut self, slot: usize) {
+        let entry = self.slots[slot]
+            .as_mut()
+            .expect("selected occupied native slot");
+        if entry.phase != Phase::Retired {
+            // Each issued incarnation can retire only once. Admission rejects
+            // issued overflow before Source; therefore this cannot wrap or fail
+            // during infallible cleanup, even when issued == u64::MAX.
+            self.retired = self
+                .retired
+                .checked_add(1)
+                .expect("one retirement per issued incarnation");
+            assert!(self.retired <= self.issued);
+            entry.retired_at = NonZeroU64::new(self.retired);
+            entry.phase = Phase::Retired;
+        } else {
+            debug_assert!(entry.retired_at.is_some());
+        }
+    }
+
+    fn selection(&self) -> Selection {
+        Selection {
+            cutoff: self.retired,
+            count: self
+                .slots
+                .iter()
+                .flatten()
+                .filter(|entry| entry.phase == Phase::Retired)
+                .count(),
+            capacity: self.slots.len(),
+        }
+    }
 }
 
 /// Snapshot is identity-free. A retired count is ownership, not native task count.
@@ -203,6 +260,8 @@ impl Registry {
         Ok(Arc::new(Self {
             state: StdMutex::new(State {
                 sealed: false,
+                issued: 0,
+                retired: 0,
                 slots,
                 first_failure: None,
                 first_expiry: None,
@@ -284,11 +343,16 @@ impl Registry {
             .ok_or_else(|| {
                 crate::output::resource_decision("native tunnel owner capacity exhausted")
             })?;
+        let issued = state.issued.checked_add(1).ok_or_else(|| {
+            crate::output::resource_decision("native tunnel incarnation limit exhausted")
+        })?;
+        state.issued = issued;
         let incarnation = Arc::new(());
         state.slots[slot] = Some(Entry {
             incarnation: Arc::clone(&incarnation),
             stamp,
             phase: Phase::Reserved,
+            retired_at: None,
             handle: None,
             metadata: None,
             global_metadata: None,
@@ -313,27 +377,35 @@ impl Registry {
     }
 
     fn retire_matching(&self, matches: impl Fn(&Entry) -> bool, seal: bool) {
-        let handles = {
+        let selected = {
             let mut state = self.lock();
             state.sealed |= seal;
-            let mut handles = Vec::with_capacity(state.slots.len());
-            for entry in state.slots.iter_mut().flatten() {
-                if matches(entry) {
-                    // An inflight empty reservation remains reserved for its
-                    // possible late attachment; only its owning guard can free it.
-                    entry.phase = Phase::Retired;
-                    if let Some(handle) = &entry.handle {
-                        handles.push(Arc::clone(handle));
-                    }
+            for slot in 0..state.slots.len() {
+                if state.slots[slot].as_ref().is_some_and(&matches) {
+                    state.retire_slot(slot);
                 }
             }
-            handles
+            state.selection()
         };
-        // Every selected state is durably retired before any native call.
-        for handle in handles {
-            handle.request_stop();
-        }
+        // Mark all matching owners before any native call. Keep the exact
+        // namespace predicate; unrelated already-retired owners stay untouched.
+        self.stop_selected(selected, matches);
         self.changed.notify_waiters();
+    }
+
+    fn stop_selected(&self, selected: Selection, matches: impl Fn(&Entry) -> bool) {
+        for slot in selected.slots() {
+            let handle = {
+                let state = self.lock();
+                state.slots[slot]
+                    .as_ref()
+                    .filter(|entry| selected.contains(entry) && matches(entry))
+                    .and_then(|entry| entry.handle.clone())
+            };
+            if let Some(handle) = handle {
+                handle.request_stop();
+            }
+        }
     }
 
     /// Call only after lifecycle.close releases its watch writes.
@@ -361,8 +433,9 @@ impl Registry {
                 state.slots[key.slot] = None;
                 None
             } else {
-                entry.phase = Phase::Retired;
-                entry.handle.clone()
+                let handle = entry.handle.clone();
+                state.retire_slot(key.slot);
+                handle
             }
         };
         if let Some(handle) = handle {
@@ -403,21 +476,39 @@ impl Registry {
         }
     }
 
-    pub(super) fn payload_outcomes(&self) -> (usize, Vec<Arc<TunnelError>>) {
+    pub(super) fn payload_outcomes(
+        &self,
+    ) -> Result<(usize, super::metadata_vec::KnownVec<Arc<TunnelError>>)> {
         let (mut errors, handles) = {
             let state = self.lock();
-            let errors = state
-                .first_failure
-                .iter()
-                .chain(state.first_expiry.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            let handles = state
+            let count = state
                 .slots
                 .iter()
                 .flatten()
-                .filter_map(|entry| entry.handle.clone())
-                .collect::<Vec<_>>();
+                .filter(|entry| entry.handle.is_some())
+                .count();
+            let history = usize::from(state.first_failure.is_some())
+                + usize::from(state.first_expiry.is_some());
+            let mut errors = super::metadata_vec::KnownVec::new(
+                Arc::clone(&self.byte_bank),
+                state.slots.len() + 2,
+            );
+            errors.reserve(history + count)?;
+            let mut handles =
+                super::metadata_vec::KnownVec::new(Arc::clone(&self.byte_bank), state.slots.len());
+            handles.reserve(count)?;
+            // Both actual backings are admitted before cloning original roots.
+            for error in state.first_failure.iter().chain(state.first_expiry.iter()) {
+                errors.push_reserved(Arc::clone(error));
+            }
+            for handle in state
+                .slots
+                .iter()
+                .flatten()
+                .filter_map(|entry| entry.handle.as_ref())
+            {
+                handles.push_reserved(Arc::clone(handle));
+            }
             (errors, handles)
         };
         let mut unjoined = 0;
@@ -425,54 +516,46 @@ impl Registry {
             if let Err(error) = handle.shutdown_status() {
                 let report = shutdown_report(&error);
                 if report.map_or(true, |report| !report.joins_complete()) {
-                    // A completed JoinHandle can still own an unobserved Err or
-                    // panic payload until its original join is acquired.
                     unjoined += 1;
                 }
                 if report.is_some_and(TunnelShutdownFailure::has_retained_outcomes) {
-                    errors.push(Arc::new(error));
+                    errors.push_reserved(Arc::new(error));
                 }
             }
         }
-        (unjoined, errors)
+        Ok((unjoined, errors))
     }
 
-    fn selection_and_stop(&self) -> Vec<Key> {
-        let (keys, handles) = {
-            let state = self.lock();
-            let mut keys = Vec::with_capacity(state.slots.len());
-            let mut handles = Vec::with_capacity(state.slots.len());
-            for (slot, entry) in state.slots.iter().enumerate() {
-                if let Some(entry) = entry.as_ref().filter(|entry| entry.phase == Phase::Retired) {
-                    keys.push(Key {
-                        slot,
-                        incarnation: Arc::clone(&entry.incarnation),
-                    });
-                    if let Some(handle) = &entry.handle {
-                        handles.push(Arc::clone(handle));
-                    }
-                }
-            }
-            (keys, handles)
-        };
-        for handle in handles {
-            handle.request_stop();
-        }
-        keys
+    fn selection_and_stop(&self) -> Selection {
+        let selected = self.lock().selection();
+        self.stop_selected(selected, |_| true);
+        selected
     }
 
-    fn capture_selected(&self, selected: &[Key], attempt: Option<&StdMutex<AttemptEvidence>>) {
-        // Clone each original runtime under the registry lock and inspect its
-        // Core ledger outside it. Observation never certifies/removes a slot.
-        for key in selected {
-            let SelectedOwner::Native(handle) = self.selected_owner(key) else {
+    fn selected_key(&self, selected: Selection, slot: usize) -> Option<Key> {
+        let state = self.lock();
+        state.slots[slot]
+            .as_ref()
+            .filter(|entry| selected.contains(entry))
+            .map(|entry| Key {
+                slot,
+                incarnation: Arc::clone(&entry.incarnation),
+            })
+    }
+
+    fn capture_selected(&self, selected: Selection, attempt: Option<&StdMutex<AttemptEvidence>>) {
+        for slot in selected.slots() {
+            let Some(key) = self.selected_key(selected, slot) else {
+                continue;
+            };
+            let SelectedOwner::Native(handle) = self.selected_owner(&key) else {
                 continue;
             };
             if let Err(error) = handle.shutdown_status() {
                 if shutdown_report(&error).is_some_and(TunnelShutdownFailure::has_retained_outcomes)
                 {
                     let error = Arc::new(error);
-                    self.record_failure(key, Arc::clone(&error));
+                    self.record_failure(&key, Arc::clone(&error));
                     if let Some(attempt) = attempt {
                         attempt
                             .lock()
@@ -487,24 +570,8 @@ impl Registry {
     /// Capture acquired native causes before an outer cleanup future disappears.
     /// Existing retired ownership and original join handles remain untouched.
     pub(super) fn capture_retired_outcomes(&self) {
-        let selected = {
-            let state = self.lock();
-            state
-                .slots
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, entry)| {
-                    entry
-                        .as_ref()
-                        .filter(|entry| entry.phase == Phase::Retired)
-                        .map(|entry| Key {
-                            slot,
-                            incarnation: Arc::clone(&entry.incarnation),
-                        })
-                })
-                .collect::<Vec<_>>()
-        };
-        self.capture_selected(&selected, None);
+        let selected = self.lock().selection();
+        self.capture_selected(selected, None);
     }
 
     fn selected_owner(&self, key: &Key) -> SelectedOwner {
@@ -594,14 +661,14 @@ impl Registry {
         clock: CleanupClock,
     ) -> impl Future<Output = std::result::Result<DrainReport, DrainFailure>> + Send + '_ {
         let selected = self.selection_and_stop();
-        let selected_count = selected.len();
+        let selected_count = selected.count;
         async move {
-            let attempt = Arc::new(StdMutex::new(AttemptEvidence::default()));
-            let evidence = Arc::clone(&attempt);
+            let attempt = StdMutex::new(AttemptEvidence::default());
+            let evidence = &attempt;
             let work = async {
                 let _serial = self.drains.lock().await;
                 let mut joined = 0;
-                for key in &selected {
+                for slot in selected.slots() {
                     if Instant::now() >= clock.deadline {
                         return DrainReport {
                             selected: selected_count,
@@ -609,13 +676,16 @@ impl Registry {
                             snapshot: self.snapshot(),
                         };
                     }
+                    let Some(key) = self.selected_key(selected, slot) else {
+                        continue;
+                    };
                     let handle = loop {
                         // Arm before inspecting state; enable prevents a missed
                         // notify_waiters race while late attachment/release occurs.
                         let changed = self.changed.notified();
                         tokio::pin!(changed);
                         changed.as_mut().enable();
-                        match self.selected_owner(key) {
+                        match self.selected_owner(&key) {
                             SelectedOwner::Released => break None,
                             SelectedOwner::Native(handle) => break Some(handle),
                             SelectedOwner::AwaitingAttachment => changed.await,
@@ -633,19 +703,19 @@ impl Registry {
                         // limits its minor relative-budget conversion rounding.
                         match handle.shutdown(clock.remaining()).await {
                             Ok(()) => {
-                                self.certify_completed(key, &handle);
+                                self.certify_completed(&key, &handle);
                                 joined += 1;
                             }
                             Err(error) => {
                                 let complete = shutdown_joins_certified(&error);
                                 let error = Arc::new(error);
-                                self.record_failure(key, Arc::clone(&error));
+                                self.record_failure(&key, Arc::clone(&error));
                                 evidence
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .record(error);
                                 if complete {
-                                    self.certify_completed(key, &handle);
+                                    self.certify_completed(&key, &handle);
                                     joined += 1;
                                 }
                             }
@@ -672,7 +742,7 @@ impl Registry {
                 biased;
                 expired = tokio::time::timeout_at(clock.deadline, pending::<()>()) => {
                     let elapsed = expired.expect_err("pending retirement clock cannot complete");
-                    self.capture_selected(&selected, Some(&attempt));
+                    self.capture_selected(selected, Some(&attempt));
                     Err(self.failure_snapshot(&attempt, Some(elapsed), selected_count))
                 }
                 report = guarded => {
@@ -768,11 +838,11 @@ impl Reservation {
             );
             let stopped = sealed || entry.phase == Phase::Retired;
             entry.handle = Some(Arc::clone(&handle));
-            entry.phase = if stopped {
-                Phase::Retired
+            if stopped {
+                state.retire_slot(key.slot);
             } else {
-                Phase::Unpublished
-            };
+                entry.phase = Phase::Unpublished;
+            }
             stopped
         };
         if stopped {

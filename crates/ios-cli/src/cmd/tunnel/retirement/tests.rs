@@ -503,3 +503,182 @@ fn message_only_or_unrecognized_native_failure_cannot_certify_a_join() {
         "joins_complete=true".into()
     )));
 }
+
+#[tokio::test]
+async fn ordinal_selection_excludes_owners_retired_after_the_fixed_cutoff() {
+    let registry = registry(2);
+    let (a, _a_rx) = handle();
+    let (b, _b_rx) = handle();
+    let a_lease = registry.reserve(stamp()).unwrap().attach(a);
+    let b_lease = registry.reserve(stamp()).unwrap().attach(b);
+    drop(a_lease);
+    let first = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
+    drop(b_lease);
+    let report = first.await.unwrap();
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.retired),
+        (1, 1, 1)
+    );
+    let report = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.occupied()),
+        (1, 1, 0)
+    );
+}
+
+#[tokio::test]
+async fn ordinal_selection_preserves_count_and_never_joins_a_reused_slot() {
+    let registry = registry(1);
+    let (a, _a_rx) = handle();
+    let a_lease = registry.reserve(stamp()).unwrap().attach(a);
+    drop(a_lease);
+    let old = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
+    let joined = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(joined.joined, 1);
+    let (b, _b_rx) = handle();
+    let b_lease = registry.reserve(stamp()).unwrap().attach(Arc::clone(&b));
+    drop(b_lease);
+    let old = old.await.unwrap();
+    assert_eq!((old.selected, old.joined, old.snapshot.retired), (1, 0, 1));
+    let report = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.occupied()),
+        (1, 1, 0)
+    );
+}
+
+#[tokio::test]
+async fn ordinal_repeated_retirement_and_late_attachment_keep_original_selection() {
+    let registry = registry(1);
+    let owner = stamp();
+    let reserved = registry.reserve(owner.clone()).unwrap();
+    reserved.start().unwrap();
+    registry.retire_global(&owner.global);
+    let selected = registry.lock().selection();
+    assert_eq!((selected.cutoff, selected.count), (1, 1));
+    registry.retire_device(&owner.device);
+    let pending = registry.drain_retired(CleanupClock::new(OBSERVE).unwrap());
+    let (native, _rx) = handle();
+    let lease = reserved.attach(Arc::clone(&native));
+    assert!(
+        !native.is_alive(),
+        "late original handle was not synchronously stopped"
+    );
+    assert_eq!(registry.lock().retired, selected.cutoff);
+    let report = pending.await.unwrap();
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.occupied()),
+        (1, 1, 0)
+    );
+    drop(lease);
+}
+
+#[tokio::test]
+async fn ordinal_admission_overflow_never_wraps_or_blocks_final_cleanup() {
+    let registry = registry(1);
+    {
+        let mut state = registry.lock();
+        state.issued = u64::MAX - 1;
+        state.retired = u64::MAX - 1;
+    }
+    let owner = stamp();
+    let reserved = registry.reserve(owner.clone()).unwrap();
+    let (native, _rx) = handle();
+    let lease = reserved.attach(native);
+    drop(lease);
+    assert_eq!(registry.lock().retired, u64::MAX);
+    registry.retire_global(&owner.global);
+    let report = registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+    assert_eq!((report.selected, report.joined), (1, 1));
+    let polls = AtomicUsize::new(0);
+    let result = async {
+        let admission = registry.reserve(stamp())?;
+        admission.start()?;
+        polls.fetch_add(1, Ordering::SeqCst);
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let error = result.expect_err("exhausted incarnation ID admitted another Source");
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ErrorClass::ResourceLimit
+    );
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    assert_eq!(registry.snapshot().occupied(), 0);
+    let state = registry.lock();
+    assert_eq!((state.issued, state.retired), (u64::MAX, u64::MAX));
+}
+
+#[test]
+fn ordinal_empty_reservation_release_does_not_refund_lifetime_admission() {
+    let registry = registry(1);
+    drop(registry.reserve(stamp()).unwrap());
+    {
+        let state = registry.lock();
+        assert_eq!((state.issued, state.retired), (1, 0));
+    }
+    let next = registry.reserve(stamp()).unwrap();
+    assert_eq!(registry.lock().issued, 2);
+    drop(next);
+    assert_eq!(registry.lock().issued, 2);
+}
+
+#[tokio::test]
+async fn ordinal_namespace_stop_does_not_repeat_stop_on_unrelated_retired_owner() {
+    let registry = registry(2);
+    let target = stamp();
+    let (a, mut a_rx) = handle();
+    let a_lease = registry.reserve(target.clone()).unwrap().attach(a);
+    let (b, mut b_rx) = handle();
+    let b_lease = registry.reserve(stamp()).unwrap().attach(b);
+    drop(b_lease);
+    b_rx.borrow_and_update();
+    registry.retire_global(&target.global);
+    assert!(a_rx.has_changed().unwrap());
+    a_rx.borrow_and_update();
+    assert!(
+        !b_rx.has_changed().unwrap(),
+        "old namespace stopped another retired owner"
+    );
+    drop(a_lease);
+    registry
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+}
+
+#[test]
+fn native_census_backing_refusal_keeps_original_history_and_last_root_grant() {
+    let registry = registry(1);
+    let original = Arc::new(TunnelError::Protocol("synthetic-native-census".into()));
+    registry.lock().first_failure = Some(Arc::clone(&original));
+    let bank = Arc::clone(&registry.byte_bank);
+    let before = bank.available_permits();
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(before.try_into().unwrap())
+        .unwrap();
+    assert!(registry.payload_outcomes().is_err());
+    assert!(Arc::ptr_eq(
+        registry.lock().first_failure.as_ref().unwrap(),
+        &original
+    ));
+    drop(held);
+    let (unjoined, roots) = registry.payload_outcomes().unwrap();
+    assert_eq!(unjoined, 0);
+    assert!(Arc::ptr_eq(&roots.as_slice()[0], &original));
+    assert!(bank.available_permits() < before);
+    drop(roots);
+    assert_eq!(bank.available_permits(), before);
+}
