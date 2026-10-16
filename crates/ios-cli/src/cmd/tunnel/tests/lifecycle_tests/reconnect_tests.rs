@@ -444,12 +444,13 @@ async fn reconnect_exhausted_a_does_not_delay_b_or_remove_published_b() {
     source.script(A, [Behavior::Failure(std::io::ErrorKind::ConnectionReset)]);
     let state = configured(source.clone(), policy(1_000, 4_000, Some(1), None));
     state.refresh_once().await.unwrap();
-    let before = state.get_record(B).await.unwrap();
+    let before = state.get_record(B).await.unwrap().unwrap();
     let publication = state.inner.tunnels.read().await[B].publication.clone();
     tokio::time::advance(Duration::from_secs(600)).await;
     state.refresh_once().await.unwrap();
     let record = tokio::time::timeout(LOCAL_BUDGET, state.get_record(B))
         .await
+        .unwrap()
         .unwrap()
         .unwrap();
     assert_eq!(record, before);
@@ -486,7 +487,7 @@ async fn reconnect_identity_change_starts_new_episode_and_recovery_clears_it() {
     attach(&source, 72);
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 2);
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert!(state.inner.retry.snapshot(A).is_none());
     assert!(state.inner.failed_attempts.read().await.is_empty());
     assert_eq!(
@@ -670,7 +671,7 @@ async fn reconnect_complete_detach_releases_gate_and_permit_but_not_partial_disc
     source.usb.lock().unwrap().push(A.into());
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 2);
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     state.clear().await;
 }
 

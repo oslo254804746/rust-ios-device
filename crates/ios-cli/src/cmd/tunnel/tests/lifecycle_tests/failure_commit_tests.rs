@@ -196,6 +196,7 @@ async fn lifecycle_tunnel_clear_cancels_old_epoch_before_waiting_for_failure_tab
     // waiting: independent list/stop remains runnable within the local budget.
     tokio::time::timeout(LOCAL_BUDGET, state.list_records())
         .await
+        .unwrap()
         .unwrap();
     drop(failed);
     tokio::time::timeout(LOCAL_BUDGET, &mut clear)

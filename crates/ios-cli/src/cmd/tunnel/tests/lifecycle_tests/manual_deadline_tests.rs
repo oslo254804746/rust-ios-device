@@ -58,7 +58,7 @@ async fn lifecycle_tunnel_manual_deadline_coordinator_and_connect_share_one_budg
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    assert!(state.get_record(A).await.is_none());
+    assert!(state.get_record(A).await.unwrap().is_none());
     start(state.clone(), A).await.unwrap();
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
@@ -77,7 +77,7 @@ async fn lifecycle_tunnel_manual_deadline_zero_does_not_poll_any_transport() {
         let error = state.ensure_tunnel(A, None, route).await.unwrap_err();
         assert_elapsed(&error);
         assert_no_source(&source);
-        assert!(state.list_records().await.is_empty());
+        assert!(state.list_records().await.unwrap().as_slice().is_empty());
         assert_eq!(
             state.inner.lifecycle.connects.available_permits(),
             lifecycle::MAX_CONNECTS
@@ -95,7 +95,7 @@ async fn lifecycle_tunnel_manual_deadline_overflow_is_typed_input_before_source(
         ios_core::ErrorClass::InvalidInput
     );
     assert_no_source(&source);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -110,7 +110,7 @@ async fn lifecycle_tunnel_manual_deadline_late_coordinator_release_does_not_conn
     let error = request.await.unwrap_err();
     assert_elapsed(&error);
     assert_no_source(&source);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -134,7 +134,7 @@ async fn lifecycle_tunnel_manual_deadline_late_native_success_cannot_publish() {
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
     );
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     start(state.clone(), A).await.unwrap();
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
@@ -213,7 +213,7 @@ async fn lifecycle_tunnel_manual_deadline_permit_wait_expires_without_source_con
             );
         }
         assert_no_source(&source);
-        assert!(state.list_records().await.is_empty());
+        assert!(state.list_records().await.unwrap().as_slice().is_empty());
         assert_eq!(
             state.inner.lifecycle.connects.available_permits(),
             lifecycle::MAX_CONNECTS
@@ -261,7 +261,7 @@ async fn lifecycle_tunnel_manual_deadline_paired_discovery_and_fallback_share_bu
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
     assert_eq!(source.exited.load(Ordering::SeqCst), 2);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -294,7 +294,7 @@ async fn lifecycle_tunnel_manual_deadline_late_paired_reply_cannot_start_fallbac
     assert_eq!(source.count(A), 1);
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -319,7 +319,7 @@ async fn lifecycle_tunnel_manual_deadline_late_publication_lock_releases_complet
     drop(held);
     assert_elapsed(&request.await.unwrap_err());
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -347,7 +347,7 @@ async fn lifecycle_tunnel_manual_deadline_http_timeout_preserves_native_class() 
     assert!(!body.contains(A));
     assert!(!body.contains("synthetic-private"));
     assert_eq!(source.active.load(Ordering::SeqCst), 0);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     state.clear().await;
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());

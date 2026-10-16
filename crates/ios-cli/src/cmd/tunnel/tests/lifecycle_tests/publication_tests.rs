@@ -31,7 +31,7 @@ async fn lifecycle_tunnel_publication_manual_native_result_detached_during_conne
     snapshot(&source, &[]);
     gate.add_permits(1);
     let result = request.await;
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let released = source.drops.load(Ordering::SeqCst);
     state.clear().await;
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
@@ -57,7 +57,7 @@ async fn lifecycle_tunnel_publication_scan_matching_old_id_is_rejected_by_new_sn
     snapshot(&source, &[(A, 72)]);
     gate.add_permits(1);
     scan.await.unwrap();
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let released = source.drops.load(Ordering::SeqCst);
     let failed = state.inner.failed_attempts.read().await.contains_key(A);
     state.clear().await;
@@ -120,7 +120,7 @@ async fn lifecycle_tunnel_publication_stop_cancels_query_with_owned_device_befor
     assert!(!removed, "result was stored before attachment query");
     assert!(result.unwrap_err().is::<ios_core::OperationCancelled>());
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     assert_eq!(
         state.inner.lifecycle.connects.available_permits(),
         lifecycle::MAX_CONNECTS
@@ -154,7 +154,7 @@ async fn lifecycle_tunnel_publication_another_live_transport_id_is_accepted() {
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     start(state.clone(), A).await.unwrap();
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
     state.clear().await;
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);

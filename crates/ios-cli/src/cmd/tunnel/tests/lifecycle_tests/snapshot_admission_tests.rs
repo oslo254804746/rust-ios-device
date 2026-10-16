@@ -169,7 +169,7 @@ async fn admission_paired_rejection_preserves_unknown_backoff_and_publishes_usb(
         host: "192.0.2.3".into(),
     });
     let result = state.refresh_once().await;
-    let usb_published = state.get_record(A).await.is_some();
+    let usb_published = state.get_record(A).await.unwrap().is_some();
     let after = state.inner.failed_attempts.read().await.get(B).cloned();
     let ready = state.is_ready().await;
     let calls = (source.count(A), source.count(B));
@@ -209,7 +209,7 @@ async fn admission_manual_paired_fallback_validates_tail_after_matching_target()
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let result = state.ensure_tunnel(A, None, None).await;
     let calls = source.count(A);
-    let empty = state.list_records().await.is_empty();
+    let empty = state.list_records().await.unwrap().as_slice().is_empty();
     state.notify_shutdown();
     state.clear().await;
     state.drain_native(LOCAL_BUDGET).await.unwrap();
@@ -248,7 +248,7 @@ async fn admission_paired_combined_count_and_bytes_reject_without_partial_ticket
         source.usb.lock().unwrap().push(A.into());
         *source.paired.lock().unwrap() = targets;
         let result = state.refresh_once().await;
-        let publication = state.get_record(A).await.is_some();
+        let publication = state.get_record(A).await.unwrap().is_some();
         let after = state.inner.failed_attempts.read().await.get(B).cloned();
         let coordinators = state.inner.lifecycle.coordinator_count().await;
         let calls = source.calls.lock().unwrap().len();

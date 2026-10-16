@@ -693,7 +693,7 @@ impl Attempt {
         emit(&self.receipt.udid, self.started, Reason::AttemptStarted);
     }
 
-    pub(super) fn finish(mut self, result: &Result<super::TunnelRecord>) {
+    pub(super) fn finish<T>(mut self, result: &Result<T>) {
         self.ledger.finish(
             &self,
             result.is_ok(),

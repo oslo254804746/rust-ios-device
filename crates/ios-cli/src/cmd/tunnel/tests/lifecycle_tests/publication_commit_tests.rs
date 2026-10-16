@@ -247,7 +247,7 @@ async fn lifecycle_tunnel_shutdown_fences_publication_success_before_close_is_re
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let record = start(state.clone(), A).await.unwrap();
-    assert_eq!(state.get_record(A).await, Some(record));
+    assert_eq!(state.get_record(A).await.unwrap(), Some(record));
     assert_eq!(source.drops.load(Ordering::SeqCst), 0);
     state.notify_shutdown();
     // A commit accepted before close remains owned until table cleanup.

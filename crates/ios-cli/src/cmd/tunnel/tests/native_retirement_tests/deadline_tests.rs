@@ -1,5 +1,6 @@
 //! Nominal deadline crossing within one actual poll, with retained native IO.
 use super::*;
+use crate::cmd::tunnel::record_owner::PaidRecord;
 
 const BUDGET: Duration = Duration::from_millis(200);
 const CROSS: Duration = Duration::from_millis(250);
@@ -100,7 +101,7 @@ impl Source for DelayedSource {
 async fn exercise(
     delay: Delay,
     route: Option<StartTunnelConnectionType>,
-) -> (Result<TunnelRecord>, bool, usize, usize, usize, bool) {
+) -> (Result<PaidRecord>, bool, usize, usize, usize, bool) {
     let expected = baseline();
     let base = LocalSource::new();
     let source = Arc::new(DelayedSource {

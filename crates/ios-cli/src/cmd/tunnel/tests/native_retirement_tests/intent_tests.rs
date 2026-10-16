@@ -230,12 +230,12 @@ async fn intent_native_http_route_recovery_retains_actual_selector_and_joins_eac
     let client = client();
     let started = post(&client, &base, AUTH_DEVICE, None, Some("192.0.2.88")).await;
     let original = source.a.handle();
-    let old_record = state.get_record(AUTH_DEVICE).await;
+    let old_record = state.get_record(AUTH_DEVICE).await.unwrap();
     original.request_stop();
     source.usb_failure.store(true, Ordering::SeqCst);
     let scan = state.refresh_once().await;
     let fresh = source.a.handle();
-    let fresh_record = state.get_record(AUTH_DEVICE).await;
+    let fresh_record = state.get_record(AUTH_DEVICE).await.unwrap();
     let original_drained = state.drain_native(OBSERVE).await;
     let original_join = original.shutdown(OBSERVE).await;
     let still_live = fresh.is_alive();
@@ -376,7 +376,7 @@ async fn intent_native_revoked_original_authority_retires_native_without_any_gra
         .map(|response| response.status());
     state.refresh_once().await.unwrap();
     state.refresh_once().await.unwrap();
-    let absent = state.get_record(AUTH_DEVICE).await.is_none();
+    let absent = state.get_record(AUTH_DEVICE).await.unwrap().is_none();
     let stopped = matches!(
         state
             .inner

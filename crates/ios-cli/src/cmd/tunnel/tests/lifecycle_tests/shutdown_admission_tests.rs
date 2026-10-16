@@ -88,7 +88,7 @@ async fn lifecycle_tunnel_shutdown_admission_drops_completed_device_during_attac
     assert_eq!(source.usb_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.usb_exited.load(Ordering::SeqCst), 1);
     assert_eq!(source.drops.load(Ordering::SeqCst), 1);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -223,7 +223,7 @@ async fn lifecycle_tunnel_shutdown_admission_http_body_finishing_after_clear_can
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     tokio::time::timeout(LOCAL_BUDGET, async {
-        while !state.list_records().await.is_empty() {
+        while !state.list_records().await.unwrap().as_slice().is_empty() {
             tokio::task::yield_now().await;
         }
     })
@@ -249,7 +249,7 @@ async fn lifecycle_tunnel_shutdown_admission_http_body_finishing_after_clear_can
         "delegated request contacted source after shutdown"
     );
     assert!(
-        state.list_records().await.is_empty(),
+        state.list_records().await.unwrap().as_slice().is_empty(),
         "late handler recreated a tunnel after clear"
     );
     let response = String::from_utf8(response).unwrap();

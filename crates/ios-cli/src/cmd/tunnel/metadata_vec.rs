@@ -146,6 +146,9 @@ impl<T> KnownVec<T> {
     pub(super) fn len(&self) -> usize {
         self.values.len()
     }
+    pub(super) fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
+        self.values.retain(keep);
+    }
 
     pub(super) fn take(&mut self) -> Self {
         let empty = Self::new(Arc::clone(&self.bank), self.ceiling);

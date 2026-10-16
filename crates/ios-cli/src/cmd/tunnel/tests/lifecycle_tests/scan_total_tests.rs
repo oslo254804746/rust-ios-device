@@ -168,8 +168,8 @@ async fn lifecycle_tunnel_whole_scan_stop_a_does_not_cancel_b_or_readiness() {
         .await
         .unwrap()
         .unwrap();
-    assert!(state.get_record(A).await.is_none());
-    assert!(state.get_record(B).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_none());
+    assert!(state.get_record(B).await.unwrap().is_some());
     assert!(state.is_ready().await);
     assert!(state.inner.failed_attempts.read().await.is_empty());
     state.clear().await;

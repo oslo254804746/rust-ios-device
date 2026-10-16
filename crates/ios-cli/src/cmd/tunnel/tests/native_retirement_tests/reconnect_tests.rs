@@ -128,7 +128,7 @@ async fn reconnect_native_failed_episodes_join_original_workers_before_new_attem
     }
     state.refresh_once().await.unwrap();
     let fresh = base.handle();
-    let record = state.get_record(DEVICE).await;
+    let record = state.get_record(DEVICE).await.unwrap();
     let alive = fresh.is_alive();
     let recovered_episode = state.inner.retry.snapshot(DEVICE).is_none();
     let active = state.inner.native.snapshot().active;
@@ -192,7 +192,7 @@ async fn reconnect_native_total_expiry_after_attachment_retains_and_joins_exact_
     assert_eq!(budget.failures, 1);
     assert_eq!(budget.last_class, Some(ios_core::ErrorClass::Timeout));
     assert_eq!((snapshot.retired, snapshot.native_handles), (1, 1));
-    assert!(state.get_record(DEVICE).await.is_none());
+    assert!(state.get_record(DEVICE).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -512,7 +512,7 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
     let entered = tokio::time::timeout(HTTP_BUDGET, async {
         loop {
             let native_started = !source.pending.handles.lock().unwrap().is_empty();
-            let record = state.get_record(HEALTHY_DEVICE).await;
+            let record = state.get_record(HEALTHY_DEVICE).await.unwrap();
             if let Some(record) = record.filter(|_| native_started) {
                 break record;
             }
@@ -577,8 +577,8 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
         let _ = scan.await;
     }
     let a_after = state.inner.retry.snapshot(PENDING_DEVICE);
-    let b_absent = state.get_record(HEALTHY_DEVICE).await.is_none();
-    let a_unpublished = state.get_record(PENDING_DEVICE).await.is_none();
+    let b_absent = state.get_record(HEALTHY_DEVICE).await.unwrap().is_none();
+    let a_unpublished = state.get_record(PENDING_DEVICE).await.unwrap().is_none();
     let owners = state.inner.native.snapshot();
     let handles = [
         source.pending.handles.lock().unwrap().clone(),
@@ -616,7 +616,7 @@ async fn reconnect_native_auto_a_total_expiry_keeps_b_http_query_and_stop_isolat
     assert_eq!(a_before_stop.unwrap().phase, reconnect::Phase::Connecting);
     let (status, record) = query.expect("B query waited behind A's pending Source");
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(record, entered);
+    assert_eq!(&record, &*entered);
     assert!(query_time < HTTP_BUDGET);
     let (status, reply) = stop.expect("B stop waited behind A's pending Source");
     assert_eq!(status, StatusCode::OK);

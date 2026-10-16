@@ -6,7 +6,9 @@ use ios_core::{ConnectOptions, MuxClient, TunMode, TunnelHandle, TunnelOwner};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::{ManagedDevice, TunnelRecord};
+use super::ManagedDevice;
+#[cfg(test)]
+use super::TunnelRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Route {
@@ -359,11 +361,29 @@ impl ManagedDevice {
         }
     }
 
-    pub(super) fn record_for_mode(&self, mode: TunMode) -> anyhow::Result<TunnelRecord> {
+    pub(super) fn record_for_mode(
+        &self,
+        mode: TunMode,
+        bank: &Arc<Semaphore>,
+    ) -> anyhow::Result<super::PaidRecord> {
         match self {
-            Self::Native(device) => super::ManagedTunnel::record_for_device(device, mode),
+            Self::Native(device) => {
+                super::record_owner::PaidRecord::from_device(device, mode, bank)
+            }
             #[cfg(test)]
-            Self::Fake(device) => Ok(device.record()),
+            Self::Fake(device) => {
+                super::record_owner::PaidRecord::from_fixture(&device.record(), bank)
+            }
+        }
+    }
+
+    pub(super) fn record_fields_available(&self) -> bool {
+        match self {
+            Self::Native(device) => {
+                device.server_address().is_some() && device.rsd_port().is_some()
+            }
+            #[cfg(test)]
+            Self::Fake(_) => true,
         }
     }
 

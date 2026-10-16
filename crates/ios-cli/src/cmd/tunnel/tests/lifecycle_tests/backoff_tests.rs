@@ -35,7 +35,7 @@ async fn lifecycle_tunnel_backoff_new_native_id_does_not_inherit_old_failure() {
     assert_eq!(source.count(A), 1);
     usb(&source, 72);
     state.refresh_once().await.unwrap();
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let failed = state.inner.failed_attempts.read().await.contains_key(A);
     let calls = source.count(A);
     state.clear().await;
@@ -65,7 +65,7 @@ async fn lifecycle_tunnel_backoff_changed_paired_host_retries_without_new_pairin
     assert_eq!(source.count(A), 1);
     paired(&source, "192.0.2.2");
     state.refresh_once().await.unwrap();
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let calls = source.calls.lock().unwrap().clone();
     state.clear().await;
     assert!(
@@ -116,7 +116,7 @@ async fn lifecycle_tunnel_backoff_changed_failure_resets_count_and_same_id_keeps
     assert_eq!(state.inner.failed_attempts.read().await[A].fail_count, 2);
     state.refresh_once().await.unwrap();
     assert_eq!(source.count(A), 3);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
 }
 
 #[tokio::test]
@@ -134,7 +134,7 @@ async fn lifecycle_tunnel_backoff_known_route_change_does_not_inherit_usb_failur
     state.refresh_once().await.unwrap();
     paired(&source, "192.0.2.3");
     state.refresh_once().await.unwrap();
-    let published = state.get_record(A).await.is_some();
+    let published = state.get_record(A).await.unwrap().is_some();
     let calls = source.calls.lock().unwrap().clone();
     state.clear().await;
     assert!(published, "known route change inherited USB backoff");

@@ -163,7 +163,7 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
         2,
         "rejected paired nodes created an automatic ticket prefix"
     );
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert!(Arc::ptr_eq(
         &publication,
         &state.inner.tunnels.read().await[B].publication
@@ -247,8 +247,8 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
     assert_eq!(source.count(A), 0);
     assert_eq!(source.count(B), 1);
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
-    assert!(state.get_record(A).await.is_none());
-    assert!(state.get_record(B).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_none());
+    assert!(state.get_record(B).await.unwrap().is_some());
     drop(error);
     state.notify_shutdown();
     state.clear().await;
@@ -300,7 +300,7 @@ async fn observed_last_byte_refusal_preserves_old_paired_publication_and_publish
         &old,
         &state.inner.tunnels.read().await[B].publication
     ));
-    assert!(state.get_record(A).await.is_some());
+    assert!(state.get_record(A).await.unwrap().is_some());
     assert_eq!(source.count(A), 1);
     assert_eq!(source.count(B), 1);
     assert_eq!(source.count("new-paired"), 0);
@@ -759,7 +759,7 @@ async fn paired_plan_bytes_refusal_is_incomplete_and_still_publishes_admitted_us
     );
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
     assert_eq!(state.inner.lifecycle.coordinator_count().await, 1);
-    assert_eq!(state.list_records().await.len(), 1);
+    assert_eq!(state.list_records().await.unwrap().len(), 1);
     assert!(!state.is_ready().await);
     state.clear().await;
     assert_eq!(
@@ -802,7 +802,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     assert!(futures_util::poll!(&mut scan).is_pending());
     assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
-    assert!(state.list_records().await.is_empty());
+    assert!(state.list_records().await.unwrap().as_slice().is_empty());
     drop(scan);
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
