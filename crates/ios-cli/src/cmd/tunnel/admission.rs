@@ -58,19 +58,6 @@ pub(super) fn known_metadata_charge(
     })
 }
 
-pub(super) fn known_vec_backing<T>(
-    bank: &Arc<Semaphore>,
-    values: &Vec<T>,
-) -> Result<OwnedSemaphorePermit> {
-    let bytes = values
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| {
-            crate::output::resource_decision("tunnel known vector backing size overflow")
-        })?;
-    known_metadata_charge(bank, bytes)
-}
-
 pub(super) fn retain_usb_snapshot(
     bank: &Arc<Semaphore>,
     devices: &Vec<UsbDevice>,
@@ -111,11 +98,9 @@ fn usb_snapshot_fields(devices: &Vec<UsbDevice>) -> Result<()> {
 }
 
 fn usb_snapshot_identities(devices: &[UsbDevice], bank: &Arc<Semaphore>) -> Result<()> {
-    let mut positions = Vec::new();
-    positions.try_reserve_exact(devices.len()).map_err(|_| {
-        crate::output::resource_decision("tunnel snapshot identity index allocation failed")
-    })?;
-    let _storage = known_vec_backing(bank, &positions)?;
+    let allocation = super::metadata_vec::exact_backing(bank, devices.len())?;
+    let _storage = allocation.storage;
+    let mut positions = allocation.values;
     positions.extend(0..devices.len());
     positions.sort_unstable_by(|a, b| devices[*a].udid.cmp(&devices[*b].udid));
     let mut last = None;
@@ -184,7 +169,9 @@ impl CandidateBudget {
         bank: &Arc<Semaphore>,
     ) -> PairedCandidates {
         match paired_snapshot(&targets).and_then(|()| {
-            let (indices, storage) = self.paired_plan(&targets, usb_seen, permits, bank)?;
+            let plan = self.paired_plan(&targets, usb_seen, permits, bank)?;
+            let storage = plan.1;
+            let indices = plan.0;
             let observed = super::paired_observed::Index::new(&targets, bank)?;
             Ok((indices, storage, observed))
         }) {
@@ -225,11 +212,9 @@ impl CandidateBudget {
         bank: &Arc<Semaphore>,
     ) -> Result<(Vec<usize>, OwnedSemaphorePermit)> {
         let mut budget = *self;
-        let mut indices = Vec::new();
-        indices.try_reserve_exact(targets.len()).map_err(|_| {
-            crate::output::resource_decision("tunnel paired plan allocation failed")
-        })?;
-        let storage = known_vec_backing(bank, &indices)?;
+        let allocation = super::metadata_vec::exact_backing(bank, targets.len())?;
+        let storage = allocation.storage;
+        let mut indices = allocation.values;
         for (index, target) in targets.iter().enumerate() {
             if permits(&target.udid) && !usb_seen(&target.udid) {
                 indices.push(index);

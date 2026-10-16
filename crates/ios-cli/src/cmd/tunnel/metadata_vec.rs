@@ -1,8 +1,71 @@
 //! Actual Vec backing admission, including both allocations during growth.
+use std::alloc::{alloc, Layout};
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Dropping an unused result deallocates values before returning its grant.
+/// When moving fields to locals, bind storage first for reverse local Drop.
+pub(super) struct AdmittedVec<T> {
+    pub(super) values: Vec<T>,
+    pub(super) storage: OwnedSemaphorePermit,
+}
+
+pub(super) fn exact_backing<T>(bank: &Arc<Semaphore>, capacity: usize) -> Result<AdmittedVec<T>> {
+    let layout = Layout::array::<T>(capacity)
+        .map_err(|_| crate::output::resource_decision("tunnel owned vector layout overflow"))?;
+    let storage = super::admission::known_metadata_charge(bank, layout.size())?;
+    let values = if layout.size() == 0 {
+        Vec::with_capacity(capacity)
+    } else {
+        let pointer = NonNull::new(unsafe { alloc(layout) }.cast::<T>()).ok_or_else(|| {
+            crate::output::resource_decision("tunnel owned vector allocation failed")
+        })?;
+        // SAFETY: the exact nonzero T array layout is admitted before alloc.
+        // No T is initialized; Vec owns and frees this same pointer/layout.
+        unsafe { Vec::from_raw_parts(pointer.as_ptr(), 0, capacity) }
+    };
+    #[cfg(test)]
+    if layout.size() != 0 {
+        ALLOCATED.with(|hook| {
+            if let Some(callback) = hook.borrow_mut().as_mut() {
+                callback(layout, values.as_ptr() as usize);
+            }
+        });
+    }
+    Ok(AdmittedVec { values, storage })
+}
+
+#[cfg(test)]
+type AllocationHook = std::cell::RefCell<Option<Box<dyn FnMut(Layout, usize)>>>;
+#[cfg(test)]
+thread_local! {
+    static ALLOCATED: AllocationHook = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn with_allocation_hook<R>(
+    hook: impl FnMut(Layout, usize) + 'static,
+    operation: impl FnOnce() -> R,
+) -> R {
+    ALLOCATED.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        assert!(
+            pending.is_none(),
+            "vector allocation hook already installed"
+        );
+        *pending = Some(Box::new(hook));
+    });
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ALLOCATED.with(|pending| pending.borrow_mut().take());
+        }
+    }
+    let _reset = Reset;
+    operation()
+}
 
 pub(super) struct KnownVec<T> {
     values: Vec<T>,
@@ -40,11 +103,9 @@ impl<T> KnownVec<T> {
             .saturating_mul(2)
             .max(required)
             .min(self.ceiling);
-        let mut replacement = Vec::new();
-        replacement.try_reserve_exact(capacity).map_err(|_| {
-            crate::output::resource_decision("tunnel metadata vector allocation failed")
-        })?;
-        let storage = super::admission::known_vec_backing(&self.bank, &replacement)?;
+        let allocation = exact_backing(&self.bank, capacity)?;
+        let storage = allocation.storage;
+        let mut replacement = allocation.values;
         replacement.append(&mut self.values);
         self.values = replacement;
         self.storage = Some(storage);

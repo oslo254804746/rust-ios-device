@@ -196,12 +196,9 @@ impl Registry {
     fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<Arc<Self>> {
         let body_storage =
             super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(capacity).map_err(|original| {
-            crate::output::resource_decision("native registry backing allocation failed")
-                .context(original)
-        })?;
-        let slots_storage = super::admission::known_vec_backing(bank, &slots)?;
+        let allocation = super::metadata_vec::exact_backing(bank, capacity)?;
+        let slots_storage = allocation.storage;
+        let mut slots = allocation.values;
         slots.resize_with(capacity, || None);
         Ok(Arc::new(Self {
             state: StdMutex::new(State {

@@ -19,7 +19,9 @@ fn selection_bytes_preserves_first_identity_order_first_usb_and_last_network() {
         row("z", 5, true),
         row("b", 6, true),
     ];
-    let (selected, charge) = selected_devices(devices, &bank).unwrap();
+    let allocation = selected_devices(devices, &bank).unwrap();
+    let charge = allocation.1;
+    let selected = allocation.0;
     assert_eq!(
         selected
             .iter()
@@ -49,7 +51,9 @@ fn selection_bytes_moves_original_buffer_without_key_clone_or_capacity_loss() {
         device_id: 7,
         usb: true,
     });
-    let (selected, charge) = selected_devices(devices, &bank).unwrap();
+    let allocation = selected_devices(devices, &bank).unwrap();
+    let charge = allocation.1;
+    let selected = allocation.0;
     assert_eq!(selected[0].udid.as_ptr(), original);
     assert_eq!(selected[0].udid.capacity(), capacity);
     assert_eq!(
@@ -102,7 +106,9 @@ fn selection_bytes_exact_peak_admission_and_one_byte_refusal_refund_all_scratch(
 fn selection_bytes_empty_input_with_vacant_capacity_needs_no_selection_storage() {
     let bank = Arc::new(Semaphore::new(0));
     let devices = Vec::with_capacity(128);
-    let (selected, charge) = selected_devices(devices, &bank).unwrap();
+    let allocation = selected_devices(devices, &bank).unwrap();
+    let charge = allocation.1;
+    let selected = allocation.0;
     assert!(selected.is_empty());
     assert_eq!(selected.capacity(), 0);
     assert_eq!(bank.available_permits(), 0);
@@ -132,7 +138,9 @@ fn selection_bytes_matches_original_selection_for_many_duplicate_orders() {
             }
             devices.push(row(&key, index, usb));
         }
-        let (selected, charge) = selected_devices(devices, &bank).unwrap();
+        let allocation = selected_devices(devices, &bank).unwrap();
+        let charge = allocation.1;
+        let selected = allocation.0;
         let actual = selected
             .iter()
             .map(|device| (device.udid.clone(), device.device_id, device.usb))

@@ -32,11 +32,9 @@ pub(super) struct Index<'a> {
 
 impl<'a> Index<'a> {
     pub(super) fn new(candidates: &'a [Candidate], bank: &Arc<Semaphore>) -> Result<Self> {
-        let mut positions = Vec::new();
-        positions.try_reserve_exact(candidates.len()).map_err(|_| {
-            crate::output::resource_decision("tunnel candidate index allocation failed")
-        })?;
-        let storage = super::admission::known_vec_backing(bank, &positions)?;
+        let allocation = super::metadata_vec::exact_backing(bank, candidates.len())?;
+        let storage = allocation.storage;
+        let mut positions = allocation.values;
         positions.extend(0..candidates.len());
         positions.sort_unstable_by(|a, b| {
             candidates[*a]
