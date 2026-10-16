@@ -8844,3 +8844,13 @@ Layout准入后分配；增长保留双份费用，canonical key先收费复制�
 门禁通过，见[验证](validation/tunnel-owned-vector-creation-2026-10-16.md)。未收费
 cleanup/history/HTTP/private与原完整freshness继续，128MiB非完整heap/RSS，
 L02不关闭；23/6/待收口、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 native cleanup fixed selection
+
+native stop/drain/caller-drop移除临时handle/key Vec，以永久issued/首次retired序号
+冻结cutoff/count/capacity，晚退休/槽位复用不进入旧集合，原Key/namespace/立即
+stop/绝对clock/joins保持；诊断两数组准入后复制所有phase的原owner。完整tunnel
+527及最终相关1/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-native-cleanup-selection-2026-10-16.md)。其它history/HTTP/
+private与原完整freshness继续，128MiB非完整heap/RSS，L02不关闭；23/6/待收口、
+有效30与Q04全部排除不变，仅本地提交。

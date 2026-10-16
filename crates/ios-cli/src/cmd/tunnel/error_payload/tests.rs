@@ -373,6 +373,15 @@ async fn payload_census_native_join_exposes_original_and_history_retains_same_pa
     // and observable; later reports must not duplicate or replace this buffer.
     assert_eq!(pending.known_payload_capacity_bytes, 16384);
     assert!(!pending.fully_measured_payloads());
+    let bank = Arc::clone(&state.inner.global_metadata_bytes);
+    let held = Arc::clone(&bank)
+        .try_acquire_many_owned(bank.available_permits().try_into().unwrap())
+        .unwrap();
+    let refused = state.retained_error_payloads();
+    assert!(refused.truncated && !refused.fully_measured_payloads());
+    assert_eq!(state.inner.native.snapshot().native_handles, 1);
+    drop(held);
+    assert_eq!(state.retained_error_payloads(), pending);
     assert!(native
         .shutdown(std::time::Duration::from_secs(2))
         .await
