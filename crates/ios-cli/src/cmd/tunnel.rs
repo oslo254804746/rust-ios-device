@@ -36,6 +36,7 @@ mod candidate_index;
 mod candidate_input;
 mod error_payload;
 mod failure_table;
+mod federation_output;
 mod freshness;
 mod intent;
 mod lifecycle;
@@ -919,17 +920,11 @@ impl TunnelAgentState {
         records
     }
 
-    async fn list_tunneld_view(&self) -> Result<FederationListing> {
-        let mut grouped = FederationListing::new();
-        for record in self.list_records().await? {
-            if let Ok(value) = serde_json::to_value(&record) {
-                grouped.entry(record.udid.clone()).or_default().push(value);
-            }
-        }
-        Ok(grouped)
+    async fn list_tunneld_view(&self) -> Result<federation_output::Listing> {
+        Ok(federation_output::Listing::new(self.list_records().await?))
     }
 
-    async fn list_federated(&self, hop: u8) -> Result<FederationListing> {
+    async fn list_federated(&self, hop: u8) -> Result<federation_output::Listing> {
         let mut grouped = self.list_tunneld_view().await?;
         if hop >= MAX_FEDERATION_HOPS {
             return Ok(grouped);
@@ -953,7 +948,7 @@ impl TunnelAgentState {
                 for mut entry in entries {
                     if let Some(object) = entry.as_object_mut() {
                         object.insert("upstream".into(), json!(upstream));
-                        grouped.entry(udid.clone()).or_default().push(entry);
+                        grouped.remote.entry(udid.clone()).or_default().push(entry);
                     }
                 }
             }
@@ -3066,7 +3061,7 @@ async fn agent_list_tunneld(
             )
         })?;
     principal.require_permission(Permission::List)?;
-    records.retain(|device, _| principal.allows(Permission::List, Some(device), None));
+    records.retain(|device| principal.allows(Permission::List, Some(device), None));
     replies.json(&records)
 }
 
