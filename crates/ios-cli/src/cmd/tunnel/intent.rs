@@ -21,23 +21,70 @@ pub(super) enum RouteIntent {
     Mobdev2(Option<String>),
 }
 
-impl RouteIntent {
-    pub(super) fn established(route: &Route, host_filter: Option<&str>) -> Self {
-        match route {
-            Route::Usbmux => Self::Usbmux,
-            Route::Usb(host) => Self::Usb(host.clone()),
-            Route::Wifi(host) => Self::Wifi(host.clone()),
-            Route::Mobdev2(_) => Self::Mobdev2(host_filter.map(str::to_owned)),
-        }
-    }
-}
-
 pub(super) struct RetainedRoute {
     pub(super) route: RouteIntent,
     _storage: OwnedSemaphorePermit,
+    _text_storage: Option<OwnedSemaphorePermit>,
 }
 
 impl RetainedRoute {
+    pub(super) fn text_bytes(&self) -> usize {
+        match &self.route {
+            RouteIntent::Usbmux => 0,
+            RouteIntent::Usb(host) | RouteIntent::Wifi(host) | RouteIntent::Mobdev2(host) => {
+                host.as_ref().map_or(0, String::capacity)
+            }
+        }
+    }
+
+    pub(super) fn established(
+        route: &Route,
+        host_filter: Option<&str>,
+        bank: &Arc<Semaphore>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::copy_established(route, host_filter, bank)
+            .map_err(|error| error.context(RouteAdmission))
+    }
+
+    fn copy_established(
+        route: &Route,
+        host_filter: Option<&str>,
+        bank: &Arc<Semaphore>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let selected = match route {
+            Route::Usbmux => None,
+            Route::Usb(host) | Route::Wifi(host) => host.as_deref(),
+            Route::Mobdev2(_) => host_filter,
+        };
+        super::admission::selectors("", selected)?;
+        let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let mut text_storage = None;
+        let host = match selected {
+            Some(host) => {
+                let allocation = super::metadata_vec::exact_backing(bank, host.len())?;
+                text_storage = Some(allocation.storage);
+                let mut bytes = allocation.values;
+                bytes.extend_from_slice(host.as_bytes());
+                Some(String::from_utf8(bytes).expect("copied route str remains UTF-8"))
+            }
+            None => None,
+        };
+        let route = match route {
+            Route::Usbmux => RouteIntent::Usbmux,
+            Route::Usb(_) => RouteIntent::Usb(host),
+            Route::Wifi(_) => RouteIntent::Wifi(host),
+            Route::Mobdev2(_) => RouteIntent::Mobdev2(host),
+        };
+        Ok(Arc::new(Self {
+            route,
+            _storage: storage,
+            _text_storage: text_storage,
+        }))
+    }
+
+    // Existing moved-input fixtures preserve the original String allocation;
+    // production uses established() before creating any route destination.
+    #[cfg(test)]
     fn new(route: RouteIntent, bank: &Arc<Semaphore>) -> anyhow::Result<Arc<Self>> {
         let host = match &route {
             RouteIntent::Usbmux => None,
@@ -53,6 +100,7 @@ impl RetainedRoute {
         Ok(Arc::new(Self {
             route,
             _storage: storage,
+            _text_storage: None,
         }))
     }
 
@@ -65,6 +113,14 @@ impl RetainedRoute {
                     host.as_ref().map_or(0, String::capacity)
                 }
             }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct RouteAdmission;
+impl std::fmt::Display for RouteAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("tunnel route destination admission failed")
     }
 }
 
@@ -209,6 +265,19 @@ impl Cell {
         Ok(version)
     }
 
+    pub(super) fn manual_shared(
+        &self,
+        route: Arc<RetainedRoute>,
+        authority: DeviceAuthority,
+    ) -> anyhow::Result<Desired> {
+        anyhow::ensure!(
+            Arc::ptr_eq(route._storage.semaphore(), &self.metadata_bytes),
+            crate::output::resource_decision("tunnel manual route bank mismatch")
+        );
+        Ok(Desired::Manual { route, authority })
+    }
+
+    #[cfg(test)]
     pub(super) fn manual(
         &self,
         route: RouteIntent,
@@ -347,9 +416,9 @@ impl Cell {
     }
 }
 
-pub(super) struct ManualRequest {
+pub(super) struct ManualRequest<'a> {
     pub(super) authority: DeviceAuthority,
-    pub(super) host_filter: Option<String>,
+    pub(super) host_filter: Option<&'a str>,
 }
 
 #[cfg(test)]

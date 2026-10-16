@@ -8948,3 +8948,13 @@ L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地�
 见[验证](validation/tunnel-upstream-registry-storage-2026-10-16.md)。URI/header/
 client/credentials/WS/private/manual副本与原完整freshness等继续；128MiB非
 完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-16 L02 shared route destination owners
+
+首次host实际Layout创建前准入，publication/desired/live shortcut/自动恢复共享
+原RetainedRoute Arc与文本，request filter借用；原published ceiling及native
+joins费用保持，路由body独立最后owner退款经Weak已验。完整tunnel592/0FAIL/
+2原ignored、上游6/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-shared-route-owners-2026-10-16.md)。observed/Source文本、
+URI/header/WS/private及完整freshness等继续；128MiB非完整heap/RSS，L02不关闭，
+23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。

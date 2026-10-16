@@ -2,6 +2,116 @@
 use super::*;
 use crate::access::test_support::{grant, PolicyFixture, DEVICE, REPLACEMENT, TOKEN};
 
+#[tokio::test]
+async fn shared_route_pre_source_refusal_keeps_original_resource_without_default_discovery_fallback(
+) {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
+    let leave = std::mem::size_of::<intent::RetainedRoute>() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((before - leave) as u32)
+        .unwrap();
+    let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+    assert!(error.is::<intent::RouteAdmission>());
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.count(A), 0);
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), leave);
+    assert!(matches!(
+        ticket.desired().desired,
+        intent::Desired::Automatic
+    ));
+    drop(held);
+    assert_eq!(bank.available_permits(), before);
+    cleanup(&state, &source).await;
+}
+
+#[tokio::test]
+async fn shared_route_live_manual_and_recovery_keep_original_arc_and_text_pointer() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let host = "original-filter-192.0.2.123";
+    drop(
+        state
+            .ensure_tunnel(A, Some(host), Some(StartTunnelConnectionType::Wifi))
+            .await
+            .unwrap(),
+    );
+    let original = state
+        .inner
+        .tunnels
+        .read()
+        .await
+        .get(A)
+        .unwrap()
+        .route_intent
+        .clone();
+    let intent::RouteIntent::Wifi(Some(text)) = &original.route else {
+        unreachable!()
+    };
+    let pointer = text.as_ptr();
+    let authority = state
+        .inner
+        .access
+        .authenticate(&axum::http::HeaderMap::new())
+        .unwrap()
+        .device_authority(Permission::ManageTunnels, A)
+        .ok()
+        .unwrap();
+    // The requested different route is ignored by the existing-live shortcut.
+    let changed = String::from("different-filter");
+    let guard = metadata_vec::on_allocation(move |layout, _| {
+        assert_ne!(
+            layout.size(),
+            host.len(),
+            "live shortcut recopied desired host"
+        );
+    });
+    drop(
+        state
+            .ensure_tunnel_with_intent(
+                A,
+                Some(&changed),
+                Some(StartTunnelConnectionType::Usb),
+                Some(intent::ManualRequest {
+                    authority,
+                    host_filter: Some(&changed),
+                }),
+            )
+            .await
+            .unwrap(),
+    );
+    drop(guard);
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    let desired = ticket.desired();
+    let intent::Desired::Manual { route, .. } = &desired.desired else {
+        unreachable!()
+    };
+    assert!(Arc::ptr_eq(route, &original));
+    assert_eq!(source.count(A), 1);
+    state.inner.tunnels.write().await.remove(A);
+    source.usb.lock().unwrap().push(A.into());
+    state.refresh_once().await.unwrap();
+    let table = state.inner.tunnels.read().await;
+    let recovered = &table.get(A).unwrap().route_intent;
+    assert!(Arc::ptr_eq(recovered, &original));
+    let intent::RouteIntent::Wifi(Some(text)) = &recovered.route else {
+        unreachable!()
+    };
+    assert_eq!(text.as_ptr(), pointer);
+    assert_eq!(source.count(A), 2);
+    drop(table);
+    cleanup(&state, &source).await;
+}
+
 async fn cleanup(state: &TunnelAgentState, source: &FakeSource) {
     state.notify_shutdown();
     state.clear().await;
