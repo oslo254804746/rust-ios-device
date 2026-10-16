@@ -30,6 +30,12 @@ fn admitted(bank: &Arc<Semaphore>, raw: &[TunnelRecord]) -> KnownVec<PaidRecord>
     local
 }
 
+fn add_remote(listing: &mut Listing, bank: &Arc<Semaphore>, url: &str, value: serde_json::Value) {
+    listing.reserve_remote(1).unwrap();
+    let tree = paid_json::Listing::parse(&serde_json::to_vec(&value).unwrap(), bank).unwrap();
+    listing.push_remote(paid_json::Text::copy(url, bank).unwrap(), tree);
+}
+
 #[test]
 fn federation_output_moves_original_paid_fields_and_serializes_at_zero_remaining_quota() {
     let bank = Arc::new(Semaphore::new(16384));
@@ -40,12 +46,13 @@ fn federation_output_moves_original_paid_fields_and_serializes_at_zero_remaining
         .iter()
         .map(|record| (record.udid.clone(), record.udid.as_ptr()))
         .collect::<Vec<_>>();
+    let listing = Listing::new(local, &bank).prepare().unwrap();
     let before = bank.available_permits();
     let held = bank.clone().try_acquire_many_owned(before as u32).unwrap();
     let hook = record_owner::on_text_allocated(|_, _| panic!("listing cloned local text"));
-    let listing = Listing::new(local);
     for (uid, pointer) in pointers {
         let actual = listing
+            .listing
             .local
             .as_slice()
             .iter()
@@ -72,9 +79,27 @@ fn federation_output_moves_original_paid_fields_and_serializes_at_zero_remaining
 fn federation_output_same_uid_keeps_local_first_remote_order_unknown_fields_and_one_key() {
     let bank = Arc::new(Semaphore::new(16384));
     let raw = [raw("same-雪", true), raw("only-local", false)];
-    let mut listing = Listing::new(admitted(&bank, &raw));
+    let mut listing = Listing::new(admitted(&bank, &raw), &bank);
     let remote = serde_json::json!({"same-雪":[{"extension":{"snow":"雪","binary":[0,255]},"upstream":"first"},{"upstream":"second"}],"only-remote":[{"future-field":null,"upstream":"third"}]});
-    listing.remote = serde_json::from_value(remote.clone()).unwrap();
+    add_remote(
+        &mut listing,
+        &bank,
+        "first",
+        serde_json::json!({"same-雪":[remote["same-雪"][0]]}),
+    );
+    add_remote(
+        &mut listing,
+        &bank,
+        "second",
+        serde_json::json!({"same-雪":[remote["same-雪"][1]]}),
+    );
+    add_remote(
+        &mut listing,
+        &bank,
+        "third",
+        serde_json::json!({"only-remote":remote["only-remote"]}),
+    );
+    let listing = listing.prepare().unwrap();
     let output = serde_json::to_value(&listing).unwrap();
     assert_eq!(output.as_object().unwrap().len(), 3);
     assert_eq!(output["same-雪"][0], serde_json::to_value(&raw[0]).unwrap());
@@ -93,14 +118,20 @@ fn federation_output_same_uid_keeps_local_first_remote_order_unknown_fields_and_
 fn federation_output_scope_removes_both_local_and_remote_without_reintroducing_hidden_keys() {
     let bank = Arc::new(Semaphore::new(16384));
     let raw = [raw("hidden", false), raw("allowed", true)];
-    let mut listing = Listing::new(admitted(&bank, &raw));
-    listing.remote = serde_json::from_value(serde_json::json!({"hidden":[{"secret":true}],"allowed":[{"upstream":"route"}],"remote-hidden":[{}]})).unwrap();
+    let mut listing = Listing::new(admitted(&bank, &raw), &bank);
+    add_remote(
+        &mut listing,
+        &bank,
+        "route",
+        serde_json::json!({"hidden":[{"secret":true}],"allowed":[{"upstream":"original"}],"remote-hidden":[{}]}),
+    );
     let before = bank.available_permits();
     listing.retain(|uid| uid == "allowed");
     assert!(
         bank.available_permits() > before,
         "filtered paid text must be freed"
     );
+    let listing = listing.prepare().unwrap();
     let value = serde_json::to_value(&listing).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 1);
     assert_eq!(value["allowed"].as_array().unwrap().len(), 2);
@@ -116,12 +147,43 @@ fn federation_output_root_local_object_preserves_legacy_sorted_bytes_and_option_
     }
 }
 
+#[test]
+fn federation_merge_index_one_byte_refusal_precedes_backing_and_releases_original_tree() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let bank = Arc::new(Semaphore::new(16384));
+    let listing = Listing::new(admitted(&bank, &[raw("index-refusal", true)]), &bank);
+    let remaining = std::mem::size_of::<Key>() - 1;
+    let held_bytes = bank.available_permits() - remaining;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(held_bytes as u32)
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured = calls.clone();
+    let error = super::super::metadata_vec::with_allocation_hook(
+        move |_, _| {
+            captured.fetch_add(1, Ordering::SeqCst);
+        },
+        || listing.prepare().err().unwrap(),
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), 16384 - held_bytes);
+    drop(held);
+    assert_eq!(bank.available_permits(), 16384);
+}
+
 #[tokio::test]
 async fn federation_output_over_one_mib_keeps_record_and_wire_fees_separate_until_last_slice() {
     let bank = Arc::new(Semaphore::new(16 * 1024 * 1024));
     let mut record = raw("large-local", true);
     record.interface = "🦀".repeat(300000);
-    let listing = Listing::new(admitted(&bank, &[record]));
+    let listing = Listing::new(admitted(&bank, &[record]), &bank)
+        .prepare()
+        .unwrap();
     let paid = 16 * 1024 * 1024 - bank.available_permits();
     let replies = response_json::Replies::new(&bank).unwrap();
     let response = replies.json(&listing).unwrap();

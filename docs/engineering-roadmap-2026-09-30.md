@@ -8901,3 +8901,13 @@ L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地�
 [验证](validation/tunnel-local-federation-view-2026-10-16.md)。remote图/input/
 URL/join_all、WS/private和原完整freshness继续；128MiB非完整heap/RSS，L02
 不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 remote JSON owned destinations
+
+上游自有body/JSON字符串及数组对象entry按实际Layout先准入，原Resource与
+JSON错误类别保留；URL snapshot/source/index真实backing预付，借用overlay
+保留扩展/顺序/target选择，原地sort/dedup避免倒序平方移动。完整tunnel565/
+0FAIL/2ignored、上游6/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-remote-json-owners-2026-10-16.md)。decoder scratch/
+join_all/RemoteTarget/private/WS及原完整freshness继续，128MiB非完整heap/RSS；
+L02不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。

@@ -49,6 +49,20 @@ pub(super) fn with_allocation_hook<R>(
     hook: impl FnMut(Layout, usize) + 'static,
     operation: impl FnOnce() -> R,
 ) -> R {
+    let _reset = on_allocation(hook);
+    operation()
+}
+
+#[cfg(test)]
+pub(super) struct AllocationGuard;
+#[cfg(test)]
+impl Drop for AllocationGuard {
+    fn drop(&mut self) {
+        ALLOCATED.with(|pending| pending.borrow_mut().take());
+    }
+}
+#[cfg(test)]
+pub(super) fn on_allocation(hook: impl FnMut(Layout, usize) + 'static) -> AllocationGuard {
     ALLOCATED.with(|pending| {
         let mut pending = pending.borrow_mut();
         assert!(
@@ -57,14 +71,7 @@ pub(super) fn with_allocation_hook<R>(
         );
         *pending = Some(Box::new(hook));
     });
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            ALLOCATED.with(|pending| pending.borrow_mut().take());
-        }
-    }
-    let _reset = Reset;
-    operation()
+    AllocationGuard
 }
 
 pub(super) struct KnownVec<T> {
@@ -148,6 +155,19 @@ impl<T> KnownVec<T> {
     }
     pub(super) fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
         self.values.retain(keep);
+    }
+
+    pub(super) fn dedup_by(&mut self, same: impl FnMut(&mut T, &mut T) -> bool) {
+        self.values.dedup_by(same);
+    }
+
+    pub(super) fn extend_copy(&mut self, values: &[T]) -> Result<()>
+    where
+        T: Copy,
+    {
+        self.reserve(values.len())?;
+        self.values.extend_from_slice(values);
+        Ok(())
     }
 
     pub(super) fn take(&mut self) -> Self {
