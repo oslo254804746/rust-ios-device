@@ -8920,3 +8920,13 @@ target直接move原paid URL，interface/下一跳文本按精确Layout先准入�
 [验证](validation/tunnel-remote-target-owner-2026-10-16.md)。join_all/decoder/
 URI/header/WS/private和原完整freshness继续，128MiB非完整heap/RSS；L02不
 关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
+
+## 2026-10-16 L02 federation future/result storage
+
+两个联邦join_all以共用collector接线，原future实际Box及Slot/Output数组在
+首次poll前预付；parent Context保留全并发/wait-all/注册顺序/原error和cancel
+Drop，最后iterator/output独立持费。10项新增专项与完整tunnel578/0FAIL/
+2原ignored、上游6/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-federation-join-storage-2026-10-16.md)。decoder scratch/
+URI/header/WS/private及原完整freshness等继续；128MiB非完整heap/RSS，L02
+不关闭，23/6/待全审计、有效30与Q04全部排除不变，仅本地提交。
