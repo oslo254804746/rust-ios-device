@@ -110,7 +110,7 @@ async fn manual_preflight_revoked_authority_keeps_original_failure_and_exact_pen
     assert_eq!(plan.selected(), 1);
     policy.replace(vec![grant(TOKEN, vec![Permission::ManageServer])]);
     access.reload(&principal).await.unwrap();
-    (*plan)
+    plan.into_inner()
         .flush_collected(
             &state,
             &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
@@ -134,7 +134,7 @@ async fn manual_preflight_stop_skips_old_writer_without_restarting_backoff() {
     let (ticket, _, failure) = manual(&state, "stopped-before-cleanup").await;
     state.inner.lifecycle.fill_manual_successes(&mut plan).await;
     state.inner.lifecycle.stop(ticket.udid()).await;
-    (*plan)
+    plan.into_inner()
         .flush_collected(
             &state,
             &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
@@ -177,7 +177,7 @@ async fn manual_preflight_expired_authority_keeps_failure_and_unprocessed_pendin
     state.inner.lifecycle.fill_manual_successes(&mut plan).await;
     assert_eq!(plan.selected(), 1);
     tokio::time::advance(Duration::from_secs(3601)).await;
-    (*plan)
+    plan.into_inner()
         .flush_collected(
             &state,
             &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
@@ -275,7 +275,7 @@ async fn manual_preflight_without_manual_captures_new_gate_and_latest_version_at
         plan.completed.as_slice()[0].ticket.udid().as_ptr(),
         ticket.udid().as_ptr()
     ));
-    (*plan)
+    plan.into_inner()
         .flush_collected(
             &state,
             &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
@@ -348,7 +348,7 @@ async fn manual_preflight_stale_writer_cannot_clear_replacement_pending_tuple() 
     let new_desired = ticket.desired().version;
     assert!(!Arc::ptr_eq(&old_desired, &new_desired));
     assert!(!Arc::ptr_eq(&old_failure, &new_failure));
-    (*plan)
+    plan.into_inner()
         .flush_collected(
             &state,
             &super::super::scan::Deadline::new(Duration::from_secs(1)).unwrap(),
@@ -376,7 +376,11 @@ async fn manual_preflight_actual_late_writer_restores_failure_stamp_and_pending_
     *state.inner.success_after_remove.lock().unwrap() =
         Some(Box::new(|| std::thread::sleep(Duration::from_millis(100))));
     let deadline = super::super::scan::Deadline::new(Duration::from_millis(40)).unwrap();
-    let error = (*plan).flush(&state, &deadline).await.unwrap_err();
+    let error = plan
+        .into_inner()
+        .flush(&state, &deadline)
+        .await
+        .unwrap_err();
     assert!(error.is::<super::super::scan::DeadlineReached>());
     assert!(Arc::ptr_eq(
         &state.inner.failed_attempts.read().await[ticket.udid()].version,

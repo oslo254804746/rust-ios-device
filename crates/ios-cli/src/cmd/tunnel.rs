@@ -2708,7 +2708,7 @@ impl TunnelAgentState {
         whole: &scan::Deadline,
         session: &scan::Session<'_>,
         destination: Option<failure_table::Destination>,
-        manual_success: Box<manual_success::Preflight>,
+        manual_success: manual_success::Owner,
         execution: (
             owned_window::Prepared<F>,
             impl FnMut(candidate_index::Candidate) -> F,
@@ -2750,7 +2750,7 @@ impl TunnelAgentState {
         if let Err(error) = whole.check() {
             return batch.finish(Err(error));
         }
-        if let Err(error) = (*manual_success).flush(self, whole).await {
+        if let Err(error) = manual_success.into_inner().flush(self, whole).await {
             return batch.finish(Err(error));
         }
         self.flush_write_batch(batch, Some(whole)).await
@@ -2761,7 +2761,7 @@ impl TunnelAgentState {
         // External direct fixtures prepare their own owners before invoking
         // this cleanup seam; production carries its Source-before preflight.
         let prepared = manual_success::Preflight::new(&self.inner.global_metadata_bytes)?;
-        (*prepared).flush(self, whole).await
+        prepared.into_inner().flush(self, whole).await
     }
 
     async fn reconcile_failures(
