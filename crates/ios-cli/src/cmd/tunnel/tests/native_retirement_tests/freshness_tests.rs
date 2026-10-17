@@ -598,6 +598,11 @@ async fn freshness_new_publication_during_source_refuses_old_proof_without_stopp
     let state = fresh_state(source.clone(), OBSERVE);
     fresh_publish(&state).await;
     let old_publication = state.inner.tunnels.read().await[UID].publication.clone();
+    let replacement = publication::Life::new(
+        &state.inner.global_metadata_bytes,
+        &state.inner.metadata_bytes,
+    )
+    .unwrap();
     let change = state.clone();
     *source.ready.lock().unwrap() = Some(Box::new(move || {
         change
@@ -607,7 +612,7 @@ async fn freshness_new_publication_during_source_refuses_old_proof_without_stopp
             .unwrap()
             .get_mut(UID)
             .unwrap()
-            .publication = Arc::new(());
+            .publication = replacement;
     }));
     let error = refresh(&state, OBSERVE).await.unwrap_err();
     assert!(error.is::<ios_core::OperationCancelled>());
@@ -773,7 +778,10 @@ async fn freshness_current_owner_survives_either_table_removal_or_native_joins_u
                 owner.upgrade().is_some(),
                 "fresh cache fees released before original native joins"
             );
-            assert_eq!(publication.available_permits(), charged + table_storage);
+            assert_eq!(
+                publication.available_permits(),
+                charged + table_storage + super::super::super::publication::Life::bytes()
+            );
             state.drain_native(OBSERVE).await.unwrap();
         } else {
             state.notify_shutdown();
