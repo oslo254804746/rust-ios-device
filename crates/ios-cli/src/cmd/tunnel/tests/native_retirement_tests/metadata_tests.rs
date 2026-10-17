@@ -11,7 +11,11 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let input = {
         let table = state.inner.tunnels.read().await;
-        Arc::downgrade(table[DEVICE]._input.as_ref().expect("scan input omitted"))
+        table[DEVICE]
+            ._input
+            .as_ref()
+            .expect("scan input omitted")
+            .downgrade()
     };
     let route = {
         let table = state.inner.tunnels.read().await;
@@ -52,6 +56,11 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     );
     state.notify_shutdown();
     drop(state);
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(input);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
@@ -64,7 +73,7 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     let input = {
         let table = state.inner.tunnels.read().await;
-        Arc::downgrade(table[DEVICE]._input.as_ref().unwrap())
+        table[DEVICE]._input.as_ref().unwrap().downgrade()
     };
     let before = bank.available_permits();
     state.notify_shutdown();
@@ -78,6 +87,11 @@ async fn candidate_input_native_original_joins_keep_input_while_table_still_owns
     state.clear().await;
     assert!(input.upgrade().is_none());
     drop(state);
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(input);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 

@@ -67,6 +67,7 @@ mod scan_publications;
 mod scan_seen;
 mod scoped;
 mod selector_copy;
+mod shared_body;
 mod shared_value;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
@@ -464,7 +465,7 @@ struct ConnectionContext<'a> {
     deadline: Option<&'a lifecycle::ConnectionDeadline>,
     retry: Option<(failure_table::Identity, Arc<OwnedSemaphorePermit>)>,
     manual: Option<&'a intent::ManualRequest<'a>>,
-    input: Option<Arc<candidate_input::Input>>,
+    input: Option<candidate_input::Owner>,
 }
 
 struct ManagedTunnel {
@@ -481,7 +482,7 @@ struct ManagedTunnel {
     // Only removal of both owners releases it; either may outlive the other.
     _metadata: Arc<OwnedSemaphorePermit>,
     _global_metadata: Arc<OwnedSemaphorePermit>,
-    _input: Option<Arc<candidate_input::Input>>,
+    _input: Option<candidate_input::Owner>,
     _fresh_metadata: Option<Arc<freshness::Metadata>>,
 }
 
@@ -1454,7 +1455,7 @@ impl TunnelAgentState {
             let device = completed.map_err(|error| {
                 let error = match &input {
                     Some(input) => error.context(candidate_input::SourceInputContext {
-                        input: Arc::clone(input),
+                        input: input.clone(),
                     }),
                     None => error,
                 };
@@ -1814,7 +1815,7 @@ impl TunnelAgentState {
         udid: &str,
         route: RouteRef<'_>,
         ticket: &Ticket,
-        input: Option<Arc<candidate_input::Input>>,
+        input: Option<candidate_input::Owner>,
         prepared: &mut Option<failure_table::OwnedNode>,
         context: RefreshContext<'_, '_>,
     ) -> ScanAttemptOutcome {
@@ -2282,7 +2283,7 @@ impl TunnelAgentState {
             seen.insert(&input)?;
             candidates.reserve(1)?;
             let node = failure_table::Node::input(
-                Arc::clone(&input),
+                input.clone(),
                 expected_id,
                 &self.inner.global_metadata_bytes,
             )?;
@@ -2314,7 +2315,7 @@ impl TunnelAgentState {
                 seen.insert(&input)?;
                 candidates.reserve(1)?;
                 let node = failure_table::Node::input(
-                    Arc::clone(&input),
+                    input.clone(),
                     Some(device.device_id),
                     &self.inner.global_metadata_bytes,
                 )?;
@@ -2489,7 +2490,7 @@ impl TunnelAgentState {
                             &self.inner.global_metadata_bytes,
                         )?;
                         let node = failure_table::Node::input(
-                            Arc::clone(&input),
+                            input.clone(),
                             None,
                             &self.inner.global_metadata_bytes,
                         )?;
@@ -2509,7 +2510,7 @@ impl TunnelAgentState {
                             &self.inner.global_metadata_bytes,
                         )?;
                         let node = failure_table::Node::input(
-                            Arc::clone(&input),
+                            input.clone(),
                             None,
                             &self.inner.global_metadata_bytes,
                         )?;
@@ -2671,7 +2672,7 @@ impl TunnelAgentState {
                 &input.udid,
                 route,
                 &ticket,
-                Some(Arc::clone(&input)),
+                Some(input.clone()),
                 &mut node,
                 RefreshContext {
                     whole: Some(whole),

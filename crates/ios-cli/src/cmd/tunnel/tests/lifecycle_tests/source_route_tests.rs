@@ -167,7 +167,7 @@ async fn source_route_original_candidate_host_survives_same_error_receipt_after_
         receipt.primary().downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,
         original
     );
-    let weak = Arc::downgrade(&context.input);
+    let weak = context.input.downgrade();
     state.notify_shutdown();
     state.clear().await;
     drop(state);
@@ -188,5 +188,10 @@ async fn source_route_original_candidate_host_survives_same_error_receipt_after_
     );
     drop(receipt);
     assert!(weak.upgrade().is_none());
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(weak);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }

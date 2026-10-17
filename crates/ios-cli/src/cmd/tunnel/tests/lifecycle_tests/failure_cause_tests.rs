@@ -159,13 +159,12 @@ async fn failure_node_real_original_records_at_zero_quota_and_last_receipt_retai
     let address = original(receipt.primary());
     assert_eq!(address, source.originals.lock().unwrap()[0]);
     assert_eq!(receipt.completion(), reconnect::Completion::Recorded);
-    let input = Arc::downgrade(
-        &receipt
-            .primary()
-            .downcast_ref::<candidate_input::SourceInputContext>()
-            .unwrap()
-            .input,
-    );
+    let input = receipt
+        .primary()
+        .downcast_ref::<candidate_input::SourceInputContext>()
+        .unwrap()
+        .input
+        .downgrade();
     state.notify_shutdown();
     state.clear().await;
     drop(state);
@@ -175,6 +174,11 @@ async fn failure_node_real_original_records_at_zero_quota_and_last_receipt_retai
     assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
     drop(receipt);
     assert!(input.upgrade().is_none());
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(input);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
@@ -564,13 +568,12 @@ async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_
     let receipt = state.inner.retry.receipt(A).unwrap();
     let original_io = original(receipt.primary());
     assert_eq!(original_io, source.originals.lock().unwrap()[0]);
-    let input = Arc::downgrade(
-        &receipt
-            .primary()
-            .downcast_ref::<candidate_input::SourceInputContext>()
-            .unwrap()
-            .input,
-    );
+    let input = receipt
+        .primary()
+        .downcast_ref::<candidate_input::SourceInputContext>()
+        .unwrap()
+        .input
+        .downgrade();
     let bank = Arc::clone(&state.inner.global_metadata_bytes);
     assert!(!format!("{receipt:?} {receipt}").contains(PRIVATE_CONTEXT));
     state.clear().await;
@@ -581,6 +584,11 @@ async fn candidate_input_original_source_receipt_owns_input_after_manager_clear_
     assert!(bank.available_permits() < MAX_GLOBAL_KNOWN_METADATA_BYTES);
     drop(receipt);
     assert!(input.upgrade().is_none());
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(input);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 

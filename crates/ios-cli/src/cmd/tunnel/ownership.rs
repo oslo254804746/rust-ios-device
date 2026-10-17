@@ -28,7 +28,7 @@ pub(super) struct Ownership<'a> {
     stamp: OwnershipStamp,
     initial: StdMutex<Option<Reservation>>,
     completed: StdMutex<Option<NativeLease>>,
-    input: Option<Arc<super::candidate_input::Input>>,
+    input: Option<super::candidate_input::Owner>,
 }
 
 impl<'a> Ownership<'a> {
@@ -40,7 +40,7 @@ impl<'a> Ownership<'a> {
     pub(super) fn admitted_with_input(
         registry: Arc<Registry>,
         ticket: &'a Ticket,
-        input: Option<Arc<super::candidate_input::Input>>,
+        input: Option<super::candidate_input::Owner>,
     ) -> Result<Self> {
         let stamp = ticket.ownership_stamp();
         let reservation = ticket

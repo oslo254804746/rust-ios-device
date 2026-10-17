@@ -11,6 +11,7 @@ use tokio::time::Instant;
 
 #[cfg(test)]
 use super::candidate_input::route_capacity;
+#[cfg(test)]
 use super::candidate_input::Input;
 use super::metadata_vec::KnownVec;
 use super::shared_value::Shared;
@@ -105,7 +106,7 @@ pub(super) type OwnedNode = super::owned_box::Owner<Node>;
 pub(super) struct Node {
     pub(super) udid: String,
     pub(super) row: FailedTunnelAttempt,
-    input: Option<Arc<Input>>,
+    input: Option<super::candidate_input::Owner>,
     _key_storage: Option<OwnedSemaphorePermit>,
     selected: bool,
     position: usize,
@@ -114,7 +115,7 @@ pub(super) struct Node {
 
 impl Node {
     pub(super) fn input(
-        input: Arc<Input>,
+        input: super::candidate_input::Owner,
         native_id: Option<u32>,
         bank: &Arc<Semaphore>,
     ) -> Result<OwnedNode> {
@@ -176,7 +177,11 @@ impl Node {
     /// Success reuses the single prepared UID copy. Never clone another outcome key.
     pub(super) fn into_success_key(
         self,
-    ) -> (String, Option<Arc<Input>>, Option<OwnedSemaphorePermit>) {
+    ) -> (
+        String,
+        Option<super::candidate_input::Owner>,
+        Option<OwnedSemaphorePermit>,
+    ) {
         assert!(self.next.is_none());
         let Self {
             udid,
@@ -188,7 +193,7 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(super) fn input_owner(&self) -> Option<&Arc<Input>> {
+    pub(super) fn input_owner(&self) -> Option<&super::candidate_input::Owner> {
         self.input.as_ref()
     }
 

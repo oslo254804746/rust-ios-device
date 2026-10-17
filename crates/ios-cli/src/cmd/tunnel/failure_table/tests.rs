@@ -219,10 +219,10 @@ fn failure_destination_one_byte_refusal_and_original_backing_refund() {
 fn failure_input_single_outcome_key_and_last_node_owner_retains_original_fee() {
     let bank = Arc::new(Semaphore::new(BANK));
     let input = Input::owned("key".into(), Route::Mobdev2("host".into()), &bank).unwrap();
-    let weak = Arc::downgrade(&input);
+    let weak = input.downgrade();
     let mut table = table(&bank);
-    let node = Node::input(Arc::clone(&input), None, &bank).unwrap();
-    assert!(Arc::ptr_eq(node.input_owner().unwrap(), &input));
+    let node = Node::input(input.clone(), None, &bank).unwrap();
+    assert!(node.input_owner().unwrap().ptr_eq(&input));
     let key = node.udid.as_ptr();
     let route = host(&node.row).as_ptr();
     assert_ne!(
@@ -246,6 +246,8 @@ fn failure_input_single_outcome_key_and_last_node_owner_retains_original_fee() {
     assert!(bank.available_permits() < BANK);
     drop(node);
     assert!(weak.upgrade().is_none());
+    assert_eq!(bank.available_permits(), BANK - Input::body_bytes());
+    drop(weak);
     assert_eq!(bank.available_permits(), BANK);
 }
 

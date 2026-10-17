@@ -11,7 +11,7 @@ fn outcome_key_usb_last_byte_refusal_leaves_original_raw_snapshot_grant_unsplit(
     let mut uid = String::with_capacity(2048);
     uid.push_str("original-usb-key");
     let raw_bytes = 128 + uid.capacity();
-    let remaining = std::mem::size_of::<Input>() + uid.len() - 1;
+    let remaining = Input::body_bytes() + uid.len() - 1;
     let bank = Arc::new(Semaphore::new(raw_bytes + remaining));
     let mut raw = super::super::admission::known_metadata_charge(&bank, raw_bytes).unwrap();
     let error = metadata_vec::with_allocation_hook(
@@ -126,7 +126,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     let lifecycle = Lifecycle::with_metadata(bank.clone());
     let ticket = lifecycle.ticket(uid).await.unwrap();
     let input = Input::copied(uid, RouteRef::Usbmux, &bank).unwrap();
-    let weak = Arc::downgrade(&input);
+    let weak = input.downgrade();
     let pointer = input
         .outcome
         .lock()
@@ -155,7 +155,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     assert!(weak.upgrade().is_none());
     assert_eq!(
         bank.available_permits(),
-        before + Input::bytes(uid, &Route::Usbmux) - uid.len()
+        before + Input::bytes(uid, &Route::Usbmux) - uid.len() - Input::body_bytes()
     );
     let SuccessKey::Owned(key) = &success.udid else {
         panic!("original prepared key missing")
@@ -169,6 +169,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
     assert_eq!(bank.available_permits(), 0);
     drop(success);
     assert_eq!(bank.available_permits(), uid.len());
+    drop(weak);
     drop((other_usage, ticket, lifecycle));
     assert_eq!(bank.available_permits(), total);
 }

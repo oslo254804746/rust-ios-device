@@ -8,7 +8,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use super::{Route, Ticket};
 
 pub(super) struct Candidate {
-    pub(super) input: Arc<super::candidate_input::Input>,
+    pub(super) input: super::candidate_input::Owner,
     pub(super) ticket: Ticket,
     pub(super) native_id: Option<u32>,
     pub(super) node: super::failure_table::OwnedNode,

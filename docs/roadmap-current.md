@@ -102,3 +102,9 @@ tunnel688、upstream10、严格 CLI/build/只读 Source0 门禁通过。原回�
 严格 CLI/build/只读 Source0 门禁通过，原预算/指针/native 断言不改。其他
 raw Arc/Weak owner 与 private header 字节、SDK/发现及完整规则审计继续，
 L02 主项状态保持。
+
+再后[Input strong/weak body owner](validation/tunnel-input-weak-owner-2026-10-17.md)
+覆盖全私有引用图，原字段在最后 strong 释放，body 和新增已付 guard payload
+在最后实际 allocation 后退款；原 Weak 观察加强为两阶段精确费用断言。专项6、
+完整 tunnel699、upstream10、严格 CLI/build/只读 Source0 门禁通过。其他 Arc、
+私有 header 字节、SDK/发现输出和完整规则审计继续，L02 主项状态保持。
