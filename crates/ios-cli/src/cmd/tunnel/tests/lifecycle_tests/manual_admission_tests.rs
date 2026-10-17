@@ -5,6 +5,123 @@ use futures_util::FutureExt;
 
 const FIELD_BYTES: usize = 4096;
 
+#[tokio::test]
+async fn native_source_admission_full_registry_default_start_never_browses_paired_fallback() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    drop(start(state.clone(), B).await.unwrap());
+    let original = state.inner.tunnels.read().await[B].publication.clone();
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    let stamp = ticket.ownership_stamp();
+    let reserved = (0..retirement::MAX_NATIVE_OWNERS)
+        .map(|_| state.inner.native.reserve(stamp.clone()).unwrap())
+        .collect::<Vec<_>>();
+    let before = source_counts(&source);
+    let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+    assert!(error.is::<ownership::Admission>());
+    resource(&error);
+    assert!(error
+        .chain()
+        .any(|cause| cause.to_string() == "native tunnel owner capacity exhausted"));
+    let after = source_counts(&source);
+    assert_eq!(source.count(A), 0);
+    assert_eq!(
+        state.inner.native.snapshot().reserved,
+        retirement::MAX_NATIVE_OWNERS
+    );
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert!(matches!(
+        ticket.desired().desired,
+        intent::Desired::Automatic
+    ));
+    assert!(Arc::ptr_eq(
+        &original,
+        &state.inner.tunnels.read().await[B].publication
+    ));
+    assert!(state.get_record(B).await.unwrap().is_some());
+    drop(reserved);
+    drop(original);
+    drop(error);
+    recover(&state, &source).await;
+    assert_eq!(
+        after, before,
+        "pre-Source owner rejection must not trigger paired discovery"
+    );
+}
+
+#[tokio::test]
+async fn native_source_admission_publication_last_byte_refusal_never_browses_default_fallback() {
+    for global in [false, true] {
+        let source = FakeSource::new();
+        let state = state(source.clone(), LOCAL_BUDGET);
+        drop(state.inner.lifecycle.ticket(A).await.unwrap());
+        let metadata = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+        let published = Arc::new(Semaphore::new(MAX_PUBLISHED_METADATA_BYTES));
+        let mut probe = publication_table::Table::<ManagedTunnel>::new(&metadata, &published);
+        let prepared = probe.prepare(A).unwrap();
+        let destination = MAX_PUBLISHED_METADATA_BYTES - published.available_permits();
+        drop(prepared);
+        drop(probe);
+        let bank = if global {
+            state.inner.global_metadata_bytes.clone()
+        } else {
+            state.inner.metadata_bytes.clone()
+        };
+        let before = bank.available_permits();
+        let held = Arc::new(StdMutex::new(None));
+        let captured = held.clone();
+        let charged = bank.clone();
+        *state.inner.publication_before_prepare.lock().unwrap() = Some(Box::new(move || {
+            *captured.lock().unwrap() = Some(
+                charged
+                    .clone()
+                    .try_acquire_many_owned((charged.available_permits() - destination + 1) as u32)
+                    .unwrap(),
+            );
+        }));
+        let counts = source_counts(&source);
+        let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+        assert!(error.is::<ownership::Admission>());
+        resource(&error);
+        assert_eq!(source_counts(&source), counts);
+        assert_eq!(state.inner.native.snapshot().occupied(), 0);
+        assert!(state.inner.tunnels.read().await.is_empty());
+        held.lock().unwrap().take();
+        let backing = state.inner.tunnels.read().await.backing_bytes();
+        assert_eq!(bank.available_permits(), before - backing);
+        drop(error);
+        recover(&state, &source).await;
+        assert_eq!(bank.available_permits(), before);
+    }
+}
+
+#[tokio::test]
+async fn native_source_admission_original_source_io_still_uses_existing_paired_fallback() {
+    let source = FakeSource::new();
+    source.script(
+        A,
+        [
+            Behavior::Failure(std::io::ErrorKind::ConnectionReset),
+            Behavior::Success,
+        ],
+    );
+    source.paired.lock().unwrap().push(PairedMobdev2Device {
+        udid: A.into(),
+        host: "192.0.2.143".into(),
+    });
+    let state = state(source.clone(), LOCAL_BUDGET);
+    drop(state.ensure_tunnel(A, None, None).await.unwrap());
+    assert_eq!(source.count(A), 2);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+    {
+        let calls = source.calls.lock().unwrap();
+        assert_eq!(calls[0].1, Route::Usbmux);
+        assert_eq!(calls[1].1, Route::Mobdev2("192.0.2.143".into()));
+    }
+    recover(&state, &source).await;
+}
+
 fn source_counts(source: &FakeSource) -> (usize, usize, usize) {
     (
         source.calls.lock().unwrap().len(),

@@ -8,6 +8,20 @@ use ios_core::{CoreError, TunnelHandle, TunnelOwner, TunnelReservation};
 use super::lifecycle::Ticket;
 use super::retirement::{NativeLease, OwnershipStamp, Registry, Reservation};
 
+/// Applied only before the original Source future is created. Keep the original
+/// anyhow allocation/downcast/source when reservation admission is refused.
+#[derive(Debug)]
+pub(super) struct Admission;
+impl std::fmt::Display for Admission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("tunnel Source ownership was not admitted")
+    }
+}
+
+pub(super) fn before_source(error: anyhow::Error) -> anyhow::Error {
+    error.context(Admission)
+}
+
 pub(super) struct Ownership<'a> {
     registry: Arc<Registry>,
     ticket: Option<&'a Ticket>,
@@ -29,8 +43,9 @@ impl<'a> Ownership<'a> {
         input: Option<Arc<super::candidate_input::Input>>,
     ) -> Result<Self> {
         let stamp = ticket.ownership_stamp();
-        let reservation =
-            ticket.commit(|| registry.reserve_with_input(stamp.clone(), input.clone()))?;
+        let reservation = ticket
+            .commit(|| registry.reserve_with_input(stamp.clone(), input.clone()))
+            .map_err(before_source)?;
         Ok(Self {
             registry,
             ticket: Some(ticket),
@@ -155,6 +170,42 @@ impl TunnelReservation for Attempt<'_, '_> {
 mod buffer_bank_tests {
     use super::*;
     use tokio::sync::Semaphore;
+
+    #[test]
+    fn native_source_admission_marker_keeps_original_typed_error_and_source_pointer() {
+        #[derive(Debug)]
+        struct Original(std::io::Error);
+        impl std::fmt::Display for Original {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("original fixture failure")
+            }
+        }
+        impl std::error::Error for Original {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let original = anyhow::Error::new(Original(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "original-source-error",
+        )));
+        let pointer = original.downcast_ref::<Original>().unwrap() as *const Original as usize;
+        let io_pointer =
+            &original.downcast_ref::<Original>().unwrap().0 as *const std::io::Error as usize;
+        let error = before_source(original);
+        assert!(error.is::<Admission>());
+        assert_eq!(
+            error.downcast_ref::<Original>().unwrap() as *const Original as usize,
+            pointer
+        );
+        let native = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+        assert_eq!(native as *const std::io::Error as usize, io_pointer);
+        assert_eq!(native.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(error.root_cause().to_string(), "original-source-error");
+    }
 
     #[test]
     fn native_runtime_bank_is_the_original_registry_bank_before_attachment() {

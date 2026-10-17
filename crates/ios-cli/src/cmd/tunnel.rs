@@ -1221,6 +1221,7 @@ impl TunnelAgentState {
                     Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
                     Err(error) if error.is::<observed_route::Admission>() => Err(error),
                     Err(error) if error.is::<publication::Admission>() => Err(error),
+                    Err(error) if error.is::<ownership::Admission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1360,12 +1361,14 @@ impl TunnelAgentState {
         }
         let mut publication_destination = Some({
             let mut tunnels = self.inner.tunnels.write().await;
-            ticket.commit(|| {
-                if let Some(deadline) = deadline {
-                    deadline.check()?;
-                }
-                tunnels.prepare(udid)
-            })?
+            ticket
+                .commit(|| {
+                    if let Some(deadline) = deadline {
+                        deadline.check()?;
+                    }
+                    tunnels.prepare(udid)
+                })
+                .map_err(ownership::before_source)?
         });
         let ownership = ownership::Ownership::admitted_with_input(
             Arc::clone(&self.inner.native),
@@ -1373,7 +1376,9 @@ impl TunnelAgentState {
             input.clone(),
         )?;
         let manual_version = if retry.is_none() {
-            ticket.commit(|| Ok(self.inner.retry.version(udid, ticket)))?
+            ticket
+                .commit(|| Ok(self.inner.retry.version(udid, ticket)))
+                .map_err(ownership::before_source)?
         } else {
             None
         };
@@ -1390,7 +1395,7 @@ impl TunnelAgentState {
             })
             .transpose();
         self.inner.retry.emit_pending(udid, ticket);
-        let attempt = attempt?;
+        let attempt = attempt.map_err(ownership::before_source)?;
         if let (Some(attempt), Some(deadline)) = (&attempt, deadline) {
             if let Some(at) = attempt.deadline() {
                 deadline.clamp_retry(at);
