@@ -126,3 +126,9 @@ SDK/发现输出和完整规则审计继续，L02 未关闭。
 body/新增已付 guard 等到最后 Weak backing 结束再退款。专项4、完整 tunnel707、
 upstream10、严格 CLI/build/只读 Source0 门禁通过。原 filter、manual/live 恢复、
 epoch/expiry 回滚和 native join/EOF 保持，其他 owner/分配及完整审计继续。
+
+再后[manual-success Preflight body owner](validation/tunnel-manual-preflight-body-owner-2026-10-17.md)
+使用创建前已付的原实际 Box，外部 body grant 保留到 allocation 释放；flush
+显式移出字段，batch/completed 仍随原 owner，pending tuple/version 不变。
+新增3项及完整 tunnel710、upstream10、严格 CLI/build/只读 Source0 门禁通过。
+其他共享 owner、私有分配及完整规则审计继续，L02 不关闭。

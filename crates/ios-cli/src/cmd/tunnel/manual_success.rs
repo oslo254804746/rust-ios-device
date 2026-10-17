@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 
 use super::bookkeeping::{DeferredSuccess, SuccessIntent, SuccessKey, WriteBatch};
 use super::metadata_vec::KnownVec;
@@ -16,24 +16,21 @@ struct Completed {
     authority: DeviceAuthority,
 }
 
+pub(super) type Owner = super::owned_box::Owner<Preflight>;
+
 pub(super) struct Preflight {
     batch: WriteBatch,
     completed: KnownVec<Completed>,
-    _storage: OwnedSemaphorePermit,
 }
 
 impl Preflight {
-    pub(super) fn new(bank: &Arc<Semaphore>) -> Result<Box<Self>> {
-        let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+    pub(super) fn new(bank: &Arc<Semaphore>) -> Result<Owner> {
+        let destination = super::owned_box::Destination::<Self>::new(bank)?;
         let capacity = super::lifecycle::MAX_DEVICE_GATES;
         let batch = WriteBatch::success_only(bank, capacity)?;
         let mut completed = KnownVec::new(Arc::clone(bank), capacity);
         completed.reserve(capacity)?;
-        Ok(Box::new(Self {
-            batch,
-            completed,
-            _storage: storage,
-        }))
+        Ok(destination.place(Self { batch, completed }))
     }
 
     pub(super) fn record(
@@ -109,5 +106,7 @@ impl Preflight {
     }
 }
 
+#[cfg(test)]
+mod body_tests;
 #[cfg(test)]
 mod tests;
