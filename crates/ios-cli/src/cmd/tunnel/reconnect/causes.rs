@@ -1,8 +1,12 @@
 //! Original Source objects enter preallocated, byte-owned receipt capsules.
 //! Opaque error payloads and private Arc/anyhow allocations stay incomplete.
+use super::super::shared_value::Shared;
 use super::*;
 use std::error::Error;
 use std::sync::OnceLock;
+
+#[cfg(test)]
+mod original_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in super::super) enum Completion {
@@ -22,7 +26,7 @@ impl Original {
     }
 }
 struct History {
-    first: Arc<Original>,
+    first: Shared<Original>,
     failures: u64,
 }
 
@@ -32,7 +36,7 @@ pub(in super::super) struct FailureReceipt {
     pub(super) ticket: Ticket,
     pub(super) slot: Arc<OwnedSemaphorePermit>,
     pub(super) version: Arc<()>,
-    original: Arc<Original>,
+    original: Shared<Original>,
     history: OnceLock<History>,
     completion: Mutex<Completion>,
     wrapper_storage: Mutex<Option<OwnedSemaphorePermit>>,
@@ -76,7 +80,7 @@ impl FailureReceipt {
             ticket: ticket.clone(),
             slot,
             version,
-            original: Arc::new(Original {
+            original: Shared::new(Original {
                 error: OnceLock::new(),
                 _storage: original_storage,
             }),
@@ -272,8 +276,14 @@ impl Ledger {
                 .filter(|old| old.same_identity(&receipt.identity, &receipt.ticket));
             let history = History {
                 first: old.map_or_else(
-                    || Arc::clone(&receipt.original),
-                    |old| Arc::clone(&old.history.get().expect("captured prior receipt").first),
+                    || receipt.original.clone(),
+                    |old| {
+                        old.history
+                            .get()
+                            .expect("captured prior receipt")
+                            .first
+                            .clone()
+                    },
                 ),
                 failures: old.map_or(1, |old| {
                     old.history
@@ -296,7 +306,7 @@ impl Ledger {
             assert!(receipt
                 .history
                 .set(History {
-                    first: Arc::clone(&receipt.original),
+                    first: receipt.original.clone(),
                     failures: 1
                 })
                 .is_ok());

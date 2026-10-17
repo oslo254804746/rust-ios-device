@@ -108,3 +108,9 @@ L02 主项状态保持。
 在最后实际 allocation 后退款；原 Weak 观察加强为两阶段精确费用断言。专项6、
 完整 tunnel699、upstream10、严格 CLI/build/只读 Source0 门禁通过。其他 Arc、
 私有 header 字节、SDK/发现输出和完整规则审计继续，L02 主项状态保持。
+
+随后[私有 Original capsule 最后 owner](validation/tunnel-original-capsule-owner-2026-10-17.md)
+接入 sealed holder，first/latest 继续共享原 typed IO，原 allocation 结束后才
+退款；预算与 Source 同 poll 捕获不变。专项2、完整 tunnel701、upstream10、
+严格 CLI/build/只读 Source0 门禁通过。FailureReceipt、其他 Arc/私有 header、
+SDK/发现输出和完整规则审计继续，L02 未关闭。
