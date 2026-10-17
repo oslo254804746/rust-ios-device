@@ -48,3 +48,11 @@ freshness 规则继续，L02 未关闭，23/6/L02 口径保持。
 再准入独立输出；真实 manager 差一字节拒绝保留原目录/native owner。完整
 tunnel656、upstream10、严格 CLI/build/只读 Source0 门禁通过；发现/SDK future
 及其余创建端和完整规则审计继续，主项状态保持。
+
+再后[原 USB/paired discovery future](validation/tunnel-discovery-future-storage-2026-10-17.md)
+实际具体 F 在 Box 前同池准入，四处调用接线；设备已成功后的 USB 构造拒绝
+不再 fallback，paired 构造拒绝保留原已付 USB window 和不完整视图语义。
+完整 tunnel662、upstream10、严格 CLI/build/只读 Source0 门禁通过；精确预算
+fixture 按真实构造器计入临时峰值，原零余量/native join/EOF 断言保持。
+Source/candidate 文本、discovery snapshot/SDK 创建端及其余完整审计继续，
+L02 与原七个主项的未完成状态不变。

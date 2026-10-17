@@ -1235,6 +1235,7 @@ impl TunnelAgentState {
                     Err(error) if error.is::<observed_route::Admission>() => Err(error),
                     Err(error) if error.is::<publication::Admission>() => Err(error),
                     Err(error) if error.is::<ownership::Admission>() => Err(error),
+                    Err(error) if error.is::<source::DiscoveryAdmission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1242,7 +1243,7 @@ impl TunnelAgentState {
                         let targets = self
                             .inner
                             .source
-                            .paired_devices()
+                            .paired_devices_owned(&self.inner.global_metadata_bytes)?
                             .await
                             .context("failed to browse paired mobdev2 devices")?;
                         let _snapshot_charge = admission::retain_paired_snapshot(
@@ -1538,7 +1539,12 @@ impl TunnelAgentState {
                 }
                 // Keep the completed device owned while the current daemon view is
                 // checked, within the caller's existing permit/deadline/cancellation.
-                match self.inner.source.usb_devices().await {
+                let snapshot = self
+                    .inner
+                    .source
+                    .usb_devices_owned(&self.inner.global_metadata_bytes)?
+                    .await;
+                match snapshot {
                     UsbSnapshot::Devices(devices) => {
                         let _snapshot_charge = admission::retain_usb_snapshot(
                             &self.inner.global_metadata_bytes,
@@ -2121,7 +2127,14 @@ impl TunnelAgentState {
                 callback();
             }
         }
-        let Some(snapshot) = control.drive(self.inner.source.usb_devices()).await? else {
+        let Some(snapshot) = control
+            .drive(
+                self.inner
+                    .source
+                    .usb_devices_owned(&self.inner.global_metadata_bytes)?,
+            )
+            .await?
+        else {
             return Ok(());
         };
         let mut usb_complete = true;
@@ -2357,8 +2370,20 @@ impl TunnelAgentState {
         // Keep a discovery failure until the USB candidates have been processed,
         // preserving their publication and the original returned source error.
         whole.check()?;
-        let Some(paired) = control.drive(self.inner.source.paired_devices()).await? else {
-            return Ok(());
+        let paired = match self
+            .inner
+            .source
+            .paired_devices_owned(&self.inner.global_metadata_bytes)
+        {
+            Ok(source) => {
+                let Some(paired) = control.drive(source).await? else {
+                    return Ok(());
+                };
+                paired
+            }
+            // The already-admitted USB execution window still runs. This is an
+            // incomplete paired stage, with no discovery IO or complete view.
+            Err(error) => Err(error),
         };
         let paired = match paired {
             Ok(targets) => Some(targets),

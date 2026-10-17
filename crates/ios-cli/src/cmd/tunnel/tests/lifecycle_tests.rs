@@ -52,6 +52,7 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
 
 mod backoff_tests;
 mod bookkeeping_tests;
+mod discovery_future_tests;
 mod discovery_intent_tests;
 mod discovery_tests;
 mod failure_cause_tests;
