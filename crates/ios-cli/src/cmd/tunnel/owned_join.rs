@@ -7,19 +7,25 @@ use std::task::{Context, Poll};
 use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::metadata_vec::{exact_backing, KnownVec};
+use super::metadata_vec::{exact_backing, AdmittedVec, KnownVec};
 
-struct PaidFuture<F> {
+pub(super) struct PaidFuture<F> {
     // Destroy the original future and its allocation before refunding the fee.
     future: Pin<Box<F>>,
     _storage: OwnedSemaphorePermit,
 }
 
 impl<F: Future> PaidFuture<F> {
-    fn new(future: F, bank: &Arc<Semaphore>) -> Result<Self> {
+    pub(super) fn new(future: F, bank: &Arc<Semaphore>) -> Result<Self> {
         let allocation = exact_backing::<F>(bank, 1)?;
+        Ok(Self::from_backing(future, allocation))
+    }
+
+    pub(super) fn from_backing(future: F, allocation: AdmittedVec<F>) -> Self {
         let storage = allocation.storage;
         let mut values = allocation.values;
+        assert!(values.is_empty());
+        assert!(std::mem::size_of::<F>() == 0 || values.capacity() == 1);
         values.push(future);
         let pointer = values.as_mut_ptr();
         std::mem::forget(values);
@@ -28,10 +34,10 @@ impl<F: Future> PaidFuture<F> {
         // A ZST uses the same valid, aligned dangling pointer and needs no
         // deallocation. No fallible step separates forgetting Vec and Box.
         let future = Box::into_pin(unsafe { Box::from_raw(pointer) });
-        Ok(Self {
+        Self {
             future,
             _storage: storage,
-        })
+        }
     }
 }
 

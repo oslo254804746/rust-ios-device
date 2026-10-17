@@ -9041,3 +9041,12 @@ strictCLI/build/Source0通过，未变生产全量证据复用，见
 [验证](validation/tunnel-native-source-admission-2026-10-17.md)。其余实际存储/
 框架task/private及完整freshness继续；L02不关闭，128MiB非完整heap/RSS，
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 actual scan future window
+
+原buffer_unordered执行存储改为实际paid Slot/F buffer，初始USB frame在paired
+发现前预付，原allocation成为原pinned future；保留四并发、partial USB、
+原输出/取消/批次/期限/native joins。完整tunnel642/0FAIL/2原ignored、上游10/
+strictCLI/build/Source0通过，见[验证](validation/tunnel-scan-window-storage-2026-10-17.md)。
+其余Source/SDK/private存储及原freshness全审计继续，128MiB非完整heap/RSS，
+L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
