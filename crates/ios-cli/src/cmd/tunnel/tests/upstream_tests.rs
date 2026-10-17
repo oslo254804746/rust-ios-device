@@ -3,6 +3,8 @@ use crate::access::test_support::{grant, tls_forward, PolicyFixture, DEVICE, REP
 use crate::access::test_tls_material::{CA, VALID};
 use tungstenite::client::IntoClientRequest;
 
+mod paid_header_tests;
+
 #[derive(clap::Parser)]
 struct Options {
     #[command(flatten)]

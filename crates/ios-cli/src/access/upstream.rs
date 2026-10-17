@@ -144,7 +144,11 @@ impl UpstreamClient {
         })
     }
 
-    fn header(&self, url: &reqwest::Url) -> Result<Option<HeaderValue>> {
+    fn header(
+        &self,
+        url: &reqwest::Url,
+        make_header: impl FnOnce(&str) -> Result<HeaderValue>,
+    ) -> Result<Option<HeaderValue>> {
         let mut root = url.clone();
         let scheme = match url.scheme() {
             "http" | "ws" => "http",
@@ -163,10 +167,7 @@ impl UpstreamClient {
         let Some(token) = &self.token else {
             return Ok(None);
         };
-        let mut value = zeroize::Zeroizing::new(String::from("Bearer "));
-        value.push_str(&token.0);
-        let mut header =
-            HeaderValue::from_str(&value).context("invalid upstream credential header")?;
+        let mut header = make_header(&token.0)?;
         header.set_sensitive(true);
         Ok(Some(header))
     }
@@ -174,10 +175,16 @@ impl UpstreamClient {
     #[cfg(test)]
     pub(crate) async fn listing(&self, hop: u8, limit: usize) -> Result<serde_json::Value> {
         let bytes = self
-            .listing_body(hop, limit, Vec::new(), |bytes, chunk| {
-                bytes.extend_from_slice(chunk);
-                Ok(())
-            })
+            .listing_body(
+                hop,
+                limit,
+                Vec::new(),
+                |bytes, chunk| {
+                    bytes.extend_from_slice(chunk);
+                    Ok(())
+                },
+                ordinary_header,
+            )
             .await?;
         serde_json::from_slice(&bytes).context("invalid upstream listing JSON")
     }
@@ -188,13 +195,14 @@ impl UpstreamClient {
         limit: usize,
         mut bytes: B,
         mut append: F,
+        make_header: impl FnOnce(&str) -> Result<HeaderValue>,
     ) -> Result<B>
     where
         F: FnMut(&mut B, &[u8]) -> Result<()>,
     {
         let mut url = reqwest::Url::parse(&self.root)?;
         url.query_pairs_mut().append_pair("hop", &hop.to_string());
-        let header = self.header(&url)?;
+        let header = self.header(&url, make_header)?;
         let mut request = self.http.get(url);
         if let Some(header) = header {
             request = request.header(header::AUTHORIZATION, header);
@@ -228,8 +236,9 @@ impl UpstreamClient {
     pub(crate) fn websocket_request(
         &self,
         url: &reqwest::Url,
+        make_header: impl FnOnce(&str) -> Result<HeaderValue>,
     ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
-        let header = self.header(url)?;
+        let header = self.header(url, make_header)?;
         let mut request = url
             .as_str()
             .into_client_request()
@@ -243,6 +252,13 @@ impl UpstreamClient {
     pub(crate) fn connector(&self) -> tokio_tungstenite::Connector {
         tokio_tungstenite::Connector::Rustls(self.tls.clone())
     }
+}
+
+#[cfg(test)]
+fn ordinary_header(token: &str) -> Result<HeaderValue> {
+    let mut value = zeroize::Zeroizing::new(String::from("Bearer "));
+    value.push_str(token);
+    HeaderValue::from_str(&value).context("invalid upstream credential header")
 }
 
 #[derive(Clone, Default)]

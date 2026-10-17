@@ -33,6 +33,7 @@ use crate::access::{
 };
 
 mod admission;
+mod authorization;
 mod bookkeeping;
 mod candidate_index;
 mod candidate_input;
@@ -2780,6 +2781,7 @@ async fn fetch_upstream_listing(
             MAX_LIST_BYTES,
             metadata_vec::KnownVec::new(bank.clone(), MAX_LIST_BYTES),
             |bytes, chunk| bytes.extend_copy(chunk),
+            |token| authorization::header(token, bank),
         )
         .await?;
     paid_json::Listing::parse(body.as_slice(), bank)
@@ -3358,13 +3360,17 @@ async fn agent_connect_authorized(
                 error.as_ref(),
             )
         })?;
-    let request = client.websocket_request(&url).map_err(|error| {
-        replies.operation_error(
-            StatusCode::BAD_GATEWAY,
-            "upstream authentication configuration failed",
-            error.as_ref(),
-        )
-    })?;
+    let request = client
+        .websocket_request(&url, |token| {
+            authorization::header(token, &state.inner.global_metadata_bytes)
+        })
+        .map_err(|error| {
+            replies.operation_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream authentication configuration failed",
+                error.as_ref(),
+            )
+        })?;
     let (remote, _) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
         tokio_tungstenite::connect_async_tls_with_config(
