@@ -109,7 +109,59 @@ fn route_body_bytes() -> usize {
     std::mem::size_of::<intent::RetainedRoute>()
 }
 
-fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
+fn source_future_bytes(source: &dyn Source) -> usize {
+    struct NeverPoll;
+    impl TunnelOwner for NeverPoll {
+        fn reserve(
+            &self,
+        ) -> Result<Box<dyn ios_core::TunnelReservation + '_>, ios_core::CoreError> {
+            panic!("measuring an empty Source allocation must never poll it")
+        }
+    }
+    let bank = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let future = source
+        .connect_owned(
+            DEVICE,
+            Route::Wifi(None),
+            TunMode::Userspace,
+            &NeverPoll,
+            &bank,
+        )
+        .unwrap();
+    let bytes = MAX_GLOBAL_KNOWN_METADATA_BYTES - bank.available_permits();
+    drop(future);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    bytes
+}
+
+struct SourcePeak {
+    _hook: future_storage::DropGuard,
+    held: Arc<StdMutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
+}
+impl SourcePeak {
+    fn new(state: &TunnelAgentState, bytes: usize) -> Self {
+        let bank = state.inner.global_metadata_bytes.clone();
+        let held = Arc::new(StdMutex::new(None));
+        let captured = held.clone();
+        let hook = future_storage::after_drop(move || {
+            // The actual Source Box and its fee are ALREADY destroyed. Model
+            // other quota usage with its measured temporary peak, retaining
+            // the original zero-free-byte metadata/cleanup fixture boundary.
+            *captured.lock().unwrap() =
+                Some(bank.clone().try_acquire_many_owned(bytes as u32).unwrap());
+        });
+        Self { _hook: hook, held }
+    }
+    fn checked(&self) {
+        assert!(
+            self.held.lock().unwrap().is_some(),
+            "original Source Box Drop boundary not reached"
+        );
+    }
+}
+
+fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize, SourcePeak) {
+    let temporary = source_future_bytes(&*source);
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>()
         + actual_publication_destination_bytes()
@@ -122,17 +174,20 @@ fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
             + charged
             + Lifecycle::initial_metadata_bytes(DEVICE)
             + record_copy_bytes()
-            + route_body_bytes(),
+            + route_body_bytes()
+            + temporary,
     );
-    (state, charged)
+    let peak = SourcePeak::new(&state, temporary);
+    (state, charged, peak)
 }
 
 #[tokio::test]
 async fn native_metadata_charge_survives_table_removal_until_original_joins_and_eof() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone());
     let record = publish(&state, Route::Wifi(None)).await.unwrap();
+    peak.checked();
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
     state.clear().await;
@@ -168,8 +223,9 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
 async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_metadata() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone());
     let record = publish(&state, Route::Wifi(None)).await.unwrap();
+    peak.checked();
     state.notify_shutdown();
     state.drain_native(OBSERVE).await.unwrap();
     assert!(state.inner.native.snapshot().closed_and_empty());
@@ -195,10 +251,11 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
 async fn native_metadata_charge_survives_cancelled_publication_query_until_original_joins() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged) = configured(source.clone());
+    let (state, charged, peak) = configured(source.clone());
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let mut connection = Box::pin(publish(&state, Route::Usbmux));
     assert!(futures_util::poll!(&mut connection).is_pending());
+    peak.checked();
     assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
     assert_eq!(state.inner.metadata_bytes.available_permits(), 0);
     assert_eq!(state.inner.global_metadata_bytes.available_permits(), 0);
@@ -235,7 +292,9 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
 async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_joins_owner() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (mut state, charged) = configured(source.clone());
+    let (mut state, charged, old_peak) = configured(source.clone());
+    drop(old_peak);
+    let temporary = source_future_bytes(&*source);
     let devices = vec![source::UsbDevice {
         udid: DEVICE.into(),
         device_id: 7,
@@ -247,11 +306,13 @@ async fn global_metadata_rejected_native_publication_keeps_snapshot_charge_and_j
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
-        native_bytes + (total + Lifecycle::initial_metadata_bytes(DEVICE)),
+        native_bytes + (total + Lifecycle::initial_metadata_bytes(DEVICE)) + temporary,
     );
+    let peak = SourcePeak::new(&state, temporary);
     let snapshot =
         admission::retain_usb_snapshot(&state.inner.global_metadata_bytes, &devices).unwrap();
     let result = publish(&state, Route::Wifi(None)).await;
+    peak.checked();
     assert_eq!(
         crate::output::operation_error_class(result.unwrap_err().as_ref()),
         ios_core::ErrorClass::ResourceLimit

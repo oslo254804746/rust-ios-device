@@ -3,6 +3,7 @@ use std::cell::Cell;
 use std::marker::PhantomPinned;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::task::Context;
 
 use super::super::metadata_vec::with_allocation_hook;
 

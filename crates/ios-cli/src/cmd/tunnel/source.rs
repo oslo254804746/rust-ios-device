@@ -82,6 +82,9 @@ pub(super) fn selected_devices(
 #[cfg(test)]
 mod selection_tests;
 
+#[cfg(test)]
+mod future_tests;
+
 pub(super) trait Source: Send + Sync {
     #[cfg(not(test))]
     fn observes_freshness(&self) -> bool;
@@ -124,16 +127,22 @@ pub(super) trait Source: Send + Sync {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.connect(udid, route, mode).await?;
-            if let Some(handle) = device.native_handle() {
-                reservation.attach(Arc::clone(handle))?;
-                reservation.complete();
-            }
-            Ok(device)
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.connect(udid, route, mode).await?;
+                if let Some(handle) = device.native_handle() {
+                    reservation.attach(Arc::clone(handle))?;
+                    reservation.complete();
+                }
+                Ok(device)
+            },
+            bank,
+        )
     }
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot>;
     fn paired_devices(&self) -> BoxFuture<'_, anyhow::Result<Vec<PairedMobdev2Device>>>;
@@ -188,40 +197,48 @@ impl Source for NativeSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
-        Box::pin(async move {
-            let options = ConnectOptions {
-                tun_mode: mode,
-                pair_record_path: None,
-                skip_tunnel: false,
-            };
-            let device = match route {
-                Route::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
-                Route::Usb(host) => {
-                    ios_core::connect_direct_usb_tunnel_with_owner(
-                        udid,
-                        host.as_deref(),
-                        options,
-                        owner,
-                    )
-                    .await?
-                }
-                Route::Wifi(host) => {
-                    ios_core::connect_remote_pairing_tunnel_with_owner(
-                        udid,
-                        host.as_deref(),
-                        options,
-                        owner,
-                    )
-                    .await?
-                }
-                Route::Mobdev2(host) => {
-                    ios_core::connect_tcp_lockdown_tunnel_with_owner(udid, &host, options, owner)
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let options = ConnectOptions {
+                    tun_mode: mode,
+                    pair_record_path: None,
+                    skip_tunnel: false,
+                };
+                let device = match route {
+                    Route::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
+                    Route::Usb(host) => {
+                        ios_core::connect_direct_usb_tunnel_with_owner(
+                            udid,
+                            host.as_deref(),
+                            options,
+                            owner,
+                        )
                         .await?
-                }
-            };
-            Ok(ManagedDevice::Native(Box::new(device)))
-        })
+                    }
+                    Route::Wifi(host) => {
+                        ios_core::connect_remote_pairing_tunnel_with_owner(
+                            udid,
+                            host.as_deref(),
+                            options,
+                            owner,
+                        )
+                        .await?
+                    }
+                    Route::Mobdev2(host) => {
+                        ios_core::connect_tcp_lockdown_tunnel_with_owner(
+                            udid, &host, options, owner,
+                        )
+                        .await?
+                    }
+                };
+                Ok(ManagedDevice::Native(Box::new(device)))
+            },
+            bank,
+        )
     }
 
     fn connect<'a>(

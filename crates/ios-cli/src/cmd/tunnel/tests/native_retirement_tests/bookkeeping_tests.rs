@@ -34,24 +34,30 @@ impl Source for FailureSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.base.connect(udid, route, mode).await?;
-            reservation.attach(device.native_handle().unwrap().clone())?;
-            self.entered.fetch_add(1, Ordering::SeqCst);
-            if udid == DEVICE {
-                self.release_healthy.acquire().await?.forget();
-                reservation.complete();
-                return Ok(device);
-            }
-            self.release_failures.acquire().await?.forget();
-            let mut stream = self.streams.lock().unwrap().remove(udid).unwrap();
-            let error = stream.read_exact(&mut [0; 2]).await.unwrap_err();
-            self.eof.fetch_add(1, Ordering::SeqCst);
-            // The reservation retains the exact original runtime on this Err.
-            Err(error.into())
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.base.connect(udid, route, mode).await?;
+                reservation.attach(device.native_handle().unwrap().clone())?;
+                self.entered.fetch_add(1, Ordering::SeqCst);
+                if udid == DEVICE {
+                    self.release_healthy.acquire().await?.forget();
+                    reservation.complete();
+                    return Ok(device);
+                }
+                self.release_failures.acquire().await?.forget();
+                let mut stream = self.streams.lock().unwrap().remove(udid).unwrap();
+                let error = stream.read_exact(&mut [0; 2]).await.unwrap_err();
+                self.eof.fetch_add(1, Ordering::SeqCst);
+                // The reservation retains the exact original runtime on this Err.
+                Err(error.into())
+            },
+            bank,
+        )
     }
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
