@@ -9013,3 +9013,12 @@ Snapshot key实际复制也先准入。完整tunnel624/0FAIL/2原ignored、上�
 strictCLI/build/Source0通过，见[验证](validation/tunnel-publication-lifetime-2026-10-17.md)。
 remote/框架upgrade joins/private和原完整freshness全审计继续；128MiB非完整
 heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 remote proxy global epoch
+
+只读原global view绑定远端selection/dial/relay，postdial commit阻止退休
+handoff；真实clear/shutdown两跳关闭红灯转绿，local stop不误关外部运行时，
+原peer strict EOF和ready原错误保留已验。完整tunnel629/0FAIL/2原ignored、
+上游10/strictCLI/build/Source0通过，见[验证](validation/tunnel-remote-upgrade-epoch-2026-10-17.md)。
+pending wire/框架upgrade joins/private及全部原freshness审计继续；128MiB非
+完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。

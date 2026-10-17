@@ -4,6 +4,7 @@ use crate::access::test_tls_material::{CA, VALID};
 use tungstenite::client::IntoClientRequest;
 
 mod paid_header_tests;
+mod remote_epoch_tests;
 
 #[derive(clap::Parser)]
 struct Options {

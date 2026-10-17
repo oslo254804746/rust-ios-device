@@ -3406,8 +3406,15 @@ async fn agent_connect_authorized(
             ));
         }
     }
-    let target = state
-        .remote_target(&query)
+    let epoch = state.inner.lifecycle.global_epoch().map_err(|error| {
+        replies.operation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "tunnel manager retired",
+            error.as_ref(),
+        )
+    })?;
+    let target = epoch
+        .run(state.remote_target(&query))
         .await
         .map_err(|err| {
             replies.operation_error(
@@ -3423,6 +3430,13 @@ async fn agent_connect_authorized(
                 ios_core::ErrorClass::NotFound,
             )
         })?;
+    epoch.check().map_err(|error| {
+        replies.operation_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream selection retired",
+            error.as_ref(),
+        )
+    })?;
     let url = remote_connect_url(&target, &query).map_err(|err| {
         replies.operation_error(
             StatusCode::BAD_REQUEST,
@@ -3452,38 +3466,52 @@ async fn agent_connect_authorized(
                 error.as_ref(),
             )
         })?;
-    let (remote, _) = tokio::time::timeout(
-        TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            Some(tungstenite::protocol::WebSocketConfig {
-                max_message_size: Some(MAX_WS_MESSAGE_BYTES),
-                max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
-                ..Default::default()
-            }),
-            false,
-            Some(client.connector()),
-        ),
-    )
-    .await
-    .map_err(|error| {
-        replies.classified_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "upstream WebSocket dial timed out",
-            ios_core::classify_error(&error),
-        )
-    })?
-    .map_err(|err| {
+    let (remote, _) = epoch
+        .run(async {
+            tokio::time::timeout(
+                TUNNEL_CONNECT_TIMEOUT,
+                tokio_tungstenite::connect_async_tls_with_config(
+                    request,
+                    Some(tungstenite::protocol::WebSocketConfig {
+                        max_message_size: Some(MAX_WS_MESSAGE_BYTES),
+                        max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
+                        ..Default::default()
+                    }),
+                    false,
+                    Some(client.connector()),
+                ),
+            )
+            .await
+            .map_err(anyhow::Error::new)?
+            .map_err(anyhow::Error::new)
+        })
+        .await
+        .map_err(|error| {
+            if error.is::<tokio::time::error::Elapsed>() {
+                replies.classified_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "upstream WebSocket dial timed out",
+                    ios_core::classify_error(error.as_ref()),
+                )
+            } else {
+                replies.operation_error(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream WebSocket dial failed",
+                    error.as_ref(),
+                )
+            }
+        })?;
+    let remote = epoch.commit(|| Ok(remote)).map_err(|error| {
         replies.operation_error(
             StatusCode::BAD_GATEWAY,
-            "upstream WebSocket dial failed",
-            &err,
+            "upstream connection retired",
+            error.as_ref(),
         )
     })?;
     Ok(bounded_websocket_upgrade(ws)
         .on_upgrade(move |socket| async move {
             tokio::select! {
-                result = bridge_websockets(socket, remote) => {
+                result = epoch.run(bridge_websockets(socket, remote)) => {
                     if let Err(err) = result {
                         tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: remote WebSocket bridge ended");
                     }
