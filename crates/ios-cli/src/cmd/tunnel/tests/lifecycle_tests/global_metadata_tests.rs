@@ -133,7 +133,7 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
         * std::mem::size_of::<(
             Arc<candidate_input::Input>,
             Option<Ticket>,
-            Box<failure_table::Node>,
+            failure_table::OwnedNode,
         )>();
     let owners = targets
         .iter()

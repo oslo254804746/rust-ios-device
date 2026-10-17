@@ -1814,7 +1814,7 @@ impl TunnelAgentState {
         route: RouteRef<'_>,
         ticket: &Ticket,
         input: Option<Arc<candidate_input::Input>>,
-        prepared: &mut Option<Box<failure_table::Node>>,
+        prepared: &mut Option<failure_table::OwnedNode>,
         context: RefreshContext<'_, '_>,
     ) -> ScanAttemptOutcome {
         let RefreshContext {
@@ -2683,8 +2683,11 @@ impl TunnelAgentState {
                 Ok(Some(ScanIntent::Failure(FailureIntent { ticket, failed })))
             }
             ScanAttemptOutcome::Success(success) => {
-                let (udid, input, key_storage) =
-                    (*node.take().expect("successful prepared key")).into_success_key();
+                let (udid, input, key_storage) = node
+                    .take()
+                    .expect("successful prepared key")
+                    .into_inner()
+                    .into_success_key();
                 Ok(Some(ScanIntent::Success(SuccessIntent {
                     _key_storage: key_storage,
                     udid: udid.into(),
@@ -2857,7 +2860,7 @@ impl TunnelAgentState {
     #[cfg(test)]
     async fn record_prepared_failure(
         &self,
-        node: Box<failure_table::Node>,
+        node: failure_table::OwnedNode,
         destination: failure_table::Destination,
         ticket: &Ticket,
     ) {

@@ -2,6 +2,56 @@ use super::super::{future_storage::Dynamic, metadata_vec};
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn node_body_into_inner_frees_original_high_alignment_box_before_refund_and_value_drop() {
+    #[repr(align(128))]
+    struct Value(Arc<Semaphore>, Arc<AtomicUsize>, usize);
+    impl Drop for Value {
+        fn drop(&mut self) {
+            assert_eq!(self.0.available_permits(), std::mem::size_of::<Self>());
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let bytes = std::mem::size_of::<Value>();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let owner = Destination::new(&bank)
+        .unwrap()
+        .place(Value(bank.clone(), drops.clone(), 713));
+    assert_eq!(&*owner as *const Value as usize % 128, 0);
+    assert_eq!(bank.available_permits(), 0);
+    let value = metadata_vec::with_allocation_hook(
+        |_, _| panic!("into_inner allocated"),
+        || owner.into_inner(),
+    );
+    assert_eq!(value.2, 713);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), bytes);
+    drop(value);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn node_body_into_inner_zst_moves_once_without_allocation_or_double_drop() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Value;
+    impl Drop for Value {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    DROPS.store(0, Ordering::SeqCst);
+    let bank = Arc::new(Semaphore::new(0));
+    let value = metadata_vec::with_allocation_hook(
+        |_, _| panic!("ZST allocated"),
+        || Destination::new(&bank).unwrap().place(Value).into_inner(),
+    );
+    assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+    assert_eq!(bank.available_permits(), 0);
+    drop(value);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+
 #[repr(align(128))]
 struct Device {
     bank: Arc<Semaphore>,

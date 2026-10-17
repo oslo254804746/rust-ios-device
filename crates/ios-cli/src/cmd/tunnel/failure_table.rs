@@ -99,15 +99,16 @@ impl std::fmt::Debug for Identity {
 /// Prepared before Source first poll; this exact Box becomes the table row.
 /// uid uses Input's single actual destination. Its independent original fee
 /// follows the key through failure nodes and deferred success cleanup.
+pub(super) type OwnedNode = super::owned_box::Owner<Node>;
+
 pub(super) struct Node {
     pub(super) udid: String,
     pub(super) row: FailedTunnelAttempt,
     input: Option<Arc<Input>>,
     _key_storage: Option<OwnedSemaphorePermit>,
-    _storage: OwnedSemaphorePermit,
     selected: bool,
     position: usize,
-    next: Option<Box<Node>>,
+    next: Option<OwnedNode>,
 }
 
 impl Node {
@@ -115,16 +116,16 @@ impl Node {
         input: Arc<Input>,
         native_id: Option<u32>,
         bank: &Arc<Semaphore>,
-    ) -> Result<Box<Self>> {
+    ) -> Result<OwnedNode> {
         anyhow::ensure!(
             Arc::ptr_eq(input.storage_bank(), bank),
             crate::output::resource_decision("tunnel failure input metadata bank mismatch")
         );
         // Prepare node/identity before consuming Input's single key destination.
-        let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let destination = super::owned_box::Destination::<Self>::new(bank)?;
         let identity = Identity::copied(&input.route, native_id, bank)?;
         let (udid, key_storage) = input.outcome_key()?;
-        Ok(Box::new(Self {
+        Ok(destination.place(Self {
             udid,
             row: FailedTunnelAttempt {
                 version: Arc::new(()),
@@ -136,7 +137,6 @@ impl Node {
             },
             input: Some(input),
             _key_storage: Some(key_storage),
-            _storage: storage,
             selected: false,
             position: 0,
             next: None,
@@ -146,14 +146,15 @@ impl Node {
     /// Only for test-supplied rows/intents, not an unchecked production constructor.
     #[cfg(test)]
     pub(super) fn owned(
-        udid: String,
+        incoming_udid: String,
         identity: AttemptIdentity,
         bank: &Arc<Semaphore>,
-    ) -> Result<Box<Self>> {
-        let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
-        let key_storage = super::admission::known_metadata_charge(bank, udid.capacity())?;
+    ) -> Result<OwnedNode> {
+        let destination = super::owned_box::Destination::<Self>::new(bank)?;
+        let key_storage = super::admission::known_metadata_charge(bank, incoming_udid.capacity())?;
+        let udid = incoming_udid;
         let identity = Identity::owned(identity, bank)?;
-        Ok(Box::new(Self {
+        Ok(destination.place(Self {
             udid,
             row: FailedTunnelAttempt {
                 version: Arc::new(()),
@@ -165,7 +166,6 @@ impl Node {
             },
             input: None,
             _key_storage: Some(key_storage),
-            _storage: storage,
             selected: false,
             position: 0,
             next: None,
@@ -205,7 +205,7 @@ impl Node {
 /// Separate backing prepared by the Source window. It is not tied to a live
 /// empty table that clear/stop may destroy while Source is still pending.
 pub(super) struct Destination {
-    rows: KnownVec<Box<Node>>,
+    rows: KnownVec<OwnedNode>,
 }
 impl Destination {
     pub(super) fn new(bank: &Arc<Semaphore>) -> Result<Self> {
@@ -215,12 +215,12 @@ impl Destination {
     }
     #[cfg(test)]
     pub(super) fn minimum_bytes() -> usize {
-        MAX_FAILURE_RECORDS * std::mem::size_of::<Box<Node>>()
+        MAX_FAILURE_RECORDS * std::mem::size_of::<OwnedNode>()
     }
 }
 
 pub(super) struct Table {
-    rows: KnownVec<Box<Node>>,
+    rows: KnownVec<OwnedNode>,
     #[cfg(test)]
     after_remove: Option<Box<dyn FnOnce() + Send + Sync>>,
     #[cfg(test)]
@@ -293,7 +293,7 @@ impl Table {
     }
 
     /// The destination was allocated before Source; replacement never charges.
-    pub(super) fn insert_reserved(&mut self, node: Box<Node>) -> Change {
+    pub(super) fn insert_reserved(&mut self, node: OwnedNode) -> Change {
         let index = self.position(&node.udid).unwrap_or(self.len());
         let old = if index < self.len() {
             let mut old = std::mem::replace(&mut self.rows.as_mut_slice()[index], node);
@@ -308,24 +308,24 @@ impl Table {
 
     /// Roll back under the same table and ticket guards; caller retains the
     /// unobserved late node until both guards have been released.
-    pub(super) fn rollback(&mut self, change: Change) -> Box<Node> {
+    pub(super) fn rollback(&mut self, change: Change) -> OwnedNode {
         let late = self.rows.remove(change.index);
         if let Some(old) = change.old {
             self.rows.insert_reserved(change.index, old);
         }
         late
     }
-    pub(super) fn commit(change: Change) -> Option<Box<Node>> {
+    pub(super) fn commit(change: Change) -> Option<OwnedNode> {
         change.old
     }
 
-    pub(super) fn remove(&mut self, udid: &str) -> Option<Box<Node>> {
+    pub(super) fn remove(&mut self, udid: &str) -> Option<OwnedNode> {
         let index = self.position(udid)?;
         let mut old = self.rows.remove(index);
         old.position = index;
         Some(old)
     }
-    pub(super) fn restore(&mut self, mut node: Box<Node>) {
+    pub(super) fn restore(&mut self, mut node: OwnedNode) {
         node.selected = false;
         let index = node.position;
         self.rows.insert_reserved(index, node);
@@ -415,7 +415,7 @@ impl Table {
 
     #[cfg(test)]
     pub(super) fn backing_bytes(&self) -> usize {
-        self.rows.capacity() * std::mem::size_of::<Box<Node>>()
+        self.rows.capacity() * std::mem::size_of::<OwnedNode>()
     }
 }
 
@@ -430,22 +430,22 @@ impl Index<&str> for Table {
 /// Must be committed or rolled back while its original table guard is held.
 pub(super) struct Change {
     index: usize,
-    old: Option<Box<Node>>,
+    old: Option<OwnedNode>,
 }
 
 #[derive(Default)]
 pub(super) struct RemovedBatch {
-    head: Option<Box<Node>>,
+    head: Option<OwnedNode>,
 }
 impl RemovedBatch {
-    pub(super) fn push(&mut self, mut node: Box<Node>) {
+    pub(super) fn push(&mut self, mut node: OwnedNode) {
         assert!(node.next.is_none());
         node.next = self.head.take();
         self.head = Some(node);
     }
 }
 impl Iterator for RemovedBatch {
-    type Item = Box<Node>;
+    type Item = OwnedNode;
     fn next(&mut self) -> Option<Self::Item> {
         let mut node = self.head.take()?;
         self.head = node.next.take();

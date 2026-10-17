@@ -38,6 +38,24 @@ pub(super) struct Owner<T> {
     _storage: OwnedSemaphorePermit,
 }
 impl<T> Owner<T> {
+    pub(super) fn into_inner(self) -> T {
+        let Self {
+            data,
+            _storage: storage,
+        } = self;
+        let pointer = Box::into_raw(data);
+        // SAFETY: this sealed owner contains exactly one initialized T in the
+        // original global allocation. Array<T>(1) has exactly T's size/alignment;
+        // for ZST the original pointer is aligned and needs no allocation. The
+        // Box has relinquished ownership, and this sole Vec now owns the same
+        // pointer. pop moves T out once; dropping the empty Vec frees the body.
+        let mut values = unsafe { Vec::from_raw_parts(pointer, 1, 1) };
+        let value = values.pop().expect("original owned Box contains one value");
+        drop(values);
+        drop(storage);
+        value
+    }
+
     pub(super) fn bytes_in(&self, bank: &Arc<Semaphore>) -> Result<usize> {
         anyhow::ensure!(
             Arc::ptr_eq(self._storage.semaphore(), bank),

@@ -11,7 +11,7 @@ pub(super) struct Candidate {
     pub(super) input: Arc<super::candidate_input::Input>,
     pub(super) ticket: Ticket,
     pub(super) native_id: Option<u32>,
-    pub(super) node: Box<super::failure_table::Node>,
+    pub(super) node: super::failure_table::OwnedNode,
 }
 
 #[cfg(test)]

@@ -4,6 +4,106 @@ use super::*;
 const BANK: usize = 262_144;
 
 #[test]
+fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_owner() {
+    let bank = Arc::new(Semaphore::new(BANK));
+    let input = Input::copied("original-body-node", super::super::RouteRef::Usbmux, &bank).unwrap();
+    let body = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = body.clone();
+    let charged = bank.clone();
+    let node = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(layout, std::alloc::Layout::new::<Node>());
+            assert!(charged.available_permits() <= BANK - layout.size());
+            captured.store(pointer, std::sync::atomic::Ordering::SeqCst);
+        },
+        || Node::input(input, Some(7), &bank).unwrap(),
+    );
+    let pointer = body.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(&*node as *const Node as usize, pointer);
+    assert_eq!(node.bytes_in(&bank).unwrap(), std::mem::size_of::<Node>());
+    let mut table = table(&bank);
+    assert!(Table::commit(table.insert_reserved(node)).is_none());
+    let backing = table.backing_bytes();
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    let mut removed = table.take_all();
+    assert_eq!(bank.available_permits(), backing);
+    let retained = removed.next().unwrap();
+    drop((removed, table));
+    assert_eq!(&*retained as *const Node as usize, pointer);
+    assert_eq!(
+        retained.bytes_in(&bank).unwrap(),
+        std::mem::size_of::<Node>()
+    );
+    assert_eq!(bank.available_permits(), backing);
+    drop(retained);
+    assert_eq!(bank.available_permits(), BANK - held.num_permits());
+    drop(held);
+    assert_eq!(bank.available_permits(), BANK);
+}
+
+#[test]
+fn node_body_last_byte_refusal_precedes_allocation_identity_and_original_key_claim() {
+    let bank = Arc::new(Semaphore::new(BANK));
+    let input = Input::copied("body-refusal-key", super::super::RouteRef::Usbmux, &bank).unwrap();
+    let leave = std::mem::size_of::<Node>() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+        .unwrap();
+    let error = super::super::metadata_vec::with_allocation_hook(
+        |_, _| panic!("refused Node body allocated"),
+        || Node::input(input.clone(), None, &bank).err().unwrap(),
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(bank.available_permits(), leave);
+    let key = input.outcome_key().unwrap();
+    assert_eq!(key.0, "body-refusal-key");
+    drop((key, error, held, input));
+    assert_eq!(bank.available_permits(), BANK);
+}
+
+#[test]
+fn node_body_empty_destination_refunds_after_identity_refusal_without_claiming_original_key() {
+    let bank = Arc::new(Semaphore::new(BANK));
+    let input = Input::copied(
+        "identity-refusal-key",
+        super::super::RouteRef::Usbmux,
+        &bank,
+    )
+    .unwrap();
+    let leave = std::mem::size_of::<Node>() + std::mem::size_of::<IdentityOwner>() - 1;
+    let held = bank
+        .clone()
+        .try_acquire_many_owned((bank.available_permits() - leave) as u32)
+        .unwrap();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = count.clone();
+    let error = super::super::metadata_vec::with_allocation_hook(
+        move |layout, _| {
+            assert_eq!(layout, std::alloc::Layout::new::<Node>());
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+        || Node::input(input.clone(), None, &bank).err().unwrap(),
+    );
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), leave);
+    let key = input.outcome_key().unwrap();
+    assert_eq!(key.0, "identity-refusal-key");
+    drop((key, error, held, input));
+    assert_eq!(bank.available_permits(), BANK);
+}
+
+#[test]
 fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_clone() {
     let original = Route::Mobdev2("原-failure-host".into());
     let length = super::super::candidate_input::route_length(&original);

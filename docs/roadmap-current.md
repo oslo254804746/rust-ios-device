@@ -82,3 +82,9 @@ body、已用字段与未用 credit 分离，原全额预算和 capsule-before-S
 专项7、完整 tunnel678、upstream10、严格 CLI/build/只读 Source0 门禁通过；
 首轮 credit 重用问题已由原短额测试发现并修复。原 body 最后 allocation owner
 及 SDK/发现输出、完整规则审计继续，L02 主项不关闭。
+
+随后[failure Node body 最后 owner](validation/tunnel-node-body-owner-2026-10-17.md)
+已使用原实际 Box 外的独立 permit，表/链表/批次均持同一 owner，actual wrapper
+backing 创建前收费；success 显式释放 body 后退款，原 key 独立保留。专项5、
+完整 tunnel683、upstream10、严格 CLI/build/只读 Source0 门禁通过。其它 body
+owner、SDK/发现输出和完整规则审计继续，L02 未关闭。

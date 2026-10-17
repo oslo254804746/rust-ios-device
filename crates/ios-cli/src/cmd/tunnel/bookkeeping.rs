@@ -1,5 +1,5 @@
 //! Bounded failure writes and contested success cleanup after the scan window.
-use super::failure_table::{Destination, Node, RemovedBatch, Table};
+use super::failure_table::{Destination, OwnedNode, RemovedBatch, Table};
 use super::{Ticket, TunnelAgentState};
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 pub(super) struct DeferredFailure {
-    pub(super) node: Box<Node>,
+    pub(super) node: OwnedNode,
     pub(super) receipt: Option<Arc<super::reconnect::FailureReceipt>>,
     // Direct-attempt fixtures also reserve their destination before Source.
     #[cfg(test)]
@@ -429,7 +429,7 @@ impl TunnelAgentState {
         success: &DeferredSuccess,
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
-    ) -> Result<Option<Box<Node>>> {
+    ) -> Result<Option<OwnedNode>> {
         self.remove_success_row_authorized(failed, udid, success, ticket, deadline, None)
     }
 
@@ -441,7 +441,7 @@ impl TunnelAgentState {
         ticket: &Ticket,
         deadline: &super::lifecycle::ConnectionDeadline,
         authority: Option<&crate::access::DeviceAuthority>,
-    ) -> Result<Option<Box<Node>>> {
+    ) -> Result<Option<OwnedNode>> {
         if !failed
             .get(udid)
             .is_some_and(|old| Arc::ptr_eq(&old.version, &success.version))

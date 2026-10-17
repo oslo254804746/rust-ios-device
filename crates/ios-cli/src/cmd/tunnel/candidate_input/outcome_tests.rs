@@ -86,13 +86,25 @@ fn outcome_key_node_uses_original_destination_and_duplicate_refusal_keeps_origin
         .values
         .as_ptr();
     let node = metadata_vec::with_allocation_hook(
-        |_, _| panic!("Node key allocated another destination"),
+        |layout, _| {
+            assert_eq!(
+                layout,
+                std::alloc::Layout::new::<Node>(),
+                "Node key allocated another destination"
+            )
+        },
         || Node::input(input.clone(), None, &bank).unwrap(),
     );
     assert_eq!(node.udid.as_ptr(), pointer);
     let before = bank.available_permits();
     let error = metadata_vec::with_allocation_hook(
-        |_, _| panic!("second Node key allocated"),
+        |layout, _| {
+            assert_eq!(
+                layout,
+                std::alloc::Layout::new::<Node>(),
+                "second Node key allocated"
+            )
+        },
         || Node::input(input.clone(), None, &bank).err().unwrap(),
     );
     assert_eq!(
@@ -125,7 +137,7 @@ async fn outcome_key_actual_success_intent_keeps_original_key_fee_after_input_an
         .as_ptr();
     let node = Node::input(input, None, &bank).unwrap();
     let version = node.row.version.clone();
-    let (key, input, key_storage) = (*node).into_success_key();
+    let (key, input, key_storage) = node.into_inner().into_success_key();
     assert_eq!(key.as_ptr(), pointer);
     let mut success = SuccessIntent {
         udid: key.into(),
