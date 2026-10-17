@@ -191,6 +191,8 @@ impl<T> Iterator for IntoIter<T> {
     }
 }
 
+impl<T> ExactSizeIterator for IntoIter<T> {}
+
 impl<T> IntoIterator for KnownVec<T> {
     type Item = T;
     type IntoIter = IntoIter<T>;

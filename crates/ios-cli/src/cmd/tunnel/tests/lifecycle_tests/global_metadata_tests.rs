@@ -624,6 +624,7 @@ async fn write_batch_bytes_refusal_happens_before_original_source_poll() {
         + selection
         + rows
         + Lifecycle::initial_metadata_bytes(A)
+        + TunnelAgentState::scan_window_bytes(1)
         + bookkeeping::WriteBatch::backing_bytes(1)
         - 1;
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
@@ -676,6 +677,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
         + selection
         + Lifecycle::additional_metadata_bytes(A)
         + candidate_index::Candidate::first_usb_bytes(A)
+        + TunnelAgentState::scan_window_bytes(1)
         + std::mem::size_of::<usize>()
         + failure_table::Destination::minimum_bytes()
         - 1;
@@ -796,6 +798,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
                 + selection
                 + candidate
                 + Lifecycle::initial_metadata_bytes(A)
+                + TunnelAgentState::scan_window_bytes(1)
                 + failure_table::Destination::minimum_bytes()),
     );
     let mut scan = Box::pin(state.refresh_once());
@@ -811,6 +814,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
             + charge
             + selection
             + candidate
+            + TunnelAgentState::scan_window_bytes(1)
             + failure_table::Destination::minimum_bytes()
     );
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);

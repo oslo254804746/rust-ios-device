@@ -1,4 +1,67 @@
 use super::*;
+
+#[tokio::test]
+async fn scan_window_actual_last_payload_byte_refusal_occurs_before_every_original_connect() {
+    let source = FakeSource::new();
+    *source.usb.lock().unwrap() = vec![
+        A.into(),
+        B.into(),
+        "third-window-device".into(),
+        "fourth-window-device".into(),
+    ];
+    let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
+    let bank = state.inner.global_metadata_bytes.clone();
+    let held = Arc::new(StdMutex::new(None));
+    let captured = held.clone();
+    let charged = bank.clone();
+    let width = Arc::new(AtomicUsize::new(0));
+    let seen_width = width.clone();
+    let stage = owned_window::on_preflight(move |bytes, count| {
+        assert_eq!(count, lifecycle::MAX_CONNECTS);
+        assert!(bytes > 0);
+        seen_width.store(bytes, Ordering::SeqCst);
+        // This is the actual compiler-sized production candidate future after
+        // its actual slot array, not an estimated placeholder future type.
+        let leave = count * bytes - 1;
+        *captured.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned((charged.available_permits() - leave) as u32)
+                .unwrap(),
+        );
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured = calls.clone();
+    let allocated = metadata_vec::on_allocation(move |layout, _| {
+        if layout.size() == width.load(Ordering::SeqCst) {
+            captured.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let error = state.refresh_once().await.unwrap_err();
+    drop(allocated);
+    drop(stage);
+    assert!(held.lock().unwrap().is_some());
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), lifecycle::MAX_CONNECTS - 1);
+    assert!(source.calls.lock().unwrap().is_empty());
+    assert_eq!(source.active.load(Ordering::SeqCst), 0);
+    assert_eq!(source.usb_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert!(state.inner.tunnels.read().await.is_empty());
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    assert!(!state.is_ready().await);
+    held.lock().unwrap().take();
+    drop(error);
+    state.notify_shutdown();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
 use crate::cmd::tunnel::record_owner::PaidRecord;
 
 fn scan_job(state: &TunnelAgentState) -> tokio::task::JoinHandle<Result<()>> {

@@ -47,6 +47,7 @@ mod manual_success;
 mod metadata_vec;
 mod observed_route;
 mod owned_join;
+mod owned_window;
 mod ownership;
 mod paid_json;
 mod paired_observed;
@@ -2313,6 +2314,14 @@ impl TunnelAgentState {
         if !self.inner.lifecycle.scan_is_current(&scan_generation) {
             return Ok(());
         }
+        // The actual initial USB execution frames remain paid across an
+        // incomplete paired snapshot, just like the original failure destination.
+        let make_future = |candidate| self.scan_candidate(candidate, whole, session);
+        let prepared_window = owned_window::prepare(
+            &self.inner.global_metadata_bytes,
+            candidates.len(),
+            make_future,
+        )?;
         // Discover both families before connecting so a pending USB connection
         // cannot prevent a known mobdev2 candidate from entering the window.
         // Keep a discovery failure until the USB candidates have been processed,
@@ -2567,6 +2576,7 @@ impl TunnelAgentState {
             session,
             failure_destination,
             manual_success,
+            (prepared_window, make_future),
         )
         .await?;
         if session.has_primary() {
@@ -2580,14 +2590,75 @@ impl TunnelAgentState {
         Ok(())
     }
 
-    async fn refresh_candidates(
+    #[cfg(test)]
+    fn scan_window_bytes(count: usize) -> usize {
+        owned_window::measured_bytes(Self::scan_candidate, count)
+    }
+
+    async fn scan_candidate(
+        &self,
+        candidate: candidate_index::Candidate,
+        whole: &scan::Deadline,
+        session: &scan::Session<'_>,
+    ) -> Result<Option<ScanIntent>> {
+        let candidate_index::Candidate {
+            input,
+            ticket,
+            node,
+            ..
+        } = candidate;
+        let mut node = Some(node);
+        let route = match input.source_route() {
+            Ok(route) => route,
+            Err(error) => return Err(error),
+        };
+        match self
+            .refresh_connect_with_input(
+                &input.udid,
+                route,
+                &ticket,
+                Some(Arc::clone(&input)),
+                &mut node,
+                RefreshContext {
+                    whole: Some(whole),
+                    session: Some(session),
+                },
+            )
+            .await
+        {
+            ScanAttemptOutcome::Failure(failed) => {
+                Ok(Some(ScanIntent::Failure(FailureIntent { ticket, failed })))
+            }
+            ScanAttemptOutcome::Success(success) => {
+                let (udid, input, key_storage) =
+                    (*node.take().expect("successful prepared key")).into_success_key();
+                Ok(Some(ScanIntent::Success(SuccessIntent {
+                    _key_storage: key_storage,
+                    udid: udid.into(),
+                    ticket,
+                    success,
+                    _input: input,
+                })))
+            }
+            ScanAttemptOutcome::NoChange => Ok(None),
+        }
+    }
+
+    async fn refresh_candidates<F>(
         &self,
         candidates: metadata_vec::KnownVec<candidate_index::Candidate>,
         whole: &scan::Deadline,
         session: &scan::Session<'_>,
         destination: Option<failure_table::Destination>,
         manual_success: Box<manual_success::Preflight>,
-    ) -> Result<()> {
+        execution: (
+            owned_window::Prepared<F>,
+            impl FnMut(candidate_index::Candidate) -> F,
+        ),
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = Result<Option<ScanIntent>>>,
+    {
         // Own these futures in the scanner itself. Dropping the scan cancels
         // every active connection and releases its serial guard/permit.
         let mut batch = bookkeeping::WriteBatch::with_destination(
@@ -2596,53 +2667,14 @@ impl TunnelAgentState {
             destination,
         )?;
         session.retain_writes(batch.owner())?;
-        let mut connections = futures_util::stream::iter(candidates)
-            .map(|candidate| async move {
-                let candidate_index::Candidate {
-                    input,
-                    ticket,
-                    node,
-                    ..
-                } = candidate;
-                let mut node = Some(node);
-                let route = match input.source_route() {
-                    Ok(route) => route,
-                    Err(error) => return Err(error),
-                };
-                match self
-                    .refresh_connect_with_input(
-                        &input.udid,
-                        route,
-                        &ticket,
-                        Some(Arc::clone(&input)),
-                        &mut node,
-                        RefreshContext {
-                            whole: Some(whole),
-                            session: Some(session),
-                        },
-                    )
-                    .await
-                {
-                    ScanAttemptOutcome::Failure(failed) => {
-                        Ok(Some(ScanIntent::Failure(FailureIntent { ticket, failed })))
-                    }
-                    ScanAttemptOutcome::Success(success) => {
-                        let (udid, input, key_storage) =
-                            (*node.take().expect("successful prepared key")).into_success_key();
-                        Ok(Some(ScanIntent::Success(SuccessIntent {
-                            _key_storage: key_storage,
-                            udid: udid.into(),
-                            ticket,
-                            success,
-                            _input: input,
-                        })))
-                    }
-                    ScanAttemptOutcome::NoChange => Ok(None),
-                }
-            })
-            .buffer_unordered(lifecycle::MAX_CONNECTS);
+        let (prepared, make_future) = execution;
+        let futures = candidates.into_iter().map(make_future);
+        let mut connections = match owned_window::Window::from_prepared(prepared, futures) {
+            Ok(window) => window,
+            Err(error) => return batch.finish(Err(error)),
+        };
         while let Some(outcome) = connections.next().await {
-            let outcome = match outcome {
+            let outcome = match outcome.and_then(|outcome| outcome) {
                 Ok(outcome) => outcome,
                 Err(error) => return batch.finish(Err(error)),
             };

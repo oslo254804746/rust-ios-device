@@ -166,7 +166,9 @@ fn metadata_vec_growth_refusal_preserves_original_rows_and_last_iterator_release
     assert_eq!(rows.as_slice(), &[1, 2]);
     assert_eq!(bank.available_permits(), std::mem::size_of::<usize>());
     let mut iterator = rows.into_iter();
+    assert_eq!(iterator.len(), 2);
     assert_eq!(iterator.next(), Some(1));
+    assert_eq!(iterator.len(), 1);
     assert_eq!(bank.available_permits(), std::mem::size_of::<usize>());
     drop(iterator);
     assert_eq!(bank.available_permits(), 3 * std::mem::size_of::<usize>());
