@@ -9050,3 +9050,12 @@ strictCLI/build/Source0通过，未变生产全量证据复用，见
 strictCLI/build/Source0通过，见[验证](validation/tunnel-scan-window-storage-2026-10-17.md)。
 其余Source/SDK/private存储及原freshness全审计继续，128MiB非完整heap/RSS，
 L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 original Source future allocation
+
+NativeSource具体F在原Box分配前准入，直接unsize同一allocation；permit置于
+Box之外，构造拒绝不poll且先于retry启动，Ready销毁后释放。原输出/typed
+error/epoch/native joins保持。完整tunnel648/0FAIL/2原ignored、上游10/
+strictCLI/build/Source0通过，见[验证](validation/tunnel-source-future-storage-2026-10-17.md)。
+返回device Box/其它Source/SDK/private及原完整freshness等继续；128MiB非完整
+heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。

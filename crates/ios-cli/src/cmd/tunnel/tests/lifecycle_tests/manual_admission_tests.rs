@@ -6,6 +6,43 @@ use futures_util::FutureExt;
 const FIELD_BYTES: usize = 4096;
 
 #[tokio::test]
+async fn source_future_constructor_last_byte_refusal_never_runs_source_or_consumes_retry() {
+    let source = FakeSource::new();
+    let state = state(source.clone(), LOCAL_BUDGET);
+    drop(state.inner.lifecycle.ticket(A).await.unwrap());
+    let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
+    let held = Arc::new(StdMutex::new(None));
+    let captured = held.clone();
+    let charged = bank.clone();
+    let hook = future_storage::on_dynamic_layout(move |bytes| {
+        assert!(bytes > 0);
+        *captured.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned((charged.available_permits() - bytes + 1) as u32)
+                .unwrap(),
+        );
+    });
+    let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+    drop(hook);
+    assert!(held.lock().unwrap().is_some());
+    assert!(error.is::<ownership::Admission>());
+    resource(&error);
+    assert_eq!(source_counts(&source), (0, 0, 0));
+    assert_eq!(state.inner.native.snapshot().occupied(), 0);
+    assert_eq!(state.inner.retry.receipt_count(), 0);
+    assert!(state.inner.failed_attempts.read().await.is_empty());
+    held.lock().unwrap().take();
+    let backing = state.inner.tunnels.read().await.backing_bytes();
+    assert_eq!(bank.available_permits(), before - backing);
+    drop(error);
+    recover(&state, &source).await;
+    drop(state);
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+}
+
+#[tokio::test]
 async fn native_source_admission_full_registry_default_start_never_browses_paired_fallback() {
     let source = FakeSource::new();
     let state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);

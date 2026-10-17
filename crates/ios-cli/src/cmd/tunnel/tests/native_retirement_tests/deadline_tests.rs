@@ -61,31 +61,37 @@ impl Source for DelayedSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.base.connect(udid, route, mode).await?;
-            reservation.attach(device.native_handle().unwrap().clone())?;
-            if matches!(self.delay, Delay::SourceSuccess | Delay::SourceFailure) {
-                std::thread::sleep(CROSS);
-            }
-            if matches!(self.delay, Delay::SourceFailure) {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "synthetic-private-late-source",
-                )
-                .into());
-            }
-            reservation.complete();
-            let ManagedDevice::Fake(device) = device else {
-                unreachable!("private native metadata seam")
-            };
-            Ok(ManagedDevice::Fake(Box::new(DelayedDevice {
-                device,
-                delay: self.delay,
-                records: self.records.clone(),
-            })))
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.base.connect(udid, route, mode).await?;
+                reservation.attach(device.native_handle().unwrap().clone())?;
+                if matches!(self.delay, Delay::SourceSuccess | Delay::SourceFailure) {
+                    std::thread::sleep(CROSS);
+                }
+                if matches!(self.delay, Delay::SourceFailure) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "synthetic-private-late-source",
+                    )
+                    .into());
+                }
+                reservation.complete();
+                let ManagedDevice::Fake(device) = device else {
+                    unreachable!("private native metadata seam")
+                };
+                Ok(ManagedDevice::Fake(Box::new(DelayedDevice {
+                    device,
+                    delay: self.delay,
+                    records: self.records.clone(),
+                })))
+            },
+            bank,
+        )
     }
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         self.base.usb_devices()

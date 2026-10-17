@@ -143,65 +143,71 @@ impl Source for MeasurementSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            anyhow::ensure!(route == Route::Usbmux, "unexpected fixture route");
-            anyhow::ensure!(
-                matches!(mode, TunMode::Userspace),
-                "unexpected fixture mode"
-            );
-            let index = self
-                .ids
-                .iter()
-                .position(|candidate| candidate == udid)
-                .context("unknown fixture device")?;
-            {
-                let originals = self.originals.lock().unwrap();
-                anyhow::ensure!(originals.len() < MAX_DEVICES, "original owner fixture full");
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                anyhow::ensure!(route == Route::Usbmux, "unexpected fixture route");
                 anyhow::ensure!(
-                    originals
-                        .iter()
-                        .all(|original| original.native.udid != udid),
-                    "duplicate original fixture owner"
+                    matches!(mode, TunMode::Userspace),
+                    "unexpected fixture mode"
                 );
-            }
-            let mut reservation = owner.reserve()?;
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-            let address = listener.local_addr()?;
-            let (stream, accepted) =
-                tokio::try_join!(TcpStream::connect(address), listener.accept())?;
-            let (peer, _) = accepted;
-            drop(listener);
-            stream.set_nodelay(true)?;
-            peer.set_nodelay(true)?;
-            let runtime =
-                ios_core::UserspaceTunDevice::start("fd00::2", "fd00::1", 1280, stream).await?;
-            let native = Arc::new(TunnelHandle::new_userspace(
-                udid.into(),
-                ios_core::TunnelInfo {
-                    server_address: "fd00::1".into(),
-                    server_rsd_port: 58783,
-                    client_address: "fd00::2".into(),
-                    client_mtu: 1280,
-                },
-                runtime,
-            ));
-            // Retain the exact handle before attachment/publication. A later
-            // error still leaves the harness an original join capability.
-            self.originals.lock().unwrap().push(Original {
-                native: native.clone(),
-                peer,
-                proxy: None,
-                intentional_disconnect: false,
-            });
-            reservation.attach(native.clone())?;
-            reservation.complete();
-            self.owned_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ManagedDevice::Fake(Box::new(MeasuredDevice {
-                native,
-                native_id: (index + 1) as u32,
-            })))
-        })
+                let index = self
+                    .ids
+                    .iter()
+                    .position(|candidate| candidate == udid)
+                    .context("unknown fixture device")?;
+                {
+                    let originals = self.originals.lock().unwrap();
+                    anyhow::ensure!(originals.len() < MAX_DEVICES, "original owner fixture full");
+                    anyhow::ensure!(
+                        originals
+                            .iter()
+                            .all(|original| original.native.udid != udid),
+                        "duplicate original fixture owner"
+                    );
+                }
+                let mut reservation = owner.reserve()?;
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+                let address = listener.local_addr()?;
+                let (stream, accepted) =
+                    tokio::try_join!(TcpStream::connect(address), listener.accept())?;
+                let (peer, _) = accepted;
+                drop(listener);
+                stream.set_nodelay(true)?;
+                peer.set_nodelay(true)?;
+                let runtime =
+                    ios_core::UserspaceTunDevice::start("fd00::2", "fd00::1", 1280, stream).await?;
+                let native = Arc::new(TunnelHandle::new_userspace(
+                    udid.into(),
+                    ios_core::TunnelInfo {
+                        server_address: "fd00::1".into(),
+                        server_rsd_port: 58783,
+                        client_address: "fd00::2".into(),
+                        client_mtu: 1280,
+                    },
+                    runtime,
+                ));
+                // Retain the exact handle before attachment/publication. A later
+                // error still leaves the harness an original join capability.
+                self.originals.lock().unwrap().push(Original {
+                    native: native.clone(),
+                    peer,
+                    proxy: None,
+                    intentional_disconnect: false,
+                });
+                reservation.attach(native.clone())?;
+                reservation.complete();
+                self.owned_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ManagedDevice::Fake(Box::new(MeasuredDevice {
+                    native,
+                    native_id: (index + 1) as u32,
+                })))
+            },
+            bank,
+        )
     }
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {

@@ -105,37 +105,43 @@ impl Source for IntentSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.connect(udid, route, mode).await?;
-            reservation.attach(device.native_handle().unwrap().clone())?;
-            if udid == AUTH_DEVICE {
-                self.owned_entered.fetch_add(1, Ordering::SeqCst);
-            }
-            let fate = if udid == AUTH_DEVICE {
-                self.fates
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or(Fate::Success)
-            } else {
-                Fate::Success
-            };
-            match fate {
-                Fate::Pending => std::future::pending::<()>().await,
-                Fate::Failure => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "synthetic-native-manual-primary",
-                    )
-                    .into())
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.connect(udid, route, mode).await?;
+                reservation.attach(device.native_handle().unwrap().clone())?;
+                if udid == AUTH_DEVICE {
+                    self.owned_entered.fetch_add(1, Ordering::SeqCst);
                 }
-                Fate::Success => {}
-            }
-            reservation.complete();
-            Ok(device)
-        })
+                let fate = if udid == AUTH_DEVICE {
+                    self.fates
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or(Fate::Success)
+                } else {
+                    Fate::Success
+                };
+                match fate {
+                    Fate::Pending => std::future::pending::<()>().await,
+                    Fate::Failure => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "synthetic-native-manual-primary",
+                        )
+                        .into())
+                    }
+                    Fate::Success => {}
+                }
+                reservation.complete();
+                Ok(device)
+            },
+            bank,
+        )
     }
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         Box::pin(async {

@@ -41,6 +41,7 @@ mod error_payload;
 mod failure_table;
 mod federation_output;
 mod freshness;
+mod future_storage;
 mod intent;
 mod lifecycle;
 mod manual_success;
@@ -1376,6 +1377,22 @@ impl TunnelAgentState {
             ticket,
             input.clone(),
         )?;
+        let observed_route = observed_route::Observed::new(
+            &route,
+            input.as_ref(),
+            &self.inner.global_metadata_bytes,
+        )?;
+        let mut source = self
+            .inner
+            .source
+            .connect_owned(
+                udid,
+                route,
+                self.inner.tun_mode,
+                &ownership,
+                &self.inner.global_metadata_bytes,
+            )
+            .map_err(ownership::before_source)?;
         let manual_version = if retry.is_none() {
             ticket
                 .commit(|| Ok(self.inner.retry.version(udid, ticket)))
@@ -1406,18 +1423,9 @@ impl TunnelAgentState {
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
-            let observed_route = observed_route::Observed::new(
-                &route,
-                input.as_ref(),
-                &self.inner.global_metadata_bytes,
-            )?;
-            let mut source =
-                self.inner
-                    .source
-                    .connect_owned(udid, route, self.inner.tun_mode, &ownership);
             let mut emitted = false;
-            let device = std::future::poll_fn(|cx| {
-                let result = std::future::Future::poll(source.as_mut(), cx);
+            let completed = std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(std::pin::Pin::new(&mut source), cx);
                 if !emitted {
                     emitted = true;
                     if let Some(attempt) = &attempt {
@@ -1426,8 +1434,11 @@ impl TunnelAgentState {
                 }
                 result
             })
-            .await
-            .map_err(|error| {
+            .await;
+            // Release the original finished Box and its fee before unrelated
+            // device/output admission. Pending cancellation uses the same Drop.
+            drop(source);
+            let device = completed.map_err(|error| {
                 let error = match &input {
                     Some(input) => error.context(candidate_input::SourceInputContext {
                         input: Arc::clone(input),

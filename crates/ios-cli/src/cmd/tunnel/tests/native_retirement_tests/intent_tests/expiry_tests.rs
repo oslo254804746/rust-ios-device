@@ -100,15 +100,24 @@ impl Source for PublicationSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let device = self.base.connect_owned(udid, route, mode, owner).await?;
-            let displaced = self.displaced.lock().unwrap().take();
-            if let Some((state, original)) = displaced {
-                state.inner.tunnels.write().await.restore(original);
-            }
-            Ok(device)
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let device = self
+                    .base
+                    .connect_owned(udid, route, mode, owner, bank)?
+                    .await?;
+                let displaced = self.displaced.lock().unwrap().take();
+                if let Some((state, original)) = displaced {
+                    state.inner.tunnels.write().await.restore(original);
+                }
+                Ok(device)
+            },
+            bank,
+        )
     }
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         self.base.usb_devices()

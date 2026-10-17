@@ -33,34 +33,40 @@ impl Source for ReconnectSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.base.connect(udid, route, mode).await?;
-            reservation.attach(Arc::clone(device.native_handle().unwrap()))?;
-            let fate = self
-                .fates
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Fate::Success);
-            if matches!(fate, Fate::Pending) {
-                std::future::pending::<()>().await;
-            }
-            if matches!(fate, Fate::LateSuccess | Fate::LateFailure) {
-                // Deliberate non-preemptible ready poll crosses the total clock.
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            if matches!(fate, Fate::Failure | Fate::LateFailure) {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "synthetic-private-retry-native-primary",
-                )
-                .into());
-            }
-            reservation.complete();
-            Ok(device)
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.base.connect(udid, route, mode).await?;
+                reservation.attach(Arc::clone(device.native_handle().unwrap()))?;
+                let fate = self
+                    .fates
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(Fate::Success);
+                if matches!(fate, Fate::Pending) {
+                    std::future::pending::<()>().await;
+                }
+                if matches!(fate, Fate::LateSuccess | Fate::LateFailure) {
+                    // Deliberate non-preemptible ready poll crosses the total clock.
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if matches!(fate, Fate::Failure | Fate::LateFailure) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "synthetic-private-retry-native-primary",
+                    )
+                    .into());
+                }
+                reservation.complete();
+                Ok(device)
+            },
+            bank,
+        )
     }
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
@@ -449,17 +455,23 @@ impl Source for IsolatedSource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.connect(udid, route, mode).await?;
-            reservation.attach(device.native_handle().unwrap().clone())?;
-            if udid == PENDING_DEVICE {
-                std::future::pending::<()>().await;
-            }
-            reservation.complete();
-            Ok(device)
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.connect(udid, route, mode).await?;
+                reservation.attach(device.native_handle().unwrap().clone())?;
+                if udid == PENDING_DEVICE {
+                    std::future::pending::<()>().await;
+                }
+                reservation.complete();
+                Ok(device)
+            },
+            bank,
+        )
     }
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {

@@ -9,8 +9,8 @@ use futures_util::Stream;
 use tokio::sync::Semaphore;
 
 use super::{
+    future_storage::PaidFuture,
     metadata_vec::{exact_backing, AdmittedVec, KnownVec},
-    owned_join::PaidFuture,
 };
 
 struct Slot<F> {

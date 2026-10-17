@@ -86,18 +86,24 @@ impl Source for DiscoverySource {
         route: Route,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
-    ) -> BoxFuture<'a, Result<ManagedDevice>> {
-        Box::pin(async move {
-            let mut reservation = owner.reserve()?;
-            let device = self.connect(udid, route, mode).await?;
-            reservation.attach(device.native_handle().unwrap().clone())?;
-            self.entered.fetch_add(1, Ordering::SeqCst);
-            if self.blocked.load(Ordering::SeqCst) {
-                self.gate.acquire().await?.forget();
-            }
-            reservation.complete();
-            Ok(device)
-        })
+        bank: &'a Arc<tokio::sync::Semaphore>,
+    ) -> anyhow::Result<
+        crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
+    > {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                let mut reservation = owner.reserve()?;
+                let device = self.connect(udid, route, mode).await?;
+                reservation.attach(device.native_handle().unwrap().clone())?;
+                self.entered.fetch_add(1, Ordering::SeqCst);
+                if self.blocked.load(Ordering::SeqCst) {
+                    self.gate.acquire().await?.forget();
+                }
+                reservation.complete();
+                Ok(device)
+            },
+            bank,
+        )
     }
 
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {

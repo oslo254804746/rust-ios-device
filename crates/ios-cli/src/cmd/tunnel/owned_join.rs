@@ -2,52 +2,12 @@
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::Poll;
 
 use anyhow::Result;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 
-use super::metadata_vec::{exact_backing, AdmittedVec, KnownVec};
-
-pub(super) struct PaidFuture<F> {
-    // Destroy the original future and its allocation before refunding the fee.
-    future: Pin<Box<F>>,
-    _storage: OwnedSemaphorePermit,
-}
-
-impl<F: Future> PaidFuture<F> {
-    pub(super) fn new(future: F, bank: &Arc<Semaphore>) -> Result<Self> {
-        let allocation = exact_backing::<F>(bank, 1)?;
-        Ok(Self::from_backing(future, allocation))
-    }
-
-    pub(super) fn from_backing(future: F, allocation: AdmittedVec<F>) -> Self {
-        let storage = allocation.storage;
-        let mut values = allocation.values;
-        assert!(values.is_empty());
-        assert!(std::mem::size_of::<F>() == 0 || values.capacity() == 1);
-        values.push(future);
-        let pointer = values.as_mut_ptr();
-        std::mem::forget(values);
-        // SAFETY: the Vec owns exactly one initialized F. For nonzero F its
-        // exact capacity is one and Layout::array::<F>(1) == Layout::new::<F>().
-        // A ZST uses the same valid, aligned dangling pointer and needs no
-        // deallocation. No fallible step separates forgetting Vec and Box.
-        let future = Box::into_pin(unsafe { Box::from_raw(pointer) });
-        Self {
-            future,
-            _storage: storage,
-        }
-    }
-}
-
-impl<F: Future> Future for PaidFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.get_mut().future.as_mut().poll(cx)
-    }
-}
+use super::{future_storage::PaidFuture, metadata_vec::KnownVec};
 
 struct Slot<F: Future> {
     future: Option<PaidFuture<F>>,
