@@ -3,6 +3,55 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
+fn removed_body_original_grant_funds_exact_box_at_zero_and_refuses_foreign_or_wrong_layout() {
+    let bytes = std::mem::size_of::<u128>();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let fee = super::super::admission::known_metadata_charge(&bank, bytes).unwrap();
+    let pointer = Arc::new(AtomicUsize::new(0));
+    let captured = pointer.clone();
+    let charged = bank.clone();
+    let owner = metadata_vec::with_allocation_hook(
+        move |layout, original| {
+            assert_eq!(layout, std::alloc::Layout::new::<u128>());
+            assert_eq!(charged.available_permits(), 0);
+            captured.store(original, Ordering::SeqCst);
+        },
+        || {
+            Destination::<u128>::from_grant(&bank, fee)
+                .unwrap()
+                .place(716)
+        },
+    );
+    assert_eq!(
+        &*owner as *const u128 as usize,
+        pointer.load(Ordering::SeqCst)
+    );
+    assert_eq!(*owner, 716);
+    assert_eq!(owner.bytes_in(&bank).unwrap(), bytes);
+    drop(owner);
+    assert_eq!(bank.available_permits(), bytes);
+    for (foreign, amount) in [(false, bytes - 1), (false, bytes + 1), (true, bytes)] {
+        let bank = Arc::new(Semaphore::new(2 * bytes));
+        let other = Arc::new(Semaphore::new(2 * bytes));
+        let fee = super::super::admission::known_metadata_charge(
+            if foreign { &other } else { &bank },
+            amount,
+        )
+        .unwrap();
+        let error = metadata_vec::with_allocation_hook(
+            |_, _| panic!("invalid body grant allocated"),
+            || Destination::<u128>::from_grant(&bank, fee).err().unwrap(),
+        );
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(bank.available_permits(), 2 * bytes);
+        assert_eq!(other.available_permits(), 2 * bytes);
+    }
+}
+
+#[test]
 fn node_body_into_inner_frees_original_high_alignment_box_before_refund_and_value_drop() {
     #[repr(align(128))]
     struct Value(Arc<Semaphore>, Arc<AtomicUsize>, usize);

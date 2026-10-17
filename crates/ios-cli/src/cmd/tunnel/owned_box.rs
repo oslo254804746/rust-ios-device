@@ -13,6 +13,10 @@ impl<T> Destination<T> {
         Ok(Self(exact_backing(bank, 1)?))
     }
 
+    pub(super) fn from_grant(bank: &Arc<Semaphore>, storage: OwnedSemaphorePermit) -> Result<Self> {
+        Ok(Self(super::metadata_vec::from_grant(bank, 1, storage)?))
+    }
+
     pub(super) fn place(self, value: T) -> Owner<T> {
         let storage = self.0.storage;
         let mut values = self.0.values;

@@ -110,6 +110,10 @@ async fn prepaid_selector_actual_retry_node_keys_and_route_use_original_exact_bu
     assert_eq!(
         seen.lock().unwrap().as_slice(),
         &[
+            (
+                std::mem::size_of::<Removed>(),
+                &*node as *const Removed as usize
+            ),
             (A.len(), node.udid.as_ptr() as usize),
             (host_length, host.as_ptr() as usize)
         ]

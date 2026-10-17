@@ -3,6 +3,7 @@ use super::super::{lifecycle::Lifecycle, source::Route};
 use super::*;
 
 mod prepaid_tests;
+mod removed_body_tests;
 
 const A: &str = "receipt-device-a";
 const B: &str = "receipt-device-b";
@@ -169,7 +170,7 @@ async fn retry_receipt_exact_pre_source_fee_rejects_one_byte_short_without_advan
     // rejection; no key, episode, receipt or source object was published.
     assert_eq!(
         bank.available_permits(),
-        bytes - Ledger::structural_bytes() - 4 * std::mem::size_of::<Box<Removed>>()
+        bytes - Ledger::structural_bytes() - 4 * std::mem::size_of::<OwnedRemoved>()
     );
     drop(ledger);
     assert_eq!(bank.available_permits(), bytes);
