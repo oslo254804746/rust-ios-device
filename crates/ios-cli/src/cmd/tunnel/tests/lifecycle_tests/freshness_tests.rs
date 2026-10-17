@@ -150,9 +150,16 @@ async fn freshness_alive_paired_address_change_rebuilds_and_complete_detach_rele
     drop(table);
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
-        MAX_PUBLISHED_METADATA_BYTES - retained_backing
+        MAX_PUBLISHED_METADATA_BYTES - retained_backing - publication::Life::bytes()
     );
     state.clear().await;
+    assert!(old.check().is_err());
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        MAX_PUBLISHED_METADATA_BYTES - publication::Life::bytes(),
+        "the closed original snapshot still owns its actual payload"
+    );
+    drop(old);
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
         MAX_PUBLISHED_METADATA_BYTES

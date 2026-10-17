@@ -17,6 +17,10 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         let table = state.inner.tunnels.read().await;
         Arc::downgrade(&table[DEVICE].route_intent)
     };
+    let publication = {
+        let table = state.inner.tunnels.read().await;
+        Arc::downgrade(&table[DEVICE].publication)
+    };
     let before = bank.available_permits();
     state.clear().await;
     assert_eq!(state.inner.native.snapshot().retired, 1);
@@ -28,9 +32,16 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
         route.upgrade().is_none(),
         "removed route still owns its body"
     );
+    assert!(
+        publication.upgrade().is_none(),
+        "removed publication payload is still alive"
+    );
     assert_eq!(
         bank.available_permits(),
-        before + actual_publication_destination_bytes() + route_body_bytes()
+        before
+            + actual_publication_destination_bytes()
+            + route_body_bytes()
+            + publication::Life::bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert!(input.upgrade().is_none());
@@ -100,7 +111,9 @@ fn route_body_bytes() -> usize {
 
 fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize) {
     let mut state = state(source);
-    let charged = std::mem::size_of::<NativeDevice>() + actual_publication_destination_bytes();
+    let charged = std::mem::size_of::<NativeDevice>()
+        + actual_publication_destination_bytes()
+        + publication::Life::bytes();
     Arc::get_mut(&mut state.inner).unwrap().metadata_bytes = Arc::new(Semaphore::new(charged));
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
@@ -126,11 +139,11 @@ async fn native_metadata_charge_survives_table_removal_until_original_joins_and_
     assert_eq!(state.inner.native.snapshot().retired, 1);
     assert_eq!(
         state.inner.metadata_bytes.available_permits(),
-        actual_publication_destination_bytes()
+        actual_publication_destination_bytes() + publication::Life::bytes()
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        actual_publication_destination_bytes() + route_body_bytes()
+        actual_publication_destination_bytes() + route_body_bytes() + publication::Life::bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(state.inner.metadata_bytes.available_permits(), charged);
@@ -194,10 +207,13 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     assert_eq!(state.inner.native.snapshot().retired, 1);
     let backing = state.inner.tunnels.read().await.backing_bytes();
     let node_bytes = actual_publication_destination_bytes() - backing;
-    assert_eq!(state.inner.metadata_bytes.available_permits(), node_bytes);
+    assert_eq!(
+        state.inner.metadata_bytes.available_permits(),
+        node_bytes + publication::Life::bytes()
+    );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        node_bytes + record_copy_bytes() + route_body_bytes()
+        node_bytes + record_copy_bytes() + route_body_bytes() + publication::Life::bytes()
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(

@@ -1,6 +1,200 @@
 use super::*;
 
 #[tokio::test]
+async fn publication_lifetime_pre_source_refusal_from_either_pool_never_browses_fallback() {
+    for global_short in [true, false] {
+        let source = FakeSource::new();
+        let mut state = state(source.clone(), LOCAL_BUDGET);
+        if !global_short {
+            Arc::get_mut(&mut state.inner).unwrap().metadata_bytes =
+                Arc::new(Semaphore::new(publication::Life::bytes() - 1));
+        }
+        drop(state.inner.lifecycle.ticket(A).await.unwrap());
+        let bank = state.inner.global_metadata_bytes.clone();
+        let before = bank.available_permits();
+        let held = if global_short {
+            let leave =
+                std::mem::size_of::<intent::RetainedRoute>() + publication::Life::bytes() - 1;
+            Some(
+                bank.clone()
+                    .try_acquire_many_owned((before - leave) as u32)
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let error = state.ensure_tunnel(A, None, None).await.err().unwrap();
+        assert!(error.is::<publication::Admission>());
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(source.count(A), 0);
+        assert_eq!(source.usb_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source.paired_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(state.inner.native.snapshot().occupied(), 0);
+        drop(held);
+        assert_eq!(bank.available_permits(), before);
+        state.notify_shutdown();
+        state.clear().await;
+        state.drain_native(LOCAL_BUDGET).await.unwrap();
+        drop(state);
+        assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    }
+}
+
+#[tokio::test]
+async fn publication_lifetime_late_replacement_rollback_keeps_original_open_and_usable() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        tcp.read_exact(&mut [0; 20]).await.unwrap();
+        let mut bytes = [0; 128];
+        loop {
+            let count = tcp.read(&mut bytes).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            tcp.write_all(&bytes[..count]).await.unwrap();
+        }
+    });
+    let source = FakeSource::new();
+    source
+        .proxy_port
+        .store(proxy_port as usize, Ordering::SeqCst);
+    let state = state(source.clone(), LOCAL_BUDGET);
+    drop(start(state.clone(), A).await.unwrap());
+    let original = state.inner.tunnels.read().await[A].publication.clone();
+    let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
+    let (port, server) = spawn_test_router(agent_router(state.clone())).await;
+    let (mut websocket, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/connect?udid={A}&port=12345"
+    ))
+    .await
+    .unwrap();
+    echo(&mut websocket, b"original-before").await;
+    let called = Arc::new(AtomicBool::new(false));
+    let captured = called.clone();
+    *state.inner.publication_after_insert.lock().unwrap() = Some(Box::new(move || {
+        captured.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(250));
+    }));
+    let deadline = lifecycle::ConnectionDeadline::new(Duration::from_millis(200)).unwrap();
+    assert!(state
+        .connect_and_store(A, Route::Wifi(None), &ticket, None, Some(&deadline))
+        .await
+        .is_err());
+    assert!(
+        called.load(Ordering::SeqCst),
+        "late rollback boundary was not reached"
+    );
+    assert!(deadline.check().is_err());
+    assert!(Arc::ptr_eq(
+        &original,
+        &state.inner.tunnels.read().await[A].publication
+    ));
+    assert!(original.check().is_ok());
+    echo(&mut websocket, b"same-original-after-rollback").await;
+    assert_eq!(source.count(A), 2);
+    state.notify_shutdown();
+    let terminal = tokio::time::timeout(LOCAL_BUDGET, websocket.next())
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal,
+        None | Some(Err(_)) | Some(Ok(tungstenite::Message::Close(_)))
+    ));
+    drop(websocket);
+    tokio::time::timeout(LOCAL_BUDGET, peer)
+        .await
+        .unwrap()
+        .unwrap();
+    state.clear().await;
+    state.drain_native(LOCAL_BUDGET).await.unwrap();
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn publication_lifetime_replacement_and_complete_prune_close_original_same_epoch_connection()
+{
+    let mut closed = Vec::new();
+    for replacement in [true, false] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            let mut preamble = [0; 20];
+            tcp.read_exact(&mut preamble).await.unwrap();
+            ready_tx.send(()).unwrap();
+            assert_eq!(tcp.read(&mut [0; 1]).await.unwrap(), 0);
+        });
+        let source = FakeSource::new();
+        source
+            .proxy_port
+            .store(proxy_port as usize, Ordering::SeqCst);
+        let state = state(source.clone(), LOCAL_BUDGET);
+        drop(start(state.clone(), A).await.unwrap());
+        let (original, ticket) = {
+            let table = state.inner.tunnels.read().await;
+            (
+                table[A].publication.clone(),
+                table[A]._ticket.for_connection(),
+            )
+        };
+        let (port, server) = spawn_test_router(agent_router(state.clone())).await;
+        let (mut websocket, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{port}/connect?udid={A}&port=12345"
+        ))
+        .await
+        .unwrap();
+        ready_rx.await.unwrap();
+        if replacement {
+            drop(
+                state
+                    .connect_and_store(A, Route::Wifi(None), &ticket, None, None)
+                    .await
+                    .unwrap(),
+            );
+            let table = state.inner.tunnels.read().await;
+            assert!(!Arc::ptr_eq(&original, &table[A].publication));
+            assert!(ticket.same_incarnation(&table[A]._ticket));
+        } else {
+            source.usb.lock().unwrap().clear();
+            state.refresh_once().await.unwrap();
+            assert!(state.inner.tunnels.read().await.get(A).is_none());
+        }
+        assert!(
+            ticket.is_current(),
+            "this fixture must retain the SAME device/global epoch"
+        );
+        let terminal = tokio::time::timeout(Duration::from_millis(150), websocket.next()).await;
+        closed.push(matches!(
+            terminal,
+            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(tungstenite::Message::Close(_))))
+        ));
+        drop(websocket);
+        tokio::time::timeout(LOCAL_BUDGET, peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.count(A), if replacement { 2 } else { 1 });
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        state.notify_shutdown();
+        state.clear().await;
+        state.drain_native(LOCAL_BUDGET).await.unwrap();
+    }
+    assert_eq!(
+        closed,
+        [true, true],
+        "old publication must retire without rotating the original ticket"
+    );
+}
+
+#[tokio::test]
 async fn upgrade_epoch_captured_record_never_borrows_a_newer_restart_ticket() {
     let source = FakeSource::new();
     let state = state(source.clone(), LOCAL_BUDGET);

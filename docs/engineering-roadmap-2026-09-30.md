@@ -9004,3 +9004,12 @@ strictCLI/build/Source0通过，见[验证](validation/tunnel-local-upgrade-epoc
 同epoch publication替换、remote/框架upgrade joins/private与完整freshness等
 继续；128MiB非完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部
 排除保持，仅本地提交。
+
+## 2026-10-17 L02 original publication connection lifetime
+
+原publication payload两池Source前准入并共享身份/最后owner，原row移除唤醒
+原连接；同epoch替换/prune真实红灯转绿，rollback同原Arc与manual live保持。
+Snapshot key实际复制也先准入。完整tunnel624/0FAIL/2原ignored、上游10/
+strictCLI/build/Source0通过，见[验证](validation/tunnel-publication-lifetime-2026-10-17.md)。
+remote/框架upgrade joins/private和原完整freshness全审计继续；128MiB非完整
+heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。

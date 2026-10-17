@@ -50,6 +50,7 @@ mod owned_join;
 mod ownership;
 mod paid_json;
 mod paired_observed;
+mod publication;
 mod publication_retain;
 mod publication_table;
 mod reconnect;
@@ -462,7 +463,7 @@ struct ConnectionContext<'a> {
 
 struct ManagedTunnel {
     device: ManagedDevice,
-    publication: Arc<()>,
+    publication: Arc<publication::Life>,
     usbmux: bool,
     native: Option<retirement::NativeLease>,
     // Actual selector established by Source, not the next caller's request.
@@ -481,10 +482,12 @@ struct ManagedTunnel {
 struct LocalTarget {
     record: PaidRecord,
     ticket: Ticket,
+    publication: Arc<publication::Life>,
 }
 
 impl Drop for ManagedTunnel {
     fn drop(&mut self) {
+        self.publication.close();
         // The independent registry keeps the original runtime through every
         // removal path, even when the table's metadata owner is destroyed.
         drop(self.native.take());
@@ -1057,6 +1060,7 @@ impl TunnelAgentState {
             Ok(LocalTarget {
                 record: tunnel.record(&self.inner.global_metadata_bytes)?,
                 ticket: tunnel._ticket.for_connection(),
+                publication: tunnel.publication.clone(),
             })
         })
         .await
@@ -1216,6 +1220,7 @@ impl TunnelAgentState {
                     Err(error) if error.is::<record_owner::CopyAdmission>() => Err(error),
                     Err(error) if error.is::<intent::RouteAdmission>() => Err(error),
                     Err(error) if error.is::<observed_route::Admission>() => Err(error),
+                    Err(error) if error.is::<publication::Admission>() => Err(error),
                     // Preserve an already acquired Source error without opening
                     // another discovery/transport after the total has expired.
                     Err(error) if deadline.check().is_err() => Err(error),
@@ -1332,6 +1337,10 @@ impl TunnelAgentState {
                 &self.inner.global_metadata_bytes,
             )?,
         };
+        let publication = publication::Life::new(
+            &self.inner.global_metadata_bytes,
+            &self.inner.metadata_bytes,
+        )?;
         let previous_failure = if manual.is_some() {
             self.inner
                 .failed_attempts
@@ -1554,7 +1563,7 @@ impl TunnelAgentState {
                     publication_destination.take().expect("single destination"),
                     ManagedTunnel {
                         device,
-                        publication: Arc::new(()),
+                        publication,
                         usbmux,
                         native,
                         route_intent: route_intent.clone(),
@@ -3319,16 +3328,21 @@ async fn agent_connect_authorized(
     } else {
         None
     };
-    if let Some(LocalTarget { record, ticket }) = local {
-        let stream = ticket
-            .run(async {
+    if let Some(LocalTarget {
+        record,
+        ticket,
+        publication,
+    }) = local
+    {
+        let stream = publication
+            .run(ticket.run(async {
                 tokio::time::timeout(
                     TUNNEL_CONNECT_TIMEOUT,
                     connect_record_port(&record, query.port),
                 )
                 .await
                 .map_err(anyhow::Error::new)?
-            })
+            }))
             .await
             .map_err(|err| {
                 if err.is::<tokio::time::error::Elapsed>() {
@@ -3345,18 +3359,23 @@ async fn agent_connect_authorized(
                     )
                 }
             })?;
-        let stream = ticket.commit(|| Ok(stream)).map_err(|err| {
-            replies.operation_error(
-                StatusCode::BAD_GATEWAY,
-                "tunnel connection retired",
-                err.as_ref(),
-            )
-        })?;
+        let stream = ticket
+            .commit(|| {
+                publication.check()?;
+                Ok(stream)
+            })
+            .map_err(|err| {
+                replies.operation_error(
+                    StatusCode::BAD_GATEWAY,
+                    "tunnel connection retired",
+                    err.as_ref(),
+                )
+            })?;
         let payload_bytes = state.inner.global_metadata_bytes.clone();
         return Ok(bounded_websocket_upgrade(ws)
             .on_upgrade(move |socket| async move {
                 tokio::select! {
-                    result = ticket.run(async { Ok(bridge_tcp_websocket(socket, stream, &payload_bytes).await) }) => {
+                    result = publication.run(ticket.run(async { Ok(bridge_tcp_websocket(socket, stream, &payload_bytes).await) })) => {
                         match result {
                             Ok(completion) => {
                                 if let Err(err) = completion.result() {

@@ -24,7 +24,7 @@ async fn published_metadata_admission_rejects_second_owner_and_releases_on_clear
     let destination = MAX_PUBLISHED_METADATA_BYTES - published.available_permits();
     drop(prepared);
     drop(probe.take_all());
-    let charged = std::mem::size_of::<OwnedDevice>() + destination;
+    let charged = std::mem::size_of::<OwnedDevice>() + destination + publication::Life::bytes();
     let mut state = state(source.clone(), TUNNEL_CONNECT_TIMEOUT);
     let inner = Arc::get_mut(&mut state.inner).unwrap();
     inner.metadata_bytes = Arc::new(Semaphore::new(charged));
