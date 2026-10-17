@@ -78,6 +78,7 @@ mod scan_total_tests;
 mod server_tests;
 mod shutdown_admission_tests;
 mod snapshot_admission_tests;
+mod source_route_tests;
 mod success_bookkeeping_tests;
 mod upgrade_epoch_tests;
 mod upstream_registry_tests;

@@ -7,9 +7,9 @@ use ios_core::{ConnectOptions, MuxClient, TunMode, TunnelHandle, TunnelOwner};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::ManagedDevice;
 #[cfg(test)]
 use super::TunnelRecord;
+use super::{candidate_input::RouteRef, ManagedDevice};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Route {
@@ -159,7 +159,7 @@ pub(super) trait Source: Send + Sync {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<Semaphore>,
@@ -169,7 +169,7 @@ pub(super) trait Source: Send + Sync {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<tokio::sync::Semaphore>,
@@ -179,7 +179,7 @@ pub(super) trait Source: Send + Sync {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
                 let mut reservation = owner.reserve()?;
-                let device = self.connect(udid, route, mode).await?;
+                let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 if let Some(handle) = device.native_handle() {
                     reservation.attach(Arc::clone(handle))?;
                     reservation.complete();
@@ -274,7 +274,7 @@ impl Source for NativeSource {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<tokio::sync::Semaphore>,
@@ -290,30 +290,20 @@ impl Source for NativeSource {
                     skip_tunnel: false,
                 };
                 let device = match route {
-                    Route::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
-                    Route::Usb(host) => {
-                        ios_core::connect_direct_usb_tunnel_with_owner(
-                            udid,
-                            host.as_deref(),
-                            options,
-                            owner,
-                        )
-                        .await?
+                    RouteRef::Usbmux => ios_core::connect_with_owner(udid, options, owner).await?,
+                    RouteRef::Usb(host) => {
+                        ios_core::connect_direct_usb_tunnel_with_owner(udid, host, options, owner)
+                            .await?
                     }
-                    Route::Wifi(host) => {
+                    RouteRef::Wifi(host) => {
                         ios_core::connect_remote_pairing_tunnel_with_owner(
-                            udid,
-                            host.as_deref(),
-                            options,
-                            owner,
+                            udid, host, options, owner,
                         )
                         .await?
                     }
-                    Route::Mobdev2(host) => {
-                        ios_core::connect_tcp_lockdown_tunnel_with_owner(
-                            udid, &host, options, owner,
-                        )
-                        .await?
+                    RouteRef::Mobdev2(host) => {
+                        ios_core::connect_tcp_lockdown_tunnel_with_owner(udid, host, options, owner)
+                            .await?
                     }
                 };
                 Ok(ManagedDevice::Native(destination.place(device)))

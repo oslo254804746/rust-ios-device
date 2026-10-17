@@ -4,7 +4,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::{candidate_input, metadata_vec, source::Route};
+use super::{
+    candidate_input::{self, RouteRef},
+    metadata_vec,
+    source::Route,
+};
 
 pub(super) enum Observed {
     Input(Arc<candidate_input::Input>),
@@ -15,31 +19,27 @@ pub(super) enum Observed {
 }
 
 impl Observed {
-    pub(super) fn new(
-        route: &Route,
+    pub(super) fn new<'a>(
+        route: impl Into<RouteRef<'a>>,
         input: Option<&Arc<candidate_input::Input>>,
         bank: &Arc<Semaphore>,
     ) -> Result<Self> {
-        Self::admit(route, input, bank).map_err(|error| error.context(Admission))
+        Self::admit(route.into(), input, bank).map_err(|error| error.context(Admission))
     }
 
     fn admit(
-        route: &Route,
+        route: RouteRef<'_>,
         input: Option<&Arc<candidate_input::Input>>,
         bank: &Arc<Semaphore>,
     ) -> Result<Self> {
         if let Some(input) = input {
             anyhow::ensure!(
-                Arc::ptr_eq(input.storage_bank(), bank) && input.route == *route,
+                Arc::ptr_eq(input.storage_bank(), bank) && RouteRef::from(&input.route) == route,
                 crate::output::resource_decision("tunnel observed route input mismatch")
             );
             return Ok(Self::Input(input.clone()));
         }
-        let host = match route {
-            Route::Usbmux => None,
-            Route::Usb(host) | Route::Wifi(host) => host.as_deref(),
-            Route::Mobdev2(host) => Some(host.as_str()),
-        };
+        let host = route.host();
         super::admission::selectors("", host)?;
         let mut storage = None;
         let host = match host {
@@ -53,10 +53,10 @@ impl Observed {
             None => None,
         };
         let route = match route {
-            Route::Usbmux => Route::Usbmux,
-            Route::Usb(_) => Route::Usb(host),
-            Route::Wifi(_) => Route::Wifi(host),
-            Route::Mobdev2(_) => Route::Mobdev2(host.expect("observed mobdev2 host")),
+            RouteRef::Usbmux => Route::Usbmux,
+            RouteRef::Usb(_) => Route::Usb(host),
+            RouteRef::Wifi(_) => Route::Wifi(host),
+            RouteRef::Mobdev2(_) => Route::Mobdev2(host.expect("observed mobdev2 host")),
         };
         Ok(Self::Owned {
             route,

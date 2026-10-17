@@ -62,3 +62,9 @@ L02 与原七个主项的未完成状态不变。
 费用随最后 Input/原错误 owner；USB 原字段转移和原预留不变。完整 tunnel665、
 upstream10、严格 CLI/build/只读 Source0 门禁通过，本轮旧精确预算断言未调整。
 Source 临时 route/clone、SDK/发现输出与其余完整审计继续，L02 主项不关闭。
+
+再后[Source 原 route 借用](validation/tunnel-source-route-borrows-2026-10-17.md)
+移除生产手动临时 host 与 candidate Source clone；Source 从同作用域持费的
+Observed/Input 原字段借用，原构造准入/retry/销毁后输出顺序和 desired filter
+保持。完整 tunnel667、upstream10、严格 CLI/build/只读 Source0 门禁通过。
+prepared outcome key 原复制、SDK/发现输出与其余完整审计继续，主项状态保持。

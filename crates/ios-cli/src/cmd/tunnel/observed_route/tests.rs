@@ -94,12 +94,11 @@ fn observed_route_original_candidate_input_is_shared_at_zero_quota_until_last_ow
         .unwrap();
     let observed = metadata_vec::with_allocation_hook(
         |_, _| panic!("shared observed input allocated a destination"),
-        || Observed::new(&source_route, Some(&input), &bank).unwrap(),
+        || Observed::new(source_route, Some(&input), &bank).unwrap(),
     );
     assert_eq!(host(observed.route()).unwrap().as_ptr(), pointer);
     assert_eq!(observed.text_bytes(), 1024);
     drop(input);
-    drop(source_route);
     assert!(weak.upgrade().is_some());
     assert_eq!(bank.available_permits(), 0);
     drop(observed);

@@ -17,11 +17,11 @@ fn candidate_input_original_capacity_and_shared_last_owner_release() {
     assert_eq!(host.as_ptr(), original);
     assert_eq!(host.capacity(), 8192);
     let source = input.source_route().unwrap();
-    assert_eq!(route_capacity(&source), "synthetic-host".len());
+    assert_eq!(source.host().unwrap().as_ptr(), original);
+    assert_eq!(source.host().unwrap(), "synthetic-host");
     let clone = input.clone();
     drop(input);
     assert_eq!(bank.available_permits(), 0);
-    drop(source);
     drop(clone);
     assert_eq!(bank.available_permits(), bytes);
 }
