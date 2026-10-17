@@ -11,8 +11,8 @@ pub(super) enum CauseState {
 
 pub(super) struct State {
     pub(super) sealed: bool,
-    pub(super) rows: KnownVec<Box<Removed>>,
-    pub(super) causes: KnownVec<Box<Removed>>,
+    pub(super) rows: KnownVec<OwnedRemoved>,
+    pub(super) causes: KnownVec<OwnedRemoved>,
 }
 
 impl State {
@@ -37,7 +37,7 @@ impl State {
         let index = self.row_index(udid)?;
         self.rows.as_mut_slice()[index].row.as_mut()
     }
-    pub(super) fn remove_row(&mut self, udid: &str) -> Option<Box<Removed>> {
+    pub(super) fn remove_row(&mut self, udid: &str) -> Option<OwnedRemoved> {
         let index = self.row_index(udid)?;
         Some(self.rows.remove(index))
     }
@@ -63,11 +63,11 @@ impl State {
                     .is_some_and(|old| Arc::ptr_eq(old, receipt))
         })
     }
-    pub(super) fn remove_cause(&mut self, udid: &str) -> Option<Box<Removed>> {
+    pub(super) fn remove_cause(&mut self, udid: &str) -> Option<OwnedRemoved> {
         let index = self.cause_index(udid)?;
         Some(self.causes.remove(index))
     }
-    pub(super) fn remove_pending(&mut self, receipt: &Arc<FailureReceipt>) -> Option<Box<Removed>> {
+    pub(super) fn remove_pending(&mut self, receipt: &Arc<FailureReceipt>) -> Option<OwnedRemoved> {
         let index = self.pending_index(receipt)?;
         Some(self.causes.remove(index))
     }
@@ -126,6 +126,8 @@ impl State {
     }
 }
 
+pub(in super::super) type OwnedRemoved = super::super::owned_box::Owner<Removed>;
+
 pub(in super::super) struct Removed {
     pub(super) udid: String,
     pub(super) row: Option<Episode>,
@@ -133,9 +135,9 @@ pub(in super::super) struct Removed {
     pub(super) cause_state: CauseState,
     pub(super) selected: bool,
     position: usize,
-    next: Option<Box<Removed>>,
-    // Box payload and actual owned String/route capacities; Arc private headers
-    // and allocator overhead remain outside this known-storage contract.
+    next: Option<OwnedRemoved>,
+    // Only the original String/route buffers. The Box body grant lives outside
+    // the allocation in OwnedRemoved; cause payloads retain their own owners.
     _storage: OwnedSemaphorePermit,
 }
 
@@ -145,7 +147,7 @@ impl Removed {
         identity: &super::AttemptIdentity,
         make_row: impl FnOnce(super::AttemptIdentity) -> Episode,
         bank: &Arc<Semaphore>,
-    ) -> Result<Box<Self>> {
+    ) -> Result<OwnedRemoved> {
         let bytes = std::mem::size_of::<Self>()
             .checked_add(udid.len())
             .and_then(|bytes| {
@@ -153,13 +155,16 @@ impl Removed {
             })
             .ok_or_else(|| crate::output::resource_decision("tunnel retry row size overflow"))?;
         let mut storage = super::super::admission::known_metadata_charge(bank, bytes)?;
+        let body = storage
+            .split(std::mem::size_of::<Self>())
+            .expect("prepaid retry body");
+        let destination = super::super::owned_box::Destination::<Self>::from_grant(bank, body)?;
         // Admission precedes both independent selector buffers and the Box.
-        let mut copier =
-            super::super::selector_copy::Copier::new(storage, std::mem::size_of::<Self>())?;
+        let mut copier = super::super::selector_copy::Copier::new(storage, 0)?;
         let udid = copier.text(udid)?;
         let identity = copier.identity(identity)?;
         storage = copier.finish();
-        Ok(Box::new(Self {
+        Ok(destination.place(Self {
             udid,
             row: Some(make_row(identity)),
             cause: None,
@@ -173,10 +178,14 @@ impl Removed {
     pub(super) fn receipt(
         receipt: Arc<FailureReceipt>,
         bank: &Arc<Semaphore>,
-    ) -> Result<Box<Self>> {
-        let storage =
+    ) -> Result<OwnedRemoved> {
+        let mut storage =
             super::super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
-        Ok(Box::new(Self {
+        let body = storage
+            .split(std::mem::size_of::<Self>())
+            .expect("prepaid cause node body");
+        let destination = super::super::owned_box::Destination::<Self>::from_grant(bank, body)?;
+        Ok(destination.place(Self {
             udid: String::new(),
             row: None,
             cause: Some(receipt),
@@ -191,16 +200,16 @@ impl Removed {
 
 #[derive(Default)]
 pub(in super::super) struct RemovedBatch {
-    head: Option<Box<Removed>>,
+    head: Option<OwnedRemoved>,
 }
 impl RemovedBatch {
-    fn prepend(&mut self, mut node: Box<Removed>) {
+    fn prepend(&mut self, mut node: OwnedRemoved) {
         node.next = self.head.take();
         self.head = Some(node);
     }
 }
 impl Iterator for RemovedBatch {
-    type Item = Box<Removed>;
+    type Item = OwnedRemoved;
     fn next(&mut self) -> Option<Self::Item> {
         let mut node = self.head.take()?;
         self.head = node.next.take();

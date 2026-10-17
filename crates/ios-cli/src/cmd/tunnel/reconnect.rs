@@ -20,7 +20,7 @@ mod causes;
 pub(super) use causes::{Completion, FailureReceipt, SourceFailure};
 mod storage;
 pub(super) use storage::RemovedBatch;
-use storage::{CauseState, Removed, State};
+use storage::{CauseState, OwnedRemoved, Removed, State};
 
 const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const MAX_DELAY: Duration = Duration::from_secs(300);
@@ -655,7 +655,7 @@ impl Ledger {
     /// copied selectors in this fixture have exactly their length as capacity.
     #[cfg(test)]
     pub(super) fn initial_attempt_bytes(udid: &str, identity: &AttemptIdentity) -> usize {
-        4 * std::mem::size_of::<Box<Removed>>()
+        4 * std::mem::size_of::<OwnedRemoved>()
             + 2 * std::mem::size_of::<Removed>()
             + udid.len()
             + super::candidate_input::route_length(&identity.route)
@@ -671,7 +671,7 @@ pub(super) struct Attempt {
     ledger: Arc<Ledger>,
     receipt: Arc<FailureReceipt>,
     started: Snapshot,
-    displaced: Option<Box<Removed>>,
+    displaced: Option<OwnedRemoved>,
     complete: bool,
 }
 impl Attempt {

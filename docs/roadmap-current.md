@@ -88,3 +88,10 @@ body、已用字段与未用 credit 分离，原全额预算和 capsule-before-S
 backing 创建前收费；success 显式释放 body 后退款，原 key 独立保留。专项5、
 完整 tunnel683、upstream10、严格 CLI/build/只读 Source0 门禁通过。其它 body
 owner、SDK/发现输出和完整规则审计继续，L02 未关闭。
+
+再后[reconnect Removed body 最后 owner](validation/tunnel-retry-node-body-owner-2026-10-17.md)
+已将 body grant 从原整笔预算拆给实际空目的地，Box 外持费；值内只留原
+selector 费用，rows/causes/backing/批次均按实际 owner 宽度。专项5、完整
+tunnel688、upstream10、严格 CLI/build/只读 Source0 门禁通过。原回滚、默认
+策略、pending cause 和 native EOF/joins 保持；Arc/SDK/发现及完整规则审计
+继续，L02 不关闭。
