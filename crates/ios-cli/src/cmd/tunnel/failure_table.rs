@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use super::candidate_input::route_capacity;
 use super::candidate_input::Input;
 use super::metadata_vec::KnownVec;
+use super::shared_value::Shared;
 use super::{AttemptIdentity, FailedTunnelAttempt, Route, MAX_FAILURE_RECORDS};
 
 struct IdentityOwner {
@@ -22,7 +23,7 @@ struct IdentityOwner {
 
 /// Clones share the actual route buffer and its fee; they never clone String.
 #[derive(Clone)]
-pub(super) struct Identity(Arc<IdentityOwner>);
+pub(super) struct Identity(Shared<IdentityOwner>);
 
 impl Identity {
     fn copied(route: &Route, native_id: Option<u32>, bank: &Arc<Semaphore>) -> Result<Self> {
@@ -41,7 +42,7 @@ impl Identity {
             super::selector_copy::Copier::new(storage, std::mem::size_of::<IdentityOwner>())?;
         let route = copier.route(route)?;
         storage = copier.finish();
-        Ok(Self(Arc::new(IdentityOwner {
+        Ok(Self(Shared::new(IdentityOwner {
             value: AttemptIdentity { route, native_id },
             _storage: storage,
         })))
@@ -56,7 +57,7 @@ impl Identity {
                 crate::output::resource_decision("tunnel failure identity size overflow")
             })?;
         let storage = super::admission::known_metadata_charge(bank, bytes)?;
-        Ok(Self(Arc::new(IdentityOwner {
+        Ok(Self(Shared::new(IdentityOwner {
             value,
             _storage: storage,
         })))

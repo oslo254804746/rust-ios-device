@@ -4,6 +4,46 @@ use super::*;
 const BANK: usize = 262_144;
 
 #[test]
+fn identity_arc_actual_identity_parallel_last_clones_keep_original_host_and_refund_once() {
+    let original = Route::Mobdev2("parallel-original-host".into());
+    let length = super::super::candidate_input::route_length(&original);
+    let total = std::mem::size_of::<IdentityOwner>() + length;
+    let bank = Arc::new(Semaphore::new(total));
+    let identity = Identity::copied(&original, Some(19), &bank).unwrap();
+    assert_eq!(
+        std::mem::size_of::<Identity>(),
+        std::mem::size_of::<Arc<IdentityOwner>>()
+    );
+    let host = super::super::candidate_input::RouteRef::from(&identity.route)
+        .host()
+        .unwrap()
+        .as_ptr() as usize;
+    let mut owners = (0..7).map(|_| identity.clone()).collect::<Vec<_>>();
+    owners.push(identity);
+    drop(original);
+    assert_eq!(bank.available_permits(), 0);
+    let barrier = Arc::new(std::sync::Barrier::new(owners.len()));
+    std::thread::scope(|scope| {
+        for owner in owners {
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                assert_eq!(
+                    super::super::candidate_input::RouteRef::from(&owner.route)
+                        .host()
+                        .unwrap()
+                        .as_ptr() as usize,
+                    host
+                );
+                assert_eq!(owner.native_id, Some(19));
+                barrier.wait();
+                drop(owner);
+            });
+        }
+    });
+    assert_eq!(bank.available_permits(), total);
+}
+
+#[test]
 fn node_body_original_pointer_and_outer_grant_survive_table_removal_until_last_owner() {
     let bank = Arc::new(Semaphore::new(BANK));
     let input = Input::copied("original-body-node", super::super::RouteRef::Usbmux, &bank).unwrap();
