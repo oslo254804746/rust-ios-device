@@ -39,7 +39,7 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
                 source
                     .connect_owned(
                         "synthetic-source-no-device",
-                        route.clone(),
+                        (&route).into(),
                         TunMode::Userspace,
                         &owner,
                         &bank,
@@ -72,7 +72,7 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
                     source
                         .connect_owned(
                             "synthetic-source-no-device",
-                            route.clone(),
+                            (&route).into(),
                             TunMode::Userspace,
                             &owner,
                             &limited,

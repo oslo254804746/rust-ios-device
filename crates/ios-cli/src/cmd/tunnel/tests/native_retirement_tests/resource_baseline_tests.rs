@@ -140,7 +140,7 @@ impl Source for MeasurementSource {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<tokio::sync::Semaphore>,
@@ -149,7 +149,10 @@ impl Source for MeasurementSource {
     > {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
-                anyhow::ensure!(route == Route::Usbmux, "unexpected fixture route");
+                anyhow::ensure!(
+                    matches!(route, RouteRef::Usbmux),
+                    "unexpected fixture route"
+                );
                 anyhow::ensure!(
                     matches!(mode, TunMode::Userspace),
                     "unexpected fixture mode"

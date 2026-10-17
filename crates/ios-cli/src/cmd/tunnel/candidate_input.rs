@@ -7,6 +7,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::source::Route;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RouteRef<'a> {
     Usbmux,
     Usb(Option<&'a str>),
@@ -21,13 +22,32 @@ impl<'a> RouteRef<'a> {
             Self::Mobdev2(host) => Some(host),
         }
     }
-}
 
+    #[cfg(test)]
+    pub(super) fn fixture_owned(self) -> Route {
+        match self {
+            Self::Usbmux => Route::Usbmux,
+            Self::Usb(host) => Route::Usb(host.map(str::to_owned)),
+            Self::Wifi(host) => Route::Wifi(host.map(str::to_owned)),
+            Self::Mobdev2(host) => Route::Mobdev2(host.to_owned()),
+        }
+    }
+}
+impl<'a> From<&'a Route> for RouteRef<'a> {
+    fn from(route: &'a Route) -> Self {
+        match route {
+            Route::Usbmux => Self::Usbmux,
+            Route::Usb(host) => Self::Usb(host.as_deref()),
+            Route::Wifi(host) => Self::Wifi(host.as_deref()),
+            Route::Mobdev2(host) => Self::Mobdev2(host),
+        }
+    }
+}
 pub(super) struct Input {
     pub(super) udid: String,
     pub(super) route: Route,
-    // The Source API consumes one clone of the original retained route. Reserve
-    // that buffer before cloning and retain the reservation through every owner.
+    // Retain the original conservative Source text allowance. Production now
+    // borrows the original route; this is not a claim of another allocation.
     source_route_bytes: usize,
     _storage: OwnedSemaphorePermit,
 }
@@ -143,13 +163,12 @@ impl Input {
         }))
     }
 
-    pub(super) fn source_route(&self) -> Result<Route> {
-        let route = self.route.clone();
+    pub(super) fn source_route(&self) -> Result<RouteRef<'_>> {
         anyhow::ensure!(
-            route_capacity(&route) <= self.source_route_bytes,
-            crate::output::resource_decision("tunnel candidate Source clone capacity exceeded")
+            route_length(&self.route) <= self.source_route_bytes,
+            crate::output::resource_decision("tunnel candidate Source text allowance exceeded")
         );
-        Ok(route)
+        Ok((&self.route).into())
     }
 
     #[cfg(test)]

@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::watch;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use super::candidate_input::RouteRef;
+#[cfg(test)]
 use super::source::Route;
 use crate::access::DeviceAuthority;
 
@@ -37,24 +39,24 @@ impl RetainedRoute {
         }
     }
 
-    pub(super) fn established(
-        route: &Route,
+    pub(super) fn established<'a>(
+        route: impl Into<RouteRef<'a>>,
         host_filter: Option<&str>,
         bank: &Arc<Semaphore>,
     ) -> anyhow::Result<Arc<Self>> {
-        Self::copy_established(route, host_filter, bank)
+        Self::copy_established(route.into(), host_filter, bank)
             .map_err(|error| error.context(RouteAdmission))
     }
 
     fn copy_established(
-        route: &Route,
+        route: RouteRef<'_>,
         host_filter: Option<&str>,
         bank: &Arc<Semaphore>,
     ) -> anyhow::Result<Arc<Self>> {
         let selected = match route {
-            Route::Usbmux => None,
-            Route::Usb(host) | Route::Wifi(host) => host.as_deref(),
-            Route::Mobdev2(_) => host_filter,
+            RouteRef::Usbmux => None,
+            RouteRef::Usb(host) | RouteRef::Wifi(host) => host,
+            RouteRef::Mobdev2(_) => host_filter,
         };
         super::admission::selectors("", selected)?;
         let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
@@ -70,10 +72,10 @@ impl RetainedRoute {
             None => None,
         };
         let route = match route {
-            Route::Usbmux => RouteIntent::Usbmux,
-            Route::Usb(_) => RouteIntent::Usb(host),
-            Route::Wifi(_) => RouteIntent::Wifi(host),
-            Route::Mobdev2(_) => RouteIntent::Mobdev2(host),
+            RouteRef::Usbmux => RouteIntent::Usbmux,
+            RouteRef::Usb(_) => RouteIntent::Usb(host),
+            RouteRef::Wifi(_) => RouteIntent::Wifi(host),
+            RouteRef::Mobdev2(_) => RouteIntent::Mobdev2(host),
         };
         Ok(Arc::new(Self {
             route,

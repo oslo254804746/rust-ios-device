@@ -83,7 +83,7 @@ impl Source for DiscoverySource {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<tokio::sync::Semaphore>,
@@ -93,7 +93,7 @@ impl Source for DiscoverySource {
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
                 let mut reservation = owner.reserve()?;
-                let device = self.connect(udid, route, mode).await?;
+                let device = self.connect(udid, route.fixture_owned(), mode).await?;
                 reservation.attach(device.native_handle().unwrap().clone())?;
                 self.entered.fetch_add(1, Ordering::SeqCst);
                 if self.blocked.load(Ordering::SeqCst) {

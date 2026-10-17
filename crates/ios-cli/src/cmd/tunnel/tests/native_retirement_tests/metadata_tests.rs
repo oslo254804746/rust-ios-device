@@ -122,7 +122,7 @@ fn source_future_bytes(source: &dyn Source) -> usize {
     let future = source
         .connect_owned(
             DEVICE,
-            Route::Wifi(None),
+            RouteRef::Wifi(None),
             TunMode::Userspace,
             &NeverPoll,
             &bank,

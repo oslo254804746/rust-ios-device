@@ -97,7 +97,7 @@ impl Source for PublicationSource {
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
-        route: Route,
+        route: RouteRef<'a>,
         mode: TunMode,
         owner: &'a dyn TunnelOwner,
         bank: &'a Arc<tokio::sync::Semaphore>,

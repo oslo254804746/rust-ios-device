@@ -75,6 +75,7 @@ mod ws_payload;
 use bookkeeping::{
     DeferredFailure, DeferredSuccess, FailureIntent, ScanAttemptOutcome, ScanIntent, SuccessIntent,
 };
+use candidate_input::RouteRef;
 use lifecycle::{Lifecycle, Ticket};
 use source::{NativeSource, Route, Source, UsbSnapshot};
 
@@ -1203,13 +1204,9 @@ impl TunnelAgentState {
                 }
                 let _permit = self.inner.lifecycle.connects.acquire().await?;
                 let route = match requested_connection_type {
-                    Some(StartTunnelConnectionType::Usb) => {
-                        Route::Usb(ip_filter.map(str::to_owned))
-                    }
-                    Some(StartTunnelConnectionType::Wifi) => {
-                        Route::Wifi(ip_filter.map(str::to_owned))
-                    }
-                    Some(StartTunnelConnectionType::Usbmux) | None => Route::Usbmux,
+                    Some(StartTunnelConnectionType::Usb) => RouteRef::Usb(ip_filter),
+                    Some(StartTunnelConnectionType::Wifi) => RouteRef::Wifi(ip_filter),
+                    Some(StartTunnelConnectionType::Usbmux) | None => RouteRef::Usbmux,
                 };
                 match self
                     .connect_and_store_with_context(
@@ -1257,7 +1254,7 @@ impl TunnelAgentState {
                         };
                         self.connect_and_store_with_context(
                             udid,
-                            Route::Mobdev2(target.host),
+                            RouteRef::Mobdev2(&target.host),
                             &ticket,
                             ConnectionContext {
                                 expected_id: None,
@@ -1305,7 +1302,7 @@ impl TunnelAgentState {
             .transpose()?;
         self.connect_and_store_with_context(
             udid,
-            route,
+            (&route).into(),
             ticket,
             ConnectionContext {
                 expected_id,
@@ -1321,7 +1318,7 @@ impl TunnelAgentState {
     async fn connect_and_store_with_context(
         &self,
         udid: &str,
-        route: Route,
+        route: RouteRef<'_>,
         ticket: &Ticket,
         context: ConnectionContext<'_>,
     ) -> Result<PaidRecord> {
@@ -1335,7 +1332,7 @@ impl TunnelAgentState {
         if let Some(deadline) = deadline {
             deadline.check()?;
         }
-        let usbmux = matches!(route, Route::Usbmux | Route::Usb(_));
+        let usbmux = matches!(route, RouteRef::Usbmux | RouteRef::Usb(_));
         let desired = ticket.desired();
         let authority = manual.map(|request| request.authority.clone()).or_else(|| {
             if let intent::Desired::Manual { authority, .. } = &desired.desired {
@@ -1347,7 +1344,7 @@ impl TunnelAgentState {
         let route_intent = match (&manual, &desired.desired) {
             (None, intent::Desired::Manual { route, .. }) => route.clone(),
             _ => intent::RetainedRoute::established(
-                &route,
+                route,
                 manual.and_then(|request| request.host_filter),
                 &self.inner.global_metadata_bytes,
             )?,
@@ -1389,49 +1386,51 @@ impl TunnelAgentState {
             ticket,
             input.clone(),
         )?;
-        let observed_route = observed_route::Observed::new(
-            &route,
-            input.as_ref(),
-            &self.inner.global_metadata_bytes,
-        )?;
-        let mut source = self
-            .inner
-            .source
-            .connect_owned(
-                udid,
-                route,
-                self.inner.tun_mode,
-                &ownership,
-                &self.inner.global_metadata_bytes,
-            )
-            .map_err(ownership::before_source)?;
-        let manual_version = if retry.is_none() {
-            ticket
-                .commit(|| Ok(self.inner.retry.version(udid, ticket)))
-                .map_err(ownership::before_source)?
-        } else {
-            None
-        };
-        // Both capacity admissions succeeded. No rejected owner/permit consumes
-        // a retry or starts the total clock; Source is the next polled operation.
-        let attempt = retry
-            .map(|(identity, slot)| {
-                ticket.commit(|| {
-                    if let Some(deadline) = deadline {
-                        deadline.check()?;
-                    }
-                    self.inner.retry.start(udid, identity, ticket, slot)
-                })
-            })
-            .transpose();
-        self.inner.retry.emit_pending(udid, ticket);
-        let attempt = attempt.map_err(ownership::before_source)?;
-        if let (Some(attempt), Some(deadline)) = (&attempt, deadline) {
-            if let Some(at) = attempt.deadline() {
-                deadline.clamp_retry(at);
-            }
-        }
+        let mut attempt = None;
+        let mut manual_version = None;
         let result = async {
+            let observed_route = observed_route::Observed::new(
+                route,
+                input.as_ref(),
+                &self.inner.global_metadata_bytes,
+            )?;
+            let mut source = self
+                .inner
+                .source
+                .connect_owned(
+                    udid,
+                    observed_route.route().into(),
+                    self.inner.tun_mode,
+                    &ownership,
+                    &self.inner.global_metadata_bytes,
+                )
+                .map_err(ownership::before_source)?;
+            manual_version = if retry.is_none() {
+                ticket
+                    .commit(|| Ok(self.inner.retry.version(udid, ticket)))
+                    .map_err(ownership::before_source)?
+            } else {
+                None
+            };
+            // Both capacity admissions succeeded. No rejected owner/permit consumes
+            // a retry or starts the total clock; Source is the next polled operation.
+            let prepared_attempt = retry
+                .map(|(identity, slot)| {
+                    ticket.commit(|| {
+                        if let Some(deadline) = deadline {
+                            deadline.check()?;
+                        }
+                        self.inner.retry.start(udid, identity, ticket, slot)
+                    })
+                })
+                .transpose();
+            self.inner.retry.emit_pending(udid, ticket);
+            attempt = prepared_attempt.map_err(ownership::before_source)?;
+            if let (Some(attempt), Some(deadline)) = (&attempt, deadline) {
+                if let Some(at) = attempt.deadline() {
+                    deadline.clamp_retry(at);
+                }
+            }
             if let Some(deadline) = deadline {
                 deadline.check()?;
             }
@@ -1792,7 +1791,7 @@ impl TunnelAgentState {
         let mut outcome = self
             .refresh_connect_with_input(
                 udid,
-                route,
+                (&route).into(),
                 ticket,
                 None,
                 &mut prepared,
@@ -1811,7 +1810,7 @@ impl TunnelAgentState {
     async fn refresh_connect_with_input(
         &self,
         udid: &str,
-        route: Route,
+        route: RouteRef<'_>,
         ticket: &Ticket,
         input: Option<Arc<candidate_input::Input>>,
         prepared: &mut Option<Box<failure_table::Node>>,
