@@ -42,3 +42,9 @@ macOS/Linux及Python最低版本/其它制品平台按真实运行范围保留NO
 发布子限保留完整金额，全局账只扣同池已付本体；完整 tunnel654、upstream10、
 严格 CLI/build/只读 Source0 门禁通过。刷新/发现 future 和其它创建端、完整
 freshness 规则继续，L02 未关闭，23/6/L02 口径保持。
+
+随后[原 RSD 刷新 Source future](validation/tunnel-refresh-future-storage-2026-10-17.md)
+按实际具体 F 在 Box 创建前准入，原 Ready cause 同 poll 保留，原 frame 销毁后
+再准入独立输出；真实 manager 差一字节拒绝保留原目录/native owner。完整
+tunnel656、upstream10、严格 CLI/build/只读 Source0 门禁通过；发现/SDK future
+及其余创建端和完整规则审计继续，主项状态保持。

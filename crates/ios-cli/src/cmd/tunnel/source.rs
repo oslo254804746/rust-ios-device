@@ -99,19 +99,32 @@ pub(super) trait Source: Send + Sync {
         route: ios_core::device::ExistingRsdRoute,
         deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
-    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>>;
+    ) -> anyhow::Result<
+        super::future_storage::Dynamic<
+            'a,
+            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
+        >,
+    >;
     #[cfg(test)]
     fn refresh_existing_rsd<'a>(
         &'a self,
         _route: ios_core::device::ExistingRsdRoute,
         _deadline: tokio::time::Instant,
-        _bank: &'a Arc<Semaphore>,
-    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>> {
-        Box::pin(async {
-            Err(crate::output::input_decision(
-                "private fixture refresh Source not implemented",
-            ))
-        })
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<
+        super::future_storage::Dynamic<
+            'a,
+            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
+        >,
+    > {
+        super::future_storage::Dynamic::new(
+            async {
+                Err(crate::output::input_decision(
+                    "private fixture refresh Source not implemented",
+                ))
+            },
+            bank,
+        )
     }
 
     #[cfg(test)]
@@ -197,10 +210,16 @@ impl Source for NativeSource {
         route: ios_core::device::ExistingRsdRoute,
         deadline: tokio::time::Instant,
         bank: &'a Arc<Semaphore>,
-    ) -> BoxFuture<'a, anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>> {
-        Box::pin(async move {
-            Ok(ios_core::device::prepare_existing_rsd_at(route, deadline, bank).await?)
-        })
+    ) -> anyhow::Result<
+        super::future_storage::Dynamic<
+            'a,
+            anyhow::Result<Arc<ios_core::device::PreparedRsdCatalogue>>,
+        >,
+    > {
+        super::future_storage::Dynamic::new(
+            async move { Ok(ios_core::device::prepare_existing_rsd_at(route, deadline, bank).await?) },
+            bank,
+        )
     }
 
     fn connect_owned<'a>(
