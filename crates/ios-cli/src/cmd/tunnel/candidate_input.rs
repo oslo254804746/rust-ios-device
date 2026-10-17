@@ -1,6 +1,6 @@
 //! One admitted input shared by the window, table, native owner and original Err.
 //! Foreign Source payloads and Arc/anyhow internals need separate creation contracts.
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -49,6 +49,7 @@ pub(super) struct Input {
     // Retain the original conservative Source text allowance. Production now
     // borrows the original route; this is not a claim of another allocation.
     source_route_bytes: usize,
+    outcome: Mutex<Option<super::metadata_vec::AdmittedVec<u8>>>,
     _storage: OwnedSemaphorePermit,
 }
 
@@ -80,11 +81,10 @@ impl Input {
     ) -> Result<Arc<Self>> {
         super::admission::selectors(udid, route.host())?;
         let source_route_bytes = route.host().map_or(0, str::len);
-        // Keep the original independent Source-route/outcome-key reservations.
-        // Each input text allocation is paid separately BEFORE its actual copy.
+        // Keep the conservative Source allowance. The outcome key now has its
+        // actual empty destination and independent fee, rather than a reserve.
         let reserved = std::mem::size_of::<Self>()
             .checked_add(source_route_bytes)
-            .and_then(|bytes| bytes.checked_add(udid.len()))
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel candidate input size overflow")
             })?;
@@ -102,44 +102,54 @@ impl Input {
             RouteRef::Wifi(_) => Route::Wifi(host),
             RouteRef::Mobdev2(_) => Route::Mobdev2(host.expect("borrowed mobdev2 host")),
         };
+        let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
         Ok(Arc::new(Self {
             udid,
             route,
             source_route_bytes,
+            outcome: Mutex::new(Some(outcome)),
             _storage: storage,
         }))
     }
 
     #[cfg(test)]
-    pub(super) fn owned(udid: String, route: Route, bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
+    pub(super) fn owned(
+        incoming_udid: String,
+        incoming_route: Route,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Arc<Self>> {
         super::admission::selectors(
-            &udid,
-            match &route {
+            &incoming_udid,
+            match &incoming_route {
                 Route::Usbmux => None,
                 Route::Usb(host) | Route::Wifi(host) => host.as_deref(),
                 Route::Mobdev2(host) => Some(host.as_str()),
             },
         )?;
-        let source_route_bytes = route_length(&route);
+        let source_route_bytes = route_length(&incoming_route);
         let bytes = std::mem::size_of::<Self>()
-            .checked_add(udid.capacity())
-            .and_then(|bytes| bytes.checked_add(route_capacity(&route)))
+            .checked_add(incoming_udid.capacity())
+            .and_then(|bytes| bytes.checked_add(route_capacity(&incoming_route)))
             .and_then(|bytes| bytes.checked_add(source_route_bytes))
-            .and_then(|bytes| bytes.checked_add(udid.len()))
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel candidate input size overflow")
             })?;
         let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        // Local fields must precede refund on an empty destination refusal.
+        let udid = incoming_udid;
+        let route = incoming_route;
+        let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
         Ok(Arc::new(Self {
             udid,
             route,
             source_route_bytes,
+            outcome: Mutex::new(Some(outcome)),
             _storage: storage,
         }))
     }
 
     pub(super) fn usb(
-        udid: String,
+        incoming_udid: String,
         raw: &mut OwnedSemaphorePermit,
         bank: &Arc<Semaphore>,
     ) -> Result<Arc<Self>> {
@@ -147,10 +157,10 @@ impl Input {
             Arc::ptr_eq(raw.semaphore(), bank),
             crate::output::resource_decision("tunnel candidate snapshot bank mismatch")
         );
-        let mut storage = super::admission::known_metadata_charge(
-            bank,
-            std::mem::size_of::<Self>() + udid.len(),
-        )?;
+        let mut storage =
+            super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let udid = incoming_udid;
+        let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
         let field = raw.split(udid.capacity()).ok_or_else(|| {
             crate::output::resource_decision("tunnel candidate snapshot field charge missing")
         })?;
@@ -159,6 +169,7 @@ impl Input {
             udid,
             route: Route::Usbmux,
             source_route_bytes: 0,
+            outcome: Mutex::new(Some(outcome)),
             _storage: storage,
         }))
     }
@@ -169,6 +180,35 @@ impl Input {
             crate::output::resource_decision("tunnel candidate Source text allowance exceeded")
         );
         Ok((&self.route).into())
+    }
+
+    pub(super) fn outcome_key(&self) -> Result<(String, OwnedSemaphorePermit)> {
+        let mut pending = self
+            .outcome
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let destination = pending.as_ref().ok_or_else(|| {
+            crate::output::resource_decision("tunnel candidate outcome key already prepared")
+        })?;
+        anyhow::ensure!(
+            Arc::ptr_eq(destination.storage.semaphore(), self.storage_bank())
+                && destination.values.is_empty()
+                && destination.values.capacity() == self.udid.len()
+                && destination.storage.num_permits() == self.udid.len(),
+            crate::output::resource_decision("tunnel candidate outcome destination mismatch")
+        );
+        let destination = pending
+            .take()
+            .expect("checked original outcome destination");
+        drop(pending);
+        // The same original allocation moves out, with its fee outside String.
+        let storage = destination.storage;
+        let mut bytes = destination.values;
+        bytes.extend_from_slice(self.udid.as_bytes());
+        Ok((
+            String::from_utf8(bytes).expect("copied outcome str remains UTF-8"),
+            storage,
+        ))
     }
 
     #[cfg(test)]
@@ -205,5 +245,7 @@ impl std::fmt::Debug for SourceInputContext {
     }
 }
 
+#[cfg(test)]
+mod outcome_tests;
 #[cfg(test)]
 mod tests;

@@ -103,8 +103,8 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
     ] {
         let expected_host = route.host();
         let host_len = expected_host.map_or(0, str::len);
-        let reserved = std::mem::size_of::<Input>() + host_len + uid.len();
-        let total = reserved + uid.len() + host_len;
+        let reserved = std::mem::size_of::<Input>() + host_len;
+        let total = reserved + 2 * uid.len() + host_len;
         let bank = Arc::new(Semaphore::new(total));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let captured = seen.clone();
@@ -126,7 +126,15 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
         let original = seen.lock().unwrap().clone();
         assert_eq!(original[0], (uid.len(), input.udid.as_ptr() as usize));
         assert_eq!(input.udid.capacity(), uid.len());
-        assert_eq!(original.len(), 1 + usize::from(host_len != 0));
+        assert_eq!(original.len(), 2 + usize::from(host_len != 0));
+        let outcome = input.outcome.lock().unwrap();
+        let destination = outcome.as_ref().unwrap();
+        assert!(destination.values.is_empty());
+        assert_eq!(
+            original.last().unwrap(),
+            &(uid.len(), destination.values.as_ptr() as usize)
+        );
+        drop(outcome);
         let copied_host = match &input.route {
             Route::Usbmux => None,
             Route::Usb(host) | Route::Wifi(host) => host.as_ref(),
@@ -170,20 +178,22 @@ fn candidate_text_partial_last_byte_refusal_allocates_only_admitted_original_fie
     use std::sync::atomic::{AtomicUsize, Ordering};
     let uid = "candidate-identity";
     let host = "candidate-host";
-    let reserved = std::mem::size_of::<Input>() + host.len() + uid.len();
+    let reserved = std::mem::size_of::<Input>() + host.len();
     for (available, expected_allocations) in [
         (0, 0),
         (reserved - 1, 0),
         (reserved + uid.len() - 1, 0),
         (reserved + uid.len() + host.len() - 1, 1),
+        (reserved + 2 * uid.len() + host.len() - 1, 2),
     ] {
         let bank = Arc::new(Semaphore::new(available));
         let seen = Arc::new(AtomicUsize::new(0));
         let captured = seen.clone();
         let error = super::super::metadata_vec::with_allocation_hook(
             move |layout, _| {
-                assert_eq!(layout, std::alloc::Layout::array::<u8>(uid.len()).unwrap());
-                captured.fetch_add(1, Ordering::SeqCst);
+                let index = captured.fetch_add(1, Ordering::SeqCst);
+                let length = if index == 0 { uid.len() } else { host.len() };
+                assert_eq!(layout, std::alloc::Layout::array::<u8>(length).unwrap());
             },
             || {
                 Input::copied(uid, RouteRef::Mobdev2(host), &bank)

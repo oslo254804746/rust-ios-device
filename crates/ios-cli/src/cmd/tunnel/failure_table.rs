@@ -100,8 +100,8 @@ impl std::fmt::Debug for Identity {
 }
 
 /// Prepared before Source first poll; this exact Box becomes the table row.
-/// uid is the single outcome copy already reserved by Input. Its Input owner
-/// follows the node through publication, displacement, deletion and rollback.
+/// uid uses Input's single actual destination. Its independent original fee
+/// follows the key through failure nodes and deferred success cleanup.
 pub(super) struct Node {
     pub(super) udid: String,
     pub(super) row: FailedTunnelAttempt,
@@ -123,14 +123,10 @@ impl Node {
             Arc::ptr_eq(input.storage_bank(), bank),
             crate::output::resource_decision("tunnel failure input metadata bank mismatch")
         );
-        // Before cloning/allocating the node. Input already owns its UID copy fee.
+        // Prepare node/identity before consuming Input's single key destination.
         let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
         let identity = Identity::copied(&input.route, native_id, bank)?;
-        let udid = input.udid.clone();
-        anyhow::ensure!(
-            udid.capacity() <= input.udid.len(),
-            crate::output::resource_decision("tunnel failure outcome key clone capacity exceeded")
-        );
+        let (udid, key_storage) = input.outcome_key()?;
         Ok(Box::new(Self {
             udid,
             row: FailedTunnelAttempt {
@@ -142,7 +138,7 @@ impl Node {
                 slot: None,
             },
             input: Some(input),
-            _key_storage: None,
+            _key_storage: Some(key_storage),
             _storage: storage,
             selected: false,
             position: 0,
