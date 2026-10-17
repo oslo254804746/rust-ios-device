@@ -67,6 +67,7 @@ mod scan_publications;
 mod scan_seen;
 mod scoped;
 mod selector_copy;
+mod shared_value;
 pub(crate) use scoped::{NativeConnection, NativeScope};
 mod server;
 mod source;

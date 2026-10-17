@@ -95,3 +95,10 @@ selector 费用，rows/causes/backing/批次均按实际 owner 宽度。专项5�
 tunnel688、upstream10、严格 CLI/build/只读 Source0 门禁通过。原回滚、默认
 策略、pending cause 和 native EOF/joins 保持；Arc/SDK/发现及完整规则审计
 继续，L02 不关闭。
+
+随后[私有 Identity Arc 最后 owner](validation/tunnel-identity-arc-owner-2026-10-17.md)
+接入无 raw Arc/Weak 出口的 Unpin holder，每个 clone 通过 into_inner 消费，
+原 allocation 结束后才析构 payload/grant。专项5、完整 tunnel693、upstream10、
+严格 CLI/build/只读 Source0 门禁通过，原预算/指针/native 断言不改。其他
+raw Arc/Weak owner 与 private header 字节、SDK/发现及完整规则审计继续，
+L02 主项状态保持。
