@@ -458,7 +458,7 @@ async fn payload_census_quota_refusal_marks_incomplete_without_losing_original_r
         before.unjoined_native_owners
     );
     let retained = state.inner.retry.receipt("payload-fixture").unwrap();
-    assert!(Arc::ptr_eq(&original, &retained));
+    assert!(original.ptr_eq(&retained));
     assert_eq!(
         retained.primary().downcast_ref::<CoreError>().unwrap() as *const CoreError,
         pointer

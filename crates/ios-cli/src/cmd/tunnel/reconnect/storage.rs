@@ -50,24 +50,21 @@ impl State {
                     .is_some_and(|receipt| receipt.udid == udid)
         })
     }
-    pub(super) fn cause(&self, udid: &str) -> Option<&Arc<FailureReceipt>> {
+    pub(super) fn cause(&self, udid: &str) -> Option<&Receipt> {
         self.cause_index(udid)
             .and_then(|index| self.causes.as_slice()[index].cause.as_ref())
     }
-    pub(super) fn pending_index(&self, receipt: &Arc<FailureReceipt>) -> Option<usize> {
+    pub(super) fn pending_index(&self, receipt: &Receipt) -> Option<usize> {
         self.causes.as_slice().iter().position(|node| {
             node.cause_state == CauseState::Pending
-                && node
-                    .cause
-                    .as_ref()
-                    .is_some_and(|old| Arc::ptr_eq(old, receipt))
+                && node.cause.as_ref().is_some_and(|old| old.ptr_eq(receipt))
         })
     }
     pub(super) fn remove_cause(&mut self, udid: &str) -> Option<OwnedRemoved> {
         let index = self.cause_index(udid)?;
         Some(self.causes.remove(index))
     }
-    pub(super) fn remove_pending(&mut self, receipt: &Arc<FailureReceipt>) -> Option<OwnedRemoved> {
+    pub(super) fn remove_pending(&mut self, receipt: &Receipt) -> Option<OwnedRemoved> {
         let index = self.pending_index(receipt)?;
         Some(self.causes.remove(index))
     }
@@ -131,7 +128,7 @@ pub(in super::super) type OwnedRemoved = super::super::owned_box::Owner<Removed>
 pub(in super::super) struct Removed {
     pub(super) udid: String,
     pub(super) row: Option<Episode>,
-    pub(super) cause: Option<Arc<FailureReceipt>>,
+    pub(super) cause: Option<Receipt>,
     pub(super) cause_state: CauseState,
     pub(super) selected: bool,
     position: usize,
@@ -175,10 +172,7 @@ impl Removed {
             _storage: storage,
         }))
     }
-    pub(super) fn receipt(
-        receipt: Arc<FailureReceipt>,
-        bank: &Arc<Semaphore>,
-    ) -> Result<OwnedRemoved> {
+    pub(super) fn receipt(receipt: Receipt, bank: &Arc<Semaphore>) -> Result<OwnedRemoved> {
         let mut storage =
             super::super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
         let body = storage

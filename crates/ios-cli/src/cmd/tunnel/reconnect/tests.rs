@@ -3,6 +3,7 @@ use super::super::{lifecycle::Lifecycle, source::Route};
 use super::*;
 
 mod prepaid_tests;
+mod receipt_body_tests;
 mod removed_body_tests;
 
 const A: &str = "receipt-device-a";

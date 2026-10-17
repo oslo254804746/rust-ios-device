@@ -107,7 +107,7 @@ async fn removed_body_cause_last_byte_refusal_and_original_receipt_handoff_are_e
     let value = node.into_inner();
     assert_eq!(bank.available_permits(), before);
     assert!(value.udid.is_empty());
-    assert!(Arc::ptr_eq(value.cause.as_ref().unwrap(), &receipt));
+    assert!(value.cause.as_ref().unwrap().ptr_eq(&receipt));
     drop(value);
     assert_eq!(bank.available_permits(), before);
     drop(receipt);

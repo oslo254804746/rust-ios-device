@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use super::{AttemptIdentity, Ticket, MAX_FAILURE_RECORDS};
 
 mod causes;
-pub(super) use causes::{Completion, FailureReceipt, SourceFailure};
+pub(super) use causes::{Completion, FailureReceipt, Receipt, SourceFailure};
 mod storage;
 pub(super) use storage::RemovedBatch;
 use storage::{CauseState, OwnedRemoved, Removed, State};
@@ -409,7 +409,7 @@ impl Ledger {
             Arc::clone(&version),
             &self.bank,
         )?;
-        let cause_node = Removed::receipt(Arc::clone(&receipt), &self.bank)?;
+        let cause_node = Removed::receipt(receipt.clone(), &self.bank)?;
         let replacement = if !same {
             Some(Removed::episode(
                 udid,
@@ -669,7 +669,7 @@ impl Ledger {
 
 pub(super) struct Attempt {
     ledger: Arc<Ledger>,
-    receipt: Arc<FailureReceipt>,
+    receipt: Receipt,
     started: Snapshot,
     displaced: Option<OwnedRemoved>,
     complete: bool,
