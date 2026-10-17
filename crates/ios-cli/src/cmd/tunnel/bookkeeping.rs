@@ -12,7 +12,7 @@ use tokio::time::Instant;
 
 pub(super) struct DeferredFailure {
     pub(super) node: OwnedNode,
-    pub(super) receipt: Option<Arc<super::reconnect::FailureReceipt>>,
+    pub(super) receipt: Option<super::reconnect::Receipt>,
     // Direct-attempt fixtures also reserve their destination before Source.
     #[cfg(test)]
     pub(super) destination: Option<Destination>,
@@ -77,11 +77,11 @@ pub(super) enum ScanIntent {
 // The primary bookkeeping error stays the original anyhow object. The context
 // exposes independent Source originals without allocating diagnostic strings.
 pub(super) struct SourceFailuresContext {
-    receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
+    receipts: KnownVec<super::reconnect::Receipt>,
     _storage: OwnedSemaphorePermit,
 }
 impl SourceFailuresContext {
-    pub(super) fn receipts(&self) -> &[Arc<super::reconnect::FailureReceipt>] {
+    pub(super) fn receipts(&self) -> &[super::reconnect::Receipt] {
         self.receipts.as_slice()
     }
 }
@@ -99,7 +99,7 @@ impl std::fmt::Debug for SourceFailuresContext {
 }
 
 struct WriteState {
-    receipts: KnownVec<Arc<super::reconnect::FailureReceipt>>,
+    receipts: KnownVec<super::reconnect::Receipt>,
     finished: bool,
     in_scan: bool,
     context_storage: Option<OwnedSemaphorePermit>,
@@ -292,7 +292,7 @@ impl WriteBatch {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .receipts
-                    .push(Arc::clone(receipt))?;
+                    .push(receipt.clone())?;
             }
         }
         self.intents.push(intent)
@@ -323,7 +323,7 @@ impl WriteBatch {
             + std::mem::size_of::<SourceFailuresContext>()
             + capacity
                 * (std::mem::size_of::<ScanIntent>()
-                    + std::mem::size_of::<Arc<super::reconnect::FailureReceipt>>())
+                    + std::mem::size_of::<super::reconnect::Receipt>())
             + if capacity == 0 {
                 0
             } else {

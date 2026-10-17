@@ -30,6 +30,8 @@ struct History {
     failures: u64,
 }
 
+pub(in super::super) type Receipt = super::super::shared_body::Strong<FailureReceipt>;
+
 pub(in super::super) struct FailureReceipt {
     pub(super) udid: String,
     pub(super) identity: AttemptIdentity,
@@ -44,6 +46,9 @@ pub(in super::super) struct FailureReceipt {
 }
 
 impl FailureReceipt {
+    pub(super) fn body_bytes() -> usize {
+        Receipt::body_bytes()
+    }
     /// Construct every owned capsule and copied selector before Source poll.
     pub(super) fn reserve(
         udid: &str,
@@ -52,8 +57,8 @@ impl FailureReceipt {
         slot: Arc<OwnedSemaphorePermit>,
         version: Arc<()>,
         bank: &Arc<Semaphore>,
-    ) -> Result<Arc<Self>> {
-        let bytes = std::mem::size_of::<Self>()
+    ) -> Result<Receipt> {
+        let bytes = Self::body_bytes()
             .checked_add(udid.len())
             .and_then(|bytes| {
                 bytes.checked_add(super::super::candidate_input::route_length(&identity.route))
@@ -62,6 +67,9 @@ impl FailureReceipt {
                 crate::output::resource_decision("tunnel Source receipt size overflow")
             })?;
         let mut storage = super::super::admission::known_metadata_charge(bank, bytes)?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid receipt body and guard");
         let original_storage =
             super::super::admission::known_metadata_charge(bank, std::mem::size_of::<Original>())?;
         let wrapper_storage = super::super::admission::known_metadata_charge(
@@ -69,26 +77,29 @@ impl FailureReceipt {
             std::mem::size_of::<SourceFailure>(),
         )?;
         // No copied selector exists while any required capsule is unadmitted.
-        let mut copier =
-            super::super::selector_copy::Copier::new(storage, std::mem::size_of::<Self>())?;
+        let mut copier = super::super::selector_copy::Copier::new(storage, 0)?;
         let udid = copier.text(udid)?;
         let identity = copier.identity(identity)?;
         storage = copier.finish();
-        Ok(Arc::new(Self {
-            udid,
-            identity,
-            ticket: ticket.clone(),
-            slot,
-            version,
-            original: Shared::new(Original {
-                error: OnceLock::new(),
-                _storage: original_storage,
-            }),
-            history: OnceLock::new(),
-            completion: Mutex::new(Completion::Pending),
-            wrapper_storage: Mutex::new(Some(wrapper_storage)),
-            _storage: storage,
-        }))
+        Receipt::new(
+            Self {
+                udid,
+                identity,
+                ticket: ticket.clone(),
+                slot,
+                version,
+                original: Shared::new(Original {
+                    error: OnceLock::new(),
+                    _storage: original_storage,
+                }),
+                history: OnceLock::new(),
+                completion: Mutex::new(Completion::Pending),
+                wrapper_storage: Mutex::new(Some(wrapper_storage)),
+                _storage: storage,
+            },
+            bank,
+            body,
+        )
     }
     pub(in super::super) fn primary(&self) -> &anyhow::Error {
         self.history
@@ -142,7 +153,7 @@ impl FailureReceipt {
     }
     #[cfg(test)]
     pub(super) fn initial_bytes(udid: &str, identity: &AttemptIdentity) -> usize {
-        std::mem::size_of::<Self>()
+        Self::body_bytes()
             + udid.len()
             + super::super::candidate_input::route_length(&identity.route)
             + std::mem::size_of::<Original>()
@@ -187,12 +198,12 @@ impl Error for FailureReceipt {
 }
 
 pub(in super::super) struct SourceFailure {
-    receipt: Arc<FailureReceipt>,
+    receipt: Receipt,
     _storage: OwnedSemaphorePermit,
 }
 impl SourceFailure {
-    pub(in super::super) fn receipt(&self) -> Arc<FailureReceipt> {
-        Arc::clone(&self.receipt)
+    pub(in super::super) fn receipt(&self) -> Receipt {
+        self.receipt.clone()
     }
 }
 impl std::fmt::Display for SourceFailure {
@@ -216,7 +227,7 @@ impl Error for SourceFailure {
 impl Ledger {
     pub(in super::super) fn payload_receipts(
         &self,
-    ) -> Result<super::super::metadata_vec::KnownVec<Arc<FailureReceipt>>> {
+    ) -> Result<super::super::metadata_vec::KnownVec<Receipt>> {
         let state = self.lock();
         let mut roots =
             super::super::metadata_vec::KnownVec::new(Arc::clone(&self.bank), state.causes.len());
@@ -229,7 +240,7 @@ impl Ledger {
         roots.reserve(count)?;
         for node in state.causes.as_slice() {
             if node.cause_state != CauseState::Pending {
-                roots.push_reserved(Arc::clone(node.cause.as_ref().expect("cause node")));
+                roots.push_reserved(node.cause.as_ref().expect("cause node").clone());
             }
         }
         Ok(roots)
@@ -325,12 +336,12 @@ impl Ledger {
             .take()
             .expect("pre-Source wrapper payload reservation");
         anyhow::Error::new(SourceFailure {
-            receipt: Arc::clone(receipt),
+            receipt: receipt.clone(),
             _storage: storage,
         })
     }
     #[cfg(test)]
-    pub(in super::super) fn receipt(&self, udid: &str) -> Option<Arc<FailureReceipt>> {
+    pub(in super::super) fn receipt(&self, udid: &str) -> Option<Receipt> {
         self.lock().cause(udid).cloned()
     }
     #[cfg(test)]
@@ -343,13 +354,13 @@ impl Ledger {
             .count()
     }
     #[cfg(test)]
-    pub(in super::super) fn retired_receipts(&self) -> Vec<Arc<FailureReceipt>> {
+    pub(in super::super) fn retired_receipts(&self) -> Vec<Receipt> {
         self.lock()
             .causes
             .as_slice()
             .iter()
             .filter(|node| node.cause_state == CauseState::Retired)
-            .map(|node| Arc::clone(node.cause.as_ref().expect("cause node")))
+            .map(|node| node.cause.as_ref().expect("cause node").clone())
             .collect()
     }
 }

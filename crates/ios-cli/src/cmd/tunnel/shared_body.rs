@@ -44,7 +44,6 @@ impl<T> Strong<T> {
             body,
         })
     }
-    #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.data, &other.data)
     }
@@ -68,6 +67,16 @@ impl<T> Deref for Strong<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.data
+    }
+}
+impl<T: std::fmt::Debug> std::fmt::Debug for Strong<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(formatter)
+    }
+}
+impl<T: std::fmt::Display> std::fmt::Display for Strong<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(formatter)
     }
 }
 #[cfg(test)]

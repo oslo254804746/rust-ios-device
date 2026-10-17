@@ -114,3 +114,9 @@ L02 主项状态保持。
 退款；预算与 Source 同 poll 捕获不变。专项2、完整 tunnel701、upstream10、
 严格 CLI/build/只读 Source0 门禁通过。FailureReceipt、其他 Arc/私有 header、
 SDK/发现输出和完整规则审计继续，L02 未关闭。
+
+再后[FailureReceipt body 最后 owner](validation/tunnel-receipt-body-owner-2026-10-17.md)
+统一接入 Ledger/SourceFailure/Removed/写入批次与 snapshot，body/新增已付 guard
+和 selector/capsule 寿命分离；原 Pending/Recorded 认证、同 poll 原 IO 保持。
+专项3、完整 tunnel704、upstream10、严格 CLI/build/只读 Source0 门禁通过。
+其他 route/框架 owner、私有 header/opaque 分配与完整规则审计继续，L02 不关闭。
