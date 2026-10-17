@@ -161,6 +161,13 @@ impl SourcePeak {
 }
 
 fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize, SourcePeak) {
+    configured_with_discovery(source, 0)
+}
+
+fn configured_with_discovery(
+    source: Arc<LocalSource>,
+    discovery: usize,
+) -> (TunnelAgentState, usize, SourcePeak) {
     let temporary = source_future_bytes(&*source);
     let mut state = state(source);
     let charged = std::mem::size_of::<NativeDevice>()
@@ -175,7 +182,8 @@ fn configured(source: Arc<LocalSource>) -> (TunnelAgentState, usize, SourcePeak)
             + Lifecycle::initial_metadata_bytes(DEVICE)
             + record_copy_bytes()
             + route_body_bytes()
-            + temporary,
+            + temporary
+            + discovery,
     );
     let peak = SourcePeak::new(&state, temporary);
     (state, charged, peak)
@@ -251,7 +259,12 @@ async fn native_metadata_charge_survives_certified_joins_while_table_still_owns_
 async fn native_metadata_charge_survives_cancelled_publication_query_until_original_joins() {
     let expected = baseline();
     let source = LocalSource::new();
-    let (state, charged, peak) = configured(source.clone());
+    let probe = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let frame = source.usb_devices_owned(&probe).unwrap();
+    let discovery = MAX_GLOBAL_KNOWN_METADATA_BYTES - probe.available_permits();
+    drop(frame); // Actual local constructor only, no discovery poll.
+    assert_eq!(probe.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    let (state, charged, peak) = configured_with_discovery(source.clone(), discovery);
     *source.usb_gate.lock().unwrap() = Some(Arc::new(Semaphore::new(0)));
     let mut connection = Box::pin(publish(&state, Route::Usbmux));
     assert!(futures_util::poll!(&mut connection).is_pending());
@@ -270,7 +283,11 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        node_bytes + record_copy_bytes() + route_body_bytes() + publication::Life::bytes()
+        node_bytes
+            + record_copy_bytes()
+            + route_body_bytes()
+            + publication::Life::bytes()
+            + discovery
     );
     state.drain_native(OBSERVE).await.unwrap();
     assert_eq!(
@@ -279,7 +296,7 @@ async fn native_metadata_charge_survives_cancelled_publication_query_until_origi
     );
     assert_eq!(
         state.inner.global_metadata_bytes.available_permits(),
-        charged - backing + record_copy_bytes() + route_body_bytes()
+        charged - backing + record_copy_bytes() + route_body_bytes() + discovery
     );
     assert!(source.handle().shutdown_status().is_ok());
     assert!(recovered(&source, expected).await);

@@ -1,5 +1,14 @@
 use super::*;
 
+fn paired_source_frame_bytes(source: &dyn Source) -> usize {
+    let bank = Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES));
+    let frame = source.paired_devices_owned(&bank).unwrap();
+    let bytes = MAX_GLOBAL_KNOWN_METADATA_BYTES - bank.available_permits();
+    drop(frame); // Measure the actual constructor, never poll discovery.
+    assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
+    bytes
+}
+
 #[tokio::test]
 async fn manual_success_preflight_one_byte_refusal_is_before_all_source_and_keeps_namespace() {
     let source = FakeSource::new();
@@ -681,9 +690,25 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
         + std::mem::size_of::<usize>()
         + failure_table::Destination::minimum_bytes()
         - 1;
+    let temporary = paired_source_frame_bytes(&*source);
+    let held = Arc::new(StdMutex::new(None));
+    let retained = held.clone();
+    let charged = bank.clone();
+    *state.inner.paired_after_first_check.lock().unwrap() = Some(Box::new(move || {
+        // The real paired frame has been destroyed. Occupy only its measured
+        // temporary extra, restoring the original final-byte index refusal.
+        *retained.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned(temporary as u32)
+                .unwrap(),
+        );
+    }));
     let occupied = bank
         .clone()
-        .try_acquire_many_owned(u32::try_from(bank.available_permits() - remaining).unwrap())
+        .try_acquire_many_owned(
+            u32::try_from(bank.available_permits() - remaining - temporary).unwrap(),
+        )
         .unwrap();
     let error = state.refresh_once().await.unwrap_err();
     assert_eq!(
@@ -714,6 +739,7 @@ async fn candidate_index_bytes_refusal_preserves_original_backoff_before_source_
     drop(original);
     drop(state);
     drop(occupied);
+    held.lock().unwrap().take();
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
@@ -788,6 +814,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
     let charge = std::mem::size_of::<source::UsbDevice>() + A.len();
     let selection = std::mem::size_of::<source::UsbDevice>();
     let candidate = candidate_index::Candidate::first_usb_bytes(A);
+    let paired_frame = paired_source_frame_bytes(&*source);
     let native_bytes =
         state.inner.native.structural_bytes() + reconnect::Ledger::structural_bytes();
     state.set_global_metadata_limit(
@@ -799,7 +826,8 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
                 + candidate
                 + Lifecycle::initial_metadata_bytes(A)
                 + TunnelAgentState::scan_window_bytes(1)
-                + failure_table::Destination::minimum_bytes()),
+                + failure_table::Destination::minimum_bytes()
+                + paired_frame),
     );
     let mut scan = Box::pin(state.refresh_once());
     assert!(futures_util::poll!(&mut scan).is_pending());
@@ -816,6 +844,7 @@ async fn global_metadata_scan_retains_usb_charge_across_paired_wait_and_drop_rel
             + candidate
             + TunnelAgentState::scan_window_bytes(1)
             + failure_table::Destination::minimum_bytes()
+            + paired_frame
     );
     assert_eq!(source.paired_active.load(Ordering::SeqCst), 0);
     assert_eq!(source.paired_exited.load(Ordering::SeqCst), 1);

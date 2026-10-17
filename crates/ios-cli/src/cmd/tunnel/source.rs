@@ -1,5 +1,6 @@
 //! Injectable private boundary around the existing device connection interfaces.
 
+#[cfg(test)]
 use futures_util::future::BoxFuture;
 use ios_core::device::PairedMobdev2Device;
 use ios_core::{ConnectOptions, MuxClient, TunMode, TunnelHandle, TunnelOwner};
@@ -29,6 +30,23 @@ pub(super) struct UsbDevice {
     pub(super) udid: String,
     pub(super) device_id: u32,
     pub(super) usb: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct DiscoveryAdmission;
+impl std::fmt::Display for DiscoveryAdmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("tunnel discovery Source future admission")
+    }
+}
+impl std::error::Error for DiscoveryAdmission {}
+
+fn discovery_future<'a, F: std::future::Future + Send + 'a>(
+    future: F,
+    bank: &Arc<Semaphore>,
+) -> anyhow::Result<super::future_storage::Dynamic<'a, F::Output>> {
+    super::future_storage::Dynamic::new(future, bank)
+        .map_err(|error| error.context(DiscoveryAdmission))
 }
 
 // Match the existing Core connect selection: first USB, otherwise last match.
@@ -82,6 +100,8 @@ pub(super) fn selected_devices(
 #[cfg(test)]
 mod selection_tests;
 
+#[cfg(test)]
+mod discovery_future_tests;
 #[cfg(test)]
 mod future_tests;
 
@@ -169,8 +189,37 @@ pub(super) trait Source: Send + Sync {
             bank,
         )
     }
+    #[cfg(test)]
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot>;
+    #[cfg(test)]
     fn paired_devices(&self) -> BoxFuture<'_, anyhow::Result<Vec<PairedMobdev2Device>>>;
+
+    #[cfg(not(test))]
+    fn usb_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, UsbSnapshot>>;
+    #[cfg(test)]
+    fn usb_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, UsbSnapshot>> {
+        discovery_future(async move { self.usb_devices().await }, bank)
+    }
+
+    #[cfg(not(test))]
+    fn paired_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, anyhow::Result<Vec<PairedMobdev2Device>>>>;
+    #[cfg(test)]
+    fn paired_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, anyhow::Result<Vec<PairedMobdev2Device>>>>
+    {
+        discovery_future(async move { self.paired_devices().await }, bank)
+    }
 }
 
 pub(super) struct NativeSource;
@@ -287,30 +336,61 @@ impl Source for NativeSource {
         })
     }
 
+    fn usb_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, UsbSnapshot>> {
+        discovery_future(
+            async {
+                let mut mux = match MuxClient::connect().await {
+                    Ok(mux) => mux,
+                    Err(error) => return UsbSnapshot::ConnectError(error.into()),
+                };
+                match mux.list_devices().await {
+                    Ok(devices) => UsbSnapshot::Devices(
+                        devices
+                            .into_iter()
+                            .map(|device| UsbDevice {
+                                udid: device.serial_number,
+                                device_id: device.device_id,
+                                usb: device.connection_type.eq_ignore_ascii_case("USB"),
+                            })
+                            .collect(),
+                    ),
+                    Err(error) => UsbSnapshot::ListError(error.into()),
+                }
+            },
+            bank,
+        )
+    }
+
+    fn paired_devices_owned<'a>(
+        &'a self,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, anyhow::Result<Vec<PairedMobdev2Device>>>>
+    {
+        discovery_future(
+            async { Ok(ios_core::discover_paired_mobdev2_devices().await?) },
+            bank,
+        )
+    }
+
+    #[cfg(test)]
     fn usb_devices(&self) -> BoxFuture<'_, UsbSnapshot> {
         Box::pin(async {
-            let mut mux = match MuxClient::connect().await {
-                Ok(mux) => mux,
-                Err(error) => return UsbSnapshot::ConnectError(error.into()),
-            };
-            match mux.list_devices().await {
-                Ok(devices) => UsbSnapshot::Devices(
-                    devices
-                        .into_iter()
-                        .map(|device| UsbDevice {
-                            udid: device.serial_number,
-                            device_id: device.device_id,
-                            usb: device.connection_type.eq_ignore_ascii_case("USB"),
-                        })
-                        .collect(),
-                ),
-                Err(error) => UsbSnapshot::ListError(error.into()),
-            }
+            UsbSnapshot::ConnectError(crate::output::input_decision(
+                "NativeSource fixture requires admitted usb_devices_owned; device IO disabled",
+            ))
         })
     }
 
+    #[cfg(test)]
     fn paired_devices(&self) -> BoxFuture<'_, anyhow::Result<Vec<PairedMobdev2Device>>> {
-        Box::pin(async { Ok(ios_core::discover_paired_mobdev2_devices().await?) })
+        Box::pin(async {
+            Err(crate::output::input_decision(
+                "NativeSource fixture requires admitted paired_devices_owned; device IO disabled",
+            ))
+        })
     }
 }
 
