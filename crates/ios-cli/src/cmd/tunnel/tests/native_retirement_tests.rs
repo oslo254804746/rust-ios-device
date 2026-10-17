@@ -623,8 +623,8 @@ async fn native_cli_owner_capacity_rejects_before_the_actual_source_is_polled() 
     assert_eq!(source_calls, 1);
     assert!(rejected
         .unwrap_err()
-        .to_string()
-        .contains("native tunnel owner capacity exhausted"));
+        .chain()
+        .any(|cause| cause.to_string() == "native tunnel owner capacity exhausted"));
 }
 
 #[tokio::test]

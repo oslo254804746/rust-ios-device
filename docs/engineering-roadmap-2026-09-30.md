@@ -9031,3 +9031,13 @@ pending wire/框架upgrade joins/private及全部原freshness审计继续；128M
 [验证](validation/tunnel-pending-remote-wire-2026-10-17.md)。wire EOF不等同私有
 任务join；其它IO/框架upgrade/private及完整freshness继续。L02不关闭，128MiB
 非完整heap/RSS，23/6/待全审计、有效30及Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 original pre-Source admission failures
+
+native满表default start仍paired发现的红灯已修复；原目的地/ownership/retry
+准备失败用context保留原cause并跳过fallback，真实Source IO仍正常fallback。
+round1完整tunnel634/0FAIL/2ignored及上游10通过，fixture锁作用域修正后专项4/
+strictCLI/build/Source0通过，未变生产全量证据复用，见
+[验证](validation/tunnel-native-source-admission-2026-10-17.md)。其余实际存储/
+框架task/private及完整freshness继续；L02不关闭，128MiB非完整heap/RSS，
+23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
