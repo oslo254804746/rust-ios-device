@@ -719,7 +719,7 @@ impl Ticket {
 
     pub(super) fn establish_manual_shared(
         &self,
-        route: Arc<super::intent::RetainedRoute>,
+        route: super::intent::RouteOwner,
         authority: crate::access::DeviceAuthority,
         failure: Option<Arc<()>>,
         deadline: Option<&ConnectionDeadline>,

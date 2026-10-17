@@ -120,3 +120,9 @@ SDK/发现输出和完整规则审计继续，L02 未关闭。
 和 selector/capsule 寿命分离；原 Pending/Recorded 认证、同 poll 原 IO 保持。
 专项3、完整 tunnel704、upstream10、严格 CLI/build/只读 Source0 门禁通过。
 其他 route/框架 owner、私有 header/opaque 分配与完整规则审计继续，L02 不关闭。
+
+随后[retained route body 最后 owner](validation/tunnel-route-body-owner-2026-10-17.md)
+接入 desired/publication/Cell/lifecycle/扫描全引用图；最后 strong 释放 text，
+body/新增已付 guard 等到最后 Weak backing 结束再退款。专项4、完整 tunnel707、
+upstream10、严格 CLI/build/只读 Source0 门禁通过。原 filter、manual/live 恢复、
+epoch/expiry 回滚和 native join/EOF 保持，其他 owner/分配及完整审计继续。

@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 
 use super::{intent, lifecycle::DesiredRow, metadata_vec::KnownVec, Ticket, MAX_FAILURE_RECORDS};
 
-type ManualValue<'a> = (&'a Ticket, &'a Arc<intent::RetainedRoute>);
+type ManualValue<'a> = (&'a Ticket, &'a intent::RouteOwner);
 type ManualEntry<'a> = (&'a str, ManualValue<'a>);
 
 pub(super) struct Manual<'a> {

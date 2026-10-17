@@ -277,7 +277,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
     let table = state.inner.tunnels.read().await;
     let owner_preserved = table.get(AUTH_DEVICE).is_some_and(|row| {
         Arc::ptr_eq(&row.publication, &old_publication)
-            && Arc::ptr_eq(&row.route_intent, &old_route)
+            && row.route_intent.ptr_eq(&old_route)
             && row._ticket.same_incarnation(&old_owner)
             && row
                 .device
@@ -354,7 +354,7 @@ async fn exercise(publication: bool, boundary: Boundary, authorization: bool) {
         Arc::ptr_eq(&before.epoch, &after.epoch) && Arc::ptr_eq(&before.version, &after.version)
     );
     assert!(
-        matches!(after.desired, intent::Desired::Manual { route, authority } if Arc::ptr_eq(&route, &old_route) && authority.current())
+        matches!(after.desired, intent::Desired::Manual { route, authority } if route.ptr_eq(&old_route) && authority.current())
     );
     assert!(same_pair(&old_pending, &after_pending) && same_pair(&old_stamp, &after_stamp));
     assert!(

@@ -474,7 +474,7 @@ struct ManagedTunnel {
     usbmux: bool,
     native: Option<retirement::NativeLease>,
     // Actual selector established by Source, not the next caller's request.
-    route_intent: Arc<intent::RetainedRoute>,
+    route_intent: intent::RouteOwner,
     // Exact observed Source route, separate from a retained rediscovery filter.
     observed_route: observed_route::Observed,
     _ticket: Ticket,
