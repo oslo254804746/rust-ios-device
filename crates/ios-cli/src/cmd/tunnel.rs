@@ -478,6 +478,11 @@ struct ManagedTunnel {
     _fresh_metadata: Option<Arc<freshness::Metadata>>,
 }
 
+struct LocalTarget {
+    record: PaidRecord,
+    ticket: Ticket,
+}
+
 impl Drop for ManagedTunnel {
     fn drop(&mut self) {
         // The independent registry keeps the original runtime through every
@@ -1041,13 +1046,36 @@ impl TunnelAgentState {
     }
 
     async fn get_record(&self, udid: &str) -> Result<Option<PaidRecord>> {
+        self.with_record(udid, |tunnel| {
+            tunnel.record(&self.inner.global_metadata_bytes)
+        })
+        .await
+    }
+
+    async fn get_local_target(&self, udid: &str) -> Result<Option<LocalTarget>> {
+        self.with_record(udid, |tunnel| {
+            Ok(LocalTarget {
+                record: tunnel.record(&self.inner.global_metadata_bytes)?,
+                ticket: tunnel._ticket.for_connection(),
+            })
+        })
+        .await
+    }
+
+    async fn with_record<T>(
+        &self,
+        udid: &str,
+        read: impl FnOnce(&ManagedTunnel) -> Result<T>,
+    ) -> Result<Option<T>> {
         let mut tunnels = self.inner.tunnels.write().await;
         match tunnels.get(udid) {
             Some(tunnel) if tunnel.is_alive() => {
                 if !tunnel.device.record_fields_available() {
                     return Ok(None);
                 }
-                tunnel.record(&self.inner.global_metadata_bytes).map(Some)
+                // The record and any original lifetime proof are captured
+                // under this same guard, before stop/replacement can remove it.
+                read(tunnel).map(Some)
             }
             Some(_) => {
                 let removed = tunnels.remove(udid);
@@ -3273,7 +3301,7 @@ async fn agent_connect_authorized(
     })?;
     let local = if query.upstream.is_none() {
         state
-            .get_record(&query.udid)
+            .get_local_target(&query.udid)
             .await
             .map_err(|error| {
                 replies.operation_error(
@@ -3282,32 +3310,45 @@ async fn agent_connect_authorized(
                     error.as_ref(),
                 )
             })?
-            .filter(|record| {
+            .filter(|target| {
                 query
                     .interface
                     .as_ref()
-                    .map_or(true, |wanted| wanted == &record.interface)
+                    .map_or(true, |wanted| wanted == &target.record.interface)
             })
     } else {
         None
     };
-    if let Some(record) = local {
-        let stream = tokio::time::timeout(
-            TUNNEL_CONNECT_TIMEOUT,
-            connect_record_port(&record, query.port),
-        )
-        .await
-        .map_err(|error| {
-            replies.classified_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                "tunnel TCP dial timed out",
-                ios_core::classify_error(&error),
-            )
-        })?
-        .map_err(|err| {
+    if let Some(LocalTarget { record, ticket }) = local {
+        let stream = ticket
+            .run(async {
+                tokio::time::timeout(
+                    TUNNEL_CONNECT_TIMEOUT,
+                    connect_record_port(&record, query.port),
+                )
+                .await
+                .map_err(anyhow::Error::new)?
+            })
+            .await
+            .map_err(|err| {
+                if err.is::<tokio::time::error::Elapsed>() {
+                    replies.classified_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "tunnel TCP dial timed out",
+                        ios_core::classify_error(err.as_ref()),
+                    )
+                } else {
+                    replies.operation_error(
+                        StatusCode::BAD_GATEWAY,
+                        "tunnel TCP dial failed",
+                        err.as_ref(),
+                    )
+                }
+            })?;
+        let stream = ticket.commit(|| Ok(stream)).map_err(|err| {
             replies.operation_error(
                 StatusCode::BAD_GATEWAY,
-                "tunnel TCP dial failed",
+                "tunnel connection retired",
                 err.as_ref(),
             )
         })?;
@@ -3315,9 +3356,14 @@ async fn agent_connect_authorized(
         return Ok(bounded_websocket_upgrade(ws)
             .on_upgrade(move |socket| async move {
                 tokio::select! {
-                    result = bridge_tcp_websocket(socket, stream, &payload_bytes) => {
-                        if let Err(err) = result.result() {
-                            tracing::debug!(error = %crate::output::error_message(err), "tunnel agent: local WebSocket bridge ended");
+                    result = ticket.run(async { Ok(bridge_tcp_websocket(socket, stream, &payload_bytes).await) }) => {
+                        match result {
+                            Ok(completion) => {
+                                if let Err(err) = completion.result() {
+                                    tracing::debug!(error = %crate::output::error_message(err), "tunnel agent: local WebSocket bridge ended");
+                                }
+                            }
+                            Err(err) => tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket lifetime ended"),
                         }
                     }
                     _ = principal.revoked() => tracing::debug!("tunnel agent: local WebSocket authorization revoked"),

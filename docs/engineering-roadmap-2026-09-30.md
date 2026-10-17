@@ -8994,3 +8994,13 @@ URI/WS/private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭�
 strictCLI/build/Source0通过，见[验证](validation/tunnel-ws-binary-owner-2026-10-17.md)。
 received/relay/upgrade/private与完整freshness等继续；128MiB非完整heap/RSS，
 L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 local upgrade original epochs
+
+同原row捕获record与device/global ticket，dial与升级桥接绑定原epoch；真实
+stop/clear/shutdown三项关闭红灯转绿，manual live与B连接保留，pending原
+payload销毁及ready原错误保留已验。完整tunnel615/0FAIL/2原ignored、上游10/
+strictCLI/build/Source0通过，见[验证](validation/tunnel-local-upgrade-epoch-2026-10-17.md)。
+同epoch publication替换、remote/框架upgrade joins/private与完整freshness等
+继续；128MiB非完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部
+排除保持，仅本地提交。

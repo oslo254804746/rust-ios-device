@@ -183,6 +183,94 @@ fn poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     ))
 }
 
+#[tokio::test]
+async fn upgrade_epoch_pending_original_sink_is_destroyed_and_refunded_on_stop_clear_shutdown() {
+    for action in 0..3 {
+        let lifecycle = super::super::lifecycle::Lifecycle::new();
+        let connection = lifecycle
+            .ticket("original-A")
+            .await
+            .unwrap()
+            .fenced()
+            .for_connection();
+        let b = lifecycle
+            .ticket("original-B")
+            .await
+            .unwrap()
+            .for_connection();
+        let bank = Arc::new(Semaphore::new(4));
+        let fixture = setup(Mode::Shared, &bank);
+        let drops = fixture.drops.clone();
+        let events = fixture.events.clone();
+        let mut endpoints = fixture.endpoints;
+        let stored = bank.clone();
+        let mut operation = Box::pin(connection.run(async move {
+            {
+                let (sink, _, pending) = endpoints.parts();
+                binary(sink, pending, b"data", &stored).await?;
+            }
+            Ok(endpoints.finish(Ok(())))
+        }));
+        assert!(poll(operation.as_mut()).is_pending());
+        assert_eq!(bank.available_permits(), 0);
+        match action {
+            0 => lifecycle.stop("original-A").await,
+            1 => lifecycle.clear(),
+            _ => lifecycle.close(),
+        }
+        let error = operation.await.err().unwrap();
+        assert!(error.is::<ios_core::OperationCancelled>());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(*events.lock().unwrap(), [1, 2, 3]);
+        assert_eq!(bank.available_permits(), 4);
+        assert_eq!(b.is_current(), action == 0);
+    }
+}
+
+#[tokio::test]
+async fn upgrade_epoch_original_ready_payload_error_crossing_clear_keeps_typed_pointer_and_fee() {
+    let lifecycle = super::super::lifecycle::Lifecycle::new();
+    let connection = lifecycle
+        .ticket("original-A")
+        .await
+        .unwrap()
+        .for_connection();
+    let bank = Arc::new(Semaphore::new(4));
+    let fixture = setup(Mode::FlushError, &bank);
+    let pointer = fixture.error_pointer.clone();
+    let drops = fixture.drops.clone();
+    let mut endpoints = fixture.endpoints;
+    let completion = connection
+        .run(async {
+            let result = {
+                let (sink, _, pending) = endpoints.parts();
+                binary(sink, pending, b"data", &bank).await
+            };
+            let completion = endpoints.finish(result);
+            lifecycle.clear();
+            Ok(completion)
+        })
+        .await
+        .unwrap();
+    assert!(!connection.is_current());
+    let original = completion
+        .result()
+        .as_ref()
+        .unwrap_err()
+        .downcast_ref::<Original>()
+        .unwrap();
+    assert_eq!(
+        original as *const Original as usize,
+        pointer.load(Ordering::SeqCst)
+    );
+    assert_eq!(original.cause.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(completion);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(bank.available_permits(), 4);
+}
+
 #[test]
 fn websocket_payload_cancel_drops_original_slot_and_both_shared_halves_before_refund() {
     for mode in [Mode::Pending, Mode::Shared] {
