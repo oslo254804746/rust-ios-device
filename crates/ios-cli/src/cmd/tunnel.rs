@@ -47,6 +47,7 @@ mod lifecycle;
 mod manual_success;
 mod metadata_vec;
 mod observed_route;
+mod owned_box;
 mod owned_join;
 mod owned_window;
 mod ownership;
@@ -497,9 +498,19 @@ impl Drop for ManagedTunnel {
 }
 
 enum ManagedDevice {
-    Native(Box<ConnectedDevice>),
+    Native(owned_box::Owner<ConnectedDevice>),
     #[cfg(test)]
     Fake(Box<dyn source::FakeDevice>),
+}
+
+impl ManagedDevice {
+    fn owned_body_bytes(&self, bank: &Arc<Semaphore>) -> Result<usize> {
+        match self {
+            Self::Native(device) => device.bytes_in(bank),
+            #[cfg(test)]
+            Self::Fake(_) => Ok(0),
+        }
+    }
 }
 
 fn managed_metadata_bytes(
@@ -1455,10 +1466,18 @@ impl TunnelAgentState {
             }
             let metadata_size =
                 managed_metadata_bytes(&device, udid, &route_intent, &observed_route)?;
-            let global_metadata = admission::known_metadata_charge(
-                &self.inner.global_metadata_bytes,
-                metadata_size - route_intent.text_bytes() - observed_route.text_bytes(),
-            )?;
+            let independently_owned = device.owned_body_bytes(&self.inner.global_metadata_bytes)?;
+            let global_size = metadata_size
+                .checked_sub(route_intent.text_bytes())
+                .and_then(|size| size.checked_sub(observed_route.text_bytes()))
+                .and_then(|size| size.checked_sub(independently_owned))
+                .ok_or_else(|| {
+                    crate::output::resource_decision(
+                        "tunnel independently owned metadata size mismatch",
+                    )
+                })?;
+            let global_metadata =
+                admission::known_metadata_charge(&self.inner.global_metadata_bytes, global_size)?;
             let metadata = self
                 .inner
                 .metadata_bytes
