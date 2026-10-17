@@ -595,6 +595,15 @@ impl ScanControl {
 }
 
 impl Ticket {
+    /// A published transport belongs to its original device/global epochs.
+    /// Desired-version changes can keep that same runtime alive (live manual
+    /// shortcut); they must not revoke its existing data connections.
+    pub(super) fn for_connection(&self) -> Self {
+        let mut connection = self.clone();
+        connection.intent_version = None;
+        connection
+    }
+
     pub(super) fn udid(&self) -> &str {
         &self.gate.udid
     }

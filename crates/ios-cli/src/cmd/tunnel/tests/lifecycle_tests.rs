@@ -78,6 +78,7 @@ mod server_tests;
 mod shutdown_admission_tests;
 mod snapshot_admission_tests;
 mod success_bookkeeping_tests;
+mod upgrade_epoch_tests;
 mod upstream_registry_tests;
 
 enum Behavior {
@@ -113,6 +114,7 @@ impl Drop for OwnedDevice {
 }
 
 struct FakeSource {
+    proxy_port: AtomicUsize,
     scripts: StdMutex<HashMap<String, VecDeque<Behavior>>>,
     calls: StdMutex<Vec<(String, Route)>>,
     changed: Notify,
@@ -160,6 +162,7 @@ impl Drop for Probe<'_> {
 impl FakeSource {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            proxy_port: AtomicUsize::new(12345),
             scripts: StdMutex::new(HashMap::new()),
             calls: StdMutex::new(Vec::new()),
             changed: Notify::new(),
@@ -253,7 +256,7 @@ impl Source for FakeSource {
                 Behavior::Pending => std::future::pending::<()>().await,
                 Behavior::Held(gate) => gate.acquire().await.unwrap().forget(),
             }
-            let mut record = fake_record(12345);
+            let mut record = fake_record(self.proxy_port.load(Ordering::SeqCst) as u16);
             record.udid = udid.into();
             record.interface = format!("fake-{udid}");
             // A successful legacy fake USB connection represents an attached
