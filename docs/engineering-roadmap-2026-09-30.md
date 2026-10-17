@@ -9022,3 +9022,12 @@ handoff；真实clear/shutdown两跳关闭红灯转绿，local stop不误关外�
 上游10/strictCLI/build/Source0通过，见[验证](validation/tunnel-remote-upgrade-epoch-2026-10-17.md)。
 pending wire/框架upgrade joins/private及全部原freshness审计继续；128MiB非
 完整heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 pending remote wire evidence
+
+匿名/持久认证、未响应listing/未返回101握手、clear/shutdown共8种localhost
+场景取得原取消、strict socket EOF、60ms无新accept和完整退款；只新增fixture，
+专项与strictCLI通过，未变生产629/上游10/build/Source0证据复用70cc006，见
+[验证](validation/tunnel-pending-remote-wire-2026-10-17.md)。wire EOF不等同私有
+任务join；其它IO/框架upgrade/private及完整freshness继续。L02不关闭，128MiB
+非完整heap/RSS，23/6/待全审计、有效30及Q04全部排除保持，仅本地提交。
