@@ -105,6 +105,8 @@ struct WriteState {
     context_storage: Option<OwnedSemaphorePermit>,
 }
 
+pub(super) type WriteOwner = super::shared_value::Shared<FailureWriteOwner>;
+
 pub(super) struct FailureWriteOwner {
     state: Mutex<WriteState>,
     _storage: OwnedSemaphorePermit,
@@ -209,7 +211,7 @@ impl Drop for FailureWriteOwner {
 // There is at most one outcome/receipt/displaced row per candidate. No later
 // byte admission can discard an acquired original after its Ready(Err) poll.
 pub(super) struct WriteBatch {
-    owner: Arc<FailureWriteOwner>,
+    owner: WriteOwner,
     intents: KnownVec<ScanIntent>,
     displaced: RemovedBatch,
     destination: Option<Destination>,
@@ -269,7 +271,7 @@ impl WriteBatch {
         let mut receipts = KnownVec::new(Arc::clone(bank), receipt_capacity);
         receipts.reserve(receipt_capacity)?;
         Ok(Self {
-            owner: Arc::new(FailureWriteOwner {
+            owner: WriteOwner::new(FailureWriteOwner {
                 state: Mutex::new(WriteState {
                     receipts,
                     finished: false,
@@ -306,8 +308,8 @@ impl WriteBatch {
         self.owner.finish(result)
     }
 
-    pub(super) fn owner(&self) -> Arc<FailureWriteOwner> {
-        Arc::clone(&self.owner)
+    pub(super) fn owner(&self) -> WriteOwner {
+        self.owner.clone()
     }
 
     #[cfg(test)]
@@ -675,5 +677,7 @@ impl TunnelAgentState {
     }
 }
 
+#[cfg(test)]
+mod owner_tests;
 #[cfg(test)]
 mod tests;

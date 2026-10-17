@@ -132,3 +132,9 @@ epoch/expiry 回滚和 native join/EOF 保持，其他 owner/分配及完整审�
 显式移出字段，batch/completed 仍随原 owner，pending tuple/version 不变。
 新增3项及完整 tunnel710、upstream10、严格 CLI/build/只读 Source0 门禁通过。
 其他共享 owner、私有分配及完整规则审计继续，L02 不关闭。
+
+随后[FailureWriteOwner 最后 owner](validation/tunnel-failure-write-owner-2026-10-17.md)
+统一接入 WriteBatch/Session 的封闭共享根，allocation 结束后才执行原 custom
+Drop/退款；零配额和并发最后根不丢原 IO、不改已完成状态。专项3、完整
+tunnel713、upstream10、严格 CLI/build/只读 Source0 门禁通过，原 Source 前
+准入与 native join/EOF 保持。scan/history 等其他 owner 与完整审计继续。
