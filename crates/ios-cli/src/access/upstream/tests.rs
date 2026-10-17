@@ -8,6 +8,103 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
+fn upstream_client_root_moves_original_string_and_clones_share_its_last_owner() {
+    let root = String::from("https://original-client-root.invalid/");
+    let pointer = root.as_ptr();
+    let client = UpstreamClient::new(root, None, None).unwrap();
+    assert_eq!(client.root.as_str().as_ptr(), pointer);
+    let cloned = client.clone();
+    assert!(Arc::ptr_eq(&client.root, &cloned.root));
+    drop(client);
+    assert_eq!(cloned.root.as_str().as_ptr(), pointer);
+    assert_eq!(
+        cloned.root.as_str(),
+        "https://original-client-root.invalid/"
+    );
+}
+
+#[test]
+fn upstream_client_root_exact_lookup_keeps_original_limit_after_idna_expansion() {
+    // Locked url2.5.4/idna1.0.3 use DnsLength::Ignore. This fixed fixture
+    // expands under the original raw-input length limit without network IO.
+    let raw = format!("https://{}invalid/", "é.".repeat(300));
+    assert!(raw.len() < MAX_URL_BYTES);
+    let expanded = normalize_upstream_url(&raw).unwrap();
+    assert!(expanded.len() > MAX_URL_BYTES);
+    let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::List])]);
+    let registry = Upstreams::read(&fixture_file(
+        &fixture,
+        json!({
+            "version":1,"upstreams":[{"url":raw,"token_file":fixture.token_path}]
+        }),
+    ))
+    .unwrap();
+    assert!(registry.0.contains_key(&expanded));
+    assert_eq!(
+        registry.client(&expanded).unwrap_err().to_string(),
+        "upstream URL limit exceeded"
+    );
+    // Preserve the original raw-alias behavior too; only the supplied raw
+    // URL length was limited, not the post-normalization representation.
+    let alias = registry.client(&raw).unwrap();
+    assert!(Arc::ptr_eq(
+        &alias.root,
+        &registry.0.get(&expanded).unwrap().root
+    ));
+}
+
+#[test]
+fn upstream_client_root_canonical_lookup_and_alias_keep_original_client_after_registry_drop() {
+    let root = "https://expected.invalid/";
+    let fixture = PolicyFixture::new(vec![grant(TOKEN, vec![Permission::List])]);
+    let registry = Upstreams::read(&fixture_file(
+        &fixture,
+        json!({
+            "version":1,"upstreams":[{"url":root,"token_file":fixture.token_path}]
+        }),
+    ))
+    .unwrap();
+    let original = registry.0.get(root).unwrap();
+    let pointer = original.root.as_str().as_ptr();
+    let canonical = registry.client(root).unwrap();
+    let alias = registry.client("https://EXPECTED.invalid:443").unwrap();
+    let second_registry = registry.clone();
+    let next = second_registry.client(root).unwrap();
+    assert!(Arc::ptr_eq(&canonical.root, &original.root));
+    assert!(Arc::ptr_eq(&canonical.root, &alias.root));
+    assert!(Arc::ptr_eq(&canonical.root, &next.root));
+    assert!(Arc::ptr_eq(
+        canonical.token.as_ref().unwrap(),
+        alias.token.as_ref().unwrap()
+    ));
+    for invalid in [
+        "https://expected.invalid/?token=synthetic",
+        "https://expected.invalid/other",
+        "https://user:secret@expected.invalid/",
+        "http://expected.invalid/",
+    ] {
+        assert!(registry.client(invalid).is_err());
+    }
+    drop(registry);
+    drop(second_registry);
+    drop(canonical);
+    drop(next);
+    drop(fixture);
+    assert_eq!(alias.root.as_str().as_ptr(), pointer);
+    let header = alias
+        .header(
+            &reqwest::Url::parse("wss://expected.invalid/connect").unwrap(),
+            ordinary_header,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(header, format!("Bearer {TOKEN}"));
+    assert!(header.is_sensitive());
+    assert!(!format!("{alias:?}").contains(root));
+    assert!(!format!("{alias:?}").contains(TOKEN));
+}
+
+#[test]
 fn upstream_header_builder_runs_after_origin_checks_and_retains_original_typed_error_pointer() {
     let client = UpstreamClient::new(
         "https://expected.invalid/".into(),

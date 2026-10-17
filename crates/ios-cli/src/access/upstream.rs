@@ -15,6 +15,7 @@ use super::ClientToken;
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_CA_BYTES: u64 = 64 * 1024;
 const MAX_UPSTREAMS: usize = 32;
+const MAX_URL_BYTES: usize = 2048;
 
 #[derive(clap::Args, Default)]
 pub(crate) struct UpstreamArgs {
@@ -42,7 +43,7 @@ struct Configured {
 /// Local plaintext URLs must use literal loopback, never DNS hostnames. Remote
 /// access uses verified HTTPS or an independently protected loopback forward.
 pub(crate) fn normalize_upstream_url(raw: &str) -> Result<String> {
-    anyhow::ensure!(raw.len() <= 2048, "upstream URL limit exceeded");
+    anyhow::ensure!(raw.len() <= MAX_URL_BYTES, "upstream URL limit exceeded");
     let url = reqwest::Url::parse(raw).context("invalid upstream URL")?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https"),
@@ -112,7 +113,7 @@ fn tls_config(ca: Option<&Path>) -> Result<Arc<rustls::ClientConfig>> {
 
 #[derive(Clone)]
 pub(crate) struct UpstreamClient {
-    root: String,
+    root: Arc<String>,
     token: Option<Arc<ClientToken>>,
     http: reqwest::Client,
     tls: Arc<rustls::ClientConfig>,
@@ -137,7 +138,7 @@ impl UpstreamClient {
             .build()
             .context("upstream HTTP client configuration failed")?;
         Ok(Self {
-            root,
+            root: Arc::new(root),
             token: token.map(Arc::new),
             http,
             tls,
@@ -161,7 +162,7 @@ impl UpstreamClient {
         root.set_query(None);
         root.set_fragment(None);
         anyhow::ensure!(
-            normalize_upstream_url(root.as_str())? == self.root,
+            normalize_upstream_url(root.as_str())? == self.root.as_str(),
             "upstream credential target mismatch"
         );
         let Some(token) = &self.token else {
@@ -270,6 +271,15 @@ impl Upstreams {
     }
 
     pub(crate) fn client(&self, url: &str) -> Result<UpstreamClient> {
+        // IDNA can expand a valid stored key beyond the original raw-input
+        // limit. Preserve that rejection even on an exact registry hit.
+        anyhow::ensure!(url.len() <= MAX_URL_BYTES, "upstream URL limit exceeded");
+        // Stored keys were normalized and validated when this immutable
+        // registry was built. The manager's paid canonical snapshot can use
+        // the original client/root directly without two new text buffers.
+        if let Some(client) = self.0.get(url) {
+            return Ok(client.clone());
+        }
         let root = normalize_upstream_url(url)?;
         self.0
             .get(&root)
