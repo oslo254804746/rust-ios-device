@@ -214,7 +214,7 @@ pub(super) struct Session<'a> {
     outcomes: Arc<Outcomes>,
     index: usize,
     acquired: StdMutex<Acquired>,
-    writes: StdMutex<Option<Arc<super::bookkeeping::FailureWriteOwner>>>,
+    writes: StdMutex<Option<super::bookkeeping::WriteOwner>>,
     // Stack-held prospective permits are not a claim about stack/heap size.
     // Only actually materialized app-owned payloads receive their exact slice.
     compound: StdMutex<Option<OwnedSemaphorePermit>>,
@@ -358,10 +358,7 @@ impl std::fmt::Debug for SourceContext {
 }
 
 impl Session<'_> {
-    pub(super) fn retain_writes(
-        &self,
-        owner: Arc<super::bookkeeping::FailureWriteOwner>,
-    ) -> Result<()> {
+    pub(super) fn retain_writes(&self, owner: super::bookkeeping::WriteOwner) -> Result<()> {
         let mut slot = self.writes.lock().unwrap_or_else(|p| p.into_inner());
         anyhow::ensure!(
             slot.is_none(),

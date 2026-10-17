@@ -38,7 +38,7 @@ fn write_batch_payload_last_shared_owner_keeps_actual_body_and_refunds_unused_co
     let bank = Arc::new(Semaphore::new(bytes));
     let batch = WriteBatch::new(&bank, 0).unwrap();
     let owner = batch.owner();
-    let copied = Arc::clone(&owner);
+    let copied = owner.clone();
     assert_eq!(bank.available_permits(), 0);
     batch.finish(Ok(())).unwrap();
     assert_eq!(
