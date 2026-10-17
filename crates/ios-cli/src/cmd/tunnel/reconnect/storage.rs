@@ -154,17 +154,11 @@ impl Removed {
             .ok_or_else(|| crate::output::resource_decision("tunnel retry row size overflow"))?;
         let mut storage = super::super::admission::known_metadata_charge(bank, bytes)?;
         // Admission precedes both independent selector buffers and the Box.
-        let udid = udid.to_owned();
-        let identity = identity.clone();
-        let actual = std::mem::size_of::<Self>()
-            + udid.capacity()
-            + super::super::candidate_input::route_capacity(&identity.route);
-        anyhow::ensure!(
-            actual <= bytes,
-            crate::output::resource_decision("tunnel retry row clone capacity exceeded")
-        );
-        let exact = storage.split(actual).expect("admitted retry row selectors");
-        drop(storage);
+        let mut copier =
+            super::super::selector_copy::Copier::new(storage, std::mem::size_of::<Self>())?;
+        let udid = copier.text(udid)?;
+        let identity = copier.identity(identity)?;
+        storage = copier.finish();
         Ok(Box::new(Self {
             udid,
             row: Some(make_row(identity)),
@@ -173,7 +167,7 @@ impl Removed {
             selected: false,
             position: 0,
             next: None,
-            _storage: exact,
+            _storage: storage,
         }))
     }
     pub(super) fn receipt(

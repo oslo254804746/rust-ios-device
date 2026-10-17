@@ -9,7 +9,9 @@ use anyhow::Result;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
-use super::candidate_input::{route_capacity, Input};
+#[cfg(test)]
+use super::candidate_input::route_capacity;
+use super::candidate_input::Input;
 use super::metadata_vec::KnownVec;
 use super::{AttemptIdentity, FailedTunnelAttempt, Route, MAX_FAILURE_RECORDS};
 
@@ -35,18 +37,13 @@ impl Identity {
                 crate::output::resource_decision("tunnel failure identity size overflow")
             })?;
         let mut storage = super::admission::known_metadata_charge(bank, bytes)?;
-        let route = route.clone();
-        anyhow::ensure!(
-            route_capacity(&route) <= route_bytes,
-            crate::output::resource_decision("tunnel failure identity clone capacity exceeded")
-        );
-        let exact = storage
-            .split(std::mem::size_of::<IdentityOwner>() + route_capacity(&route))
-            .expect("reserved failure identity payload and clone");
-        drop(storage);
+        let mut copier =
+            super::selector_copy::Copier::new(storage, std::mem::size_of::<IdentityOwner>())?;
+        let route = copier.route(route)?;
+        storage = copier.finish();
         Ok(Self(Arc::new(IdentityOwner {
             value: AttemptIdentity { route, native_id },
-            _storage: exact,
+            _storage: storage,
         })))
     }
 

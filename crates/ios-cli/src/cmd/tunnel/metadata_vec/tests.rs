@@ -3,6 +3,78 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 #[test]
+fn prepaid_selector_original_grant_supports_high_alignment_at_zero_free_bytes() {
+    #[repr(align(128))]
+    struct Element(Arc<Semaphore>, Arc<AtomicUsize>);
+    impl Drop for Element {
+        fn drop(&mut self) {
+            assert_eq!(self.0.available_permits(), 0);
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let bytes = Layout::array::<Element>(2).unwrap().size();
+    let bank = Arc::new(Semaphore::new(bytes));
+    let fee = super::super::admission::known_metadata_charge(&bank, bytes).unwrap();
+    let pointer = Arc::new(AtomicUsize::new(0));
+    let captured = pointer.clone();
+    let charged = bank.clone();
+    let mut backing = with_allocation_hook(
+        move |layout, original| {
+            assert_eq!(layout, Layout::array::<Element>(2).unwrap());
+            assert_eq!(charged.available_permits(), 0);
+            assert_eq!(original % 128, 0);
+            captured.store(original, Ordering::SeqCst);
+        },
+        || from_grant::<Element>(&bank, 2, fee).unwrap(),
+    );
+    assert_eq!(
+        backing.values.as_ptr() as usize,
+        pointer.load(Ordering::SeqCst)
+    );
+    let drops = Arc::new(AtomicUsize::new(0));
+    backing.values.push(Element(bank.clone(), drops.clone()));
+    backing.values.push(Element(bank.clone(), drops.clone()));
+    drop(backing);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    assert_eq!(bank.available_permits(), bytes);
+}
+
+#[test]
+fn prepaid_selector_foreign_short_long_overflow_grants_refuse_before_allocation_and_refund() {
+    for (amount, foreign, capacity) in [
+        (7, false, 1),
+        (9, false, 1),
+        (8, true, 1),
+        (0, false, usize::MAX),
+    ] {
+        let bank = Arc::new(Semaphore::new(16));
+        let other = Arc::new(Semaphore::new(16));
+        let funded = if foreign { &other } else { &bank };
+        let fee = super::super::admission::known_metadata_charge(funded, amount).unwrap();
+        let error = with_allocation_hook(
+            |_, _| panic!("invalid prepaid grant allocated"),
+            || from_grant::<u64>(&bank, capacity, fee).err().unwrap(),
+        );
+        assert_eq!(
+            crate::output::operation_error_class(error.as_ref()),
+            ios_core::ErrorClass::ResourceLimit
+        );
+        assert_eq!(bank.available_permits(), 16);
+        assert_eq!(other.available_permits(), 16);
+    }
+    let bank = Arc::new(Semaphore::new(0));
+    let fee = super::super::admission::known_metadata_charge(&bank, 0).unwrap();
+    let empty = with_allocation_hook(
+        |_, _| panic!("empty grant allocated"),
+        || from_grant::<u8>(&bank, 0, fee).unwrap(),
+    );
+    assert!(empty.values.is_empty());
+    assert_eq!(empty.values.capacity(), 0);
+    drop(empty);
+    assert_eq!(bank.available_permits(), 0);
+}
+
+#[test]
 fn metadata_vector_refusal_precedes_actual_allocation_and_keeps_original_growth_owner() {
     let width = std::mem::size_of::<usize>();
     let bank = Arc::new(Semaphore::new(3 * width));

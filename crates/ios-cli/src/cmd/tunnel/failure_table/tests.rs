@@ -2,6 +2,44 @@
 use super::*;
 
 const BANK: usize = 262_144;
+
+#[test]
+fn prepaid_selector_actual_failure_identity_shares_original_buffer_through_last_clone() {
+    let original = Route::Mobdev2("原-failure-host".into());
+    let length = super::super::candidate_input::route_length(&original);
+    let total = std::mem::size_of::<IdentityOwner>() + length;
+    let bank = Arc::new(Semaphore::new(total));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let charged = bank.clone();
+    let identity = super::super::metadata_vec::with_allocation_hook(
+        move |layout, pointer| {
+            assert_eq!(charged.available_permits(), 0);
+            assert_eq!(layout, std::alloc::Layout::array::<u8>(length).unwrap());
+            captured.lock().unwrap().push(pointer);
+        },
+        || Identity::copied(&original, Some(17), &bank).unwrap(),
+    );
+    let pointer = super::super::candidate_input::RouteRef::from(&identity.route)
+        .host()
+        .unwrap()
+        .as_ptr() as usize;
+    assert_eq!(seen.lock().unwrap().as_slice(), &[pointer]);
+    assert_eq!(identity.native_id, Some(17));
+    assert_eq!(route_capacity(&identity.route), length);
+    let retained = identity.clone();
+    drop((identity, original));
+    assert_eq!(bank.available_permits(), 0);
+    assert_eq!(
+        super::super::candidate_input::RouteRef::from(&retained.route)
+            .host()
+            .unwrap()
+            .as_ptr() as usize,
+        pointer
+    );
+    drop(retained);
+    assert_eq!(bank.available_permits(), total);
+}
 fn identity(host: &str) -> AttemptIdentity {
     AttemptIdentity {
         route: Route::Mobdev2(host.into()),

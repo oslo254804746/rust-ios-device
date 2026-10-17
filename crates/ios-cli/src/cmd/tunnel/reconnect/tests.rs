@@ -2,6 +2,8 @@
 use super::super::{lifecycle::Lifecycle, source::Route};
 use super::*;
 
+mod prepaid_tests;
+
 const A: &str = "receipt-device-a";
 const B: &str = "receipt-device-b";
 const C: &str = "receipt-device-c";
