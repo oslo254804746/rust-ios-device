@@ -7,6 +7,22 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::source::Route;
 
+pub(super) enum RouteRef<'a> {
+    Usbmux,
+    Usb(Option<&'a str>),
+    Wifi(Option<&'a str>),
+    Mobdev2(&'a str),
+}
+impl<'a> RouteRef<'a> {
+    pub(super) fn host(&self) -> Option<&'a str> {
+        match self {
+            Self::Usbmux => None,
+            Self::Usb(host) | Self::Wifi(host) => *host,
+            Self::Mobdev2(host) => Some(host),
+        }
+    }
+}
+
 pub(super) struct Input {
     pub(super) udid: String,
     pub(super) route: Route,
@@ -37,6 +53,44 @@ impl Input {
         self._storage.semaphore()
     }
 
+    pub(super) fn copied(
+        udid: &str,
+        route: RouteRef<'_>,
+        bank: &Arc<Semaphore>,
+    ) -> Result<Arc<Self>> {
+        super::admission::selectors(udid, route.host())?;
+        let source_route_bytes = route.host().map_or(0, str::len);
+        // Keep the original independent Source-route/outcome-key reservations.
+        // Each input text allocation is paid separately BEFORE its actual copy.
+        let reserved = std::mem::size_of::<Self>()
+            .checked_add(source_route_bytes)
+            .and_then(|bytes| bytes.checked_add(udid.len()))
+            .ok_or_else(|| {
+                crate::output::resource_decision("tunnel candidate input size overflow")
+            })?;
+        let mut storage = super::admission::known_metadata_charge(bank, reserved)?;
+        // Bind storage first: on partial failure these actual Strings are
+        // destroyed before their merged grants are returned.
+        let udid = copy_text(udid, bank, &mut storage)?;
+        let host = route
+            .host()
+            .map(|host| copy_text(host, bank, &mut storage))
+            .transpose()?;
+        let route = match route {
+            RouteRef::Usbmux => Route::Usbmux,
+            RouteRef::Usb(_) => Route::Usb(host),
+            RouteRef::Wifi(_) => Route::Wifi(host),
+            RouteRef::Mobdev2(_) => Route::Mobdev2(host.expect("borrowed mobdev2 host")),
+        };
+        Ok(Arc::new(Self {
+            udid,
+            route,
+            source_route_bytes,
+            _storage: storage,
+        }))
+    }
+
+    #[cfg(test)]
     pub(super) fn owned(udid: String, route: Route, bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
         super::admission::selectors(
             &udid,
@@ -102,6 +156,18 @@ impl Input {
     pub(super) fn bytes(udid: &str, route: &Route) -> usize {
         std::mem::size_of::<Self>() + 2 * udid.len() + route_capacity(route) + route_length(route)
     }
+}
+
+fn copy_text(
+    value: &str,
+    bank: &Arc<Semaphore>,
+    storage: &mut OwnedSemaphorePermit,
+) -> Result<String> {
+    let allocation = super::metadata_vec::exact_backing(bank, value.len())?;
+    storage.merge(allocation.storage);
+    let mut bytes = allocation.values;
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(String::from_utf8(bytes).expect("copied candidate str remains UTF-8"))
 }
 
 pub(super) struct SourceInputContext {

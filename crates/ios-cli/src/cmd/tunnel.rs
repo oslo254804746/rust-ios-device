@@ -2253,15 +2253,19 @@ impl TunnelAgentState {
                 continue;
             }
             let (route, expected_id) = match &route.route {
-                intent::RouteIntent::Wifi(host) => (Route::Wifi(host.clone()), None),
+                intent::RouteIntent::Wifi(host) => {
+                    (candidate_input::RouteRef::Wifi(host.as_deref()), None)
+                }
                 intent::RouteIntent::Usbmux | intent::RouteIntent::Usb(_) => {
                     let id = attached_ids.get(udid);
                     if usb_complete && id.is_none() {
                         continue;
                     }
                     let route = match &route.route {
-                        intent::RouteIntent::Usb(host) => Route::Usb(host.clone()),
-                        _ => Route::Usbmux,
+                        intent::RouteIntent::Usb(host) => {
+                            candidate_input::RouteRef::Usb(host.as_deref())
+                        }
+                        _ => candidate_input::RouteRef::Usbmux,
                     };
                     (route, id)
                 }
@@ -2270,16 +2274,10 @@ impl TunnelAgentState {
                     continue;
                 }
             };
-            let bytes = match &route {
-                Route::Usb(host) | Route::Wifi(host) => host.as_ref().map_or(0, String::len),
-                _ => 0,
-            };
+            let bytes = route.host().map_or(0, str::len);
             candidate_budget.admit(udid.len(), bytes)?;
-            let input = candidate_input::Input::owned(
-                udid.to_owned(),
-                route,
-                &self.inner.global_metadata_bytes,
-            )?;
+            let input =
+                candidate_input::Input::copied(udid, route, &self.inner.global_metadata_bytes)?;
             seen.insert(&input)?;
             candidates.reserve(1)?;
             let node = failure_table::Node::input(
@@ -2484,9 +2482,9 @@ impl TunnelAgentState {
                 inputs.reserve(planned.len() + indices.len())?;
                 for (udid, ticket, index) in planned.as_slice() {
                     if !seen.contains(udid) {
-                        let input = candidate_input::Input::owned(
-                            (*udid).to_owned(),
-                            Route::Mobdev2(targets[*index].host.clone()),
+                        let input = candidate_input::Input::copied(
+                            udid,
+                            candidate_input::RouteRef::Mobdev2(&targets[*index].host),
                             &self.inner.global_metadata_bytes,
                         )?;
                         let node = failure_table::Node::input(
@@ -2504,9 +2502,9 @@ impl TunnelAgentState {
                         && !suppressed.contains(target.udid.as_str())
                         && !seen.contains(&target.udid)
                     {
-                        let input = candidate_input::Input::owned(
-                            target.udid.clone(),
-                            Route::Mobdev2(target.host.clone()),
+                        let input = candidate_input::Input::copied(
+                            &target.udid,
+                            candidate_input::RouteRef::Mobdev2(&target.host),
                             &self.inner.global_metadata_bytes,
                         )?;
                         let node = failure_table::Node::input(

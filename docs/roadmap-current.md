@@ -56,3 +56,9 @@ tunnel656、upstream10、严格 CLI/build/只读 Source0 门禁通过；发现/S
 fixture 按真实构造器计入临时峰值，原零余量/native join/EOF 断言保持。
 Source/candidate 文本、discovery snapshot/SDK 创建端及其余完整审计继续，
 L02 与原七个主项的未完成状态不变。
+
+随后[candidate 原 UDID/host 文本](validation/tunnel-candidate-text-storage-2026-10-17.md)
+三处生产创建端改为借用，原缓冲区在复制前按实际长度准入、同一 Vec 转 String，
+费用随最后 Input/原错误 owner；USB 原字段转移和原预留不变。完整 tunnel665、
+upstream10、严格 CLI/build/只读 Source0 门禁通过，本轮旧精确预算断言未调整。
+Source 临时 route/clone、SDK/发现输出与其余完整审计继续，L02 主项不关闭。
