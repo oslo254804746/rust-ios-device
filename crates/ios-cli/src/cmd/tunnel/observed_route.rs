@@ -11,7 +11,7 @@ use super::{
 };
 
 pub(super) enum Observed {
-    Input(Arc<candidate_input::Input>),
+    Input(candidate_input::Owner),
     Owned {
         route: Route,
         _storage: Option<OwnedSemaphorePermit>,
@@ -21,7 +21,7 @@ pub(super) enum Observed {
 impl Observed {
     pub(super) fn new<'a>(
         route: impl Into<RouteRef<'a>>,
-        input: Option<&Arc<candidate_input::Input>>,
+        input: Option<&candidate_input::Owner>,
         bank: &Arc<Semaphore>,
     ) -> Result<Self> {
         Self::admit(route.into(), input, bank).map_err(|error| error.context(Admission))
@@ -29,7 +29,7 @@ impl Observed {
 
     fn admit(
         route: RouteRef<'_>,
-        input: Option<&Arc<candidate_input::Input>>,
+        input: Option<&candidate_input::Owner>,
         bank: &Arc<Semaphore>,
     ) -> Result<Self> {
         if let Some(input) = input {

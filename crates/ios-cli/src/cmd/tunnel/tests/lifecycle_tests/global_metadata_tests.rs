@@ -131,7 +131,7 @@ async fn paired_failure_node_last_byte_refusal_keeps_usb_and_original_mobdev2_wi
     let plans = 2 * targets.len() * std::mem::size_of::<usize>();
     let inputs = targets.len()
         * std::mem::size_of::<(
-            Arc<candidate_input::Input>,
+            candidate_input::Owner,
             Option<Ticket>,
             failure_table::OwnedNode,
         )>();
@@ -226,7 +226,7 @@ async fn seen_coordinator_byte_refusal_does_not_retry_same_usb_uid_after_paired_
         + A.len()
         + std::mem::size_of::<source::UsbDevice>()
         + std::mem::size_of::<usize>()
-        + std::mem::size_of::<candidate_input::Input>()
+        + candidate_input::Input::body_bytes()
         + A.len()
         + scan_seen::Seen::first_bytes()
         + failure_table::Node::input_bytes(&Route::Usbmux)

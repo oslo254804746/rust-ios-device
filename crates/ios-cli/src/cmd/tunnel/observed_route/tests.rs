@@ -84,7 +84,7 @@ fn observed_route_original_candidate_input_is_shared_at_zero_quota_until_last_ow
     let mut text = String::with_capacity(1024);
     text.push_str("observed-original");
     let input = candidate_input::Input::owned("uid".into(), Route::Mobdev2(text), &bank).unwrap();
-    let weak = Arc::downgrade(&input);
+    let weak = input.downgrade();
     let pointer = host(&input.route).unwrap().as_ptr();
     let source_route = input.source_route().unwrap();
     let paid = 4096 - bank.available_permits();
@@ -103,6 +103,11 @@ fn observed_route_original_candidate_input_is_shared_at_zero_quota_until_last_ow
     assert_eq!(bank.available_permits(), 0);
     drop(observed);
     assert!(weak.upgrade().is_none());
+    assert_eq!(
+        bank.available_permits(),
+        paid - candidate_input::Input::body_bytes()
+    );
+    drop(weak);
     assert_eq!(bank.available_permits(), paid);
     drop(held);
     assert_eq!(bank.available_permits(), 4096);

@@ -88,7 +88,7 @@ struct Entry {
     // runtime until its joins are certified, even after its table row drops.
     metadata: Option<Arc<OwnedSemaphorePermit>>,
     global_metadata: Option<Arc<OwnedSemaphorePermit>>,
-    _input: Option<Arc<super::candidate_input::Input>>,
+    _input: Option<super::candidate_input::Owner>,
     fresh_metadata: Option<Arc<super::freshness::Metadata>>,
     first_freshness: Option<Arc<super::freshness::Receipt>>,
     latest_freshness: Option<Arc<super::freshness::Receipt>>,
@@ -330,7 +330,7 @@ impl Registry {
     pub(super) fn reserve_with_input(
         self: &Arc<Self>,
         stamp: OwnershipStamp,
-        input: Option<Arc<super::candidate_input::Input>>,
+        input: Option<super::candidate_input::Owner>,
     ) -> Result<Reservation> {
         let mut state = self.lock();
         if state.sealed {

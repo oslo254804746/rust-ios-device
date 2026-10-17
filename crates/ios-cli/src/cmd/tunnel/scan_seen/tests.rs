@@ -5,13 +5,13 @@ use crate::cmd::tunnel::Route;
 fn seen_bytes_share_exact_input_and_keep_coordinator_rejected_identity_until_drop() {
     let bank = Arc::new(Semaphore::new(4096));
     let input = Input::owned("rejected".into(), Route::Usbmux, &bank).unwrap();
-    let weak = Arc::downgrade(&input);
+    let weak = input.downgrade();
     let pointer = input.udid.as_ptr();
     let before = bank.available_permits();
     let mut seen = Seen::new(&bank);
     assert!(seen.insert(&input).unwrap());
     assert_eq!(bank.available_permits(), before - Seen::first_bytes());
-    assert!(Arc::ptr_eq(&seen.rows.as_slice()[0], &input));
+    assert!(seen.rows.as_slice()[0].ptr_eq(&input));
     assert_eq!(seen.rows.as_slice()[0].udid.as_ptr(), pointer);
     assert!(!seen.insert(&input).unwrap());
     drop(input);
@@ -20,6 +20,8 @@ fn seen_bytes_share_exact_input_and_keep_coordinator_rejected_identity_until_dro
     assert!(!seen.contains("another"));
     drop(seen);
     assert!(weak.upgrade().is_none());
+    assert_eq!(bank.available_permits(), 4096 - Input::body_bytes());
+    drop(weak);
     assert_eq!(bank.available_permits(), 4096);
 }
 
@@ -31,7 +33,7 @@ fn seen_bytes_growth_one_byte_refusal_preserves_original_backing_keys_and_permit
     assert!(seen.insert(&inputs[0]).unwrap());
     assert!(seen.insert(&inputs[1]).unwrap());
     let original_backing = seen.rows.as_slice().as_ptr();
-    let replacement = 4 * std::mem::size_of::<Arc<Input>>();
+    let replacement = 4 * std::mem::size_of::<super::super::candidate_input::Owner>();
     let held = bank
         .clone()
         .try_acquire_many_owned((bank.available_permits() - replacement + 1) as u32)

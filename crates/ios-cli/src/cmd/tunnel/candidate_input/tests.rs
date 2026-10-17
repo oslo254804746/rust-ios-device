@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn input_weak_body_original_input_fields_and_outcome_end_before_last_weak_body_refund() {
+    let uid = "original-input-uid";
+    let host = "original-input-host";
+    let total = Input::bytes(uid, &Route::Mobdev2(host.into()));
+    let bank = Arc::new(Semaphore::new(total));
+    let input = Input::copied(uid, RouteRef::Mobdev2(host), &bank).unwrap();
+    let pointer = input.udid.as_ptr();
+    let weak = input.downgrade();
+    let upgraded = weak.upgrade().unwrap();
+    assert!(input.ptr_eq(&upgraded));
+    assert_eq!(upgraded.udid.as_ptr(), pointer);
+    drop((input, upgraded));
+    assert!(weak.upgrade().is_none());
+    assert_eq!(bank.available_permits(), total - Input::body_bytes());
+    drop(weak);
+    assert_eq!(bank.available_permits(), total);
+}
+
+#[test]
 fn candidate_input_original_capacity_and_shared_last_owner_release() {
     let mut host = String::with_capacity(8192);
     host.push_str("synthetic-host");
@@ -32,7 +51,7 @@ fn candidate_input_usb_transfers_original_snapshot_charge_without_double_count()
     let original = uid.as_ptr();
     let backing = 128;
     let raw_bytes = backing + uid.capacity();
-    let supplemental = std::mem::size_of::<Input>() + uid.len();
+    let supplemental = Input::body_bytes() + uid.len();
     let bank = Arc::new(Semaphore::new(raw_bytes + supplemental));
     let mut raw = super::super::admission::known_metadata_charge(&bank, raw_bytes).unwrap();
     let input = Input::usb(uid, &mut raw, &bank).unwrap();
@@ -103,7 +122,7 @@ fn candidate_text_original_allocations_prepaid_before_copy_and_shared_last_error
     ] {
         let expected_host = route.host();
         let host_len = expected_host.map_or(0, str::len);
-        let reserved = std::mem::size_of::<Input>() + host_len;
+        let reserved = Input::body_bytes() + host_len;
         let total = reserved + 2 * uid.len() + host_len;
         let bank = Arc::new(Semaphore::new(total));
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -178,7 +197,7 @@ fn candidate_text_partial_last_byte_refusal_allocates_only_admitted_original_fie
     use std::sync::atomic::{AtomicUsize, Ordering};
     let uid = "candidate-identity";
     let host = "candidate-host";
-    let reserved = std::mem::size_of::<Input>() + host.len();
+    let reserved = Input::body_bytes() + host.len();
     for (available, expected_allocations) in [
         (0, 0),
         (reserved - 1, 0),

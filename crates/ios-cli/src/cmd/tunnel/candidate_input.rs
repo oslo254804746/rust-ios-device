@@ -7,6 +7,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::source::Route;
 
+pub(super) type Owner = super::shared_body::Strong<Input>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RouteRef<'a> {
     Usbmux,
@@ -70,25 +72,27 @@ pub(super) fn route_length(route: &Route) -> usize {
 }
 
 impl Input {
+    pub(super) fn body_bytes() -> usize {
+        Owner::body_bytes()
+    }
     pub(super) fn storage_bank(&self) -> &Arc<Semaphore> {
         self._storage.semaphore()
     }
 
-    pub(super) fn copied(
-        udid: &str,
-        route: RouteRef<'_>,
-        bank: &Arc<Semaphore>,
-    ) -> Result<Arc<Self>> {
+    pub(super) fn copied(udid: &str, route: RouteRef<'_>, bank: &Arc<Semaphore>) -> Result<Owner> {
         super::admission::selectors(udid, route.host())?;
         let source_route_bytes = route.host().map_or(0, str::len);
         // Keep the conservative Source allowance. The outcome key now has its
         // actual empty destination and independent fee, rather than a reserve.
-        let reserved = std::mem::size_of::<Self>()
+        let reserved = Self::body_bytes()
             .checked_add(source_route_bytes)
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel candidate input size overflow")
             })?;
         let mut storage = super::admission::known_metadata_charge(bank, reserved)?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid Input body and guard");
         // Bind storage first: on partial failure these actual Strings are
         // destroyed before their merged grants are returned.
         let udid = copy_text(udid, bank, &mut storage)?;
@@ -103,13 +107,17 @@ impl Input {
             RouteRef::Mobdev2(_) => Route::Mobdev2(host.expect("borrowed mobdev2 host")),
         };
         let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
-        Ok(Arc::new(Self {
-            udid,
-            route,
-            source_route_bytes,
-            outcome: Mutex::new(Some(outcome)),
-            _storage: storage,
-        }))
+        Owner::new(
+            Self {
+                udid,
+                route,
+                source_route_bytes,
+                outcome: Mutex::new(Some(outcome)),
+                _storage: storage,
+            },
+            bank,
+            body,
+        )
     }
 
     #[cfg(test)]
@@ -117,7 +125,7 @@ impl Input {
         incoming_udid: String,
         incoming_route: Route,
         bank: &Arc<Semaphore>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<Owner> {
         super::admission::selectors(
             &incoming_udid,
             match &incoming_route {
@@ -127,51 +135,64 @@ impl Input {
             },
         )?;
         let source_route_bytes = route_length(&incoming_route);
-        let bytes = std::mem::size_of::<Self>()
+        let bytes = Self::body_bytes()
             .checked_add(incoming_udid.capacity())
             .and_then(|bytes| bytes.checked_add(route_capacity(&incoming_route)))
             .and_then(|bytes| bytes.checked_add(source_route_bytes))
             .ok_or_else(|| {
                 crate::output::resource_decision("tunnel candidate input size overflow")
             })?;
-        let storage = super::admission::known_metadata_charge(bank, bytes)?;
+        let mut storage = super::admission::known_metadata_charge(bank, bytes)?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid Input body and guard");
         // Local fields must precede refund on an empty destination refusal.
         let udid = incoming_udid;
         let route = incoming_route;
         let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
-        Ok(Arc::new(Self {
-            udid,
-            route,
-            source_route_bytes,
-            outcome: Mutex::new(Some(outcome)),
-            _storage: storage,
-        }))
+        Owner::new(
+            Self {
+                udid,
+                route,
+                source_route_bytes,
+                outcome: Mutex::new(Some(outcome)),
+                _storage: storage,
+            },
+            bank,
+            body,
+        )
     }
 
     pub(super) fn usb(
         incoming_udid: String,
         raw: &mut OwnedSemaphorePermit,
         bank: &Arc<Semaphore>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<Owner> {
         anyhow::ensure!(
             Arc::ptr_eq(raw.semaphore(), bank),
             crate::output::resource_decision("tunnel candidate snapshot bank mismatch")
         );
-        let mut storage =
-            super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let mut storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid Input body and guard");
         let udid = incoming_udid;
         let outcome = super::metadata_vec::exact_backing(bank, udid.len())?;
         let field = raw.split(udid.capacity()).ok_or_else(|| {
             crate::output::resource_decision("tunnel candidate snapshot field charge missing")
         })?;
         storage.merge(field);
-        Ok(Arc::new(Self {
-            udid,
-            route: Route::Usbmux,
-            source_route_bytes: 0,
-            outcome: Mutex::new(Some(outcome)),
-            _storage: storage,
-        }))
+        Owner::new(
+            Self {
+                udid,
+                route: Route::Usbmux,
+                source_route_bytes: 0,
+                outcome: Mutex::new(Some(outcome)),
+                _storage: storage,
+            },
+            bank,
+            body,
+        )
     }
 
     pub(super) fn source_route(&self) -> Result<RouteRef<'_>> {
@@ -213,7 +234,7 @@ impl Input {
 
     #[cfg(test)]
     pub(super) fn bytes(udid: &str, route: &Route) -> usize {
-        std::mem::size_of::<Self>() + 2 * udid.len() + route_capacity(route) + route_length(route)
+        Self::body_bytes() + 2 * udid.len() + route_capacity(route) + route_length(route)
     }
 }
 
@@ -230,7 +251,7 @@ fn copy_text(
 }
 
 pub(super) struct SourceInputContext {
-    pub(super) input: Arc<Input>,
+    pub(super) input: Owner,
 }
 
 impl std::fmt::Display for SourceInputContext {

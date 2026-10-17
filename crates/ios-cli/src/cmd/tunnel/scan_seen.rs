@@ -4,10 +4,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::Semaphore;
 
-use super::{candidate_input::Input, metadata_vec::KnownVec, MAX_FAILURE_RECORDS};
+#[cfg(test)]
+use super::candidate_input::Input;
+use super::{metadata_vec::KnownVec, MAX_FAILURE_RECORDS};
 
 pub(super) struct Seen {
-    rows: KnownVec<Arc<Input>>,
+    rows: KnownVec<super::candidate_input::Owner>,
 }
 
 impl Seen {
@@ -31,7 +33,7 @@ impl Seen {
         self.rows.reserve(additional)
     }
 
-    pub(super) fn insert(&mut self, input: &Arc<Input>) -> Result<bool> {
+    pub(super) fn insert(&mut self, input: &super::candidate_input::Owner) -> Result<bool> {
         if self.contains(&input.udid) {
             return Ok(false);
         }
@@ -40,17 +42,17 @@ impl Seen {
     }
 
     // Paired preparation reserved all slots before creating any new ticket.
-    pub(super) fn insert_reserved(&mut self, input: &Arc<Input>) -> bool {
+    pub(super) fn insert_reserved(&mut self, input: &super::candidate_input::Owner) -> bool {
         let Err(position) = self.position(&input.udid) else {
             return false;
         };
-        self.rows.insert_reserved(position, Arc::clone(input));
+        self.rows.insert_reserved(position, input.clone());
         true
     }
 
     #[cfg(test)]
     pub(super) fn first_bytes() -> usize {
-        2 * std::mem::size_of::<Arc<Input>>()
+        2 * std::mem::size_of::<super::candidate_input::Owner>()
     }
 }
 

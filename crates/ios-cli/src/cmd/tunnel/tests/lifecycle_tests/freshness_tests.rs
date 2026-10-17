@@ -14,7 +14,7 @@ async fn observed_route_scan_publication_shares_original_input_and_retains_it_af
         let row = table.get_mut(A).unwrap();
         let input = row._input.as_ref().unwrap();
         assert!(std::ptr::eq(row.observed_route.route(), &input.route));
-        let weak = Arc::downgrade(input);
+        let weak = input.downgrade();
         // Move only this original owner out. The original row/input/native
         // owners will all be destroyed by the normal manager cleanup below.
         let observed = std::mem::replace(
@@ -34,6 +34,11 @@ async fn observed_route_scan_publication_shares_original_input_and_retains_it_af
     assert_eq!(source.count(A), 1);
     drop(observed);
     assert!(weak.upgrade().is_none());
+    assert_eq!(
+        bank.available_permits(),
+        MAX_GLOBAL_KNOWN_METADATA_BYTES - candidate_input::Input::body_bytes()
+    );
+    drop(weak);
     assert_eq!(bank.available_permits(), MAX_GLOBAL_KNOWN_METADATA_BYTES);
 }
 
