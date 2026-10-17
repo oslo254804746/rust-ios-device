@@ -8985,3 +8985,12 @@ heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持�
 [验证](validation/tunnel-upstream-client-root-2026-10-17.md)。初始config/client/
 URI/WS/private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，
 23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 outgoing WebSocket Binary owner
+
+实际Binary Vec在创建前准入，双half与原错误data先于费用析构；借用Completion
+保留原typed error/source/pointer。真实WriteBufferFull仍持原Frame，配额拒绝
+关闭同一已读TCP并strict EOF。完整tunnel610/0FAIL/2原ignored、上游10/
+strictCLI/build/Source0通过，见[验证](validation/tunnel-ws-binary-owner-2026-10-17.md)。
+received/relay/upgrade/private与完整freshness等继续；128MiB非完整heap/RSS，
+L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
