@@ -250,9 +250,9 @@ impl TunnelAgentState {
             route,
             deadline.absolute_at(),
             &self.inner.global_metadata_bytes,
-        );
+        )?;
         let observe = std::future::poll_fn(|cx| {
-            match std::future::Future::poll(source.as_mut(), cx) {
+            match std::future::Future::poll(std::pin::Pin::new(&mut source), cx) {
                 std::task::Poll::Ready(Err(original)) => {
                     receipt.capture(original);
                     // Persist the original in this very Ready poll; no later
@@ -266,7 +266,11 @@ impl TunnelAgentState {
                 other => other,
             }
         });
-        let catalogue = observe.await?;
+        let result = observe.await;
+        // The independent catalogue owns its own storage. Destroy this original
+        // Source frame before admitting the output/publication metadata.
+        drop(source);
+        let catalogue = result?;
         deadline.check()?;
         anyhow::ensure!(
             catalogue.udid() == udid,

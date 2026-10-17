@@ -233,51 +233,57 @@ impl Source for FreshSource {
         route: ExistingRsdRoute,
         deadline: Instant,
         bank: &'a Arc<tokio::sync::Semaphore>,
-    ) -> BoxFuture<'a, Result<Arc<PreparedRsdCatalogue>>> {
-        Box::pin(async move {
-            assert_eq!(route, self.route);
-            self.deadlines.lock().unwrap().push(deadline);
-            self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-            self.entered.notify_one();
-            let fate = self
-                .fates
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Refresh::Directory);
-            let result = match fate {
-                Refresh::Directory => Ok(ios_core::device::prepare_existing_rsd_with_identity_at(
-                    route,
-                    deadline,
-                    bank,
-                    uuid::Uuid::nil(),
-                )
-                .await?),
-                Refresh::Failure {
-                    marker,
-                    delay,
-                    zero,
-                } => {
-                    if zero {
-                        *self.held.lock().unwrap() = Some(
-                            bank.clone()
-                                .try_acquire_many_owned(bank.available_permits() as u32)
-                                .unwrap(),
-                        );
-                        self.zero_at_ready
-                            .store(bank.available_permits() == 0, Ordering::SeqCst);
+    ) -> Result<crate::cmd::tunnel::future_storage::Dynamic<'a, Result<Arc<PreparedRsdCatalogue>>>>
+    {
+        crate::cmd::tunnel::future_storage::Dynamic::new(
+            async move {
+                assert_eq!(route, self.route);
+                self.deadlines.lock().unwrap().push(deadline);
+                self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_one();
+                let fate = self
+                    .fates
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(Refresh::Directory);
+                let result = match fate {
+                    Refresh::Directory => {
+                        Ok(ios_core::device::prepare_existing_rsd_with_identity_at(
+                            route,
+                            deadline,
+                            bank,
+                            uuid::Uuid::nil(),
+                        )
+                        .await?)
                     }
-                    std::thread::sleep(delay);
-                    Err(anyhow::Error::new(Original { marker }))
+                    Refresh::Failure {
+                        marker,
+                        delay,
+                        zero,
+                    } => {
+                        if zero {
+                            *self.held.lock().unwrap() = Some(
+                                bank.clone()
+                                    .try_acquire_many_owned(bank.available_permits() as u32)
+                                    .unwrap(),
+                            );
+                            self.zero_at_ready
+                                .store(bank.available_permits() == 0, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(delay);
+                        Err(anyhow::Error::new(Original { marker }))
+                    }
+                    Refresh::Pending => std::future::pending().await,
+                };
+                let ready = self.ready.lock().unwrap().take();
+                if let Some(ready) = ready {
+                    ready();
                 }
-                Refresh::Pending => std::future::pending().await,
-            };
-            let ready = self.ready.lock().unwrap().take();
-            if let Some(ready) = ready {
-                ready();
-            }
-            result
-        })
+                result
+            },
+            bank,
+        )
     }
 }
 fn fresh_state(source: Arc<FreshSource>, timeout: Duration) -> TunnelAgentState {
@@ -539,6 +545,71 @@ async fn freshness_pre_source_zero_quota_preserves_publication_and_original_nati
     assert!(state.inner.tunnels.read().await[UID].is_alive());
     drop(error);
     drop(held);
+    fresh_finish(&state, &source, expected).await;
+}
+
+#[tokio::test]
+async fn refresh_future_last_byte_constructor_refusal_keeps_original_catalogue_and_native() {
+    let expected = baseline();
+    let (route, peer) = directories(vec![10203]).await;
+    let source = FreshSource::new(route);
+    let state = fresh_state(source.clone(), OBSERVE);
+    fresh_publish(&state).await;
+    refresh(&state, OBSERVE).await.unwrap();
+    tokio::time::timeout(OBSERVE, peer).await.unwrap().unwrap();
+    let (publication, previous) = {
+        let table = state.inner.tunnels.read().await;
+        let row = &table[UID];
+        (
+            row.publication.clone(),
+            row._fresh_metadata.as_ref().unwrap().clone(),
+        )
+    };
+    let native = source.base.handle();
+    let bank = state.inner.global_metadata_bytes.clone();
+    let before = bank.available_permits();
+    let held = Arc::new(StdMutex::new(None));
+    let captured = held.clone();
+    let charged = bank.clone();
+    let hook = crate::cmd::tunnel::future_storage::on_dynamic_layout(move |bytes| {
+        assert!(bytes > 0);
+        *captured.lock().unwrap() = Some(
+            charged
+                .clone()
+                .try_acquire_many_owned((charged.available_permits() - bytes + 1) as u32)
+                .unwrap(),
+        );
+    });
+    let error = refresh(&state, OBSERVE).await.unwrap_err();
+    drop(hook);
+    assert!(held.lock().unwrap().is_some());
+    assert_eq!(
+        crate::output::operation_error_class(error.as_ref()),
+        ios_core::ErrorClass::ResourceLimit
+    );
+    assert_eq!(source.refresh_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(source.base.connect_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.inner.native.snapshot().active, 1);
+    {
+        let table = state.inner.tunnels.read().await;
+        let row = &table[UID];
+        assert!(Arc::ptr_eq(&row.publication, &publication));
+        assert!(Arc::ptr_eq(
+            row._fresh_metadata.as_ref().unwrap(),
+            &previous
+        ));
+        assert!(Arc::ptr_eq(
+            row.device.freshness_catalogue().unwrap(),
+            &previous.catalogue
+        ));
+        assert!(Arc::ptr_eq(row.device.native_handle().unwrap(), &native));
+        assert_eq!(previous.catalogue.service_port(SERVICE), Some(10203));
+        assert!(row.is_alive());
+    }
+    drop(error);
+    held.lock().unwrap().take();
+    assert_eq!(bank.available_permits(), before);
+    drop((publication, previous, native));
     fresh_finish(&state, &source, expected).await;
 }
 
