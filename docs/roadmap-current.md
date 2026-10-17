@@ -68,3 +68,10 @@ Source 临时 route/clone、SDK/发现输出与其余完整审计继续，L02 �
 Observed/Input 原字段借用，原构造准入/retry/销毁后输出顺序和 desired filter
 保持。完整 tunnel667、upstream10、严格 CLI/build/只读 Source0 门禁通过。
 prepared outcome key 原复制、SDK/发现输出与其余完整审计继续，主项状态保持。
+
+随后[prepared outcome key](validation/tunnel-outcome-key-storage-2026-10-17.md)
+从预留改为实际空目的地，在 Input 工厂创建前准入，Node/success intent 复用
+原 String/独立费用，最后 key owner 退款；重复取用明确拒绝。专项11及完整
+tunnel671、upstream10、严格 CLI/build/只读 Source0 门禁通过，原回滚/native
+join/EOF 与精确预算断言保持。Identity/retry/receipt selectors 及其余完整
+审计继续，L02 不关闭。
