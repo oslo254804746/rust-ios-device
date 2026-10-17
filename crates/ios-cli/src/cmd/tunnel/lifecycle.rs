@@ -100,6 +100,66 @@ pub(super) struct Ticket {
     intent_version: Option<Arc<()>>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct GlobalEpoch {
+    changes: watch::Receiver<Option<Arc<()>>>,
+    generation: Arc<()>,
+}
+
+impl GlobalEpoch {
+    fn current(&self) -> bool {
+        self.changes.has_changed().is_ok()
+            && self
+                .changes
+                .borrow()
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+    }
+
+    pub(super) fn check(&self) -> Result<()> {
+        if self.current() {
+            Ok(())
+        } else {
+            Err(cancelled())
+        }
+    }
+
+    /// Synchronous final admission only: do not await or reenter this watch.
+    pub(super) fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let current = self.changes.borrow();
+        if self.changes.has_changed().is_err()
+            || !current
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.generation))
+        {
+            return Err(cancelled());
+        }
+        action()
+    }
+
+    pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
+        let mut changes = self.changes.clone();
+        let retired = async {
+            loop {
+                if !self.current() || changes.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        tokio::pin!(retired);
+        tokio::pin!(work);
+        std::future::poll_fn(|cx| {
+            if !self.current() || retired.as_mut().poll(cx).is_ready() {
+                return std::task::Poll::Ready(Err(cancelled()));
+            }
+            // Preserve the original result if this ready poll itself crosses
+            // a global retirement. Success consumers commit before handoff.
+            work.as_mut().poll(cx)
+        })
+        .await
+    }
+}
+
 pub(super) struct ScanControl {
     changes: watch::Receiver<Arc<()>>,
     pub(super) generation: Arc<()>,
@@ -260,6 +320,15 @@ impl Lifecycle {
             #[cfg(test)]
             clear_before_cleanup: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(super) fn global_epoch(&self) -> Result<GlobalEpoch> {
+        let mut changes = self.shutdown.subscribe();
+        let generation = changes.borrow_and_update().clone().ok_or_else(cancelled)?;
+        Ok(GlobalEpoch {
+            changes,
+            generation,
+        })
     }
 
     pub(super) async fn ticket(&self, udid: &str) -> Result<Ticket> {
@@ -870,6 +939,10 @@ pub(super) fn cancelled() -> anyhow::Error {
 #[cfg(test)]
 #[path = "lifecycle/desired_tests.rs"]
 mod desired_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/global_epoch_tests.rs"]
+mod global_epoch_tests;
 
 #[cfg(test)]
 mod tests {
