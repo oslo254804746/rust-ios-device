@@ -67,6 +67,7 @@ mod server;
 mod source;
 mod upstream_registry;
 mod usb_index;
+mod ws_payload;
 use bookkeeping::{
     DeferredFailure, DeferredSuccess, FailureIntent, ScanAttemptOutcome, ScanIntent, SuccessIntent,
 };
@@ -2820,29 +2821,43 @@ async fn connect_record_port(record: &TunnelRecord, port: u16) -> Result<TcpStre
     }
 }
 
-async fn bridge_tcp_websocket<S>(socket: WebSocket, stream: S) -> Result<()>
+async fn bridge_tcp_websocket<S>(
+    socket: WebSocket,
+    stream: S,
+    bank: &Arc<Semaphore>,
+) -> ws_payload::Completion
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let (mut ws_tx, ws_rx) = socket.split();
+    let (ws_tx, ws_rx) = socket.split();
+    let mut endpoints = ws_payload::Endpoints::new(ws_tx, ws_rx);
     let (mut tcp_rx, tcp_tx) = tokio::io::split(stream);
-    let inbound = websocket_to_tcp(ws_rx, tcp_tx);
-    let outbound = async {
-        let mut buffer = [0u8; BRIDGE_BUFFER_SIZE];
-        loop {
-            let count = tcp_rx.read(&mut buffer).await?;
-            if count == 0 {
-                let _ =
-                    tokio::time::timeout(BRIDGE_CLOSE_TIMEOUT, ws_tx.send(Message::Close(None)))
-                        .await;
-                return Ok::<(), anyhow::Error>(());
+    let result = {
+        let (ws_tx, ws_rx, pending) = endpoints.parts();
+        let inbound = websocket_to_tcp(ws_rx, tcp_tx);
+        let outbound = async {
+            let mut buffer = [0u8; BRIDGE_BUFFER_SIZE];
+            loop {
+                let count = tcp_rx.read(&mut buffer).await?;
+                if count == 0 {
+                    let _ = tokio::time::timeout(
+                        BRIDGE_CLOSE_TIMEOUT,
+                        ws_tx.send(Message::Close(None)),
+                    )
+                    .await;
+                    return Ok::<(), anyhow::Error>(());
+                }
+                ws_payload::binary(ws_tx, pending, &buffer[..count], bank).await?;
             }
-            ws_tx
-                .send(Message::Binary(buffer[..count].to_vec()))
-                .await?;
-        }
+        };
+        tokio::select! { result = inbound => result, result = outbound => result }
     };
-    tokio::select! { result = inbound => result, result = outbound => result }
+    endpoints.finish(result)
+}
+
+#[cfg(test)]
+fn fixture_bridge_bank() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(MAX_GLOBAL_KNOWN_METADATA_BYTES))
 }
 
 async fn websocket_to_tcp<St, W>(mut rx: St, mut tx: W) -> Result<()>
@@ -3296,12 +3311,13 @@ async fn agent_connect_authorized(
                 err.as_ref(),
             )
         })?;
+        let payload_bytes = state.inner.global_metadata_bytes.clone();
         return Ok(bounded_websocket_upgrade(ws)
             .on_upgrade(move |socket| async move {
                 tokio::select! {
-                    result = bridge_tcp_websocket(socket, stream) => {
-                        if let Err(err) = result {
-                            tracing::debug!(error = %crate::output::error_message(&err), "tunnel agent: local WebSocket bridge ended");
+                    result = bridge_tcp_websocket(socket, stream, &payload_bytes) => {
+                        if let Err(err) = result.result() {
+                            tracing::debug!(error = %crate::output::error_message(err), "tunnel agent: local WebSocket bridge ended");
                         }
                     }
                     _ = principal.revoked() => tracing::debug!("tunnel agent: local WebSocket authorization revoked"),
@@ -3677,6 +3693,7 @@ mod tests {
     mod method_tests;
     mod native_retirement_tests;
     mod upstream_tests;
+    mod ws_payload_tests;
 
     #[tokio::test]
     async fn manager_http_categories_keep_native_and_message_only_bodies() {
@@ -4204,7 +4221,11 @@ mod tests {
             get(move |ws: WebSocketUpgrade| async move {
                 let stream = connect_record_port(&record, 12345).await.unwrap();
                 ws.on_upgrade(move |socket| async move {
-                    bridge_tcp_websocket(socket, stream).await.unwrap();
+                    bridge_tcp_websocket(socket, stream, &fixture_bridge_bank())
+                        .await
+                        .result()
+                        .as_ref()
+                        .unwrap();
                 })
             }),
         );
@@ -4238,7 +4259,11 @@ mod tests {
             get(move |ws: WebSocketUpgrade| async move {
                 let stream = TcpStream::connect(("127.0.0.1", tcp_port)).await.unwrap();
                 ws.on_upgrade(move |socket| async move {
-                    bridge_tcp_websocket(socket, stream).await.unwrap();
+                    bridge_tcp_websocket(socket, stream, &fixture_bridge_bank())
+                        .await
+                        .result()
+                        .as_ref()
+                        .unwrap();
                 })
             }),
         );
@@ -4271,7 +4296,7 @@ mod tests {
             get(move |ws: WebSocketUpgrade| async move {
                 let stream = TcpStream::connect(("127.0.0.1", tcp_port)).await.unwrap();
                 bounded_websocket_upgrade(ws).on_upgrade(move |socket| async move {
-                    let _ = bridge_tcp_websocket(socket, stream).await;
+                    let _ = bridge_tcp_websocket(socket, stream, &fixture_bridge_bank()).await;
                 })
             }),
         );
@@ -4353,7 +4378,11 @@ mod tests {
                         assert_eq!(query.hop, 1);
                         let stream = connect_record_port(&record, query.port).await.unwrap();
                         ws.on_upgrade(move |socket| async move {
-                            bridge_tcp_websocket(socket, stream).await.unwrap();
+                            bridge_tcp_websocket(socket, stream, &fixture_bridge_bank())
+                                .await
+                                .result()
+                                .as_ref()
+                                .unwrap();
                         })
                     },
                 ),
@@ -4427,7 +4456,11 @@ mod tests {
                         assert_eq!(query.interface.as_deref(), Some("fake-interface"));
                         let stream = connect_record_port(&record, query.port).await.unwrap();
                         ws.on_upgrade(move |socket| async move {
-                            bridge_tcp_websocket(socket, stream).await.unwrap();
+                            bridge_tcp_websocket(socket, stream, &fixture_bridge_bank())
+                                .await
+                                .result()
+                                .as_ref()
+                                .unwrap();
                         })
                     },
                 ),

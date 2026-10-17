@@ -100,7 +100,7 @@ async fn two_production_managers_use_distinct_credentials_across_verified_tls_an
                         assert!(query.upstream.is_none());
                         let tcp = connect_record_port(&record, query.port).await.unwrap();
                         ws.on_upgrade(move |socket| async move {
-                            let _ = bridge_tcp_websocket(socket, tcp).await;
+                            let _ = bridge_tcp_websocket(socket, tcp, &fixture_bridge_bank()).await;
                         })
                     }
                 },

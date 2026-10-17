@@ -100,7 +100,7 @@ async fn browser_fixture(node: &std::ffi::OsStr, chromium: &std::ffi::OsStr, exp
                     assert_eq!(query.hop, 1);
                     let stream = connect_record_port(&record, query.port).await.unwrap();
                     ws.on_upgrade(move |socket| async move {
-                        let _ = bridge_tcp_websocket(socket, stream).await;
+                        let _ = bridge_tcp_websocket(socket, stream, &fixture_bridge_bank()).await;
                     })
                 },
             ),
