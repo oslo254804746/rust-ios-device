@@ -8,6 +8,42 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
+fn upstream_header_builder_runs_after_origin_checks_and_retains_original_typed_error_pointer() {
+    let client = UpstreamClient::new(
+        "https://expected.invalid/".into(),
+        Some(ClientToken(zeroize::Zeroizing::new(TOKEN.to_owned()))),
+        None,
+    )
+    .unwrap();
+    let calls = AtomicUsize::new(0);
+    let mismatch = reqwest::Url::parse("https://different.invalid/connect").unwrap();
+    let error = client
+        .header(&mismatch, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            unreachable!("mismatched origin must not invoke header builder")
+        })
+        .unwrap_err();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(error.to_string().contains("target mismatch"));
+    let url = reqwest::Url::parse("wss://expected.invalid/connect?hop=1").unwrap();
+    let original = anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "original-builder-error",
+    ));
+    let pointer = original.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize;
+    let error = client.header(&url, |_| Err(original)).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap() as *const _ as usize,
+        pointer
+    );
+    let anonymous = UpstreamClient::new("https://expected.invalid/".into(), None, None).unwrap();
+    assert!(anonymous
+        .header(&url, |_| unreachable!("no token needs no payload"))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn upstream_normalization_rejects_plaintext_dns_remote_credentials_and_unsafe_urls() {
     for input in [
         "http://localhost:8000",
@@ -95,7 +131,7 @@ fn credentials_are_bound_to_one_normalized_authority_and_transport() {
         "wss://example.invalid:8443/connect?udid=owned&port=12345&hop=1",
     ] {
         let header = configured
-            .header(&reqwest::Url::parse(url).unwrap())
+            .header(&reqwest::Url::parse(url).unwrap(), ordinary_header)
             .unwrap()
             .unwrap();
         assert!(header.is_sensitive());
@@ -109,13 +145,16 @@ fn credentials_are_bound_to_one_normalized_authority_and_transport() {
         "https://user:secret@example.invalid:8443/",
     ] {
         assert!(configured
-            .header(&reqwest::Url::parse(url).unwrap())
+            .header(&reqwest::Url::parse(url).unwrap(), ordinary_header)
             .is_err());
     }
     assert!(clients
         .client("https://other.invalid/")
         .unwrap()
-        .header(&reqwest::Url::parse("https://other.invalid/").unwrap())
+        .header(
+            &reqwest::Url::parse("https://other.invalid/").unwrap(),
+            ordinary_header
+        )
         .unwrap()
         .is_none());
 }
@@ -190,7 +229,7 @@ async fn http_credentials_are_per_upstream_and_redirects_never_receive_them() {
     let client = clients.client(&source).unwrap();
     let url =
         reqwest::Url::parse(&format!("{}connect", source.replacen("http:", "ws:", 1))).unwrap();
-    let request = client.websocket_request(&url).unwrap();
+    let request = client.websocket_request(&url, ordinary_header).unwrap();
     let refused = tokio_tungstenite::connect_async_tls_with_config(
         request,
         None,
@@ -310,7 +349,7 @@ async fn https_and_wss_verify_ca_expiry_and_hostname_before_sending_http_credent
             before + usize::from(passed)
         );
         let url = reqwest::Url::parse(&format!("wss://127.0.0.1:{tls_port}/connect")).unwrap();
-        let request = client.websocket_request(&url).unwrap();
+        let request = client.websocket_request(&url, ordinary_header).unwrap();
         let connection = tokio_tungstenite::connect_async_tls_with_config(
             request,
             None,
