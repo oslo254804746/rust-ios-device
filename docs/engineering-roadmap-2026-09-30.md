@@ -8976,3 +8976,12 @@ L02不关闭，23/6/待全审计、有效30和Q04全部排除保持，仅本地�
 通过，见[验证](validation/tunnel-authorization-payload-2026-10-17.md)。client
 root/config/URI/framework/WS/private及完整freshness等继续，128MiB非完整
 heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-17 L02 shared upstream client root
+
+原client String直接move到共享owner，clone不再复制文本，canonical hit复用
+原client；原2048-byte输入限制在lookup前保留，固定IDNA扩展边界已验。完整
+ tunnel603/0FAIL/2原ignored、上游10/strictCLI/build/Source0通过，见
+[验证](validation/tunnel-upstream-client-root-2026-10-17.md)。初始config/client/
+URI/WS/private及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，
+23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
