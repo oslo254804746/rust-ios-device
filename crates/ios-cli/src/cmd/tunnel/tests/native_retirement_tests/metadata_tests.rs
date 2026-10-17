@@ -19,7 +19,7 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     };
     let route = {
         let table = state.inner.tunnels.read().await;
-        Arc::downgrade(&table[DEVICE].route_intent)
+        table[DEVICE].route_intent.downgrade()
     };
     let publication = {
         let table = state.inner.tunnels.read().await;
@@ -34,12 +34,17 @@ async fn candidate_input_native_table_removal_keeps_input_until_original_joins_a
     );
     assert!(
         route.upgrade().is_none(),
-        "removed route still owns its body"
+        "removed route value must end before its weak allocation"
     );
     assert!(
         publication.upgrade().is_none(),
         "removed publication payload is still alive"
     );
+    assert_eq!(
+        bank.available_permits(),
+        before + actual_publication_destination_bytes() + publication::Life::bytes()
+    );
+    drop(route);
     assert_eq!(
         bank.available_permits(),
         before
@@ -118,9 +123,9 @@ fn record_copy_bytes() -> usize {
 
 fn route_body_bytes() -> usize {
     // These fixtures select Usbmux/Wifi(None), so the independent retained
-    // route has a real Arc payload and no host allocation. Unlike the native
-    // device permit, it ends when its last table/desired owner is destroyed.
-    std::mem::size_of::<intent::RetainedRoute>()
+    // route has a real Arc body/paid guard and no host allocation. A retained
+    // Weak keeps this body fee after table/desired value destruction.
+    intent::RetainedRoute::body_bytes()
 }
 
 fn source_future_bytes(source: &dyn Source) -> usize {

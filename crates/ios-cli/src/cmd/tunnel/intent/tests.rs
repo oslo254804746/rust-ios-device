@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[test]
 fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     let host = "manual-filter-雪";
-    let bytes = std::mem::size_of::<RetainedRoute>() + host.len();
+    let bytes = RetainedRoute::body_bytes() + host.len();
     let bank = Arc::new(Semaphore::new(bytes));
     let charged = bank.clone();
     let route = super::super::metadata_vec::with_allocation_hook(
@@ -41,7 +41,7 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
     else {
         unreachable!()
     };
-    assert!(Arc::ptr_eq(&route, retained));
+    assert!(route.ptr_eq(retained));
     cell.replace(Desired::Stopped);
     drop(cell);
     drop(route);
@@ -57,7 +57,7 @@ fn shared_route_actual_text_is_paid_before_copy_and_last_snapshot_owns_it() {
 #[test]
 fn shared_route_body_and_text_last_byte_refusal_refund_without_destination_allocation() {
     let host = "selected-host";
-    let body = std::mem::size_of::<RetainedRoute>();
+    let body = RetainedRoute::body_bytes();
     for limit in [body - 1, body + host.len() - 1] {
         let bank = Arc::new(Semaphore::new(limit));
         let error = super::super::metadata_vec::with_allocation_hook(
@@ -159,7 +159,7 @@ fn manual_route_bytes_capacity_shared_snapshots_and_last_owner_after_stop() {
     let Desired::Manual { route: second, .. } = &copied.desired else {
         panic!("manual missing")
     };
-    assert!(Arc::ptr_eq(first, second));
+    assert!(first.ptr_eq(second));
     let RouteIntent::Wifi(Some(host)) = &first.route else {
         unreachable!()
     };
@@ -205,7 +205,7 @@ fn manual_route_bytes_rejected_replacement_preserves_original_version_watch_and_
     else {
         unreachable!()
     };
-    assert!(Arc::ptr_eq(old, current));
+    assert!(old.ptr_eq(current));
     assert!(!watch.has_changed().unwrap());
     assert!(cell.pending_success().is_none());
     assert_eq!(bank.available_permits(), 0);
@@ -248,7 +248,7 @@ fn manual_route_bytes_late_candidate_rolls_back_original_arc_and_refunds_only_ne
     else {
         unreachable!()
     };
-    assert!(Arc::ptr_eq(old, current));
+    assert!(old.ptr_eq(current));
     assert!(cell.pending_success().is_none());
     assert_eq!(bank.available_permits(), new_bytes);
     drop(before);

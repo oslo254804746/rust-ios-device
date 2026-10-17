@@ -23,6 +23,8 @@ pub(super) enum RouteIntent {
     Mobdev2(Option<String>),
 }
 
+pub(super) type RouteOwner = super::shared_body::Strong<RetainedRoute>;
+
 pub(super) struct RetainedRoute {
     pub(super) route: RouteIntent,
     _storage: OwnedSemaphorePermit,
@@ -30,6 +32,9 @@ pub(super) struct RetainedRoute {
 }
 
 impl RetainedRoute {
+    pub(super) fn body_bytes() -> usize {
+        RouteOwner::body_bytes()
+    }
     pub(super) fn text_bytes(&self) -> usize {
         match &self.route {
             RouteIntent::Usbmux => 0,
@@ -43,7 +48,7 @@ impl RetainedRoute {
         route: impl Into<RouteRef<'a>>,
         host_filter: Option<&str>,
         bank: &Arc<Semaphore>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> anyhow::Result<RouteOwner> {
         Self::copy_established(route.into(), host_filter, bank)
             .map_err(|error| error.context(RouteAdmission))
     }
@@ -52,14 +57,17 @@ impl RetainedRoute {
         route: RouteRef<'_>,
         host_filter: Option<&str>,
         bank: &Arc<Semaphore>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> anyhow::Result<RouteOwner> {
         let selected = match route {
             RouteRef::Usbmux => None,
             RouteRef::Usb(host) | RouteRef::Wifi(host) => host,
             RouteRef::Mobdev2(_) => host_filter,
         };
         super::admission::selectors("", selected)?;
-        let storage = super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
+        let mut storage = super::admission::known_metadata_charge(bank, Self::body_bytes())?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid desired route body and guard");
         let mut text_storage = None;
         let host = match selected {
             Some(host) => {
@@ -77,38 +85,50 @@ impl RetainedRoute {
             RouteRef::Wifi(_) => RouteIntent::Wifi(host),
             RouteRef::Mobdev2(_) => RouteIntent::Mobdev2(host),
         };
-        Ok(Arc::new(Self {
-            route,
-            _storage: storage,
-            _text_storage: text_storage,
-        }))
+        RouteOwner::new(
+            Self {
+                route,
+                _storage: storage,
+                _text_storage: text_storage,
+            },
+            bank,
+            body,
+        )
     }
 
     // Existing moved-input fixtures preserve the original String allocation;
     // production uses established() before creating any route destination.
     #[cfg(test)]
-    fn new(route: RouteIntent, bank: &Arc<Semaphore>) -> anyhow::Result<Arc<Self>> {
-        let host = match &route {
+    fn new(incoming_route: RouteIntent, bank: &Arc<Semaphore>) -> anyhow::Result<RouteOwner> {
+        let host = match &incoming_route {
             RouteIntent::Usbmux => None,
             RouteIntent::Usb(host) | RouteIntent::Wifi(host) | RouteIntent::Mobdev2(host) => {
                 host.as_ref()
             }
         };
         super::admission::selectors("", host.map(String::as_str))?;
-        let bytes = std::mem::size_of::<Self>()
+        let bytes = Self::body_bytes()
             .checked_add(host.map_or(0, String::capacity))
             .ok_or_else(|| crate::output::resource_decision("tunnel manual route size overflow"))?;
-        let storage = super::admission::known_metadata_charge(bank, bytes)?;
-        Ok(Arc::new(Self {
-            route,
-            _storage: storage,
-            _text_storage: None,
-        }))
+        let mut storage = super::admission::known_metadata_charge(bank, bytes)?;
+        let body = storage
+            .split(Self::body_bytes())
+            .expect("prepaid desired route body and guard");
+        let route = incoming_route;
+        RouteOwner::new(
+            Self {
+                route,
+                _storage: storage,
+                _text_storage: None,
+            },
+            bank,
+            body,
+        )
     }
 
     #[cfg(test)]
     fn bytes(route: &RouteIntent) -> usize {
-        std::mem::size_of::<Self>()
+        Self::body_bytes()
             + match route {
                 RouteIntent::Usbmux => 0,
                 RouteIntent::Usb(host) | RouteIntent::Wifi(host) | RouteIntent::Mobdev2(host) => {
@@ -130,7 +150,7 @@ impl std::fmt::Display for RouteAdmission {
 pub(super) enum Desired {
     Automatic,
     Manual {
-        route: Arc<RetainedRoute>,
+        route: RouteOwner,
         authority: DeviceAuthority,
     },
     Stopped,
@@ -269,7 +289,7 @@ impl Cell {
 
     pub(super) fn manual_shared(
         &self,
-        route: Arc<RetainedRoute>,
+        route: RouteOwner,
         authority: DeviceAuthority,
     ) -> anyhow::Result<Desired> {
         anyhow::ensure!(
@@ -423,5 +443,7 @@ pub(super) struct ManualRequest<'a> {
     pub(super) host_filter: Option<&'a str>,
 }
 
+#[cfg(test)]
+mod body_tests;
 #[cfg(test)]
 mod tests;

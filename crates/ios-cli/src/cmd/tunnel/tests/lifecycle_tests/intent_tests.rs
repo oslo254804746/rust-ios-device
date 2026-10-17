@@ -10,7 +10,7 @@ async fn shared_route_pre_source_refusal_keeps_original_resource_without_default
     let ticket = state.inner.lifecycle.ticket(A).await.unwrap();
     let bank = state.inner.global_metadata_bytes.clone();
     let before = bank.available_permits();
-    let leave = std::mem::size_of::<intent::RetainedRoute>() - 1;
+    let leave = intent::RetainedRoute::body_bytes() - 1;
     let held = bank
         .clone()
         .try_acquire_many_owned((before - leave) as u32)
@@ -95,14 +95,14 @@ async fn shared_route_live_manual_and_recovery_keep_original_arc_and_text_pointe
     let intent::Desired::Manual { route, .. } = &desired.desired else {
         unreachable!()
     };
-    assert!(Arc::ptr_eq(route, &original));
+    assert!(route.ptr_eq(&original));
     assert_eq!(source.count(A), 1);
     state.inner.tunnels.write().await.remove(A);
     source.usb.lock().unwrap().push(A.into());
     state.refresh_once().await.unwrap();
     let table = state.inner.tunnels.read().await;
     let recovered = &table.get(A).unwrap().route_intent;
-    assert!(Arc::ptr_eq(recovered, &original));
+    assert!(recovered.ptr_eq(&original));
     let intent::RouteIntent::Wifi(Some(text)) = &recovered.route else {
         unreachable!()
     };
