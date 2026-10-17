@@ -65,19 +65,11 @@ impl FailureReceipt {
             std::mem::size_of::<SourceFailure>(),
         )?;
         // No copied selector exists while any required capsule is unadmitted.
-        let udid = udid.to_owned();
-        let identity = identity.clone();
-        let actual = std::mem::size_of::<Self>()
-            + udid.capacity()
-            + super::super::candidate_input::route_capacity(&identity.route);
-        anyhow::ensure!(
-            actual <= bytes,
-            crate::output::resource_decision("tunnel Source receipt clone capacity exceeded")
-        );
-        let exact = storage
-            .split(actual)
-            .expect("admitted Source receipt selectors");
-        drop(storage);
+        let mut copier =
+            super::super::selector_copy::Copier::new(storage, std::mem::size_of::<Self>())?;
+        let udid = copier.text(udid)?;
+        let identity = copier.identity(identity)?;
+        storage = copier.finish();
         Ok(Arc::new(Self {
             udid,
             identity,
@@ -91,7 +83,7 @@ impl FailureReceipt {
             history: OnceLock::new(),
             completion: Mutex::new(Completion::Pending),
             wrapper_storage: Mutex::new(Some(wrapper_storage)),
-            _storage: exact,
+            _storage: storage,
         }))
     }
     pub(in super::super) fn primary(&self) -> &anyhow::Error {

@@ -75,3 +75,10 @@ prepared outcome key 原复制、SDK/发现输出与其余完整审计继续，�
 tunnel671、upstream10、严格 CLI/build/只读 Source0 门禁通过，原回滚/native
 join/EOF 与精确预算断言保持。Identity/retry/receipt selectors 及其余完整
 审计继续，L02 不关闭。
+
+再后[原 selector 精确预付复制](validation/tunnel-prepaid-selector-storage-2026-10-17.md)
+将 failure identity/retry row/Source receipt 三处接入原 grant 的精确实际缓冲区；
+body、已用字段与未用 credit 分离，原全额预算和 capsule-before-Source 顺序保持。
+专项7、完整 tunnel678、upstream10、严格 CLI/build/只读 Source0 门禁通过；
+首轮 credit 重用问题已由原短额测试发现并修复。原 body 最后 allocation owner
+及 SDK/发现输出、完整规则审计继续，L02 主项不关闭。

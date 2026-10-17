@@ -17,6 +17,28 @@ pub(super) fn exact_backing<T>(bank: &Arc<Semaphore>, capacity: usize) -> Result
     let layout = Layout::array::<T>(capacity)
         .map_err(|_| crate::output::resource_decision("tunnel owned vector layout overflow"))?;
     let storage = super::admission::known_metadata_charge(bank, layout.size())?;
+    allocate_backing(capacity, layout, storage)
+}
+
+pub(super) fn from_grant<T>(
+    bank: &Arc<Semaphore>,
+    capacity: usize,
+    storage: OwnedSemaphorePermit,
+) -> Result<AdmittedVec<T>> {
+    let layout = Layout::array::<T>(capacity)
+        .map_err(|_| crate::output::resource_decision("tunnel owned vector layout overflow"))?;
+    anyhow::ensure!(
+        Arc::ptr_eq(storage.semaphore(), bank) && storage.num_permits() == layout.size(),
+        crate::output::resource_decision("tunnel prepaid vector grant mismatch")
+    );
+    allocate_backing(capacity, layout, storage)
+}
+
+fn allocate_backing<T>(
+    capacity: usize,
+    layout: Layout,
+    storage: OwnedSemaphorePermit,
+) -> Result<AdmittedVec<T>> {
     let values = if layout.size() == 0 {
         Vec::with_capacity(capacity)
     } else {
