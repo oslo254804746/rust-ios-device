@@ -27,11 +27,13 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
         let charged = bank.clone();
         let future = super::super::metadata_vec::with_allocation_hook(
             move |layout, pointer| {
+                let mut seen = captured.lock().unwrap();
+                let prior: usize = seen.iter().map(|(size, _)| size).sum();
                 assert_eq!(
                     charged.available_permits(),
-                    super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - layout.size()
+                    super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES - prior - layout.size()
                 );
-                captured.lock().unwrap().push((layout.size(), pointer));
+                seen.push((layout.size(), pointer));
             },
             || {
                 source
@@ -45,8 +47,10 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
                     .unwrap()
             },
         );
-        assert_eq!(seen.lock().unwrap().len(), 1);
-        let (bytes, pointer) = seen.lock().unwrap()[0];
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        let body_bytes = seen.lock().unwrap()[0].0;
+        assert_eq!(body_bytes, std::mem::size_of::<ios_core::ConnectedDevice>());
+        let (bytes, pointer) = seen.lock().unwrap()[1];
         assert!(bytes > 0);
         assert_eq!(future.data_pointer(), pointer);
         drop(future); // Intentionally NEVER poll production NativeSource.
@@ -54,7 +58,9 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
             bank.available_permits(),
             super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES
         );
-        for available in [0, bytes - 1] {
+        for (available, expected_allocations) in
+            [(0, 0), (body_bytes - 1, 0), (body_bytes + bytes - 1, 1)]
+        {
             let limited = Arc::new(Semaphore::new(available));
             let allocated = Arc::new(AtomicUsize::new(0));
             let captured = allocated.clone();
@@ -79,8 +85,18 @@ fn source_future_native_actual_constructor_is_admitted_before_allocation_without
                 crate::output::operation_error_class(error.as_ref()),
                 ios_core::ErrorClass::ResourceLimit
             );
-            assert_eq!(allocated.load(Ordering::SeqCst), 0);
+            assert_eq!(allocated.load(Ordering::SeqCst), expected_allocations);
             assert_eq!(limited.available_permits(), available);
         }
     }
+}
+
+#[tokio::test]
+async fn returned_device_box_native_legacy_fixture_cannot_contact_a_device() {
+    let error = NativeSource
+        .connect("synthetic", Route::Usbmux, TunMode::Userspace)
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("device IO disabled"));
 }

@@ -114,6 +114,7 @@ pub(super) trait Source: Send + Sync {
         })
     }
 
+    #[cfg(test)]
     fn connect<'a>(
         &'a self,
         udid: &'a str,
@@ -121,6 +122,17 @@ pub(super) trait Source: Send + Sync {
         mode: TunMode,
     ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>>;
 
+    #[cfg(not(test))]
+    fn connect_owned<'a>(
+        &'a self,
+        udid: &'a str,
+        route: Route,
+        mode: TunMode,
+        owner: &'a dyn TunnelOwner,
+        bank: &'a Arc<Semaphore>,
+    ) -> anyhow::Result<super::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>>;
+
+    #[cfg(test)]
     fn connect_owned<'a>(
         &'a self,
         udid: &'a str,
@@ -201,6 +213,7 @@ impl Source for NativeSource {
     ) -> anyhow::Result<
         crate::cmd::tunnel::future_storage::Dynamic<'a, anyhow::Result<ManagedDevice>>,
     > {
+        let destination = super::owned_box::Destination::<ios_core::ConnectedDevice>::new(bank)?;
         crate::cmd::tunnel::future_storage::Dynamic::new(
             async move {
                 let options = ConnectOptions {
@@ -235,37 +248,23 @@ impl Source for NativeSource {
                         .await?
                     }
                 };
-                Ok(ManagedDevice::Native(Box::new(device)))
+                Ok(ManagedDevice::Native(destination.place(device)))
             },
             bank,
         )
     }
 
+    #[cfg(test)]
     fn connect<'a>(
         &'a self,
-        udid: &'a str,
-        route: Route,
-        mode: TunMode,
+        _udid: &'a str,
+        _route: Route,
+        _mode: TunMode,
     ) -> BoxFuture<'a, anyhow::Result<ManagedDevice>> {
-        Box::pin(async move {
-            let options = ConnectOptions {
-                tun_mode: mode,
-                pair_record_path: None,
-                skip_tunnel: false,
-            };
-            let device = match route {
-                Route::Usbmux => ios_core::connect(udid, options).await?,
-                Route::Usb(host) => {
-                    ios_core::connect_direct_usb_tunnel(udid, host.as_deref(), options).await?
-                }
-                Route::Wifi(host) => {
-                    ios_core::connect_remote_pairing_tunnel(udid, host.as_deref(), options).await?
-                }
-                Route::Mobdev2(host) => {
-                    ios_core::connect_tcp_lockdown_tunnel(udid, &host, options).await?
-                }
-            };
-            Ok(ManagedDevice::Native(Box::new(device)))
+        Box::pin(async {
+            Err(crate::output::input_decision(
+                "NativeSource fixture requires admitted connect_owned; device IO disabled",
+            ))
         })
     }
 
