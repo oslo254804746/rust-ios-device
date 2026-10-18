@@ -1,5 +1,12 @@
 # 当前待开发清单
 
+2026-10-18：L02 [原 Source 胶囊完整分配](validation/tunnel-original-capsule-full-allocation-2026-10-18.md)
+原OnceLock错误胶囊的counter/value/原grant完整layout在Source前准入，first/latest/
+history共享原对象，关闭零配额下的原IO指针/Disconnected类别/独立receipt退款保持。
+原胶囊3/reconnect21/attribution9/完整CLI1737/0FAIL/13原ignored及严格门禁通过；
+其余private header/SDK/opaque/完整freshness继续，主项23/6/L02待核查、有效30/Q04排除不变。
+
+
 2026-10-18：L02 [failure slot 完整实际分配](validation/tunnel-failure-slot-full-allocation-2026-10-18.md)
 真实slot改用单个应用自有共享分配，counter/value/原grant/padding完整layout同池准入，
 最后原分配释放后再退款，原count优先级/typed cause/closed0复用保持。

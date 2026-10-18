@@ -1,6 +1,6 @@
 //! Original Source objects enter preallocated, byte-owned receipt capsules.
 //! Opaque error payloads and private Arc/anyhow allocations stay incomplete.
-use super::super::shared_value::Shared;
+use super::super::shared_allocation::Shared;
 use super::*;
 use std::error::Error;
 use std::sync::OnceLock;
@@ -18,9 +18,11 @@ pub(in super::super) enum Completion {
 
 struct Original {
     error: OnceLock<anyhow::Error>,
-    _storage: OwnedSemaphorePermit,
 }
 impl Original {
+    fn allocation_bytes() -> usize {
+        Shared::<Self>::allocation_bytes()
+    }
     fn error(&self) -> &anyhow::Error {
         self.error.get().expect("captured Source original")
     }
@@ -71,7 +73,7 @@ impl FailureReceipt {
             .split(Self::body_bytes())
             .expect("prepaid receipt body and guard");
         let original_storage =
-            super::super::admission::known_metadata_charge(bank, std::mem::size_of::<Original>())?;
+            super::super::admission::known_metadata_charge(bank, Original::allocation_bytes())?;
         let wrapper_storage = super::super::admission::known_metadata_charge(
             bank,
             std::mem::size_of::<SourceFailure>(),
@@ -88,10 +90,13 @@ impl FailureReceipt {
                 ticket: ticket.clone(),
                 slot,
                 version,
-                original: Shared::new(Original {
-                    error: OnceLock::new(),
-                    _storage: original_storage,
-                }),
+                original: Shared::from_grant(
+                    Original {
+                        error: OnceLock::new(),
+                    },
+                    bank,
+                    original_storage,
+                )?,
                 history: OnceLock::new(),
                 completion: Mutex::new(Completion::Pending),
                 wrapper_storage: Mutex::new(Some(wrapper_storage)),
@@ -156,7 +161,7 @@ impl FailureReceipt {
         Self::body_bytes()
             + udid.len()
             + super::super::candidate_input::route_length(&identity.route)
-            + std::mem::size_of::<Original>()
+            + Original::allocation_bytes()
             + std::mem::size_of::<SourceFailure>()
     }
 }
