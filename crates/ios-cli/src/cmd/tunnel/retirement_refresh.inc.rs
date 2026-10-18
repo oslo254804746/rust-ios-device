@@ -1,6 +1,6 @@
 // This fragment is appended inside retirement.rs's module (not a new lease).
 pub(super) struct RefreshProof {
-    registry: Arc<Registry>,
+    registry: RegistryOwner,
     key: Key,
     stamp: OwnershipStamp,
     handle: Arc<TunnelHandle>,
@@ -62,7 +62,7 @@ impl NativeLease {
         let storage =
             super::admission::known_metadata_charge(bank, std::mem::size_of::<RefreshProof>())?;
         Ok(RefreshProof {
-            registry: Arc::clone(&self.registry),
+            registry: self.registry.clone(),
             key: self.key.clone(),
             stamp,
             handle: Arc::clone(handle),

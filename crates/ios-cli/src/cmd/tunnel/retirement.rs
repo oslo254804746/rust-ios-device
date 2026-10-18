@@ -239,25 +239,27 @@ pub(super) struct Registry {
     _body_storage: OwnedSemaphorePermit,
 }
 
+pub(super) type RegistryOwner = super::shared_value::Shared<Registry>;
+
 impl Registry {
-    pub(super) fn new() -> Result<Arc<Self>> {
+    pub(super) fn new() -> Result<RegistryOwner> {
         Self::with_metadata(&Arc::new(Semaphore::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
         )))
     }
 
-    pub(super) fn with_metadata(bank: &Arc<Semaphore>) -> Result<Arc<Self>> {
+    pub(super) fn with_metadata(bank: &Arc<Semaphore>) -> Result<RegistryOwner> {
         Self::allocate(bank, MAX_NATIVE_OWNERS)
     }
 
-    fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<Arc<Self>> {
+    fn allocate(bank: &Arc<Semaphore>, capacity: usize) -> Result<RegistryOwner> {
         let body_storage =
             super::admission::known_metadata_charge(bank, std::mem::size_of::<Self>())?;
         let allocation = super::metadata_vec::exact_backing(bank, capacity)?;
         let slots_storage = allocation.storage;
         let mut slots = allocation.values;
         slots.resize_with(capacity, || None);
-        Ok(Arc::new(Self {
+        Ok(RegistryOwner::new(Self {
             state: StdMutex::new(State {
                 sealed: false,
                 issued: 0,
@@ -277,7 +279,7 @@ impl Registry {
     }
 
     #[cfg(test)]
-    fn small(capacity: NonZeroUsize) -> Arc<Self> {
+    fn small(capacity: NonZeroUsize) -> RegistryOwner {
         assert!(capacity.get() <= MAX_NATIVE_OWNERS);
         Self::allocate(
             &Arc::new(Semaphore::new(super::MAX_GLOBAL_KNOWN_METADATA_BYTES)),
@@ -322,13 +324,15 @@ impl Registry {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
+}
 
-    pub(super) fn reserve(self: &Arc<Self>, stamp: OwnershipStamp) -> Result<Reservation> {
+impl RegistryOwner {
+    pub(super) fn reserve(&self, stamp: OwnershipStamp) -> Result<Reservation> {
         self.reserve_with_input(stamp, None)
     }
 
     pub(super) fn reserve_with_input(
-        self: &Arc<Self>,
+        &self,
         stamp: OwnershipStamp,
         input: Option<super::candidate_input::Owner>,
     ) -> Result<Reservation> {
@@ -363,11 +367,13 @@ impl Registry {
             failure_observed: false,
         });
         Ok(Reservation {
-            registry: Arc::clone(self),
+            registry: self.clone(),
             key: Some(Key { slot, incarnation }),
         })
     }
+}
 
+impl Registry {
     fn entry_mut<'a>(state: &'a mut State, key: &Key) -> Option<&'a mut Entry> {
         state
             .slots
@@ -801,7 +807,7 @@ impl Drop for Registry {
 }
 
 pub(super) struct Reservation {
-    registry: Arc<Registry>,
+    registry: RegistryOwner,
     key: Option<Key>,
 }
 
@@ -850,7 +856,7 @@ impl Reservation {
         }
         self.registry.changed.notify_waiters();
         NativeLease {
-            registry: Arc::clone(&self.registry),
+            registry: self.registry.clone(),
             key,
         }
     }
@@ -865,7 +871,7 @@ impl Drop for Reservation {
 }
 
 pub(super) struct NativeLease {
-    registry: Arc<Registry>,
+    registry: RegistryOwner,
     key: Key,
 }
 

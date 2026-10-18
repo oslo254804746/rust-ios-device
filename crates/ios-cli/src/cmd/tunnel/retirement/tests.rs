@@ -9,7 +9,7 @@ use tokio::sync::watch;
 
 const OBSERVE: Duration = Duration::from_secs(1);
 
-fn registry(capacity: usize) -> Arc<Registry> {
+fn registry(capacity: usize) -> RegistryOwner {
     Registry::small(NonZeroUsize::new(capacity).unwrap())
 }
 

@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [native registry 最后 owner](validation/tunnel-registry-final-owners-2026-10-18.md)
+全部私有根统一，原 body/slots 费用保持；闭池零配额下原 NativeLease、实际
+joins/strict EOF 与最后 root 退款已验。完整 tunnel727/strict CLI/build/Source0通过；
+L02继续全审计，主项23/6/待核查、有效30与Q04全部排除不变。
+
 2026-10-18：L02 [retry Ledger 最后 owner](validation/tunnel-ledger-final-owners-2026-10-18.md)
 原 body grant/准入保持，manager/Attempt 全部根在 allocation 结束后退款；
 闭池/零余量和原IO快照独立寿命已验。完整 tunnel725/strict CLI/build/Source0通过；

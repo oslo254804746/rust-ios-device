@@ -9,6 +9,65 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream, ReadBuf};
 const OBSERVE: Duration = Duration::from_secs(2);
 
 #[tokio::test]
+async fn registry_owner_original_native_lease_outlives_caller_and_joins_at_closed_zero_quota() {
+    let baseline = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let registry = Registry::small(NonZeroUsize::new(1).unwrap());
+    let bank = registry.byte_bank.clone();
+    let total = super::super::MAX_GLOBAL_KNOWN_METADATA_BYTES;
+    let structural = registry.structural_bytes();
+    let pointer = &*registry as *const Registry;
+    let (stream, mut peer) = tokio::io::duplex(1280);
+    let native = runtime(stream).await;
+    let lease = registry.reserve(stamp()).unwrap().attach(native.clone());
+    assert!(lease.registry.ptr_eq(&registry));
+    assert_eq!(bank.available_permits(), total - structural);
+    let held = bank
+        .clone()
+        .try_acquire_many_owned(bank.available_permits() as u32)
+        .unwrap();
+    bank.close();
+    drop(registry);
+    assert_eq!(bank.available_permits(), 0);
+    assert!(native.is_alive());
+    let retained = lease.registry.clone();
+    assert_eq!(&*retained as *const Registry, pointer);
+    drop(lease);
+    assert!(
+        !native.is_alive(),
+        "original lease Drop must request stop before drain"
+    );
+    let report = retained
+        .drain_retired(CleanupClock::new(OBSERVE).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.selected, report.joined, report.snapshot.occupied()),
+        (1, 1, 0)
+    );
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(OBSERVE, peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert!(native.shutdown_status().is_ok());
+    assert!(recovered(baseline).await);
+    assert_eq!(
+        bank.available_permits(),
+        0,
+        "joined workers do not release the live registry body/backing"
+    );
+    drop(retained);
+    assert_eq!(bank.available_permits(), structural);
+    drop(held);
+    assert_eq!(bank.available_permits(), total);
+}
+
+#[tokio::test]
 async fn native_ordinal_cleanup_at_zero_pool_joins_original_workers_and_strict_eof() {
     let baseline = tokio::runtime::Handle::current()
         .metrics()
