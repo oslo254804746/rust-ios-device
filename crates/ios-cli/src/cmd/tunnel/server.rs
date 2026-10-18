@@ -44,13 +44,12 @@ pub(super) async fn serve(
 ) -> Result<()> {
     let _owner = Owner(state.clone());
     let shutdown_state = state.clone();
-    let mut server = Box::pin(
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move { shutdown_state.wait_shutdown().await })
-            .into_future(),
-    );
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown_state.wait_shutdown().await })
+        .into_future();
+    tokio::pin!(server);
     let monitor_state = state.clone();
-    let mut monitor = Box::pin(async move {
+    let monitor = Some(async move {
         let mut interval = tokio::time::interval(scan_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -76,6 +75,7 @@ pub(super) async fn serve(
             }
         }
     });
+    tokio::pin!(monitor);
     tokio::pin!(signal);
     let mut server_finished = false;
     let primary = tokio::select! {
@@ -86,20 +86,20 @@ pub(super) async fn serve(
             server_finished = true;
             result.context("serving tunnel manager")
         }
-        _ = &mut monitor => Ok(()),
+        _ = async { monitor.as_mut().as_pin_mut().expect("live scanner").await } => Ok(()),
     };
     let clock = CleanupClock::new(cleanup_timeout);
     state.notify_shutdown();
-    // Box owns the actual scanner future, including every active candidate.
-    // Dropping a Pin<&mut _> alone would not release the underlying future.
-    drop(monitor);
+    // Drop the actual inline scanner, including all active candidates, in
+    // place before reading history. Dropping only its Pin reference is not enough.
+    monitor.set(None);
     let scan_history = state.inner.scan_outcomes.history();
     let cleanup = match clock {
         Err(error) => Err(error),
         Ok(clock) => {
-            let phases = Arc::new(StdMutex::new(CleanupPhases::default()));
-            let native_phases = Arc::clone(&phases);
-            let metadata_phases = Arc::clone(&phases);
+            let phases = StdMutex::new(CleanupPhases::default());
+            let native_phases = &phases;
+            let metadata_phases = &phases;
             let work = async {
                 tokio::join!(
                     async {
