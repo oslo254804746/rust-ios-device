@@ -2,6 +2,7 @@
 use super::super::{lifecycle::Lifecycle, source::Route};
 use super::*;
 
+mod ledger_owner_tests;
 mod prepaid_tests;
 mod receipt_body_tests;
 mod removed_body_tests;

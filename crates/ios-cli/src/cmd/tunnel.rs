@@ -425,7 +425,7 @@ struct TunnelAgentInner {
     upstreams: RwLock<upstream_registry::Registry>,
     upstream_access: Upstreams,
     failed_attempts: RwLock<failure_table::Table>,
-    retry: Arc<reconnect::Ledger>,
+    retry: reconnect::LedgerOwner,
     failure_slots: Arc<Semaphore>,
     metadata_bytes: Arc<Semaphore>,
     global_metadata_bytes: Arc<Semaphore>,

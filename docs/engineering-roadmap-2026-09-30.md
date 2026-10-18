@@ -9078,3 +9078,12 @@ Strong/Weak 保持原字段最后 strong 销毁、body 最后 Weak 退款，精�
 [验证](validation/tunnel-manager-initialization-2026-10-18.md)。其它共享 owner/
 private及完整freshness继续，128MiB非完整heap/RSS；L02不关闭，主项23/6/
 待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 retry Ledger final owners
+
+Ledger 原预算保持，全部 manager/Attempt 根接入封闭 owner；实际 allocation
+结束后退款，闭池/零余量下最后 Attempt 与独立原 IO 快照边界已验。新增2项、
+完整tunnel725/0 FAIL/2原ignored、上游10/strict CLI/build/Source0通过，见
+[验证](validation/tunnel-ledger-final-owners-2026-10-18.md)。Registry/private
+及完整freshness继续；128MiB非完整heap/RSS，L02不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。
