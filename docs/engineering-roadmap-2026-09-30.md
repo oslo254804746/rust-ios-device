@@ -9059,3 +9059,12 @@ error/epoch/native joins保持。完整tunnel648/0FAIL/2原ignored、上游10/
 strictCLI/build/Source0通过，见[验证](validation/tunnel-source-future-storage-2026-10-17.md)。
 返回device Box/其它Source/SDK/private及原完整freshness等继续；128MiB非完整
 heap/RSS，L02不关闭，23/6/待全审计、有效30与Q04全部排除保持，仅本地提交。
+
+## 2026-10-18 L02 Outcomes initialization body
+
+原池在协调器创建前取得实际 body grant；manager/Session 的封闭 owner 在
+allocation 结束后退款，snapshot 独立费用和原 IO 指针保持。新增 3 项、完整
+tunnel 718/0 FAIL/2 原 ignored、上游10/strict CLI/build/Source0 通过，见
+[验证](validation/tunnel-outcomes-initialization-2026-10-18.md)。其它 owner/private
+与完整 freshness 继续；128MiB 非完整 heap/RSS，L02 不关闭，主项23/6/待全审计、
+有效30与Q04全部排除保持，仅本地提交。

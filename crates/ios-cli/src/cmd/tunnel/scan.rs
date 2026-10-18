@@ -12,6 +12,7 @@ pub(super) const MAX_ABANDONED_SCANS: usize = 8;
 
 pub(super) type AbandonedOwner = super::shared_value::Shared<AbandonedScan>;
 pub(super) type HistoryOwner = super::shared_value::Shared<HistorySnapshot>;
+pub(super) type OutcomesOwner = super::shared_value::Shared<Outcomes>;
 
 #[cfg(test)]
 #[path = "scan/capsule_tests.rs"]
@@ -19,6 +20,9 @@ mod capsule_tests;
 #[cfg(test)]
 #[path = "scan/history_owner_tests.rs"]
 mod history_owner_tests;
+#[cfg(test)]
+#[path = "scan/init_owner_tests.rs"]
+mod init_owner_tests;
 
 enum Slot {
     Empty,
@@ -97,6 +101,7 @@ impl std::ops::Index<usize> for HistorySnapshot {
 pub(super) struct Outcomes {
     slots: StdMutex<Slots>,
     bank: Arc<Semaphore>,
+    _storage: OwnedSemaphorePermit,
 }
 
 fn compound_bytes() -> usize {
@@ -113,24 +118,35 @@ pub(super) fn capsule_reservation_bytes() -> usize {
 
 impl Outcomes {
     #[cfg(test)]
-    pub(super) fn new() -> Arc<Self> {
+    pub(super) fn new() -> OutcomesOwner {
         Self::with_metadata(Arc::new(Semaphore::new(
             super::MAX_GLOBAL_KNOWN_METADATA_BYTES,
         )))
+        .unwrap()
     }
 
-    pub(super) fn with_metadata(bank: Arc<Semaphore>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(super) fn body_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    pub(super) fn with_metadata(bank: Arc<Semaphore>) -> Result<OutcomesOwner> {
+        let storage = super::admission::known_metadata_charge(&bank, Self::body_bytes())?;
+        Ok(OutcomesOwner::new(Self {
             slots: StdMutex::new(Slots {
                 closed: false,
                 entries: std::array::from_fn(|_| Slot::Empty),
                 history_root: None,
             }),
             bank,
-        })
+            _storage: storage,
+        }))
     }
+}
 
-    pub(super) fn begin<'a>(self: &Arc<Self>, lock: MutexGuard<'a, ()>) -> Result<Session<'a>> {
+// A stable crate-local specialized implementation keeps the admitted original
+// owner available for Session; it does not expose a raw Arc receiver/adapter.
+impl OutcomesOwner {
+    pub(super) fn begin<'a>(&self, lock: MutexGuard<'a, ()>) -> Result<Session<'a>> {
         let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
         if slots.closed {
             return Err(super::lifecycle::cancelled());
@@ -161,7 +177,7 @@ impl Outcomes {
         });
         slots.entries[index] = Slot::Active;
         Ok(Session {
-            outcomes: Arc::clone(self),
+            outcomes: self.clone(),
             index,
             acquired: StdMutex::new(Acquired::default()),
             writes: StdMutex::new(None),
@@ -173,7 +189,9 @@ impl Outcomes {
             _lock: lock,
         })
     }
+}
 
+impl Outcomes {
     pub(super) fn close(&self) {
         self.slots.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
     }
@@ -214,7 +232,7 @@ impl Outcomes {
 }
 
 pub(super) struct Session<'a> {
-    outcomes: Arc<Outcomes>,
+    outcomes: OutcomesOwner,
     index: usize,
     acquired: StdMutex<Acquired>,
     writes: StdMutex<Option<super::bookkeeping::WriteOwner>>,

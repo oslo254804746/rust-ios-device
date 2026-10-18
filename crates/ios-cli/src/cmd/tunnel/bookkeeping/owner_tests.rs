@@ -62,7 +62,7 @@ async fn write_owner_actual_session_retains_original_batch_root_and_finishes_err
     let (bank, batch, receipt, pointer) = fixture().await;
     let owner = batch.owner();
     let lock = tokio::sync::Mutex::new(());
-    let outcomes = super::super::scan::Outcomes::with_metadata(bank.clone());
+    let outcomes = super::super::scan::Outcomes::with_metadata(bank.clone()).unwrap();
     let session = outcomes.begin(lock.lock().await).unwrap();
     session.retain_writes(owner.clone()).unwrap();
     assert_eq!(owner.state.lock().unwrap().receipts.len(), 1);
@@ -158,7 +158,7 @@ async fn write_owner_session_caller_drop_abandons_original_receipt_without_losin
     let (bank, batch, receipt, pointer) = fixture().await;
     let owner = batch.owner();
     let lock = tokio::sync::Mutex::new(());
-    let outcomes = super::super::scan::Outcomes::with_metadata(bank.clone());
+    let outcomes = super::super::scan::Outcomes::with_metadata(bank.clone()).unwrap();
     let session = outcomes.begin(lock.lock().await).unwrap();
     session.retain_writes(owner.clone()).unwrap();
     drop(batch);
