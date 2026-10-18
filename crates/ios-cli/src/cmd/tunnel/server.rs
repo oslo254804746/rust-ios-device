@@ -1,7 +1,7 @@
 //! The parent owns the scanner; returned shutdown gets an independent budget.
 use std::error::Error;
 use std::future::{Future, IntoFuture};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -108,7 +108,7 @@ pub(super) async fn serve(
                         acquired.native_complete = true;
                         match result {
                             Ok(report) => acquired.native_selected = report.selected,
-                            Err(error) => acquired.native = Some(Arc::new(error)),
+                            Err(error) => acquired.native = Some(error),
                         }
                     },
                     async {
@@ -122,20 +122,16 @@ pub(super) async fn serve(
                             metadata_phases.lock().unwrap_or_else(|p| p.into_inner());
                         acquired.metadata_http_complete = true;
                         if let Err(error) = result {
-                            acquired.metadata_http = Some(Arc::from(error.into_boxed_dyn_error()));
+                            acquired.metadata_http = Some(error);
                         }
                     },
                 );
             };
-            let elapsed = clock.run(work).await.err().map(Arc::new);
+            let elapsed = clock.run(work).await.err();
             state.inner.native.capture_retired_outcomes();
-            let acquired = phases.lock().unwrap_or_else(|p| p.into_inner());
+            let acquired = phases.into_inner().unwrap_or_else(|p| p.into_inner());
             let snapshot = state.inner.native.snapshot();
-            let history = state
-                .inner
-                .native
-                .historical_failure()
-                .map(|error| Arc::new(error) as Cause);
+            let history = state.inner.native.historical_failure();
             if elapsed.is_none()
                 && acquired.native.is_none()
                 && acquired.metadata_http.is_none()
@@ -158,15 +154,13 @@ pub(super) async fn serve(
                 // Preserve the existing metadata-only server timeout contract.
                 // An attempt that selected actual native owners instead carries
                 // its ownership and phase evidence in TerminalCleanupFailure.
-                Err(Arc::try_unwrap(elapsed.expect("actual cleanup timer"))
-                    .expect("local timer")
-                    .into())
+                Err(elapsed.expect("actual cleanup timer").into())
             } else {
                 Err(TerminalCleanupFailure {
-                    native: acquired.native.clone(),
+                    native: acquired.native,
                     history,
                     scan_history,
-                    metadata_http: acquired.metadata_http.clone(),
+                    metadata_http: acquired.metadata_http,
                     elapsed,
                     snapshot,
                     native_complete: acquired.native_complete,
@@ -183,25 +177,23 @@ pub(super) async fn serve(
     }
 }
 
-type Cause = Arc<dyn Error + Send + Sync>;
-
 #[derive(Default)]
 struct CleanupPhases {
-    native: Option<Cause>,
-    metadata_http: Option<Cause>,
+    native: Option<super::retirement::DrainFailure>,
+    metadata_http: Option<anyhow::Error>,
     native_complete: bool,
     native_selected: usize,
     metadata_http_complete: bool,
 }
 
 pub(super) struct TerminalCleanupFailure {
-    native: Option<Cause>,
-    history: Option<Cause>,
+    native: Option<super::retirement::DrainFailure>,
+    history: Option<super::retirement::HistoryFailure>,
     // The prepaid root owns the array. The separate terminal wrapper/anyhow
     // private body remains outside exact snapshot-body accounting.
     scan_history: Option<super::scan::HistoryOwner>,
-    metadata_http: Option<Cause>,
-    elapsed: Option<Arc<tokio::time::error::Elapsed>>,
+    metadata_http: Option<anyhow::Error>,
+    elapsed: Option<tokio::time::error::Elapsed>,
     snapshot: Snapshot,
     native_complete: bool,
     metadata_http_complete: bool,
@@ -212,21 +204,13 @@ impl TerminalCleanupFailure {
         // A non-expiry native history survives a previous monitor drain. Fresh
         // phase IO takes precedence over a purely historical cleanup expiry.
         if let Some(history) = &self.history {
-            if history
-                .downcast_ref::<super::retirement::HistoryFailure>()
-                .is_some_and(|history| {
-                    !super::retirement::shutdown_primary_is_elapsed(history.primary())
-                })
-            {
-                return history.as_ref();
+            if !super::retirement::shutdown_primary_is_elapsed(history.primary()) {
+                return history;
             }
         }
         if let Some(native) = &self.native {
-            if native
-                .downcast_ref::<super::retirement::DrainFailure>()
-                .is_some_and(|native| !native.primary_is_elapsed())
-            {
-                return native.as_ref();
+            if !native.primary_is_elapsed() {
+                return native;
             }
         }
         if let Some(metadata) = &self.metadata_http {
@@ -240,13 +224,13 @@ impl TerminalCleanupFailure {
             return scan.as_ref();
         }
         if let Some(elapsed) = &self.elapsed {
-            return elapsed.as_ref();
+            return elapsed;
         }
         if let Some(native) = &self.native {
-            return native.as_ref();
+            return native;
         }
         if let Some(history) = &self.history {
-            return history.as_ref();
+            return history;
         }
         self
     }
@@ -273,22 +257,22 @@ impl std::fmt::Debug for TerminalCleanupFailure {
                 "native_class",
                 &self
                     .native
-                    .as_deref()
+                    .as_ref()
                     .map(|cause| ios_core::classify_error(cause)),
             )
             .field(
                 "history_class",
                 &self
                     .history
-                    .as_deref()
+                    .as_ref()
                     .map(|cause| ios_core::classify_error(cause)),
             )
             .field(
                 "metadata_http_class",
                 &self
                     .metadata_http
-                    .as_deref()
-                    .map(|cause| ios_core::classify_error(cause)),
+                    .as_ref()
+                    .map(|cause| ios_core::classify_error(cause.as_ref())),
             )
             .field("elapsed", &self.elapsed.is_some())
             .field(
@@ -320,10 +304,8 @@ impl Error for TerminalCleanupFailure {
 pub(super) async fn drain_native_terminal(native: &Registry, clock: CleanupClock) -> Result<()> {
     let result = native.drain_retired(clock).await;
     native.capture_retired_outcomes();
-    let failure = result.err().map(|error| Arc::new(error) as Cause);
-    let history = native
-        .historical_failure()
-        .map(|error| Arc::new(error) as Cause);
+    let failure = result.err();
+    let history = native.historical_failure();
     let snapshot = native.snapshot();
     if failure.is_none() && history.is_none() && snapshot.closed_and_empty() {
         Ok(())
@@ -373,3 +355,6 @@ impl std::error::Error for CleanupFailure {
         Some(self.primary.as_ref())
     }
 }
+
+#[cfg(test)]
+mod tests;

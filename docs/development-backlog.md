@@ -1,5 +1,10 @@
 # 当前待开发清单
 
+2026-10-18：L02 [终态清理原值存储](validation/tunnel-terminal-inline-values-2026-10-18.md)
+阶段 native/history/HTTP/Elapsed 保留原值并移动到终态，去除额外共享 wrapper；
+原 primary 顺序、IO 指针、类别和原 timer 保持。新增2/server8/native CLI105/
+完整tunnel751/strict CLI/build/Source0通过；L02继续全审计，主项23/6/待核查、有效30/Q04排除不变。
+
 2026-10-18：L02 [required native report 预付存储](validation/tunnel-native-report-preflight-2026-10-18.md)
 原两类历史根创建前准入，当前 attempt/Elapsed 内联；闭池原 IO、不可变 joins
 快照及最后退款已验。新增3/retirement38/native CLI105/完整tunnel749/strict CLI/
